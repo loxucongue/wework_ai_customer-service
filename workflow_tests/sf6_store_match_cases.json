@@ -1,0 +1,362 @@
+[
+  {
+    "case_id": "SF6_001",
+    "target_flow": "SF6_store_match",
+    "content": "你们门店在哪里",
+    "customer_id": "test_sf6_001",
+    "corp_id": "test_sf6_001",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF6_store_match",
+      "quality_points": ["客户城市未知", "不能直接报门店", "应追问城市或区域"]
+    }
+  },
+  {
+    "case_id": "SF6_002",
+    "target_flow": "SF6_store_match",
+    "content": "附近有门店吗",
+    "customer_id": "test_sf6_002",
+    "corp_id": "test_sf6_002",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF6_store_match",
+      "quality_points": ["没有定位信息", "不能说附近有", "应问所在城市/商圈"]
+    }
+  },
+  {
+    "case_id": "SF6_003",
+    "target_flow": "SF6_store_match",
+    "content": "我在厦门，有近一点的吗",
+    "customer_id": "test_sf6_003",
+    "corp_id": "test_sf6_003",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF6_store_match",
+      "quality_points": ["城市已知但区域未知", "应追问区/商圈", "不能编造具体地址"]
+    }
+  },
+  {
+    "case_id": "SF6_004",
+    "target_flow": "SF6_store_match",
+    "content": "厦门思明区附近有没有门店",
+    "customer_id": "test_sf6_004",
+    "corp_id": "test_sf6_004",
+    "conversation_history": ["用户: 我周末想过去看看"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["可基于门店库结果回复", "无结果不能编造", "可提示进一步确认"]
+    }
+  },
+  {
+    "case_id": "SF6_005",
+    "target_flow": "SF6_store_match",
+    "content": "广州天河有店吗",
+    "customer_id": "test_sf6_005",
+    "corp_id": "test_sf6_005",
+    "conversation_history": ["用户: 想做皮肤检测"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF6_store_match",
+      "quality_points": ["城市区域明确", "不能无依据说有", "需要门店库支持"]
+    }
+  },
+  {
+    "case_id": "SF6_006",
+    "target_flow": "SF6_store_match",
+    "content": "深圳南山店具体地址发我",
+    "customer_id": "test_sf6_006",
+    "corp_id": "test_sf6_006",
+    "conversation_history": ["用户: 我在深圳"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["请求具体地址", "只能用门店库返回地址", "不能编造地图链接"]
+    }
+  },
+  {
+    "case_id": "SF6_007",
+    "target_flow": "SF6_store_match",
+    "content": "你们营业到几点",
+    "customer_id": "test_sf6_007",
+    "corp_id": "test_sf6_007",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF6_store_match",
+      "quality_points": ["门店未知", "不能直接报营业时间", "应问具体门店/城市"]
+    }
+  },
+  {
+    "case_id": "SF6_008",
+    "target_flow": "SF6_store_match",
+    "content": "周末营业吗",
+    "customer_id": "test_sf6_008",
+    "corp_id": "test_sf6_008",
+    "conversation_history": ["用户: 我在厦门"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["城市有但门店未知", "不能直接确认营业", "应确认门店后再答"]
+    }
+  },
+  {
+    "case_id": "SF6_009",
+    "target_flow": "SF6_store_match",
+    "content": "有停车场吗",
+    "customer_id": "test_sf6_009",
+    "corp_id": "test_sf6_009",
+    "conversation_history": ["用户: 厦门思明区附近有没有门店"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["停车信息需门店库", "无结果不能编造", "可提示确认具体门店"]
+    }
+  },
+  {
+    "case_id": "SF6_010",
+    "target_flow": "SF6_store_match",
+    "content": "坐地铁怎么过去",
+    "customer_id": "test_sf6_010",
+    "corp_id": "test_sf6_010",
+    "conversation_history": ["助手: 可以帮你确认附近门店", "用户: 我在广州天河"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["路线需具体门店", "不能编造地铁站", "应先确认门店"]
+    }
+  },
+  {
+    "case_id": "SF6_011",
+    "target_flow": "SF6_store_match",
+    "content": "把导航发我",
+    "customer_id": "test_sf6_011",
+    "corp_id": "test_sf6_011",
+    "conversation_history": ["用户: 我想去厦门店", "助手: 你方便说下在哪个区吗"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["门店未明确", "不能编造导航链接", "应确认具体门店"]
+    }
+  },
+  {
+    "case_id": "SF6_012",
+    "target_flow": "SF6_store_match",
+    "content": "我在湖里区，哪家近",
+    "customer_id": "test_sf6_012",
+    "corp_id": "test_sf6_012",
+    "conversation_history": ["用户: 我在厦门"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["区域明确", "需要门店库匹配", "无结果不编造"]
+    }
+  },
+  {
+    "case_id": "SF6_013",
+    "target_flow": "SF6_store_match",
+    "content": "我现在在上海，你们那边有店吗",
+    "customer_id": "test_sf6_013",
+    "corp_id": "test_sf6_013",
+    "conversation_history": ["用户: 想了解祛斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF6_store_match",
+      "quality_points": ["城市明确", "不能无依据说有或没有", "需门店库确认"]
+    }
+  },
+  {
+    "case_id": "SF6_014",
+    "target_flow": "SF6_store_match",
+    "content": "我可以换到离公司近的店吗",
+    "customer_id": "test_sf6_014",
+    "corp_id": "test_sf6_014",
+    "conversation_history": ["用户: 周六想到店", "助手: 可以先登记意向时间"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["需要公司位置/区域", "不能直接说可以换", "可引导确认"]
+    }
+  },
+  {
+    "case_id": "SF6_015",
+    "target_flow": "SF6_store_match",
+    "content": "我已经约了思明店，地址再发我一下",
+    "customer_id": "test_sf6_015",
+    "corp_id": "test_sf6_015",
+    "conversation_history": ["助手: 你周六到店意向已记录"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF6_store_match",
+      "quality_points": ["已约门店", "仍需门店库或预约信息", "不能编造地址"]
+    }
+  },
+  {
+    "case_id": "SF6_016",
+    "target_flow": "SF6_store_match",
+    "content": "门店是在商场里面吗，几楼",
+    "customer_id": "test_sf6_016",
+    "corp_id": "test_sf6_016",
+    "conversation_history": ["用户: 我去厦门思明店"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF6_store_match",
+      "quality_points": ["楼层需门店库", "无结果不能编造", "可提示进一步确认"]
+    }
+  },
+  {
+    "case_id": "SF6_017",
+    "target_flow": "SF6_store_match",
+    "content": "附近有公交站吗",
+    "customer_id": "test_sf6_017",
+    "corp_id": "test_sf6_017",
+    "conversation_history": ["用户: 我在深圳南山"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["交通信息需门店库", "不能编造公交站", "先确认具体门店"]
+    }
+  },
+  {
+    "case_id": "SF6_018",
+    "target_flow": "SF6_store_match",
+    "content": "离我最近的门店可以今天去吗",
+    "customer_id": "test_sf6_018",
+    "corp_id": "test_sf6_018",
+    "conversation_history": ["用户: 我想今天看看"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["同时涉及门店和预约", "缺城市不能确认", "不能直接说可以今天去"]
+    }
+  },
+  {
+    "case_id": "SF6_019",
+    "target_flow": "SF6_store_match",
+    "content": "厦门店现在人多吗，要不要排队",
+    "customer_id": "test_sf6_019",
+    "corp_id": "test_sf6_019",
+    "conversation_history": ["用户: 我在厦门"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["实时客流需外部接口", "不能编造排队情况", "可建议预约确认"]
+    }
+  },
+  {
+    "case_id": "SF6_020",
+    "target_flow": "SF6_store_match",
+    "content": "哪家店医生比较好",
+    "customer_id": "test_sf6_020",
+    "corp_id": "test_sf6_020",
+    "conversation_history": ["用户: 我想做抗衰"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF6_store_match",
+      "quality_points": ["医生信息需资料", "不能编造医生优劣", "可问项目和区域"]
+    }
+  },
+  {
+    "case_id": "SF6_021",
+    "target_flow": "SF6_store_match",
+    "content": "你们厦门几家店",
+    "customer_id": "test_sf6_021",
+    "corp_id": "test_sf6_021",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF6_store_match",
+      "quality_points": ["门店数量需知识库", "不能编造数量", "可回复以最新门店信息为准"]
+    }
+  },
+  {
+    "case_id": "SF6_022",
+    "target_flow": "SF6_store_match",
+    "content": "我不在本地，可以先线上咨询再决定门店吗",
+    "customer_id": "test_sf6_022",
+    "corp_id": "test_sf6_022",
+    "conversation_history": ["用户: 想了解水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF6_store_match",
+      "quality_points": ["允许先线上咨询", "不急着匹配门店", "可问后续到店城市"]
+    }
+  },
+  {
+    "case_id": "SF6_023",
+    "target_flow": "SF6_store_match",
+    "content": "门店可以做皮肤检测吗",
+    "customer_id": "test_sf6_023",
+    "corp_id": "test_sf6_023",
+    "conversation_history": ["用户: 想先检测再决定项目"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF6_store_match",
+      "quality_points": ["服务项目需门店/项目资料", "不能无依据说都可以", "可提示到店确认"]
+    }
+  },
+  {
+    "case_id": "SF6_024",
+    "target_flow": "SF6_store_match",
+    "content": "我在厦门，周六到店可以吗",
+    "customer_id": "test_sf6_024",
+    "corp_id": "test_sf6_024",
+    "conversation_history": ["用户: 想做淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["预约优先", "不能直接说周六可以", "应确认具体门店/时间"]
+    }
+  }
+]

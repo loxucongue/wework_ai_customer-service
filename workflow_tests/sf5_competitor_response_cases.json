@@ -1,0 +1,385 @@
+[
+  {
+    "case_id": "SF5_001",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家给我报的水光比你们便宜很多",
+    "customer_id": "test_sf5_001",
+    "corp_id": "test_sf5_001",
+    "conversation_history": ["用户: 想了解水光", "助手: 可以先看你的皮肤基础再确认方案"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["认可对比", "不贬低竞品", "引导比较产品/剂量/服务/售后", "不直接降价"]
+    }
+  },
+  {
+    "case_id": "SF5_002",
+    "target_flow": "SF5_competitor_response",
+    "content": "我看另一家光子嫩肤才299，你们为什么贵",
+    "customer_id": "test_sf5_002",
+    "corp_id": "test_sf5_002",
+    "conversation_history": ["用户: 我想改善暗沉和毛孔"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF", "SF7_price_consult"],
+      "quality_points": ["解释价格差异维度", "不说竞品低价不好", "不承诺最低价"]
+    }
+  },
+  {
+    "case_id": "SF5_003",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家说你们产品不正规，是真的吗",
+    "customer_id": "test_sf5_003",
+    "corp_id": "test_sf5_003",
+    "conversation_history": ["用户: 想做水光靓颜冻干粉套组"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不攻击竞品", "基于资质/溯源资料回应", "可发背书图片", "不编造资质"]
+    }
+  },
+  {
+    "case_id": "SF5_004",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家顾问说你们家技术不行",
+    "customer_id": "test_sf5_004",
+    "corp_id": "test_sf5_004",
+    "conversation_history": ["用户: 我比较担心做坏"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不争辩", "不贬低对方", "用流程/资质/面诊降低顾虑"]
+    }
+  },
+  {
+    "case_id": "SF5_005",
+    "target_flow": "SF5_competitor_response",
+    "content": "我发你个截图，这个水光才199，你们差这么多？",
+    "customer_id": "test_sf5_005",
+    "corp_id": "test_sf5_005",
+    "conversation_history": ["用户: 水光多少钱"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["承接截图", "提醒看清项目内容/剂量/是否另收费", "不判断截图真假"]
+    }
+  },
+  {
+    "case_id": "SF5_006",
+    "target_flow": "SF5_competitor_response",
+    "content": "另一家现在做活动买一送一，你们有吗",
+    "customer_id": "test_sf5_006",
+    "corp_id": "test_sf5_006",
+    "conversation_history": ["用户: 想淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不跟随竞品活动承诺", "说明需看当前活动配置", "引导比较适配度和服务内容"]
+    }
+  },
+  {
+    "case_id": "SF5_007",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家说皮秒肯定比光子好，你们怎么说",
+    "customer_id": "test_sf5_007",
+    "corp_id": "test_sf5_007",
+    "conversation_history": ["用户: 我想淡斑，不知道选哪个"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不说竞品错误", "说明项目适配不同", "引导看斑型/肤质"]
+    }
+  },
+  {
+    "case_id": "SF5_008",
+    "target_flow": "SF5_competitor_response",
+    "content": "我朋友在别家做淡斑没效果，你们有什么区别",
+    "customer_id": "test_sf5_008",
+    "corp_id": "test_sf5_008",
+    "conversation_history": ["用户: 脸上斑很多"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不评价别家效果", "说明效果因人而异", "强调面诊和方案匹配"]
+    }
+  },
+  {
+    "case_id": "SF5_009",
+    "target_flow": "SF5_competitor_response",
+    "content": "你们和另一家机构比哪个好",
+    "customer_id": "test_sf5_009",
+    "corp_id": "test_sf5_009",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S1_icebreaking",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不直接说谁更好", "给对比维度", "低压力引导需求"]
+    }
+  },
+  {
+    "case_id": "SF5_010",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家把资质证书发我了，你们有吗",
+    "customer_id": "test_sf5_010",
+    "corp_id": "test_sf5_010",
+    "conversation_history": ["用户: 我担心不正规"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["应检索资质背书图片", "图片用 image 类型", "不编造资质"]
+    }
+  },
+  {
+    "case_id": "SF5_011",
+    "target_flow": "SF5_competitor_response",
+    "content": "他们说用的是进口设备，你们这边呢",
+    "customer_id": "test_sf5_011",
+    "corp_id": "test_sf5_011",
+    "conversation_history": ["用户: 想做抗衰"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不编造设备来源", "有资料再发", "引导确认具体项目"]
+    }
+  },
+  {
+    "case_id": "SF5_012",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家说他们售后包修包退，你们售后怎么保障",
+    "customer_id": "test_sf5_012",
+    "corp_id": "test_sf5_012",
+    "conversation_history": ["用户: 我怕做完没人管"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不承诺包退", "说明售后流程", "有售后资料再发"]
+    }
+  },
+  {
+    "case_id": "SF5_013",
+    "target_flow": "SF5_competitor_response",
+    "content": "我就是想多对比几家，不想被你们催",
+    "customer_id": "test_sf5_013",
+    "corp_id": "test_sf5_013",
+    "conversation_history": ["用户: 还在考虑"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["认可对比", "降低压力", "不催促"]
+    }
+  },
+  {
+    "case_id": "SF5_014",
+    "target_flow": "SF5_competitor_response",
+    "content": "你们要是比他们便宜我就来，不然算了",
+    "customer_id": "test_sf5_014",
+    "corp_id": "test_sf5_014",
+    "conversation_history": ["用户: 别家报价更低", "助手: 可以帮你看下项目内容是否一致"],
+    "file_image": "",
+    "expected": {
+      "intent": "bargain",
+      "scene": "S3_deep_consult",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["强压价可转人工", "不自动降价", "不拉扯多轮"]
+    }
+  },
+  {
+    "case_id": "SF5_015",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家一直说你们坑人，我有点不放心",
+    "customer_id": "test_sf5_015",
+    "corp_id": "test_sf5_015",
+    "conversation_history": ["用户: 想先了解机构靠不靠谱"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不对骂", "承接不放心", "给透明流程和资料"]
+    }
+  },
+  {
+    "case_id": "SF5_016",
+    "target_flow": "SF5_competitor_response",
+    "content": "是不是同行都说你们不好啊",
+    "customer_id": "test_sf5_016",
+    "corp_id": "test_sf5_016",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S1_icebreaking",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不情绪化", "用事实资料和流程回应", "不攻击同行"]
+    }
+  },
+  {
+    "case_id": "SF5_017",
+    "target_flow": "SF5_competitor_response",
+    "content": "同样是皮秒，为什么他们只要几百",
+    "customer_id": "test_sf5_017",
+    "corp_id": "test_sf5_017",
+    "conversation_history": ["用户: 想做皮秒淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["解释同名项目差异维度", "不说便宜一定差", "不报价"]
+    }
+  },
+  {
+    "case_id": "SF5_018",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家说一次就能把斑淡很多，你们能做到吗",
+    "customer_id": "test_sf5_018",
+    "corp_id": "test_sf5_018",
+    "conversation_history": ["用户: 斑很明显"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不跟随承诺", "强调因人而异", "不保证一次效果"]
+    }
+  },
+  {
+    "case_id": "SF5_019",
+    "target_flow": "SF5_competitor_response",
+    "content": "我在别家做过水光维持不久，换你们会不会好点",
+    "customer_id": "test_sf5_019",
+    "corp_id": "test_sf5_019",
+    "conversation_history": ["用户: 之前做过水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S7_dealed_active",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不贬低原机构", "不承诺更久", "分析维持时间影响因素"]
+    }
+  },
+  {
+    "case_id": "SF5_020",
+    "target_flow": "SF5_competitor_response",
+    "content": "一家推荐皮秒，一家推荐光子，我到底听谁的",
+    "customer_id": "test_sf5_020",
+    "corp_id": "test_sf5_020",
+    "conversation_history": ["用户: 我想淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不判断谁对谁错", "说明适配条件", "追问斑型/皮肤状态"]
+    }
+  },
+  {
+    "case_id": "SF5_021",
+    "target_flow": "SF5_competitor_response",
+    "content": "我把别家的报价单发你，你帮我看看合理吗",
+    "customer_id": "test_sf5_021",
+    "corp_id": "test_sf5_021",
+    "conversation_history": ["用户: 想对比价格"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不能判断竞品报价真假", "帮客户看对比维度", "不攻击竞品"]
+    }
+  },
+  {
+    "case_id": "SF5_022",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家说套餐包干，你们为什么只报单次",
+    "customer_id": "test_sf5_022",
+    "corp_id": "test_sf5_022",
+    "conversation_history": ["用户: 想知道淡斑价格"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["解释线上只报单次", "不否定套餐", "不编造套餐价"]
+    }
+  },
+  {
+    "case_id": "SF5_023",
+    "target_flow": "SF5_competitor_response",
+    "content": "我想比较一下你们和另一家的安全保障",
+    "customer_id": "test_sf5_023",
+    "corp_id": "test_sf5_023",
+    "conversation_history": ["用户: 怕做坏"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不保证安全", "可发安全/资质背书", "说明评估和风险告知"]
+    }
+  },
+  {
+    "case_id": "SF5_024",
+    "target_flow": "SF5_competitor_response",
+    "content": "别家说不用面诊可以直接做，更方便",
+    "customer_id": "test_sf5_024",
+    "corp_id": "test_sf5_024",
+    "conversation_history": ["用户: 我想周末快速做完"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不评价别家流程", "强调面诊评估必要性", "不说绝对安全"]
+    }
+  }
+]

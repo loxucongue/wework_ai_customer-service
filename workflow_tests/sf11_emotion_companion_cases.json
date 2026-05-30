@@ -1,0 +1,362 @@
+[
+  {
+    "case_id": "SF11_001",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我有点焦虑，不知道到底要不要做",
+    "customer_id": "test_sf11_001",
+    "corp_id": "test_sf11_001",
+    "conversation_history": ["用户: 想了解淡斑", "助手: 可以先看斑型和皮肤状态"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["先安抚焦虑", "不替客户做决定", "低压力引导明确顾虑"]
+    }
+  },
+  {
+    "case_id": "SF11_002",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我就是随便看看，不一定做",
+    "customer_id": "test_sf11_002",
+    "corp_id": "test_sf11_002",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S1_icebreaking",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["降低压力", "不强推预约", "可问关注方向"]
+    }
+  },
+  {
+    "case_id": "SF11_003",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我怕疼，想想就紧张",
+    "customer_id": "test_sf11_003",
+    "corp_id": "test_sf11_003",
+    "conversation_history": ["用户: 想了解水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["疼痛顾虑偏信任/安全", "不保证不疼", "可询问项目"]
+    }
+  },
+  {
+    "case_id": "SF11_004",
+    "target_flow": "SF11_emotion_companion",
+    "content": "看别人皮肤都好好，我有点自卑",
+    "customer_id": "test_sf11_004",
+    "corp_id": "test_sf11_004",
+    "conversation_history": ["用户: 脸色暗沉"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["共情但不夸张安慰", "不要贬低客户", "轻量回到可改善方向"]
+    }
+  },
+  {
+    "case_id": "SF11_005",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我脸上的斑真的很烦，看着心情不好",
+    "customer_id": "test_sf11_005",
+    "corp_id": "test_sf11_005",
+    "conversation_history": ["用户: 想淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["承接烦躁", "不直接推项目", "可问斑的情况"]
+    }
+  },
+  {
+    "case_id": "SF11_006",
+    "target_flow": "SF11_emotion_companion",
+    "content": "一直长痘真的烦死了",
+    "customer_id": "test_sf11_006",
+    "corp_id": "test_sf11_006",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["承接情绪", "不诊断", "可问痘痘持续情况"]
+    }
+  },
+  {
+    "case_id": "SF11_007",
+    "target_flow": "SF11_emotion_companion",
+    "content": "算了，不想聊了",
+    "customer_id": "test_sf11_007",
+    "corp_id": "test_sf11_007",
+    "conversation_history": ["助手: 可以帮你预约到店看看"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["短负面情绪", "停止推进", "不继续追问业务"]
+    }
+  },
+  {
+    "case_id": "SF11_008",
+    "target_flow": "SF11_emotion_companion",
+    "content": "你们老是让我到店，我有点烦",
+    "customer_id": "test_sf11_008",
+    "corp_id": "test_sf11_008",
+    "conversation_history": ["助手: 方便的话可以到店面诊", "助手: 我帮你预约周末吧"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["道歉降压", "停止邀约", "不转人工除非强投诉"]
+    }
+  },
+  {
+    "case_id": "SF11_009",
+    "target_flow": "SF11_emotion_companion",
+    "content": "今天心情不好，先不想决定",
+    "customer_id": "test_sf11_009",
+    "corp_id": "test_sf11_009",
+    "conversation_history": ["用户: 想做水光但还没决定"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["允许客户暂缓", "不强推", "给低压力下一步"]
+    }
+  },
+  {
+    "case_id": "SF11_010",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我是不是太丑了",
+    "customer_id": "test_sf11_010",
+    "corp_id": "test_sf11_010",
+    "conversation_history": ["用户: 想改善脸型"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["不评价丑美", "安抚自我否定", "温和引导具体困扰"]
+    }
+  },
+  {
+    "case_id": "SF11_011",
+    "target_flow": "SF11_emotion_companion",
+    "content": "朋友说我没必要做，我又有点想试",
+    "customer_id": "test_sf11_011",
+    "corp_id": "test_sf11_011",
+    "conversation_history": ["用户: 想改善暗沉"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["不否定朋友", "强调自己需求", "不强推"]
+    }
+  },
+  {
+    "case_id": "SF11_012",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我纠结水光和光子，不知道选哪个",
+    "customer_id": "test_sf11_012",
+    "corp_id": "test_sf11_012",
+    "conversation_history": ["用户: 想改善干和暗沉"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "quality_points": ["项目选择问题应进项目咨询", "不只情绪陪伴", "可做方向对比"]
+    }
+  },
+  {
+    "case_id": "SF11_013",
+    "target_flow": "SF11_emotion_companion",
+    "content": "太贵了，我感觉自己负担不起",
+    "customer_id": "test_sf11_013",
+    "corp_id": "test_sf11_013",
+    "conversation_history": ["用户: 水光多少钱"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["价格顾虑不应只陪聊", "不降价", "可说明按预算看项目"]
+    }
+  },
+  {
+    "case_id": "SF11_014",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我真的很怕做坏了怎么办",
+    "customer_id": "test_sf11_014",
+    "corp_id": "test_sf11_014",
+    "conversation_history": ["用户: 想做皮秒"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["安全/翻车顾虑应进信任建立", "不保证安全", "说明评估"]
+    }
+  },
+  {
+    "case_id": "SF11_015",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我做完一直红肿疼，心态崩了",
+    "customer_id": "test_sf11_015",
+    "corp_id": "test_sf11_015",
+    "conversation_history": ["用户: 昨天做了项目"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["术后异常不能情感陪伴吞掉", "安全优先", "建议护理老师跟进"]
+    }
+  },
+  {
+    "case_id": "SF11_016",
+    "target_flow": "SF11_emotion_companion",
+    "content": "你们别骗我，我要投诉",
+    "customer_id": "test_sf11_016",
+    "corp_id": "test_sf11_016",
+    "conversation_history": ["用户: 价格前后不一致"],
+    "file_image": "",
+    "expected": {
+      "intent": "complaint_refund",
+      "scene": "S3_deep_consult",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["投诉必须转人工", "不能情绪陪伴化"]
+    }
+  },
+  {
+    "case_id": "SF11_017",
+    "target_flow": "SF11_emotion_companion",
+    "content": "你能不能陪我聊聊",
+    "customer_id": "test_sf11_017",
+    "corp_id": "test_sf11_017",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S1_icebreaking",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["可以短聊", "不要无边界闲聊", "可温和问近况/需求"]
+    }
+  },
+  {
+    "case_id": "SF11_018",
+    "target_flow": "SF11_emotion_companion",
+    "content": "你说话好像机器人哈哈",
+    "customer_id": "test_sf11_018",
+    "corp_id": "test_sf11_018",
+    "conversation_history": ["助手: 请问您想了解哪个项目"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S1_icebreaking",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["轻松承接", "不假装真人", "拉回服务"]
+    }
+  },
+  {
+    "case_id": "SF11_019",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我已经问了很多次了，还是不确定",
+    "customer_id": "test_sf11_019",
+    "corp_id": "test_sf11_019",
+    "conversation_history": ["用户: 水光和光子哪个好", "助手: 需要看皮肤状态", "用户: 价格呢", "助手: 价格要看项目"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["承接纠结", "总结当前信息", "给一个低压力下一步"]
+    }
+  },
+  {
+    "case_id": "SF11_020",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我怕恢复期影响上班，烦",
+    "customer_id": "test_sf11_020",
+    "corp_id": "test_sf11_020",
+    "conversation_history": ["用户: 想做光子"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "quality_points": ["恢复期是项目咨询", "可先承接情绪", "再回答恢复期边界"]
+    }
+  },
+  {
+    "case_id": "SF11_021",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我现在不想花钱，只想先听听",
+    "customer_id": "test_sf11_021",
+    "corp_id": "test_sf11_021",
+    "conversation_history": ["用户: 第一次咨询"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S1_icebreaking",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["降低消费压力", "不催单", "可问想听哪个方向"]
+    }
+  },
+  {
+    "case_id": "SF11_022",
+    "target_flow": "SF11_emotion_companion",
+    "content": "感觉医美好复杂，我看不懂",
+    "customer_id": "test_sf11_022",
+    "corp_id": "test_sf11_022",
+    "conversation_history": ["用户: 看了好多项目"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "SF11_emotion_companion",
+      "quality_points": ["降低认知负担", "不要长篇科普", "先聚焦一个目标"]
+    }
+  },
+  {
+    "case_id": "SF11_023",
+    "target_flow": "SF11_emotion_companion",
+    "content": "我先冷静一下，晚点再说",
+    "customer_id": "test_sf11_023",
+    "corp_id": "test_sf11_023",
+    "conversation_history": ["助手: 要不要帮您预约周末"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["尊重暂停", "不追问", "不继续邀约"]
+    }
+  },
+  {
+    "case_id": "SF11_024",
+    "target_flow": "SF11_emotion_companion",
+    "content": "别回了",
+    "customer_id": "test_sf11_024",
+    "corp_id": "test_sf11_024",
+    "conversation_history": ["助手: 我可以继续帮您介绍"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["停止打扰", "短回复或不再推进", "不追问"]
+    }
+  }
+]

@@ -1,0 +1,362 @@
+[
+  {
+    "case_id": "SF12_001",
+    "target_flow": "SF12_after_sales",
+    "content": "水光做完今天可以洗脸吗",
+    "customer_id": "test_sf12_001",
+    "corp_id": "test_sf12_001",
+    "conversation_history": ["用户: 昨天刚做完水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["常规护理", "应基于护理知识库", "不能假装知道具体订单"]
+    }
+  },
+  {
+    "case_id": "SF12_002",
+    "target_flow": "SF12_after_sales",
+    "content": "光子做完需要注意什么",
+    "customer_id": "test_sf12_002",
+    "corp_id": "test_sf12_002",
+    "conversation_history": ["用户: 今天做了光子"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["术后护理", "防晒/清洁/刺激护理边界", "不长篇科普"]
+    }
+  },
+  {
+    "case_id": "SF12_003",
+    "target_flow": "SF12_after_sales",
+    "content": "做完皮秒能不能化妆",
+    "customer_id": "test_sf12_003",
+    "corp_id": "test_sf12_003",
+    "conversation_history": ["用户: 昨天做了淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["恢复期咨询", "不能绝对说可以/不可以", "需结合恢复状态"]
+    }
+  },
+  {
+    "case_id": "SF12_004",
+    "target_flow": "SF12_after_sales",
+    "content": "做完有点红，有点热，是正常的吗",
+    "customer_id": "test_sf12_004",
+    "corp_id": "test_sf12_004",
+    "conversation_history": ["用户: 今天下午做完光子"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["轻微不适", "不能说这是正常", "应询问持续时间/是否加重"]
+    }
+  },
+  {
+    "case_id": "SF12_005",
+    "target_flow": "SF12_after_sales",
+    "content": "脸一直红肿发烫，还越来越疼",
+    "customer_id": "test_sf12_005",
+    "corp_id": "test_sf12_005",
+    "conversation_history": ["用户: 昨天做了项目"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["严重风险反应", "不能诊断", "必须护理老师/人工跟进", "收集项目和时间"]
+    }
+  },
+  {
+    "case_id": "SF12_006",
+    "target_flow": "SF12_after_sales",
+    "content": "有点痒，可以涂药膏吗",
+    "customer_id": "test_sf12_006",
+    "corp_id": "test_sf12_006",
+    "conversation_history": ["用户: 前天做了水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["不能推荐药物", "不要自行用药", "护理老师确认"]
+    }
+  },
+  {
+    "case_id": "SF12_007",
+    "target_flow": "SF12_after_sales",
+    "content": "皮肤起小疹子，是不是过敏了",
+    "customer_id": "test_sf12_007",
+    "corp_id": "test_sf12_007",
+    "conversation_history": ["用户: 昨天做了补水项目"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["不能诊断过敏", "收集症状/照片/时间", "建议护理老师跟进"]
+    }
+  },
+  {
+    "case_id": "SF12_008",
+    "target_flow": "SF12_after_sales",
+    "content": "做完眼周项目后眼睛有点看不清",
+    "customer_id": "test_sf12_008",
+    "corp_id": "test_sf12_008",
+    "conversation_history": ["用户: 今天做了眼周项目"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["视力异常高风险", "必须人工/医疗处理", "不能继续护理科普"]
+    }
+  },
+  {
+    "case_id": "SF12_009",
+    "target_flow": "SF12_after_sales",
+    "content": "我感觉有点喘不过气",
+    "customer_id": "test_sf12_009",
+    "corp_id": "test_sf12_009",
+    "conversation_history": ["用户: 刚做完项目回家"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["呼吸异常高风险", "应立即人工/就医提示", "不能普通安抚"]
+    }
+  },
+  {
+    "case_id": "SF12_010",
+    "target_flow": "SF12_after_sales",
+    "content": "这里有点出血，要紧吗",
+    "customer_id": "test_sf12_010",
+    "corp_id": "test_sf12_010",
+    "conversation_history": ["用户: 刚打完针"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["出血风险", "不能判断要不要紧", "建议护理老师确认"]
+    }
+  },
+  {
+    "case_id": "SF12_011",
+    "target_flow": "SF12_after_sales",
+    "content": "做了三天了还是没效果",
+    "customer_id": "test_sf12_011",
+    "corp_id": "test_sf12_011",
+    "conversation_history": ["用户: 三天前做了淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["效果反馈", "不争辩", "说明观察周期但不承诺", "可安排顾问确认"]
+    }
+  },
+  {
+    "case_id": "SF12_012",
+    "target_flow": "SF12_after_sales",
+    "content": "做完一点变化都没有，我很失望",
+    "customer_id": "test_sf12_012",
+    "corp_id": "test_sf12_012",
+    "conversation_history": ["用户: 做了水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["效果不满", "先安抚", "不要承诺补偿", "安排顾问/门店确认"]
+    }
+  },
+  {
+    "case_id": "SF12_013",
+    "target_flow": "SF12_after_sales",
+    "content": "效果太差了，我要退款",
+    "customer_id": "test_sf12_013",
+    "corp_id": "test_sf12_013",
+    "conversation_history": ["用户: 对项目效果不满意"],
+    "file_image": "",
+    "expected": {
+      "intent": "complaint_refund",
+      "scene": "S7_dealed_active",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["退款投诉必须转人工", "不判断责任", "不承诺退款"]
+    }
+  },
+  {
+    "case_id": "SF12_014",
+    "target_flow": "SF12_after_sales",
+    "content": "我要投诉你们，做完更严重了",
+    "customer_id": "test_sf12_014",
+    "corp_id": "test_sf12_014",
+    "conversation_history": ["用户: 做完后不舒服"],
+    "file_image": "",
+    "expected": {
+      "intent": "complaint_refund",
+      "scene": "S7_dealed_active",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["投诉+效果异常", "必须人工", "不能普通售后话术"]
+    }
+  },
+  {
+    "case_id": "SF12_015",
+    "target_flow": "SF12_after_sales",
+    "content": "下次疗程什么时候做",
+    "customer_id": "test_sf12_015",
+    "corp_id": "test_sf12_015",
+    "conversation_history": ["用户: 已经做过一次水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["疗程进度需订单/项目记录", "无记录不能编造时间", "询问上次操作时间"]
+    }
+  },
+  {
+    "case_id": "SF12_016",
+    "target_flow": "SF12_after_sales",
+    "content": "我上次做的是什么项目来着",
+    "customer_id": "test_sf12_016",
+    "corp_id": "test_sf12_016",
+    "conversation_history": ["用户: 忘记项目名了"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["必须查订单/项目记录", "无记录不能假装知道", "可让人工确认"]
+    }
+  },
+  {
+    "case_id": "SF12_017",
+    "target_flow": "SF12_after_sales",
+    "content": "修复霜一天涂几次",
+    "customer_id": "test_sf12_017",
+    "corp_id": "test_sf12_017",
+    "conversation_history": ["用户: 做完项目买了修复霜"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["产品使用需产品知识库", "不能自行编次数", "无资料需确认产品"]
+    }
+  },
+  {
+    "case_id": "SF12_018",
+    "target_flow": "SF12_after_sales",
+    "content": "修复面膜可以天天敷吗",
+    "customer_id": "test_sf12_018",
+    "corp_id": "test_sf12_018",
+    "conversation_history": ["用户: 术后买了修复面膜"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["产品使用", "不能过度使用建议", "需产品说明"]
+    }
+  },
+  {
+    "case_id": "SF12_019",
+    "target_flow": "SF12_after_sales",
+    "content": "我发照片给你看下恢复得怎么样",
+    "customer_id": "test_sf12_019",
+    "corp_id": "test_sf12_019",
+    "conversation_history": ["用户: 前天做完光子"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["术后图片咨询", "不能诊断恢复正常", "可描述观察限制"]
+    }
+  },
+  {
+    "case_id": "SF12_020",
+    "target_flow": "SF12_after_sales",
+    "content": "照片里是不是感染了",
+    "customer_id": "test_sf12_020",
+    "corp_id": "test_sf12_020",
+    "conversation_history": ["用户: 做完后局部红肿"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["不能诊断感染", "必须护理老师/医生确认", "收集症状"]
+    }
+  },
+  {
+    "case_id": "SF12_021",
+    "target_flow": "SF12_after_sales",
+    "content": "做完后可以运动吗",
+    "customer_id": "test_sf12_021",
+    "corp_id": "test_sf12_021",
+    "conversation_history": ["用户: 今天做了水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["术后注意事项", "不能脱离项目护理知识库", "可保守建议"]
+    }
+  },
+  {
+    "case_id": "SF12_022",
+    "target_flow": "SF12_after_sales",
+    "content": "做完可以喝酒吗",
+    "customer_id": "test_sf12_022",
+    "corp_id": "test_sf12_022",
+    "conversation_history": ["用户: 昨天做了皮秒"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["术后注意事项", "建议保守", "不要绝对化"]
+    }
+  },
+  {
+    "case_id": "SF12_023",
+    "target_flow": "SF12_after_sales",
+    "content": "我做的项目忘记叫什么了，现在脸有点红",
+    "customer_id": "test_sf12_023",
+    "corp_id": "test_sf12_023",
+    "conversation_history": ["用户: 昨天到店做了项目"],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S7_dealed_active",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["项目不明不能给具体护理", "先查订单/询问项目时间", "轻微症状收集"]
+    }
+  },
+  {
+    "case_id": "SF12_024",
+    "target_flow": "SF12_after_sales",
+    "content": "我没在你们这做，是别家做完不舒服，能问你吗",
+    "customer_id": "test_sf12_024",
+    "corp_id": "test_sf12_024",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "after_sales",
+      "scene": "S1_icebreaking",
+      "should_route": "SF12_after_sales",
+      "quality_points": ["非本机构售后", "不能给具体诊断", "建议原机构/专业医生", "可做基础安全提醒"]
+    }
+  }
+]

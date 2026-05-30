@@ -1,0 +1,362 @@
+[
+  {
+    "case_id": "SF8_001",
+    "target_flow": "SF8_campaign_push",
+    "content": "你们现在有什么活动",
+    "customer_id": "test_sf8_001",
+    "corp_id": "test_sf8_001",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["无活动结果不能编造", "应先问项目方向", "不能直接说有活动"]
+    }
+  },
+  {
+    "case_id": "SF8_002",
+    "target_flow": "SF8_campaign_push",
+    "content": "水光最近有活动吗",
+    "customer_id": "test_sf8_002",
+    "corp_id": "test_sf8_002",
+    "conversation_history": ["用户: 想改善干燥暗沉"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["项目明确", "活动需来自活动系统", "无结果不承诺折扣"]
+    }
+  },
+  {
+    "case_id": "SF8_003",
+    "target_flow": "SF8_campaign_push",
+    "content": "淡斑活动价多少",
+    "customer_id": "test_sf8_003",
+    "corp_id": "test_sf8_003",
+    "conversation_history": ["用户: 脸上斑明显"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["活动价需活动系统和报价系统", "不能编造价格", "可确认具体项目"]
+    }
+  },
+  {
+    "case_id": "SF8_004",
+    "target_flow": "SF8_campaign_push",
+    "content": "五一活动现在还有吗",
+    "customer_id": "test_sf8_004",
+    "corp_id": "test_sf8_004",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["当前日期2026-05-21", "五一活动大概率已过期", "不能说还有效除非活动系统返回"]
+    }
+  },
+  {
+    "case_id": "SF8_005",
+    "target_flow": "SF8_campaign_push",
+    "content": "618会有活动吗",
+    "customer_id": "test_sf8_005",
+    "corp_id": "test_sf8_005",
+    "conversation_history": ["用户: 我还在考虑"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S8_silent_return",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["未来活动需配置", "不能提前编造618活动", "可说以当前活动为准"]
+    }
+  },
+  {
+    "case_id": "SF8_006",
+    "target_flow": "SF8_campaign_push",
+    "content": "新客有什么福利",
+    "customer_id": "test_sf8_006",
+    "corp_id": "test_sf8_006",
+    "conversation_history": ["用户: 第一次咨询"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["新客福利需活动配置", "应问项目方向", "不能泛称都有新客礼包"]
+    }
+  },
+  {
+    "case_id": "SF8_007",
+    "target_flow": "SF8_campaign_push",
+    "content": "我是老客，有没有复购活动",
+    "customer_id": "test_sf8_007",
+    "corp_id": "test_sf8_007",
+    "conversation_history": ["用户: 之前在你们这做过水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S7_dealed_active",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["老客活动需活动配置", "不能发新客活动", "可问复购项目"]
+    }
+  },
+  {
+    "case_id": "SF8_008",
+    "target_flow": "SF8_campaign_push",
+    "content": "我之前做过水光，还能参加水光新客活动吗",
+    "customer_id": "test_sf8_008",
+    "corp_id": "test_sf8_008",
+    "conversation_history": ["用户: 之前做过水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S7_dealed_active",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["同品类老客不能享受新客活动", "不转人工", "可说明老客活动需查询"]
+    }
+  },
+  {
+    "case_id": "SF8_009",
+    "target_flow": "SF8_campaign_push",
+    "content": "我做过淡斑，现在想问眼周活动，算新客吗",
+    "customer_id": "test_sf8_009",
+    "corp_id": "test_sf8_009",
+    "conversation_history": ["用户: 去年做过淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S7_dealed_active",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["跨项目大类可按新项目判断", "仍需活动适用人群配置", "不能直接承诺可用"]
+    }
+  },
+  {
+    "case_id": "SF8_010",
+    "target_flow": "SF8_campaign_push",
+    "content": "学生有没有优惠",
+    "customer_id": "test_sf8_010",
+    "corp_id": "test_sf8_010",
+    "conversation_history": ["用户: 想了解皮肤管理"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["学生优惠需活动配置", "不能编造学生价", "如果未成年需风险拦截"]
+    }
+  },
+  {
+    "case_id": "SF8_011",
+    "target_flow": "SF8_campaign_push",
+    "content": "到店有什么礼品吗",
+    "customer_id": "test_sf8_011",
+    "corp_id": "test_sf8_011",
+    "conversation_history": ["用户: 周末可能过去看看"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["到店礼需活动配置", "不能编造礼品", "不能用礼品强推预约"]
+    }
+  },
+  {
+    "case_id": "SF8_012",
+    "target_flow": "SF8_campaign_push",
+    "content": "有没有买一送一",
+    "customer_id": "test_sf8_012",
+    "corp_id": "test_sf8_012",
+    "conversation_history": ["用户: 想做水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["买赠活动需配置", "不能自行承诺买一送一", "线上优先单次报价"]
+    }
+  },
+  {
+    "case_id": "SF8_013",
+    "target_flow": "SF8_campaign_push",
+    "content": "套餐活动多少钱",
+    "customer_id": "test_sf8_013",
+    "corp_id": "test_sf8_013",
+    "conversation_history": ["用户: 想做光子嫩肤"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["套餐活动需配置", "不编造套餐价", "可说明线上先按单次确认"]
+    }
+  },
+  {
+    "case_id": "SF8_014",
+    "target_flow": "SF8_campaign_push",
+    "content": "朋友介绍有没有优惠",
+    "customer_id": "test_sf8_014",
+    "corp_id": "test_sf8_014",
+    "conversation_history": ["用户: 是朋友推荐来的"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["转介绍活动需配置", "不编造优惠", "可问朋友是否老客/项目"]
+    }
+  },
+  {
+    "case_id": "SF8_015",
+    "target_flow": "SF8_campaign_push",
+    "content": "这个活动适用哪家门店",
+    "customer_id": "test_sf8_015",
+    "corp_id": "test_sf8_015",
+    "conversation_history": ["用户: 想了解水光活动"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["活动适用门店需活动结果", "不能编造门店", "可追问城市"]
+    }
+  },
+  {
+    "case_id": "SF8_016",
+    "target_flow": "SF8_campaign_push",
+    "content": "活动什么时候结束",
+    "customer_id": "test_sf8_016",
+    "corp_id": "test_sf8_016",
+    "conversation_history": ["用户: 水光最近有活动吗", "助手: 我先帮你看当前活动"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["结束时间必须来自活动配置", "不知道不能编造日期", "可说明需确认活动"]
+    }
+  },
+  {
+    "case_id": "SF8_017",
+    "target_flow": "SF8_campaign_push",
+    "content": "活动海报发我看看",
+    "customer_id": "test_sf8_017",
+    "corp_id": "test_sf8_017",
+    "conversation_history": ["用户: 你们现在有什么活动"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["素材需活动系统返回", "不能编造图片URL", "无素材不发图片"]
+    }
+  },
+  {
+    "case_id": "SF8_018",
+    "target_flow": "SF8_campaign_push",
+    "content": "我今天预约能锁这个活动吗",
+    "customer_id": "test_sf8_018",
+    "corp_id": "test_sf8_018",
+    "conversation_history": ["用户: 水光活动价多少"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["活动锁定规则需活动配置", "预约需预约系统", "不能直接承诺锁价"]
+    }
+  },
+  {
+    "case_id": "SF8_019",
+    "target_flow": "SF8_campaign_push",
+    "content": "淡斑新客体验价多少",
+    "customer_id": "test_sf8_019",
+    "corp_id": "test_sf8_019",
+    "conversation_history": ["用户: 第一次咨询淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["新客体验价属于报价系统", "不能无价乱报", "需要项目大类和新客判断"]
+    }
+  },
+  {
+    "case_id": "SF8_020",
+    "target_flow": "SF8_campaign_push",
+    "content": "水光活动最低价是多少",
+    "customer_id": "test_sf8_020",
+    "corp_id": "test_sf8_020",
+    "conversation_history": ["用户: 水光多少钱"],
+    "file_image": "",
+    "expected": {
+      "intent": "bargain",
+      "scene": "S3_deep_consult",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["最低价/底价是议价边界", "不能自动报底价", "不能多轮降价"]
+    }
+  },
+  {
+    "case_id": "SF8_021",
+    "target_flow": "SF8_campaign_push",
+    "content": "别家五一活动298，你们有类似的吗",
+    "customer_id": "test_sf8_021",
+    "corp_id": "test_sf8_021",
+    "conversation_history": ["用户: 想做光子"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "quality_points": ["竞品活动对比优先SF5", "不跟价", "不编造五一活动"]
+    }
+  },
+  {
+    "case_id": "SF8_022",
+    "target_flow": "SF8_campaign_push",
+    "content": "预算低一点，有没有什么福利",
+    "customer_id": "test_sf8_022",
+    "corp_id": "test_sf8_022",
+    "conversation_history": ["用户: 想改善毛孔"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["可以承接预算敏感", "福利需活动配置", "不能承诺赠品"]
+    }
+  },
+  {
+    "case_id": "SF8_023",
+    "target_flow": "SF8_campaign_push",
+    "content": "我未成年，可以参加新客活动吗",
+    "customer_id": "test_sf8_023",
+    "corp_id": "test_sf8_023",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "human_request",
+      "scene": "S1_icebreaking",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["未成年强风险", "不能推活动", "应人工确认"]
+    }
+  },
+  {
+    "case_id": "SF8_024",
+    "target_flow": "SF8_campaign_push",
+    "content": "我还在哺乳期，能不能先买活动券",
+    "customer_id": "test_sf8_024",
+    "corp_id": "test_sf8_024",
+    "conversation_history": ["用户: 想做水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "human_request",
+      "scene": "S1_icebreaking",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["哺乳期强风险", "不能促销转化", "应人工/专业确认"]
+    }
+  }
+]

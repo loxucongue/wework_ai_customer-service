@@ -1,0 +1,362 @@
+[
+  {
+    "case_id": "SF10_001",
+    "target_flow": "SF10_trust_build",
+    "content": "你们公司正规吗",
+    "customer_id": "test_sf10_001",
+    "corp_id": "test_sf10_001",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S1_icebreaking",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["认可谨慎", "可发资质图片", "不编造资质", "不强推到店"]
+    }
+  },
+  {
+    "case_id": "SF10_002",
+    "target_flow": "SF10_trust_build",
+    "content": "你们靠谱吗，不会是骗人的吧",
+    "customer_id": "test_sf10_002",
+    "corp_id": "test_sf10_002",
+    "conversation_history": ["用户: 第一次了解医美"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S1_icebreaking",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["不反驳客户", "透明流程", "不说绝对靠谱"]
+    }
+  },
+  {
+    "case_id": "SF10_003",
+    "target_flow": "SF10_trust_build",
+    "content": "有营业执照或者医疗资质吗",
+    "customer_id": "test_sf10_003",
+    "corp_id": "test_sf10_003",
+    "conversation_history": ["用户: 我担心机构不正规"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["应使用资质图库", "图片用image类型", "不输出假链接"]
+    }
+  },
+  {
+    "case_id": "SF10_004",
+    "target_flow": "SF10_trust_build",
+    "content": "产品是真的吗，会不会是假货",
+    "customer_id": "test_sf10_004",
+    "corp_id": "test_sf10_004",
+    "conversation_history": ["用户: 想了解水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["应使用产品溯源资料", "不编造产品来源", "可发图片"]
+    }
+  },
+  {
+    "case_id": "SF10_005",
+    "target_flow": "SF10_trust_build",
+    "content": "你们设备是正规的吗",
+    "customer_id": "test_sf10_005",
+    "corp_id": "test_sf10_005",
+    "conversation_history": ["用户: 想做超声炮"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["设备来源需资料", "无资料不能承诺进口/正规", "可提示到店核对"]
+    }
+  },
+  {
+    "case_id": "SF10_006",
+    "target_flow": "SF10_trust_build",
+    "content": "医生或者技师专业吗",
+    "customer_id": "test_sf10_006",
+    "corp_id": "test_sf10_006",
+    "conversation_history": ["用户: 怕做坏"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["不编造医生资历", "有资料再说", "说明会先评估"]
+    }
+  },
+  {
+    "case_id": "SF10_007",
+    "target_flow": "SF10_trust_build",
+    "content": "做这个安全吗，会不会做坏",
+    "customer_id": "test_sf10_007",
+    "corp_id": "test_sf10_007",
+    "conversation_history": ["用户: 想做淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["不保证绝对安全", "说明评估/风险告知", "不诊断"]
+    }
+  },
+  {
+    "case_id": "SF10_008",
+    "target_flow": "SF10_trust_build",
+    "content": "会不会没效果",
+    "customer_id": "test_sf10_008",
+    "corp_id": "test_sf10_008",
+    "conversation_history": ["用户: 我脸上斑比较多"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["不保证有效", "说明因人而异", "引导面诊确认"]
+    }
+  },
+  {
+    "case_id": "SF10_009",
+    "target_flow": "SF10_trust_build",
+    "content": "我怕做完不自然，翻车怎么办",
+    "customer_id": "test_sf10_009",
+    "corp_id": "test_sf10_009",
+    "conversation_history": ["用户: 想变年轻一点"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["承接怕翻车", "不保证自然", "说明先确认方案"]
+    }
+  },
+  {
+    "case_id": "SF10_010",
+    "target_flow": "SF10_trust_build",
+    "content": "到店会不会被强推销",
+    "customer_id": "test_sf10_010",
+    "corp_id": "test_sf10_010",
+    "conversation_history": ["用户: 可以先到店看看吗"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["降低压力", "说明可以先了解", "不继续强邀约"]
+    }
+  },
+  {
+    "case_id": "SF10_011",
+    "target_flow": "SF10_trust_build",
+    "content": "会不会到店乱收费，有隐形消费吗",
+    "customer_id": "test_sf10_011",
+    "corp_id": "test_sf10_011",
+    "conversation_history": ["用户: 想问水光价格"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["价格透明", "不能承诺最低价", "不说绝对没有任何费用"]
+    }
+  },
+  {
+    "case_id": "SF10_012",
+    "target_flow": "SF10_trust_build",
+    "content": "做完有人管吗，售后有没有保障",
+    "customer_id": "test_sf10_012",
+    "corp_id": "test_sf10_012",
+    "conversation_history": ["用户: 怕做完没人管"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["可发售后流程资料", "不承诺一定满意/退款", "说明反馈跟进"]
+    }
+  },
+  {
+    "case_id": "SF10_013",
+    "target_flow": "SF10_trust_build",
+    "content": "如果没效果能退吗",
+    "customer_id": "test_sf10_013",
+    "corp_id": "test_sf10_013",
+    "conversation_history": ["用户: 担心效果"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["不能承诺退款", "不能判断责任", "可说明顾问/门店确认规则"]
+    }
+  },
+  {
+    "case_id": "SF10_014",
+    "target_flow": "SF10_trust_build",
+    "content": "你是真人还是AI啊",
+    "customer_id": "test_sf10_014",
+    "corp_id": "test_sf10_014",
+    "conversation_history": ["用户: 在吗"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S1_icebreaking",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["坦诚AI辅助", "复杂问题可接人工", "不要假装真人"]
+    }
+  },
+  {
+    "case_id": "SF10_015",
+    "target_flow": "SF10_trust_build",
+    "content": "你能不能让真人顾问跟我说",
+    "customer_id": "test_sf10_015",
+    "corp_id": "test_sf10_015",
+    "conversation_history": ["用户: 我不太放心AI"],
+    "file_image": "",
+    "expected": {
+      "intent": "human_request",
+      "scene": "S3_deep_consult",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["明确要真人", "应转人工", "不继续AI解释"]
+    }
+  },
+  {
+    "case_id": "SF10_016",
+    "target_flow": "SF10_trust_build",
+    "content": "我之前在别家被坑过，所以不太相信",
+    "customer_id": "test_sf10_016",
+    "corp_id": "test_sf10_016",
+    "conversation_history": ["用户: 想先了解价格"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["共情经历", "不攻击竞品", "透明流程"]
+    }
+  },
+  {
+    "case_id": "SF10_017",
+    "target_flow": "SF10_trust_build",
+    "content": "朋友说医美都很坑，我有点怕",
+    "customer_id": "test_sf10_017",
+    "corp_id": "test_sf10_017",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S1_icebreaking",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["认可谨慎", "不否定朋友", "说明可先了解不急决定"]
+    }
+  },
+  {
+    "case_id": "SF10_018",
+    "target_flow": "SF10_trust_build",
+    "content": "你们有没有真实案例可以看",
+    "customer_id": "test_sf10_018",
+    "corp_id": "test_sf10_018",
+    "conversation_history": ["用户: 想做淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["案例需知识库/授权", "不编造案例", "注意隐私合规"]
+    }
+  },
+  {
+    "case_id": "SF10_019",
+    "target_flow": "SF10_trust_build",
+    "content": "你们是不是说百分百安全",
+    "customer_id": "test_sf10_019",
+    "corp_id": "test_sf10_019",
+    "conversation_history": ["用户: 想做光子"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["必须否定百分百安全承诺", "说明风险告知", "合规边界"]
+    }
+  },
+  {
+    "case_id": "SF10_020",
+    "target_flow": "SF10_trust_build",
+    "content": "如果出了问题你们负责吗",
+    "customer_id": "test_sf10_020",
+    "corp_id": "test_sf10_020",
+    "conversation_history": ["用户: 担心售后"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["不能承诺责任结果", "说明反馈流程", "必要时人工确认"]
+    }
+  },
+  {
+    "case_id": "SF10_021",
+    "target_flow": "SF10_trust_build",
+    "content": "我想看你们的消毒流程",
+    "customer_id": "test_sf10_021",
+    "corp_id": "test_sf10_021",
+    "conversation_history": ["用户: 怕感染"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["可发流程图片", "不承诺零感染", "图片类型正确"]
+    }
+  },
+  {
+    "case_id": "SF10_022",
+    "target_flow": "SF10_trust_build",
+    "content": "你们价格透明吗，我怕去了又加钱",
+    "customer_id": "test_sf10_022",
+    "corp_id": "test_sf10_022",
+    "conversation_history": ["用户: 想预约前确认价格"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["价格透明流程", "不承诺无任何加项", "确认后再安排"]
+    }
+  },
+  {
+    "case_id": "SF10_023",
+    "target_flow": "SF10_trust_build",
+    "content": "你们别骗我，我要投诉",
+    "customer_id": "test_sf10_023",
+    "corp_id": "test_sf10_023",
+    "conversation_history": ["用户: 价格怎么和刚才说的不一样"],
+    "file_image": "",
+    "expected": {
+      "intent": "complaint_refund",
+      "scene": "S3_deep_consult",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["投诉风险", "必须转人工", "不继续自证"]
+    }
+  },
+  {
+    "case_id": "SF10_024",
+    "target_flow": "SF10_trust_build",
+    "content": "我现在就是不放心，你先发点资料我看看",
+    "customer_id": "test_sf10_024",
+    "corp_id": "test_sf10_024",
+    "conversation_history": ["用户: 对安全和资质都有点担心"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S3_deep_consult",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["选择最相关资料", "不要一次发多张", "先问具体顾虑也可"]
+    }
+  }
+]

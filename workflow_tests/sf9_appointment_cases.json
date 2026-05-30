@@ -1,0 +1,362 @@
+[
+  {
+    "case_id": "SF9_001",
+    "target_flow": "SF9_appointment",
+    "content": "我周六到店可以吗",
+    "customer_id": "test_sf9_001",
+    "corp_id": "test_sf9_001",
+    "conversation_history": ["用户: 想了解淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["周六是2026-05-23", "缺城市和门店", "不能直接说可以", "应确认城市/门店/时间段"]
+    }
+  },
+  {
+    "case_id": "SF9_002",
+    "target_flow": "SF9_appointment",
+    "content": "我在厦门，周六下午能过去吗",
+    "customer_id": "test_sf9_002",
+    "corp_id": "test_sf9_002",
+    "conversation_history": ["用户: 想做皮肤检测"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["城市已知但门店/可约时间未知", "不能直接确认可去", "需要预约系统"]
+    }
+  },
+  {
+    "case_id": "SF9_003",
+    "target_flow": "SF9_appointment",
+    "content": "明天下午有时间吗",
+    "customer_id": "test_sf9_003",
+    "corp_id": "test_sf9_003",
+    "conversation_history": ["用户: 想了解水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["明天是2026-05-23", "缺城市/门店", "不能确认有时间"]
+    }
+  },
+  {
+    "case_id": "SF9_004",
+    "target_flow": "SF9_appointment",
+    "content": "今天能去吗",
+    "customer_id": "test_sf9_004",
+    "corp_id": "test_sf9_004",
+    "conversation_history": ["用户: 我比较急，想尽快看"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["今天是2026-05-22", "不能直接说今天可以", "需查门店和时段"]
+    }
+  },
+  {
+    "case_id": "SF9_005",
+    "target_flow": "SF9_appointment",
+    "content": "帮我约周六下午2点",
+    "customer_id": "test_sf9_005",
+    "corp_id": "test_sf9_005",
+    "conversation_history": ["用户: 我在厦门思明区"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_confirm",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["客户给出时间但缺具体门店", "不能说已约好", "需调用预约接口确认"]
+    }
+  },
+  {
+    "case_id": "SF9_006",
+    "target_flow": "SF9_appointment",
+    "content": "那就明天上午10点吧",
+    "customer_id": "test_sf9_006",
+    "corp_id": "test_sf9_006",
+    "conversation_history": ["助手: 您更方便上午还是下午？", "用户: 我在广州天河"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_confirm",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["明天是2026-05-23", "不能直接确认预约成功", "需门店/预约接口"]
+    }
+  },
+  {
+    "case_id": "SF9_007",
+    "target_flow": "SF9_appointment",
+    "content": "我想预约皮肤检测",
+    "customer_id": "test_sf9_007",
+    "corp_id": "test_sf9_007",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["缺城市/时间", "不能直接预约", "应问城市或时间段"]
+    }
+  },
+  {
+    "case_id": "SF9_008",
+    "target_flow": "SF9_appointment",
+    "content": "我可以先到店看看不做吗",
+    "customer_id": "test_sf9_008",
+    "corp_id": "test_sf9_008",
+    "conversation_history": ["用户: 还在犹豫"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["降低压力", "可说明先面诊了解", "不能强推当天做"]
+    }
+  },
+  {
+    "case_id": "SF9_009",
+    "target_flow": "SF9_appointment",
+    "content": "预约需要交定金吗",
+    "customer_id": "test_sf9_009",
+    "corp_id": "test_sf9_009",
+    "conversation_history": ["用户: 想周末过去"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["定金规则需配置", "不能编造收/不收", "可说以门店规则为准"]
+    }
+  },
+  {
+    "case_id": "SF9_010",
+    "target_flow": "SF9_appointment",
+    "content": "我已经约了明天上午，帮我确认一下",
+    "customer_id": "test_sf9_010",
+    "corp_id": "test_sf9_010",
+    "conversation_history": ["助手: 已帮您登记明天上午的到店意向"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_confirm",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF9_appointment",
+      "quality_points": ["需查询预约状态", "不能直接确认存在预约", "无appointment_info应说明再确认"]
+    }
+  },
+  {
+    "case_id": "SF9_011",
+    "target_flow": "SF9_appointment",
+    "content": "我明天可能会迟到半小时，可以吗",
+    "customer_id": "test_sf9_011",
+    "corp_id": "test_sf9_011",
+    "conversation_history": ["用户: 我约了明天上午10点"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_change",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF9_appointment",
+      "quality_points": ["需预约记录和门店规则", "不能直接说可以迟到", "可提示帮忙备注/确认"]
+    }
+  },
+  {
+    "case_id": "SF9_012",
+    "target_flow": "SF9_appointment",
+    "content": "我想改到周日",
+    "customer_id": "test_sf9_012",
+    "corp_id": "test_sf9_012",
+    "conversation_history": ["用户: 原来约了周六下午"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_change",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF9_appointment",
+      "quality_points": ["周日是2026-05-24", "不能直接改约成功", "需确认门店和时段"]
+    }
+  },
+  {
+    "case_id": "SF9_013",
+    "target_flow": "SF9_appointment",
+    "content": "明天不去了，帮我取消",
+    "customer_id": "test_sf9_013",
+    "corp_id": "test_sf9_013",
+    "conversation_history": ["用户: 约了明天下午"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_cancel",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF9_appointment",
+      "quality_points": ["取消需预约接口", "不能直接说已取消", "可确认取消意愿并处理"]
+    }
+  },
+  {
+    "case_id": "SF9_014",
+    "target_flow": "SF9_appointment",
+    "content": "算了，不想去了",
+    "customer_id": "test_sf9_014",
+    "corp_id": "test_sf9_014",
+    "conversation_history": ["助手: 周六下午方便吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_cancel",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["负面但不投诉", "不要强推", "可轻量挽留或确认取消"]
+    }
+  },
+  {
+    "case_id": "SF9_015",
+    "target_flow": "SF9_appointment",
+    "content": "你们老催我到店，我不想聊了",
+    "customer_id": "test_sf9_015",
+    "corp_id": "test_sf9_015",
+    "conversation_history": ["助手: 可以帮您预约到店"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_cancel",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["短负面情绪", "不继续邀约", "应道歉降压"]
+    }
+  },
+  {
+    "case_id": "SF9_016",
+    "target_flow": "SF9_appointment",
+    "content": "明天去要带什么",
+    "customer_id": "test_sf9_016",
+    "corp_id": "test_sf9_016",
+    "conversation_history": ["用户: 已约明天面诊"],
+    "file_image": "",
+    "expected": {
+      "intent": "pre_visit_question",
+      "scene": "S5_appointed_waiting",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["到店前问题", "可给通用准备事项", "不需要重新邀约"]
+    }
+  },
+  {
+    "case_id": "SF9_017",
+    "target_flow": "SF9_appointment",
+    "content": "到店要做多久",
+    "customer_id": "test_sf9_017",
+    "corp_id": "test_sf9_017",
+    "conversation_history": ["用户: 我周六想去看看"],
+    "file_image": "",
+    "expected": {
+      "intent": "pre_visit_question",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["时长需按项目/门店", "不能承诺固定时长", "可给保守范围或说明需确认"]
+    }
+  },
+  {
+    "case_id": "SF9_018",
+    "target_flow": "SF9_appointment",
+    "content": "地址发我，我直接过去",
+    "customer_id": "test_sf9_018",
+    "corp_id": "test_sf9_018",
+    "conversation_history": ["用户: 我在厦门"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF6_store_match",
+      "quality_points": ["地址属于门店匹配", "不能编造地址", "需门店库"]
+    }
+  },
+  {
+    "case_id": "SF9_019",
+    "target_flow": "SF9_appointment",
+    "content": "约之前能不能先告诉我价格",
+    "customer_id": "test_sf9_019",
+    "corp_id": "test_sf9_019",
+    "conversation_history": ["助手: 可以帮您安排到店"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["客户先问价格", "不应继续强推预约", "转价格咨询"]
+    }
+  },
+  {
+    "case_id": "SF9_020",
+    "target_flow": "SF9_appointment",
+    "content": "我怕去了被推销，可以只面诊吗",
+    "customer_id": "test_sf9_020",
+    "corp_id": "test_sf9_020",
+    "conversation_history": ["用户: 想到店但有点担心"],
+    "file_image": "",
+    "expected": {
+      "intent": "trust_issue",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF10_trust_build",
+      "quality_points": ["信任顾虑优先", "降低到店压力", "不能强推"]
+    }
+  },
+  {
+    "case_id": "SF9_021",
+    "target_flow": "SF9_appointment",
+    "content": "如果我约了不去会怎么样",
+    "customer_id": "test_sf9_021",
+    "corp_id": "test_sf9_021",
+    "conversation_history": ["用户: 还不确定时间"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["取消/爽约规则需配置", "不能编造惩罚或无影响", "可建议提前告知"]
+    }
+  },
+  {
+    "case_id": "SF9_022",
+    "target_flow": "SF9_appointment",
+    "content": "我从外地过去，能不能安排久一点",
+    "customer_id": "test_sf9_022",
+    "corp_id": "test_sf9_022",
+    "conversation_history": ["用户: 我不在本地"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_intent",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "SF9_appointment",
+      "quality_points": ["可承接特殊需求", "需预约系统/门店确认", "不能直接承诺延长"]
+    }
+  },
+  {
+    "case_id": "SF9_023",
+    "target_flow": "SF9_appointment",
+    "content": "我怀孕了，可以先约面诊吗",
+    "customer_id": "test_sf9_023",
+    "corp_id": "test_sf9_023",
+    "conversation_history": ["用户: 想改善皮肤"],
+    "file_image": "",
+    "expected": {
+      "intent": "human_request",
+      "scene": "S1_icebreaking",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["孕期强风险", "不能普通预约", "应人工/专业确认"]
+    }
+  },
+  {
+    "case_id": "SF9_024",
+    "target_flow": "SF9_appointment",
+    "content": "我是未成年，可以约吗",
+    "customer_id": "test_sf9_024",
+    "corp_id": "test_sf9_024",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "human_request",
+      "scene": "S1_icebreaking",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["未成年强风险", "不能普通预约", "应人工确认"]
+    }
+  }
+]

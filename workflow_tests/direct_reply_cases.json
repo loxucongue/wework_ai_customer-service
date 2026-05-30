@@ -1,0 +1,362 @@
+[
+  {
+    "case_id": "DR_001",
+    "target_flow": "DIRECT_REPLY",
+    "content": "好的",
+    "customer_id": "test_dr_001",
+    "corp_id": "test_dr_001",
+    "conversation_history": ["助手: 我先帮你确认一下周六下午的时间"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["简单确认", "短回复", "不继续推项目"]
+    }
+  },
+  {
+    "case_id": "DR_002",
+    "target_flow": "DIRECT_REPLY",
+    "content": "嗯嗯",
+    "customer_id": "test_dr_002",
+    "corp_id": "test_dr_002",
+    "conversation_history": ["助手: 你可以先考虑一下，不着急决定"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["承接即可", "不追问", "不长篇"]
+    }
+  },
+  {
+    "case_id": "DR_003",
+    "target_flow": "DIRECT_REPLY",
+    "content": "谢谢",
+    "customer_id": "test_dr_003",
+    "corp_id": "test_dr_003",
+    "conversation_history": ["助手: 我先发你护理注意事项"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S7_dealed_active",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["礼貌回应", "不触发售后长流程"]
+    }
+  },
+  {
+    "case_id": "DR_004",
+    "target_flow": "DIRECT_REPLY",
+    "content": "不用了",
+    "customer_id": "test_dr_004",
+    "corp_id": "test_dr_004",
+    "conversation_history": ["助手: 要不要我帮你预约周末到店"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_cancel",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["尊重拒绝", "不继续邀约", "不追问太多"]
+    }
+  },
+  {
+    "case_id": "DR_005",
+    "target_flow": "DIRECT_REPLY",
+    "content": "先这样吧",
+    "customer_id": "test_dr_005",
+    "corp_id": "test_dr_005",
+    "conversation_history": ["助手: 我可以继续帮你介绍项目区别"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["暂停沟通", "不继续输出项目"]
+    }
+  },
+  {
+    "case_id": "DR_006",
+    "target_flow": "DIRECT_REPLY",
+    "content": "晚点再说",
+    "customer_id": "test_dr_006",
+    "corp_id": "test_dr_006",
+    "conversation_history": ["助手: 你要不要今天先确认预约"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["尊重延后", "不催促", "不预约"]
+    }
+  },
+  {
+    "case_id": "DR_007",
+    "target_flow": "DIRECT_REPLY",
+    "content": "明天去要带什么",
+    "customer_id": "test_dr_007",
+    "corp_id": "test_dr_007",
+    "conversation_history": ["用户: 已约明天面诊"],
+    "file_image": "",
+    "expected": {
+      "intent": "pre_visit_question",
+      "scene": "S5_appointed_waiting",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["到店前小问题", "通用准备事项", "不重新邀约"]
+    }
+  },
+  {
+    "case_id": "DR_008",
+    "target_flow": "DIRECT_REPLY",
+    "content": "到店要做多久",
+    "customer_id": "test_dr_008",
+    "corp_id": "test_dr_008",
+    "conversation_history": ["用户: 周六想去看看"],
+    "file_image": "",
+    "expected": {
+      "intent": "pre_visit_question",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["时长咨询", "不能承诺固定时长", "不进门店/预约长流程"]
+    }
+  },
+  {
+    "case_id": "DR_009",
+    "target_flow": "DIRECT_REPLY",
+    "content": "可以化妆过去吗",
+    "customer_id": "test_dr_009",
+    "corp_id": "test_dr_009",
+    "conversation_history": ["用户: 已经约了明天皮肤检测"],
+    "file_image": "",
+    "expected": {
+      "intent": "pre_visit_question",
+      "scene": "S5_appointed_waiting",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["到店前准备", "给稳妥建议", "不推项目"]
+    }
+  },
+  {
+    "case_id": "DR_010",
+    "target_flow": "DIRECT_REPLY",
+    "content": "需要空腹吗",
+    "customer_id": "test_dr_010",
+    "corp_id": "test_dr_010",
+    "conversation_history": ["用户: 明天去面诊"],
+    "file_image": "",
+    "expected": {
+      "intent": "pre_visit_question",
+      "scene": "S5_appointed_waiting",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["到店前小问题", "不能医学化", "不长篇"]
+    }
+  },
+  {
+    "case_id": "DR_011",
+    "target_flow": "DIRECT_REPLY",
+    "content": "我到了",
+    "customer_id": "test_dr_011",
+    "corp_id": "test_dr_011",
+    "conversation_history": ["助手: 到店后可以联系前台"],
+    "file_image": "",
+    "expected": {
+      "intent": "pre_visit_question",
+      "scene": "S5_appointed_waiting",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["到店确认", "短回复", "不推项目"]
+    }
+  },
+  {
+    "case_id": "DR_012",
+    "target_flow": "DIRECT_REPLY",
+    "content": "我在路上",
+    "customer_id": "test_dr_012",
+    "corp_id": "test_dr_012",
+    "conversation_history": ["助手: 路上注意安全，到店联系前台即可"],
+    "file_image": "",
+    "expected": {
+      "intent": "pre_visit_question",
+      "scene": "S5_appointed_waiting",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["路上状态", "短回复", "不重复发地址"]
+    }
+  },
+  {
+    "case_id": "DR_013",
+    "target_flow": "DIRECT_REPLY",
+    "content": "停车方便吗",
+    "customer_id": "test_dr_013",
+    "corp_id": "test_dr_013",
+    "conversation_history": ["用户: 已约厦门思明店"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF6_store_match",
+      "quality_points": ["停车需门店库", "不应DIRECT_REPLY编造"]
+    }
+  },
+  {
+    "case_id": "DR_014",
+    "target_flow": "DIRECT_REPLY",
+    "content": "地址再发我一下",
+    "customer_id": "test_dr_014",
+    "corp_id": "test_dr_014",
+    "conversation_history": ["用户: 已约明天到店"],
+    "file_image": "",
+    "expected": {
+      "intent": "store_inquiry",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF6_store_match",
+      "quality_points": ["地址需门店库/预约信息", "不能编造"]
+    }
+  },
+  {
+    "case_id": "DR_015",
+    "target_flow": "DIRECT_REPLY",
+    "content": "不用回复了",
+    "customer_id": "test_dr_015",
+    "corp_id": "test_dr_015",
+    "conversation_history": ["助手: 我可以继续帮你看活动"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S4_appointment_negotiating",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["停止打扰", "短回复", "不追问"]
+    }
+  },
+  {
+    "case_id": "DR_016",
+    "target_flow": "DIRECT_REPLY",
+    "content": "我不考虑了",
+    "customer_id": "test_dr_016",
+    "corp_id": "test_dr_016",
+    "conversation_history": ["助手: 要不要帮你保留活动名额"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S8_silent_return",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["明确不再考虑", "不挽留过度", "不推活动"]
+    }
+  },
+  {
+    "case_id": "DR_017",
+    "target_flow": "DIRECT_REPLY",
+    "content": "再看看",
+    "customer_id": "test_dr_017",
+    "corp_id": "test_dr_017",
+    "conversation_history": ["助手: 你可以先看看资料"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["尊重考虑", "不继续追问"]
+    }
+  },
+  {
+    "case_id": "DR_018",
+    "target_flow": "DIRECT_REPLY",
+    "content": "收到",
+    "customer_id": "test_dr_018",
+    "corp_id": "test_dr_018",
+    "conversation_history": ["助手: 这个价格需要按具体项目确认"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["短确认", "不扩展"]
+    }
+  },
+  {
+    "case_id": "DR_019",
+    "target_flow": "DIRECT_REPLY",
+    "content": "没事了",
+    "customer_id": "test_dr_019",
+    "corp_id": "test_dr_019",
+    "conversation_history": ["助手: 需要我继续帮你看吗"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["结束对话", "不追问"]
+    }
+  },
+  {
+    "case_id": "DR_020",
+    "target_flow": "DIRECT_REPLY",
+    "content": "我先问问朋友",
+    "customer_id": "test_dr_020",
+    "corp_id": "test_dr_020",
+    "conversation_history": ["助手: 你可以先按这几个方向考虑"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S3_deep_consult",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["尊重客户", "不催单", "不推预约"]
+    }
+  },
+  {
+    "case_id": "DR_021",
+    "target_flow": "DIRECT_REPLY",
+    "content": "我周六改周日",
+    "customer_id": "test_dr_021",
+    "corp_id": "test_dr_021",
+    "conversation_history": ["用户: 已约周六下午"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_change",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF9_appointment",
+      "quality_points": ["改约不是DIRECT_REPLY", "需预约接口", "不能直接改成功"]
+    }
+  },
+  {
+    "case_id": "DR_022",
+    "target_flow": "DIRECT_REPLY",
+    "content": "取消吧",
+    "customer_id": "test_dr_022",
+    "corp_id": "test_dr_022",
+    "conversation_history": ["用户: 已约明天下午"],
+    "file_image": "",
+    "expected": {
+      "intent": "appointment_cancel",
+      "scene": "S5_appointed_waiting",
+      "should_route": "SF9_appointment",
+      "quality_points": ["取消预约需接口", "不能直接说已取消"]
+    }
+  },
+  {
+    "case_id": "DR_023",
+    "target_flow": "DIRECT_REPLY",
+    "content": "先别联系我了",
+    "customer_id": "test_dr_023",
+    "corp_id": "test_dr_023",
+    "conversation_history": ["助手: 后续有活动我再提醒你"],
+    "file_image": "",
+    "expected": {
+      "intent": "emotion_chat",
+      "scene": "S8_silent_return",
+      "should_route": "DIRECT_REPLY",
+      "quality_points": ["停止触达", "不营销", "短回复"]
+    }
+  },
+  {
+    "case_id": "DR_024",
+    "target_flow": "DIRECT_REPLY",
+    "content": "可以",
+    "customer_id": "test_dr_024",
+    "corp_id": "test_dr_024",
+    "conversation_history": ["助手: 我帮你安排真人顾问接上，可以吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "human_request",
+      "scene": "S3_deep_consult",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["同意转人工", "应进入人工", "不普通短回复"]
+    }
+  }
+]

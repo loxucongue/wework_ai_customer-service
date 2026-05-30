@@ -1,0 +1,17 @@
+[
+  {
+    "case_id": "SMOKE_UTF8_001",
+    "target_flow": "encoding_check",
+    "content": "你好，我想了解祛斑",
+    "customer_id": "smoke_utf8_001",
+    "corp_id": "smoke_utf8_001",
+    "conversation_history": [
+      "用户: 你好",
+      "助手: 你好呀，可以先说下你想了解什么方向"
+    ],
+    "file_image": "",
+    "expected": {
+      "encoding": "content 和 conversation_history 在 Coze Trace 中应显示中文，不应显示为问号"
+    }
+  }
+]

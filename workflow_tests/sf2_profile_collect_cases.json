@@ -1,0 +1,387 @@
+[
+  {
+    "case_id": "SF2_001",
+    "target_flow": "SF2_profile_collect",
+    "content": "我主要想改善脸上的斑",
+    "customer_id": "test_sf2_001",
+    "corp_id": "test_sf2_001",
+    "conversation_history": ["用户: 你好", "助手: 可以先说下你主要想改善什么问题吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["HUMAN_HANDOFF", "SF7_price_consult", "SF9_appointment"],
+      "quality_points": ["承接客户需求", "最多追问一个关键问题", "不要直接推荐具体项目", "不要报价"]
+    }
+  },
+  {
+    "case_id": "SF2_002",
+    "target_flow": "SF2_profile_collect",
+    "content": "毛孔粗大，还有点出油",
+    "customer_id": "test_sf2_002",
+    "corp_id": "test_sf2_002",
+    "conversation_history": ["助手: 你现在最想改善的是皮肤、抗衰还是轮廓方向呢？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["把毛孔和出油作为画像信息承接", "追问持续时间或是否伴随闭口痘痘", "不要立刻推荐水杨酸"]
+    }
+  },
+  {
+    "case_id": "SF2_003",
+    "target_flow": "SF2_profile_collect",
+    "content": "我平时经常熬夜，脸色很黄",
+    "customer_id": "test_sf2_003",
+    "corp_id": "test_sf2_003",
+    "conversation_history": ["助手: 方便说下你平时皮肤状态吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["承接作息和暗沉信息", "不要诊断", "追问一个重点问题"]
+    }
+  },
+  {
+    "case_id": "SF2_004",
+    "target_flow": "SF2_profile_collect",
+    "content": "我是敏感肌，之前刷酸会刺痛",
+    "customer_id": "test_sf2_004",
+    "corp_id": "test_sf2_004",
+    "conversation_history": ["助手: 你之前做过什么皮肤项目吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["记录敏感肌和刷酸刺痛史", "回复要谨慎", "不要继续建议刷酸", "可追问现在是否仍泛红/刺痛"]
+    }
+  },
+  {
+    "case_id": "SF2_005",
+    "target_flow": "SF2_profile_collect",
+    "content": "我之前做过水光，但是维持不久",
+    "customer_id": "test_sf2_005",
+    "corp_id": "test_sf2_005",
+    "conversation_history": ["助手: 你之前有做过医美项目吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["记录历史项目和效果顾虑", "不要直接推荐替代项目", "追问水光类型或主要诉求"]
+    }
+  },
+  {
+    "case_id": "SF2_006",
+    "target_flow": "SF2_profile_collect",
+    "content": "预算不要太高，我先看看",
+    "customer_id": "test_sf2_006",
+    "corp_id": "test_sf2_006",
+    "conversation_history": ["助手: 你比较关注效果、恢复期还是预算呢？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF7_price_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["记录价格敏感", "不要报价", "不要议价", "低压力承接"]
+    }
+  },
+  {
+    "case_id": "SF2_007",
+    "target_flow": "SF2_profile_collect",
+    "content": "我怕疼，也怕恢复期太久",
+    "customer_id": "test_sf2_007",
+    "corp_id": "test_sf2_007",
+    "conversation_history": ["助手: 你做项目最担心什么？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF10_trust_build", "HUMAN_HANDOFF"],
+      "quality_points": ["记录怕疼和恢复期顾虑", "不要保证不疼", "可问更在意疼痛还是恢复期"]
+    }
+  },
+  {
+    "case_id": "SF2_008",
+    "target_flow": "SF2_profile_collect",
+    "content": "想自然一点，不要太明显",
+    "customer_id": "test_sf2_008",
+    "corp_id": "test_sf2_008",
+    "conversation_history": ["助手: 你比较喜欢什么样的改善风格？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["记录自然风格偏好", "不要承诺自然", "可继续问主要部位或问题"]
+    }
+  },
+  {
+    "case_id": "SF2_009",
+    "target_flow": "SF2_profile_collect",
+    "content": "我在厦门",
+    "customer_id": "test_sf2_009",
+    "corp_id": "test_sf2_009",
+    "conversation_history": ["助手: 方便说下你在哪个城市吗？后续好判断是否方便安排门店。"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF6_store_match", "SF9_appointment"],
+      "quality_points": ["记录城市信息", "不要直接匹配门店", "不要说有时间/可预约"]
+    }
+  },
+  {
+    "case_id": "SF2_010",
+    "target_flow": "SF2_profile_collect",
+    "content": "25岁，混油皮",
+    "customer_id": "test_sf2_010",
+    "corp_id": "test_sf2_010",
+    "conversation_history": ["助手: 可以说下年龄和肤质吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["记录年龄和肤质", "追问一个当前困扰", "不要推荐项目"]
+    }
+  },
+  {
+    "case_id": "SF2_011",
+    "target_flow": "SF2_profile_collect",
+    "content": "脸颊泛红，偶尔会痒",
+    "customer_id": "test_sf2_011",
+    "corp_id": "test_sf2_011",
+    "conversation_history": ["助手: 你现在皮肤有没有敏感、泛红或者不舒服的情况？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["HUMAN_HANDOFF", "SF12_after_sales"],
+      "quality_points": ["记录泛红和痒", "不要在线诊断", "可询问持续多久或是否正在过敏"]
+    }
+  },
+  {
+    "case_id": "SF2_012",
+    "target_flow": "SF2_profile_collect",
+    "content": "主要是黑眼圈重，经常熬夜",
+    "customer_id": "test_sf2_012",
+    "corp_id": "test_sf2_012",
+    "conversation_history": ["助手: 你最明显的困扰是什么？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["记录黑眼圈和熬夜", "不要直接推荐眼周项目", "追问颜色类型或持续时间"]
+    }
+  },
+  {
+    "case_id": "SF2_013",
+    "target_flow": "SF2_profile_collect",
+    "content": "我想先改善痘印，痘痘已经少了",
+    "customer_id": "test_sf2_013",
+    "corp_id": "test_sf2_013",
+    "conversation_history": ["助手: 你现在主要是痘痘还是痘印困扰？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["记录痘印为主", "不要直接推荐光电/酸", "追问红痘印还是黑痘印"]
+    }
+  },
+  {
+    "case_id": "SF2_014",
+    "target_flow": "SF2_profile_collect",
+    "content": "脸有点松，法令纹也明显",
+    "customer_id": "test_sf2_014",
+    "corp_id": "test_sf2_014",
+    "conversation_history": ["助手: 你现在更关注皮肤还是抗衰？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["记录松弛和法令纹", "不要直接推荐热玛吉/超声炮", "追问年龄或松弛程度"]
+    }
+  },
+  {
+    "case_id": "SF2_015",
+    "target_flow": "SF2_profile_collect",
+    "content": "我刚生完孩子，还在哺乳期",
+    "customer_id": "test_sf2_015",
+    "corp_id": "test_sf2_015",
+    "conversation_history": ["助手: 近期有没有特殊身体情况需要提前了解？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "HUMAN_HANDOFF",
+      "should_not_route": ["SF3_project_consult", "SF7_price_consult"],
+      "quality_points": ["识别哺乳期风险", "不要推荐项目", "应谨慎提示人工/专业评估"]
+    }
+  },
+  {
+    "case_id": "SF2_016",
+    "target_flow": "SF2_profile_collect",
+    "content": "我未成年，可以做吗",
+    "customer_id": "test_sf2_016",
+    "corp_id": "test_sf2_016",
+    "conversation_history": ["助手: 方便了解下你的基础情况吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "HUMAN_HANDOFF",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["识别未成年高风险", "不要继续项目建议", "建议人工/专业确认"]
+    }
+  },
+  {
+    "case_id": "SF2_017",
+    "target_flow": "SF2_profile_collect",
+    "content": "没有做过医美，护肤也比较简单",
+    "customer_id": "test_sf2_017",
+    "corp_id": "test_sf2_017",
+    "conversation_history": ["助手: 之前有做过医美或皮肤管理吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["记录医美新手", "低压力承接", "追问主要困扰"]
+    }
+  },
+  {
+    "case_id": "SF2_018",
+    "target_flow": "SF2_profile_collect",
+    "content": "之前被推销怕了，不想被一直催",
+    "customer_id": "test_sf2_018",
+    "corp_id": "test_sf2_018",
+    "conversation_history": ["助手: 你这次咨询有什么顾虑也可以先说。"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF10_trust_build", "HUMAN_HANDOFF"],
+      "quality_points": ["记录抗拒推销顾虑", "低压力承接", "不要转信任建立也不要邀约"]
+    }
+  },
+  {
+    "case_id": "SF2_019",
+    "target_flow": "SF2_profile_collect",
+    "content": "恢复期最好短一点，我工作没法请假",
+    "customer_id": "test_sf2_019",
+    "corp_id": "test_sf2_019",
+    "conversation_history": ["助手: 你对恢复期有没有要求？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["记录恢复期短偏好", "不要承诺无恢复期", "可问可接受几天"]
+    }
+  },
+  {
+    "case_id": "SF2_020",
+    "target_flow": "SF2_profile_collect",
+    "content": "我比较急，最好这周能看到变化",
+    "customer_id": "test_sf2_020",
+    "corp_id": "test_sf2_020",
+    "conversation_history": ["助手: 你对改善时间有没有预期？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF9_appointment", "HUMAN_HANDOFF"],
+      "quality_points": ["记录急迫度", "不要承诺本周见效", "不要直接预约"]
+    }
+  },
+  {
+    "case_id": "SF2_021",
+    "target_flow": "SF2_profile_collect",
+    "content": "我在广州，想改善暗沉和毛孔",
+    "customer_id": "test_sf2_021",
+    "corp_id": "test_sf2_021",
+    "conversation_history": ["助手: 可以说下城市和主要皮肤困扰吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF6_store_match", "SF3_project_consult"],
+      "quality_points": ["同时记录城市和需求", "不要直接匹配门店", "不要直接推荐项目"]
+    }
+  },
+  {
+    "case_id": "SF2_022",
+    "target_flow": "SF2_profile_collect",
+    "content": "就想先淡斑，别的暂时不考虑",
+    "customer_id": "test_sf2_022",
+    "corp_id": "test_sf2_022",
+    "conversation_history": ["助手: 你这次主要想改善哪个方向？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["记录单一需求淡斑", "不要扩展推荐其他项目", "追问斑类型或时间"]
+    }
+  },
+  {
+    "case_id": "SF2_023",
+    "target_flow": "SF2_profile_collect",
+    "content": "不太清楚是什么斑，晒太阳后更明显",
+    "customer_id": "test_sf2_023",
+    "corp_id": "test_sf2_023",
+    "conversation_history": ["助手: 你脸上的斑大概是什么情况？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF4_face_consult", "SF3_project_consult"],
+      "quality_points": ["记录晒后加重", "不要在线判断斑类型", "可问是否方便后续发图或面诊确认"]
+    }
+  },
+  {
+    "case_id": "SF2_024",
+    "target_flow": "SF2_profile_collect",
+    "content": "我最担心反黑，之前听别人说过",
+    "customer_id": "test_sf2_024",
+    "corp_id": "test_sf2_024",
+    "conversation_history": ["助手: 除了效果，你还有什么担心的吗？"],
+    "file_image": "",
+    "expected": {
+      "intent": "profile_collect",
+      "scene": "S2_profile_collecting",
+      "should_route": "SF2_profile_collect",
+      "should_not_route": ["SF10_trust_build", "HUMAN_HANDOFF"],
+      "quality_points": ["记录反黑顾虑", "不要保证不会反黑", "可说明需评估肤质和护理习惯"]
+    }
+  }
+]
+

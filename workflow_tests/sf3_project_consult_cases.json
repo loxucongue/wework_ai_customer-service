@@ -1,0 +1,387 @@
+[
+  {
+    "case_id": "SF3_001",
+    "target_flow": "SF3_project_consult",
+    "content": "你们有做祛斑吗",
+    "customer_id": "test_sf3_001",
+    "corp_id": "test_sf3_001",
+    "conversation_history": ["用户: 你好", "助手: 你好呀，可以先说下你想了解什么方向"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF7_price_consult", "SF9_appointment", "HUMAN_HANDOFF"],
+      "quality_points": ["回答有相关方向", "不要直接强推具体产品", "追问一个斑点情况", "不要报价"]
+    }
+  },
+  {
+    "case_id": "SF3_002",
+    "target_flow": "SF3_project_consult",
+    "content": "能改善毛孔粗大和出油吗",
+    "customer_id": "test_sf3_002",
+    "corp_id": "test_sf3_002",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF2_profile_collect", "HUMAN_HANDOFF"],
+      "quality_points": ["确认可看毛孔出油方向", "不要直接说一定适合某项目", "问是否伴随闭口痘痘"]
+    }
+  },
+  {
+    "case_id": "SF3_003",
+    "target_flow": "SF3_project_consult",
+    "content": "水光主要是改善什么的",
+    "customer_id": "test_sf3_003",
+    "corp_id": "test_sf3_003",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["解释水光功效方向", "不承诺效果", "说明需看皮肤基础"]
+    }
+  },
+  {
+    "case_id": "SF3_004",
+    "target_flow": "SF3_project_consult",
+    "content": "光子嫩肤是什么原理",
+    "customer_id": "test_sf3_004",
+    "corp_id": "test_sf3_004",
+    "conversation_history": ["用户: 我脸色暗沉", "助手: 可以先了解光电类方向"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["解释原理要通俗", "不要过度医学化", "不要保证安全和效果"]
+    }
+  },
+  {
+    "case_id": "SF3_005",
+    "target_flow": "SF3_project_consult",
+    "content": "皮秒和光子哪个更适合淡斑",
+    "customer_id": "test_sf3_005",
+    "corp_id": "test_sf3_005",
+    "conversation_history": ["用户: 我主要想淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["做方向性对比", "不要绝对判断哪个更好", "追问斑类型或照片/面诊确认"]
+    }
+  },
+  {
+    "case_id": "SF3_006",
+    "target_flow": "SF3_project_consult",
+    "content": "水杨酸适合敏感肌吗",
+    "customer_id": "test_sf3_006",
+    "corp_id": "test_sf3_006",
+    "conversation_history": ["用户: 我是敏感肌", "助手: 敏感肌项目会更谨慎一点"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["谨慎说明敏感肌需评估", "不要直接建议做", "不要在线诊断"]
+    }
+  },
+  {
+    "case_id": "SF3_007",
+    "target_flow": "SF3_project_consult",
+    "content": "黑眼圈有什么项目可以改善",
+    "customer_id": "test_sf3_007",
+    "corp_id": "test_sf3_007",
+    "conversation_history": ["用户: 我经常熬夜", "助手: 熬夜和黑眼圈我先记下"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF4_face_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["先按类型方向解释", "不要直接确定项目", "追问青黑/茶色/阴影"]
+    }
+  },
+  {
+    "case_id": "SF3_008",
+    "target_flow": "SF3_project_consult",
+    "content": "脸黄暗沉适合做什么",
+    "customer_id": "test_sf3_008",
+    "corp_id": "test_sf3_008",
+    "conversation_history": ["用户: 我平时熬夜比较多"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["推荐方向不能太具体/绝对", "结合熬夜暗沉", "问是否干燥/斑/炎症"]
+    }
+  },
+  {
+    "case_id": "SF3_009",
+    "target_flow": "SF3_project_consult",
+    "content": "热玛吉和超声炮有什么区别",
+    "customer_id": "test_sf3_009",
+    "corp_id": "test_sf3_009",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["做差异说明", "不要说哪个绝对更好", "强调面诊确认"]
+    }
+  },
+  {
+    "case_id": "SF3_010",
+    "target_flow": "SF3_project_consult",
+    "content": "超声炮疼不疼，恢复期多久",
+    "customer_id": "test_sf3_010",
+    "corp_id": "test_sf3_010",
+    "conversation_history": ["用户: 我怕疼"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["说明疼痛因人而异", "不要承诺无痛", "恢复期不能编造具体天数除非有知识库"]
+    }
+  },
+  {
+    "case_id": "SF3_011",
+    "target_flow": "SF3_project_consult",
+    "content": "做完光子会不会反黑",
+    "customer_id": "test_sf3_011",
+    "corp_id": "test_sf3_011",
+    "conversation_history": ["用户: 我最担心反黑"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["谨慎说明风险", "不要保证不会反黑", "强调评估和术后防晒护理"]
+    }
+  },
+  {
+    "case_id": "SF3_012",
+    "target_flow": "SF3_project_consult",
+    "content": "水光能维持多久",
+    "customer_id": "test_sf3_012",
+    "corp_id": "test_sf3_012",
+    "conversation_history": ["用户: 之前做过水光，但是维持不久"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["说明维持因人而异", "不要给绝对时间", "可问之前做的类型/护理"]
+    }
+  },
+  {
+    "case_id": "SF3_013",
+    "target_flow": "SF3_project_consult",
+    "content": "痘印适合做光子还是刷酸",
+    "customer_id": "test_sf3_013",
+    "corp_id": "test_sf3_013",
+    "conversation_history": ["用户: 痘痘少了，主要剩痘印"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["区分红痘印/黑痘印方向", "不要直接确定项目", "追问痘印颜色"]
+    }
+  },
+  {
+    "case_id": "SF3_014",
+    "target_flow": "SF3_project_consult",
+    "content": "皮肤屏障不好能做项目吗",
+    "customer_id": "test_sf3_014",
+    "corp_id": "test_sf3_014",
+    "conversation_history": ["用户: 我脸颊泛红，偶尔会痒"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["谨慎处理屏障问题", "不要直接建议刺激项目", "建议先评估/修护方向"]
+    }
+  },
+  {
+    "case_id": "SF3_015",
+    "target_flow": "SF3_project_consult",
+    "content": "有没有不需要恢复期的项目",
+    "customer_id": "test_sf3_015",
+    "corp_id": "test_sf3_015",
+    "conversation_history": ["用户: 我工作没法请假"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF9_appointment"],
+      "quality_points": ["不要承诺零恢复期", "按轻恢复方向说", "追问可接受几天/具体需求"]
+    }
+  },
+  {
+    "case_id": "SF3_016",
+    "target_flow": "SF3_project_consult",
+    "content": "我这种脸松适合热玛吉吗",
+    "customer_id": "test_sf3_016",
+    "corp_id": "test_sf3_016",
+    "conversation_history": ["用户: 脸有点松，法令纹明显", "助手: 松弛和法令纹我先记下"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不能直接判断一定适合", "说明需看松弛层次和基础", "可建议面诊确认"]
+    }
+  },
+  {
+    "case_id": "SF3_017",
+    "target_flow": "SF3_project_consult",
+    "content": "有没有针对敏感肌的补水修复项目",
+    "customer_id": "test_sf3_017",
+    "corp_id": "test_sf3_017",
+    "conversation_history": ["用户: 我是敏感肌"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["回答有修护方向", "不要保证敏感肌安全", "问当前是否泛红刺痛"]
+    }
+  },
+  {
+    "case_id": "SF3_018",
+    "target_flow": "SF3_project_consult",
+    "content": "做淡斑会不会伤皮肤",
+    "customer_id": "test_sf3_018",
+    "corp_id": "test_sf3_018",
+    "conversation_history": ["用户: 我主要担心淡斑会伤皮肤"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF10_trust_build", "HUMAN_HANDOFF"],
+      "quality_points": ["解释风险和边界", "不说完全不伤肤", "强调方案和肤质评估"]
+    }
+  },
+  {
+    "case_id": "SF3_019",
+    "target_flow": "SF3_project_consult",
+    "content": "水光靓颜冻干粉套组适合暗沉吗",
+    "customer_id": "test_sf3_019",
+    "corp_id": "test_sf3_019",
+    "conversation_history": ["助手: 可以了解水光靓颜冻干粉套组这类方向"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["完整保留项目名", "按项目资料回答", "不要编造价格和疗程"]
+    }
+  },
+  {
+    "case_id": "SF3_020",
+    "target_flow": "SF3_project_consult",
+    "content": "PDRN三文鱼冻干修护套组主要修复什么",
+    "customer_id": "test_sf3_020",
+    "corp_id": "test_sf3_020",
+    "conversation_history": ["用户: 我之前做完项目恢复慢"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF12_after_sales"],
+      "quality_points": ["回答修护方向", "不要把售后异常化", "不要编造医学疗效"]
+    }
+  },
+  {
+    "case_id": "SF3_021",
+    "target_flow": "SF3_project_consult",
+    "content": "我不知道选什么，想先改善暗沉和毛孔",
+    "customer_id": "test_sf3_021",
+    "corp_id": "test_sf3_021",
+    "conversation_history": ["用户: 我在广州，想改善暗沉和毛孔"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF2_profile_collect"],
+      "quality_points": ["应给项目方向", "不要只重复问需求", "避免一次推荐太多"]
+    }
+  },
+  {
+    "case_id": "SF3_022",
+    "target_flow": "SF3_project_consult",
+    "content": "可以先做皮肤检测再决定项目吗",
+    "customer_id": "test_sf3_022",
+    "corp_id": "test_sf3_022",
+    "conversation_history": ["用户: 我不知道自己适合什么"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF9_appointment"],
+      "quality_points": ["回答可以先评估方向", "不要直接预约", "说明检测/面诊只是判断依据"]
+    }
+  },
+  {
+    "case_id": "SF3_023",
+    "target_flow": "SF3_project_consult",
+    "content": "水光和小气泡有什么区别",
+    "customer_id": "test_sf3_023",
+    "corp_id": "test_sf3_023",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["说明二者定位差异", "不要贬低任一项目", "可问客户主要困扰"]
+    }
+  },
+  {
+    "case_id": "SF3_024",
+    "target_flow": "SF3_project_consult",
+    "content": "我脸上斑很多，做一次能不能淡很多",
+    "customer_id": "test_sf3_024",
+    "corp_id": "test_sf3_024",
+    "conversation_history": ["用户: 我想淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "project_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF3_project_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不承诺单次明显效果", "说明和斑类型/深浅有关", "引导评估"]
+    }
+  }
+]
+

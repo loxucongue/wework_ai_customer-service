@@ -1,0 +1,362 @@
+[
+  {
+    "case_id": "SF7_001",
+    "target_flow": "SF7_price_consult",
+    "content": "水光多少钱",
+    "customer_id": "test_sf7_001",
+    "corp_id": "test_sf7_001",
+    "conversation_history": ["用户: 我想改善干燥和暗沉", "助手: 可以先了解水光方向"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["应查询报价结果", "有价格则报单次价", "无价格不能编造", "不主动报套餐"]
+    }
+  },
+  {
+    "case_id": "SF7_002",
+    "target_flow": "SF7_price_consult",
+    "content": "水光靓颜冻干粉套组是什么价格呢",
+    "customer_id": "test_sf7_002",
+    "corp_id": "test_sf7_002",
+    "conversation_history": ["用户: 我主要是皮肤发炎，并且皮肤太暗沉了", "助手: 可以考虑水光靓颜冻干粉套组，具体需面诊确认"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["完整保留项目名", "按报价系统结果回答", "不说线上无法报价如果已有价格结果"]
+    }
+  },
+  {
+    "case_id": "SF7_003",
+    "target_flow": "SF7_price_consult",
+    "content": "祛斑大概什么价格",
+    "customer_id": "test_sf7_003",
+    "corp_id": "test_sf7_003",
+    "conversation_history": ["用户: 我脸上斑比较明显"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["大类价格咨询", "需要明确项目/斑型或按可配置大类报价", "不能报一堆无依据价格"]
+    }
+  },
+  {
+    "case_id": "SF7_004",
+    "target_flow": "SF7_price_consult",
+    "content": "光子嫩肤单次多少钱",
+    "customer_id": "test_sf7_004",
+    "corp_id": "test_sf7_004",
+    "conversation_history": ["用户: 想改善毛孔和暗沉"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["只报单次价", "不主动推套餐", "价格需来自查询结果"]
+    }
+  },
+  {
+    "case_id": "SF7_005",
+    "target_flow": "SF7_price_consult",
+    "content": "皮秒价格多少",
+    "customer_id": "test_sf7_005",
+    "corp_id": "test_sf7_005",
+    "conversation_history": ["用户: 想淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["项目明确", "价格缺失时不编造", "可说明按部位/方案确认"]
+    }
+  },
+  {
+    "case_id": "SF7_006",
+    "target_flow": "SF7_price_consult",
+    "content": "热玛吉多少钱一次",
+    "customer_id": "test_sf7_006",
+    "corp_id": "test_sf7_006",
+    "conversation_history": ["用户: 脸有点松"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["抗衰项目价格", "不编造高额价格", "如需部位需说明"]
+    }
+  },
+  {
+    "case_id": "SF7_007",
+    "target_flow": "SF7_price_consult",
+    "content": "超声炮贵不贵",
+    "customer_id": "test_sf7_007",
+    "corp_id": "test_sf7_007",
+    "conversation_history": ["用户: 想改善下颌线"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["不能只说贵不贵", "应按配置价格或解释需查项目", "不刺激客户预算焦虑"]
+    }
+  },
+  {
+    "case_id": "SF7_008",
+    "target_flow": "SF7_price_consult",
+    "content": "有没有新客体验价",
+    "customer_id": "test_sf7_008",
+    "corp_id": "test_sf7_008",
+    "conversation_history": ["用户: 第一次了解水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["新客价需结合项目大类", "不能泛泛承诺所有项目都有", "可追问项目"]
+    }
+  },
+  {
+    "case_id": "SF7_009",
+    "target_flow": "SF7_price_consult",
+    "content": "我之前做过水光，还能用新客价吗",
+    "customer_id": "test_sf7_009",
+    "corp_id": "test_sf7_009",
+    "conversation_history": ["用户: 我之前做过水光，但是维持不久"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S7_dealed_active",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["同品类老客不能再报新客价", "不强行转人工", "可说明老客价/复购价需按配置"]
+    }
+  },
+  {
+    "case_id": "SF7_010",
+    "target_flow": "SF7_price_consult",
+    "content": "我做过淡斑，现在想问眼周项目，有新客价吗",
+    "customer_id": "test_sf7_010",
+    "corp_id": "test_sf7_010",
+    "conversation_history": ["用户: 去年做过淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S7_dealed_active",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["跨大类可视为该项目新客", "仍需项目价格配置", "不一概拒绝新客价"]
+    }
+  },
+  {
+    "case_id": "SF7_011",
+    "target_flow": "SF7_price_consult",
+    "content": "老客复购水光多少钱",
+    "customer_id": "test_sf7_011",
+    "corp_id": "test_sf7_011",
+    "conversation_history": ["用户: 之前在你们这做过水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S7_dealed_active",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["老客价需按配置", "不报新客价", "不主动推多次卡"]
+    }
+  },
+  {
+    "case_id": "SF7_012",
+    "target_flow": "SF7_price_consult",
+    "content": "有没有活动价",
+    "customer_id": "test_sf7_012",
+    "corp_id": "test_sf7_012",
+    "conversation_history": ["用户: 想做光子嫩肤"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["活动价应走活动系统", "不能编造活动", "可结合项目查询"]
+    }
+  },
+  {
+    "case_id": "SF7_013",
+    "target_flow": "SF7_price_consult",
+    "content": "现在五一活动淡斑多少钱",
+    "customer_id": "test_sf7_013",
+    "corp_id": "test_sf7_013",
+    "conversation_history": ["用户: 我想淡斑"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["活动价必须有活动结果", "不能过期活动乱报", "需要项目和活动配置"]
+    }
+  },
+  {
+    "case_id": "SF7_014",
+    "target_flow": "SF7_price_consult",
+    "content": "套餐多少钱，买三次有优惠吗",
+    "customer_id": "test_sf7_014",
+    "corp_id": "test_sf7_014",
+    "conversation_history": ["用户: 想做水光"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["线上只报单次", "不主动报套餐", "多次卡留门店确认"]
+    }
+  },
+  {
+    "case_id": "SF7_015",
+    "target_flow": "SF7_price_consult",
+    "content": "最低多少钱，直接给我底价",
+    "customer_id": "test_sf7_015",
+    "corp_id": "test_sf7_015",
+    "conversation_history": ["用户: 水光多少钱", "助手: 可以按项目配置帮你确认"],
+    "file_image": "",
+    "expected": {
+      "intent": "bargain",
+      "scene": "S3_deep_consult",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["强议价应转人工或边界回复", "不能自动降价", "不能多轮拉扯"]
+    }
+  },
+  {
+    "case_id": "SF7_016",
+    "target_flow": "SF7_price_consult",
+    "content": "能不能再便宜点",
+    "customer_id": "test_sf7_016",
+    "corp_id": "test_sf7_016",
+    "conversation_history": ["用户: 水光多少钱", "助手: 单次价是按当前配置给你的"],
+    "file_image": "",
+    "expected": {
+      "intent": "bargain",
+      "scene": "S3_deep_consult",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["二次议价不降价", "不要给第二报价", "可说明统一报价"]
+    }
+  },
+  {
+    "case_id": "SF7_017",
+    "target_flow": "SF7_price_consult",
+    "content": "别家水光199，你们能做到这个价吗",
+    "customer_id": "test_sf7_017",
+    "corp_id": "test_sf7_017",
+    "conversation_history": ["用户: 别家给我发了报价"],
+    "file_image": "",
+    "expected": {
+      "intent": "competitor_compare",
+      "scene": "S3_deep_consult",
+      "should_route": "SF5_competitor_response",
+      "quality_points": ["竞品比价优先SF5", "不跟价", "不贬低竞品"]
+    }
+  },
+  {
+    "case_id": "SF7_018",
+    "target_flow": "SF7_price_consult",
+    "content": "这个价格包含皮肤检测吗",
+    "customer_id": "test_sf7_018",
+    "corp_id": "test_sf7_018",
+    "conversation_history": ["用户: 光子嫩肤单次多少钱", "助手: 我先按配置给你确认单次价"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["包含项需报价/门店配置", "无结果不能承诺包含", "可说明到店确认"]
+    }
+  },
+  {
+    "case_id": "SF7_019",
+    "target_flow": "SF7_price_consult",
+    "content": "只做半脸是不是便宜点",
+    "customer_id": "test_sf7_019",
+    "corp_id": "test_sf7_019",
+    "conversation_history": ["用户: 热玛吉多少钱一次"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["部位价需配置", "不能自行折算", "引导确认部位方案"]
+    }
+  },
+  {
+    "case_id": "SF7_020",
+    "target_flow": "SF7_price_consult",
+    "content": "学生有没有优惠",
+    "customer_id": "test_sf7_020",
+    "corp_id": "test_sf7_020",
+    "conversation_history": ["用户: 第一次咨询"],
+    "file_image": "",
+    "expected": {
+      "intent": "campaign_inquiry",
+      "scene": "S1_icebreaking",
+      "should_route": "SF8_campaign_push",
+      "quality_points": ["学生优惠需活动配置", "未成年风险需识别", "不编造学生价"]
+    }
+  },
+  {
+    "case_id": "SF7_021",
+    "target_flow": "SF7_price_consult",
+    "content": "我未成年，价格会便宜吗",
+    "customer_id": "test_sf7_021",
+    "corp_id": "test_sf7_021",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "human_request",
+      "scene": "S1_icebreaking",
+      "should_route": "HUMAN_HANDOFF",
+      "quality_points": ["未成年高风险", "不能继续报价", "应人工确认"]
+    }
+  },
+  {
+    "case_id": "SF7_022",
+    "target_flow": "SF7_price_consult",
+    "content": "这个多少钱",
+    "customer_id": "test_sf7_022",
+    "corp_id": "test_sf7_022",
+    "conversation_history": ["用户: 皮秒和光子哪个更适合淡斑", "助手: 皮秒更偏明确斑点，光子更偏综合肤质"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["指代不明确", "不应随便选一个报价", "应问皮秒还是光子"]
+    }
+  },
+  {
+    "case_id": "SF7_023",
+    "target_flow": "SF7_price_consult",
+    "content": "刚刚那个PDRN三文鱼冻干修护套组价格呢",
+    "customer_id": "test_sf7_023",
+    "corp_id": "test_sf7_023",
+    "conversation_history": ["用户: PDRN三文鱼冻干修护套组主要修复什么", "助手: 可以作为修复方向参考，具体需面诊确认"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["完整保留项目名", "价格来自报价结果", "无价不编造"]
+    }
+  },
+  {
+    "case_id": "SF7_024",
+    "target_flow": "SF7_price_consult",
+    "content": "先告诉我大概预算范围就行",
+    "customer_id": "test_sf7_024",
+    "corp_id": "test_sf7_024",
+    "conversation_history": ["用户: 想改善暗沉和毛孔", "助手: 方向上可能涉及光子或水光，需要结合皮肤状态"],
+    "file_image": "",
+    "expected": {
+      "intent": "price_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF7_price_consult",
+      "quality_points": ["项目不明确", "可说明需先确定项目", "不能编造预算区间"]
+    }
+  }
+]

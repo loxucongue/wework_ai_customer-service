@@ -1,0 +1,387 @@
+[
+  {
+    "case_id": "SF1_001",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "你好",
+    "customer_id": "test_sf1_001",
+    "corp_id": "test_sf1_001",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["HUMAN_HANDOFF", "SF9_appointment", "SF6_store_match"],
+      "quality_points": ["自然打招呼", "不要主动报价", "不要强行预约", "最多问一个需求方向问题"]
+    }
+  },
+  {
+    "case_id": "SF1_002",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "在吗",
+    "customer_id": "test_sf1_002",
+    "corp_id": "test_sf1_002",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["HUMAN_HANDOFF", "SF7_price_consult"],
+      "quality_points": ["应回应在线", "轻量询问客户想了解什么", "不要长篇介绍"]
+    }
+  },
+  {
+    "case_id": "SF1_003",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "哈喽",
+    "customer_id": "test_sf1_003",
+    "corp_id": "test_sf1_003",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["语气自然", "不要百科式", "不要一次列太多项目"]
+    }
+  },
+  {
+    "case_id": "SF1_004",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "有人吗",
+    "customer_id": "test_sf1_004",
+    "corp_id": "test_sf1_004",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不要说自己是真人", "可以承接咨询", "不要追问超过一个问题"]
+    }
+  },
+  {
+    "case_id": "SF1_005",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "我想了解一下",
+    "customer_id": "test_sf1_005",
+    "corp_id": "test_sf1_005",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["HUMAN_HANDOFF", "SF3_project_consult"],
+      "quality_points": ["应先澄清方向", "不要直接推荐具体项目", "可给皮肤/抗衰/轮廓等方向选项"]
+    }
+  },
+  {
+    "case_id": "SF1_006",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "第一次咨询，你们这边主要做什么",
+    "customer_id": "test_sf1_006",
+    "corp_id": "test_sf1_006",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF7_price_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["可简单介绍服务范围", "不要夸大效果", "最后问一个关注方向"]
+    }
+  },
+  {
+    "case_id": "SF1_007",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "我是新来的，想看看有没有适合我的",
+    "customer_id": "test_sf1_007",
+    "corp_id": "test_sf1_007",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF4_face_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["先欢迎并收集需求方向", "不要直接判断适合项目", "不要要求立刻发照片"]
+    }
+  },
+  {
+    "case_id": "SF1_008",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "你们是做医美的吗",
+    "customer_id": "test_sf1_008",
+    "corp_id": "test_sf1_008",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF10_trust_build", "HUMAN_HANDOFF"],
+      "quality_points": ["回答服务范围", "不要进入信任资质证明", "可追问关注方向"]
+    }
+  },
+  {
+    "case_id": "SF1_009",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "朋友推给我的，我先问问",
+    "customer_id": "test_sf1_009",
+    "corp_id": "test_sf1_009",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["承接低压力咨询", "不要强销售", "问一个想改善的问题"]
+    }
+  },
+  {
+    "case_id": "SF1_010",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "刚加上，想先了解下皮肤项目",
+    "customer_id": "test_sf1_010",
+    "corp_id": "test_sf1_010",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF3_project_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["可承接皮肤方向", "不要过早推荐具体项目", "问具体困扰"]
+    }
+  },
+  {
+    "case_id": "SF1_011",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "你好，我脸上有点问题，想问问",
+    "customer_id": "test_sf1_011",
+    "corp_id": "test_sf1_011",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF4_face_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["先问具体问题类型", "不要直接让到店", "不要诊断"]
+    }
+  },
+  {
+    "case_id": "SF1_012",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "你们这边能改善皮肤吗",
+    "customer_id": "test_sf1_012",
+    "corp_id": "test_sf1_012",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF3_project_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["服务范围确认", "不要直接推荐具体产品", "询问皮肤困扰"]
+    }
+  },
+  {
+    "case_id": "SF1_013",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "想变年轻一点，先咨询下",
+    "customer_id": "test_sf1_013",
+    "corp_id": "test_sf1_013",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF3_project_consult", "SF9_appointment", "HUMAN_HANDOFF"],
+      "quality_points": ["不要直接推荐热玛吉/超声炮", "先问松弛/皱纹/肤质等方向", "语气自然"]
+    }
+  },
+  {
+    "case_id": "SF1_014",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "我有点怕医美，先问问",
+    "customer_id": "test_sf1_014",
+    "corp_id": "test_sf1_014",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["接住害怕情绪", "不要硬推", "可问主要担心疼痛/恢复期/效果"]
+    }
+  },
+  {
+    "case_id": "SF1_015",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "你好呀，看到广告来的",
+    "customer_id": "test_sf1_015",
+    "corp_id": "test_sf1_015",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF8_campaign_push", "HUMAN_HANDOFF"],
+      "quality_points": ["不要立刻推活动", "先问看到的是哪类需求", "保持轻量"]
+    }
+  },
+  {
+    "case_id": "SF1_016",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "请问这里是咨询的吗",
+    "customer_id": "test_sf1_016",
+    "corp_id": "test_sf1_016",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["确认可以咨询", "不要输出系统身份", "问客户想了解什么"]
+    }
+  },
+  {
+    "case_id": "SF1_017",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "刚看到你们，想了解一下皮肤管理",
+    "customer_id": "test_sf1_017",
+    "corp_id": "test_sf1_017",
+    "conversation_history": ["用户: 你好", "助手: 你好呀，可以先说下你想改善的方向"],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF3_project_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["带历史也应识别新客首轮了解", "不要重复欢迎太多", "问具体皮肤问题"]
+    }
+  },
+  {
+    "case_id": "SF1_018",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "我不知道自己适合什么，可以先问吗",
+    "customer_id": "test_sf1_018",
+    "corp_id": "test_sf1_018",
+    "conversation_history": ["用户: 在吗", "助手: 在的，你想了解皮肤、抗衰还是轮廓方向呢？"],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF4_face_consult", "SF9_appointment"],
+      "quality_points": ["承接不确定", "给方向而非具体方案", "最多问一个关键问题"]
+    }
+  },
+  {
+    "case_id": "SF1_019",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "我是第一次做这种，想先了解流程",
+    "customer_id": "test_sf1_019",
+    "corp_id": "test_sf1_019",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF9_appointment", "HUMAN_HANDOFF"],
+      "quality_points": ["可简单说明先了解需求再评估", "不要默认预约", "不要过长"]
+    }
+  },
+  {
+    "case_id": "SF1_020",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "你们这里能先简单介绍一下吗",
+    "customer_id": "test_sf1_020",
+    "corp_id": "test_sf1_020",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["简短介绍服务方向", "不要列十几个项目", "引导客户说关注点"]
+    }
+  },
+  {
+    "case_id": "SF1_021",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "我想先看看有没有优惠，但还不知道做什么",
+    "customer_id": "test_sf1_021",
+    "corp_id": "test_sf1_021",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF8_campaign_push", "SF7_price_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["不应直接活动推送", "先确认需求或项目方向", "语气低压力"]
+    }
+  },
+  {
+    "case_id": "SF1_022",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "我脸上斑比较明显，但是第一次问",
+    "customer_id": "test_sf1_022",
+    "corp_id": "test_sf1_022",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF3_project_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["新客首响可承接斑点问题", "不要直接推荐项目", "追问斑类型或时间"]
+    }
+  },
+  {
+    "case_id": "SF1_023",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "我想改善毛孔和出油，刚加的",
+    "customer_id": "test_sf1_023",
+    "corp_id": "test_sf1_023",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF3_project_consult", "HUMAN_HANDOFF"],
+      "quality_points": ["承接需求", "不要直接推荐水杨酸", "先问出油程度或是否伴随闭口痘痘"]
+    }
+  },
+  {
+    "case_id": "SF1_024",
+    "target_flow": "SF1_new_customer_reply",
+    "content": "先问问，不一定做",
+    "customer_id": "test_sf1_024",
+    "corp_id": "test_sf1_024",
+    "conversation_history": ["用户: 哈喽", "助手: 你好呀，这边可以先了解你的需求"],
+    "file_image": "",
+    "expected": {
+      "intent": "greeting",
+      "scene": "S1_icebreaking",
+      "should_route": "SF1_new_customer_reply",
+      "should_not_route": ["SF9_appointment", "HUMAN_HANDOFF"],
+      "quality_points": ["低压力承接", "明确不强制到店或消费", "问想了解什么方向"]
+    }
+  }
+]
+

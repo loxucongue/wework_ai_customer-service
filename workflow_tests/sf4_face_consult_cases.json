@@ -1,0 +1,387 @@
+[
+  {
+    "case_id": "SF4_001",
+    "target_flow": "SF4_face_consult",
+    "content": "我发了照片，帮我看看脸上适合做什么",
+    "customer_id": "test_sf4_001",
+    "corp_id": "test_sf4_001",
+    "conversation_history": ["用户: 我不知道自己适合什么", "助手: 你可以发一张正脸照片，我先按方向帮你看"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion", "HUMAN_HANDOFF", "SF7_price_consult"],
+      "quality_points": ["应基于图片做皮肤状态方向描述", "不要诊断", "不要直接定项目", "要提示面诊确认"]
+    }
+  },
+  {
+    "case_id": "SF4_002",
+    "target_flow": "SF4_face_consult",
+    "content": "帮我看看皮肤状态",
+    "customer_id": "test_sf4_002",
+    "corp_id": "test_sf4_002",
+    "conversation_history": [],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF3_project_consult", "SF11_emotion_companion"],
+      "quality_points": ["描述皮肤状态要专业", "不要只说有斑点", "可从肤色均匀度/毛孔/纹理/泛红方向观察"]
+    }
+  },
+  {
+    "case_id": "SF4_003",
+    "target_flow": "SF4_face_consult",
+    "content": "你看看我脸上是不是暗沉",
+    "customer_id": "test_sf4_003",
+    "corp_id": "test_sf4_003",
+    "conversation_history": ["用户: 最近熬夜多"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion"],
+      "quality_points": ["结合暗沉诉求描述", "不能确定医学原因", "可提熬夜/护理/防晒等可能影响因素"]
+    }
+  },
+  {
+    "case_id": "SF4_004",
+    "target_flow": "SF4_face_consult",
+    "content": "看下我的斑属于哪种",
+    "customer_id": "test_sf4_004",
+    "corp_id": "test_sf4_004",
+    "conversation_history": ["用户: 脸上斑比较明显"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不能在线确定斑类型", "可描述颜色/分布/深浅倾向", "引导面诊/皮肤检测"]
+    }
+  },
+  {
+    "case_id": "SF4_005",
+    "target_flow": "SF4_face_consult",
+    "content": "看照片能不能判断我适不适合皮秒",
+    "customer_id": "test_sf4_005",
+    "corp_id": "test_sf4_005",
+    "conversation_history": ["用户: 我想淡斑"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["不能仅凭照片判断一定适合", "可按淡斑方向初筛", "提示需面诊确认"]
+    }
+  },
+  {
+    "case_id": "SF4_006",
+    "target_flow": "SF4_face_consult",
+    "content": "我鼻子旁边毛孔明显，你看得到吗",
+    "customer_id": "test_sf4_006",
+    "corp_id": "test_sf4_006",
+    "conversation_history": [],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion"],
+      "quality_points": ["可描述图片清晰度限制", "承接毛孔诉求", "不要编造看不到的细节"]
+    }
+  },
+  {
+    "case_id": "SF4_007",
+    "target_flow": "SF4_face_consult",
+    "content": "帮我看看黑眼圈是什么类型",
+    "customer_id": "test_sf4_007",
+    "corp_id": "test_sf4_007",
+    "conversation_history": ["用户: 我经常熬夜"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["不要直接确定黑眼圈类型", "可说明需看颜色/凹陷/阴影", "结合熬夜因素"]
+    }
+  },
+  {
+    "case_id": "SF4_008",
+    "target_flow": "SF4_face_consult",
+    "content": "帮我看下面部松弛严不严重",
+    "customer_id": "test_sf4_008",
+    "corp_id": "test_sf4_008",
+    "conversation_history": ["用户: 想变年轻一点"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion"],
+      "quality_points": ["可描述轮廓/法令纹/下颌线方向", "不做严重程度诊断", "不要直接推热玛吉"]
+    }
+  },
+  {
+    "case_id": "SF4_009",
+    "target_flow": "SF4_face_consult",
+    "content": "这张照片看起来脸黄吗",
+    "customer_id": "test_sf4_009",
+    "corp_id": "test_sf4_009",
+    "conversation_history": ["用户: 最近脸色黄"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion"],
+      "quality_points": ["说明照片光线会影响判断", "承接肤色暗沉", "不要医学诊断"]
+    }
+  },
+  {
+    "case_id": "SF4_010",
+    "target_flow": "SF4_face_consult",
+    "content": "你看我的皮肤是不是很差",
+    "customer_id": "test_sf4_010",
+    "corp_id": "test_sf4_010",
+    "conversation_history": [],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion"],
+      "quality_points": ["语气要照顾情绪但仍做面诊分析", "不要贬低客户", "给可改善方向"]
+    }
+  },
+  {
+    "case_id": "SF4_011",
+    "target_flow": "SF4_face_consult",
+    "content": "没发照片，你能先说要拍什么角度吗",
+    "customer_id": "test_sf4_011",
+    "corp_id": "test_sf4_011",
+    "conversation_history": ["助手: 可以发照片我帮你先看方向"],
+    "file_image": "",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["说明正脸/侧脸/自然光等拍摄要求", "不要假装已看到照片", "不要推荐项目"]
+    }
+  },
+  {
+    "case_id": "SF4_012",
+    "target_flow": "SF4_face_consult",
+    "content": "我现在不方便发照片，可以先口述吗",
+    "customer_id": "test_sf4_012",
+    "corp_id": "test_sf4_012",
+    "conversation_history": [],
+    "file_image": "",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion"],
+      "quality_points": ["允许口述", "问一个关键症状/需求", "不要假装看图"]
+    }
+  },
+  {
+    "case_id": "SF4_013",
+    "target_flow": "SF4_face_consult",
+    "content": "我发的照片有点糊，还能看吗",
+    "customer_id": "test_sf4_013",
+    "corp_id": "test_sf4_013",
+    "conversation_history": [],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["说明模糊会影响判断", "可先看大方向", "建议补充清晰照片"]
+    }
+  },
+  {
+    "case_id": "SF4_014",
+    "target_flow": "SF4_face_consult",
+    "content": "帮我看一下法令纹和苹果肌",
+    "customer_id": "test_sf4_014",
+    "corp_id": "test_sf4_014",
+    "conversation_history": ["用户: 我想自然一点"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["描述面部结构方向要谨慎", "不要直接建议填充", "强调面诊评估"]
+    }
+  },
+  {
+    "case_id": "SF4_015",
+    "target_flow": "SF4_face_consult",
+    "content": "看照片能不能判断我是不是敏感肌",
+    "customer_id": "test_sf4_015",
+    "corp_id": "test_sf4_015",
+    "conversation_history": ["用户: 我脸容易红"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不能仅凭照片判断敏感肌", "可描述泛红/屏障倾向", "追问刺痛/干痒史"]
+    }
+  },
+  {
+    "case_id": "SF4_016",
+    "target_flow": "SF4_face_consult",
+    "content": "这个照片能看出来有没有痘印吗",
+    "customer_id": "test_sf4_016",
+    "corp_id": "test_sf4_016",
+    "conversation_history": ["用户: 之前长痘，现在痘少了"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF3_project_consult"],
+      "quality_points": ["可描述是否可观察色沉/痘印倾向", "不确定时说明光线限制", "不直接定项目"]
+    }
+  },
+  {
+    "case_id": "SF4_017",
+    "target_flow": "SF4_face_consult",
+    "content": "我上传的是侧脸，帮我看看下颌线",
+    "customer_id": "test_sf4_017",
+    "corp_id": "test_sf4_017",
+    "conversation_history": ["用户: 轮廓有点松"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion"],
+      "quality_points": ["承接下颌线和轮廓", "说明照片角度限制", "不直接定方案"]
+    }
+  },
+  {
+    "case_id": "SF4_018",
+    "target_flow": "SF4_face_consult",
+    "content": "看起来脸上有炎症吗",
+    "customer_id": "test_sf4_018",
+    "corp_id": "test_sf4_018",
+    "conversation_history": ["用户: 最近皮肤发炎，暗沉"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不能诊断炎症", "可描述泛红/不稳定倾向", "症状明显需专业确认"]
+    }
+  },
+  {
+    "case_id": "SF4_019",
+    "target_flow": "SF4_face_consult",
+    "content": "我这张是素颜照，帮我分析一下",
+    "customer_id": "test_sf4_019",
+    "corp_id": "test_sf4_019",
+    "conversation_history": [],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion"],
+      "quality_points": ["从多维度分析", "不要只有一句有斑点", "不要过度诊断"]
+    }
+  },
+  {
+    "case_id": "SF4_020",
+    "target_flow": "SF4_face_consult",
+    "content": "发照片给你看，能不能直接推荐项目",
+    "customer_id": "test_sf4_020",
+    "corp_id": "test_sf4_020",
+    "conversation_history": ["用户: 想快点知道做什么"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["可以给方向但不能直接定项目", "提示面诊确认", "不要强推"]
+    }
+  },
+  {
+    "case_id": "SF4_021",
+    "target_flow": "SF4_face_consult",
+    "content": "这张照片光线比较暗，会影响判断吗",
+    "customer_id": "test_sf4_021",
+    "corp_id": "test_sf4_021",
+    "conversation_history": [],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF11_emotion_companion"],
+      "quality_points": ["承认光线影响", "说明可先看大方向", "建议自然光补拍"]
+    }
+  },
+  {
+    "case_id": "SF4_022",
+    "target_flow": "SF4_face_consult",
+    "content": "你看我适合做水光还是光子",
+    "customer_id": "test_sf4_022",
+    "corp_id": "test_sf4_022",
+    "conversation_history": ["用户: 我主要想改善干和暗沉"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["SF7_price_consult"],
+      "quality_points": ["做方向性对比", "不能直接确定", "结合干和暗沉"]
+    }
+  },
+  {
+    "case_id": "SF4_023",
+    "target_flow": "SF4_face_consult",
+    "content": "照片里看脸颊红红的，是不是过敏",
+    "customer_id": "test_sf4_023",
+    "corp_id": "test_sf4_023",
+    "conversation_history": ["用户: 脸颊泛红，偶尔会痒"],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["不能诊断过敏", "可提示如持续加重需人工/医生确认", "问持续多久或是否刺痛"]
+    }
+  },
+  {
+    "case_id": "SF4_024",
+    "target_flow": "SF4_face_consult",
+    "content": "我发的不是本人照片，能随便看看吗",
+    "customer_id": "test_sf4_024",
+    "corp_id": "test_sf4_024",
+    "conversation_history": [],
+    "file_image": "https://raw.githubusercontent.com/opencv/opencv/master/samples/data/lena.jpg",
+    "expected": {
+      "intent": "image_inquiry",
+      "scene": "S3_deep_consult",
+      "should_route": "SF4_face_consult",
+      "should_not_route": ["HUMAN_HANDOFF"],
+      "quality_points": ["说明只能按照片做一般观察", "不要代替本人判断", "建议本人照片/面诊"]
+    }
+  }
+]
+
