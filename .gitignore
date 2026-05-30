@@ -15,6 +15,7 @@ venv/
 *.p12
 *.pfx
 *.log
+*.md
 *.tgz
 *.tar
 *.tar.gz
