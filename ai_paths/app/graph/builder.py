@@ -476,67 +476,6 @@ def build_graph(
     return graph.compile()
 
 
-def _detect_intents(content: str, image_info: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    items: list[dict[str, Any]] = []
-    image_info = image_info or {}
-    pre_service_effect_concern = _is_pre_service_effect_concern(content)
-    case_request = _has_case_request(content)
-    project_process = _has_project_process_question(content)
-    ad_price_check = _has_ad_price_check(content)
-    if image_info.get("has_image"):
-        image_intent = str(image_info.get("image_intent") or "")
-        suggested_route = str(image_info.get("suggested_route") or "")
-        if image_intent == "after_sales" or suggested_route == "SF12_after_sales":
-            items.append({"intent": "after_sales", "skill": "after_sales", "priority": 1, "reason": "图片售后反馈"})
-        elif image_intent == "competitor_compare" or suggested_route == "SF5_competitor_response":
-            items.append({"intent": "competitor_compare", "skill": "competitor", "priority": 1, "reason": "图片竞品/报价咨询"})
-        elif image_intent == "store_inquiry" or suggested_route == "SF6_store_match":
-            items.append({"intent": "store_inquiry", "skill": "store", "priority": 1, "reason": "图片门店/地图咨询"})
-        elif image_intent == "trust_issue" or suggested_route == "SF10_trust_build":
-            items.append({"intent": "trust_issue", "skill": "trust_build", "priority": 1, "reason": "图片资质/产品信任咨询"})
-        elif image_intent == "human_request" or suggested_route == "HUMAN_HANDOFF":
-            items.append({"intent": "human_request", "skill": "handoff", "priority": 0, "reason": "图片包含高风险或需专业协助内容"})
-        else:
-            items.append({"intent": "image_inquiry", "skill": "project_consult", "priority": 1, "reason": "图片面诊咨询"})
-    if any(word in content for word in TRUST_KEYWORDS):
-        items.append({"intent": "trust_issue", "skill": "trust_build", "priority": 1, "reason": "信任或正规性顾虑"})
-    if _is_identity_question(content):
-        items.append({"intent": "trust_issue", "skill": "trust_build", "priority": 1, "reason": "客户询问身份和服务承接方式"})
-    if _has_effect_guarantee_request(content):
-        items.append({"intent": "trust_issue", "skill": "trust_build", "priority": 1, "reason": "客户要求效果保证或一次见效承诺"})
-    if pre_service_effect_concern:
-        items.append({"intent": "trust_issue", "skill": "trust_build", "priority": 1, "reason": "效果或被坑顾虑"})
-    if any(word in content for word in COMPETITOR_KEYWORDS):
-        items.append({"intent": "competitor_compare", "skill": "competitor", "priority": 2, "reason": "竞品或外部报价对比"})
-    if _has_advantage_question(content):
-        items.append({"intent": "trust_issue", "skill": "trust_build", "priority": 2, "reason": "询问品牌或服务优势"})
-    if _has_price_objection(content):
-        items.append({"intent": "price_inquiry", "skill": "price_consult", "priority": 2, "reason": "价格异议或议价"})
-    elif ad_price_check:
-        items.append({"intent": "ad_price_check", "skill": "price_consult", "priority": 2, "reason": "广告价、预约金或收费口径核对"})
-    elif any(word in content for word in CAMPAIGN_KEYWORDS):
-        items.append({"intent": "campaign_inquiry", "skill": "price_consult", "priority": 2, "reason": "活动或优惠咨询"})
-    elif any(word in content for word in PRICE_KEYWORDS):
-        items.append({"intent": "price_inquiry", "skill": "price_consult", "priority": 2, "reason": "价格咨询"})
-    if any(word in content for word in AFTER_SALES_KEYWORDS) and not pre_service_effect_concern and not case_request:
-        items.append({"intent": "after_sales", "skill": "after_sales", "priority": 2, "reason": "售后或恢复问题"})
-    if _has_effect_dispute(content):
-        items.append({"intent": "complaint_refund", "skill": "handoff", "priority": 0, "reason": "效果不满或纠纷倾向"})
-    if _has_store_inquiry(content):
-        items.append({"intent": "store_inquiry", "skill": "store", "priority": 3, "reason": "门店地址或路线咨询"})
-    if _has_appointment_record_query(content) and not ad_price_check:
-        items.append({"intent": "appointment_confirm", "skill": "appointment", "priority": 3, "reason": "查询已有预约记录"})
-    elif any(word in content for word in APPOINTMENT_KEYWORDS) and not ad_price_check:
-        items.append({"intent": "appointment_intent", "skill": "appointment", "priority": 3, "reason": "预约或到店意向"})
-    if case_request:
-        items.append({"intent": "case_request", "skill": "project_consult", "priority": 3, "reason": "案例或效果对比诉求"})
-    if project_process:
-        items.append({"intent": "project_process", "skill": "project_consult", "priority": 3, "reason": "项目流程或时长咨询"})
-    if _has_project_consult_intent(content) or not items:
-        items.append({"intent": "project_inquiry", "skill": "project_consult", "priority": 4, "reason": "项目咨询或普通咨询"})
-    return _dedupe_intents(items)
-
-
 def _has_project_consult_intent(content: str) -> bool:
     """Project names alone are not enough; otherwise simple price turns become noisy."""
     if _has_price_objection(content):
@@ -677,31 +616,6 @@ def _has_advantage_question(content: str) -> bool:
     return any(term in content for term in ADVANTAGE_KEYWORDS)
 
 
-def _is_store_city_followup(state: AgentState) -> bool:
-    content = state.get("normalized_content") or ""
-    if not _extract_city(content):
-        return False
-    if any(term in content for term in PRICE_KEYWORDS + TRUST_KEYWORDS + COMPETITOR_KEYWORDS + AFTER_SALES_KEYWORDS):
-        return False
-    if any(term in content for term in ["项目", "价格", "多少钱", "适合", "效果", "做什么", "能解决"]):
-        return False
-    recent = _recent_conversation_text(state, limit=6)
-    store_context_terms = [
-        "门店",
-        "地址",
-        "哪里",
-        "哪家",
-        "更方便",
-        "城市",
-        "区域",
-        "附近",
-        "导航",
-        "停车",
-        "店信息",
-    ]
-    return any(term in recent for term in store_context_terms)
-
-
 def _recent_conversation_text(state: AgentState, limit: int = 6) -> str:
     history = state.get("conversation_history") or []
     return "\n".join(str(item) for item in history[-limit:])
@@ -775,11 +689,6 @@ def _has_recent_complaint_context(state: AgentState) -> bool:
     return bool(_complaint_terms(text) or _has_effect_dispute(text))
 
 
-def _has_recent_competitor_context(state: AgentState) -> bool:
-    text = _recent_conversation_text(state, limit=8)
-    return any(word in text for word in COMPETITOR_KEYWORDS + ["对比", "报价截图", "别人报价", "竞品"])
-
-
 def _is_image_following_complaint(state: AgentState) -> bool:
     content = (state.get("normalized_content") or "").strip()
     image_info = state.get("image_info") or {}
@@ -810,51 +719,6 @@ def _is_pre_service_effect_concern(content: str) -> bool:
         return False
     past_or_done_terms = ["做完", "术后", "刚做", "已经做", "做了", "花了", "一点用都没", "没有淡", "没淡"]
     return not any(term in content for term in past_or_done_terms)
-
-
-def _merge_intents(state: AgentState, rule_items: list[dict[str, Any]], model_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Let the model supplement deterministic routing, but never override clear current-message triggers."""
-    merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    def add(item: dict[str, Any]) -> None:
-        intent = str(item.get("intent") or "")
-        if not intent or intent in seen:
-            return
-        seen.add(intent)
-        merged.append(item)
-
-    for item in rule_items:
-        add(item)
-    for item in model_items:
-        intent = str(item.get("intent") or "")
-        if intent in seen or _model_intent_has_current_trigger(state, intent):
-            add(item)
-    return merged[:3] or _dedupe_intents(rule_items + model_items)
-
-
-def _model_intent_has_current_trigger(state: AgentState, intent: str) -> bool:
-    content = state.get("normalized_content") or ""
-    image_info = state.get("image_info") or {}
-    if intent == "image_inquiry":
-        return bool(image_info.get("has_image"))
-    if intent == "appointment_intent" and _has_ad_price_check(content):
-        return False
-    trigger_map = {
-        "trust_issue": TRUST_KEYWORDS + ADVANTAGE_KEYWORDS,
-        "competitor_compare": COMPETITOR_KEYWORDS + ADVANTAGE_KEYWORDS,
-        "price_inquiry": PRICE_KEYWORDS,
-        "ad_price_check": ["广告", "直播", "团购", "预约金", "尾款", "隐形收费", "其他收费", "另收费", "包含"],
-        "campaign_inquiry": CAMPAIGN_KEYWORDS,
-        "after_sales": AFTER_SALES_KEYWORDS,
-        "store_inquiry": STORE_KEYWORDS,
-        "appointment_intent": APPOINTMENT_KEYWORDS,
-        "appointment_confirm": ["我有没有预约", "我约的是", "约的是几点", "预约成功", "查一下预约", "查下预约", "是不是约了", "有没有约"],
-        "project_inquiry": PROJECT_KEYWORDS + ["斑", "点状", "片状", "痘印", "痘坑", "毛孔", "暗沉", "适合", "改善"],
-        "case_request": ["案例", "效果案例", "前后对比", "对比照", "做完效果", "客户做完"],
-        "project_process": ["流程", "操作流程", "怎么操作", "要做多久", "多久能做完", "时长", "步骤"],
-    }
-    return any(word in content for word in trigger_map.get(intent, []))
 
 
 def _vision_prompt(state: AgentState) -> str:
@@ -981,165 +845,6 @@ def _list_of_strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item)[:200] for item in value[:10] if str(item).strip()]
-
-
-def _should_use_model_planner(state: AgentState) -> bool:
-    content = state.get("normalized_content") or ""
-    if not content and not state.get("file_image"):
-        return False
-    return True
-
-
-def _planner_model_tier(state: AgentState) -> str:
-    content = state.get("normalized_content") or ""
-    if any(word in content for word in AFTER_SALES_KEYWORDS + COMPETITOR_KEYWORDS + TRUST_KEYWORDS):
-        return "balanced"
-    return "fast"
-
-
-def _planner_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
-    system = (
-        "你是企业微信医美客服系统的轻量动作规划节点。"
-        "你不回复客户，只判断本轮需要调用哪些业务skill。"
-        "最多输出3个意图，按优先级排序。"
-        "可选skill只能是：project_consult, price_consult, trust_build, competitor, after_sales, store, appointment。"
-        "如果只是普通项目咨询，用project_consult；价格用price_consult；正规/靠谱/怕被骗用trust_build；别家/竞品用competitor。"
-        "营业执照、资质、证照、许可证、机构是否正规属于trust_build，不属于store；客户没有问地址/附近/停车/路线时不要调用store。"
-        "客户问“你们优势在哪里/为什么选你们/有什么不一样”，属于trust_build；如果上一轮明显在竞品对比，可用competitor。不要因为出现“哪里”误判成门店。"
-        "如果上一轮在问门店/地址/哪家方便，客户本轮只补充城市如“我在上海/上海/人在上海”，必须用store。"
-        "客户说太贵、贵了、便宜点、能不能优惠、最低价、底价、预算不够时，属于price_consult，不要归到project_consult。"
-        "最终只输出合法JSON：{\"intents\":[{\"intent\":\"\",\"skill\":\"\",\"priority\":1,\"reason\":\"\"}]}"
-    )
-    user = {
-        "content": state.get("normalized_content"),
-        "conversation_history": state.get("conversation_history", [])[-6:],
-        "image_info": state.get("image_info", {}),
-        "customer_profile": state.get("customer_profile", {}),
-        "history_events": state.get("history_events", [])[-6:],
-        "appointment_cache": state.get("appointment_cache", {}),
-    }
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": json_dumps(user)},
-    ]
-
-
-def _validated_planner_intents(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = payload.get("intents")
-    if not isinstance(raw, list) or not raw:
-        raise ValueError("Planner JSON missing intents")
-    allowed_skills = {"project_consult", "price_consult", "trust_build", "competitor", "after_sales", "store", "appointment"}
-    result: list[dict[str, Any]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        skill = str(item.get("skill", "")).strip()
-        if skill not in allowed_skills:
-            continue
-        intent = _intent_for_skill(skill)
-        priority_raw = item.get("priority", len(result) + 1)
-        try:
-            priority = int(priority_raw)
-        except (TypeError, ValueError):
-            priority = len(result) + 1
-        reason = str(item.get("reason") or "模型规划识别").strip()
-        result.append({"intent": intent, "skill": skill, "priority": priority, "reason": reason[:80]})
-        if len(result) >= 3:
-            break
-    if not result:
-        raise ValueError("Planner JSON has no valid intents")
-    return _dedupe_intents(result)
-
-
-def _filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    image_info = state.get("image_info") or {}
-    content = state.get("normalized_content") or ""
-    has_current_competitor = any(word in content for word in COMPETITOR_KEYWORDS)
-    has_current_trust = any(word in content for word in TRUST_KEYWORDS)
-    has_price_objection = _has_price_objection(content)
-    pre_service_effect_concern = _is_pre_service_effect_concern(content)
-    if _has_effect_guarantee_request(content):
-        intents = [item for item in intents if item.get("intent") != "price_inquiry"]
-        if not any(item.get("intent") == "trust_issue" for item in intents):
-            intents.append({"intent": "trust_issue", "skill": "trust_build", "priority": 1, "reason": "客户要求效果保证或一次见效承诺"})
-    if _has_advantage_question(content):
-        intents = [item for item in intents if item.get("intent") != "store_inquiry"]
-        target_skill = "competitor" if _has_recent_competitor_context(state) else "trust_build"
-        target_intent = "competitor_compare" if target_skill == "competitor" else "trust_issue"
-        if not any(item.get("intent") == target_intent for item in intents):
-            intents.append({"intent": target_intent, "skill": target_skill, "priority": 2, "reason": "客户询问优势或差异点"})
-    if has_current_trust and not _has_store_inquiry(content):
-        intents = [item for item in intents if item.get("intent") != "store_inquiry"]
-        if not any(item.get("intent") == "trust_issue" for item in intents):
-            intents.append({"intent": "trust_issue", "skill": "trust_build", "priority": 1, "reason": "客户当前表达资质或正规性顾虑"})
-    if _is_store_city_followup(state):
-        intents = [item for item in intents if item.get("intent") not in {"project_inquiry", "price_inquiry", "campaign_inquiry"}]
-        if not any(item.get("intent") == "store_inquiry" for item in intents):
-            intents.append({"intent": "store_inquiry", "skill": "store", "priority": 1, "reason": "承接上一轮门店查询补充城市"})
-    if has_price_objection:
-        intents = [item for item in intents if item.get("intent") != "project_inquiry"]
-        if not any(item.get("intent") == "price_inquiry" for item in intents):
-            intents.append({"intent": "price_inquiry", "skill": "price_consult", "priority": 2, "reason": "价格异议或议价"})
-    if pre_service_effect_concern:
-        intents = [item for item in intents if item.get("intent") != "after_sales"]
-    if has_current_competitor and not has_current_trust:
-        intents = [item for item in intents if item.get("intent") != "trust_issue"]
-    if image_info.get("has_image") and image_info.get("image_intent") == "face_consult":
-        allowed = {"image_inquiry", "project_inquiry"}
-        if _has_recent_complaint_context(state):
-            allowed.add("complaint_refund")
-            allowed.add("after_sales")
-        if any(word in content for word in PRICE_KEYWORDS):
-            allowed.add("price_inquiry")
-        if any(word in content for word in CAMPAIGN_KEYWORDS):
-            allowed.add("campaign_inquiry")
-        if any(word in content for word in APPOINTMENT_KEYWORDS):
-            allowed.add("appointment_intent")
-        if any(word in content for word in TRUST_KEYWORDS):
-            allowed.add("trust_issue")
-        if _has_store_inquiry(content):
-            allowed.add("store_inquiry")
-        if any(word in content for word in AFTER_SALES_KEYWORDS) and not pre_service_effect_concern:
-            allowed.add("after_sales")
-        filtered = [item for item in intents if item.get("intent") in allowed]
-        if filtered:
-            return _dedupe_intents(filtered)
-    return _dedupe_intents(intents)
-
-
-def _dedupe_intents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for _, item in sorted(enumerate(items), key=lambda pair: (_intent_rank(str(pair[1]["intent"])), int(pair[1]["priority"]), pair[0])):
-        key = str(item["intent"])
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(item)
-        if len(deduped) >= 3:
-            break
-    return deduped
-
-
-def _intent_rank(intent: str) -> int:
-    return {
-        "human_request": 0,
-        "complaint_refund": 0,
-        "after_sales": 1,
-        "trust_issue": 2,
-        "competitor_compare": 3,
-        "ad_price_check": 4,
-        "price_inquiry": 4,
-        "campaign_inquiry": 4,
-        "store_inquiry": 5,
-        "appointment_intent": 6,
-        "appointment_confirm": 6,
-        "appointment_change": 6,
-        "appointment_cancel": 6,
-        "image_inquiry": 7,
-        "project_inquiry": 8,
-        "emotion_chat": 9,
-    }.get(intent, 9)
 
 
 def _skill_output(skill: str, content: str, tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
