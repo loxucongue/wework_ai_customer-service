@@ -27,6 +27,8 @@ def detect_intents(content: str, image_info: dict[str, Any] | None = None) -> li
     case_request = _has_case_request(content)
     project_process = _has_project_process_question(content)
     ad_price_check = _has_ad_price_check(content)
+    if _needs_real_order_lookup(content):
+        items.append({"intent": "human_request", "skill": "handoff", "priority": 0, "reason": "订单、付款或到账状态需要真实系统数据核实"})
     if image_info.get("has_image"):
         image_intent = str(image_info.get("image_intent") or "")
         suggested_route = str(image_info.get("suggested_route") or "")
@@ -305,6 +307,18 @@ def _has_effect_guarantee_request(content: str) -> bool:
     if not content:
         return False
     return any(term in content for term in ["保证一次有效", "保证有效", "一次有效", "一次见效", "包效果", "不保证就算了"])
+
+
+def _needs_real_order_lookup(content: str) -> bool:
+    if not content:
+        return False
+    order_terms = ["订单", "付款", "付的钱", "那笔钱", "到账", "扣款", "支付记录", "尾款", "定金", "预约金", "退款进度", "款项"]
+    query_terms = ["查一下", "查下", "帮我查", "到底去哪了", "去哪了", "有没有到账", "什么时候到", "什么状态", "记录", "明细"]
+    if not any(term in content for term in order_terms):
+        return False
+    if any(term in content for term in query_terms):
+        return True
+    return "订单" in content and "项目" not in content
 
 
 def _has_store_inquiry(content: str) -> bool:
