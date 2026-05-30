@@ -10,6 +10,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from app.graph import planner_helpers
 from app.graph.state import AgentState
 from app.policies.constants import (
     ADVANTAGE_KEYWORDS,
@@ -179,22 +180,22 @@ def build_graph(
                 intents = [{"intent": intent, "skill": "handoff", "priority": 0, "reason": "命中投诉、纠纷或风险关键词"}]
             else:
                 try:
-                    rule_intents = _detect_intents(content, state.get("image_info", {}))
-                    if model_client and model_client.available and _should_use_model_planner(state):
-                        tier = _planner_model_tier(state)
+                    rule_intents = planner_helpers.detect_intents(content, state.get("image_info", {}))
+                    if model_client and model_client.available and planner_helpers.should_use_model_planner(state):
+                        tier = planner_helpers.planner_model_tier(state)
                         planner_call = {"name": "planner_brain_model", "input": {"tier": tier}}
-                        payload = await model_client.chat_json(_planner_messages_for_model(state), tier=tier)
+                        payload = await model_client.chat_json(planner_helpers.planner_messages_for_model(state), tier=tier)
                         planner_call["usage"] = _model_usage_snapshot(model_client)
-                        intents = _validated_planner_intents(payload)
-                        intents = _merge_intents(state, rule_intents, intents)
-                        intents = _filter_spurious_intents(state, intents)
+                        intents = planner_helpers.validated_planner_intents(payload)
+                        intents = planner_helpers.merge_intents(state, rule_intents, intents)
+                        intents = planner_helpers.filter_spurious_intents(state, intents)
                         planner_call["output"] = {"intents": len(intents)}
                     else:
                         intents = rule_intents
-                    intents = _filter_spurious_intents(state, intents)
+                    intents = planner_helpers.filter_spurious_intents(state, intents)
                 except Exception as exc:
-                    intents = _detect_intents(content, state.get("image_info", {}))
-                    intents = _filter_spurious_intents(state, intents)
+                    intents = planner_helpers.detect_intents(content, state.get("image_info", {}))
+                    intents = planner_helpers.filter_spurious_intents(state, intents)
                     planner_call = planner_call or {"name": "planner_brain_model", "input": {}}
                     planner_call["error"] = f"{type(exc).__name__}: {exc}"
             if planner_call:
