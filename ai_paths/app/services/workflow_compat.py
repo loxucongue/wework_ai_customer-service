@@ -146,12 +146,11 @@ def _record(value: Any) -> dict[str, Any]:
 
 def _message_content_value(value: Any, preferred_key: str) -> str:
     if isinstance(value, dict):
-        return (
-            _string(value.get(preferred_key))
-            or _string(value.get("text"))
-            or _string(value.get("url"))
-            or _string(value.get("handoff_reason"))
-        )
+        for key in [preferred_key, "handoff_reason", "text", "url"]:
+            text = _message_content_value(value.get(key), preferred_key)
+            if text:
+                return text
+        return ""
     return _string(value)
 
 

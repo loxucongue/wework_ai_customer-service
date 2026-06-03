@@ -64,12 +64,12 @@ def debug_message_contents(messages: list[dict[str, Any]]) -> list[str]:
 
 def message_content_text(content: Any) -> str:
     if isinstance(content, dict):
-        return str(
-            content.get("text")
-            or content.get("url")
-            or content.get("handoff_reason")
-            or ""
-        ).strip()
+        for key in ("handoff_reason", "text", "url"):
+            value = content.get(key)
+            text = message_content_text(value)
+            if text:
+                return text
+        return ""
     return str(content or "").strip()
 
 

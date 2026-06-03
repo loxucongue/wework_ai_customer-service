@@ -455,9 +455,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function stringValue(value: unknown) {
+function stringValue(value: unknown): string {
   if (value === null || value === undefined) {
     return "";
+  }
+  if (isRecord(value)) {
+    return (
+      stringValue(value.handoff_reason) ||
+      stringValue(value.text) ||
+      stringValue(value.url)
+    );
   }
   return String(value).trim();
 }
