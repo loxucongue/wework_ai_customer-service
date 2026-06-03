@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.graph.planner_dispute_signals import model_intent_has_current_trigger as _model_intent_has_current_trigger
+from app.graph.planner_dispute_signals import (
+    has_effect_dispute as _has_effect_dispute_from_signals,
+    has_fee_or_refund_dispute as _has_fee_or_refund_dispute_from_signals,
+    is_soft_fee_concern as _is_soft_fee_concern_from_signals,
+    model_intent_has_current_trigger as _model_intent_has_current_trigger,
+)
 from app.graph.planner_intent_meta import (
     dedupe_intents as _dedupe_intents,
     known_info_from_state as _known_info_from_state,
@@ -15,6 +20,9 @@ from app.graph.planner_intent_filter import filter_spurious_intents
 from app.graph.planner_prompt import planner_messages_for_model, planner_model_tier, should_use_model_planner
 from app.graph.planner_rule_intents import detect_intents
 from app.graph.planner_store_followup import contextual_followup_intents as _contextual_followup_intents
+from app.graph.planner_store_followup import (
+    store_location_preference_from_context as _store_location_preference_from_context_from_followup,
+)
 from app.graph.planner_tool_plan import (
     default_tool_plan as _default_tool_plan,
     needs_default_tool_plan as _needs_default_tool_plan,
@@ -65,3 +73,26 @@ def enrich_intents_with_tool_plan(state: AgentState, intents: list[dict[str, Any
         copied["tool_plan"] = _normalize_tool_plan_for_intent(state, copied)
         enriched.append(copied)
     return enriched
+
+
+def _has_fee_or_refund_dispute(content: str) -> bool:
+    return _has_fee_or_refund_dispute_from_signals(content)
+
+
+def _is_soft_fee_concern(content: str) -> bool:
+    return _is_soft_fee_concern_from_signals(content)
+
+
+def _has_effect_dispute(content: str) -> bool:
+    return _has_effect_dispute_from_signals(content)
+
+
+def _is_service_response_complaint(content: str) -> bool:
+    if not content:
+        return False
+    terms = ["你回消息为什么这么慢", "为什么这么慢", "没人回", "一直不回", "等太久", "太慢了"]
+    return any(term in content for term in terms)
+
+
+def _store_location_preference_from_context(state: AgentState) -> str:
+    return _store_location_preference_from_context_from_followup(state)

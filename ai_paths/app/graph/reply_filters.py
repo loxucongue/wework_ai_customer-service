@@ -11,6 +11,10 @@ from app.graph.reply_compliance_filters import (
     sanitize_license_promise,
     sanitize_unasked_project_names,
 )
+from app.graph.reply_internal_sanitizer import (
+    has_internal_reply_leak as _has_internal_reply_leak,
+    sanitize_customer_visible_messages as _sanitize_customer_visible_messages,
+)
 
 
 def sanitize_sensitive_reply_content(
@@ -44,6 +48,14 @@ def sanitize_sensitive_reply_content(
         if content.strip():
             sanitized.append({**message, "content": content})
     return sanitized
+
+
+def has_internal_reply_leak(text: str) -> bool:
+    return _has_internal_reply_leak(text)
+
+
+def sanitize_customer_visible_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _sanitize_customer_visible_messages(messages)
 
 
 def asks_for_duplicate_photo(text: str) -> bool:
