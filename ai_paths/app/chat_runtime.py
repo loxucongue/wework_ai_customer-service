@@ -5,6 +5,8 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
+from app.chat_request_context import build_request_context, conversation_id_from_request, conversation_title
+from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
 from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
 from app.services.storage import AppRepository
@@ -132,40 +134,6 @@ class ChatRuntime:
         )
 
 
-def build_request_context(request: ChatRequest) -> dict[str, Any]:
-    context = dict(request.request_context or {})
-    fields = {
-        "user_id": request.user_id,
-        "corp_id": request.corp_id,
-        "wechat": request.wechat,
-        "external_userid": request.external_userid,
-        "customer_id": request.customer_id,
-        "customer_add_wechat_id": request.customer_add_wechat_id,
-        "confirmed_store_id": request.confirmed_store_id,
-        "confirmed_store_name": request.confirmed_store_name,
-        "store_id": request.store_id,
-        "store_name": request.store_name,
-        "appointment_id": request.appointment_id,
-        "appointment_time": request.appointment_time,
-    }
-    for key, value in fields.items():
-        if value not in (None, ""):
-            context[key] = value
-    return context
-
-
-def conversation_id_from_request(request: ChatRequest, request_context: dict[str, Any]) -> str:
-    explicit = request_context.get("conversation_id") or request_context.get("session_id")
-    return str(explicit or request.customer_id or request.external_userid or "unknown")
-
-
-def conversation_title(content: str) -> str:
-    title = (content or "").strip().replace("\n", " ")
-    if not title:
-        return "图片咨询"
-    return title[:40]
-
-
 def safe_repository_call(func: Any, **kwargs: Any) -> None:
     try:
         func(**kwargs)
@@ -203,76 +171,3 @@ def failed_state_from_exception(initial_state: AgentState, exc: Exception) -> Ag
         },
     ]
     return state
-
-
-def collect_model_usage(trace: list[dict[str, Any]]) -> dict[str, Any]:
-    calls: list[dict[str, Any]] = []
-    summary = {
-        "planner_tokens": 0,
-        "reply_tokens": 0,
-        "vision_tokens": 0,
-        "other_tokens": 0,
-        "total_tokens": 0,
-    }
-
-    def add_call(node: str, call: dict[str, Any]) -> None:
-        usage = call.get("usage") if isinstance(call.get("usage"), dict) else {}
-        total = int(usage.get("total_tokens") or usage.get("token_count") or 0)
-        if total > 0:
-            item = {
-                "node": node,
-                "name": call.get("name", ""),
-                "provider": usage.get("provider", ""),
-                "model": usage.get("model", ""),
-                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                "completion_tokens": int(usage.get("completion_tokens") or 0),
-                "total_tokens": total,
-            }
-            calls.append(item)
-            if node == "planner_brain":
-                summary["planner_tokens"] += total
-            elif node == "synthesize_reply":
-                summary["reply_tokens"] += total
-            elif node == "image_understanding":
-                summary["vision_tokens"] += total
-            else:
-                summary["other_tokens"] += total
-            summary["total_tokens"] += total
-        for nested in call.get("nested_calls", []) or []:
-            if isinstance(nested, dict):
-                add_call(node, nested)
-
-    for entry in trace or []:
-        node = str(entry.get("node") or "")
-        for call in entry.get("tool_calls", []) or []:
-            if not isinstance(call, dict):
-                continue
-            add_call(node, call)
-    return {"calls": calls, "summary": summary}
-
-
-def collect_tool_calls(trace: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    calls: list[dict[str, Any]] = []
-
-    def add_call(node: str, call: dict[str, Any]) -> None:
-        calls.append(
-            {
-                "node": node,
-                "name": call.get("name", ""),
-                "input": call.get("input", {}),
-                "output": call.get("output", {}),
-                "error": call.get("error", ""),
-                "usage": call.get("usage", {}),
-            }
-        )
-        for nested in call.get("nested_calls", []) or []:
-            if isinstance(nested, dict):
-                add_call(node, nested)
-
-    for entry in trace or []:
-        node = str(entry.get("node") or "")
-        for call in entry.get("tool_calls", []) or []:
-            if not isinstance(call, dict):
-                continue
-            add_call(node, call)
-    return calls[:30]
