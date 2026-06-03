@@ -3,10 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.graph.nodes.appointment_utils import (
-    extract_date_value as _extract_date_value,
-    has_explicit_location_or_store as _has_explicit_location_or_store_from_appointment_utils,
-)
 from app.graph.nodes.common import (
     dedupe_strings as _dedupe_strings,
     json_dumps,
@@ -24,16 +20,14 @@ from app.graph.nodes.legacy_goal_context import (
     has_confirmed_spot_goal as _has_confirmed_spot_goal_from_goal_context,
     is_redundant_known_goal_question as _is_redundant_known_goal_question_from_goal_context,
 )
-from app.graph.nodes.legacy_flow_utils import (
-    available_slot_list as _available_slot_list_from_utils,
-    compact_memory as _compact_memory_from_utils,
-    extract_price_digits as _extract_price_digits_from_utils,
-    parking_text as _parking_text_from_utils,
+from app.graph.nodes.legacy_appointment_bridge import (
+    appointment_context_sentence as _appointment_context_sentence,
+    available_slot_list as _available_slot_list,
+    should_show_appointment_context as _should_show_appointment_context,
 )
-from app.graph.nodes.legacy_appointment_messages import (
-    LegacyAppointmentMessageCallbacks,
-    appointment_context_sentence as _appointment_context_sentence_from_module,
-    should_show_appointment_context as _should_show_appointment_context_from_module,
+from app.graph.nodes.legacy_flow_utils import (
+    extract_price_digits as _extract_price_digits,
+    parking_text as _parking_text_from_utils,
 )
 from app.graph.nodes.legacy_context_bridge import (
     business_project_slices as _business_project_slices,
@@ -42,8 +36,6 @@ from app.graph.nodes.legacy_context_bridge import (
     project_direction_names_from_state as _project_direction_names_from_state,
 )
 from app.graph.nodes.intent_signals import (
-    has_appointment_change_or_cancel as _has_appointment_change_or_cancel,
-    has_appointment_record_query as _has_appointment_record_query,
     has_effect_guarantee_request as _has_effect_guarantee_request,
     has_price_objection as _has_price_objection,
     is_generic_project_intro as _is_generic_project_intro,
@@ -67,11 +59,6 @@ from app.graph.nodes.legacy_reply_quality_signals import (
     rejects_more_questions as _rejects_more_questions_from_quality_signals,
     time_text_variants as _time_text_variants_from_quality_signals,
     too_similar_to_recent_assistant_reply as _too_similar_to_recent_assistant_reply_from_quality_signals,
-)
-from app.graph.nodes.legacy_turn_planning import (
-    LegacyTurnPlanningCallbacks,
-    has_explicit_appointment_request as _has_explicit_appointment_request_from_module,
-    should_suspend_active_task_for_current_turn as _should_suspend_active_task_for_current_turn_from_module,
 )
 from app.graph.nodes.legacy_tool_results import tool_results_contain as _tool_results_contain_from_tool_results
 from app.graph.nodes.pricing_context import (
@@ -117,14 +104,6 @@ from app.graph.nodes.store_context import (
     extract_city as _extract_city,
 )
 from app.graph.state import AgentState
-
-def _compact_memory(memory: dict[str, Any]) -> dict[str, Any]:
-    return _compact_memory_from_utils(memory)
-
-
-def _extract_price_digits(content: str) -> list[str]:
-    return _extract_price_digits_from_utils(content)
-
 
 def _postprocess_reply_messages(state: AgentState, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return _postprocess_reply_messages_from_postprocess(state, messages, _reply_postprocess_callbacks())
@@ -190,45 +169,6 @@ def _latest_store_summary_from_history(state: AgentState) -> str:
 
 def _latest_price_summary_from_history(state: AgentState) -> str:
     return _latest_price_summary_from_history_from_summary(state, _reply_summary_callbacks())
-
-
-def _available_slot_list(slots_value: Any) -> list[str]:
-    return _available_slot_list_from_utils(slots_value, _dedupe_strings)
-
-
-def _legacy_appointment_message_callbacks() -> LegacyAppointmentMessageCallbacks:
-    return LegacyAppointmentMessageCallbacks(
-        recent_assistant_replies=_recent_assistant_replies,
-    )
-
-
-def _legacy_turn_planning_callbacks() -> LegacyTurnPlanningCallbacks:
-    return LegacyTurnPlanningCallbacks(
-        asks_price_recap=_asks_price_recap,
-        asks_store_or_address_recap=_asks_store_or_address_recap,
-        extract_date_value=_extract_date_value,
-        has_appointment_change_or_cancel=_has_appointment_change_or_cancel,
-        has_appointment_record_query=_has_appointment_record_query,
-        has_pre_visit_question=_has_pre_visit_question,
-        is_strong_multi_recap_request=_is_strong_multi_recap_request,
-    )
-
-
-def _should_suspend_active_task_for_current_turn(
-    state: AgentState,
-    active_task: dict[str, Any] | None = None,
-    intents: list[dict[str, Any]] | None = None,
-) -> bool:
-    return _should_suspend_active_task_for_current_turn_from_module(
-        state,
-        active_task=active_task,
-        intents=intents,
-        callbacks=_legacy_turn_planning_callbacks(),
-    )
-
-
-def _has_explicit_appointment_request(content: str) -> bool:
-    return _has_explicit_appointment_request_from_module(content, _legacy_turn_planning_callbacks())
 
 
 def _legacy_reply_callback_factory_callbacks() -> LegacyReplyCallbackFactoryCallbacks:
@@ -341,15 +281,5 @@ def _parking_text(store: dict[str, Any]) -> str:
     return _parking_text_from_utils(store)
 
 
-def _appointment_context_sentence(state: AgentState) -> str:
-    return _appointment_context_sentence_from_module(state)
-
-
-def _should_show_appointment_context(state: AgentState) -> bool:
-    return _should_show_appointment_context_from_module(state, _legacy_appointment_message_callbacks())
-
-
-def _has_explicit_location_or_store(content: str) -> bool:
-    return _has_explicit_location_or_store_from_appointment_utils(content, _extract_city)
 
 
