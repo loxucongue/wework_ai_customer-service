@@ -4,6 +4,7 @@ from typing import Any
 
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_catalog import StoreRecord, local_store_records
+from app.services.store_recommendation import with_location_recommendation
 from app.services import store_text
 
 
@@ -47,7 +48,7 @@ class StoreService:
             if city and not requested_name and platform_result.get("stores"):
                 platform_result = self._merge_local_city_stores(platform_result, city, limit=limit)
             if platform_result.get("stores"):
-                return self._with_location_recommendation(platform_result, location_preference)
+                return with_location_recommendation(platform_result, location_preference)
 
         candidates = self._stores
         if requested_name:
@@ -68,57 +69,7 @@ class StoreService:
             "source": "local_store_fallback",
             "platform_error": platform_error,
         }
-        return self._with_location_recommendation(result, location_preference)
-
-    def _with_location_recommendation(self, result: dict[str, Any], location_preference: str) -> dict[str, Any]:
-        if not location_preference:
-            return result
-        stores = result.get("stores") if isinstance(result, dict) else []
-        if not isinstance(stores, list) or not stores:
-            return result
-        city = str(result.get("city") or "").strip()
-        if location_preference == "机场附近" and city and city != "厦门":
-            return result
-        ranked = sorted(
-            [store for store in stores if isinstance(store, dict)],
-            key=lambda store: self._location_preference_rank(store, location_preference),
-        )
-        if not ranked:
-            return result
-        best_rank = self._location_preference_rank(ranked[0], location_preference)
-        if best_rank >= 50:
-            return result
-        recommended = ranked[0]
-        output = dict(result)
-        output["stores"] = ranked
-        output["location_preference"] = location_preference
-        output["recommended_store"] = recommended
-        output["recommendation_reason"] = self._recommendation_reason(recommended, location_preference)
-        return output
-
-    @staticmethod
-    def _location_preference_rank(store: dict[str, Any], location_preference: str) -> int:
-        text = " ".join(str(store.get(key) or "") for key in ["name", "city", "address", "parking_name", "parking_address"])
-        if location_preference == "机场附近":
-            if any(term in text for term in ["机场", "高崎"]):
-                return 0
-            if any(term in text for term in ["百星", "枋湖"]):
-                return 1
-            if any(term in text for term in ["湖里", "安岭", "钟宅"]):
-                return 2
-            if any(term in text for term in ["思明", "厦禾", "国骏"]):
-                return 8
-        return 99
-
-    @staticmethod
-    def _recommendation_reason(store: dict[str, Any], location_preference: str) -> str:
-        name = str(store.get("name") or "这家门店").strip()
-        address = str(store.get("address") or "").strip()
-        if location_preference == "机场附近":
-            if any(term in f"{name} {address}" for term in ["湖里", "枋湖", "百星", "安岭", "钟宅"]):
-                return f"客户偏好机场附近，按当前门店地址看，{name}在湖里区方向，比思明区门店更贴近机场区域。"
-            return f"客户偏好机场附近，按当前门店地址看，可优先对比{name}。"
-        return f"按客户位置偏好，可优先对比{name}。"
+        return with_location_recommendation(result, location_preference)
 
     def available_time(self, *, store_id: str, date: str, customer_context: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._platform_client or not self._platform_client.available:
