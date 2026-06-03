@@ -43,9 +43,9 @@ type WorkflowCompatibleBody = {
 };
 
 export type AiPathsReplyMessage = {
-  type?: "text" | "image";
+  type?: "text" | "image" | "human_handoff";
   order?: number;
-  content?: string;
+  content?: string | Record<string, unknown>;
 };
 
 export type AiPathsResponse = {
@@ -370,11 +370,11 @@ export async function proxyAiPathsChatForFrontend(body: ChatRequestBody) {
 
     const result = JSON.parse(text) as AiPathsResponse;
     const output = (result.reply_messages || [])
-      .filter((item) => item.content)
+      .filter((item) => replyMessageContent(item))
       .map((item, index) => ({
         type: item.type || "text",
         order: item.order || index + 1,
-        content: item.content || "",
+        content: replyMessageContent(item),
       }));
 
     return jsonResponse({
@@ -426,13 +426,22 @@ function workflowDirectionLabel(direction: string) {
 
 function normalizeWorkflowReplyMessages(messages: AiPathsReplyMessage[]) {
   return messages
-    .filter((item) => item.content)
+    .filter((item) => replyMessageContent(item, item.type === "human_handoff" ? "handoff_reason" : "text"))
     .map((item, index) => {
       const type = item.type || "text";
+      if (type === "human_handoff") {
+        const reason = replyMessageContent(item, "handoff_reason");
+        return {
+          type,
+          order: item.order || index + 1,
+          content: { handoff_reason: reason },
+        };
+      }
+      const content = replyMessageContent(item, type === "image" ? "url" : "text");
       return {
         type,
         order: item.order || index + 1,
-        content: type === "image" ? { url: item.content || "" } : { text: item.content || "" },
+        content: type === "image" ? { url: content } : { text: content },
       };
     });
 }
@@ -451,6 +460,25 @@ function stringValue(value: unknown) {
     return "";
   }
   return String(value).trim();
+}
+
+function replyMessageContent(item: AiPathsReplyMessage, preferredKey = "text") {
+  const content = item.content;
+  if (isRecord(content)) {
+    const preferred = stringValue(content[preferredKey]);
+    if (preferred) {
+      return preferred;
+    }
+    if (preferredKey === "handoff_reason") {
+      return "";
+    }
+    return (
+      stringValue(content.text) ||
+      stringValue(content.url) ||
+      stringValue(content.handoff_reason)
+    );
+  }
+  return stringValue(content);
 }
 
 function numberValue(value: unknown) {
