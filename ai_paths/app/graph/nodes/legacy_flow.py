@@ -65,12 +65,6 @@ from app.graph.nodes.legacy_project_context import (
     project_direction_names_from_state as _project_direction_names_from_project_context,
     recent_project_from_state as _recent_project_from_project_context,
 )
-from app.graph.nodes.legacy_qa_slice_context import (
-    clean_after_sales_text as _clean_after_sales_text_from_qa_context,
-    first_after_sales_slice as _first_after_sales_slice_from_qa_context,
-    first_competitor_slice as _first_competitor_slice_from_qa_context,
-    split_collect_items as _split_collect_items_from_qa_context,
-)
 from app.graph.nodes.legacy_reply_callback_factories import (
     LegacyReplyCallbackFactoryCallbacks,
     reply_brief_callbacks as _reply_brief_callbacks_from_module,
