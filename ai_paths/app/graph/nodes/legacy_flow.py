@@ -3,10 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.graph.nodes.action_queries import (
-    ActionQueryCallbacks,
-    safe_query_from_state as _safe_query_from_action_queries,
-)
 from app.graph.nodes.appointment_utils import (
     extract_date_value as _extract_date_value,
     has_explicit_location_or_store as _has_explicit_location_or_store_from_appointment_utils,
@@ -14,7 +10,6 @@ from app.graph.nodes.appointment_utils import (
 from app.graph.nodes.common import (
     dedupe_strings as _dedupe_strings,
     json_dumps,
-    looks_bad_text as _looks_bad_text,
     recent_assistant_replies as _recent_assistant_replies,
     renumber_messages as _renumber,
 )
@@ -34,12 +29,6 @@ from app.graph.nodes.legacy_flow_utils import (
     compact_memory as _compact_memory_from_utils,
     extract_price_digits as _extract_price_digits_from_utils,
     parking_text as _parking_text_from_utils,
-)
-from app.graph.nodes.legacy_kb_planning import (
-    LegacyKbPlanningCallbacks,
-    needs_project_price_followup as _needs_project_price_followup_from_module,
-    planned_kb_searches as _planned_kb_searches_from_module,
-    project_price_followup_queries as _project_price_followup_queries_from_module,
 )
 from app.graph.nodes.legacy_appointment_messages import (
     LegacyAppointmentMessageCallbacks,
@@ -64,9 +53,7 @@ from app.graph.nodes.intent_signals import (
     is_unclear_need as _is_unclear_need,
     recent_conversation_text as _recent_conversation_text,
 )
-from app.graph.nodes.kb_slice_parsing import (
-    pricing_rows_from_kb as _pricing_rows_from_kb,
-)
+from app.graph.nodes.kb_slice_parsing import pricing_rows_from_kb as _pricing_rows_from_kb
 from app.graph.nodes.project_kb_context import (
     business_project_slices as _business_project_slices_from_context,
     project_direction_name_candidates as _project_direction_name_candidates,
@@ -103,10 +90,7 @@ from app.graph.nodes.legacy_turn_planning import (
     has_explicit_appointment_request as _has_explicit_appointment_request_from_module,
     should_suspend_active_task_for_current_turn as _should_suspend_active_task_for_current_turn_from_module,
 )
-from app.graph.nodes.legacy_tool_results import (
-    merge_kb_result as _merge_kb_result_from_tool_results,
-    tool_results_contain as _tool_results_contain_from_tool_results,
-)
+from app.graph.nodes.legacy_tool_results import tool_results_contain as _tool_results_contain_from_tool_results
 from app.graph.nodes.pricing_context import (
     canonical_price_project as _canonical_price_project,
     extract_project as _extract_project,
@@ -154,51 +138,6 @@ from app.graph.state import AgentState
 
 def _compact_memory(memory: dict[str, Any]) -> dict[str, Any]:
     return _compact_memory_from_utils(memory)
-
-
-def _legacy_kb_planning_callbacks() -> LegacyKbPlanningCallbacks:
-    return LegacyKbPlanningCallbacks(
-        canonical_price_project=_canonical_price_project,
-        contextual_price_project=_contextual_price_project,
-        dedupe_strings=_dedupe_strings,
-        extract_project=_extract_project,
-        is_broad_price_category=_is_broad_price_category,
-        looks_bad_text=_looks_bad_text,
-        pricing_rows_from_kb=_pricing_rows_from_kb,
-        project_direction_name_candidates=_project_direction_name_candidates,
-        project_slices_from_tool_results=_project_slices_from_tool_results,
-        recent_project_from_state=_recent_project_from_state,
-        safe_query_from_state=_safe_query_from_state,
-    )
-
-
-def _planned_kb_searches(action: dict[str, Any], state: AgentState | None = None) -> list[dict[str, str]]:
-    return _planned_kb_searches_from_module(action, state, callbacks=_legacy_kb_planning_callbacks())
-
-
-def _safe_query_from_state(state: AgentState, skill: str) -> str:
-    return _safe_query_from_action_queries(
-        state,
-        skill,
-        callbacks=ActionQueryCallbacks(
-            canonical_price_project=_canonical_price_project,
-            contextual_price_project=_contextual_price_project,
-            extract_price_digits=_extract_price_digits,
-            extract_project=_extract_project,
-        ),
-    )
-
-
-def _needs_project_price_followup(actions: list[dict[str, Any]], tool_results: dict[str, Any], state: AgentState) -> bool:
-    return _needs_project_price_followup_from_module(actions, tool_results, state, callbacks=_legacy_kb_planning_callbacks())
-
-
-def _project_price_followup_queries(tool_results: dict[str, Any]) -> list[str]:
-    return _project_price_followup_queries_from_module(tool_results, callbacks=_legacy_kb_planning_callbacks())
-
-
-def _merge_kb_result(tool_results: dict[str, Any], kb_name: str, dumped: dict[str, Any]) -> None:
-    _merge_kb_result_from_tool_results(tool_results, kb_name, dumped)
 
 
 def _extract_price_digits(content: str) -> list[str]:

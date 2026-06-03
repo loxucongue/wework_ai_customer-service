@@ -12,14 +12,10 @@ from app.graph.nodes.legacy_flow import (
     _has_appointment_change_or_cancel,
     _has_appointment_record_query,
     _is_broad_price_category,
-    _merge_kb_result,
     _model_reply_unsafe,
-    _needs_project_price_followup,
-    _planned_kb_searches,
     _postprocess_reply_messages,
     _pricing_sql_from_state,
     _project_direction_names_from_state,
-    _project_price_followup_queries,
     _recent_assistant_replies,
     _reply_brief_for_model,
     _should_suspend_active_task_for_current_turn,
@@ -28,6 +24,12 @@ from app.graph.nodes.legacy_flow import (
 from app.graph.nodes.image_info import known_visible_concerns_from_state as _known_visible_concerns_from_state
 from app.graph.nodes.intent_signals import has_store_inquiry as _has_store_inquiry
 from app.graph.nodes.legacy_graph_wiring import LegacyGraphWiringCallbacks, build_legacy_graph
+from app.graph.nodes.legacy_kb_bridge import (
+    merge_kb_result as _merge_kb_result,
+    needs_project_price_followup as _needs_project_price_followup,
+    planned_kb_searches as _planned_kb_searches,
+    project_price_followup_queries as _project_price_followup_queries,
+)
 from app.graph.nodes.legacy_turn_planning import (
     should_drop_planner_notes_for_skill_output as _should_drop_planner_notes_for_skill_output,
     with_action_planning_notes as _with_action_planning_notes,
