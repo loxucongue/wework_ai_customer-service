@@ -3,8 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.graph import reply_filters, task_state
-from app.graph.nodes.action_nodes import ActionCallbacks, create_execute_actions_node
 from app.graph.nodes.action_queries import (
     ActionQueryCallbacks,
     safe_query_from_state as _safe_query_from_action_queries,
@@ -14,11 +12,7 @@ from app.graph.nodes.after_sales_skill_output import (
     after_sales_skill_output as _after_sales_skill_output_from_module,
 )
 from app.graph.nodes.appointment_utils import (
-    AppointmentQueryCallbacks,
-    appointment_query_from_state as _appointment_query_from_appointment_utils,
-    available_time_values as _available_time_values,
     extract_date_value as _extract_date_value,
-    filter_times_by_preference as _filter_times_by_preference,
     has_explicit_location_or_store as _has_explicit_location_or_store_from_appointment_utils,
 )
 from app.graph.nodes.basic_skill_output import (
@@ -30,7 +24,6 @@ from app.graph.nodes.common import (
     intent_for_skill as _intent_for_skill,
     json_dumps,
     looks_bad_text as _looks_bad_text,
-    model_usage_snapshot as _model_usage_snapshot,
     recent_assistant_replies as _recent_assistant_replies,
     renumber_messages as _renumber,
 )
@@ -38,18 +31,13 @@ from app.graph.nodes.competitor_skill_output import (
     CompetitorSkillCallbacks,
     competitor_skill_output as _competitor_skill_output_from_module,
 )
-from app.graph.nodes.context_nodes import create_load_customer_context_node, create_load_memory_node
-from app.graph.nodes.guardrail_nodes import (
-    create_hard_guardrails_node,
-    is_identity_question as _is_identity_question,
-)
+from app.graph.nodes.guardrail_nodes import is_identity_question as _is_identity_question
 from app.graph.nodes.image_info import (
     has_image_concern as _has_image_concern,
     has_actual_image_context as _has_actual_image_context,
     has_known_image_context as _has_known_image_context,
     known_visible_concerns_from_state as _known_visible_concerns_from_state,
 )
-from app.graph.nodes.input_nodes import create_image_understanding_node, create_normalize_input_node
 from app.graph.nodes.legacy_goal_context import (
     has_confirmed_spot_goal as _has_confirmed_spot_goal_from_goal_context,
     is_redundant_known_goal_question as _is_redundant_known_goal_question_from_goal_context,
@@ -81,31 +69,20 @@ from app.graph.nodes.legacy_context_guidance import (
     sanitize_project_direction as _sanitize_project_direction_from_context_guidance,
 )
 from app.graph.nodes.intent_signals import (
-    denies_severe_after_sales as _denies_severe_after_sales,
-    has_advantage_question as _has_advantage_question,
     has_appointment_change_or_cancel as _has_appointment_change_or_cancel,
     has_appointment_record_query as _has_appointment_record_query,
     has_effect_guarantee_request as _has_effect_guarantee_request,
     has_price_objection as _has_price_objection,
-    has_project_consult_intent as _has_project_consult_intent,
-    has_store_inquiry as _has_store_inquiry,
     is_generic_project_intro as _is_generic_project_intro,
-    is_negated_symptom as _is_negated_symptom,
-    is_pre_service_effect_concern as _is_pre_service_effect_concern,
     is_unclear_need as _is_unclear_need,
     recent_conversation_text as _recent_conversation_text,
 )
-from app.graph.nodes.planner_nodes import create_planner_brain_node
 from app.graph.nodes.kb_slice_parsing import (
-    extract_label as _extract_label,
-    extract_label_block as _extract_label_block,
-    parse_price_kb_content as _parse_price_kb_content,
     pricing_rows_from_kb as _pricing_rows_from_kb,
 )
 from app.graph.nodes.project_kb_context import (
     business_project_slices as _business_project_slices_from_context,
     case_request_lacks_specific_context as _case_request_lacks_specific_context,
-    is_business_project_direction_name as _is_business_project_direction_name,
     project_direction_name_candidates as _project_direction_name_candidates,
     project_slices_from_tool_results as _project_slices_from_tool_results,
 )
@@ -160,22 +137,12 @@ from app.graph.nodes.legacy_skill_dispatch import (
 from app.graph.nodes.legacy_turn_planning import (
     LegacyTurnPlanningCallbacks,
     has_explicit_appointment_request as _has_explicit_appointment_request_from_module,
-    should_drop_planner_notes_for_skill_output as _should_drop_planner_notes_for_skill_output,
     should_suspend_active_task_for_current_turn as _should_suspend_active_task_for_current_turn_from_module,
-    with_action_planning_notes as _with_action_planning_notes,
-    without_appointment_intents as _without_appointment_intents,
 )
 from app.graph.nodes.legacy_tool_results import (
     merge_kb_result as _merge_kb_result_from_tool_results,
     tool_results_contain as _tool_results_contain_from_tool_results,
 )
-from app.graph.nodes.profile_extraction import (
-    ProfileExtractionCallbacks,
-    customer_goal_from_content as _customer_goal_from_content,
-    extract_event_updates as _extract_event_updates_from_profile,
-    extract_profile_update as _extract_profile_update_from_profile,
-)
-from app.graph.nodes.profile_nodes import ProfileCallbacks, create_profile_event_extractor_node
 from app.graph.nodes.pricing_context import (
     canonical_price_project as _canonical_price_project,
     extract_project as _extract_project,
@@ -183,33 +150,16 @@ from app.graph.nodes.pricing_context import (
     is_broad_price_category as _is_broad_price_category,
     price_bits as _price_bits,
     price_fact_for_brief as _price_fact_for_brief,
-    price_point_from_row as _price_point_from_row,
     price_risk_terms as _price_risk_terms,
     pricing_rows as _pricing_rows,
     pricing_sql_for_project,
-    requires_exact_price as _requires_exact_price,
-    value as _value,
-)
-from app.graph.nodes.reply_input import (
-    ReplyInputCallbacks,
-    reply_messages_for_model as _reply_messages_from_input,
-    reply_model_tier as _reply_model_tier_from_input,
-    reply_repair_messages_for_model as _reply_repair_messages_from_input,
-    should_use_model_reply as _should_use_model_reply_from_input,
 )
 from app.graph.nodes.reply_context import (
-    ReplyContextCallbacks,
-    reply_user_payload_for_model as _reply_user_payload_from_context,
     store_lookup_missing_city as _store_lookup_missing_city,
 )
 from app.graph.nodes.result_compaction import ad_price_without_explicit_project as _ad_price_without_explicit_project
-from app.graph.nodes.reply_nodes import ReplyCallbacks, create_synthesize_reply_node
 from app.graph.nodes.reply_payloads import (
-    ReplyPayloadCallbacks,
-    appointment_reply_payload_for_model as _appointment_reply_payload_from_payloads,
     is_direct_arrival_question as _is_direct_arrival_question,
-    reply_forced_payload_for_model as _reply_forced_payload_from_payloads,
-    should_use_appointment_fact_reply as _should_use_appointment_fact_reply_from_payloads,
 )
 from app.graph.nodes.reply_postprocess import (
     has_no_price_fact_phrase as _has_no_price_fact_phrase_from_postprocess,
@@ -234,29 +184,10 @@ from app.graph.nodes.reply_summary_context import (
 from app.graph.nodes.reply_brief import (
     reply_brief_for_model as _reply_brief_from_module,
 )
-from app.graph.nodes.reply_validation import (
-    debug_message_contents as _debug_message_contents,
-    extract_image_url_from_text as _extract_image_url_from_text,
-    looks_like_image_url as _looks_like_image_url,
-    validated_model_messages as _validated_model_messages,
-)
 from app.graph.nodes.store_context import (
     extract_city as _extract_city,
-    extract_store_area as _extract_store_area,
-    extract_time_text as _extract_time_text,
-    known_city_from_state as _known_city_from_state,
-    known_store_name_from_history as _known_store_name_from_history,
-    known_store_name_from_text as _known_store_name_from_text,
-    preferred_store_name_from_text as _preferred_store_name_from_text,
-    should_use_known_store_context as _should_use_known_store_context,
-    should_use_recent_store_fact_context as _should_use_recent_store_fact_context,
-    store_query_from_state as _store_query_from_state,
 )
 from app.graph.state import AgentState
-from app.policies.constants import (
-    APPOINTMENT_KEYWORDS,
-    CITY_NAMES,
-)
 
 def _compact_memory(memory: dict[str, Any]) -> dict[str, Any]:
     return _compact_memory_from_utils(memory)
