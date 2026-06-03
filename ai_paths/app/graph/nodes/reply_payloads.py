@@ -32,6 +32,13 @@ def reply_forced_payload_for_model(state: AgentState, callbacks: ReplyPayloadCal
             "必须先回答暂未查到可直接引用的明确价格，不能乱报数字；"
             "可以简短说明当前更偏哪个改善方向，但禁止追问，禁止说档位、费用明细、预算参考或让客户继续补斑点信息。"
         )
+    if _effect_guarantee_question(content):
+        hard_instruction = (
+            "客户只是泛问效果是否有保障。必须回答不能做绝对效果承诺；"
+            "改善会受皮肤基础、方案匹配、操作细节和后续护理影响；"
+            "小贝可以先帮客户把这些关键点确认清楚。"
+            "禁止出现当前消息没有明确提到的具体项目名、门店名、顾客反馈、案例节点、持证、备案、资质、所有项目或定金可退。"
+        )
     preferred_time = str(facts.get("customer_preferred_time") or "").strip()
     slots = facts.get("available_time_slots") if isinstance(facts.get("available_time_slots"), list) else []
     direct_active_task = state.get("active_task") or {}
@@ -146,3 +153,7 @@ def appointment_reply_payload_for_model(state: AgentState, callbacks: ReplyPaylo
 
 def is_direct_arrival_question(content: str) -> bool:
     return any(term in content for term in ["直接到店", "直接去", "直接过去", "到店就可以", "直接来", "到店可以"])
+
+
+def _effect_guarantee_question(content: str) -> bool:
+    return any(term in content for term in ["效果有保障", "效果保障", "有保障吗", "保障效果", "保证效果", "有效果吗"])

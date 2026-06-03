@@ -104,12 +104,49 @@ def has_fee_or_refund_dispute(content: str) -> bool:
         return False
     if is_soft_fee_concern(content):
         return False
+    if is_deposit_rule_question(content):
+        return False
     refund_terms = ["退给我", "退钱", "退款", "退定金", "退订金", "退预约金", "把钱退", "10块钱退", "十块钱退"]
     fee_terms = ["额外加钱", "加钱", "另收费", "额外收费", "多收", "乱收费", "收费不一样", "价格不一样", "说法不一样", "口径不一样"]
     payment_terms = ["定金", "订金", "预约金", "尾款", "付款", "付的钱", "门店说", "到店说"]
     if any(term in content for term in refund_terms + fee_terms):
         return True
     return any(term in content for term in payment_terms) and any(term in content for term in ["退", "加钱", "收费", "不一样", "不一致", "怎么说"])
+
+
+def is_deposit_rule_question(content: str) -> bool:
+    if not content:
+        return False
+    deposit_terms = ["定金", "订金", "预约金", "10元", "十元", "10块", "十块"]
+    question_terms = ["是什么意思", "什么意思", "能退吗", "可以退吗", "可退吗", "退吗", "怎么退", "规则", "干嘛的", "为什么要付", "要付吗", "怎么用"]
+    hard_terms = [
+        "退给我",
+        "把钱退",
+        "退钱",
+        "退款",
+        "要求退",
+        "不退",
+        "不然",
+        "投诉",
+        "维权",
+        "曝光",
+        "起诉",
+        "骗",
+        "额外加钱",
+        "另收费",
+        "乱收费",
+        "口径不一样",
+        "说法不一样",
+        "门店说",
+        "到店说",
+        "收了",
+        "付了",
+        "已经付",
+        "刚付",
+    ]
+    return any(term in content for term in deposit_terms) and any(term in content for term in question_terms) and not any(
+        term in content for term in hard_terms
+    )
 
 
 def is_soft_fee_concern(content: str) -> bool:
@@ -165,6 +202,8 @@ def model_intent_has_current_trigger(state: AgentState, intent: str) -> bool:
         return bool(image_info.get("has_image"))
     if intent == "appointment_intent" and _has_ad_price_check(content):
         return False
+    if intent == "complaint_refund" and is_deposit_rule_question(content):
+        return False
     trigger_map = {
         "trust_issue": TRUST_KEYWORDS + ADVANTAGE_KEYWORDS,
         "competitor_compare": COMPETITOR_KEYWORDS + ADVANTAGE_KEYWORDS,
@@ -178,7 +217,7 @@ def model_intent_has_current_trigger(state: AgentState, intent: str) -> bool:
         "project_inquiry": PROJECT_KEYWORDS + ["斑", "点状", "片状", "痘印", "痘坑", "毛孔", "暗沉", "适合", "改善"],
         "case_request": ["案例", "效果案例", "前后对比", "对比照", "做完效果", "客户做完"],
         "project_process": ["流程", "操作流程", "怎么操作", "要做多久", "多久能做完", "时长", "步骤"],
-        "complaint_refund": ["额外加钱", "加钱", "收费不一样", "说法不一样", "退给我", "退钱", "退款", "定金", "订金", "预约金"],
+        "complaint_refund": ["额外加钱", "加钱", "收费不一样", "说法不一样", "退给我", "退钱", "退款", "退定金", "退订金", "退预约金"],
     }
     return any(word in content for word in trigger_map.get(intent, []))
 

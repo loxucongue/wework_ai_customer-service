@@ -120,10 +120,18 @@ def _workflow_messages_to_history(messages: list[Any]) -> list[str]:
 
 def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
     message_type = _string(message.get("type")) or "text"
-    content = _string(message.get("content"))
+    raw_content = message.get("content")
     order = int(message.get("order") or 1)
+    if message_type == "human_handoff":
+        return {
+            "type": "human_handoff",
+            "order": order,
+            "content": {"handoff_reason": _message_content_value(raw_content, "handoff_reason")},
+        }
     if message_type == "image":
+        content = _message_content_value(raw_content, "url")
         return {"type": "image", "order": order, "content": {"url": content}}
+    content = _message_content_value(raw_content, "text")
     return {"type": "text", "order": order, "content": {"text": content}}
 
 
@@ -134,6 +142,17 @@ def _has_knowledge(meta: dict[str, Any]) -> bool:
 
 def _record(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _message_content_value(value: Any, preferred_key: str) -> str:
+    if isinstance(value, dict):
+        return (
+            _string(value.get(preferred_key))
+            or _string(value.get("text"))
+            or _string(value.get("url"))
+            or _string(value.get("handoff_reason"))
+        )
+    return _string(value)
 
 
 def _string(value: Any) -> str:

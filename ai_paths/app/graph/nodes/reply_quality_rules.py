@@ -227,6 +227,8 @@ def _ad_price_reply_invalid(state: AgentState, text: str, content: str, callback
         return True
     if not any(term in text for term in ["广告", "活动", "预约金", "尾款", "包含", "另收费", "隐形"]):
         return True
+    if any(term in text for term in ["斑点出现多久", "出现多久", "晒后明显", "想改善哪一点", "更适合怎么推进"]):
+        return True
     project = callbacks.canonical_price_project(callbacks.contextual_price_project(state) or callbacks.extract_project(content))
     if callbacks.ad_price_without_explicit_project(state, project):
         return any(term in text for term in ["确实有", "真实有", "目前有这个活动", "可以按这个价格", "就是这个活动"])

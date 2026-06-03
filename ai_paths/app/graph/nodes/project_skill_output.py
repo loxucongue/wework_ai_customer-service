@@ -33,16 +33,16 @@ def project_skill_output(
     else:
         items = []
 
+    case_items = _kb_items(tool_results.get("case_studies"))
     image_info = state.get("image_info", {})
     project_slices = callbacks.project_slices_from_tool_results(tool_results)
-    lacks_case_context = callbacks.case_request_lacks_specific_context(
-        state,
-        known_visible_concerns_from_state=callbacks.known_visible_concerns_from_state,
-    )
+    lacks_case_context = callbacks.case_request_lacks_specific_context(state)
     business_slices = [] if lacks_case_context else callbacks.business_project_slices(project_slices, state)
 
     if lacks_case_context:
         facts = ["客户想看效果案例，但本轮没有明确项目、皮肤问题或图片线索；不能把项目知识库相似切片当作案例事实。"]
+    elif case_items:
+        facts = [f"案例素材库命中{len(case_items)}条，可作为同类改善参考；不能承诺客户也会达到相同变化。"]
     else:
         facts = [f"项目知识库命中{len(items)}条"] if items else ["暂未命中明确项目知识库结果"]
 
@@ -64,6 +64,8 @@ def project_skill_output(
     visible = image_info.get("visible_concerns") or []
     if lacks_case_context:
         reply_points = ["客户要看效果案例时，先承接可以看同类改善参考；本轮没有项目或问题方向时，只问“想看哪个项目或哪类问题的效果参考”，不要引入无关项目建议。"]
+    elif case_items:
+        reply_points = ["客户要看效果案例时，优先使用案例素材库资料做同类改善参考；没有真实图片链接时只做文字承接，不编造前后对比。"]
     else:
         reply_points = ["项目咨询应从客户需求和可见问题切入，不强迫客户先说专业项目名。"]
 
@@ -90,3 +92,14 @@ def project_skill_output(
         "suggested_next_step": "确认客户想看的案例方向" if lacks_case_context else "按已知需求给出项目方向，必要时只追问一个关键因素",
         "confidence": 0.7,
     }
+
+
+def _kb_items(value: Any) -> list[Any]:
+    if isinstance(value, dict):
+        items = value.get("items") or value.get("outputList") or []
+        if not items and (value.get("content") or value.get("output")):
+            return [value]
+        return items if isinstance(items, list) else []
+    if isinstance(value, list):
+        return value
+    return []

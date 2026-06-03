@@ -47,7 +47,23 @@ def has_project_consult_intent(content: str) -> bool:
 def has_case_request(content: str) -> bool:
     if not content:
         return False
-    case_terms = ["案例", "效果案例", "前后对比", "对比照", "做完效果", "客户做完", "案例效果", "案例展示"]
+    case_terms = [
+        "案例",
+        "效果案例",
+        "前后对比",
+        "对比照",
+        "做完效果",
+        "客户做完",
+        "案例效果",
+        "案例展示",
+        "效果图",
+        "对比案例",
+        "客户效果",
+        "做完之后的效果",
+        "发我看看效果",
+        "发个效果",
+        "看看效果",
+    ]
     return any(term in content for term in case_terms)
 
 
@@ -76,8 +92,25 @@ def is_unclear_need(content: str) -> bool:
 def has_ad_price_check(content: str) -> bool:
     if not content:
         return False
-    context_terms = ["广告", "直播", "团购", "预约金", "尾款", "隐形收费", "其他收费", "另收费", "包含什么", "包含哪些"]
-    price_terms = PRICE_KEYWORDS + ["199", "299", "268", "10元", "定金", "订金"]
+    context_terms = [
+        "广告",
+        "直播",
+        "团购",
+        "预约金",
+        "定金",
+        "订金",
+        "尾款",
+        "10元",
+        "十元",
+        "10块",
+        "十块",
+        "隐形收费",
+        "其他收费",
+        "另收费",
+        "包含什么",
+        "包含哪些",
+    ]
+    price_terms = PRICE_KEYWORDS + ["199", "299", "268", "10元", "十元", "10块", "十块", "定金", "订金", "预约金", "能退", "可退", "怎么退"]
     return any(term in content for term in context_terms) and (
         any(term in content for term in price_terms) or bool(re.search(r"\d+\s*元?", content))
     )
@@ -107,7 +140,21 @@ def has_price_objection(content: str) -> bool:
 def has_effect_guarantee_request(content: str) -> bool:
     if not content:
         return False
-    return any(term in content for term in ["保证一次有效", "保证有效", "一次有效", "一次见效", "包效果", "不保证就算了"])
+    return any(
+        term in content
+        for term in [
+            "保证一次有效",
+            "保证有效",
+            "一次有效",
+            "一次见效",
+            "包效果",
+            "效果有保障",
+            "效果保障",
+            "有保障吗",
+            "保障效果",
+            "不保证就算了",
+        ]
+    )
 
 
 def has_store_inquiry(content: str) -> bool:

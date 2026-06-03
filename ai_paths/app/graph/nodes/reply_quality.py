@@ -14,11 +14,16 @@ from app.graph.nodes.reply_quality_rules import (
     check_store_appointment_price,
 )
 from app.graph.nodes.reply_quality_types import ReplyQualityCallbacks
+from app.graph.nodes.reply_validation import message_content_text
 from app.graph.state import AgentState
 
 
 def model_reply_unsafe(state: AgentState, messages: list[dict[str, Any]], callbacks: ReplyQualityCallbacks) -> bool:
-    text = "\n".join(str(message.get("content") or "") for message in messages)
+    text = "\n".join(
+        message_content_text(message.get("content"))
+        for message in messages
+        if message.get("type") != "human_handoff"
+    )
     if reply_filters.has_internal_reply_leak(text):
         return True
     if any(term in text for term in ["客户偏好", "客户想", "客户问", "客户提到", "客户表示"]):

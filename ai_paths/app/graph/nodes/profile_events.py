@@ -78,7 +78,7 @@ def _event_facts(event_type: str, content: str, state: AgentState, callbacks: An
             "visible_concerns": image_info.get("visible_concerns", []),
             "image_desc": image_info.get("image_desc", ""),
             "project_directions": []
-            if case_request_lacks_specific_context(state, known_visible_concerns_from_state=callbacks.known_visible_concerns)
+            if case_request_lacks_specific_context(state)
             else callbacks.project_direction_names(state),
         }
     if event_type == "image_inquiry":

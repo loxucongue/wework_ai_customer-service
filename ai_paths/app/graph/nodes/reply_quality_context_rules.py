@@ -12,6 +12,8 @@ HARD_FORBIDDEN_TERMS = [
     "留名额",
     "锁位",
     "锁定这个时段",
+    "锁定服务名额",
+    "锁定名额",
     "帮你锁位",
     "电话联系",
     "电话确认",
@@ -62,9 +64,9 @@ APPOINTMENT_PUSH_TERMS = [
 
 
 def case_request_invented_specific_context(state: AgentState, text: str, callbacks: ReplyQualityCallbacks) -> bool:
-    if not case_request_lacks_specific_context(state, known_visible_concerns_from_state=callbacks.known_visible_concerns_from_state):
+    if not case_request_lacks_specific_context(state):
         return False
-    return any(term in text for term in ["点状斑", "肤色改善", "淡斑", "修护", "术后修护", "斑点深浅"])
+    return any(term in text for term in ["点状斑", "斑点", "肤色不均", "色沉", "肤色改善", "淡斑", "修护", "术后修护", "斑点深浅"])
 
 
 def contains_forbidden_customer_claims(text: str) -> bool:

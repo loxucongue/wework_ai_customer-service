@@ -123,7 +123,7 @@ def _validated_tool_plan(value: Any, skill: str) -> list[dict[str, str]]:
         "professional_assist",
         "no_tool",
     }
-    allowed_kbs = {"project_qa", "project_price", "trust_assets", "competitor_qa", "after_sales_qa"}
+    allowed_kbs = {"project_qa", "project_price", "case_studies", "trust_assets", "competitor_qa", "after_sales_qa"}
     result: list[dict[str, str]] = []
     for item in value:
         if not isinstance(item, dict):

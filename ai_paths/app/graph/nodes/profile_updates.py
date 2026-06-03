@@ -110,7 +110,7 @@ def _collect_project_signals(content: str, state: AgentState, callbacks: Any, pr
     for project in PROJECT_KEYWORDS:
         if project in content and project not in projects:
             projects.append(project)
-    if case_request_lacks_specific_context(state, known_visible_concerns_from_state=callbacks.known_visible_concerns):
+    if case_request_lacks_specific_context(state):
         return
     for direction in callbacks.project_direction_names(state):
         if direction and direction not in projects:

@@ -13,11 +13,16 @@ def attach_asset_images(
     intents: set[str],
     tool_results: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    if "trust_issue" not in intents:
+    asset_key = ""
+    if "trust_issue" in intents:
+        asset_key = "trust_assets"
+    elif "case_request" in intents:
+        asset_key = "case_studies"
+    if not asset_key:
         return _renumber(messages)
     if any(message.get("type") == "image" for message in messages):
         return _renumber(messages)
-    image_url = first_asset_image_url(tool_results, "trust_assets")
+    image_url = first_asset_image_url(tool_results, asset_key)
     if not image_url:
         return _renumber(messages)
 

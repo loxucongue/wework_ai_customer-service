@@ -9,6 +9,10 @@ from app.graph.nodes.reply_brief_types import ReplyBriefCallbacks
 from app.graph.state import AgentState
 
 
+def _generic_case_request(state: AgentState, callbacks: ReplyBriefCallbacks) -> bool:
+    return case_request_lacks_specific_context(state)
+
+
 def apply_multi_recap_context(state: AgentState, brief: dict[str, Any], callbacks: ReplyBriefCallbacks) -> None:
     content = state.get("normalized_content") or ""
     if not callbacks.is_strong_multi_recap_request(content):
@@ -29,6 +33,8 @@ def apply_multi_recap_context(state: AgentState, brief: dict[str, Any], callback
 
 
 def apply_image_context(state: AgentState, brief: dict[str, Any], callbacks: ReplyBriefCallbacks) -> None:
+    if _generic_case_request(state, callbacks):
+        return
     image_info = state.get("image_info") or {}
     visible = image_info.get("visible_concerns") or callbacks.known_visible_concerns_from_state(state)
     if not visible:
@@ -91,6 +97,10 @@ def apply_price_context(state: AgentState, brief: dict[str, Any], callbacks: Rep
         brief["known_facts"].append(f"本轮想问价格的项目：{project}；暂未查到可直接引用的明确价格。")
         brief["available_facts"]["prices"] = []
     brief["do_not_say"].extend(["到店再说", "门店会有优惠", "高配方案", "体验档位"])
+    if "campaign_inquiry" in intent_set and any(term in content for term in ["券", "优惠券", "活动券", "代金券"]):
+        brief["must_answer"].append("客户当前在问券或活动是否可用，先回答有没有查到对应活动，再说明需要核对的券详情；不要切回皮肤分析。")
+        brief["do_not_say"].extend(["斑点出现多久", "晒后明显", "想改善哪一点", "更适合怎么推进"])
+        brief["follow_up"] = "如需继续确认，只问券对应的项目、广告截图或使用条件其中一项。"
 
     if callbacks.has_confirmed_spot_goal(state):
         brief["known_facts"].append("客户已明确关注斑点/淡斑，价格后不要再问客户想改善哪一点。")
@@ -101,7 +111,7 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
     intent_set = _intent_set(state)
     tool_results = state.get("tool_results", {}) or {}
     project_slices = callbacks.project_slices_from_tool_results(tool_results)
-    if case_request_lacks_specific_context(state, known_visible_concerns_from_state=callbacks.known_visible_concerns_from_state):
+    if _generic_case_request(state, callbacks):
         project_slices = []
 
     if not ({"project_inquiry", "image_inquiry", "price_inquiry", "campaign_inquiry"} & intent_set or project_slices):
@@ -147,11 +157,12 @@ def apply_case_process_ad_dispute_context(state: AgentState, brief: dict[str, An
     intent_set = _intent_set(state)
 
     if "case_request" in intent_set:
-        if case_request_lacks_specific_context(state, known_visible_concerns_from_state=callbacks.known_visible_concerns_from_state):
+        if _generic_case_request(state, callbacks):
             brief["must_answer"].append("客户泛泛想看效果案例，但没有明确项目、问题方向或相关图片；不要自行假设淡斑、修护或其他方向。")
             brief["known_facts"].append("本轮只有案例/效果参考诉求，没有明确项目或皮肤问题。")
             brief["answer_first"].append("可以看同类改善参考；需要先知道客户想看哪个项目或哪类问题。")
-            brief["do_not_say"].extend(["点状斑", "肤色改善", "淡斑案例", "修护方向", "案例价格"])
+            brief["do_not_say"].extend(["点状斑", "斑点", "肤色不均", "色沉", "肤色改善", "淡斑案例", "修护方向", "案例价格"])
+            brief["follow_up"] = "只问客户想看哪个项目或哪类问题的效果参考，不继续分析皮肤方向。"
         else:
             brief["must_answer"].append("客户要效果案例或前后对比时，承接可以看同类改善参考；没有真实图片链接时不要编造案例图。")
             brief["do_not_say"].extend(["案例价格", "哪家门店可以看案例"])
@@ -177,6 +188,25 @@ def apply_trust_and_misc_context(state: AgentState, brief: dict[str, Any], callb
     content = state.get("normalized_content") or ""
     intent_set = _intent_set(state)
     if "trust_issue" in intent_set:
+        if _effect_guarantee_question(content):
+            brief["answer_first"].append(
+                "效果不能做绝对承诺；改善会受皮肤基础、方案匹配、操作细节和后续护理影响，小贝会先帮客户把这些关键点确认清楚。"
+            )
+            brief["must_answer"].append("客户泛问效果保障时，只回答效果边界和把控维度，不引用历史默认项目、门店、案例或资质背书。")
+            brief["do_not_say"].extend(
+                [
+                    "美眸",
+                    "佛山顺德店",
+                    "持证",
+                    "备案",
+                    "资质",
+                    "所有项目",
+                    "顾客反馈",
+                    "案例节点",
+                    "包效果",
+                    "一定有效",
+                ]
+            )
         if planner_helpers._is_soft_fee_concern(content):
             brief["must_answer"].append("本轮是收费透明顾虑，只回答收费如何提前确认和逐项核对；不要转去问城市、门店或预约。")
             brief["known_facts"].append("没有可引用资质、设备或服务追溯事实时，不要主动编造这些背书。")
@@ -194,6 +224,9 @@ def apply_price_recap_and_memory_context(state: AgentState, brief: dict[str, Any
     if callbacks.asks_price_recap(content):
         brief["must_answer"].append("客户要你把价格再顺一下时，优先复述已知价格事实；没有明确价格就直接说暂未查到。")
         brief["answer_first"].append(callbacks.price_summary_message(state))
+
+    if _generic_case_request(state, callbacks):
+        return
 
     memory_context = callbacks.memory_context_sentence(state)
     if memory_context:
@@ -238,9 +271,13 @@ def _apply_ad_price_boundary(content: str, brief: dict[str, Any], callbacks: Rep
     brief["known_facts"].append("客户没有提供明确广告项目或广告截图时，不能拿相似知识库命中的价格代替报价。")
     brief["answer_first"].append("可以先按客户看到的金额核对收费口径，但当前不能确认是不是同一条广告或同一个活动。")
     brief["must_answer"].append("解释广告价需要核对对应项目、包含项、预约金/尾款和是否另收费；不要确认广告价真实存在。")
-    brief["do_not_say"].extend(["这个价格确实有", "目前有这个活动", "可以按这个价格做", "肯定没有其他收费", "绝对没有隐形消费"])
+    brief["do_not_say"].extend(["这个价格确实有", "目前有这个活动", "可以按这个价格做", "肯定没有其他收费", "绝对没有隐形消费", "斑点出现多久", "晒后明显", "想改善哪一点", "更适合怎么推进"])
+    brief["follow_up"] = "如需继续确认，只问广告截图、项目名称或收费包含项其中一项，不转去问皮肤细节。"
 
 
 def _intent_set(state: AgentState) -> set[str]:
     return {str(item.get("intent") or "") for item in state.get("intents", []) if isinstance(item, dict)}
 
+
+def _effect_guarantee_question(content: str) -> bool:
+    return any(term in content for term in ["效果有保障", "效果保障", "有保障吗", "保障效果", "保证效果", "有效果吗"])

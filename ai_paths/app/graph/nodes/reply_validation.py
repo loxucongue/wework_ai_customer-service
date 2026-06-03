@@ -6,35 +6,71 @@ from typing import Any
 
 from app.graph.nodes.common import renumber_messages
 
+VISIBLE_MESSAGE_TYPES = {"text", "image"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff"}
+
 
 def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     messages = payload.get("reply_messages")
     if not isinstance(messages, list) or not messages:
         raise ValueError("Model JSON missing reply_messages")
     result: list[dict[str, Any]] = []
-    for item in messages[:3]:
+    visible_count = 0
+    has_handoff = False
+    for item in messages:
         if not isinstance(item, dict):
             continue
-        content = str(item.get("content", "")).strip()
+        msg_type = item.get("type") if item.get("type") in ALLOWED_MESSAGE_TYPES else "text"
+        if msg_type == "human_handoff":
+            if has_handoff:
+                continue
+            handoff_reason = message_content_text(item.get("content"))
+            if not handoff_reason:
+                continue
+            result.append(
+                {
+                    "type": "human_handoff",
+                    "order": len(result) + 1,
+                    "content": {"handoff_reason": handoff_reason},
+                }
+            )
+            has_handoff = True
+            continue
+        if visible_count >= 3:
+            continue
+        content = message_content_text(item.get("content"))
         if not content:
             continue
-        msg_type = item.get("type") if item.get("type") in {"text", "image"} else "text"
         if msg_type == "text":
             image_url = extract_image_url_from_text(content)
             if image_url:
                 text_without_url = strip_image_url_from_text(content, image_url)
                 if text_without_url:
                     result.append({"type": "text", "order": len(result) + 1, "content": text_without_url})
+                    visible_count += 1
                 result.append({"type": "image", "order": len(result) + 1, "content": image_url})
+                visible_count += 1
                 continue
         result.append({"type": msg_type, "order": len(result) + 1, "content": content})
+        visible_count += 1
     if not result:
         raise ValueError("Model reply_messages are empty")
-    return renumber_messages(result[:3])
+    return renumber_messages(result)
 
 
 def debug_message_contents(messages: list[dict[str, Any]]) -> list[str]:
-    return [str(message.get("content") or "")[:240] for message in messages[:3] if isinstance(message, dict)]
+    return [message_content_text(message.get("content"))[:240] for message in messages[:4] if isinstance(message, dict)]
+
+
+def message_content_text(content: Any) -> str:
+    if isinstance(content, dict):
+        return str(
+            content.get("text")
+            or content.get("url")
+            or content.get("handoff_reason")
+            or ""
+        ).strip()
+    return str(content or "").strip()
 
 
 def looks_like_image_url(content: str) -> bool:

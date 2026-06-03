@@ -175,7 +175,24 @@ def check_project_store_dispute(state: AgentState, text: str, intents: set[str],
         if callbacks.is_identity_question(content) and any(term in text for term in ["真人客服", "我是人工", "不是AI", "不是机器人"]):
             return True
         if callbacks.has_effect_guarantee_request(content) and any(
-            term in text for term in ["多数人", "明显提亮", "3-5次", "3到5次", "一定", "所有项目", "顾问档期", "先面诊", "不收费"]
+            term in text
+            for term in [
+                "多数人",
+                "明显提亮",
+                "3-5次",
+                "3到5次",
+                "一定",
+                "所有项目",
+                "持证",
+                "备案",
+                "资质",
+                "定金可退",
+                "不满意不做",
+                "满意再做",
+                "顾问档期",
+                "先面诊",
+                "不收费",
+            ]
         ):
             return True
         return None

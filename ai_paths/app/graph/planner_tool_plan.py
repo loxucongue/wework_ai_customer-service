@@ -9,6 +9,7 @@ from app.graph.planner_query_terms import (
     needs_project_direction_before_price,
     price_query_from_state,
 )
+from app.graph.planner_project_signals import has_case_request
 from app.graph.state import AgentState
 
 
@@ -25,19 +26,19 @@ def needs_default_tool_plan(skill: Any, tool_plan: Any) -> bool:
     if not tool_names:
         return True
 
-    required_kb_by_skill = {
-        "project_consult": "project_qa",
-        "price_consult": "project_price",
-        "trust_build": "trust_assets",
-        "competitor": "competitor_qa",
-        "after_sales": "after_sales_qa",
+    required_kbs_by_skill = {
+        "project_consult": {"project_qa", "case_studies"},
+        "price_consult": {"project_price"},
+        "trust_build": {"trust_assets"},
+        "competitor": {"competitor_qa"},
+        "after_sales": {"after_sales_qa"},
     }
-    required_kb = required_kb_by_skill.get(skill_name)
-    if required_kb:
+    required_kbs = required_kbs_by_skill.get(skill_name)
+    if required_kbs:
         return not any(
             isinstance(item, dict)
             and item.get("name") == "kb_search"
-            and item.get("kb_name") == required_kb
+            and item.get("kb_name") in required_kbs
             for item in tool_plan
         )
 
@@ -55,6 +56,8 @@ def default_tool_plan(state: AgentState, item: dict[str, Any]) -> list[dict[str,
     content = state.get("normalized_content") or ""
     query = default_query_for_skill(skill, content=content, state=state)
     if skill == "project_consult":
+        if has_case_request(content):
+            return [{"name": "kb_search", "kb_name": "case_studies", "query": query, "purpose": "检索效果案例、前后对比或客户做完效果资料"}]
         return [{"name": "kb_search", "kb_name": "project_qa", "query": query, "purpose": "检索改善方向和项目建议"}]
     if skill == "price_consult":
         plan: list[dict[str, str]] = []
@@ -87,6 +90,9 @@ def default_tool_plan(state: AgentState, item: dict[str, Any]) -> list[dict[str,
 def default_query_for_skill(skill: str, *, content: str = "", state: AgentState | None = None) -> str:
     content = (content or "").strip()
     if skill == "project_consult":
+        if has_case_request(content):
+            query_parts = [content, "案例", "效果", "前后对比", "改善参考"]
+            return " ".join(part for part in query_parts if part).strip()
         if state:
             image_info = state.get("image_info") or {}
             concerns = image_info.get("visible_concerns") if isinstance(image_info, dict) else []
@@ -122,11 +128,24 @@ def normalize_tool_plan_for_intent(state: AgentState, item: dict[str, Any]) -> l
         if copied.get("name") == "kb_search":
             kb_name = copied.get("kb_name", "")
             query = copied.get("query", "")
-            if kb_name == "project_qa":
+            if kb_name in {"project_qa", "case_studies"}:
                 copied["query"] = need_query_from_state(state, content) if is_generic_query(query) else query
             elif kb_name == "project_price":
                 copied["query"] = price_query_from_state(state, content) if is_generic_query(query) else query
         normalized.append(copied)
+
+    if skill == "project_consult" and has_case_request(content):
+        has_case_studies = any(tool.get("name") == "kb_search" and tool.get("kb_name") == "case_studies" for tool in normalized)
+        if not has_case_studies:
+            normalized.insert(
+                0,
+                {
+                    "name": "kb_search",
+                    "kb_name": "case_studies",
+                    "query": need_query_from_state(state, content),
+                    "purpose": "检索效果案例、前后对比或客户做完效果资料",
+                },
+            )
 
     if skill == "price_consult":
         has_project_qa = any(tool.get("name") == "kb_search" and tool.get("kb_name") == "project_qa" for tool in normalized)

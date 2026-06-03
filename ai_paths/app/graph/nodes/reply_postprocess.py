@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from app.graph import reply_filters, task_state
+from app.graph.nodes.reply_validation import message_content_text
 from app.graph.state import AgentState
 from app.policies.constants import APPOINTMENT_KEYWORDS
 
@@ -34,12 +35,17 @@ def postprocess_reply_messages(
     has_available_time_result = bool(state.get("tool_results", {}).get("available_time"))
     cleaned: list[dict[str, Any]] = []
     seen_text: set[str] = set()
+    handoff_message = _handoff_message_for_state(state)
+    if handoff_message is None and _state_allows_model_handoff(state):
+        handoff_message = _handoff_message_from_model(messages)
 
     for message in messages:
         if not isinstance(message, dict):
             continue
+        if message.get("type") == "human_handoff":
+            continue
         msg_type = message.get("type") if message.get("type") in {"text", "image"} else "text"
-        content = str(message.get("content") or "").strip()
+        content = message_content_text(message.get("content"))
         if not content:
             continue
         if msg_type == "text" and callbacks.has_actual_image_context(state) and not intents & {"human_request", "complaint_refund", "after_sales"} and reply_filters.asks_for_duplicate_photo(content):
@@ -101,7 +107,11 @@ def postprocess_reply_messages(
         contextual_price_project=callbacks.contextual_price_project(state),
     )
     cleaned = reply_filters.sanitize_customer_visible_messages(cleaned)
-    return callbacks.renumber_messages(cleaned)
+    result = reply_filters.attach_asset_images(cleaned, intents=intents, tool_results=state.get("tool_results", {}) or {})
+    result = callbacks.renumber_messages(result)
+    if handoff_message:
+        result.append({"type": "human_handoff", "order": len(result) + 1, "content": handoff_message["content"]})
+    return callbacks.renumber_messages(result)
 
 
 def lacks_price_answer_for_price_question(state: AgentState, text: str) -> bool:
@@ -131,3 +141,37 @@ def has_no_price_fact_phrase(text: str) -> bool:
             "不能拿别的项目价格代替",
         ]
     )
+
+
+def _handoff_message_from_model(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for message in messages:
+        if not isinstance(message, dict) or message.get("type") != "human_handoff":
+            continue
+        reason = message_content_text(message.get("content"))
+        if reason:
+            return {"type": "human_handoff", "content": {"handoff_reason": reason}}
+    return None
+
+
+def _state_allows_model_handoff(state: AgentState) -> bool:
+    intents = {item.get("intent") for item in state.get("intents", []) if isinstance(item, dict)}
+    skills = {item.get("skill") for item in state.get("intents", []) if isinstance(item, dict)}
+    route_result = state.get("route_result") or {}
+    return bool(
+        intents & {"human_request", "complaint_refund"}
+        or "handoff" in skills
+        or route_result.get("need_human") is True
+        or route_result.get("subflow") == "HUMAN_HANDOFF"
+    )
+
+
+def _handoff_message_for_state(state: AgentState) -> dict[str, Any] | None:
+    intents = {item.get("intent") for item in state.get("intents", []) if isinstance(item, dict)}
+    skills = {item.get("skill") for item in state.get("intents", []) if isinstance(item, dict)}
+    if not (intents & {"human_request", "complaint_refund"} or "handoff" in skills):
+        return None
+    if "complaint_refund" in intents:
+        reason = "客户涉及投诉、退款、费用争议或效果不满，需要专业同事协助核对处理。"
+    else:
+        reason = "客户当前问题需要专业同事协助确认。"
+    return {"type": "human_handoff", "content": {"handoff_reason": reason}}

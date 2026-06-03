@@ -70,9 +70,7 @@ def create_synthesize_reply_node(
                     forced_call["usage"] = model_usage_snapshot(model_client)
                     forced_messages = callbacks.validated_model_messages(forced_payload)
                     forced_call["draft_messages"] = callbacks.debug_message_contents(forced_messages)
-                    forced_call["draft_messages_full"] = [
-                        str(message.get("content") or "") for message in forced_messages[:3] if isinstance(message, dict)
-                    ]
+                    forced_call["draft_messages_full"] = callbacks.debug_message_contents(forced_messages)
                     forced_unsafe = callbacks.model_reply_unsafe(state, forced_messages) if forced_messages else True
                     forced_call["unsafe"] = forced_unsafe
                     if forced_messages and (
@@ -177,7 +175,7 @@ def create_synthesize_reply_node(
                 errors.append({"node": "synthesize_reply", "message": "final_reply_failed_quality_gate"})
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
-            output = {"reply_messages": messages[:3], "errors": errors, "trace": state.get("trace", [])}
+            output = {"reply_messages": messages, "errors": errors, "trace": state.get("trace", [])}
             span["output_snapshot"] = output
             return output
 
