@@ -1,5 +1,5 @@
 from __future__ import annotations
 
-from app.graph.nodes.legacy_flow import build_graph
+from app.graph.graph_builder import build_graph
 
 __all__ = ["build_graph"]
