@@ -7,6 +7,7 @@ from app.services.store_catalog import local_store_records
 from app.services import store_format
 from app.services.store_query_info import build_store_query_info
 from app.services.store_recommendation import with_location_recommendation
+from app.services.store_result_merge import merge_local_city_stores, sanitize_platform_result
 from app.services import store_text
 
 
@@ -44,14 +45,20 @@ class StoreService:
             platform_result = {}
             platform_error = f"{type(exc).__name__}: {exc}"
         if platform_result:
-            platform_result = self._sanitize_platform_result(
+            platform_result = sanitize_platform_result(
                 platform_result,
-                query_info.requested_name,
-                query_info.city,
+                requested_name=query_info.requested_name,
+                city=query_info.city,
+                stores_catalog=self._stores,
                 limit=limit,
             )
             if query_info.city and not query_info.requested_name and platform_result.get("stores"):
-                platform_result = self._merge_local_city_stores(platform_result, query_info.city, limit=limit)
+                platform_result = merge_local_city_stores(
+                    platform_result,
+                    city=query_info.city,
+                    stores_catalog=self._stores,
+                    limit=limit,
+                )
             if platform_result.get("stores"):
                 return with_location_recommendation(platform_result, query_info.location_preference)
 
@@ -146,83 +153,6 @@ class StoreService:
             "stores": stores,
             "source": source,
         }
-
-    def _sanitize_platform_result(
-        self,
-        result: dict[str, Any],
-        requested_name: str,
-        city: str,
-        *,
-        limit: int,
-    ) -> dict[str, Any]:
-        stores = result.get("stores") if isinstance(result, dict) else []
-        if not isinstance(stores, list):
-            return result
-        target_city = city or store_text.city_for_store_name(requested_name, self._stores)
-        aliases = store_text.store_aliases(requested_name) if requested_name else []
-        clean_stores: list[dict[str, Any]] = []
-        for store in stores:
-            if not isinstance(store, dict):
-                continue
-            if target_city and not store_text.store_matches_city(store, target_city):
-                continue
-            if requested_name and not store_text.store_matches_requested_name(store, requested_name, aliases):
-                continue
-            clean_stores.append(self._merge_local_store_details(store))
-            if len(clean_stores) >= limit:
-                break
-        output = dict(result)
-        output["stores"] = clean_stores
-        if target_city and not output.get("city"):
-            output["city"] = target_city
-        return output
-
-    def _merge_local_city_stores(self, result: dict[str, Any], city: str, *, limit: int) -> dict[str, Any]:
-        stores = [store for store in result.get("stores", []) if isinstance(store, dict)]
-        seen = {
-            (str(store.get("id") or ""), str(store.get("name") or ""), str(store.get("address") or ""))
-            for store in stores
-        }
-        for record in self._stores:
-            if record.city != city or not record.is_public:
-                continue
-            item = store_format.store_record_to_dict(record)
-            key = (item["id"], item["name"], item["address"])
-            if key in seen:
-                continue
-            stores.append(item)
-            seen.add(key)
-            if len(stores) >= limit:
-                break
-        output = dict(result)
-        output["stores"] = stores[:limit]
-        if stores and output.get("source") and "local_fallback" not in str(output.get("source")):
-            output["source"] = f"{output.get('source')}+local_store_fallback"
-        return output
-
-    def _merge_local_store_details(self, store: dict[str, Any]) -> dict[str, Any]:
-        name = str(store.get("name") or "").strip()
-        if not name:
-            return store
-        aliases = store_text.store_aliases(name)
-        local = next(
-            (
-                record
-                for record in self._stores
-                if record.name == name or any(alias and alias in record.name for alias in aliases)
-            ),
-            None,
-        )
-        if not local:
-            return store
-        merged = dict(store)
-        local_data = store_format.store_record_to_dict(local)
-        for key in ["map_url", "parking_name", "parking_address", "parking_link", "business_hours", "status_summary", "city"]:
-            if not merged.get(key) and local_data.get(key):
-                merged[key] = local_data[key]
-        if not merged.get("address") and local_data.get("address"):
-            merged["address"] = local_data["address"]
-        return merged
 
     @staticmethod
     def _request_context(customer_context: dict[str, Any]) -> dict[str, Any]:
