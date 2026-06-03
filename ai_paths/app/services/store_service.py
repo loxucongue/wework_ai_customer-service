@@ -8,6 +8,7 @@ from app.services import store_format
 from app.services.store_query_info import build_store_query_info
 from app.services.store_recommendation import with_location_recommendation
 from app.services.store_result_merge import merge_local_city_stores, sanitize_platform_result
+from app.services.store_platform_context import request_context_from_customer_context, store_platform_context
 from app.services import store_text
 
 
@@ -87,7 +88,11 @@ class StoreService:
         if not self._platform_client or not self._platform_client.available:
             return {"source": "platform_agent_unavailable", "slots": {}, "error": "PLATFORM_AGENT_TOKEN is not configured"}
         try:
-            data = self._platform_client.available_time(store_id=store_id, date=date, request_context=self._request_context(customer_context or {}))
+            data = self._platform_client.available_time(
+                store_id=store_id,
+                date=date,
+                request_context=request_context_from_customer_context(customer_context or {}),
+            )
             return {"source": "platform_agent.available_time", "date": date, "store_id": store_id, "slots": data}
         except Exception as exc:
             return {"source": "platform_agent.available_time", "date": date, "store_id": store_id, "slots": {}, "error": f"{type(exc).__name__}: {exc}"}
@@ -95,21 +100,16 @@ class StoreService:
     def _search_platform(self, query: str, customer_context: dict[str, Any], *, limit: int) -> dict[str, Any]:
         if not self._platform_client or not self._platform_client.available:
             return {}
-        customer = customer_context.get("customer") if isinstance(customer_context, dict) else {}
-        if not isinstance(customer, dict):
-            customer = {}
-        request_context = self._request_context(customer_context)
-        customer_id = customer.get("id") or customer_context.get("customer_id") or request_context.get("customer_id")
-        add_wechat_id = customer.get("customer_add_wechat_id") or request_context.get("customer_add_wechat_id")
-        if customer_id and add_wechat_id:
+        platform_context = store_platform_context(customer_context)
+        if platform_context.customer_id and platform_context.customer_add_wechat_id:
             rows = self._platform_client.list_stores(
-                customer_id=customer_id,
-                customer_add_wechat_id=add_wechat_id,
-                request_context=request_context,
+                customer_id=platform_context.customer_id,
+                customer_add_wechat_id=platform_context.customer_add_wechat_id,
+                request_context=platform_context.request_context,
             )
             source = "platform_agent.store_index"
         else:
-            rows = self._platform_client.list_store_options(request_context=request_context)
+            rows = self._platform_client.list_store_options(request_context=platform_context.request_context)
             source = "platform_agent.option_store"
         query_info = build_store_query_info(query, self._stores)
         requested_name = query_info.requested_name
@@ -136,7 +136,7 @@ class StoreService:
             store = store_format.platform_store_to_dict(
                 row,
                 platform_client=self._platform_client,
-                request_context=request_context,
+                request_context=platform_context.request_context,
             )
             if not (store.get("address") or store.get("map_url") or wants_status):
                 continue
@@ -153,8 +153,3 @@ class StoreService:
             "stores": stores,
             "source": source,
         }
-
-    @staticmethod
-    def _request_context(customer_context: dict[str, Any]) -> dict[str, Any]:
-        value = customer_context.get("request_context") if isinstance(customer_context, dict) else {}
-        return value if isinstance(value, dict) else {}
