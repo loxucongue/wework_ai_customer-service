@@ -4,12 +4,9 @@ from app.graph.nodes.common import json_dumps, recent_assistant_replies as _rece
 from app.graph.nodes.legacy_flow_utils import compact_memory as _compact_memory, extract_price_digits as _extract_price_digits
 from app.graph.nodes.legacy_flow import (
     _available_slot_list,
-    _contextual_price_project,
     _forced_reply_satisfies_hard_instruction,
     _model_reply_unsafe,
     _postprocess_reply_messages,
-    _pricing_sql_from_state,
-    _project_direction_names_from_state,
     _reply_brief_for_model,
     _should_suspend_active_task_for_current_turn,
 )
@@ -25,6 +22,11 @@ from app.graph.nodes.legacy_kb_bridge import (
     needs_project_price_followup as _needs_project_price_followup,
     planned_kb_searches as _planned_kb_searches,
     project_price_followup_queries as _project_price_followup_queries,
+)
+from app.graph.nodes.legacy_context_bridge import (
+    contextual_price_project as _contextual_price_project,
+    pricing_sql_from_state as _pricing_sql_from_state,
+    project_direction_names_from_state as _project_direction_names_from_state,
 )
 from app.graph.nodes.legacy_turn_planning import (
     should_drop_planner_notes_for_skill_output as _should_drop_planner_notes_for_skill_output,

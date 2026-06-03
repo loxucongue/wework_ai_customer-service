@@ -35,14 +35,11 @@ from app.graph.nodes.legacy_appointment_messages import (
     appointment_context_sentence as _appointment_context_sentence_from_module,
     should_show_appointment_context as _should_show_appointment_context_from_module,
 )
-from app.graph.nodes.legacy_context_guidance import (
-    LegacyContextGuidanceCallbacks,
-    context_guidance_inline as _context_guidance_inline_from_context_guidance,
-    image_guidance_inline as _image_guidance_inline_from_context_guidance,
-    memory_context_sentence as _memory_context_sentence_from_context_guidance,
-    project_context_source as _project_context_source_from_context_guidance,
-    project_guidance_inline as _project_guidance_inline_from_context_guidance,
-    sanitize_project_direction as _sanitize_project_direction_from_context_guidance,
+from app.graph.nodes.legacy_context_bridge import (
+    business_project_slices as _business_project_slices,
+    contextual_price_project as _contextual_price_project,
+    memory_context_sentence as _memory_context_sentence,
+    project_direction_names_from_state as _project_direction_names_from_state,
 )
 from app.graph.nodes.intent_signals import (
     has_appointment_change_or_cancel as _has_appointment_change_or_cancel,
@@ -51,19 +48,11 @@ from app.graph.nodes.intent_signals import (
     has_price_objection as _has_price_objection,
     is_generic_project_intro as _is_generic_project_intro,
     is_unclear_need as _is_unclear_need,
-    recent_conversation_text as _recent_conversation_text,
 )
 from app.graph.nodes.kb_slice_parsing import pricing_rows_from_kb as _pricing_rows_from_kb
 from app.graph.nodes.project_kb_context import (
-    business_project_slices as _business_project_slices_from_context,
     project_direction_name_candidates as _project_direction_name_candidates,
     project_slices_from_tool_results as _project_slices_from_tool_results,
-)
-from app.graph.nodes.legacy_project_context import (
-    LegacyProjectContextCallbacks,
-    contextual_price_project as _contextual_price_project_from_project_context,
-    project_direction_names_from_state as _project_direction_names_from_project_context,
-    recent_project_from_state as _recent_project_from_project_context,
 )
 from app.graph.nodes.legacy_reply_callback_factories import (
     LegacyReplyCallbackFactoryCallbacks,
@@ -93,7 +82,6 @@ from app.graph.nodes.pricing_context import (
     price_bits as _price_bits,
     price_fact_for_brief as _price_fact_for_brief,
     pricing_rows as _pricing_rows,
-    pricing_sql_for_project,
 )
 from app.graph.nodes.reply_context import (
     store_lookup_missing_city as _store_lookup_missing_city,
@@ -349,59 +337,6 @@ def _tool_results_contain(state: AgentState, term: str) -> bool:
     return _tool_results_contain_from_tool_results(state, term, json_dumps)
 
 
-def _business_project_slices(project_slices: list[dict[str, str]], state: AgentState | None = None) -> list[dict[str, str]]:
-    return _business_project_slices_from_context(
-        project_slices,
-        state,
-        known_visible_concerns_from_state=_known_visible_concerns_from_state,
-    )
-
-
-def _legacy_context_guidance_callbacks() -> LegacyContextGuidanceCallbacks:
-    return LegacyContextGuidanceCallbacks(
-        has_actual_image_context=_has_actual_image_context,
-        has_image_concern=_has_image_concern,
-        known_visible_concerns_from_state=_known_visible_concerns_from_state,
-    )
-
-
-def _project_guidance_inline(content: str, project: str) -> str:
-    return _project_guidance_inline_from_context_guidance(content, project)
-
-
-def _context_guidance_inline(state: AgentState, content: str, project: str) -> str:
-    return _context_guidance_inline_from_context_guidance(
-        state,
-        content,
-        project,
-        _legacy_context_guidance_callbacks(),
-    )
-
-
-def _image_guidance_inline(state: AgentState, project: str = "") -> str:
-    return _image_guidance_inline_from_context_guidance(
-        state,
-        project,
-        _legacy_context_guidance_callbacks(),
-    )
-
-
-def _project_context_source(state: AgentState) -> str:
-    return _project_context_source_from_context_guidance(state, _legacy_context_guidance_callbacks())
-
-
-def _sanitize_project_direction(direction: str, state: AgentState) -> str:
-    return _sanitize_project_direction_from_context_guidance(
-        direction,
-        state,
-        _legacy_context_guidance_callbacks(),
-    )
-
-
-def _memory_context_sentence(state: AgentState) -> str:
-    return _memory_context_sentence_from_context_guidance(state)
-
-
 def _parking_text(store: dict[str, Any]) -> str:
     return _parking_text_from_utils(store)
 
@@ -418,30 +353,3 @@ def _has_explicit_location_or_store(content: str) -> bool:
     return _has_explicit_location_or_store_from_appointment_utils(content, _extract_city)
 
 
-def _pricing_sql_from_state(state: AgentState) -> str:
-    return pricing_sql_for_project(_contextual_price_project(state))
-
-
-def _legacy_project_context_callbacks() -> LegacyProjectContextCallbacks:
-    return LegacyProjectContextCallbacks(
-        business_project_slices=_business_project_slices,
-        canonical_price_project=_canonical_price_project,
-        dedupe_strings=_dedupe_strings,
-        extract_project=_extract_project,
-        has_image_concern=_has_image_concern,
-        project_direction_name_candidates=_project_direction_name_candidates,
-        project_slices_from_tool_results=_project_slices_from_tool_results,
-        recent_conversation_text=_recent_conversation_text,
-    )
-
-
-def _recent_project_from_state(state: AgentState) -> str:
-    return _recent_project_from_project_context(state, _legacy_project_context_callbacks())
-
-
-def _contextual_price_project(state: AgentState) -> str:
-    return _contextual_price_project_from_project_context(state, _legacy_project_context_callbacks())
-
-
-def _project_direction_names_from_state(state: AgentState) -> list[str]:
-    return _project_direction_names_from_project_context(state, _legacy_project_context_callbacks())
