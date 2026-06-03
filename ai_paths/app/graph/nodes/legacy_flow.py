@@ -54,6 +54,12 @@ from app.graph.nodes.legacy_graph_wiring import (
     LegacyGraphWiringCallbacks,
     build_legacy_graph,
 )
+from app.graph.nodes.legacy_flow_utils import (
+    available_slot_list as _available_slot_list_from_utils,
+    compact_memory as _compact_memory_from_utils,
+    extract_price_digits as _extract_price_digits_from_utils,
+    parking_text as _parking_text_from_utils,
+)
 from app.graph.nodes.legacy_kb_planning import (
     LegacyKbPlanningCallbacks,
     needs_project_price_followup as _needs_project_price_followup_from_module,
@@ -316,14 +322,7 @@ def build_graph(
 
 
 def _compact_memory(memory: dict[str, Any]) -> dict[str, Any]:
-    if not memory:
-        return {}
-    return {
-        "portrait_keys": list((memory.get("portrait") or {}).keys())[:12],
-        "basic_info": memory.get("basic_info") or {},
-        "history_events_count": len(memory.get("history_events") or []),
-        "updated_at": memory.get("updated_at", ""),
-    }
+    return _compact_memory_from_utils(memory)
 
 
 def _skill_output(skill: str, content: str, tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
@@ -421,7 +420,7 @@ def _competitor_skill_output(content: str, tool_results: dict[str, Any]) -> dict
 
 
 def _extract_price_digits(content: str) -> list[str]:
-    return re.findall(r"\d+(?:\.\d+)?", content or "")
+    return _extract_price_digits_from_utils(content)
 
 
 def _store_skill_output(content: str, tool_results: dict[str, Any]) -> dict[str, Any]:
@@ -586,16 +585,7 @@ def _latest_price_summary_from_history(state: AgentState) -> str:
 
 
 def _available_slot_list(slots_value: Any) -> list[str]:
-    if isinstance(slots_value, dict):
-        values: list[str] = []
-        for key in ["new", "new_addon", "old", "old_addon", "pre"]:
-            raw = slots_value.get(key)
-            if isinstance(raw, list):
-                values.extend(str(item) for item in raw if item)
-        return _dedupe_strings(values)
-    if isinstance(slots_value, list):
-        return _dedupe_strings([str(item) for item in slots_value if item])
-    return []
+    return _available_slot_list_from_utils(slots_value, _dedupe_strings)
 
 
 def _legacy_appointment_message_callbacks() -> LegacyAppointmentMessageCallbacks:
@@ -793,15 +783,7 @@ def _memory_context_sentence(state: AgentState) -> str:
 
 
 def _parking_text(store: dict[str, Any]) -> str:
-    parking_name = str(store.get("parking_name") or "").strip()
-    parking_address = str(store.get("parking_address") or "").strip()
-    if parking_name and parking_address:
-        return f"停车：{parking_name}，{parking_address}"
-    if parking_name:
-        return f"停车：{parking_name}"
-    if parking_address:
-        return f"停车：{parking_address}"
-    return ""
+    return _parking_text_from_utils(store)
 
 
 def _appointment_context_sentence(state: AgentState) -> str:
