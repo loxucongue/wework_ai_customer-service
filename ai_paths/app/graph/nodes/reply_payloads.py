@@ -19,6 +19,19 @@ def reply_forced_payload_for_model(state: AgentState, callbacks: ReplyPayloadCal
     brief = callbacks.reply_brief(state)
     facts = brief.get("available_facts", {}) if isinstance(brief.get("available_facts"), dict) else {}
     hard_instruction = ""
+    content = str(state.get("normalized_content") or "")
+    intents = {item.get("intent") for item in state.get("intents", []) if isinstance(item, dict)}
+    prices = facts.get("prices") if isinstance(facts.get("prices"), list) else []
+    if (
+        "price_inquiry" in intents
+        and not prices
+        and any(term in content for term in ["多少钱", "价格", "预算", "费用"])
+    ):
+        hard_instruction = (
+            "客户当前在问价格，但fact_brief里没有可直接引用的明确价格。"
+            "必须先回答暂未查到可直接引用的明确价格，不能乱报数字；"
+            "可以简短说明当前更偏哪个改善方向，但禁止追问，禁止说档位、费用明细、预算参考或让客户继续补斑点信息。"
+        )
     preferred_time = str(facts.get("customer_preferred_time") or "").strip()
     slots = facts.get("available_time_slots") if isinstance(facts.get("available_time_slots"), list) else []
     direct_active_task = state.get("active_task") or {}

@@ -99,6 +99,8 @@ def check_final_intent_rules(
         return True
     if "project_process" in intents and not any(term in text for term in ["流程", "步骤", "操作", "清洁", "检测", "评估", "分钟", "时长", "多久"]):
         return True
+    if "project_process" in intents and callbacks.asks_followup_question(text):
+        return True
     if "ad_price_check" in intents and _ad_price_reply_invalid(state, text, content, callbacks):
         return True
     if claims_unavailable_preferred_time_available(state, text, callbacks):
@@ -158,9 +160,13 @@ def _price_reply_invalid(
     if any(term in text for term in ["稍后同步给你", "稍后发你", "回头给你", "我去问下再回复你"]):
         return True
     need_text = " ".join([content, *map(str, known_visible), str(image_info.get("image_desc") or "")])
+    has_spot_need = any(term in need_text for term in ["斑", "点状", "色沉", "肤色不均", "暗沉"])
+    has_sensitive_repair_need = any(term in need_text for term in ["敏感", "泛红", "屏障", "刺痛", "干痒", "红血丝"])
+    if has_spot_need and callbacks.has_no_price_fact_phrase(text) and _asks_spot_price_followup(text):
+        return True
     if (
-        any(term in need_text for term in ["斑", "点状", "色沉", "肤色不均", "暗沉"])
-        and not any(term in need_text for term in ["敏感", "泛红", "屏障", "刺痛", "干痒", "红血丝"])
+        has_spot_need
+        and not has_sensitive_repair_need
         and any(term in text for term in ["舒缓修护", "屏障重建", "敏感修护", "修护方向", "泛红"])
     ):
         return True
@@ -189,6 +195,20 @@ def _price_reply_invalid(
         if any(term in text for term in ["所在城市", "附近门店", "门店优惠", "到店时间", "哪家更方便", "对应门店"]):
             return True
     return False
+
+
+def _asks_spot_price_followup(text: str) -> bool:
+    followup_terms = [
+        "斑出现多久",
+        "出现多久",
+        "晒后",
+        "方便的话",
+        "如果方便",
+        "告诉我",
+        "可以告诉我",
+        "想问下",
+    ]
+    return "？" in text or "?" in text or any(term in text for term in followup_terms)
 
 
 def _case_reply_misses_case_intent(state: AgentState, text: str, callbacks: ReplyQualityCallbacks) -> bool:

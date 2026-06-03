@@ -115,6 +115,8 @@ def has_unsupported_no_price_commitment(text: str) -> bool:
         "效果节奏",
         "护理强度",
         "配置对应",
+        "档位",
+        "费用明细",
     ]
     return any(term in text for term in unsupported_terms)
 
