@@ -23,7 +23,6 @@ from app.graph.nodes.legacy_flow import (
     _recent_assistant_replies,
     _reply_brief_for_model,
     _should_suspend_active_task_for_current_turn,
-    _skill_output,
     json_dumps,
 )
 from app.graph.nodes.image_info import known_visible_concerns_from_state as _known_visible_concerns_from_state
@@ -42,6 +41,7 @@ from app.graph.nodes.reply_validation import (
     debug_message_contents as _debug_message_contents,
     validated_model_messages as _validated_model_messages,
 )
+from app.graph.nodes.legacy_skill_bridge import skill_output as _skill_output
 from app.graph.nodes.store_context import store_query_from_state as _store_query_from_state
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService

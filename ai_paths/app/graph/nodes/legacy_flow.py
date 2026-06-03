@@ -7,29 +7,16 @@ from app.graph.nodes.action_queries import (
     ActionQueryCallbacks,
     safe_query_from_state as _safe_query_from_action_queries,
 )
-from app.graph.nodes.after_sales_skill_output import (
-    AfterSalesSkillCallbacks,
-    after_sales_skill_output as _after_sales_skill_output_from_module,
-)
 from app.graph.nodes.appointment_utils import (
     extract_date_value as _extract_date_value,
     has_explicit_location_or_store as _has_explicit_location_or_store_from_appointment_utils,
 )
-from app.graph.nodes.basic_skill_output import (
-    BasicSkillCallbacks,
-    basic_skill_output as _basic_skill_output_from_module,
-)
 from app.graph.nodes.common import (
     dedupe_strings as _dedupe_strings,
-    intent_for_skill as _intent_for_skill,
     json_dumps,
     looks_bad_text as _looks_bad_text,
     recent_assistant_replies as _recent_assistant_replies,
     renumber_messages as _renumber,
-)
-from app.graph.nodes.competitor_skill_output import (
-    CompetitorSkillCallbacks,
-    competitor_skill_output as _competitor_skill_output_from_module,
 )
 from app.graph.nodes.guardrail_nodes import is_identity_question as _is_identity_question
 from app.graph.nodes.image_info import (
@@ -82,23 +69,9 @@ from app.graph.nodes.kb_slice_parsing import (
 )
 from app.graph.nodes.project_kb_context import (
     business_project_slices as _business_project_slices_from_context,
-    case_request_lacks_specific_context as _case_request_lacks_specific_context,
     project_direction_name_candidates as _project_direction_name_candidates,
     project_slices_from_tool_results as _project_slices_from_tool_results,
 )
-from app.graph.nodes.project_skill_output import (
-    ProjectSkillCallbacks,
-    project_skill_output as _project_skill_output_from_module,
-)
-from app.graph.nodes.price_skill_output import (
-    PriceSkillCallbacks,
-    price_skill_output as _price_skill_output_from_module,
-)
-from app.graph.nodes.store_skill_output import (
-    StoreSkillCallbacks,
-    store_skill_output as _store_skill_output_from_module,
-)
-from app.graph.nodes.trust_skill_output import trust_skill_output as _trust_skill_output_from_module
 from app.graph.nodes.legacy_project_context import (
     LegacyProjectContextCallbacks,
     contextual_price_project as _contextual_price_project_from_project_context,
@@ -107,11 +80,6 @@ from app.graph.nodes.legacy_project_context import (
 )
 from app.graph.nodes.legacy_qa_slice_context import (
     clean_after_sales_text as _clean_after_sales_text_from_qa_context,
-    clean_competitor_text as _clean_competitor_text_from_qa_context,
-    competitor_default_reply as _competitor_default_reply_from_qa_context,
-    competitor_risk_terms as _competitor_risk_terms_from_qa_context,
-    competitor_scenario as _competitor_scenario_from_qa_context,
-    competitor_slice_matches as _competitor_slice_matches_from_qa_context,
     first_after_sales_slice as _first_after_sales_slice_from_qa_context,
     first_competitor_slice as _first_competitor_slice_from_qa_context,
     split_collect_items as _split_collect_items_from_qa_context,
@@ -130,10 +98,6 @@ from app.graph.nodes.legacy_reply_quality_signals import (
     time_text_variants as _time_text_variants_from_quality_signals,
     too_similar_to_recent_assistant_reply as _too_similar_to_recent_assistant_reply_from_quality_signals,
 )
-from app.graph.nodes.legacy_skill_dispatch import (
-    LegacySkillDispatchCallbacks,
-    skill_output as _skill_output_from_dispatch,
-)
 from app.graph.nodes.legacy_turn_planning import (
     LegacyTurnPlanningCallbacks,
     has_explicit_appointment_request as _has_explicit_appointment_request_from_module,
@@ -150,7 +114,6 @@ from app.graph.nodes.pricing_context import (
     is_broad_price_category as _is_broad_price_category,
     price_bits as _price_bits,
     price_fact_for_brief as _price_fact_for_brief,
-    price_risk_terms as _price_risk_terms,
     pricing_rows as _pricing_rows,
     pricing_sql_for_project,
 )
@@ -191,25 +154,6 @@ from app.graph.state import AgentState
 
 def _compact_memory(memory: dict[str, Any]) -> dict[str, Any]:
     return _compact_memory_from_utils(memory)
-
-
-def _skill_output(skill: str, content: str, tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
-    return _skill_output_from_dispatch(
-        skill,
-        content,
-        tool_results,
-        state,
-        LegacySkillDispatchCallbacks(
-            price_skill_output=_price_skill_output,
-            trust_skill_output=_trust_skill_output,
-            project_skill_output=_project_skill_output,
-            competitor_skill_output=_competitor_skill_output,
-            after_sales_skill_output=_after_sales_skill_output,
-            store_skill_output=_store_skill_output,
-            basic_skill_output=_basic_skill_output,
-            json_dumps=json_dumps,
-        ),
-    )
 
 
 def _legacy_kb_planning_callbacks() -> LegacyKbPlanningCallbacks:
@@ -257,110 +201,8 @@ def _merge_kb_result(tool_results: dict[str, Any], kb_name: str, dumped: dict[st
     _merge_kb_result_from_tool_results(tool_results, kb_name, dumped)
 
 
-def _after_sales_skill_output(content: str, tool_results: dict[str, Any]) -> dict[str, Any]:
-    return _after_sales_skill_output_from_module(
-        content,
-        tool_results,
-        AfterSalesSkillCallbacks(
-            first_after_sales_slice=_first_after_sales_slice_from_qa_context,
-            clean_after_sales_text=_clean_after_sales_text_from_qa_context,
-            split_collect_items=_split_collect_items_from_qa_context,
-        ),
-    )
-
-
-def _competitor_skill_output(content: str, tool_results: dict[str, Any]) -> dict[str, Any]:
-    return _competitor_skill_output_from_module(
-        content,
-        tool_results,
-        CompetitorSkillCallbacks(
-            first_competitor_slice=_first_competitor_slice_from_qa_context,
-            competitor_scenario=_competitor_scenario_from_qa_context,
-            extract_project=_extract_project,
-            extract_price_digits=_extract_price_digits,
-            competitor_slice_matches=_competitor_slice_matches_from_qa_context,
-            clean_competitor_text=_clean_competitor_text_from_qa_context,
-            competitor_default_reply=_competitor_default_reply_from_qa_context,
-            split_collect_items=_split_collect_items_from_qa_context,
-            competitor_risk_terms=_competitor_risk_terms_from_qa_context,
-        ),
-    )
-
-
 def _extract_price_digits(content: str) -> list[str]:
     return _extract_price_digits_from_utils(content)
-
-
-def _store_skill_output(content: str, tool_results: dict[str, Any]) -> dict[str, Any]:
-    return _store_skill_output_from_module(
-        content,
-        tool_results,
-        StoreSkillCallbacks(
-            extract_city=_extract_city,
-            parking_text=_parking_text,
-        ),
-    )
-
-
-def _price_skill_output(content: str, tool_results: dict[str, Any], state: AgentState | None = None) -> dict[str, Any]:
-    return _price_skill_output_from_module(
-        content,
-        tool_results,
-        state,
-        PriceSkillCallbacks(
-            ad_price_without_explicit_project=_ad_price_without_explicit_project,
-            canonical_price_project=_canonical_price_project,
-            contextual_price_project=_contextual_price_project,
-            extract_price_digits=_extract_price_digits,
-            extract_project=_extract_project,
-            filter_pricing_rows_for_project=_filter_pricing_rows_for_project,
-            has_price_objection=_has_price_objection,
-            is_broad_price_category=_is_broad_price_category,
-            price_bits=_price_bits,
-            price_risk_terms=_price_risk_terms,
-            pricing_rows=_pricing_rows,
-            pricing_rows_from_kb=_pricing_rows_from_kb,
-        ),
-    )
-
-
-def _trust_skill_output(content: str, tool_results: dict[str, Any]) -> dict[str, Any]:
-    return _trust_skill_output_from_module(content, tool_results)
-
-
-def _project_skill_output(content: str, tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
-    return _project_skill_output_from_module(
-        content,
-        tool_results,
-        state,
-        ProjectSkillCallbacks(
-            business_project_slices=_business_project_slices,
-            case_request_lacks_specific_context=_case_request_lacks_specific_context,
-            dedupe_strings=_dedupe_strings,
-            has_image_concern=_has_image_concern,
-            known_visible_concerns_from_state=_known_visible_concerns_from_state,
-            project_direction_name_candidates=_project_direction_name_candidates,
-            project_slices_from_tool_results=_project_slices_from_tool_results,
-        ),
-    )
-
-
-def _basic_skill_output(
-    skill: str,
-    reply_points: list[str],
-    *,
-    suggested_next_step: str = "",
-    facts: list[str] | None = None,
-    risk_flags: list[str] | None = None,
-) -> dict[str, Any]:
-    return _basic_skill_output_from_module(
-        skill,
-        reply_points,
-        BasicSkillCallbacks(intent_for_skill=_intent_for_skill),
-        suggested_next_step=suggested_next_step,
-        facts=facts,
-        risk_flags=risk_flags,
-    )
 
 
 def _postprocess_reply_messages(state: AgentState, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
