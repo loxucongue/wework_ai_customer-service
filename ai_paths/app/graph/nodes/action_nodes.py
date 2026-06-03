@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from app.graph.nodes.action_module_outputs import build_active_task_output, build_handoff_output
 from app.graph.state import AgentState
 from app.policies.constants import KB_BY_SKILL
 from app.services.coze_client import CozeClient
@@ -200,23 +201,7 @@ def create_execute_actions_node(
             for action in actions:
                 skill = action.get("name")
                 if skill == "handoff":
-                    handoff_intent = str(action.get("intent") or "")
-                    if handoff_intent not in {"human_request", "complaint_refund"}:
-                        handoff_intent = "complaint_refund" if any(
-                            item.get("intent") == "complaint_refund" for item in state.get("intents", []) if isinstance(item, dict)
-                        ) else "human_request"
-                    module_outputs.append(
-                        {
-                            "skill": "handoff",
-                            "intent": handoff_intent,
-                            "facts": [],
-                            "reply_points": ["本轮涉及投诉、退款、真实订单/付款/预约记录或高风险事项；最终回复应先承接客户诉求，再说明会让专业同事结合真实记录协助核对。"],
-                            "missing_slots": [],
-                            "risk_flags": state.get("guardrail_result", {}).get("terms", []),
-                            "suggested_next_step": "professional_assist",
-                            "confidence": 0.9,
-                        }
-                    )
+                    module_outputs.append(build_handoff_output(action, state))
                     continue
                 skill_output = callbacks.skill_output(str(skill), content, tool_results, state)
                 if callbacks.should_drop_planner_notes_for_skill_output(skill_output, action, tool_results):
@@ -230,18 +215,7 @@ def create_execute_actions_node(
                 and active_task
                 and not callbacks.should_suspend_active_task(state, active_task, state.get("intents", []))
             ):
-                module_outputs.append(
-                    {
-                        "skill": "active_task",
-                        "intent": active_task.get("type", ""),
-                        "facts": [callbacks.json_dumps(active_task)],
-                        "reply_points": [str(active_task.get("reply_focus") or "")],
-                        "missing_slots": active_task.get("missing_slots") or [],
-                        "risk_flags": [],
-                        "suggested_next_step": active_task.get("next_action", ""),
-                        "confidence": 0.85,
-                    }
-                )
+                module_outputs.append(build_active_task_output(active_task, callbacks.json_dumps))
 
             span["entry"]["tool_calls"] = tool_calls
             output = {"tool_results": tool_results, "module_outputs": module_outputs, "trace": state.get("trace", [])}
