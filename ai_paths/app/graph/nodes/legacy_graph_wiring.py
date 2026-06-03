@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import StateGraph
 
 from app.graph.nodes.action_nodes import ActionCallbacks, create_execute_actions_node
 from app.graph.nodes.action_queries import ActionQueryCallbacks, safe_query_from_state
@@ -11,6 +11,7 @@ from app.graph.nodes.appointment_utils import AppointmentQueryCallbacks, appoint
 from app.graph.nodes.context_nodes import create_load_customer_context_node, create_load_memory_node
 from app.graph.nodes.guardrail_nodes import create_hard_guardrails_node
 from app.graph.nodes.input_nodes import create_image_understanding_node, create_normalize_input_node
+from app.graph.nodes.legacy_graph_edges import add_legacy_nodes_and_edges
 from app.graph.nodes.planner_nodes import create_planner_brain_node
 from app.graph.nodes.profile_extraction import ProfileExtractionCallbacks, extract_event_updates, extract_profile_update
 from app.graph.nodes.profile_nodes import ProfileCallbacks, create_profile_event_extractor_node
@@ -206,25 +207,19 @@ def build_legacy_graph(
         ),
     )
 
-    graph.add_node("normalize_input", normalize_input)
-    graph.add_node("image_understanding", image_understanding)
-    graph.add_node("hard_guardrails", hard_guardrails)
-    graph.add_node("load_memory", load_memory)
-    graph.add_node("load_customer_context", load_customer_context)
-    graph.add_node("planner_brain", planner_brain)
-    graph.add_node("execute_actions", execute_actions)
-    graph.add_node("synthesize_reply", synthesize_reply)
-    graph.add_node("profile_event_extractor", profile_event_extractor)
-
-    graph.add_edge(START, "normalize_input")
-    graph.add_edge("normalize_input", "image_understanding")
-    graph.add_edge("image_understanding", "hard_guardrails")
-    graph.add_edge("hard_guardrails", "load_memory")
-    graph.add_edge("load_memory", "load_customer_context")
-    graph.add_edge("load_customer_context", "planner_brain")
-    graph.add_edge("planner_brain", "execute_actions")
-    graph.add_edge("execute_actions", "synthesize_reply")
-    graph.add_edge("synthesize_reply", "profile_event_extractor")
-    graph.add_edge("profile_event_extractor", END)
+    add_legacy_nodes_and_edges(
+        graph,
+        {
+            "normalize_input": normalize_input,
+            "image_understanding": image_understanding,
+            "hard_guardrails": hard_guardrails,
+            "load_memory": load_memory,
+            "load_customer_context": load_customer_context,
+            "planner_brain": planner_brain,
+            "execute_actions": execute_actions,
+            "synthesize_reply": synthesize_reply,
+            "profile_event_extractor": profile_event_extractor,
+        },
+    )
 
     return graph.compile()
