@@ -4,9 +4,9 @@ import asyncio
 from typing import Any, Callable
 
 from app.graph.nodes.action_callback_types import ActionCallbacks
+from app.graph.nodes.action_kb_tasks import ActionToolTask, append_kb_and_pricing_tasks
 from app.graph.nodes.action_module_outputs import build_active_task_output, build_handoff_output
 from app.graph.state import AgentState
-from app.policies.constants import KB_BY_SKILL
 from app.services.coze_client import CozeClient
 from app.services.pricing_repository import LocalPricingRepository
 from app.services.store_service import StoreService
@@ -28,48 +28,21 @@ def create_execute_actions_node(
             module_outputs: list[dict[str, Any]] = []
             tool_calls: list[dict[str, Any]] = []
             actions = state.get("action_plan", {}).get("actions", [])
-            tool_tasks: list[tuple[str, dict[str, Any], Any]] = []
+            tool_tasks: list[ActionToolTask] = []
 
             for action in actions:
                 skill = action.get("name")
                 if skill == "handoff":
                     continue
 
-                kb_name = KB_BY_SKILL.get(str(skill))
-                if skill == "price_consult":
-                    price_project = callbacks.canonical_price_project(
-                        callbacks.contextual_price_project(state) or callbacks.extract_project(content)
-                    )
-                    if not price_project or callbacks.is_broad_price_category(price_project):
-                        kb_name = ""
-                planned_kb_searches = callbacks.planned_kb_searches(action, state)
-                if planned_kb_searches:
-                    for planned in planned_kb_searches:
-                        planned_kb = planned.get("kb_name", "")
-                        planned_query = planned.get("query", "") or callbacks.safe_query_from_state(state, skill)
-                        call = {
-                            "name": "coze_kb_search",
-                            "input": {
-                                "kb_name": planned_kb,
-                                "query": planned_query,
-                                "planned": True,
-                                "purpose": planned.get("purpose", ""),
-                            },
-                        }
-                        tool_tasks.append((planned_kb, call, coze_client.search_kb(planned_kb, planned_query)))
-                elif kb_name:
-                    query = callbacks.safe_query_from_state(state, skill)
-                    call = {"name": "coze_kb_search", "input": {"kb_name": kb_name, "query": query}}
-                    tool_tasks.append((kb_name, call, coze_client.search_kb(kb_name, query)))
-
-                if skill == "price_consult":
-                    price_project = callbacks.canonical_price_project(
-                        callbacks.contextual_price_project(state) or callbacks.extract_project(content)
-                    )
-                    if price_project and not callbacks.is_broad_price_category(price_project):
-                        sql = callbacks.pricing_sql_from_state(state)
-                        call = {"name": "coze_pricing_db", "input": {"sql": sql}}
-                        tool_tasks.append(("pricing_db", call, coze_client.query_pricing_db(sql)))
+                append_kb_and_pricing_tasks(
+                    action=action,
+                    state=state,
+                    content=content,
+                    coze_client=coze_client,
+                    callbacks=callbacks,
+                    tool_tasks=tool_tasks,
+                )
 
                 if skill == "store" and store_service:
                     if any(item.get("intent") == "trust_issue" for item in state.get("intents", [])) and not callbacks.has_store_inquiry(content):
