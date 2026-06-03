@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.platform_agent_client import unix_to_text
+from app.services.customer_appointment_context import empty_appointment
 
 
 def appointment_from_orders(orders: list[dict[str, Any]]) -> dict[str, Any]:
@@ -16,8 +17,6 @@ def appointment_from_orders(orders: list[dict[str, Any]]) -> dict[str, Any]:
         if status in active_statuses:
             active_orders.append(order)
     if not active_orders:
-        from app.services.customer_context_extractors import empty_appointment
-
         return empty_appointment(source="platform_agent.order_index")
     order = sorted(active_orders, key=lambda item: int(item.get("plan_at") or item.get("created_at") or 0), reverse=True)[0]
     appointment_time = unix_to_text(order.get("plan_at")) or unix_to_text(order.get("pre_plan_at"))
