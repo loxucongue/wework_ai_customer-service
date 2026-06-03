@@ -6,6 +6,7 @@ from typing import Any, Callable
 from app.graph.nodes.action_callback_types import ActionCallbacks
 from app.graph.nodes.action_kb_tasks import ActionToolTask, append_kb_and_pricing_tasks
 from app.graph.nodes.action_module_outputs import build_active_task_output, build_handoff_output
+from app.graph.nodes.action_task_results import merge_action_task_results
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.pricing_repository import LocalPricingRepository
@@ -94,22 +95,12 @@ def create_execute_actions_node(
 
             if tool_tasks:
                 results = await asyncio.gather(*(task for _, _, task in tool_tasks), return_exceptions=True)
-                for (key, call, _), result in zip(tool_tasks, results):
-                    if isinstance(result, Exception):
-                        call["error"] = f"{type(result).__name__}: {result}"
-                        if key == "pricing_db":
-                            tool_results[key] = {"rows": [], "error": call["error"]}
-                        else:
-                            tool_results[key] = {"kb_name": key, "items": [], "error": call["error"]}
-                    elif key == "pricing_db":
-                        rows = result if isinstance(result, list) else []
-                        tool_results[key] = {"rows": rows[:10]}
-                        call["output"] = {"rows": len(rows)}
-                    else:
-                        dumped = result.model_dump()
-                        tool_results[key] = dumped
-                        call["output"] = {"items": len(result.items)}
-                    tool_calls.append(call)
+                merge_action_task_results(
+                    tool_tasks=tool_tasks,
+                    results=results,
+                    tool_results=tool_results,
+                    tool_calls=tool_calls,
+                )
 
             if callbacks.needs_project_price_followup(actions, tool_results, state):
                 for query in callbacks.project_price_followup_queries(tool_results):
