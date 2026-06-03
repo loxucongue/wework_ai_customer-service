@@ -5,6 +5,7 @@ from typing import Any
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_catalog import local_store_records
 from app.services import store_format
+from app.services.store_query_info import build_store_query_info
 from app.services.store_recommendation import with_location_recommendation
 from app.services import store_text
 
@@ -17,22 +18,20 @@ class StoreService:
         self._stores = local_store_records()
 
     def search(self, query: str, *, customer_context: dict[str, Any] | None = None, limit: int = 3) -> dict[str, Any]:
-        query = (query or "").strip()
-        city = store_text.extract_city(query, self._stores)
-        requested_name = store_text.extract_store_name(query, self._stores)
-        location_preference = store_text.extract_location_preference(query)
-        wants_parking = any(term in query for term in ["停车", "停车场", "车位"])
-        wants_route = any(term in query for term in ["导航", "路线", "怎么过去", "地址", "哪里", "位置", "发给我", "发我", "发一下"])
-        wants_status = store_text.asks_store_status(query)
-        if store_text.needs_city_before_lookup(query, city=city, requested_name=requested_name):
+        query_info = build_store_query_info(query, self._stores)
+        if store_text.needs_city_before_lookup(
+            query_info.query,
+            city=query_info.city,
+            requested_name=query_info.requested_name,
+        ):
             return {
-                "query": query,
+                "query": query_info.query,
                 "city": "",
                 "requested_store": "",
-                "wants_parking": wants_parking,
-                "wants_route": wants_route,
-                "wants_status": wants_status,
-                "location_preference": location_preference,
+                "wants_parking": query_info.wants_parking,
+                "wants_route": query_info.wants_route,
+                "wants_status": query_info.wants_status,
+                "location_preference": query_info.location_preference,
                 "stores": [],
                 "missing": ["city"],
                 "source": "need_city_before_store_lookup",
@@ -40,37 +39,42 @@ class StoreService:
 
         platform_error = ""
         try:
-            platform_result = self._search_platform(query, customer_context or {}, limit=limit)
+            platform_result = self._search_platform(query_info.query, customer_context or {}, limit=limit)
         except Exception as exc:
             platform_result = {}
             platform_error = f"{type(exc).__name__}: {exc}"
         if platform_result:
-            platform_result = self._sanitize_platform_result(platform_result, requested_name, city, limit=limit)
-            if city and not requested_name and platform_result.get("stores"):
-                platform_result = self._merge_local_city_stores(platform_result, city, limit=limit)
+            platform_result = self._sanitize_platform_result(
+                platform_result,
+                query_info.requested_name,
+                query_info.city,
+                limit=limit,
+            )
+            if query_info.city and not query_info.requested_name and platform_result.get("stores"):
+                platform_result = self._merge_local_city_stores(platform_result, query_info.city, limit=limit)
             if platform_result.get("stores"):
-                return with_location_recommendation(platform_result, location_preference)
+                return with_location_recommendation(platform_result, query_info.location_preference)
 
         candidates = self._stores
-        if requested_name:
-            candidates = [store for store in candidates if requested_name == store.name]
-        elif city:
-            candidates = [store for store in candidates if store.city == city and store.is_public]
+        if query_info.requested_name:
+            candidates = [store for store in candidates if query_info.requested_name == store.name]
+        elif query_info.city:
+            candidates = [store for store in candidates if store.city == query_info.city and store.is_public]
 
         stores = [store_format.store_record_to_dict(store) for store in candidates[:limit]]
         result = {
-            "query": query,
-            "city": city,
-            "requested_store": requested_name,
-            "wants_parking": wants_parking,
-            "wants_route": wants_route,
-            "wants_status": wants_status,
-            "location_preference": location_preference,
+            "query": query_info.query,
+            "city": query_info.city,
+            "requested_store": query_info.requested_name,
+            "wants_parking": query_info.wants_parking,
+            "wants_route": query_info.wants_route,
+            "wants_status": query_info.wants_status,
+            "location_preference": query_info.location_preference,
             "stores": stores,
             "source": "local_store_fallback",
             "platform_error": platform_error,
         }
-        return with_location_recommendation(result, location_preference)
+        return with_location_recommendation(result, query_info.location_preference)
 
     def available_time(self, *, store_id: str, date: str, customer_context: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._platform_client or not self._platform_client.available:
@@ -100,9 +104,10 @@ class StoreService:
         else:
             rows = self._platform_client.list_store_options(request_context=request_context)
             source = "platform_agent.option_store"
-        requested_name = store_text.extract_store_name(query, self._stores)
-        city = store_text.extract_city(query, self._stores) or store_text.city_for_store_name(requested_name, self._stores)
-        wants_status = store_text.asks_store_status(query)
+        query_info = build_store_query_info(query, self._stores)
+        requested_name = query_info.requested_name
+        city = query_info.city or store_text.city_for_store_name(requested_name, self._stores)
+        wants_status = query_info.wants_status
         query_matches = store_text.match_rows_by_query_name(rows, query)
         candidates = [row for row in rows if store_format.is_public_store(row)]
         if requested_name:
@@ -135,8 +140,8 @@ class StoreService:
             "query": query,
             "city": city,
             "requested_store": requested_name,
-            "wants_parking": any(term in query for term in ["停车", "停车场", "车位"]),
-            "wants_route": any(term in query for term in ["导航", "路线", "怎么过去", "地址", "哪里", "位置", "发给我", "发我", "发一下"]),
+            "wants_parking": query_info.wants_parking,
+            "wants_route": query_info.wants_route,
             "wants_status": wants_status,
             "stores": stores,
             "source": source,
