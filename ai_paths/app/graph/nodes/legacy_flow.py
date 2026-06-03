@@ -54,6 +54,10 @@ from app.graph.nodes.legacy_graph_wiring import (
     LegacyGraphWiringCallbacks,
     build_legacy_graph,
 )
+from app.graph.nodes.legacy_goal_context import (
+    has_confirmed_spot_goal as _has_confirmed_spot_goal_from_goal_context,
+    is_redundant_known_goal_question as _is_redundant_known_goal_question_from_goal_context,
+)
 from app.graph.nodes.legacy_flow_utils import (
     available_slot_list as _available_slot_list_from_utils,
     compact_memory as _compact_memory_from_utils,
@@ -512,40 +516,17 @@ def _looks_like_store_list_message(text: str) -> bool:
 
 
 def _is_redundant_known_goal_question(state: AgentState, text: str) -> bool:
-    if not text:
-        return False
-    if not any(term in text for term in ["最想先改善", "想先改善哪", "更想改善哪", "主要想改善哪", "告诉我最想改善"]):
-        return False
-    if _has_confirmed_spot_goal(state):
-        return True
-    if _has_known_image_context(state) and _known_visible_concerns_from_state(state):
-        return True
-    return False
+    return _is_redundant_known_goal_question_from_goal_context(
+        state,
+        text,
+        has_known_image_context=_has_known_image_context,
+        known_visible_concerns_from_state=_known_visible_concerns_from_state,
+        json_dumps=json_dumps,
+    )
 
 
 def _has_confirmed_spot_goal(state: AgentState) -> bool:
-    content = str(state.get("normalized_content") or "")
-    if any(term in content for term in ["就是斑", "主要斑", "祛斑", "淡斑", "斑呀", "斑啊", "斑点"]):
-        return True
-    profile = state.get("customer_profile") or {}
-    if isinstance(profile, dict):
-        joined = json_dumps(
-            {
-                "needs": profile.get("needs", []),
-                "pain_points": profile.get("pain_points", []),
-                "summary": profile.get("summary", ""),
-            }
-        )
-        if any(term in joined for term in ["斑", "色沉", "肤色不均"]):
-            return True
-    for event in state.get("history_events", [])[-8:]:
-        event_text = json_dumps(event) if isinstance(event, dict) else str(event)
-        if any(term in event_text for term in ["点状斑", "斑点", "色沉", "肤色不均", "淡斑", "祛斑"]):
-            return True
-    for message in state.get("conversation_history", [])[-8:]:
-        if any(term in str(message) for term in ["点状斑", "斑点", "色沉", "肤色不均", "淡斑", "祛斑"]):
-            return True
-    return False
+    return _has_confirmed_spot_goal_from_goal_context(state, json_dumps)
 
 
 def _has_pre_visit_question(content: str) -> bool:
