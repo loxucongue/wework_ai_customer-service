@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Literal
 
 import httpx
 
 from app.config import Settings
+from app.services import model_response, model_selection
 
 
 ModelTier = Literal["fast", "balanced", "strong", "vision"]
@@ -121,86 +121,29 @@ class ModelClient:
             return raw
 
     def _api_key(self) -> str:
-        provider = self.settings.model_provider.lower()
-        if provider == "volcengine":
-            return self.settings.volcengine_ark_api_key
-        return self.settings.aliyun_dashscope_api_key
+        return model_selection.api_key(self.settings)
 
     def _base_url(self) -> str:
-        provider = self.settings.model_provider.lower()
-        if provider == "volcengine":
-            return self.settings.volcengine_openai_base_url
-        return self.settings.aliyun_openai_base_url
+        return model_selection.base_url(self.settings)
 
     def _model_name(self, tier: ModelTier) -> str:
-        if tier == "fast":
-            return self.settings.model_fast
-        if tier == "strong":
-            return self.settings.model_strong
-        if tier == "vision":
-            return self.settings.model_vision
-        return self.settings.model_balanced
+        return model_selection.model_name(self.settings, tier)
 
     def _model_names(self, tier: ModelTier) -> list[str]:
-        primary = self._model_name(tier)
-        if tier == "fast":
-            fallback_text = self.settings.model_fast_fallbacks
-        elif tier == "strong":
-            fallback_text = self.settings.model_strong_fallbacks
-        elif tier == "vision":
-            fallback_text = self.settings.model_vision_fallbacks
-        else:
-            fallback_text = self.settings.model_balanced_fallbacks
-        models = [primary]
-        for name in self._split_models(fallback_text):
-            if name and name not in models:
-                models.append(name)
-        return models
+        return model_selection.model_names(self.settings, tier)
 
     @staticmethod
     def _split_models(value: str) -> list[str]:
-        return [item.strip() for item in (value or "").split(",") if item.strip()]
+        return model_selection.split_models(value)
 
     @staticmethod
     def _should_try_next_model(exc: Exception) -> bool:
-        if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError)):
-            return True
-        if isinstance(exc, httpx.HTTPStatusError):
-            if exc.response.status_code in {400, 401, 403, 404, 429, 500, 502, 503, 504}:
-                return True
-        return True
+        return model_selection.should_try_next_model(exc)
 
     @staticmethod
     def _extract_text(raw: dict[str, Any]) -> str:
-        choices = raw.get("choices") or []
-        if not choices:
-            raise RuntimeError("Model response has no choices")
-        message = choices[0].get("message") or {}
-        content = message.get("content")
-        if isinstance(content, str):
-            return content.strip()
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, dict):
-                    text = item.get("text") or item.get("content")
-                    if text:
-                        parts.append(str(text))
-            return "\n".join(parts).strip()
-        return str(content or "").strip()
+        return model_response.extract_text(raw)
 
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any]:
-        stripped = text.strip()
-        if stripped.startswith("```"):
-            stripped = re.sub(r"^```(?:json)?", "", stripped).strip()
-            stripped = re.sub(r"```$", "", stripped).strip()
-        try:
-            parsed = json.loads(stripped)
-            return parsed if isinstance(parsed, dict) else {"output": parsed}
-        except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", stripped, re.S)
-            if not match:
-                raise
-            parsed = json.loads(match.group(0))
-            return parsed if isinstance(parsed, dict) else {"output": parsed}
+        return model_response.parse_json(text)
