@@ -52,6 +52,7 @@ class AgentState(TypedDict, total=False):
     route_result: dict[str, Any]
     intents: list[dict[str, Any]]
     action_plan: dict[str, Any]
+    active_task: dict[str, Any]
     tool_results: dict[str, Any]
     module_outputs: list[dict[str, Any]]
     reply_messages: list[dict[str, Any]]

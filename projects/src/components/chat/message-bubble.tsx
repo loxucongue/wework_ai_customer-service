@@ -24,9 +24,10 @@ function hasDebugMeta(message: ChatMessage): boolean {
   const meta = message.meta;
   if (!meta) return false;
   return Boolean(
-    meta.requestId ||
+      meta.requestId ||
       meta.traceUrl ||
       meta.toolResultKeys?.length ||
+      meta.toolCalls?.length ||
       meta.profileUpdate ||
       meta.eventUpdates?.length ||
       meta.imageInfo ||
@@ -154,6 +155,18 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                       {key}
                     </Badge>
                   ))}
+                </div>
+              )}
+
+              {message.meta?.toolCalls && message.meta.toolCalls.length > 0 && (
+                <div>
+                  <div className="mb-1 inline-flex items-center gap-1 font-medium text-foreground">
+                    <Database className="h-3.5 w-3.5" />
+                    工具调用
+                  </div>
+                  <pre className="max-h-48 overflow-auto rounded bg-muted/70 p-2 font-mono text-[11px] leading-relaxed">
+                    {formatDebugValue(message.meta.toolCalls)}
+                  </pre>
                 </div>
               )}
 

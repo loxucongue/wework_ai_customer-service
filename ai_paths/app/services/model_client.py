@@ -30,13 +30,21 @@ class ModelClient:
     ) -> str:
         if not self.available:
             raise RuntimeError("No model API key configured")
-        payload = {
-            "model": self._model_name(tier),
-            "messages": messages,
-            "temperature": temperature,
-        }
-        raw = await self._post_chat(payload)
-        return self._extract_text(raw)
+        errors: list[str] = []
+        for index, model in enumerate(self._model_names(tier)):
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            try:
+                raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
+                return self._extract_text(raw)
+            except Exception as exc:
+                errors.append(f"{model}: {type(exc).__name__}: {exc}")
+                if not self._should_try_next_model(exc):
+                    break
+        raise RuntimeError("All model candidates failed: " + " | ".join(errors))
 
     async def chat_json(
         self,
@@ -68,14 +76,30 @@ class ModelClient:
             }
         ]
         payload = {
-            "model": self._model_name(tier),
+            "model": self._model_names(tier)[0],
             "messages": messages,
             "temperature": temperature,
         }
-        raw = await self._post_chat(payload)
-        return self._parse_json(self._extract_text(raw))
+        errors: list[str] = []
+        for index, model in enumerate(self._model_names(tier)):
+            payload["model"] = model
+            try:
+                raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
+                return self._parse_json(self._extract_text(raw))
+            except Exception as exc:
+                errors.append(f"{model}: {type(exc).__name__}: {exc}")
+                if not self._should_try_next_model(exc):
+                    break
+        raise RuntimeError("All vision model candidates failed: " + " | ".join(errors))
 
-    async def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _post_chat(
+        self,
+        payload: dict[str, Any],
+        *,
+        tier: ModelTier,
+        fallback_index: int,
+        errors: list[str],
+    ) -> dict[str, Any]:
         url = f"{self._base_url().rstrip('/')}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self._api_key()}",
@@ -89,6 +113,9 @@ class ModelClient:
             self.last_usage = {
                 "provider": self.settings.model_provider,
                 "model": payload.get("model"),
+                "tier": tier,
+                "fallback_index": fallback_index,
+                "fallback_errors": list(errors),
                 "usage": raw.get("usage") or {},
             }
             return raw
@@ -113,6 +140,35 @@ class ModelClient:
         if tier == "vision":
             return self.settings.model_vision
         return self.settings.model_balanced
+
+    def _model_names(self, tier: ModelTier) -> list[str]:
+        primary = self._model_name(tier)
+        if tier == "fast":
+            fallback_text = self.settings.model_fast_fallbacks
+        elif tier == "strong":
+            fallback_text = self.settings.model_strong_fallbacks
+        elif tier == "vision":
+            fallback_text = self.settings.model_vision_fallbacks
+        else:
+            fallback_text = self.settings.model_balanced_fallbacks
+        models = [primary]
+        for name in self._split_models(fallback_text):
+            if name and name not in models:
+                models.append(name)
+        return models
+
+    @staticmethod
+    def _split_models(value: str) -> list[str]:
+        return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+    @staticmethod
+    def _should_try_next_model(exc: Exception) -> bool:
+        if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError)):
+            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            if exc.response.status_code in {400, 401, 403, 404, 429, 500, 502, 503, 504}:
+                return True
+        return True
 
     @staticmethod
     def _extract_text(raw: dict[str, Any]) -> str:

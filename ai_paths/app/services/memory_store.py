@@ -7,13 +7,19 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.services.storage.repositories import AppRepository
 
 
 class CustomerMemoryStore:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, repository: AppRepository | None = None):
         self.memory_dir: Path = settings.memory_dir
+        self.repository = repository
 
     def load(self, customer_id: str) -> dict[str, Any]:
+        if self.repository:
+            memory = self.repository.load_memory(customer_id)
+            if memory:
+                return memory
         path = self._path(customer_id)
         if not path.exists():
             return self._empty(customer_id)
@@ -46,7 +52,21 @@ class CustomerMemoryStore:
                 data["history_events"] = events[-100:]
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
         return data
+
+    def clear(self, customer_id: str) -> None:
+        if self.repository:
+            self.repository.clear_memory(customer_id)
+        path = self._path(customer_id)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
 
     def _path(self, customer_id: str) -> Path:
         safe = re.sub(r"[^a-zA-Z0-9_.-]+", "_", customer_id or "unknown")
@@ -72,6 +92,7 @@ class CustomerMemoryStore:
             portrait = data.setdefault("portrait", {})
             if isinstance(portrait, dict):
                 self._merge_dict(portrait, portrait_update)
+                self._refresh_portrait_summary(portrait)
         basic_update = profile_update.get("basic_info")
         if isinstance(basic_update, dict):
             basic = data.setdefault("basic_info", {})
@@ -107,3 +128,20 @@ class CustomerMemoryStore:
                 result.append(value)
         return result
 
+    @staticmethod
+    def _refresh_portrait_summary(portrait: dict[str, Any]) -> None:
+        needs = portrait.get("needs") if isinstance(portrait.get("needs"), list) else []
+        pain_points = portrait.get("pain_points") if isinstance(portrait.get("pain_points"), list) else []
+        projects = portrait.get("projects") if isinstance(portrait.get("projects"), list) else []
+        concerns = portrait.get("concerns") if isinstance(portrait.get("concerns"), list) else []
+        parts: list[str] = []
+        if pain_points:
+            parts.append("关注" + "、".join(str(item) for item in pain_points[:4]))
+        if needs:
+            parts.append("希望" + "、".join(str(item) for item in needs[:4]))
+        if projects:
+            parts.append("提到" + "、".join(str(item) for item in projects[:3]))
+        if concerns:
+            parts.append("顾虑" + "、".join(str(item) for item in concerns[:3]))
+        if parts:
+            portrait["summary"] = "，".join(parts) + "。"

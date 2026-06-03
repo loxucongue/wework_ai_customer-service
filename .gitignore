@@ -1,8 +1,10 @@
 .env
 *.env
 ai_paths/.env
-logs/
+/logs/
 ai_paths/logs/
+data/
+ai_paths/data/
 __pycache__/
 *.py[cod]
 .pytest_cache/

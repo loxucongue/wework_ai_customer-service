@@ -1,0 +1,230 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from langgraph.graph import END, START, StateGraph
+
+from app.graph.nodes.action_nodes import ActionCallbacks, create_execute_actions_node
+from app.graph.nodes.action_queries import ActionQueryCallbacks, safe_query_from_state
+from app.graph.nodes.appointment_utils import AppointmentQueryCallbacks, appointment_query_from_state
+from app.graph.nodes.context_nodes import create_load_customer_context_node, create_load_memory_node
+from app.graph.nodes.guardrail_nodes import create_hard_guardrails_node
+from app.graph.nodes.input_nodes import create_image_understanding_node, create_normalize_input_node
+from app.graph.nodes.planner_nodes import create_planner_brain_node
+from app.graph.nodes.profile_extraction import ProfileExtractionCallbacks, extract_event_updates, extract_profile_update
+from app.graph.nodes.profile_nodes import ProfileCallbacks, create_profile_event_extractor_node
+from app.graph.nodes.reply_context import ReplyContextCallbacks, reply_user_payload_for_model
+from app.graph.nodes.reply_input import (
+    ReplyInputCallbacks,
+    reply_messages_for_model,
+    reply_repair_messages_for_model,
+)
+from app.graph.nodes.reply_nodes import ReplyCallbacks, create_synthesize_reply_node
+from app.graph.nodes.reply_payloads import (
+    ReplyPayloadCallbacks,
+    appointment_reply_payload_for_model,
+    reply_forced_payload_for_model,
+    should_use_appointment_fact_reply,
+)
+from app.graph.state import AgentState
+
+
+@dataclass(frozen=True)
+class LegacyGraphWiringCallbacks:
+    available_slot_list: Callable[[Any], list[str]]
+    canonical_price_project: Callable[[str], str]
+    compact_memory: Callable[..., Any]
+    contextual_price_project: Callable[[AgentState], str]
+    debug_message_contents: Callable[..., Any]
+    extract_city: Callable[[str], str]
+    extract_price_digits: Callable[[str], list[str]]
+    extract_project: Callable[[str], str]
+    forced_reply_satisfies_hard_instruction: Callable[..., bool]
+    has_appointment_change_or_cancel: Callable[[str], bool]
+    has_appointment_record_query: Callable[[str], bool]
+    has_store_inquiry: Callable[[str], bool]
+    is_broad_price_category: Callable[[str], bool]
+    json_dumps: Callable[..., str]
+    known_visible_concerns: Callable[[AgentState], list[str]]
+    merge_kb_result: Callable[..., Any]
+    model_reply_unsafe: Callable[..., bool]
+    needs_project_price_followup: Callable[[AgentState], bool]
+    planned_kb_searches: Callable[[AgentState], list[dict[str, Any]]]
+    postprocess_reply_messages: Callable[..., Any]
+    pricing_sql_from_state: Callable[[AgentState], str]
+    project_direction_names: Callable[[AgentState], list[str]]
+    project_price_followup_queries: Callable[[AgentState], list[str]]
+    recent_assistant_replies: Callable[..., list[str]]
+    reply_brief: Callable[[AgentState], dict[str, Any]]
+    reply_model_tier: Callable[..., str]
+    should_drop_planner_notes_for_skill_output: Callable[[AgentState, str], bool]
+    should_suspend_active_task: Callable[[AgentState], bool]
+    should_use_model_reply: Callable[[AgentState], bool]
+    skill_output: Callable[[AgentState, str], dict[str, Any]]
+    store_query_from_state: Callable[[AgentState], str]
+    validated_model_messages: Callable[..., Any]
+    with_action_planning_notes: Callable[[AgentState, dict[str, Any], str], dict[str, Any]]
+    without_appointment_intents: Callable[[AgentState], AgentState]
+
+
+def build_legacy_graph(
+    *,
+    coze_client: Any,
+    trace_logger: Any,
+    model_client: Any | None = None,
+    memory_store: Any | None = None,
+    pricing_repository: Any | None = None,
+    customer_context_service: Any | None = None,
+    store_service: Any | None = None,
+    callbacks: LegacyGraphWiringCallbacks,
+):
+    graph = StateGraph(AgentState)
+    normalize_input = create_normalize_input_node(trace_logger=trace_logger)
+    image_understanding = create_image_understanding_node(trace_logger=trace_logger, model_client=model_client)
+    load_memory = create_load_memory_node(trace_logger=trace_logger, memory_store=memory_store)
+    load_customer_context = create_load_customer_context_node(
+        trace_logger=trace_logger,
+        customer_context_service=customer_context_service,
+    )
+    hard_guardrails = create_hard_guardrails_node(trace_logger=trace_logger)
+    planner_brain = create_planner_brain_node(
+        trace_logger=trace_logger,
+        model_client=model_client,
+        should_suspend_active_task=callbacks.should_suspend_active_task,
+        without_appointment_intents=callbacks.without_appointment_intents,
+    )
+    action_query_callbacks = ActionQueryCallbacks(
+        canonical_price_project=callbacks.canonical_price_project,
+        contextual_price_project=callbacks.contextual_price_project,
+        extract_price_digits=callbacks.extract_price_digits,
+        extract_project=callbacks.extract_project,
+    )
+    appointment_query_callbacks = AppointmentQueryCallbacks(extract_city=callbacks.extract_city)
+    execute_actions = create_execute_actions_node(
+        coze_client=coze_client,
+        trace_logger=trace_logger,
+        pricing_repository=pricing_repository,
+        store_service=store_service,
+        callbacks=ActionCallbacks(
+            appointment_query_from_state=lambda content, store_lookup, state: appointment_query_from_state(
+                content,
+                store_lookup,
+                state,
+                appointment_query_callbacks,
+            ),
+            canonical_price_project=callbacks.canonical_price_project,
+            contextual_price_project=callbacks.contextual_price_project,
+            extract_project=callbacks.extract_project,
+            has_appointment_change_or_cancel=callbacks.has_appointment_change_or_cancel,
+            has_appointment_record_query=callbacks.has_appointment_record_query,
+            has_store_inquiry=callbacks.has_store_inquiry,
+            is_broad_price_category=callbacks.is_broad_price_category,
+            json_dumps=callbacks.json_dumps,
+            merge_kb_result=callbacks.merge_kb_result,
+            needs_project_price_followup=callbacks.needs_project_price_followup,
+            planned_kb_searches=callbacks.planned_kb_searches,
+            pricing_sql_from_state=callbacks.pricing_sql_from_state,
+            project_price_followup_queries=callbacks.project_price_followup_queries,
+            safe_query_from_state=lambda state, skill: safe_query_from_state(state, skill, action_query_callbacks),
+            should_drop_planner_notes_for_skill_output=callbacks.should_drop_planner_notes_for_skill_output,
+            should_suspend_active_task=callbacks.should_suspend_active_task,
+            skill_output=callbacks.skill_output,
+            store_query_from_state=callbacks.store_query_from_state,
+            with_action_planning_notes=callbacks.with_action_planning_notes,
+        ),
+    )
+    profile_extraction_callbacks = ProfileExtractionCallbacks(
+        canonical_price_project=callbacks.canonical_price_project,
+        contextual_price_project=callbacks.contextual_price_project,
+        extract_price_digits=callbacks.extract_price_digits,
+        extract_project=callbacks.extract_project,
+        known_visible_concerns=callbacks.known_visible_concerns,
+        project_direction_names=callbacks.project_direction_names,
+    )
+    profile_event_extractor = create_profile_event_extractor_node(
+        trace_logger=trace_logger,
+        memory_store=memory_store,
+        callbacks=ProfileCallbacks(
+            compact_memory=callbacks.compact_memory,
+            extract_event_updates=lambda state, profile_update: extract_event_updates(
+                state,
+                profile_update,
+                profile_extraction_callbacks,
+            ),
+            extract_profile_update=lambda state: extract_profile_update(state, profile_extraction_callbacks),
+        ),
+    )
+    reply_context_callbacks = ReplyContextCallbacks(
+        canonical_price_project=callbacks.canonical_price_project,
+        contextual_price_project=callbacks.contextual_price_project,
+        is_broad_price_category=callbacks.is_broad_price_category,
+        recent_assistant_replies=callbacks.recent_assistant_replies,
+        reply_brief=callbacks.reply_brief,
+        should_suspend_active_task=callbacks.should_suspend_active_task,
+    )
+    reply_input_callbacks = ReplyInputCallbacks(
+        json_dumps=callbacks.json_dumps,
+        reply_user_payload=lambda state: reply_user_payload_for_model(state, reply_context_callbacks),
+    )
+    reply_payload_callbacks = ReplyPayloadCallbacks(
+        available_slot_list=callbacks.available_slot_list,
+        recent_assistant_replies=callbacks.recent_assistant_replies,
+        reply_brief=callbacks.reply_brief,
+        should_suspend_active_task=callbacks.should_suspend_active_task,
+    )
+    synthesize_reply = create_synthesize_reply_node(
+        trace_logger=trace_logger,
+        model_client=model_client,
+        callbacks=ReplyCallbacks(
+            appointment_reply_payload_for_model=lambda state: appointment_reply_payload_for_model(
+                state,
+                reply_payload_callbacks,
+            ),
+            debug_message_contents=callbacks.debug_message_contents,
+            forced_reply_satisfies_hard_instruction=callbacks.forced_reply_satisfies_hard_instruction,
+            json_dumps=callbacks.json_dumps,
+            model_reply_unsafe=callbacks.model_reply_unsafe,
+            postprocess_reply_messages=callbacks.postprocess_reply_messages,
+            reply_forced_payload_for_model=lambda state: reply_forced_payload_for_model(
+                state,
+                reply_payload_callbacks,
+            ),
+            reply_messages_for_model=lambda state: reply_messages_for_model(state, reply_input_callbacks),
+            reply_model_tier=callbacks.reply_model_tier,
+            reply_repair_messages_for_model=lambda state, draft_messages: reply_repair_messages_for_model(
+                state,
+                draft_messages,
+                reply_input_callbacks,
+            ),
+            should_use_appointment_fact_reply=lambda state: should_use_appointment_fact_reply(
+                state,
+                reply_payload_callbacks,
+            ),
+            should_use_model_reply=callbacks.should_use_model_reply,
+            validated_model_messages=callbacks.validated_model_messages,
+        ),
+    )
+
+    graph.add_node("normalize_input", normalize_input)
+    graph.add_node("image_understanding", image_understanding)
+    graph.add_node("hard_guardrails", hard_guardrails)
+    graph.add_node("load_memory", load_memory)
+    graph.add_node("load_customer_context", load_customer_context)
+    graph.add_node("planner_brain", planner_brain)
+    graph.add_node("execute_actions", execute_actions)
+    graph.add_node("synthesize_reply", synthesize_reply)
+    graph.add_node("profile_event_extractor", profile_event_extractor)
+
+    graph.add_edge(START, "normalize_input")
+    graph.add_edge("normalize_input", "image_understanding")
+    graph.add_edge("image_understanding", "hard_guardrails")
+    graph.add_edge("hard_guardrails", "load_memory")
+    graph.add_edge("load_memory", "load_customer_context")
+    graph.add_edge("load_customer_context", "planner_brain")
+    graph.add_edge("planner_brain", "execute_actions")
+    graph.add_edge("execute_actions", "synthesize_reply")
+    graph.add_edge("synthesize_reply", "profile_event_extractor")
+    graph.add_edge("profile_event_extractor", END)
+
+    return graph.compile()

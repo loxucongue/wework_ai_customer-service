@@ -17,6 +17,7 @@ export interface ChatMessage {
     requestId?: string;
     traceUrl?: string;
     toolResultKeys?: string[];
+    toolCalls?: unknown[];
     profileUpdate?: unknown;
     eventUpdates?: unknown[];
     imageInfo?: unknown;

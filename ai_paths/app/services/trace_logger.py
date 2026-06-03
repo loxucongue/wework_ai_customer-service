@@ -38,7 +38,7 @@ def compact(value: Any, max_chars: int = 1600) -> Any:
 
 class TraceLogger:
     def __init__(self, settings: Settings):
-        self.log_dir: Path = settings.log_dir
+        self.log_dir: Path = settings.trace_log_dir or settings.log_dir
 
     @contextmanager
     def node(self, state: AgentState, node_name: str, input_snapshot: dict[str, Any]) -> Iterator[dict[str, Any]]:
@@ -67,8 +67,20 @@ class TraceLogger:
         request_id = state.get("request_id") or "unknown"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         path = self.log_dir / f"{request_id}.json"
-        serializable = compact(state, max_chars=8000)
+        serializable = compact(state, max_chars=50000)
         if isinstance(serializable, dict) and isinstance(state.get("trace"), list):
-            serializable["trace"] = [compact(entry, max_chars=4000) for entry in state.get("trace", [])]
+            serializable["trace"] = [compact(entry, max_chars=20000) for entry in state.get("trace", [])]
         path.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
+
+    def read_run(self, request_id: str) -> dict[str, Any]:
+        if not request_id:
+            return {}
+        path = self.log_dir / f"{request_id}.json"
+        if not path.exists():
+            return {}
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+            return parsed if isinstance(parsed, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}

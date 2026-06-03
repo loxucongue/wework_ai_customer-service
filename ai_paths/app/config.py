@@ -14,6 +14,7 @@ class Settings(BaseSettings):
 
     app_name: str = "AI Paths"
     ai_paths_api_key: str = Field(default="", repr=False)
+    ai_external_api_key: str = Field(default="", repr=False)
     coze_api_base: str = "https://api.coze.cn"
     coze_oauth_client_id: str = Field(default="", repr=False)
     coze_oauth_public_key_id: str = Field(default="", repr=False)
@@ -28,9 +29,14 @@ class Settings(BaseSettings):
     model_balanced: str = "qwen-plus"
     model_strong: str = "qwen-max"
     model_vision: str = "qwen-vl-plus"
+    model_fast_fallbacks: str = "kimi-k2.6,qwen3.6-flash"
+    model_balanced_fallbacks: str = "kimi-k2.6,qwen3.7-max-2026-05-20,qwen3.6-flash"
+    model_strong_fallbacks: str = "qwen3.7-max-2026-05-20,kimi-k2.6,qwen-plus"
+    model_vision_fallbacks: str = ""
     model_timeout_seconds: int = 45
     memory_dir: Path = Path("logs/memory")
     pricing_xlsx_path: Path = Path("projects/public/items_pricing_system.xlsx")
+    db_path: Path = Field(default=Path("data/ai_paths.db"), alias="AI_PATHS_DB_PATH")
     platform_agent_base_url: str = "https://v2.henm.cn"
     platform_agent_token: str = Field(default="", repr=False)
     platform_agent_request_from: str = "platform_agent"
@@ -44,6 +50,7 @@ class Settings(BaseSettings):
     pricing_sync_workflow_id: str = "7644090458134609974"
 
     log_dir: Path = Path("logs/runs")
+    trace_log_dir: Path | None = Field(default=None, alias="AI_PATHS_TRACE_LOG_DIR")
 
 
 @lru_cache(maxsize=1)

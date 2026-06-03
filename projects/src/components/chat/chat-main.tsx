@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Bot, Sparkles, Settings } from "lucide-react";
+import { Activity, Bot, Sparkles, Settings, UserRoundX } from "lucide-react";
 import Link from "next/link";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatInput } from "./chat-input";
@@ -70,10 +70,22 @@ function mergeConversations(
   return [...fresh, ...persistent].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+function findNewestIncomingConversation(
+  current: Conversation[],
+  incoming: Conversation[]
+): Conversation | null {
+  const existingIds = new Set(current.map((item) => item.id));
+  const fresh = incoming
+    .filter((item) => item.id && !existingIds.has(item.id))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  return fresh[0] ?? null;
+}
+
 export function ChatMain() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isClearingMemory, setIsClearingMemory] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -102,7 +114,11 @@ export function ChatMain() {
         const incoming = payload.conversations as Conversation[];
         if (incoming.length === 0) return;
         setConversations((prev) => {
+          const newestIncoming = findNewestIncomingConversation(prev, incoming);
           const merged = mergeConversations(prev, incoming);
+          if (newestIncoming) {
+            setActiveId(newestIncoming.id);
+          }
           return merged;
         });
       })
@@ -152,6 +168,64 @@ export function ChatMain() {
     },
     [activeId]
   );
+
+  const clearActiveMemory = useCallback(async () => {
+    if (!activeConversation || isClearingMemory) return;
+    const ok = window.confirm(
+      "确认清空当前测试客户的画像和历史事件吗？当前页面里的对话消息不会删除。"
+    );
+    if (!ok) return;
+
+    setIsClearingMemory(true);
+    try {
+      const response = await fetch("/api/memory/clear", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customer_id: activeConversation.id }),
+      });
+      if (!response.ok) {
+        throw new Error(`API error: ${response.status}`);
+      }
+      const notice: ChatMessage = {
+        id: generateId(),
+        role: "assistant",
+        content: "当前测试客户的画像和历史事件已清空，后续回复不会再读取这部分旧记忆。",
+        timestamp: Date.now(),
+      };
+      setConversations((prev) =>
+        prev.map((item) =>
+          item.id === activeConversation.id
+            ? {
+                ...item,
+                messages: [...item.messages, notice],
+                updatedAt: Date.now(),
+              }
+            : item
+        )
+      );
+    } catch (error) {
+      console.error("Failed to clear memory:", error);
+      const notice: ChatMessage = {
+        id: generateId(),
+        role: "assistant",
+        content: "画像清理失败，可以稍后再试，或新建一个对话继续测试。",
+        timestamp: Date.now(),
+      };
+      setConversations((prev) =>
+        prev.map((item) =>
+          item.id === activeConversation.id
+            ? {
+                ...item,
+                messages: [...item.messages, notice],
+                updatedAt: Date.now(),
+              }
+            : item
+        )
+      );
+    } finally {
+      setIsClearingMemory(false);
+    }
+  }, [activeConversation, isClearingMemory]);
 
   const sendMessage = useCallback(
     async (content: string, imageFile?: File) => {
@@ -328,6 +402,9 @@ export function ChatMain() {
               (item): item is string => typeof item === "string"
             );
           }
+          if (Array.isArray(debugMeta.tool_calls)) {
+            meta.toolCalls = debugMeta.tool_calls;
+          }
           if ("profile_update" in debugMeta) {
             meta.profileUpdate = debugMeta.profile_update;
           }
@@ -431,7 +508,25 @@ export function ChatMain() {
               {isLoading ? "正在思考中..." : "在线"}
             </p>
           </div>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              disabled={!activeConversation || isLoading || isClearingMemory}
+              onClick={clearActiveMemory}
+              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <UserRoundX className="h-3.5 w-3.5" />
+              {isClearingMemory ? "清理中" : "清空画像"}
+            </button>
+            <Link href="/logs">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              >
+                <Activity className="h-3.5 w-3.5" />
+                日志
+              </button>
+            </Link>
             <Link href="/config">
               <button
                 type="button"
