@@ -4,6 +4,7 @@ from typing import Any
 
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_catalog import StoreRecord, local_store_records
+from app.services import store_text
 
 
 class StoreService:
@@ -15,13 +16,13 @@ class StoreService:
 
     def search(self, query: str, *, customer_context: dict[str, Any] | None = None, limit: int = 3) -> dict[str, Any]:
         query = (query or "").strip()
-        city = self._extract_city(query)
-        requested_name = self._extract_store_name(query)
-        location_preference = self._extract_location_preference(query)
+        city = store_text.extract_city(query, self._stores)
+        requested_name = store_text.extract_store_name(query, self._stores)
+        location_preference = store_text.extract_location_preference(query)
         wants_parking = any(term in query for term in ["停车", "停车场", "车位"])
         wants_route = any(term in query for term in ["导航", "路线", "怎么过去", "地址", "哪里", "位置", "发给我", "发我", "发一下"])
-        wants_status = self._asks_store_status(query)
-        if self._needs_city_before_lookup(query, city=city, requested_name=requested_name):
+        wants_status = store_text.asks_store_status(query)
+        if store_text.needs_city_before_lookup(query, city=city, requested_name=requested_name):
             return {
                 "query": query,
                 "city": "",
@@ -147,10 +148,10 @@ class StoreService:
         else:
             rows = self._platform_client.list_store_options(request_context=request_context)
             source = "platform_agent.option_store"
-        requested_name = self._extract_store_name(query)
-        city = self._extract_city(query) or self._city_for_store_name(requested_name)
-        wants_status = self._asks_store_status(query)
-        query_matches = self._match_rows_by_query_name(rows, query)
+        requested_name = store_text.extract_store_name(query, self._stores)
+        city = store_text.extract_city(query, self._stores) or store_text.city_for_store_name(requested_name, self._stores)
+        wants_status = store_text.asks_store_status(query)
+        query_matches = store_text.match_rows_by_query_name(rows, query)
         candidates = [row for row in rows if self._is_public_store(row)]
         if requested_name:
             base_rows = rows if wants_status else candidates
@@ -158,12 +159,12 @@ class StoreService:
             if exact_candidates:
                 candidates = exact_candidates
             else:
-                aliases = self._store_aliases(requested_name)
+                aliases = store_text.store_aliases(requested_name)
                 candidates = [row for row in base_rows if any(alias in str(row.get("name") or "") for alias in aliases)]
             if city:
-                candidates = [row for row in candidates if self._row_matches_city(row, city)]
+                candidates = [row for row in candidates if store_text.row_matches_city(row, city)]
         elif city:
-            candidates = [row for row in candidates if self._row_matches_city(row, city)]
+            candidates = [row for row in candidates if store_text.row_matches_city(row, city)]
         elif query_matches:
             candidates = query_matches if wants_status else [row for row in query_matches if self._is_public_store(row)]
         stores: list[dict[str, Any]] = []
@@ -216,7 +217,7 @@ class StoreService:
         return {
             "id": store_id,
             "name": info.get("name") or row.get("name") or "",
-            "city": self._city_from_row(row, info),
+            "city": store_text.city_from_row(row, info),
             "address": info.get("tencent_address") or row.get("tencent_address") or row.get("address") or "",
             "map_url": info.get("tencent_map_store") or row.get("tencent_map_store") or row.get("map_store") or "",
             "parking_name": parking.get("park_name") or "",
@@ -234,99 +235,6 @@ class StoreService:
             "status_summary": status_summary,
         }
 
-    def _needs_city_before_lookup(self, query: str, *, city: str, requested_name: str) -> bool:
-        if city or requested_name:
-            return False
-        if not query:
-            return False
-        generic_terms = ["门店", "店", "地址", "哪里", "附近", "停车", "导航", "位置", "怎么过去", "哪家"]
-        return any(term in query for term in generic_terms)
-
-    @staticmethod
-    def _extract_location_preference(query: str) -> str:
-        if any(term in query for term in ["机场附近", "机场周边", "离机场近", "机场近", "高崎机场", "厦门机场", "机场"]):
-            return "机场附近"
-        if any(term in query for term in ["火车站附近", "离火车站近", "高铁站附近"]):
-            return "火车站附近"
-        return ""
-
-    def _extract_city(self, query: str) -> str:
-        for city in ["厦门", "上海", "重庆", "杭州", "广州", "深圳", "南京", "成都", "武汉", "长沙", "福州", "泉州", "西安"]:
-            if city in query:
-                return city
-        for store in self._stores:
-            if store.name in query:
-                return store.city
-        for area, city in {
-            "虹口": "上海",
-            "浦东": "上海",
-            "嘉定": "上海",
-            "思明": "厦门",
-            "湖里": "厦门",
-            "渝北": "重庆",
-            "南岸": "重庆",
-            "渝中": "重庆",
-            "大坪": "重庆",
-            "中贸": "西安",
-            "小寨": "西安",
-            "未央": "西安",
-            "碑林": "西安",
-        }.items():
-            if area in query:
-                return city
-        return ""
-
-    def _extract_store_name(self, query: str) -> str:
-        city = self._extract_city(query)
-        for store in self._stores:
-            if store.name in query:
-                return store.name
-        if "百星" in query and city:
-            return f"{city}百星"
-        aliases = {
-            "中贸": "西安中贸店",
-            "小寨": "西安小寨店",
-            "未央": "西安未央店",
-            "碑林": "西安碑林店",
-            "思明": "厦门思明店",
-            "厦门二店": "厦门二店",
-            "二店": "厦门二店",
-            "百星": "厦门百星",
-            "浦东": "上海浦东二店",
-            "上海二店": "上海浦东二店",
-            "虹口": "上海虹口店",
-            "嘉定": "上海嘉定店",
-            "渝北": "重庆渝北店",
-            "南岸": "重庆南岸店",
-            "渝中": "重庆渝中店",
-            "大坪": "重庆渝中店",
-        }
-        for alias, name in aliases.items():
-            if alias in query:
-                return name
-        return ""
-
-    @staticmethod
-    def _store_aliases(name: str) -> list[str]:
-        aliases = {
-            "上海浦东二店": ["上海浦东二店", "浦东二店", "浦东"],
-            "上海虹口店": ["上海虹口店", "虹口"],
-            "上海嘉定店": ["上海嘉定店", "嘉定"],
-            "厦门思明店": ["厦门思明店", "思明"],
-            "厦门二店": ["厦门二店", "二店", "湖里"],
-            "厦门百星": ["厦门百星", "百星"],
-            "重庆渝北店": ["重庆渝北店", "渝北"],
-            "重庆南岸店": ["重庆南岸店", "南岸"],
-            "重庆渝中店": ["重庆渝中店", "渝中", "大坪"],
-            "西安中贸店": ["西安中贸店", "中贸"],
-            "西安小寨店": ["西安小寨店", "小寨"],
-            "西安未央店": ["西安未央店", "未央"],
-            "西安碑林店": ["西安碑林店", "碑林"],
-        }
-        if name.endswith("百星"):
-            return [name, "百星"]
-        return aliases.get(name, [name])
-
     def _sanitize_platform_result(
         self,
         result: dict[str, Any],
@@ -338,15 +246,15 @@ class StoreService:
         stores = result.get("stores") if isinstance(result, dict) else []
         if not isinstance(stores, list):
             return result
-        target_city = city or self._city_for_store_name(requested_name)
-        aliases = self._store_aliases(requested_name) if requested_name else []
+        target_city = city or store_text.city_for_store_name(requested_name, self._stores)
+        aliases = store_text.store_aliases(requested_name) if requested_name else []
         clean_stores: list[dict[str, Any]] = []
         for store in stores:
             if not isinstance(store, dict):
                 continue
-            if target_city and not self._store_matches_city(store, target_city):
+            if target_city and not store_text.store_matches_city(store, target_city):
                 continue
-            if requested_name and not self._store_matches_requested_name(store, requested_name, aliases):
+            if requested_name and not store_text.store_matches_requested_name(store, requested_name, aliases):
                 continue
             clean_stores.append(self._merge_local_store_details(store))
             if len(clean_stores) >= limit:
@@ -384,7 +292,7 @@ class StoreService:
         name = str(store.get("name") or "").strip()
         if not name:
             return store
-        aliases = self._store_aliases(name)
+        aliases = store_text.store_aliases(name)
         local = next(
             (
                 record
@@ -403,115 +311,6 @@ class StoreService:
         if not merged.get("address") and local_data.get("address"):
             merged["address"] = local_data["address"]
         return merged
-
-    def _city_for_store_name(self, name: str) -> str:
-        if not name:
-            return ""
-        for store in self._stores:
-            if store.name == name:
-                return store.city
-        for city in ["厦门", "上海", "重庆", "杭州", "广州", "深圳", "南京", "成都", "武汉", "长沙", "福州", "泉州", "西安"]:
-            if city in name:
-                return city
-        return ""
-
-    def _row_matches_city(self, row: dict[str, Any], city: str) -> bool:
-        name = str(row.get("name") or "")
-        city_field = str(row.get("city") or row.get("city_name") or "")
-        address = " ".join(str(row.get(key) or "") for key in ["address", "tencent_address"])
-        return self._text_matches_city(name=name, city_field=city_field, address=address, city=city)
-
-    def _store_matches_city(self, store: dict[str, Any], city: str) -> bool:
-        return self._text_matches_city(
-            name=str(store.get("name") or ""),
-            city_field=str(store.get("city") or ""),
-            address=str(store.get("address") or ""),
-            city=city,
-        )
-
-    def _city_from_row(self, row: dict[str, Any], info: dict[str, Any]) -> str:
-        city_field = str(row.get("city") or row.get("city_name") or info.get("city") or info.get("city_name") or "")
-        if city_field:
-            for city in ["厦门", "上海", "重庆", "杭州", "广州", "深圳", "南京", "成都", "武汉", "长沙", "福州", "泉州", "西安"]:
-                if city in city_field:
-                    return city
-        name = str(info.get("name") or row.get("name") or "")
-        address = str(info.get("tencent_address") or row.get("tencent_address") or row.get("address") or "")
-        for city in ["厦门", "上海", "重庆", "杭州", "广州", "深圳", "南京", "成都", "武汉", "长沙", "福州", "泉州", "西安"]:
-            if self._text_matches_city(name=name, city_field="", address=address, city=city):
-                return city
-        return ""
-
-    @staticmethod
-    def _text_matches_city(*, name: str, city_field: str, address: str, city: str) -> bool:
-        if not city:
-            return False
-        if city_field and city in city_field:
-            return True
-        if name.startswith(city) or f"{city}店" in name:
-            return True
-        if f"{city}市" in address:
-            return True
-        if city in {"北京", "上海", "天津", "重庆"} and f"{city}" in address:
-            return True
-        return False
-
-    def _store_matches_requested_name(self, store: dict[str, Any], requested_name: str, aliases: list[str]) -> bool:
-        haystack = " ".join(str(store.get(key) or "") for key in ["name", "address", "city"])
-        if requested_name and requested_name in haystack:
-            return True
-        return any(alias and alias in haystack for alias in aliases)
-
-    @staticmethod
-    def _asks_store_status(query: str) -> bool:
-        return any(term in query for term in ["关门", "开门", "闭店", "停业", "还开", "还营业", "营业吗", "营业时间", "几点开", "几点关"])
-
-    def _match_rows_by_query_name(self, rows: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
-        terms = self._store_hint_terms(query)
-        if not terms:
-            return []
-        matched: list[dict[str, Any]] = []
-        for row in rows:
-            haystack = " ".join(str(row.get(key) or "") for key in ["name", "address", "tencent_address"])
-            if any(term in haystack for term in terms):
-                matched.append(row)
-        return matched
-
-    @staticmethod
-    def _store_hint_terms(query: str) -> list[str]:
-        text = query or ""
-        generic_terms = [
-            "这边",
-            "那边",
-            "附近",
-            "关门",
-            "开门",
-            "闭店",
-            "停业",
-            "营业",
-            "营业时间",
-            "了吗",
-            "吗",
-            "是不是",
-            "还有",
-            "还在",
-            "还开",
-            "门店",
-            "店",
-            "地址",
-            "哪里",
-            "位置",
-            "导航",
-            "停车",
-            "现在",
-            "目前",
-            "今天",
-            "明天",
-            "几点",
-        ]
-        for term in generic_terms:
-            text = text.replace(term, " ")
-        return [term for term in text.split() if len(term) >= 2]
 
     @staticmethod
     def _status_summary(row: dict[str, Any]) -> str:
