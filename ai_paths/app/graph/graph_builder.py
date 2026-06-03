@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.graph.nodes.common import json_dumps, recent_assistant_replies as _recent_assistant_replies
 from app.graph.nodes.legacy_flow_utils import compact_memory as _compact_memory, extract_price_digits as _extract_price_digits
-from app.graph.nodes.legacy_flow import (
+from app.graph.nodes.legacy_reply_bridge import (
     _forced_reply_satisfies_hard_instruction,
     _model_reply_unsafe,
     _postprocess_reply_messages,
