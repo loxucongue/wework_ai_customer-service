@@ -288,7 +288,7 @@ function RunDetailPanel({
           </div>
         ) : null}
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <Snapshot title="客户输入" value={run.input_snapshot} />
+          <Snapshot title="客户输入（含历史）" value={inputSnapshotForDisplay(run, rawLog)} />
           <Snapshot title="最终输出" value={run.output_snapshot} />
         </div>
       </section>
@@ -366,6 +366,39 @@ function formatJson(value: JsonValue) {
   return JSON.stringify(value, null, 2);
 }
 
+function inputSnapshotForDisplay(run: RunItem, rawLog?: JsonValue) {
+  const snapshot: Record<string, JsonValue> = { ...(run.input_snapshot || {}) };
+  if (!isRecord(rawLog)) {
+    return snapshot;
+  }
+  for (const key of [
+    "content",
+    "customer_id",
+    "corp_id",
+    "conversation_history",
+    "file_image",
+    "user_id",
+    "wechat",
+    "external_userid",
+    "customer_add_wechat_id",
+    "confirmed_store_id",
+    "confirmed_store_name",
+    "store_id",
+    "store_name",
+    "appointment_id",
+    "appointment_time",
+    "request_context",
+  ]) {
+    if (rawLog[key] !== undefined) {
+      snapshot[key] = rawLog[key];
+    }
+  }
+  if (Array.isArray(snapshot.conversation_history)) {
+    snapshot.conversation_history_count = snapshot.conversation_history.length;
+  }
+  return snapshot;
+}
+
 function prettyError(value: string) {
   if (!value) return "";
   try {
@@ -381,6 +414,10 @@ function failedToolCount(trace: NodeTrace) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return false;
     return Boolean((item as Record<string, JsonValue>).error);
   }).length;
+}
+
+function isRecord(value: JsonValue): value is Record<string, JsonValue> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function stringField(value: JsonValue) {

@@ -165,9 +165,23 @@ def create_synthesize_reply_node(
                 model_call["output"] = {"messages": len(messages)}
             except Exception as exc:
                 model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
-                model_call["error"] = f"{type(exc).__name__}: {exc}"
-                errors.append({"node": "synthesize_reply", "message": "final_reply_model_failed", "detail": model_call["error"]})
-                messages = []
+                primary_error = f"{type(exc).__name__}: {exc}"
+                model_call["primary_error"] = primary_error
+                forced_messages, forced_call = await try_forced_reply("balanced", "primary_reply_model_exception")
+                model_call.setdefault("nested_calls", []).append(forced_call)
+                if not forced_messages:
+                    forced_messages, forced_call = await try_forced_reply("fast", "balanced_forced_after_exception_failed")
+                    model_call.setdefault("nested_calls", []).append(forced_call)
+                if forced_messages:
+                    messages = forced_messages
+                    model_call["fallback"] = "forced_fact_model_after_exception"
+                    model_call["output"] = {"messages": len(messages)}
+                else:
+                    model_call["error"] = primary_error
+                    errors.append(
+                        {"node": "synthesize_reply", "message": "final_reply_model_failed", "detail": primary_error}
+                    )
+                    messages = []
             if messages:
                 messages = callbacks.postprocess_reply_messages(state, messages)
             if messages and callbacks.model_reply_unsafe(state, messages):
