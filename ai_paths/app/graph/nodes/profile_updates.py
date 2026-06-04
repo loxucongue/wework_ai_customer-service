@@ -4,6 +4,7 @@ from typing import Any
 
 from app.graph.nodes.common import dedupe_strings
 from app.graph.nodes.image_info import has_image_concern
+from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.profile_update_summary import decision_stage, intent_level, profile_summary
 from app.graph.nodes.store_context import extract_city
@@ -12,6 +13,9 @@ from app.policies.constants import PROJECT_KEYWORDS
 
 
 def extract_profile_update(state: AgentState, callbacks: Any) -> dict[str, Any]:
+    if should_suppress_profile_memory_for_reply(state):
+        return {}
+
     content = state.get("normalized_content") or ""
     image_info = state.get("image_info", {}) or {}
     intents = {item.get("intent") for item in state.get("intents", []) if isinstance(item, dict)}

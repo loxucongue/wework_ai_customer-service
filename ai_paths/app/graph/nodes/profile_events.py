@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.profile_event_text import event_impact, event_summary, event_type_for_intent
 from app.graph.nodes.store_context import extract_city, extract_time_text
@@ -13,6 +14,9 @@ def extract_event_updates(
     profile_update: dict[str, Any],
     callbacks: Any,
 ) -> list[dict[str, Any]]:
+    if should_suppress_profile_memory_for_reply(state):
+        return []
+
     content = state.get("normalized_content") or ""
     intents = state.get("intents", [])
     if not intents and not profile_update:

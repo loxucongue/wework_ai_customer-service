@@ -8,6 +8,10 @@ from app.graph.nodes.result_compaction import (
     compact_module_outputs_for_model,
     compact_tool_results_for_model,
 )
+from app.graph.nodes.memory_usage_policy import (
+    memory_usage_policy_for_reply,
+    should_suppress_profile_memory_for_reply,
+)
 from app.graph.state import AgentState
 
 
@@ -23,24 +27,29 @@ class ReplyContextCallbacks:
 
 def reply_user_payload_for_model(state: AgentState, callbacks: ReplyContextCallbacks) -> dict[str, Any]:
     suspend_active_task = callbacks.should_suspend_active_task(state, state.get("active_task", {}), state.get("intents", []))
+    suppress_profile_memory = should_suppress_profile_memory_for_reply(state)
     module_outputs = state.get("module_outputs", [])
     if suspend_active_task:
         module_outputs = [item for item in module_outputs if not (isinstance(item, dict) and item.get("skill") == "active_task")]
+    if suppress_profile_memory:
+        module_outputs = []
+    tool_results = {} if suppress_profile_memory else state.get("tool_results", {})
     return {
         "content": state.get("normalized_content"),
-        "conversation_history": state.get("conversation_history", [])[-6:],
+        "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-6:],
         "reply_brief": callbacks.reply_brief(state),
         "image_info": state.get("image_info", {}),
-        "customer_profile": state.get("customer_profile", {}),
-        "customer_basic_info": state.get("customer_basic_info", {}),
-        "history_events": state.get("history_events", [])[-8:],
-        "recent_assistant_replies": callbacks.recent_assistant_replies(state, 4),
+        "customer_profile": {} if suppress_profile_memory else state.get("customer_profile", {}),
+        "customer_basic_info": {} if suppress_profile_memory else state.get("customer_basic_info", {}),
+        "history_events": [] if suppress_profile_memory else state.get("history_events", [])[-8:],
+        "memory_usage_policy": memory_usage_policy_for_reply(state),
+        "recent_assistant_replies": [] if suppress_profile_memory else callbacks.recent_assistant_replies(state, 4),
         "guardrail_result": state.get("guardrail_result", {}),
-        "action_plan": action_plan_for_reply_model(state),
+        "action_plan": {} if suppress_profile_memory else action_plan_for_reply_model(state),
         "active_task": {} if suspend_active_task else state.get("active_task", {}),
         "module_outputs": compact_module_outputs_for_model(module_outputs),
         "tool_results": compact_tool_results_for_model(
-            state.get("tool_results", {}),
+            tool_results,
             state,
             callbacks=CompactionCallbacks(
                 canonical_price_project=callbacks.canonical_price_project,

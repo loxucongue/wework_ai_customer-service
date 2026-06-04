@@ -16,6 +16,7 @@ from app.graph.planner_content_signals import (
     is_pre_visit_only_question,
     is_service_response_complaint,
 )
+from app.graph.nodes.memory_usage_policy import is_generic_opening_without_specific_need
 from app.graph.planner_dispute_signals import (
     has_effect_dispute,
     has_fee_or_refund_dispute,
@@ -50,13 +51,13 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
         if not any(item.get("intent") == "store_inquiry" for item in kept):
             kept.append(store_city_followup_intent(state))
         return dedupe_intents(kept)
-    if is_low_information_content(content) and not has_recent_action_context(state):
+    if (is_low_information_content(content) and not has_recent_action_context(state)) or is_generic_opening_without_specific_need(content):
         return [
             {
                 "intent": "emotion_chat",
                 "skill": "direct_reply",
                 "priority": 9,
-                "reason": "普通问候或低信息承接，无需进入业务流程",
+                "reason": "普通问候、低信息承接或泛项目开场，无需进入业务流程",
             }
         ]
     if is_service_response_complaint(content):

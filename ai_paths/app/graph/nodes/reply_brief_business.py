@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.graph import planner_helpers
+from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.result_compaction import ad_price_without_explicit_project
 from app.graph.nodes.reply_brief_types import ReplyBriefCallbacks
@@ -33,7 +34,7 @@ def apply_multi_recap_context(state: AgentState, brief: dict[str, Any], callback
 
 
 def apply_image_context(state: AgentState, brief: dict[str, Any], callbacks: ReplyBriefCallbacks) -> None:
-    if _generic_case_request(state, callbacks):
+    if _generic_case_request(state, callbacks) or should_suppress_profile_memory_for_reply(state):
         return
     image_info = state.get("image_info") or {}
     visible = image_info.get("visible_concerns") or callbacks.known_visible_concerns_from_state(state)
@@ -111,7 +112,7 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
     intent_set = _intent_set(state)
     tool_results = state.get("tool_results", {}) or {}
     project_slices = callbacks.project_slices_from_tool_results(tool_results)
-    if _generic_case_request(state, callbacks):
+    if _generic_case_request(state, callbacks) or should_suppress_profile_memory_for_reply(state):
         project_slices = []
 
     if not ({"project_inquiry", "image_inquiry", "price_inquiry", "campaign_inquiry"} & intent_set or project_slices):
@@ -228,7 +229,7 @@ def apply_price_recap_and_memory_context(state: AgentState, brief: dict[str, Any
     if _generic_case_request(state, callbacks):
         return
 
-    memory_context = callbacks.memory_context_sentence(state)
+    memory_context = "" if should_suppress_profile_memory_for_reply(state) else callbacks.memory_context_sentence(state)
     if memory_context:
         brief["known_facts"].append(memory_context)
 
