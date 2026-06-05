@@ -348,7 +348,8 @@ def _allow_tool_backed_store_reply(
     content: str,
     intents: set[str],
 ) -> bool:
-    if intents != {"store_inquiry"}:
+    mixed_project_store = intents == {"store_inquiry", "project_inquiry"}
+    if intents != {"store_inquiry"} and not mixed_project_store:
         return False
     lookup = state.get("tool_results", {}).get("store_lookup") or {}
     if not isinstance(lookup, dict):
@@ -361,10 +362,11 @@ def _allow_tool_backed_store_reply(
         "留名额",
         "什么时候方便",
         "哪天方便",
-        "项目",
         "价格",
         "收费",
     ]
+    if not mixed_project_store:
+        blocked_terms.append("项目")
     if any(term in text for term in blocked_terms):
         return False
 

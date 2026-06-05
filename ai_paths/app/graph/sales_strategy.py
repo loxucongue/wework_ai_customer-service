@@ -57,6 +57,8 @@ def _sales_stage(
         return "service_recovery"
     if _is_at_store(content):
         return "handoff_at_store"
+    if _has_confirmed_booking_signal(content):
+        return "collect_info"
     if isinstance(active_task, dict) and active_task.get("type") == "appointment_visit":
         known = active_task.get("known_slots") if isinstance(active_task.get("known_slots"), dict) else {}
         if _has_customer_confirmation(content) and _has_opening_ready_slots(known):
@@ -65,10 +67,14 @@ def _sales_stage(
             return "collect_info"
         return "close_order"
     if intents & {"appointment_intent", "appointment_confirm", "appointment_change", "appointment_cancel"} or skills & {"appointment"}:
+        if _has_arrival_intent(content):
+            return "close_order"
         return "collect_info"
     if intents & {"store_inquiry"} or skills & {"store"}:
         return "store_paving"
     if intents & {"price_inquiry", "ad_price_check", "campaign_inquiry", "competitor_compare"} or skills & {"price_consult", "campaign"}:
+        if _has_arrival_intent(content):
+            return "close_order"
         if any(
             term in content
             for term in ["多少钱", "价格", "费用", "一次", "定金", "预约金", "尾款", "另收费", "加钱", "全款"]
@@ -150,26 +156,26 @@ def _ask_policy(stage: str, content: str, known_slots: dict[str, Any], missing_s
 def _next_best_action(stage: str, known_slots: dict[str, Any], missing_slots: list[str]) -> str:
     if stage == "opening_intro":
         if known_slots.get("need") or known_slots.get("project_direction"):
-            return "短承接客户需求，直接给改善方向，不重新追问已知问题。"
-        return "短承接客户需求，给一个方向或问一个最关键问题。"
+            return "短承接客户需求，直接给改善方向；如果已有活动口径，就顺带给活动/价格铺垫，不重新追问已知问题。"
+        return "短承接客户需求，给一个方向或只问一个最关键问题。"
     if stage == "store_paving":
         if known_slots.get("city"):
-            return "直接推荐最方便门店；能给地址、导航、停车就一次发全。"
+            return "直接推荐最近或最方便门店；能给地址、导航、停车就一次发全，不再反问客户选哪家。"
         return "只补问城市或所在区域。"
     if stage == "price_paving":
         if known_slots.get("need") or known_slots.get("project_direction"):
-            return "先给项目方向或活动方向，再补一句收费口径，不主动追问。"
+            return "先给项目方向或活动方向，再补一句收费口径，让客户形成价格预期，不主动追问。"
         return "先解释项目/活动价值和收费口径，再自然过渡到报价。"
     if stage == "quote":
         return "先回答当前价格口径；只有客户明确想来时，才轻提预约登记。"
     if stage == "close_order":
         if missing_slots:
-            return f"客户意向已较强，只补一个关键槽位：{missing_slots[0]}。"
-        return "客户意向已较强，轻推登记活动名额或确认到店时间。"
+            return f"客户意向已较强，只补一个关键槽位：{missing_slots[0]}，不要连问。"
+        return "客户意向已较强，轻推登记活动名额或确认到店时间，不提前收姓名电话。"
     if stage == "collect_info":
         if missing_slots:
-            return f"只收集缺失预约信息：{missing_slots[0]}。"
-        return "复述预约开单信息，请客户确认后开预约入口。"
+            return f"只收集缺失预约信息：{missing_slots[0]}，优先门店、日期、时间，再到姓名电话。"
+        return "复述预约开单信息，请客户确认后开预约入口和10元预约金小程序。"
     if stage == "handoff_at_store":
         return "客户已到店，交给门店专业同事接待。"
     if stage == "service_recovery":
@@ -199,6 +205,46 @@ def _reply_rhythm(stage: str, ask_policy: str) -> str:
     if stage in {"store_paving", "quote", "close_order"}:
         return "默认1条答核心；只有地址资料和下一步明显不同才拆第2条。"
     return "短承接后最多问一个关键问题；已知信息足够时不追问。"
+
+
+def _has_arrival_intent(content: str) -> bool:
+    return any(
+        term in content
+        for term in [
+            "想来",
+            "想过去",
+            "能去吗",
+            "可以去吗",
+            "过去看看",
+            "到店",
+            "安排接待",
+            "今天能来",
+            "下午来",
+            "周末来",
+            "约一下",
+        ]
+    )
+
+
+def _has_confirmed_booking_signal(content: str) -> bool:
+    return any(
+        term in content
+        for term in [
+            "姓名",
+            "电话",
+            "手机号",
+            "我叫",
+            "这是我电话",
+            "发你电话",
+            "发你名字",
+            "帮我登记",
+            "开预约",
+            "发小程序",
+            "发付款码",
+            "付10元",
+            "付预约金",
+        ]
+    )
 
 
 def _stage_reason(stage: str, intents: set[str], known_slots: dict[str, Any]) -> str:
@@ -259,7 +305,14 @@ def _has_opening_ready_slots(known: dict[str, Any]) -> bool:
 
 
 def _has_customer_confirmation(content: str) -> bool:
-    return any(term in content for term in ["确认", "可以", "好的", "行", "就这个", "就这家", "约", "开单", "发我"])
+    text = str(content or "").strip()
+    if not text:
+        return False
+    if "?" in text or "？" in text:
+        return False
+    if any(term in text for term in ["可以去吗", "能去吗", "能不能", "想过来看看", "过来看看"]):
+        return False
+    return any(term in text for term in ["确认", "好的", "行", "就这个", "就这家", "约", "开单", "发我", "可以"])
 
 
 def _is_at_store(content: str) -> bool:
