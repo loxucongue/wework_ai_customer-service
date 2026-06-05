@@ -10,6 +10,29 @@ interface MessageBubbleProps {
   message: ChatMessage;
 }
 
+function getDisplayText(message: ChatMessage): string {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (!content || typeof content !== "object") return "";
+  if (message.contentType === "human_handoff") {
+    return typeof content.handoff_reason === "string" ? content.handoff_reason : "";
+  }
+  if (message.contentType === "appointment_push") {
+    return typeof content.text === "string" ? content.text : "";
+  }
+  if (message.contentType === "book_order") {
+    return typeof content.order_id === "string" ? `预约订单：${content.order_id}` : "";
+  }
+  return typeof content.text === "string" ? content.text : "";
+}
+
+function getImageUrl(message: ChatMessage): string {
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (!content || typeof content !== "object") return "";
+  return typeof content.url === "string" ? content.url : "";
+}
+
 function formatDebugValue(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -38,6 +61,8 @@ function hasDebugMeta(message: ChatMessage): boolean {
 export function MessageBubble({ message }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const showDebug = !isUser && hasDebugMeta(message);
+  const displayText = getDisplayText(message);
+  const displayImageUrl = getImageUrl(message);
 
   return (
     <div
@@ -68,7 +93,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         )}
 
         {/* Message bubble */}
-        {message.content && message.contentType !== "image" && (
+        {displayText && message.contentType !== "image" && (
           <div
             className={cn(
               "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
@@ -77,15 +102,15 @@ export function MessageBubble({ message }: MessageBubbleProps) {
                 : "bg-muted text-foreground"
             )}
           >
-            {message.content}
+            {displayText}
           </div>
         )}
 
         {/* Assistant image from workflow */}
-        {!isUser && message.contentType === "image" && message.content && (
+        {!isUser && message.contentType === "image" && displayImageUrl && (
           <div className="overflow-hidden rounded-2xl bg-muted">
             <img
-              src={message.content}
+              src={displayImageUrl}
               alt="AI回复的图片"
               className="max-h-80 max-w-full object-contain"
             />

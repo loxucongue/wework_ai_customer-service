@@ -19,6 +19,27 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+function getWorkflowItemText(
+  type: string,
+  content: string | Record<string, unknown>
+): string {
+  if (typeof content === "string") return content;
+  if (!content || typeof content !== "object") return "";
+  if (type === "image") {
+    return typeof content.url === "string" ? content.url : "";
+  }
+  if (type === "human_handoff") {
+    return typeof content.handoff_reason === "string" ? content.handoff_reason : "";
+  }
+  if (type === "appointment_push") {
+    return typeof content.text === "string" ? content.text : "";
+  }
+  if (type === "book_order") {
+    return typeof content.order_id === "string" ? content.order_id : "";
+  }
+  return typeof content.text === "string" ? content.text : "";
+}
+
 function fileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -423,12 +444,16 @@ export function ChatMain() {
           // Only attach meta to the first bubble
           for (let i = 0; i < sorted.length; i++) {
             const item = sorted[i];
-            if (!item.content) continue;
+            const type =
+              (item.type as "text" | "image" | "human_handoff" | "appointment_push" | "book_order") ||
+              "text";
+            const normalizedContent = getWorkflowItemText(type, item.content);
+            if (!normalizedContent) continue;
             assistantMessages.push({
               id: generateId(),
               role: "assistant",
               content: item.content,
-              contentType: (item.type as "text" | "image") || "text",
+              contentType: type,
               timestamp: Date.now(),
               duration: elapsed,
               meta: i === 0 && Object.keys(meta).length > 0 ? meta : undefined,
@@ -483,7 +508,7 @@ export function ChatMain() {
   );
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="flex h-screen overflow-hidden bg-background">
       {/* Sidebar */}
       <ChatSidebar
         conversations={conversations}
@@ -496,7 +521,7 @@ export function ChatMain() {
       />
 
       {/* Main chat area */}
-      <div className="flex flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         {/* Header */}
         <div className="flex items-center gap-3 border-b px-6 py-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
@@ -540,7 +565,7 @@ export function ChatMain() {
         </div>
 
         {/* Messages area */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
           {!activeConversation || activeConversation.messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 px-4">
               <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">

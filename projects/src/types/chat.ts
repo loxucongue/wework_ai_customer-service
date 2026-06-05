@@ -1,10 +1,10 @@
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
-  content: string;
+  content: string | Record<string, unknown>;
   timestamp: number;
-  /** 消息内容类型：text 或 image */
-  contentType?: "text" | "image";
+  /** 消息内容类型：text、image 或 human_handoff */
+  contentType?: "text" | "image" | "human_handoff" | "appointment_push" | "book_order";
   /** 用户上传的图片 URL（对象存储签名链接） */
   imageUrl?: string;
   /** 回答耗时（毫秒），仅 assistant 消息有 */
@@ -35,7 +35,7 @@ export interface Conversation {
 }
 
 export interface WorkflowOutputItem {
-  content: string;
+  content: string | Record<string, unknown>;
   order: number;
   type: string;
 }
