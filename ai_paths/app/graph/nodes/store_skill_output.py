@@ -45,6 +45,9 @@ def store_skill_output(content: str, tool_results: dict[str, Any], callbacks: St
                 recommendation += f"；位置偏好：{location_preference}"
             if recommendation_reason:
                 recommendation += f"；推荐原因：{recommendation_reason}"
+            driving = _store_driving_text(recommended_store)
+            if driving:
+                recommendation += f"；车程参考：{driving}"
             facts.append(recommendation)
 
         for store in stores[:3]:
@@ -57,6 +60,9 @@ def store_skill_output(content: str, tool_results: dict[str, Any], callbacks: St
                 parts.append(str(store.get("status_summary")))
             if wants_route and store.get("map_url"):
                 parts.append(f"导航链接{store.get('map_url')}")
+            driving = _store_driving_text(store)
+            if driving:
+                parts.append(f"车程参考{driving}")
             if wants_parking:
                 parking = callbacks.parking_text(store)
                 if parking:
@@ -78,6 +84,10 @@ def store_skill_output(content: str, tool_results: dict[str, Any], callbacks: St
                 f"已匹配到{len(stores)}家门店；优先推荐{recommended_store.get('name')}；"
                 "最终回复应说明推荐原因，并简要列出另外几家备选。"
             )
+            if wants_route or wants_parking:
+                reply_points.append("客户已经在要地址、导航或停车时，不要再反问方便哪家，直接发推荐门店的完整资料。")
+            else:
+                reply_points.append("客户只要附近门店时，默认先推荐最方便的一家，不要先反问客户选哪家。")
         else:
             reply_points.append(f"已匹配到{len(stores)}家门店；最终回复应按客户本轮问题列出门店信息。")
     else:
@@ -96,3 +106,19 @@ def store_skill_output(content: str, tool_results: dict[str, Any], callbacks: St
         "risk_flags": [],
         "suggested_next_step": "发送客户本轮明确询问的门店信息" if stores else "确认城市或门店",
     }
+
+
+def _store_driving_text(store: dict[str, Any]) -> str:
+    driving = store.get("driving_time") if isinstance(store, dict) else None
+    if not isinstance(driving, dict):
+        return ""
+    summary = str(driving.get("summary") or "").strip()
+    if summary:
+        return summary
+    output = driving.get("raw_output")
+    if isinstance(output, dict):
+        for key in ["duration", "driving_time", "time", "text", "output"]:
+            value = output.get(key)
+            if value:
+                return str(value).strip()
+    return ""
