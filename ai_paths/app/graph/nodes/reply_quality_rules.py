@@ -243,6 +243,30 @@ def _price_reply_invalid(
 ) -> bool:
     if any(term in text for term in ["稍后同步给你", "稍后发你", "回头给你", "我去问下再回复你"]):
         return True
+    frame = detect_price_question_frame(content)
+    if frame in {
+        "single_fee",
+        "times_question",
+        "course_payment",
+        "deposit_question",
+        "price_conflict",
+        "hidden_fee_concern",
+        "confirm_price",
+    }:
+        if frame == "single_fee":
+            return not any(term in text for term in ["一次", "单次", "范围", "局部", "全脸", "双侧", "疗程"])
+        if frame == "times_question":
+            return not any(term in text for term in ["2-3", "2到3", "两三", "分阶段", "几次", "次数", "节奏", "变化"])
+        if frame == "course_payment":
+            return not any(term in text for term in ["单次", "当次", "到店", "疗程", "付费", "确认"])
+        if frame == "deposit_question":
+            return not any(term in text for term in ["10元", "定金", "订金", "预约金", "尾款", "到店", "全款", "活动参与"])
+        if frame == "price_conflict":
+            return not any(term in text for term in ["口径", "范围", "包含", "尾款", "活动", "差异", "不同"])
+        if frame == "hidden_fee_concern":
+            return not any(term in text for term in ["包含项", "尾款", "另加", "加项", "核清楚", "确认前", "收费"])
+        if frame == "confirm_price":
+            return not any(term in text for term in ["参考", "活动", "口径", "核对", "确认"])
     need_text = " ".join([content, *map(str, known_visible), str(image_info.get("image_desc") or "")])
     has_spot_need = any(term in need_text for term in ["斑", "点状", "色沉", "肤色不均", "暗沉"])
     has_sensitive_repair_need = any(term in need_text for term in ["敏感", "泛红", "屏障", "刺痛", "干痒", "红血丝"])
