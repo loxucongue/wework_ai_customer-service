@@ -54,6 +54,8 @@ def postprocess_reply_messages(
         content = message_content_text(message.get("content"))
         if not content:
             continue
+        if msg_type == "text" and _is_standalone_image_url(content):
+            msg_type = "image"
         if msg_type == "text" and callbacks.has_actual_image_context(state) and not intents & {"human_request", "complaint_refund", "after_sales"} and reply_filters.asks_for_duplicate_photo(content):
             continue
         if msg_type == "text" and "price_inquiry" in intents and reply_filters.is_vague_price_deferral(content):
@@ -291,3 +293,12 @@ def _normalize_output_message(message: dict[str, Any]) -> dict[str, Any]:
         url = message_content_text(content)
         return {**message, "content": {"url": url}}
     return message
+
+
+def _is_standalone_image_url(text: str) -> bool:
+    content = str(text or "").strip()
+    if not (content.startswith("http://") or content.startswith("https://")):
+        return False
+    if "\n" in content or " " in content:
+        return False
+    return any(marker in content.lower() for marker in [".png", ".jpg", ".jpeg", ".webp", "filebiztype"])

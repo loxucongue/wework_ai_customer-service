@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.graph.planner_dispute_signals import is_deposit_rule_question
 from app.graph.planner_general_signals import is_low_information_content
 from app.policies.constants import (
     ADVANTAGE_KEYWORDS,
@@ -67,6 +68,10 @@ def has_generic_project_request(content: str) -> bool:
 def has_case_request(content: str) -> bool:
     if not content:
         return False
+    if any(term in content for term in ["图片上", "图上", "这张图", "这个图"]) and any(
+        term in content for term in ["客户", "做了多少次", "做了几次", "效果", "前后"]
+    ):
+        return True
     return any(
         term in content
         for term in [
@@ -83,8 +88,18 @@ def has_case_request(content: str) -> bool:
             "客户效果",
             "做完之后的效果",
             "发我看看效果",
+            "发我看看",
+            "发我看",
             "发个效果",
             "看看效果",
+            "看祛斑效果",
+            "看淡斑效果",
+            "祛斑效果",
+            "淡斑效果",
+            "做完后的变化",
+            "做完后变化",
+            "效果变化",
+            "做完后什么样",
         ]
     )
 
@@ -97,6 +112,8 @@ def has_project_process_question(content: str) -> bool:
 
 def has_ad_price_check(content: str) -> bool:
     if not content:
+        return False
+    if is_deposit_rule_question(content):
         return False
     context_terms = [
         "广告",
@@ -124,6 +141,8 @@ def has_ad_price_check(content: str) -> bool:
 
 def has_campaign_inquiry(content: str) -> bool:
     if not content:
+        return False
+    if is_deposit_rule_question(content):
         return False
     campaign_terms = [
         "活动",
@@ -176,8 +195,18 @@ def has_effect_guarantee_request(content: str) -> bool:
             "包效果",
             "效果有保障",
             "效果保障",
+            "效果能保证",
+            "能保证吗",
+            "效果能保证吗",
             "有保障吗",
             "保障效果",
+            "会不会反弹",
+            "怕反弹",
+            "担心反弹",
+            "能维持多久",
+            "维持多久",
+            "保持多久",
+            "能保持多久",
             "不保证就算了",
         ]
     )
