@@ -213,4 +213,10 @@ def _should_attach_case_study_image(content: str) -> bool:
         "客户做完",
     ]
     effect_terms = ["这种效果", "这样效果", "看到变化", "能做到这样", "能做成这样", "能有这种变化"]
-    return any(term in text for term in explicit_terms) or any(term in text for term in effect_terms)
+    need_terms = ["黑色素", "祛斑", "淡斑", "色沉", "暗沉", "肤色不均", "毛孔", "痘印", "松弛", "细纹", "提亮"]
+    ask_terms = ["能弄吗", "能做吗", "能改善吗", "可以做吗", "有没有效果", "有效果吗", "能不能", "行不行", "年纪大"]
+    return (
+        any(term in text for term in explicit_terms)
+        or any(term in text for term in effect_terms)
+        or (any(term in text for term in need_terms) and any(term in text for term in ask_terms))
+    )

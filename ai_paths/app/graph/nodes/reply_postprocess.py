@@ -189,6 +189,7 @@ def postprocess_reply_messages(
         allow_case_study_image=not case_request_lacks_specific_context(state)
         and not is_generic_times_or_effect_question(content_text),
     )
+    result = _ensure_case_asset_image_message(state, result)
     result = _rewrite_repeated_case_image_reference(state, result)
     result = _enforce_verified_store_facts_only(state, result)
     result = _strip_unasked_unverified_store_details(state, result)
@@ -198,6 +199,36 @@ def postprocess_reply_messages(
     if handoff_message:
         result.append({"type": "human_handoff", "order": len(result) + 1, "content": handoff_message["content"]})
     return callbacks.renumber_messages(result)
+
+
+def _ensure_case_asset_image_message(state: AgentState, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    intents = {item.get("intent") for item in state.get("intents", []) if isinstance(item, dict)}
+    if not (intents & {"case_request", "project_inquiry", "image_inquiry"}):
+        return messages
+    if any(isinstance(item, dict) and item.get("type") == "image" for item in messages):
+        return messages
+    content = str(state.get("normalized_content") or "")
+    if case_request_lacks_specific_context(state):
+        return messages
+    should_attach = (
+        "case_request" in intents
+        or detect_customer_need_type_followup(content) is not None
+        or reply_assets._should_attach_case_study_image(content)
+    )
+    if not should_attach:
+        return messages
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    image_url = reply_assets.select_asset_image_url(
+        tool_results,
+        "case_studies",
+        conversation_history=state.get("conversation_history", []) or [],
+    )
+    if not image_url:
+        return messages
+    updated = list(messages)
+    insert_at = 1 if updated else 0
+    updated.insert(insert_at, {"type": "image", "order": insert_at + 1, "content": image_url})
+    return updated
 
 
 def _enforce_verified_store_facts_only(state: AgentState, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

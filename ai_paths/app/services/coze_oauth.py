@@ -30,6 +30,11 @@ class CozeOAuthTokenProvider:
             raise RuntimeError("Missing COZE_OAUTH_PRIVATE_KEY_FILE")
 
         path = Path(private_key_file)
+        if not path.is_absolute() and not path.exists():
+            repo_root = Path(__file__).resolve().parents[3]
+            candidate = repo_root / path
+            if candidate.exists():
+                path = candidate
         if not path.exists():
             raise RuntimeError("COZE_OAUTH_PRIVATE_KEY_FILE does not exist")
 
