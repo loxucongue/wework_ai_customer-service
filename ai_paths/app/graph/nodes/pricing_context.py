@@ -10,11 +10,15 @@ def price_point_from_row(name: str, row: dict[str, Any], *, requested_project: s
     prefix = ""
     if requested_project and requested_project not in name and source == "local_xlsx":
         if requires_exact_price(requested_project):
-            return f"当前价格表没看到{requested_project}单项，小贝先不拿其他淡斑产品价格代替报价。"
+            return f"当前价格表没看到{requested_project}单项，先不拿其他淡斑产品价格代替报价。"
         prefix = f"当前价格表没看到{requested_project}单项，淡斑相关配置里，"
     new_price = value(row.get("new_price"))
     promo_price = value(row.get("promo_price"))
     daily_price = value(row.get("daily_price"))
+    note = str(row.get("price_note") or "")
+    range_match = re.search(r"参考价[:：]?([0-9]+(?:\.[0-9]+)?-[0-9]+(?:\.[0-9]+)?)", note)
+    if range_match:
+        return f"{prefix}{name}可以先按参考价{range_match.group(1)}做预算参考。"
     if new_price and promo_price:
         return f"{prefix}{name}可以先按新客体验价{new_price}、活动价{promo_price}做预算参考。"
     if new_price:
@@ -53,11 +57,11 @@ def price_project_aliases(project: str) -> list[str]:
 
 
 def pricing_rows(tool_results: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = tool_results.get("pricing_db", {}).get("rows") or []
-    if rows:
-        return [dict(row, _source="coze_db") for row in rows if isinstance(row, dict)]
     local_rows = tool_results.get("pricing_local", {}).get("rows") or []
-    return [dict(row, _source="local_xlsx") for row in local_rows if isinstance(row, dict)]
+    if local_rows:
+        return [dict(row, _source=row.get("_source") or "local_pricing_rules") for row in local_rows if isinstance(row, dict)]
+    rows = tool_results.get("pricing_db", {}).get("rows") or []
+    return [dict(row, _source="coze_db") for row in rows if isinstance(row, dict)]
 
 
 def requires_exact_price(project: str) -> bool:

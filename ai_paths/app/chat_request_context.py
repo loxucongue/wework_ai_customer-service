@@ -4,6 +4,8 @@ from typing import Any
 
 from app.schemas import ChatRequest
 
+DEFAULT_PLATFORM_USER_ID = 7294
+
 
 def build_request_context(request: ChatRequest) -> dict[str, Any]:
     context = dict(request.request_context or {})
@@ -24,6 +26,8 @@ def build_request_context(request: ChatRequest) -> dict[str, Any]:
     for key, value in fields.items():
         if value not in (None, ""):
             context[key] = value
+    if context.get("user_id") in (None, ""):
+        context["user_id"] = DEFAULT_PLATFORM_USER_ID
     return context
 
 

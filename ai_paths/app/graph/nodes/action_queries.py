@@ -9,7 +9,10 @@ from app.graph.nodes.intent_signals import (
     has_ad_price_check,
     has_case_request,
     has_project_process_question,
+    is_broad_ad_intro,
 )
+from app.graph.nodes.result_compaction import price_question_without_explicit_project
+from app.graph.planner_query_terms import need_query_from_state
 
 
 @dataclass(frozen=True)
@@ -81,16 +84,22 @@ def safe_query_from_state(state: dict[str, Any], skill: Any, callbacks: ActionQu
     content = state.get("normalized_content") or ""
     skill_name = str(skill)
     if skill_name == "price_consult":
+        if price_question_without_explicit_project(state):
+            parts = [*callbacks.extract_price_digits(content)[:2], "广告价", "预约金", "尾款", "包含项", "是否另收费"]
+            return " ".join(part for part in parts if part).strip()
         if has_ad_price_check(content):
-            project = callbacks.canonical_price_project(callbacks.contextual_price_project(state) or callbacks.extract_project(content))
+            project = callbacks.canonical_price_project(callbacks.extract_project(content))
             parts = [project, *callbacks.extract_price_digits(content)[:2], "广告价", "预约金", "尾款", "包含项", "是否另收费"]
             return " ".join(part for part in parts if part).strip()
         project = callbacks.canonical_price_project(callbacks.contextual_price_project(state))
         return project or "项目价格"
     if skill_name == "project_consult":
-        if has_case_request(content):
-            project = callbacks.extract_project(content)
-            return " ".join(part for part in [project, "案例", "效果", "前后对比", "改善参考"] if part).strip()
+        if is_broad_ad_intro(content):
+            if "祛斑" in content or "淡斑" in content:
+                return "祛斑 项目建议 替换词名称"
+            return "项目建议 替换词名称"
+        if has_case_request(content) or _has_case_intent(state):
+            return " ".join(part for part in [need_query_from_state(state, content), "案例", "效果", "前后对比", "改善参考"] if part).strip()
         if has_project_process_question(content):
             project = callbacks.extract_project(content)
             return " ".join(part for part in [project, "操作流程", "时长", "恢复", "注意事项"] if part).strip()
@@ -101,6 +110,13 @@ def safe_query_from_state(state: dict[str, Any], skill: Any, callbacks: ActionQu
         if visible_text:
             return f"{visible_text} 项目建议 替换词名称"
     return safe_query(content, skill, callbacks)
+
+
+def _has_case_intent(state: dict[str, Any]) -> bool:
+    return any(
+        isinstance(item, dict) and item.get("intent") == "case_request"
+        for item in (state.get("intents") or [])
+    )
 
 
 def after_sales_query_terms(content: str) -> list[str]:

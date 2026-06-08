@@ -28,7 +28,15 @@ def planned_kb_searches(
     *,
     callbacks: LegacyKbPlanningCallbacks,
 ) -> list[dict[str, str]]:
-    allowed = {"project_qa", "project_price", "trust_assets", "competitor_qa", "after_sales_qa"}
+    allowed = {
+        "sales_talk_qa",
+        "project_qa",
+        "project_price",
+        "trust_assets",
+        "competitor_qa",
+        "after_sales_qa",
+        "case_studies",
+    }
     planned = action.get("tool_plan")
     if not isinstance(planned, list):
         return []
@@ -67,6 +75,8 @@ def clean_planned_kb_query(
         return text
     if kb_name == "project_qa":
         return callbacks.safe_query_from_state(state, "project_consult")
+    if kb_name == "sales_talk_qa":
+        return callbacks.safe_query_from_state(state, skill)
     if kb_name == "project_price":
         project = callbacks.canonical_price_project(callbacks.recent_project_from_state(state))
         if project and not callbacks.is_broad_price_category(project):
@@ -120,9 +130,4 @@ def project_price_followup_queries(
             value = value.split("|")[-1].strip() if "|" in value else value
             value = re.sub(r"^(切片\d+\s*)", "", value).strip()
             queries.extend(callbacks.project_direction_name_candidates(value))
-        direction = str(item.get("direction") or "").strip()
-        if direction:
-            for candidate in ["肤色改善", "针对性色素淡化", "毛孔肤质改善", "痘印痘坑肤质改善", "敏感泛红修护"]:
-                if candidate in direction:
-                    queries.append(candidate)
     return callbacks.dedupe_strings(queries)[:2]

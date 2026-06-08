@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
+from app.graph.planner_dispute_signals import is_pre_service_effect_concern
 from app.graph.nodes.common import dedupe_strings
 from app.graph.state import AgentState
 from app.policies.constants import COMPLAINT_KEYWORDS, HUMAN_KEYWORDS, SEVERE_AFTER_SALES_KEYWORDS
@@ -58,6 +59,8 @@ def complaint_terms(content: str) -> list[str]:
 
 def has_effect_dispute(content: str) -> bool:
     if not content:
+        return False
+    if is_pre_service_effect_concern(content):
         return False
     if any(prefix in content for prefix in ["会不会", "怕", "担心", "有没有可能"]) and any(
         word in content for word in ["没效果", "没用", "被坑"]

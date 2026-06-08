@@ -18,7 +18,11 @@ def validated_planner_intents(payload: dict[str, Any]) -> list[dict[str, Any]]:
         if skill not in allowed_skills:
             continue
         raw_intent = str(item.get("intent") or "").strip()
-        if skill == "handoff":
+        if skill == "project_consult" and raw_intent in {"case_request", "project_process", "image_inquiry", "project_inquiry"}:
+            intent = raw_intent
+        elif skill == "price_consult" and raw_intent in {"ad_price_check", "campaign_inquiry", "price_inquiry"}:
+            intent = raw_intent
+        elif skill == "handoff":
             intent = raw_intent if raw_intent in {"human_request", "complaint_refund"} else "human_request"
         else:
             intent = _intent_for_skill(skill)
@@ -69,6 +73,7 @@ def _intent_rank(intent: str) -> int:
         "after_sales": 1,
         "trust_issue": 2,
         "competitor_compare": 3,
+        "case_request": 3,
         "ad_price_check": 4,
         "price_inquiry": 4,
         "campaign_inquiry": 4,
@@ -78,6 +83,7 @@ def _intent_rank(intent: str) -> int:
         "appointment_change": 6,
         "appointment_cancel": 6,
         "image_inquiry": 7,
+        "project_process": 7,
         "project_inquiry": 8,
         "emotion_chat": 9,
     }.get(intent, 9)
@@ -120,10 +126,11 @@ def _validated_tool_plan(value: Any, skill: str) -> list[dict[str, str]]:
         "store_lookup",
         "available_time",
         "appointment_record_query",
+        "appointment_create",
         "professional_assist",
         "no_tool",
     }
-    allowed_kbs = {"project_qa", "project_price", "case_studies", "trust_assets", "competitor_qa", "after_sales_qa"}
+    allowed_kbs = {"sales_talk_qa", "project_qa", "project_price", "case_studies", "trust_assets", "competitor_qa", "after_sales_qa"}
     result: list[dict[str, str]] = []
     for item in value:
         if not isinstance(item, dict):
@@ -141,7 +148,7 @@ def _validated_tool_plan(value: Any, skill: str) -> list[dict[str, str]]:
                 continue
             tool["kb_name"] = kb_name
             tool["query"] = str(item.get("query") or "").strip()[:120] or default_query_for_skill(skill)
-        elif name in {"pricing_db", "local_pricing", "store_lookup", "available_time", "appointment_record_query"}:
+        elif name in {"pricing_db", "local_pricing", "store_lookup", "available_time", "appointment_record_query", "appointment_create"}:
             tool["query"] = str(item.get("query") or "").strip()[:120]
         result.append(tool)
         if len(result) >= 4:

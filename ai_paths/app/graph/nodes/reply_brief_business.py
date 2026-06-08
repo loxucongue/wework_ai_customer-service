@@ -5,6 +5,11 @@ import re
 from typing import Any
 
 from app.graph import planner_helpers
+from app.graph.customer_need_questions import (
+    customer_friendly_direction_label,
+    customer_friendly_type_question,
+    is_customer_need_type_followup,
+)
 from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.intent_signals import is_broad_ad_intro
 from app.graph.nodes.price_question_frames import (
@@ -35,7 +40,7 @@ def apply_direct_reply_context(state: AgentState, brief: dict[str, Any], callbac
         brief["follow_up"] = "如果客户想继续预约，再确认门店、日期、时间和手机号；否则不用主动推进。"
     if is_low_information_closing(content):
         brief["must_answer"].append("客户当前只是感谢、收到、暂缓或轻量收尾，只需自然收住，不继承历史预约、门店或项目任务。")
-        brief["answer_first"].append("自然回应客户的感谢或收尾，有需要时再来找小贝即可。")
+        brief["answer_first"].append("自然回应客户的感谢或收尾，有需要时再来找我即可。")
         brief["do_not_say"].extend(["最近有在关注什么", "想了解什么项目", "哪天方便", "哪个门店", "查一下可约时间", "继续预约"])
         brief["follow_up"] = "不要追加新的问题。"
 
@@ -56,7 +61,7 @@ def apply_multi_recap_context(state: AgentState, brief: dict[str, Any], callback
             "更多门店",
         ]
     )
-    brief["follow_up"] = "整理完客户要的信息即可；如需下一步，只能轻轻说明后续想确认时间再告诉小贝。"
+    brief["follow_up"] = "整理完客户要的信息即可；如需下一步，只能轻轻说明后续想确认时间再告诉我。"
 
 
 def apply_image_context(state: AgentState, brief: dict[str, Any], callbacks: ReplyBriefCallbacks) -> None:
@@ -78,8 +83,8 @@ def apply_image_context(state: AgentState, brief: dict[str, Any], callbacks: Rep
     if any(term in visible_text for term in ["斑", "色沉", "肤色不均"]):
         brief["known_facts"].append("客户已明确关注斑点/色沉/肤色不均，不要反复追问最想改善哪一点。")
         brief["available_facts"]["project_direction"] = [
-            "肤色改善类方向更偏肤色不均、暗沉、浅层色沉改善",
-            "针对性色素淡化类方向更偏点状色素问题",
+            "整体提亮方向更偏肤色不均、暗沉和浅层色沉改善",
+            "淡斑改善方向更偏更明确的点状色素问题",
             "具体适合哪类要看斑点深浅、范围、肤质和预算",
         ]
         brief["must_answer"].append("如果客户问斑点能不能淡，正面回答可以往淡化方向看，再说明不能承诺完全消失。")
@@ -138,17 +143,24 @@ def apply_price_context(state: AgentState, brief: dict[str, Any], callbacks: Rep
         _apply_ad_price_boundary(content, brief, callbacks, frame)
         return
 
-    rows = callbacks.filter_pricing_rows_for_project(callbacks.pricing_rows_from_kb(tool_results), project)
-    if not rows:
-        rows = callbacks.filter_pricing_rows_for_project(callbacks.pricing_rows(tool_results), project)
+    local_rows = callbacks.pricing_rows(tool_results)
+    kb_rows = callbacks.pricing_rows_from_kb(tool_results)
+    if _should_prefer_local_pricing(content, project):
+        rows = callbacks.filter_pricing_rows_for_project(local_rows, project)
+        if not rows:
+            rows = callbacks.filter_pricing_rows_for_project(kb_rows, project)
+    else:
+        rows = callbacks.filter_pricing_rows_for_project(kb_rows, project)
+        if not rows:
+            rows = callbacks.filter_pricing_rows_for_project(local_rows, project)
 
     if rows:
         row = rows[0]
-        name = str(row.get("project_name") or project or "相关项目")
+        name = _customer_facing_price_name(content, project, row)
         brief["known_facts"].append(f"价格项目：{name}")
-        for bit in callbacks.price_bits(row)[:5]:
+        for bit in _customer_price_bits(name, row, content)[:5]:
             brief["known_facts"].append(bit)
-        brief["available_facts"]["prices"] = [callbacks.price_fact_for_brief(row)]
+        brief["available_facts"]["prices"] = [_customer_price_fact_for_brief(name, row, callbacks, content)]
     elif project:
         brief["known_facts"].append(f"本轮想问价格的项目：{project}；暂未查到可直接引用的明确价格。")
         brief["available_facts"]["prices"] = []
@@ -167,19 +179,61 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
     content = state.get("normalized_content") or ""
     intent_set = _intent_set(state)
     tool_results = state.get("tool_results", {}) or {}
+    image_info = state.get("image_info") or {}
     project_slices = callbacks.project_slices_from_tool_results(tool_results)
     broad_ad_intro = is_broad_ad_intro(content)
+    case_items = _case_items_from_tool_results(state)
     if _generic_case_request(state, callbacks) or should_suppress_profile_memory_for_reply(state):
         project_slices = []
+        case_items = []
 
     if not ({"project_inquiry", "image_inquiry", "price_inquiry", "campaign_inquiry"} & intent_set or project_slices):
         return
 
     if {"project_inquiry", "image_inquiry"} & intent_set:
         brief["must_answer"].append("本轮是项目/看图咨询：先基于已知需求给出改善方向，再说明边界；不要只追问客户。")
+        friendly_question = customer_friendly_type_question(content, visible_concerns=image_info.get("visible_concerns") if isinstance(image_info, dict) else [])
+        if friendly_question:
+            brief["available_facts"]["customer_friendly_type_question"] = friendly_question
+        if is_customer_need_type_followup(content):
+            brief["must_answer"].append("客户已经在回答上一轮的类型判断，本轮不要再重复问同一个类型问题；直接给优先改善方向和同类参考。")
+            brief["must_answer"].append("如果城市已知，可以轻带一句后续就近到店方便，但不要切到门店清单或预约时间。")
+            brief["do_not_say"].extend(
+                [
+                    "你这个更像零散小点、成片颜色重一点，还是整体肤色暗沉不均",
+                    "你更像是脸有点松、轮廓没以前紧，还是法令纹、嘴角这些纹路更明显",
+                    "你更偏干燥缺水、上妆卡粉，还是整体肤色发闷没光泽",
+                    "你更在意毛孔粗、出油黑头，还是痘印痘坑这些问题",
+                ]
+            )
+            brief["follow_up"] = "先给方向和参考，不再重复类型追问。"
         if broad_ad_intro:
-            brief["answer_first"].append("可以的，你这轮主要就是想先把祛斑方向、价格口径、效果参考和到店安排顺清楚。")
-            brief["must_answer"].append("这是广告引流的初次咨询，先短承接并主动给信息：先说祛斑先看方向，再说明价格按活动口径核，效果按同类改善参考看，到店安排后面可以接着确认。")
+            brief["answer_first"].append("可以的，这类大多数都可以做，我先给你把方向、效果参考和到店这几块说清楚。")
+            brief["must_answer"].append("这是广告引流的初次咨询，先短承接并主动给信息：先说这类大多数都可以做，再说明先按方向看、效果按同类改善参考看、价格按活动口径核。")
+            if any(term in content for term in ["价格", "多少钱", "费用", "活动", "广告"]) and any(term in content for term in ["到店", "门店", "安排", "预约"]):
+                brief["answer_first"].append("客户同一句同时问价格、效果和到店安排：回复必须覆盖三点，效果先看同类参考，价格按广告/活动口径核对，到店按城市或位置推荐最近门店。")
+                brief["must_answer"].append("这类多意图首轮不能只发案例或只问斑型；必须用1条短消息把效果、价格口径和到店方式都顺一下。")
+                brief["follow_up"] = "最多问一个关键问题，优先问客户所在城市/位置或让客户发广告图，不能连续追问。"
+            brief["must_answer"].append("如果当前已经有同类案例素材，优先把案例当作安全感素材顺带带出来，不要等客户再单独开口要案例。")
+            brief["must_answer"].append("项目方向表达尽量口语化，优先说淡斑改善、整体提亮、紧致提升这类客户能懂的话，不要把内部方向名直接丢给客户。")
+            brief["must_answer"].append("如果需要追问斑点类型，要用客户听得懂的说法，例如零散小点、成片颜色重、整体暗沉；不要直接把术语甩给客户选。")
+            if friendly_question:
+                brief["known_facts"].append("客户可理解的追问方式：" + friendly_question.replace("？", "").replace("?", ""))
+            if case_items:
+                image_url = _case_image_url(case_items)
+                brief["answer_first"].append("同类改善参考可以直接先看，客户会更有感觉。")
+                brief["must_answer"].append("本轮已有同类效果案例素材，回复里要主动带出“可以先看同类变化参考”的节奏。")
+                brief["must_answer"].append("即使先发案例，也不要只发图收住；客户只是宽需求时，要顺手补一个客户听得懂的类型问题。")
+                brief["available_facts"]["case_studies"] = [
+                    {
+                        "documentId": str(item.get("documentId") or "")[:40],
+                        "text": str(item.get("output") or item.get("content") or item.get("description") or "")[:240],
+                    }
+                    for item in case_items[:3]
+                    if isinstance(item, dict)
+                ]
+                if image_url:
+                    brief["available_facts"]["case_asset_image_url"] = image_url
             brief["do_not_say"].extend(
                 [
                     "如果主要是点状斑",
@@ -195,7 +249,7 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
                     "完整方案",
                 ]
             )
-            brief["follow_up"] = "只在必要时问客户这一轮更想先听价格、效果参考还是到店安排，其余先不用追问。"
+            brief["follow_up"] = "优先把方向和效果参考顺一下；只在必要时补一个客户听得懂的问题，不连续追问。"
             return
         if _wants_direct_direction_answer(content):
             brief["must_answer"].append("客户明确不想继续被追问，这一轮必须直接给优先改善方向和一句理由，不要再追问。")
@@ -212,14 +266,41 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
             )
             brief["follow_up"] = "这一轮不要问问题，直接给结论和一句边界。"
         if _is_initial_broad_project_intro(content):
-            brief["answer_first"].append("可以，祛斑这类我先帮你按方向、价格口径和到店安排这三块顺一下：先看适合的改善方向，再核活动价和到店安排。")
-            brief["must_answer"].append("客户只是初步了解该方向，按话术合集标准短承接即可：一句说明大方向，再问一个关键问题；不要展开完整方案、节奏、价格或预约，也不要擅自细分斑型。")
+            if case_items:
+                brief["answer_first"].append("可以的，这类大多数都可以做，我先给你看个同类参考。")
+            else:
+                brief["answer_first"].append("可以的，这类大多数都可以做，我先帮你判断更偏哪种情况。")
+            brief["must_answer"].append("客户只是初步了解该方向，按话术合集标准短承接即可：先说这类通常可以做，再给一个大方向或效果参考；不要先追问专业项目名。")
+            brief["must_answer"].append("如果当前已有同类效果参考或案例素材，就顺手带出一条，让客户先建立预期和安全感。")
+            brief["must_answer"].append("方向名称尽量翻译成客户听得懂的话，例如淡斑改善、整体肤色提亮、紧致提升；不要直接说内部方向名。")
+            brief["must_answer"].append("如果要继续确认问题类型，只能用客户听得懂的描述方式，不要直接让客户判断专业术语。")
+            if state.get("detected_city") or state.get("confirmed_store_name") or state.get("store_name"):
+                brief["must_answer"].append("如果当前已经知道客户在哪个城市或已有合适门店，不要再回头问城市；先承接需求和案例，再补一个客户听得懂的类型问题。")
+            if friendly_question:
+                brief["known_facts"].append("客户可理解的追问方式：" + friendly_question.replace("？", "").replace("?", ""))
+            if case_items:
+                image_url = _case_image_url(case_items)
+                brief["answer_first"].append("我先给你看个同类改善参考，你会更有感觉。")
+                brief["must_answer"].append("本轮已有同类案例素材，项目初步咨询时要主动带出，不要等客户再单独追问案例。")
+                brief["must_answer"].append("客户只是泛说祛斑/抗衰/淡斑这类宽需求时，发案例的同时仍要补一个客户听得懂的类型问题，不要只发参考图就收住。")
+                brief["available_facts"]["case_studies"] = [
+                    {
+                        "documentId": str(item.get("documentId") or "")[:40],
+                        "text": str(item.get("output") or item.get("content") or item.get("description") or "")[:240],
+                    }
+                    for item in case_items[:3]
+                    if isinstance(item, dict)
+                ]
+                if image_url:
+                    brief["available_facts"]["case_asset_image_url"] = image_url
             brief["do_not_say"].extend(["如果主要是点状斑", "点状斑为主", "片状色沉", "你这个更偏", "先稳肤、再淡化、后巩固", "避免反复或加深", "温和型还是进阶型", "斑点深浅、范围", "完整方案", "到店安排"])
-            brief["follow_up"] = "只在必要时问客户这轮更想先看价格、效果参考还是到店安排，不继续分析细分斑型。"
+            brief["follow_up"] = "优先顺改善方向和效果参考；只有确实缺关键事实时才补一个问题。"
             return
         if callbacks.has_confirmed_spot_goal(state):
             brief["must_answer"].append("客户已明确点状斑/色沉方向，直接给优先方向和一句边界；不要再问温和型还是进阶型，也不要问客户想改善哪一点。")
             brief["do_not_say"].extend(["温和型还是进阶型", "更适合当前状态", "最想改善哪一点", "更关注哪方面", "肤质、补水、抗衰", "轮廓提升"])
+        else:
+            brief["must_answer"].append("客户还没有明确斑点类型时，追问要尽量口语化，优先用零散小点、成片颜色重、整体暗沉这类描述。")
         if _asks_effect_timeline(content):
             brief["answer_first"].append("这类淡化改善通常不是一次就把结果定完，会按阶段观察；具体节奏要看实际情况来调。")
             brief["must_answer"].append("客户问几次或多久看到变化，先正面回答改善周期边界，不要改问肤质、补水、抗衰或轮廓。")
@@ -231,6 +312,23 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
         brief["must_answer"].append("需求型价格问题即使没有明确价格，也要先说明可考虑方向，再说明暂未查到明确价格。")
 
     if broad_ad_intro or not project_slices:
+        if case_items and not _generic_case_request(state, callbacks):
+            image_url = _case_image_url(case_items)
+            brief["must_answer"].append("当前已有同类改善案例素材时，可以直接作为效果参考承接，不要等客户先开口要案例。")
+            brief["answer_first"].append("这类大多数都可以做，我先给你看个同类改善参考。")
+            if image_url:
+                brief["available_facts"]["case_asset_image_url"] = image_url
+            brief["available_facts"]["case_studies"] = [
+                {
+                    "documentId": str(item.get("documentId") or "")[:40],
+                    "text": str(item.get("output") or item.get("content") or item.get("description") or "")[:240],
+                }
+                for item in case_items[:3]
+                if isinstance(item, dict)
+            ]
+        if not case_items and intent_set & {"project_inquiry", "image_inquiry"}:
+            brief["answer_first"].append("这类大多数都可以做，我先帮你判断更偏哪种情况。")
+            brief["must_answer"].append("如果当前没有真实案例素材，不要假装已经发了图；先承接可做方向，再问一个客户能听懂的类型问题。")
         return
 
     brief["available_facts"]["project_qa"] = [
@@ -244,7 +342,11 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
     ]
     replacement_candidates: list[str] = []
     for item in project_slices:
-        replacement_candidates.extend(callbacks.project_direction_name_candidates(str(item.get("replacement_name") or "")))
+        replacement_candidates.extend(
+            callbacks.project_direction_name_candidates(
+                customer_friendly_direction_label(str(item.get("replacement_name") or ""))
+            )
+        )
     replacement_names = callbacks.dedupe_strings(replacement_candidates)
     if replacement_names:
         brief["known_facts"].append("项目知识库建议使用这些合规方向表达：" + "、".join(replacement_names[:3]))
@@ -256,10 +358,24 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
                 brief["known_facts"].append("客户有预算顾虑；无明确价格事实时，可以说明先核对基础单次或当前活动可用配置，不先推组合配置。")
     for item in project_slices[:2]:
         if item.get("direction"):
-            brief["known_facts"].append("项目知识库可考虑方向：" + str(item["direction"])[:160])
+            brief["known_facts"].append("项目知识库可考虑方向：" + customer_friendly_direction_label(str(item["direction"]))[:160])
         if item.get("reply_point"):
             brief["known_facts"].append("项目知识库回复要点：" + str(item["reply_point"])[:160])
     brief["must_answer"].append("项目咨询优先使用 project_qa 给出的方向做判断；不要逐字照抄知识库。")
+    case_items = _case_items_from_tool_results(state)
+    if case_items and not _generic_case_request(state, callbacks):
+        brief["must_answer"].append("客户需求明确时，有同类案例素材就顺带作为效果参考承接，不要再退回泛项目咨询。")
+        image_url = _case_image_url(case_items)
+        if image_url:
+            brief["available_facts"]["case_asset_image_url"] = image_url
+        brief["available_facts"]["case_studies"] = [
+            {
+                "documentId": str(item.get("documentId") or "")[:40],
+                "text": str(item.get("output") or item.get("content") or item.get("description") or "")[:240],
+            }
+            for item in case_items[:3]
+            if isinstance(item, dict)
+        ]
 
 
 def apply_case_process_ad_dispute_context(state: AgentState, brief: dict[str, Any], callbacks: ReplyBriefCallbacks) -> None:
@@ -283,6 +399,7 @@ def apply_case_process_ad_dispute_context(state: AgentState, brief: dict[str, An
                 brief["follow_up"] = "只在必要时问客户想看哪个项目或哪类问题的效果参考，不继续分析皮肤方向。"
         else:
             brief["must_answer"].append("客户要效果案例或前后对比时，承接可以看同类改善参考；没有真实图片链接时不要编造案例图。")
+            brief["must_answer"].append("案例/效果轮次优先只回答效果参考本身，不要顺手夹带城市、门店、到店方便、预约安排等推进信息，除非客户本轮就在问门店或预约。")
             if case_items:
                 brief["known_facts"].append(f"案例素材库已命中{len(case_items)}条同类改善参考资料；只能作为参考，不能承诺同样变化。")
                 image_url = _case_image_url(case_items)
@@ -300,7 +417,7 @@ def apply_case_process_ad_dispute_context(state: AgentState, brief: dict[str, An
                 ]
             else:
                 brief["known_facts"].append("当前没有可直接发送的真实案例图片或案例资料，不能编造前后对比。")
-            brief["do_not_say"].extend(["案例价格", "哪家门店可以看案例"])
+            brief["do_not_say"].extend(["案例价格", "哪家门店可以看案例", "到店也方便", "方便安排", "附近门店", "哪天方便", "预约"])
 
     if "project_process" in intent_set:
         brief["must_answer"].append("客户问操作流程或大概要多久，先给通用流程和时长范围；不同项目配置会有差异。")
@@ -356,10 +473,11 @@ def apply_trust_and_misc_context(state: AgentState, brief: dict[str, Any], callb
                 ]
             )
         if planner_helpers._is_soft_fee_concern(content):
-            brief["answer_first"].append("你担心到店后收费说法不一致，这个我先跟你说清楚：项目范围、包含项、尾款和是否另加项目，都会在你确认前先核清楚。")
+            brief["answer_first"].append("这个你放心，确认好的项目、价格和包含项不会临时再加别的费用。")
             brief["must_answer"].append("本轮是收费透明顾虑，只回答收费如何提前确认和逐项核对；不要转去问城市、门店或预约。")
             brief["known_facts"].append("没有可引用资质、设备或服务追溯事实时，不要主动编造这些背书。")
-            brief["do_not_say"].extend(["放心", "不会乱收费", "绝不会额外加收", "没有隐形消费", "所有门店", "资质认证", "近期可安排", "哪天方便", "哪个门店", "帮你查时间", "附近门店"])
+            brief["do_not_say"].extend(["所有门店", "资质认证", "近期可安排", "哪天方便", "哪个门店", "帮你查时间", "附近门店"])
+            brief["answer_first"].append("如果现场你自己还想加做别的项目，也会提前跟你说清楚，由你自己决定，不会稀里糊涂给你加。")
         else:
             brief["must_answer"].append("本轮是信任顾虑，先认可客户谨慎，再基于可用资质/背书事实解释；没有资料时不要编造。")
     if "competitor_compare" in intent_set:
@@ -430,9 +548,17 @@ def _apply_ad_price_boundary(
     if not frame:
         brief["answer_first"].append("可以先按客户看到的金额核对收费口径，但当前不能确认是不是同一条广告或同一个活动。")
         brief["must_answer"].append("解释广告价需要核对对应项目、包含项、预约金/尾款和是否另收费；不要确认广告价真实存在。")
+    if any(term in content for term in ["券", "优惠券", "活动券", "代金券"]):
+        brief["answer_first"].append("这个券能不能用，要看你看到的是哪张活动图或对应哪个项目；你发我看一眼，我就按这条活动帮你核。")
+        brief["must_answer"].append("客户只是在追问券能不能用，先正面回答需要核对券对应的活动或项目，不要把上一轮广告价整段重复。")
+        brief["do_not_say"].extend(["参考价280元起", "针对性色素淡化方向", "你更像零散小点", "成片颜色重一点"])
     if frame and frame.name in {"single_fee", "confirm_price", "price_conflict", "hidden_fee_concern", "course_payment", "deposit_question"}:
         brief["known_facts"].append("广告价格追问需要优先解释价格口径，再补是否要核对广告项目、包含项、预约金或尾款。")
-    brief["do_not_say"].extend(["这个价格确实有", "目前有这个活动", "可以按这个价格做", "肯定没有其他收费", "绝对没有隐形消费", "斑点出现多久", "晒后明显", "想改善哪一点", "更适合怎么推进"])
+    if frame and frame.name == "hidden_fee_concern":
+        brief["answer_first"].append("这个你放心，确认好的项目、包含项和尾款不会到店临时再加别的费用。")
+        brief["answer_first"].append("如果现场你自己还想加做别的项目，也会提前跟你说清楚，由你自己决定。")
+        brief["must_answer"].append("客户担心额外加钱时，先给确定感，不要只说需要核对；再说明广告图或项目名用于确认具体包含项。")
+    brief["do_not_say"].extend(["这个价格确实有", "目前有这个活动", "可以按这个价格做", "肯定没有任何其他收费", "绝对没有隐形消费", "斑点出现多久", "晒后明显", "想改善哪一点", "更适合怎么推进"])
     if not brief.get("follow_up"):
         brief["follow_up"] = "如需继续确认，只问广告截图、项目名称或收费包含项其中一项，不转去问皮肤细节。"
 
@@ -452,6 +578,107 @@ def _case_items_from_tool_results(state: AgentState) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def _customer_facing_price_name(content: str, project: str, row: dict[str, Any]) -> str:
+    text = str(content or "")
+    project_code = str(row.get("project_code") or project or "").upper()
+    if any(term in text for term in ["黑色素", "色素沉着", "色沉"]):
+        return "黑色素这个情况"
+    if any(term in text for term in ["祛斑", "淡斑", "斑点", "斑"]):
+        return "祛斑这个情况"
+    if any(term in text for term in ["暗沉", "肤色不均", "提亮"]):
+        return "肤色改善这个情况"
+    if any(term in text for term in ["补水", "干燥", "缺水", "卡粉"]):
+        return "补水护理这个情况"
+    if any(term in text for term in ["抗衰", "紧致", "松弛", "皱纹", "细纹"]):
+        return "抗衰紧致这个情况"
+    if any(term in text for term in ["塑形", "轮廓", "下颌线"]):
+        return "轮廓塑形这个情况"
+    if project_code == "S10":
+        return "祛斑这个情况"
+    if project_code == "S10N":
+        return "补水护理这个情况"
+    if project_code in {"K10", "K10F"}:
+        return "抗衰紧致这个情况"
+    if project_code == "M10":
+        return "轮廓塑形这个情况"
+    return "你这个情况"
+
+
+def _customer_price_bits(name: str, row: dict[str, Any], content: str) -> list[str]:
+    result: list[str] = []
+    note = str(row.get("price_note") or "")
+    range_match = re.search(r"参考价[:：]?([0-9]+(?:\.[0-9]+)?-[0-9]+(?:\.[0-9]+)?)", note)
+    if range_match:
+        result.append(f"{name}参考价{range_match.group(1)}")
+    prefer_start_price = (
+        str(row.get("_source") or "") == "local_pricing_rules"
+        and not any(term in str(content or "") for term in ["新客价", "新客", "活动价", "活动", "老客", "复购", "单次", "一次"])
+    )
+    for key, label in [("new_price", "新客体验价"), ("promo_price", "活动价"), ("daily_price", "日常单次价"), ("old_price", "老客单次价")]:
+        value = _price_value(row.get(key))
+        if value:
+            if prefer_start_price and key == "new_price":
+                result.append(f"{name}起步参考价{value}")
+                continue
+            result.append(f"{name}{label}{value}")
+    return result
+
+
+def _customer_price_fact_for_brief(name: str, row: dict[str, Any], callbacks: ReplyBriefCallbacks, content: str) -> dict[str, Any]:
+    fact = callbacks.price_fact_for_brief(row)
+    result = {
+        key: value
+        for key, value in fact.items()
+        if key not in {"project_name", "price_note", "promo_target", "source"}
+    }
+    prefer_start_price = (
+        str(row.get("_source") or "") == "local_pricing_rules"
+        and not any(term in str(content or "") for term in ["新客价", "新客", "活动价", "活动", "老客", "复购", "单次", "一次"])
+    )
+    if prefer_start_price and result.get("new_price"):
+        result["reference_start_price"] = result.get("new_price")
+        result["new_price"] = ""
+    result["project_name"] = name
+    result["price_note"] = "内部项目代号和项目名只用于匹配价格，客户侧不要透露；普通需求型价格优先说成X元起参考，不要机械说新客体验价。"
+    result["source"] = fact.get("source") or row.get("_source") or ""
+    return result
+
+
+def _price_value(raw_value: Any) -> str:
+    text = str(raw_value or "").strip()
+    if not text or text in {"0", "0.00", "None", "null"}:
+        return ""
+    if re.fullmatch(r"\d+(\.0+)?", text):
+        text = text.split(".")[0]
+    return f"{text}元" if text.isdigit() else text
+
+
+def _should_prefer_local_pricing(content: str, project: str) -> bool:
+    text = str(content or "")
+    normalized = str(project or "").upper()
+    if normalized in {"S10", "S10N", "K10", "K10F", "M10", "F10"}:
+        return True
+    return any(
+        term in text
+        for term in [
+            "祛斑",
+            "淡斑",
+            "黑色素",
+            "色素",
+            "色沉",
+            "肤色不均",
+            "抗衰",
+            "紧致",
+            "松弛",
+            "补水",
+            "缺水",
+            "干燥",
+            "塑形",
+            "轮廓",
+        ]
+    )
 
 
 def _case_image_url(items: list[dict[str, Any]]) -> str:
@@ -491,7 +718,11 @@ def _effect_guarantee_question(content: str) -> bool:
 
 def _is_initial_broad_project_intro(content: str) -> bool:
     text = content or ""
-    if not any(term in text for term in ["了解淡斑", "了解祛斑", "了解一下淡斑", "了解一下祛斑", "想了解淡斑", "想了解祛斑"]):
+    opening_terms = ["了解", "了解一下", "想了解", "咨询一下", "先了解", "想看看", "看下"]
+    broad_need_terms = ["祛斑", "淡斑", "黑色素", "抗衰", "补水", "毛孔", "暗沉", "色沉", "肤色不均", "松弛", "提升"]
+    if not any(op in text for op in opening_terms):
+        return False
+    if not any(term in text for term in broad_need_terms):
         return False
     return not any(term in text for term in ["点状", "片状", "色沉", "肤色不均", "预算", "多少钱", "价格", "案例", "效果对比"])
 

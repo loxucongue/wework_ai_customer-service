@@ -19,12 +19,34 @@ from app.policies.constants import (
 def is_pre_visit_only_question(content: str) -> bool:
     if not content:
         return False
-    prep_terms = ["需要带什么", "要带什么", "带什么", "能不能化妆", "可以化妆", "要不要空腹", "需要空腹", "到店流程", "第一次去注意"]
+    prep_terms = [
+        "需要带什么",
+        "要带什么",
+        "带什么",
+        "能不能化妆",
+        "可以化妆",
+        "要不要空腹",
+        "需要空腹",
+        "空腹去",
+        "吃了早饭",
+        "吃饭能不能去",
+        "吃完饭",
+        "能不能吃饭",
+        "素颜",
+        "洗脸",
+        "到店流程",
+        "第一次去注意",
+        "第一次过去",
+    ]
     return any(term in content for term in prep_terms)
 
 
 def has_current_after_sales_signal(content: str) -> bool:
     if not content:
+        return False
+    if "做完" in content and any(term in content for term in ["效果", "变化", "案例", "对比", "前后"]) and not any(
+        term in content for term in ["术后", "恢复", "反黑", "红肿", "流脓", "出血", "疼", "痛", "没效果"]
+    ):
         return False
     return any(term in content for term in ["做完", "术后", "恢复", "反黑", "红肿", "流脓", "出血", "疼", "痛", "没效果"])
 
@@ -77,6 +99,36 @@ def is_low_information_content(content: str) -> bool:
     if len(normalized) <= 2 and not has_business_signal(text):
         return True
     return False
+
+
+def is_low_information_closing(content: str) -> bool:
+    text = (content or "").strip()
+    if not text:
+        return False
+    normalized = re.sub(r"[\s,，。.!！?？~～、]+", "", text)
+    closing_terms = {
+        "谢谢",
+        "谢谢啦",
+        "谢谢你",
+        "好的谢谢",
+        "好的谢谢你",
+        "好谢谢",
+        "好的哈",
+        "好的呢",
+        "好的好的",
+        "好哒",
+        "我看看",
+        "我考虑一下",
+        "先这样",
+        "后面再说",
+        "暂时不用",
+        "先不用",
+        "不用了",
+        "明白了",
+        "知道啦",
+        "收到了",
+    }
+    return normalized in closing_terms
 
 
 def has_business_signal(content: str) -> bool:

@@ -127,3 +127,18 @@ def contains_store_or_appointment_push(text: str) -> bool:
 
 def contains_appointment_push(text: str) -> bool:
     return any(term in text for term in APPOINTMENT_PUSH_TERMS)
+
+
+def store_status_confirmation_reply_allowed(text: str, intents: set[str]) -> bool:
+    if intents != {"store_inquiry"}:
+        return False
+    allowed_terms = [
+        "小贝帮你再看一下",
+        "我帮你确认一下",
+        "帮你确认一下当天",
+        "帮你再看一下当天",
+        "当天营业安排",
+        "当天接待安排",
+        "营业情况",
+    ]
+    return any(term in text for term in allowed_terms)

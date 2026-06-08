@@ -92,7 +92,7 @@ def is_project_only_after_price_objection(text: str) -> bool:
 
 def has_budget_or_price_answer(text: str) -> bool:
     return bool(re.search(r"\d+\s*元?", text)) or any(
-        term in text for term in ["新客体验价", "活动价", "日常单次", "优惠价", "明确价格", "没查到", "没有查到", "暂未查到", "不能直接改价", "不能直接承诺", "不乱降价", "底价"]
+        term in text for term in ["新客体验价", "活动价", "日常单次", "优惠价", "明确价格", "没查到", "没有查到", "暂未查到", "不能直接改价", "不能直接承诺", "不乱降价", "底价", "预约金", "定金", "订金", "尾款", "总价", "一次费用", "单次", "到店付"]
     )
 
 
@@ -126,9 +126,39 @@ def asks_daily_single_price(content: str) -> bool:
 
 
 def repair_appointment_commitment(text: str) -> str:
-    text = text.replace("小贝马上帮你锁位", "小贝再继续帮你确认")
+    text = text.replace("预约成功", "继续确认")
+    text = text.replace("已经预约成功", "继续确认")
+    text = text.replace("预约已经帮您登记好了", "预约信息我继续帮您确认")
+    text = text.replace("预约已经帮你登记好了", "预约信息我继续帮你确认")
+    text = text.replace("已经帮您登记好了", "我继续帮您确认预约信息")
+    text = text.replace("已经帮你登记好了", "我继续帮你确认预约信息")
+    text = text.replace("帮您登记好了", "继续帮您确认预约信息")
+    text = text.replace("帮你登记好了", "继续帮你确认预约信息")
+    text = text.replace("登记好了", "继续确认")
+    text = text.replace("预约已经确认", "这个时间目前有空位")
+    text = text.replace("预约已确认", "这个时间目前有空位")
+    text = text.replace("已经为您确认好了", "这个时间目前有空位")
+    text = text.replace("已经为你确认好了", "这个时间目前有空位")
+    text = text.replace("为您确认好了", "目前有空位")
+    text = text.replace("为你确认好了", "目前有空位")
+    text = text.replace("确认好了", "继续确认")
+    text = text.replace("已经确认", "还在继续确认")
+    text = text.replace("已确认", "继续确认")
+    text = text.replace("已经约好了", "继续确认")
+    text = text.replace("约好了", "继续确认")
+    text = text.replace("已经预约了", "继续确认")
+    text = text.replace("已预约了", "继续确认")
+    text = re.sub(r"(?<!未)预约了([^，。！？!?]*)", r"继续确认\1", text)
+    text = text.replace("已为您预留", "先按这个时间继续帮您确认")
+    text = text.replace("为您预留", "按这个时间继续帮您确认")
+    text = text.replace("为您预约", "按这个时间继续帮您确认")
+    text = text.replace("帮您预约", "继续帮您确认")
+    text = text.replace("帮你预约", "继续帮你确认")
+    text = text.replace("可以预约", "目前有空位")
+    text = text.replace("能预约", "目前有空位")
+    text = text.replace("小贝马上帮你锁位", "我再继续帮你确认")
     text = text.replace("马上帮你锁位", "再继续帮你确认")
-    text = text.replace("小贝马上为你锁定这个时段", "小贝按这个时段继续帮你确认")
+    text = text.replace("小贝马上为你锁定这个时段", "我按这个时段继续帮你确认")
     text = text.replace("马上为你锁定这个时段", "按这个时段继续帮你确认")
     text = text.replace("为你锁定这个时段", "按这个时段继续确认")
     text = text.replace("锁定这个时段", "继续确认这个时段")
@@ -139,4 +169,21 @@ def repair_appointment_commitment(text: str) -> str:
     text = text.replace("帮您锁位", "帮您继续确认")
     text = text.replace("锁位", "确认")
     text = text.replace("可以安排", "目前有可约时间")
+    text = text.replace("我马上给您开预约入口和10元预约金小程序", "信息确认没问题后，我再给您开预约入口和10元预约金小程序")
+    text = text.replace("我马上给你开预约入口和10元预约金小程序", "信息确认没问题后，我再给你开预约入口和10元预约金小程序")
+    text = text.replace("马上给您开预约入口", "信息确认没问题后再给您开预约入口")
+    text = text.replace("马上给你开预约入口", "信息确认没问题后再给你开预约入口")
+    text = text.replace("我会把预约入口和10元预约金小程序发给您", "信息确认没问题后，我再给您开预约入口和10元预约金小程序")
+    text = text.replace("我会把预约入口和10元预约金小程序发给你", "信息确认没问题后，我再给你开预约入口和10元预约金小程序")
+    text = text.replace("接下来我会给您发一个预约入口和10元的预约金小程序，请按页面提示确认一下", "您看是否按这个信息开预约入口？10元预约金按页面确认就行")
+    text = text.replace("接下来我会给你发一个预约入口和10元的预约金小程序，请按页面提示确认一下", "你看是否按这个信息开预约入口？10元预约金按页面确认就行")
+    text = text.replace("接下来我会给您发一个预约入口和10元预约金小程序，请按页面提示确认一下", "您看是否按这个信息开预约入口？10元预约金按页面确认就行")
+    text = text.replace("接下来我会给你发一个预约入口和10元预约金小程序，请按页面提示确认一下", "你看是否按这个信息开预约入口？10元预约金按页面确认就行")
+    text = re.sub(
+        r"(明天(?:上午|下午|晚上)?\d{1,2}:\d{2}在[^，。！？!?]{2,20})按这个时间继续帮[您你]确认[。；;，,]?\s*请提供一下[您你]的电话号码[，,]?\s*我继续帮[您你]确认",
+        r"\1这个时间目前有空位。你把电话号码发我，我继续帮你登记",
+        text,
+    )
+    text = text.replace("我继续帮您确认我继续帮您确认", "我继续帮您确认")
+    text = text.replace("我继续帮你确认我继续帮你确认", "我继续帮你确认")
     return text

@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from app.graph.active_order_reminder import (
+    ActiveOrderReminderCallbacks,
+    active_order_reminder_mode,
+    active_order_reminder_sentence,
+)
 from app.graph.state import AgentState
 
 
@@ -15,20 +20,33 @@ def appointment_context_sentence(state: AgentState) -> str:
     appointment = state.get("appointment_cache") or {}
     if not isinstance(appointment, dict) or not appointment.get("has_active"):
         return ""
+    content = str(state.get("normalized_content") or "").strip()
     summary = str(appointment.get("summary") or "").strip()
     store_name = str(appointment.get("store_name") or "").strip()
     appointment_time = str(appointment.get("appointment_time") or "").strip()
+    if any(term in content for term in ["地址", "导航", "停车", "哪家近", "附近", "我到了", "在楼下", "快到了", "在路上", "想过去", "能去吗"]):
+        if any(term in content for term in ["我到了", "在楼下", "快到了", "在路上"]):
+            return active_order_reminder_sentence(state, mode="arrival")
+        if any(term in content for term in ["想过去", "能去吗", "明天能去", "周末能去"]):
+            return active_order_reminder_sentence(state, mode="appointment_related")
+        return active_order_reminder_sentence(state, mode="store_related")
     if summary:
-        return f"另外小贝也看到你这边已有预约记录：{summary}。如果这次要约新的门店或项目，我会按新的需求单独帮你确认。"
+        return f"另外我也看到你这边已有预约记录：{summary}。如果这次要约新的门店或项目，我会按新的需求单独帮你确认。"
     if store_name or appointment_time:
         bits = " ".join(bit for bit in [store_name, appointment_time] if bit)
-        return f"另外小贝也看到你这边已有预约记录：{bits}。"
-    return "另外小贝也看到你这边已有预约记录，后面涉及改约、取消或查时间时会一起帮你对照。"
+        return f"另外我也看到你这边已有预约记录：{bits}。"
+    return "另外我也看到你这边已有预约记录，后面涉及改约、取消或查时间时会一起帮你对照。"
 
 
 def should_show_appointment_context(state: AgentState, callbacks: LegacyAppointmentMessageCallbacks) -> bool:
     intents = {item.get("intent") for item in state.get("intents", [])}
     content = state.get("normalized_content") or ""
+    reminder_mode = active_order_reminder_mode(
+        state,
+        ActiveOrderReminderCallbacks(recent_assistant_replies=callbacks.recent_assistant_replies),
+    )
+    if reminder_mode in {"store_related", "arrival", "appointment_related"}:
+        return True
     if intents & {"appointment_confirm", "appointment_change", "appointment_cancel"}:
         return True
     if "appointment_intent" in intents:

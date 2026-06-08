@@ -8,6 +8,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+try:
+    from .test_conversation_store import append_test_conversations
+except ImportError:
+    from test_conversation_store import append_test_conversations
+
 
 DEFAULT_TURNS = [
     "\u4f60\u597d\uff0c\u6211\u60f3\u4e86\u89e3\u4e00\u4e0b\u8138\u4e0a\u7684\u6591\uff0c\u4e5f\u60f3\u77e5\u9053\u4e0a\u6d77\u6709\u6ca1\u6709\u95e8\u5e97",
@@ -115,7 +120,7 @@ def build_preview(api_url: str, api_key: str, customer_id: str) -> tuple[dict[st
         "createdAt": now,
         "updatedAt": now + len(DEFAULT_TURNS) * 60000,
     }
-    return {"conversations": [conversation]}, report
+    return conversation, report
 
 
 def main() -> None:
@@ -126,12 +131,11 @@ def main() -> None:
     parser.add_argument("--conversation-output", default="projects/public/test-conversations.json")
     parser.add_argument("--report-output", default="logs/server_three_turn_report.json")
     args = parser.parse_args()
-    conversation_payload, report = build_preview(args.api_url, args.api_key, args.customer_id)
+    conversation, report = build_preview(args.api_url, args.api_key, args.customer_id)
     conversation_path = Path(args.conversation_output)
     report_path = Path(args.report_output)
-    conversation_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.parent.mkdir(parents=True, exist_ok=True)
-    conversation_path.write_text(json.dumps(conversation_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    append_test_conversations([conversation], path=conversation_path)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
 

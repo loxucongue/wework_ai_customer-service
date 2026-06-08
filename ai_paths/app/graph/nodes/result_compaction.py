@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Callable
 
+from app.graph.nodes.pricing_context import extract_project
 from app.graph.state import AgentState
 
 
@@ -58,7 +60,24 @@ def ad_price_without_explicit_project(state: AgentState | None, project: str) ->
         return False
     if not any(term in content for term in ["价格", "多少钱", "收费", "预约金", "尾款", "另收费", "199", "一百九十九"]):
         return False
+    explicit_project = extract_project(content)
+    if explicit_project:
+        return False
     return not project or project in {"项目价格", "祛斑", "淡斑", "斑", "色沉", "肤色改善"}
+
+
+def price_question_without_explicit_project(state: AgentState | None) -> bool:
+    content = str((state or {}).get("normalized_content") or "")
+    if not content:
+        return False
+    if extract_project(content):
+        return False
+    if not any(
+        term in content
+        for term in ["价格", "多少钱", "收费", "199", "299", "268", "预约金", "定金", "券", "尾款", "其他收费", "另收费"]
+    ) and not re.search(r"\d+\s*元", content):
+        return False
+    return True
 
 
 def compact_tool_results_for_model(
@@ -97,6 +116,7 @@ def compact_tool_results_for_model(
                     "parking_name": recommended.get("parking_name") if store_result_wants_parking(value, state) else "",
                     "parking_address": recommended.get("parking_address") if store_result_wants_parking(value, state) else "",
                     "business_hours": recommended.get("business_hours") if store_result_wants_status(value, state) else "",
+                    "driving_time": _store_driving_text(recommended),
                 }
                 if recommended
                 else {},
@@ -111,6 +131,7 @@ def compact_tool_results_for_model(
                         "parking_name": store.get("parking_name") if store_result_wants_parking(value, state) else "",
                         "parking_address": store.get("parking_address") if store_result_wants_parking(value, state) else "",
                         "business_hours": store.get("business_hours") if store_result_wants_status(value, state) else "",
+                        "driving_time": _store_driving_text(store),
                     }
                     for store in (value.get("stores") or [])[:3]
                     if isinstance(store, dict)
@@ -129,10 +150,14 @@ def compact_tool_results_for_model(
                 "error": value.get("error"),
             }
             continue
-        if key == "project_price" and (callbacks.is_broad_price_category(project) or ad_price_without_explicit_project(state, project)):
+        if key == "project_price" and (
+            callbacks.is_broad_price_category(project)
+            or ad_price_without_explicit_project(state, project)
+            or price_question_without_explicit_project(state)
+        ):
             compacted[key] = {
                 "items": [],
-                "note": "客户当前没有提供明确项目名或广告截图，已隐藏具体商品项，避免拿不相关商品价代替报价。",
+                "note": "客户当前没有提供足够明确的项目事实，已隐藏具体商品项，避免拿不相关商品价代替报价。",
                 "error": value.get("error") if isinstance(value, dict) else None,
             }
             continue
@@ -149,3 +174,19 @@ def compact_tool_results_for_model(
             "error": value.get("error") if isinstance(value, dict) else None,
         }
     return compacted
+
+
+def _store_driving_text(store: dict[str, Any]) -> str:
+    driving = store.get("driving_time") if isinstance(store, dict) else None
+    if not isinstance(driving, dict):
+        return ""
+    summary = str(driving.get("summary") or "").strip()
+    if summary:
+        return summary
+    output = driving.get("raw_output")
+    if isinstance(output, dict):
+        for key in ["duration", "driving_time", "time", "text", "output"]:
+            value = output.get(key)
+            if value:
+                return str(value).strip()
+    return ""

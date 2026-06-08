@@ -24,6 +24,8 @@ def reply_model_tier(state: AgentState) -> str:
         return "strong"
     if intents & {"appointment_intent", "appointment_confirm", "appointment_change", "appointment_cancel"}:
         return "strong"
+    if intents & {"store_inquiry", "ad_price_check", "case_request"}:
+        return "balanced"
     if len(intents) >= 2 or "trust_issue" in intents:
         return "balanced"
     return "fast"

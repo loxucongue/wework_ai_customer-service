@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from app.graph.nodes.sales_talk_kb_parsing import first_sales_talk_slice
+
 
 @dataclass(frozen=True)
 class CompetitorSkillCallbacks:
@@ -24,6 +26,7 @@ def competitor_skill_output(
 ) -> dict[str, Any]:
     """Build factual competitor-skill output for the final reply model."""
 
+    sales_talk = first_sales_talk_slice(tool_results)
     competitor_result = tool_results.get("competitor_qa", {}) if isinstance(tool_results, dict) else {}
     items = competitor_result.get("items", []) if isinstance(competitor_result, dict) else []
     if not isinstance(items, list):
@@ -58,6 +61,14 @@ def competitor_skill_output(
         missing_slots = ["项目", "产品/剂量", "部位", "次数", "是否含售后"]
     if next_step:
         facts.append(f"下一步：{next_step}")
+    if sales_talk.get("scene_type"):
+        facts.append(f"销售话术场景：{sales_talk['scene_type']}")
+    if sales_talk.get("target"):
+        facts.append(f"承接目标：{sales_talk['target']}")
+    if sales_talk.get("sample_reply"):
+        reply_points.insert(0, f"优先参考这种竞品承接节奏：{sales_talk['sample_reply']}")
+    if sales_talk.get("forbidden"):
+        facts.append(f"禁用表达：{sales_talk['forbidden']}")
 
     return {
         "skill": "competitor",

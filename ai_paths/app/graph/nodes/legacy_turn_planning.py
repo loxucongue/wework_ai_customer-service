@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 from app.graph import planner_helpers
 from app.graph.state import AgentState
+from app.graph.task_appointment_signals import is_appointment_resume_message, is_low_info_social_message
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,12 @@ def should_suspend_active_task_for_current_turn(
     content = state.get("normalized_content") or ""
     if not content:
         return False
+    if _is_passive_opening_message(content):
+        return True
+    if is_low_info_social_message(content):
+        if is_appointment_resume_message(content):
+            return False
+        return True
     if has_explicit_appointment_request(content, callbacks):
         return False
     if callbacks.is_strong_multi_recap_request(content):
@@ -159,4 +166,20 @@ def without_appointment_intents(intents: list[dict[str, Any]]) -> list[dict[str,
     ]
     if filtered:
         return filtered[:3]
-    return [{"intent": "project_inquiry", "skill": "project_consult", "priority": 4, "reason": "当前问题不是预约确认，按普通咨询承接"}]
+    return [{"intent": "emotion_chat", "skill": "direct_reply", "priority": 9, "reason": "当前问题不是预约确认，按轻量承接处理"}]
+
+
+def _is_passive_opening_message(content: str) -> bool:
+    text = re.sub(r"\s+", "", str(content or "").strip())
+    if not text:
+        return False
+    passive_terms = [
+        "我已经添加了你",
+        "已经添加了你",
+        "现在我们可以开始聊天了",
+        "可以开始聊天了",
+        "开始聊天",
+    ]
+    if any(term in text for term in passive_terms):
+        return True
+    return text in {"已添加", "加上了", "通过了"}

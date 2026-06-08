@@ -114,3 +114,20 @@ class ConversationRepositoryMixin:
                 for row in runs
             ],
         }
+
+    def list_recent_messages(self, customer_id: str, limit: int = 12) -> list[dict[str, Any]]:
+        if not customer_id:
+            return []
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.role, m.content, m.created_at
+                FROM messages m
+                JOIN conversations c ON c.id = m.conversation_id
+                WHERE c.customer_id = ?
+                ORDER BY m.created_at DESC
+                LIMIT ?
+                """,
+                (customer_id, max(1, min(limit, 50))),
+            ).fetchall()
+        return [dict(row) for row in reversed(rows)]

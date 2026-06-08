@@ -58,7 +58,17 @@ def case_request_lacks_specific_context(
     image_info = state.get("image_info") or {}
     known_visible_items = known_visible_concerns_from_state(state) if known_visible_concerns_from_state else []
     visible_text = " ".join(map(str, list(image_info.get("visible_concerns") or []) + list(known_visible_items)))
-    context_text = f"{content} {visible_text} {image_info.get('image_desc') or ''}"
+    context_text = " ".join(
+        part
+        for part in [
+            content,
+            visible_text,
+            str(image_info.get("image_desc") or ""),
+            _recent_business_context(state),
+            _profile_context(state),
+        ]
+        if part
+    )
     specific_terms = [
         "斑",
         "色沉",
@@ -96,7 +106,18 @@ def project_slice_relevant_to_current_need(
     known_visible_items = known_visible_concerns_from_state(state) if known_visible_concerns_from_state else []
     known_visible = " ".join(map(str, known_visible_items))
     image_visible = " ".join(map(str, image_info.get("visible_concerns") or []))
-    need_text = f"{content} {known_visible} {image_visible} {image_info.get('image_desc') or ''}"
+    need_text = " ".join(
+        part
+        for part in [
+            content,
+            known_visible,
+            image_visible,
+            str(image_info.get("image_desc") or ""),
+            _recent_business_context(state),
+            _profile_context(state),
+        ]
+        if part
+    )
     slice_text = " ".join(
         str(item.get(key) or "")
         for key in ("title", "replacement_name", "direction", "reply_point", "say")
@@ -120,6 +141,36 @@ def project_direction_name_candidates(name: str) -> list[str]:
         return []
     parts = re.split(r"\s*(?:/|｜|\||、|，|,|；|;)\s*", text)
     return [part for part in (part.strip() for part in parts) if is_business_project_direction_name(part)]
+
+
+def _recent_business_context(state: AgentState) -> str:
+    history = state.get("conversation_history") or []
+    if not isinstance(history, list):
+        return ""
+    texts: list[str] = []
+    for item in history[-8:]:
+        if isinstance(item, str):
+            texts.append(item)
+        elif isinstance(item, dict):
+            texts.append(str(item.get("content") or item.get("text") or ""))
+    return " ".join(text for text in texts if text)
+
+
+def _profile_context(state: AgentState) -> str:
+    memory_policy = state.get("memory_usage_policy") or {}
+    if isinstance(memory_policy, dict) and memory_policy.get("active_profile_memory") is False:
+        return ""
+    chunks: list[str] = []
+    for key in ("portrait", "customer_profile", "profile"):
+        value = state.get(key)
+        if isinstance(value, dict):
+            for field in ("summary", "needs", "pain_points", "projects", "concerns"):
+                part = value.get(field)
+                if isinstance(part, list):
+                    chunks.extend(str(item) for item in part[:6])
+                elif part:
+                    chunks.append(str(part))
+    return " ".join(chunk for chunk in chunks if chunk)
 
 
 def is_business_project_direction_name(name: str) -> bool:

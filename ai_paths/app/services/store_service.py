@@ -3,23 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.platform_agent_client import PlatformAgentClient
-from app.services.store_catalog import local_store_records
-from app.services import store_format
 from app.services.store_query_info import build_store_query_info
 from app.services.store_recommendation import with_location_recommendation
-from app.services.store_result_merge import merge_local_city_stores, sanitize_platform_result
+from app.services.store_result_merge import sanitize_platform_result
 from app.services.store_platform_context import request_context_from_customer_context, store_platform_context
-from app.services import store_text
+from app.services import store_format, store_text
 
 
 class StoreService:
-    """Store lookup with platform-agent API first and a clean local fallback for tests."""
+    """Store lookup must rely on realtime platform results only."""
 
     def __init__(self, platform_client: PlatformAgentClient | None = None) -> None:
         self._platform_client = platform_client
-        self._stores = local_store_records()
+        self._stores = []
 
-    def search(self, query: str, *, customer_context: dict[str, Any] | None = None, limit: int = 3) -> dict[str, Any]:
+    def search(self, query: str, *, customer_context: dict[str, Any] | None = None, limit: int = 20) -> dict[str, Any]:
         query_info = build_store_query_info(query, self._stores)
         if store_text.needs_city_before_lookup(
             query_info.query,
@@ -53,23 +51,9 @@ class StoreService:
                 stores_catalog=self._stores,
                 limit=limit,
             )
-            if query_info.city and not query_info.requested_name and platform_result.get("stores"):
-                platform_result = merge_local_city_stores(
-                    platform_result,
-                    city=query_info.city,
-                    stores_catalog=self._stores,
-                    limit=limit,
-                )
             if platform_result.get("stores"):
                 return with_location_recommendation(platform_result, query_info.location_preference)
 
-        candidates = self._stores
-        if query_info.requested_name:
-            candidates = [store for store in candidates if query_info.requested_name == store.name]
-        elif query_info.city:
-            candidates = [store for store in candidates if store.city == query_info.city and store.is_public]
-
-        stores = [store_format.store_record_to_dict(store) for store in candidates[:limit]]
         result = {
             "query": query_info.query,
             "city": query_info.city,
@@ -78,11 +62,11 @@ class StoreService:
             "wants_route": query_info.wants_route,
             "wants_status": query_info.wants_status,
             "location_preference": query_info.location_preference,
-            "stores": stores,
-            "source": "local_store_fallback",
+            "stores": [],
+            "source": "platform_agent_no_realtime_store_data",
             "platform_error": platform_error,
         }
-        return with_location_recommendation(result, query_info.location_preference)
+        return result
 
     def available_time(self, *, store_id: str, date: str, customer_context: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._platform_client or not self._platform_client.available:

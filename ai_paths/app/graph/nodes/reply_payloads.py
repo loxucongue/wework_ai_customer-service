@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from app.graph import planner_helpers, task_state
+from app.graph.customer_need_questions import customer_friendly_type_question
 from app.graph.nodes.price_question_frames import build_price_question_frame
+from app.graph.nodes.intent_signals import is_broad_ad_intro
 from app.graph.state import AgentState
 
 
@@ -65,6 +67,24 @@ def reply_forced_payload_for_model(state: AgentState, callbacks: ReplyPayloadCal
             "禁止说不会乱收费、绝对没有其他收费、没有隐形消费、明码标价、正规备案、资质认证、所有项目、所有门店。"
             "禁止追问城市、门店、预约时间、项目方向或斑点情况；禁止主动推进预约。"
             "这一轮默认只输出1条text，不要拆成两条，也不要在结尾追加问句。"
+        )
+    case_asset_image_url = str(facts.get("case_asset_image_url") or "").strip()
+    type_question = str(facts.get("customer_friendly_type_question") or "").strip() or customer_friendly_type_question(
+        content,
+        visible_concerns=facts.get("visible_concerns") if isinstance(facts.get("visible_concerns"), list) else [],
+    )
+    if (
+        not hard_instruction
+        and case_asset_image_url
+        and ask_one_case_followup_needed(state, content, intents, facts)
+    ):
+        hard_instruction = (
+            "本轮已有真实同类案例图可发送，客户又是在做宽需求了解。"
+            "文字不能只停在“先发你看案例”这一句，必须同时补一个客户听得懂的类型问题，"
+            f"优先使用这个问题：{type_question or '你更像零散小点、成片颜色重一点，还是整体肤色暗沉不均？'}"
+            "不要追问专业项目名，也不要把问题说得很学术。"
+            "默认1条text即可，这条text里先短承接“这类大多数都可以做”，再带一句我先给你看个同类参考，最后必须带一个问句。"
+            "这个问句只能是类型判断问题，不能问城市、门店、价格、要不要发图，也不能省略问号。"
         )
     preferred_time = str(facts.get("customer_preferred_time") or "").strip()
     slots = facts.get("available_time_slots") if isinstance(facts.get("available_time_slots"), list) else []
@@ -174,7 +194,20 @@ def store_reply_payload_for_model(state: AgentState, callbacks: ReplyPayloadCall
     wants_names_only = any(term in content for term in ["门店名字", "店名", "叫什么店", "哪几家店", "有哪些店"])
     wants_address_pack = any(term in content for term in ["地址", "导航", "停车"])
     has_location_anchor = any(term in content for term in ["机场", "高铁", "火车站", "地铁", "商圈", "附近", "近一点", "最近"])
-    if wants_address_pack:
+    city_only_multiple_stores = _is_city_only_store_reply(
+        content=content,
+        city=str(lookup.get("city") or "").strip() if isinstance(lookup, dict) else "",
+        stores=stores,
+        recommended=recommended,
+        generic_store_query=generic_store_query,
+        wants_names_only=wants_names_only,
+        wants_address_pack=wants_address_pack,
+        has_location_anchor=has_location_anchor,
+    )
+    location_hint_options = _store_location_hint_options(stores) if city_only_multiple_stores else []
+    if city_only_multiple_stores:
+        preferred_shape = "refine_location"
+    elif wants_address_pack:
         preferred_shape = "address_pack"
     elif recommended and has_location_anchor:
         preferred_shape = "recommend_one"
@@ -182,6 +215,7 @@ def store_reply_payload_for_model(state: AgentState, callbacks: ReplyPayloadCall
         preferred_shape = "list_and_stop"
     else:
         preferred_shape = "recommend_one" if recommended else "list_and_stop"
+    stores_payload = [] if city_only_multiple_stores else stores[:3]
     return {
         "content": content,
         "sales_strategy": _sales_strategy_for_payload(state),
@@ -198,14 +232,17 @@ def store_reply_payload_for_model(state: AgentState, callbacks: ReplyPayloadCall
             "platform_error": str(lookup.get("platform_error") or "").strip() if isinstance(lookup, dict) else "",
             "source": str(lookup.get("source") or "").strip() if isinstance(lookup, dict) else "",
         },
-        "stores": stores[:3],
+        "stores": stores_payload,
+        "store_count": len(stores),
         "recommended_store": recommended,
         "query_type": {
             "generic_store_query": generic_store_query,
             "wants_names_only": wants_names_only,
             "wants_address_pack": wants_address_pack,
             "has_location_anchor": has_location_anchor,
+            "city_only_multiple_stores": city_only_multiple_stores,
         },
+        "location_hint_options": location_hint_options[:3],
         "preferred_reply_shape": preferred_shape,
         "reply_goal": "直接回答门店、地址、导航、停车、营业状态或最近门店推荐问题；不发散到项目咨询、价格咨询或预约确认。",
     }
@@ -227,7 +264,9 @@ def appointment_reply_payload_for_model(state: AgentState, callbacks: ReplyPaylo
         preferred_time_available = preferred_time in slot_list
     selected_slots = slot_list[:6]
     opening = state.get("tool_results", {}).get("appointment_opening") or {}
+    action = state.get("tool_results", {}).get("appointment_action") or {}
     opening_fact = facts.get("appointment_opening") if isinstance(facts.get("appointment_opening"), dict) else {}
+    action_fact = facts.get("appointment_action") if isinstance(facts.get("appointment_action"), dict) else {}
     if isinstance(opening, dict) and opening and not opening_fact:
         opening_facts = opening.get("facts") if isinstance(opening.get("facts"), dict) else {}
         opening_fact = {
@@ -240,6 +279,21 @@ def appointment_reply_payload_for_model(state: AgentState, callbacks: ReplyPaylo
             "prepay": opening_facts.get("prepay") or "",
             "missing": opening.get("missing") or [],
             "error": opening.get("error") or "",
+        }
+    if isinstance(action, dict) and action and not action_fact:
+        action_facts = action.get("facts") if isinstance(action.get("facts"), dict) else {}
+        action_fact = {
+            "operation": action.get("operation") or "",
+            "status": action.get("status") or "",
+            "order_id": action_facts.get("order_id") or "",
+            "store_id": action_facts.get("store_id") or "",
+            "store_name": action_facts.get("store_name") or "",
+            "appointment_date": action_facts.get("date") or "",
+            "appointment_time": action_facts.get("time") or "",
+            "available_time_slots": action_facts.get("available_time_slots") or [],
+            "preferred_time_available": action_facts.get("preferred_time_available"),
+            "missing": action.get("missing") or [],
+            "error": action.get("error") or "",
         }
     must_not_say = ["已预约成功", "约好了", "已经确认", "帮你预留", "锁位"]
     if preferred_time_available is False:
@@ -259,6 +313,7 @@ def appointment_reply_payload_for_model(state: AgentState, callbacks: ReplyPaylo
         "available_time_slots": selected_slots,
         "available_time_error": str(available.get("error") or "").strip() if isinstance(available, dict) else "",
         "appointment_opening": opening_fact,
+        "appointment_action": action_fact,
         "appointment_confirmed": False,
         "direct_arrival_question": is_direct_arrival_question(content),
         "must_not_say": must_not_say,
@@ -301,6 +356,10 @@ def _effect_guarantee_question(content: str) -> bool:
             "保证效果",
             "有效果吗",
             "会不会反弹",
+            "反弹",
+            "返弹",
+            "反复",
+            "又回来",
             "怕反弹",
             "担心反弹",
             "能维持多久",
@@ -309,3 +368,81 @@ def _effect_guarantee_question(content: str) -> bool:
             "能保持多久",
         ]
     )
+
+
+def ask_one_case_followup_needed(
+    state: AgentState,
+    content: str,
+    intents: set[str],
+    facts: dict[str, Any],
+) -> bool:
+    sales_strategy = state.get("sales_strategy") if isinstance(state.get("sales_strategy"), dict) else {}
+    ask_policy = str(sales_strategy.get("ask_policy") or "")
+    if ask_policy != "ask_one":
+        return False
+    if not (is_broad_ad_intro(content) or any(term in content for term in ["祛斑", "淡斑", "黑色素", "抗衰", "毛孔", "暗沉"])):
+        return False
+    if not (intents & {"project_inquiry", "image_inquiry", "case_request"}):
+        return False
+    visible = facts.get("visible_concerns") if isinstance(facts.get("visible_concerns"), list) else []
+    if any(any(term in str(item) for term in ["点状", "片状", "成片", "暗沉"]) for item in visible):
+        return False
+    return True
+
+
+def _is_city_only_store_reply(
+    *,
+    content: str,
+    city: str,
+    stores: list[dict[str, Any]],
+    recommended: dict[str, Any],
+    generic_store_query: bool,
+    wants_names_only: bool,
+    wants_address_pack: bool,
+    has_location_anchor: bool,
+) -> bool:
+    if not city or len(stores) <= 1 or recommended:
+        return False
+    if generic_store_query or wants_names_only or wants_address_pack or has_location_anchor:
+        return False
+    text = str(content or "").strip()
+    if not text:
+        return False
+    for prefix in ["我在", "人在", "目前在", "现在在", "住在"]:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    for suffix in ["这边", "这儿", "附近"]:
+        if text.endswith(suffix):
+            text = text[: -len(suffix)].strip()
+    text = text.strip(" ，。！？?~～")
+    return text in {city, f"{city}市"}
+
+
+def _store_location_hint_options(stores: list[dict[str, Any]]) -> list[str]:
+    hints: list[str] = []
+    for store in stores[:5]:
+        if not isinstance(store, dict):
+            continue
+        for value in [str(store.get("address") or "").strip(), str(store.get("name") or "").strip()]:
+            hint = _extract_store_area_hint(value)
+            if hint and hint not in hints:
+                hints.append(hint)
+        if len(hints) >= 3:
+            break
+    return hints
+
+
+def _extract_store_area_hint(text: str) -> str:
+    import re
+
+    value = str(text or "").strip()
+    if not value:
+        return ""
+    matched = re.search(r"(?:[\u4e00-\u9fa5]{2,8}市)?([\u4e00-\u9fa5]{2,8}区)", value)
+    if matched:
+        return matched.group(1)
+    matched = re.search(r"(?:[\u4e00-\u9fa5]{2,8}市)?([\u4e00-\u9fa5]{2,8}(?:机场|火车站|高铁站|商圈))", value)
+    if matched:
+        return matched.group(1)
+    return ""

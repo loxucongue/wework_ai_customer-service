@@ -34,7 +34,7 @@ SKILL_CATALOG: tuple[SkillDefinition, ...] = (
             "你们正规吗",
         ),
         optional_slots=("concern", "body_part", "image_info", "project_name"),
-        must_call_tools=("project_qa",),
+        must_call_tools=("sales_talk_qa", "project_qa"),
         exit_conditions=("已给出方向性判断", "客户转为价格、门店或预约问题"),
     ),
     SkillDefinition(
@@ -53,7 +53,7 @@ SKILL_CATALOG: tuple[SkillDefinition, ...] = (
             "下午能约吗",
         ),
         optional_slots=("project_name", "price_type", "customer_type"),
-        must_call_tools=("project_price",),
+        must_call_tools=("sales_talk_qa", "project_price"),
         forbidden_tools=("available_time_query",),
         risk_notes=("没有价格事实时不能编造金额或价格区间。",),
     ),
@@ -112,7 +112,7 @@ SKILL_CATALOG: tuple[SkillDefinition, ...] = (
             "下午能约吗",
         ),
         optional_slots=("concern", "asset_type"),
-        must_call_tools=("trust_assets",),
+        must_call_tools=("sales_talk_qa", "trust_assets"),
         forbidden_tools=("available_time_query",),
     ),
     SkillDefinition(
@@ -141,7 +141,7 @@ SKILL_CATALOG: tuple[SkillDefinition, ...] = (
         ),
         negative_examples=("普通问价", "普通问门店", "术后不适"),
         optional_slots=("competitor", "project_name", "price"),
-        must_call_tools=("competitor_qa",),
+        must_call_tools=("sales_talk_qa", "competitor_qa"),
     ),
     SkillDefinition(
         name="after_sales",
@@ -153,7 +153,7 @@ SKILL_CATALOG: tuple[SkillDefinition, ...] = (
         ),
         negative_examples=("还没做想了解项目", "普通问价格", "普通问地址"),
         optional_slots=("project_name", "days_after", "symptom", "image_info"),
-        must_call_tools=("after_sales_qa",),
+        must_call_tools=("sales_talk_qa", "after_sales_qa"),
         risk_notes=("严重不适、投诉、退款或效果纠纷应进入专业协助。",),
     ),
     SkillDefinition(

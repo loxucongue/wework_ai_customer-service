@@ -14,11 +14,25 @@ from app.policies.constants import (
     TRUST_KEYWORDS,
 )
 
+_BROAD_NEED_KEYWORDS = [
+    "祛斑",
+    "淡斑",
+    "黑色素",
+    "抗衰",
+    "补水",
+    "毛孔",
+    "暗沉",
+    "色沉",
+    "肤色不均",
+    "松弛",
+    "提升",
+]
+
 
 def has_project_consult_intent(content: str) -> bool:
     if has_price_objection(content):
         return False
-    if not any(word in content for word in PROJECT_KEYWORDS):
+    if not any(word in content for word in [*PROJECT_KEYWORDS, *_BROAD_NEED_KEYWORDS]):
         return False
     consult_terms = [
         "适合",
@@ -42,6 +56,13 @@ def has_project_consult_intent(content: str) -> bool:
         "淡化",
         "去掉",
         "去除",
+        "了解一下",
+        "想了解一下",
+        "想了解",
+        "咨询一下",
+        "先了解",
+        "想看看",
+        "看下",
     ]
     return any(term in content for term in consult_terms)
 
@@ -62,7 +83,10 @@ def has_generic_project_request(content: str) -> bool:
         "想看项目",
         "想了解项目",
     ]
-    return any(term in content for term in generic_terms)
+    if any(term in content for term in generic_terms):
+        return True
+    opening_need_terms = ["了解一下", "想了解一下", "想了解", "咨询一下", "先了解", "想看看", "看下"]
+    return any(word in content for word in [*PROJECT_KEYWORDS, *_BROAD_NEED_KEYWORDS]) and any(term in content for term in opening_need_terms)
 
 
 def has_case_request(content: str) -> bool:
@@ -201,6 +225,10 @@ def has_effect_guarantee_request(content: str) -> bool:
             "有保障吗",
             "保障效果",
             "会不会反弹",
+            "反弹",
+            "返弹",
+            "反复",
+            "又回来",
             "怕反弹",
             "担心反弹",
             "能维持多久",

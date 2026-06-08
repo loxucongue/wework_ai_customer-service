@@ -54,6 +54,25 @@ def visit_date_from_text(text: str) -> tuple[str, str] | None:
 def visit_time_from_text(text: str) -> str:
     if not text:
         return ""
+    readable_half_match = re.search(r"(上午|中午|下午|晚上|早上)?\s*(\d{1,2})\s*点半", text)
+    if readable_half_match:
+        period, hour_raw = readable_half_match.groups()
+        hour = int(hour_raw)
+        if period in {"下午", "晚上"} and hour < 12:
+            hour += 12
+        if period == "中午" and hour < 11:
+            hour += 12
+        return f"{hour:02d}:30"
+    readable_match = re.search(r"(上午|中午|下午|晚上|早上)?\s*(\d{1,2})\s*(?:点|:|：)\s*(\d{1,2})?", text)
+    if readable_match:
+        period, hour_raw, minute_raw = readable_match.groups()
+        hour = int(hour_raw)
+        if period in {"下午", "晚上"} and hour < 12:
+            hour += 12
+        if period == "中午" and hour < 11:
+            hour += 12
+        minute = int(minute_raw) if minute_raw else 0
+        return f"{hour:02d}:{minute:02d}"
     half_match = re.search(r"(上午|中午|下午|晚上)?\s*(\d{1,2})\s*点半", text)
     if half_match:
         period, hour_raw = half_match.groups()
@@ -82,17 +101,23 @@ def visit_time_from_text(text: str) -> str:
         "九点": 9,
         "十点": 10,
     }
+    matches: list[tuple[int, str, int]] = []
     for word, hour in chinese_hour.items():
-        if word in text:
-            if not chinese_hour_has_time_context(text, word):
-                continue
-            if any(period in text for period in ["下午", "晚上"]) and hour < 12:
-                hour += 12
-            return f"{hour:02d}:00"
+        start = text.find(word)
+        if start >= 0:
+            matches.append((start, word, hour))
+    for _, word, hour in sorted(matches, key=lambda item: item[0]):
+        if not chinese_hour_has_time_context(text, word):
+            continue
+        if any(period in text for period in ["下午", "晚上"]) and hour < 12:
+            hour += 12
+        return f"{hour:02d}:00"
     return ""
 
 
 def has_time_period(text: str) -> bool:
+    if any(period in text for period in ["上午", "中午", "下午", "晚上", "早上"]):
+        return True
     return any(period in text for period in ["上午", "中午", "下午", "晚上"])
 
 
@@ -149,6 +174,11 @@ def is_chinese_hour_false_positive(text: str, word: str) -> bool:
         f"轻{word}",
         f"重点{word}",
     ]
+    index = text.find(word)
+    if index > 0:
+        prev = text[index - 1]
+        if prev in {"多", "差", "过", "再"}:
+            return True
     return any(pattern in text for pattern in false_patterns)
 
 

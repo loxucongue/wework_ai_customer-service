@@ -29,7 +29,7 @@ def first_competitor_slice(items: list[Any]) -> dict[str, str]:
 
 def clean_competitor_text(text: str) -> str:
     value = text.strip()
-    value = value.replace("我这边", "小贝这边")
+    value = value.replace("我这边", "这边")
     value = value.replace("我们", "我们这边")
     return value
 
@@ -112,7 +112,7 @@ def first_after_sales_slice(items: list[Any]) -> dict[str, str]:
 
 def clean_after_sales_text(text: str) -> str:
     value = text.strip()
-    value = value.replace("我这边", "小贝这边")
+    value = value.replace("我这边", "这边")
     value = value.replace("护理老师", "专业同事")
     return value
 

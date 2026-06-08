@@ -26,7 +26,7 @@ class AgentState(TypedDict, total=False):
     content: str
     file_image: str | None
     conversation_history: list[str]
-    user_id: int | None
+    user_id: str | int | None
     wechat: str | None
     external_userid: str | None
     customer_add_wechat_id: str | int | None
@@ -53,6 +53,7 @@ class AgentState(TypedDict, total=False):
     intents: list[dict[str, Any]]
     action_plan: dict[str, Any]
     active_task: dict[str, Any]
+    sales_strategy: dict[str, Any]
     tool_results: dict[str, Any]
     module_outputs: list[dict[str, Any]]
     reply_messages: list[dict[str, Any]]

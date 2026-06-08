@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.graph.nodes.intent_signals import is_broad_ad_intro
 from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.profile_event_text import event_impact, event_summary, event_type_for_intent
 from app.graph.nodes.store_context import extract_city, extract_time_text
+from app.graph.store_anchor import is_valid_store_anchor
 from app.graph.state import AgentState
 
 
@@ -66,6 +68,7 @@ def _event_facts(event_type: str, content: str, state: AgentState, callbacks: An
     image_info = state.get("image_info", {}) or {}
     project = callbacks.extract_project(content)
     common = _event_common_facts(content, state, callbacks)
+    broad_ad_intro = is_broad_ad_intro(content)
     if event_type == "price_inquiry":
         return {
             **common,
@@ -82,6 +85,8 @@ def _event_facts(event_type: str, content: str, state: AgentState, callbacks: An
             "visible_concerns": image_info.get("visible_concerns", []),
             "image_desc": image_info.get("image_desc", ""),
             "project_directions": []
+            if broad_ad_intro
+            else []
             if case_request_lacks_specific_context(state)
             else callbacks.project_direction_names(state),
         }
@@ -102,10 +107,10 @@ def _event_facts(event_type: str, content: str, state: AgentState, callbacks: An
         return {
             **common,
             "intent_level": "medium",
-            "preferred_time": extract_time_text(content) or _active_task_slot(state, "time"),
+            "preferred_time": extract_time_text(content) or _active_task_slot(state, "visit_time"),
             "preferred_store": _active_task_slot(state, "store_name"),
-            "preferred_date": _active_task_slot(state, "date"),
-            "people_count": _active_task_slot(state, "people_count"),
+            "preferred_date": _active_task_slot(state, "visit_date_label") or _active_task_slot(state, "visit_date_value"),
+            "people_count": _active_task_slot(state, "party_size"),
         }
     if event_type == "after_sales":
         return {**common, "issue": "售后/恢复咨询", "severity": "unknown"}
@@ -121,6 +126,12 @@ def _event_facts(event_type: str, content: str, state: AgentState, callbacks: An
 def _event_common_facts(content: str, state: AgentState, callbacks: Any) -> dict[str, Any]:
     image_info = state.get("image_info", {}) or {}
     facts: dict[str, Any] = {}
+    if is_broad_ad_intro(content):
+        if "祛斑" in content or "淡斑" in content:
+            facts["customer_goal"] = "了解祛斑方向、价格口径、效果参考和到店安排"
+        if any(term in content for term in ["预算", "价格", "多少钱", "活动"]):
+            facts["budget_or_price_signal"] = content[:80]
+        return facts
     city = extract_city(content)
     if city:
         facts["city"] = city
@@ -159,7 +170,10 @@ def _active_task_slot(state: AgentState, key: str) -> str:
     slots = active_task.get("known_slots")
     if not isinstance(slots, dict):
         return ""
-    return str(slots.get(key) or "").strip()
+    value = str(slots.get(key) or "").strip()
+    if key == "store_name" and not is_valid_store_anchor(value):
+        return ""
+    return value
 
 
 def _matched_store_names(state: AgentState) -> list[str]:

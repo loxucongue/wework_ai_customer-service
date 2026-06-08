@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Callable
 
 from app.graph.state import AgentState
@@ -25,13 +26,14 @@ def merge_kb_result(tool_results: dict[str, Any], kb_name: str, dumped: dict[str
     existing["kb_name"] = kb_name
 
 
-def tool_results_contain(state: AgentState, term: str, json_dumps: Callable[[Any], str]) -> bool:
+def tool_results_contain(state: AgentState, term: str | Iterable[str], json_dumps: Callable[[Any], str]) -> bool:
     tool_results = state.get("tool_results") or {}
+    terms = [str(item) for item in term] if isinstance(term, Iterable) and not isinstance(term, str) else [str(term)]
     for value in tool_results.values():
         if isinstance(value, dict):
-            if term in json_dumps(value):
+            dumped = json_dumps(value)
+            if any(item and item in dumped for item in terms):
                 return True
-        elif term in str(value):
+        elif any(item and item in str(value) for item in terms):
             return True
     return False
-

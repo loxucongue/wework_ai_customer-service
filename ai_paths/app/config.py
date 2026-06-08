@@ -37,17 +37,24 @@ class Settings(BaseSettings):
     memory_dir: Path = Path("logs/memory")
     pricing_xlsx_path: Path = Path("projects/public/items_pricing_system.xlsx")
     db_path: Path = Field(default=Path("data/ai_paths.db"), alias="AI_PATHS_DB_PATH")
-    platform_agent_base_url: str = "https://v2.henm.cn"
+    platform_agent_base_url: str = "https://www.henm.cn"
     platform_agent_token: str = Field(default="", repr=False)
     platform_agent_request_from: str = "platform_agent"
     platform_agent_timeout_seconds: int = 12
     platform_agent_default_user_id: int | None = None
     platform_agent_default_corp_id: str = ""
     platform_agent_default_wechat: str = ""
+    platform_agent_test_mode_enabled: bool = False
+    platform_agent_test_force_user_id: int | None = None
+    platform_agent_test_force_corp_id: str = ""
+    platform_agent_test_force_wechat: str = ""
+    platform_agent_test_external_userid: str = ""
+    platform_agent_test_order_scene_only: bool = True
 
     kb_workflow_id: str = "7644575365759746083"
     pricing_db_workflow_id: str = "7641872030061117450"
     pricing_sync_workflow_id: str = "7644090458134609974"
+    driving_time_workflow_id: str = "7647753819456192558"
 
     log_dir: Path = Path("logs/runs")
     trace_log_dir: Path | None = Field(default=None, alias="AI_PATHS_TRACE_LOG_DIR")

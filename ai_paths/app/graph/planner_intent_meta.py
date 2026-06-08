@@ -27,6 +27,7 @@ def intent_rank(intent: str) -> int:
         "after_sales": 1,
         "trust_issue": 2,
         "competitor_compare": 3,
+        "case_request": 3,
         "ad_price_check": 4,
         "price_inquiry": 4,
         "campaign_inquiry": 4,
@@ -36,6 +37,7 @@ def intent_rank(intent: str) -> int:
         "appointment_change": 6,
         "appointment_cancel": 6,
         "image_inquiry": 7,
+        "project_process": 7,
         "project_inquiry": 8,
         "emotion_chat": 9,
     }.get(intent, 9)

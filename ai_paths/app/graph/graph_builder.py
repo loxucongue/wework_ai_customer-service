@@ -54,6 +54,8 @@ from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
+from app.services.appointment_opening_service import AppointmentOpeningService
+from app.services.appointment_schedule_service import AppointmentScheduleService
 from app.services.pricing_repository import LocalPricingRepository
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
@@ -67,6 +69,8 @@ def build_graph(
     pricing_repository: LocalPricingRepository | None = None,
     customer_context_service: CustomerContextService | None = None,
     store_service: StoreService | None = None,
+    appointment_opening_service: AppointmentOpeningService | None = None,
+    appointment_schedule_service: AppointmentScheduleService | None = None,
 ):
     return build_legacy_graph(
         coze_client=coze_client,
@@ -76,6 +80,8 @@ def build_graph(
         pricing_repository=pricing_repository,
         customer_context_service=customer_context_service,
         store_service=store_service,
+        appointment_opening_service=appointment_opening_service,
+        appointment_schedule_service=appointment_schedule_service,
         callbacks=_legacy_graph_callbacks(),
     )
 

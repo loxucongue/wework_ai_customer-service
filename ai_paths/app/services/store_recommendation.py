@@ -9,9 +9,6 @@ def with_location_recommendation(result: dict[str, Any], location_preference: st
     stores = result.get("stores") if isinstance(result, dict) else []
     if not isinstance(stores, list) or not stores:
         return result
-    city = str(result.get("city") or "").strip()
-    if location_preference == "机场附近" and city and city != "厦门":
-        return result
     ranked = sorted(
         [store for store in stores if isinstance(store, dict)],
         key=lambda store: location_preference_rank(store, location_preference),
@@ -33,14 +30,21 @@ def with_location_recommendation(result: dict[str, Any], location_preference: st
 def location_preference_rank(store: dict[str, Any], location_preference: str) -> int:
     text = " ".join(str(store.get(key) or "") for key in ["name", "city", "address", "parking_name", "parking_address"])
     if location_preference == "机场附近":
-        if any(term in text for term in ["机场", "高崎"]):
+        if any(term in text for term in ["机场", "高崎", "浦东机场", "虹桥机场"]):
             return 0
-        if any(term in text for term in ["百星", "枋湖"]):
+        if "百星" in text:
+            return 0
+        if any(term in text for term in ["枋湖", "安岭", "钟宅", "湖里"]):
             return 1
-        if any(term in text for term in ["湖里", "安岭", "钟宅"]):
+        if any(term in text for term in ["浦东", "杨高中路", "南洋泾路"]):
+            return 1
+        if any(term in text for term in ["湖里", "嘉园"]):
             return 2
-        if any(term in text for term in ["思明", "厦禾", "国骏"]):
+        if any(term in text for term in ["思明", "厦禾路", "国骏"]):
             return 8
+    if location_preference == "火车站附近":
+        if any(term in text for term in ["火车站", "高铁", "铁路"]):
+            return 0
     return 99
 
 
@@ -48,7 +52,9 @@ def recommendation_reason(store: dict[str, Any], location_preference: str) -> st
     name = str(store.get("name") or "这家门店").strip()
     address = str(store.get("address") or "").strip()
     if location_preference == "机场附近":
-        if any(term in f"{name} {address}" for term in ["湖里", "枋湖", "百星", "安岭", "钟宅"]):
-            return f"客户偏好机场附近，按当前门店地址看，{name}在湖里区方向，比思明区门店更贴近机场区域。"
-        return f"客户偏好机场附近，按当前门店地址看，可优先对比{name}。"
-    return f"按客户位置偏好，可优先对比{name}。"
+        if any(term in f"{name} {address}" for term in ["湖里", "枋湖", "百星", "安岭", "钟宅", "机场", "浦东"]):
+            return "按你提到的机场附近来选，这家相对更顺路。"
+        return f"按你提到的位置偏好，可以优先看{name}。"
+    if location_preference == "火车站附近":
+        return f"按你提到的车站附近来选，可以优先看{name}。"
+    return f"按你提到的位置偏好，可以优先看{name}。"

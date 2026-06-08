@@ -36,7 +36,7 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
             )
             has_handoff = True
             continue
-        if visible_count >= 3:
+        if visible_count >= 2:
             continue
         content = message_content_text(item.get("content"))
         if not content:

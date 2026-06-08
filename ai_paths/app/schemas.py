@@ -9,7 +9,7 @@ class ChatRequest(BaseModel):
     corp_id: str
     conversation_history: list[str] = Field(default_factory=list)
     file_image: str | None = None
-    user_id: int | None = None
+    user_id: str | int | None = None
     wechat: str | None = None
     external_userid: str | None = None
     customer_add_wechat_id: str | int | None = None
@@ -23,7 +23,7 @@ class ChatRequest(BaseModel):
 
 
 class ReplyMessage(BaseModel):
-    type: Literal["text", "image", "human_handoff"] = "text"
+    type: Literal["text", "image", "human_handoff", "appointment_push", "book_order"] = "text"
     order: int
     content: str | dict[str, Any]
 

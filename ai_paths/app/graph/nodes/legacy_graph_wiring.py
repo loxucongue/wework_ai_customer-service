@@ -26,7 +26,9 @@ from app.graph.nodes.reply_payloads import (
     ReplyPayloadCallbacks,
     appointment_reply_payload_for_model,
     reply_forced_payload_for_model,
+    should_use_store_fact_reply,
     should_use_appointment_fact_reply,
+    store_reply_payload_for_model,
 )
 from app.graph.state import AgentState
 
@@ -40,6 +42,8 @@ def build_legacy_graph(
     pricing_repository: Any | None = None,
     customer_context_service: Any | None = None,
     store_service: Any | None = None,
+    appointment_opening_service: Any | None = None,
+    appointment_schedule_service: Any | None = None,
     callbacks: LegacyGraphWiringCallbacks,
 ):
     graph = StateGraph(AgentState)
@@ -69,6 +73,8 @@ def build_legacy_graph(
         trace_logger=trace_logger,
         pricing_repository=pricing_repository,
         store_service=store_service,
+        appointment_opening_service=appointment_opening_service,
+        appointment_schedule_service=appointment_schedule_service,
         callbacks=ActionCallbacks(
             appointment_query_from_state=lambda content, store_lookup, state: appointment_query_from_state(
                 content,
@@ -164,7 +170,15 @@ def build_legacy_graph(
                 state,
                 reply_payload_callbacks,
             ),
+            should_use_store_fact_reply=lambda state: should_use_store_fact_reply(
+                state,
+                reply_payload_callbacks,
+            ),
             should_use_model_reply=callbacks.should_use_model_reply,
+            store_reply_payload_for_model=lambda state: store_reply_payload_for_model(
+                state,
+                reply_payload_callbacks,
+            ),
             validated_model_messages=callbacks.validated_model_messages,
         ),
     )

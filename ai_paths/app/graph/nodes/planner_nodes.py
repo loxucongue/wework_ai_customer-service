@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from app.graph import planner_helpers, task_state
+from app.graph import planner_helpers, sales_strategy, task_state
 from app.graph.nodes.common import infer_scene, model_usage_snapshot, primary_goal, subflow_for_skill
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
@@ -57,11 +57,14 @@ def create_planner_brain_node(
 
             active_task = task_state.build_active_task(state, intents)
             intents = task_state.apply_active_task_intent(state, intents, active_task)
+            intents = planner_helpers.filter_spurious_intents(state, intents)
             active_task = task_state.build_active_task(state, intents)
             intents = planner_helpers.enrich_intents_with_tool_plan(state, planner_helpers.filter_spurious_intents(state, intents))
+            intents = planner_helpers.filter_spurious_intents(state, intents)
             if should_suspend_active_task(state, active_task, intents):
                 intents = without_appointment_intents(intents)
                 active_task = {}
+            current_sales_strategy = sales_strategy.build_sales_strategy(state, intents, active_task)
 
             actions = []
             for item in intents[:3]:
@@ -100,6 +103,7 @@ def create_planner_brain_node(
                     "must_not": ["编造价格", "承诺效果", "透露工具过程", "生硬暴露AI身份"],
                 },
                 "active_task": active_task,
+                "sales_strategy": current_sales_strategy,
                 "confidence": route_result["confidence"],
             }
             output = {
@@ -107,6 +111,7 @@ def create_planner_brain_node(
                 "route_result": route_result,
                 "action_plan": action_plan,
                 "active_task": active_task,
+                "sales_strategy": current_sales_strategy,
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output

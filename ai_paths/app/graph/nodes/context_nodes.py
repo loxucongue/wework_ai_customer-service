@@ -33,6 +33,7 @@ def create_load_customer_context_node(
                         customer_id=str(state.get("customer_id") or "unknown"),
                         memory=state.get("saved_memory") or {},
                         request_context=request_context_from_state(state),
+                        current_message=str(state.get("normalized_content") or state.get("content") or ""),
                     )
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"
@@ -56,12 +57,20 @@ def create_load_memory_node(
     async def load_memory(state: AgentState) -> dict[str, Any]:
         with trace_logger.node(state, "load_memory", {"customer_id": state.get("customer_id")}) as span:
             memory = memory_store.load(str(state.get("customer_id") or "unknown")) if memory_store else {}
+            recent_messages = []
+            repository = getattr(memory_store, "repository", None) if memory_store else None
+            if repository:
+                try:
+                    recent_messages = repository.list_recent_messages(str(state.get("customer_id") or "unknown"))
+                except Exception:
+                    recent_messages = []
             output = {
                 "customer_profile": memory.get("portrait", {}) if isinstance(memory, dict) else {},
                 "customer_basic_info": memory.get("basic_info", {}) if isinstance(memory, dict) else {},
                 "history_events": memory.get("history_events", []) if isinstance(memory, dict) else [],
                 "lifecycle_stage": memory.get("lifecycle_stage", "") if isinstance(memory, dict) else "",
                 "saved_memory": memory if isinstance(memory, dict) else {},
+                "recent_messages": recent_messages,
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output

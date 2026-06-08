@@ -52,6 +52,10 @@ def severe_after_sales_terms(content: str) -> list[str]:
 def has_effect_dispute(content: str) -> bool:
     if not content:
         return False
+    if is_pre_service_effect_concern(content):
+        return False
+    if is_mild_effect_dissatisfaction(content):
+        return False
     if any(prefix in content for prefix in ["会不会", "怕", "担心", "有没有可能"]) and any(
         word in content for word in ["没效果", "没用", "被坑", "骗人", "骗子"]
     ):
@@ -99,10 +103,21 @@ def has_effect_dispute(content: str) -> bool:
     return False
 
 
+def is_mild_effect_dissatisfaction(content: str) -> bool:
+    if not content:
+        return False
+    past_context = any(word in content for word in ["做了", "做完", "已经做", "去过", "做过"])
+    mild_terms = ["不见效果", "没什么变化", "变化不大", "怎么没变化", "怎么还没淡", "怎么感觉没什么效果"]
+    consultive_tone = any(word in content for word in ["呢", "吗", "咋办", "怎么办", "怎么回事", "正常吗", "想问"])
+    return past_context and any(term in content for term in mild_terms) and consultive_tone
+
+
 def has_fee_or_refund_dispute(content: str) -> bool:
     if not content:
         return False
     if is_soft_fee_concern(content):
+        return False
+    if _is_pre_service_fee_trust_concern(content):
         return False
     if is_deposit_rule_question(content):
         return False
@@ -114,11 +129,57 @@ def has_fee_or_refund_dispute(content: str) -> bool:
     return any(term in content for term in payment_terms) and any(term in content for term in ["退", "加钱", "收费", "不一样", "不一致", "怎么说"])
 
 
+def _is_pre_service_fee_trust_concern(content: str) -> bool:
+    trust_terms = ["不正规", "不太正规", "正规吗", "靠谱", "不靠谱", "怕", "担心", "是不是", "会不会", "朋友说", "听说"]
+    fee_terms = ["加钱", "另收费", "额外收费", "乱收费", "隐形消费", "到店加", "门店去要加"]
+    hard_terms = ["已付", "已经付", "刚付", "付款了", "收了", "扣了", "退钱", "退款", "退给我", "投诉", "维权", "曝光", "起诉"]
+    return any(term in content for term in trust_terms) and any(term in content for term in fee_terms) and not any(
+        term in content for term in hard_terms
+    )
+
+
 def is_deposit_rule_question(content: str) -> bool:
     if not content:
         return False
     deposit_terms = ["定金", "订金", "预约金", "10元", "十元", "10块", "十块"]
-    question_terms = ["是什么意思", "什么意思", "能退吗", "可以退吗", "可退吗", "退吗", "怎么退", "规则", "干嘛的", "为什么要付", "要付吗", "怎么用"]
+    payment_method_terms = [
+        "不交定金",
+        "不交订金",
+        "不交预约金",
+        "不用交定金",
+        "不用交订金",
+        "不用交预约金",
+        "不付定金",
+        "不付订金",
+        "不付预约金",
+        "到店付全款",
+        "到店再付全款",
+        "到店付款",
+        "到店再付",
+        "到店付",
+        "付全款",
+        "再付全款",
+        "交全款",
+    ]
+    question_terms = [
+        "是什么意思",
+        "什么意思",
+        "能退吗",
+        "可以退吗",
+        "可退吗",
+        "退吗",
+        "怎么退",
+        "规则",
+        "干嘛的",
+        "为什么要付",
+        "要付吗",
+        "需要吗",
+        "需要定金吗",
+        "需要预约金吗",
+        "要交吗",
+        "要给定金吗",
+        "怎么用",
+    ]
     hard_terms = [
         "退给我",
         "把钱退",
@@ -144,17 +205,80 @@ def is_deposit_rule_question(content: str) -> bool:
         "已经付",
         "刚付",
     ]
-    return any(term in content for term in deposit_terms) and any(term in content for term in question_terms) and not any(
-        term in content for term in hard_terms
-    )
+    if any(term in content for term in hard_terms):
+        return False
+    if any(term in content for term in deposit_terms) and any(term in content for term in question_terms):
+        return True
+    return any(term in content for term in deposit_terms) and any(term in content for term in payment_method_terms)
 
 
 def is_soft_fee_concern(content: str) -> bool:
     if not content:
         return False
-    soft_markers = ["会不会", "怕", "担心", "是不是", "有没有隐形", "会不会到店"]
-    fee_markers = ["乱收费", "隐形消费", "加钱", "额外收费", "另收费", "到店加"]
-    hard_markers = ["已经", "刚刚", "门店说", "到店说", "让我", "要我", "收了", "付了", "退钱", "退款", "投诉", "维权"]
+    soft_markers = [
+        "会不会",
+        "怕",
+        "担心",
+        "是不是",
+        "有没有隐形",
+        "会不会到店",
+        "到店会",
+        "到店后会",
+        "到店是不是会",
+        "到店乱",
+        "会不会到店乱",
+        "到店会不会乱",
+        "会不会乱",
+        "会不会加",
+        "会不会多",
+        "是不是会加",
+        "会不会乱",
+        "有没有乱",
+    ]
+    fee_markers = [
+        "乱收费",
+        "隐形消费",
+        "加钱",
+        "额外收费",
+        "另收费",
+        "到店加",
+        "到店会不会加",
+        "到店加收",
+        "到店费用",
+        "到店支出",
+        "到店账单",
+        "乱加",
+        "乱收",
+        "多收",
+        "乱收费",
+        "多扣",
+        "到店怎么收",
+        "费用会不会",
+        "会不会乱收",
+        "会不会乱加",
+        "会不会到店乱收",
+        "到店会不会乱收",
+        "会不会到店乱收费",
+        "到店会不会乱收费",
+    ]
+    hard_markers = [
+        "已经",
+        "刚刚",
+        "门店说",
+        "到店说",
+        "让我",
+        "要我",
+        "收了",
+        "付了",
+        "退钱",
+        "退款",
+        "投诉",
+        "维权",
+        "把钱退",
+        "要求退",
+        "不给",
+        "退货",
+    ]
     return any(marker in content for marker in soft_markers) and any(marker in content for marker in fee_markers) and not any(
         marker in content for marker in hard_markers
     )
@@ -175,6 +299,17 @@ def has_recent_competitor_context(state: AgentState) -> bool:
 def is_pre_service_effect_concern(content: str) -> bool:
     if not content:
         return False
+    soft_future_terms = [
+        "不会做完没效果",
+        "会不会做完没效果",
+        "怕做完没效果",
+        "担心做完没效果",
+        "做完没效果吧",
+        "做完没有效果吧",
+    ]
+    actual_done_terms = ["已经做", "做了", "做过", "去过", "刚做", "刚做完", "术后"]
+    if any(term in content for term in soft_future_terms) and not any(term in content for term in actual_done_terms):
+        return True
     soft_terms = [
         "会不会没效果",
         "会不会没有效果",
@@ -183,6 +318,17 @@ def is_pre_service_effect_concern(content: str) -> bool:
         "担心没效果",
         "担心没有效果",
         "有没有效果",
+        "会不会反弹",
+        "反弹",
+        "返弹",
+        "反复",
+        "又回来",
+        "怕反弹",
+        "担心反弹",
+        "能维持多久",
+        "维持多久",
+        "保持多久",
+        "能保持多久",
         "怕被坑",
         "担心被坑",
         "会不会被坑",
@@ -201,6 +347,8 @@ def model_intent_has_current_trigger(state: AgentState, intent: str) -> bool:
     if intent == "image_inquiry":
         return bool(image_info.get("has_image"))
     if intent == "appointment_intent" and _has_ad_price_check(content):
+        return False
+    if intent == "appointment_intent" and is_deposit_rule_question(content):
         return False
     if intent == "complaint_refund" and is_deposit_rule_question(content):
         return False

@@ -11,6 +11,8 @@ from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
+from app.services.appointment_opening_service import AppointmentOpeningService
+from app.services.appointment_schedule_service import AppointmentScheduleService
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.pricing_repository import LocalPricingRepository
 from app.services.storage import AppRepository, SQLiteStore
@@ -29,10 +31,12 @@ repository = AppRepository(sqlite_store)
 coze_client = CozeClient(settings)
 model_client = ModelClient(settings)
 memory_store = CustomerMemoryStore(settings, repository)
-pricing_repository = LocalPricingRepository(settings)
+pricing_repository = LocalPricingRepository(settings, sqlite_store)
 platform_agent_client = PlatformAgentClient(settings)
-customer_context_service = CustomerContextService(platform_agent_client)
+customer_context_service = CustomerContextService(platform_agent_client, settings)
 store_service = StoreService(platform_agent_client)
+appointment_opening_service = AppointmentOpeningService(platform_agent_client)
+appointment_schedule_service = AppointmentScheduleService(platform_agent_client)
 compiled_graph = build_graph(
     coze_client,
     trace_logger,
@@ -41,6 +45,8 @@ compiled_graph = build_graph(
     pricing_repository,
     customer_context_service,
     store_service,
+    appointment_opening_service,
+    appointment_schedule_service,
 )
 chat_runtime = ChatRuntime(compiled_graph, trace_logger, repository)
 
@@ -93,6 +99,29 @@ async def require_external_api_key(authorization: str | None = Header(default=No
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing external API token",
         )
+
+
+@app.get("/pricing/legacy")
+async def pricing_legacy(_: None = Depends(require_api_key)) -> dict[str, Any]:
+    return {"output": pricing_repository.list_legacy_rows()}
+
+
+@app.post("/pricing/legacy-sql")
+async def pricing_legacy_sql(payload: dict[str, Any] = Body(...), _: None = Depends(require_api_key)) -> dict[str, Any]:
+    sql = str(payload.get("input") or "").strip()
+    if not sql:
+        raise HTTPException(status_code=400, detail="input is required")
+    try:
+        rows = pricing_repository.execute_legacy_sql(sql)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
+    return {"output": rows}
+
+
+@app.get("/pricing/export")
+async def pricing_export(_: None = Depends(require_api_key)) -> dict[str, Any]:
+    text = pricing_repository.export_knowledge_text()
+    return {"output": text, "row_count": len(pricing_repository.list_legacy_rows())}
 
 
 @app.post("/chat", response_model=ChatResponse)

@@ -8,6 +8,7 @@ from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_f
 from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.profile_update_summary import decision_stage, intent_level, profile_summary
 from app.graph.nodes.store_context import extract_city
+from app.graph.store_anchor import is_valid_store_anchor
 from app.graph.state import AgentState
 from app.policies.constants import PROJECT_KEYWORDS
 
@@ -155,9 +156,13 @@ def _basic_info_update(content: str, state: AgentState) -> dict[str, Any]:
     if isinstance(active_task, dict) and active_task.get("type") == "appointment_visit":
         slots = active_task.get("known_slots") if isinstance(active_task.get("known_slots"), dict) else {}
         if slots:
-            basic_info["appointment_preference"] = {
+            preference = {
                 key: value
                 for key, value in slots.items()
-                if key in {"city", "store_name", "date", "time", "people_count"} and value
+                if key in {"city", "store_name", "visit_date_label", "visit_date_value", "visit_time", "party_size"} and value
             }
+            if "store_name" in preference and not is_valid_store_anchor(str(preference.get("store_name") or "")):
+                preference.pop("store_name", None)
+            if preference:
+                basic_info["appointment_preference"] = preference
     return basic_info

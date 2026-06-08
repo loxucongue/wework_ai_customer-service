@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.graph.store_anchor import current_store_anchor_from_state, known_store_name_matches
 from app.graph.state import AgentState
 from app.graph.task_time_slots import (
     has_time_period,
@@ -25,11 +26,7 @@ def city_from_text(text: str) -> str:
 
 
 def store_name_from_state(state: AgentState) -> str:
-    for key in ["confirmed_store_name", "store_name"]:
-        value = str(state.get(key) or "").strip()
-        if value:
-            return value
-    return ""
+    return current_store_anchor_from_state(state)
 
 
 def store_name_from_text(text: str, city: str = "") -> str:
@@ -60,9 +57,9 @@ def store_name_from_text(text: str, city: str = "") -> str:
                 alias_candidates.append("重庆渝北")
             elif "嘉定" in cleaned:
                 alias_candidates.append("嘉定")
-        match = re.search(r"([\u4e00-\u9fa5A-Za-z0-9]{2,8}(?:门店|店))", cleaned)
-        if match and not any(term in match.group(1) for term in ["来店", "到店", "店吗", "哪家", "哪个", "不知道", "不确定"]):
-            regex_candidates.append(match.group(1))
+        matches = known_store_name_matches(cleaned)
+        if matches:
+            regex_candidates.append(matches[-1][0])
     if alias_candidates:
         return alias_candidates[-1]
     return regex_candidates[-1] if regex_candidates else ""

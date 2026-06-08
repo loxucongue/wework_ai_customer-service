@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.graph.appointment_identity_signals import (
+    extract_customer_name_value,
+    extract_phone_value,
+    recent_identity_values_from_history,
+)
 from app.graph.planner_intent_meta import extract_city
 from app.graph.state import AgentState
 from app.services.store_text_constants import AREA_CITY_MAP, CITY_NAMES
@@ -41,7 +46,7 @@ def build_sales_strategy(
         "known_slots": known_slots,
         "missing_slots": missing_slots,
         "ask_policy": ask_policy,
-        "next_best_action": _next_best_action(stage, known_slots, missing_slots),
+        "next_best_action": _next_best_action(stage, known_slots, missing_slots, content),
         "push_goal": _push_goal(stage),
         "reply_rhythm": _reply_rhythm(stage, ask_policy),
     }
@@ -82,7 +87,9 @@ def _sales_stage(
             return "quote"
         return "price_paving"
     if intents & {"project_inquiry", "image_inquiry", "case_request", "project_process"}:
-        return "opening_intro" if _is_early_intro(content) else "price_paving"
+        if _should_hold_opening_intro(content):
+            return "opening_intro"
+        return "price_paving"
     if intents & {"trust_issue"}:
         return "answer_only"
     if intents & {"greeting", "emotion_chat"} or not intents:
@@ -99,6 +106,13 @@ def _known_slots(
     profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
     active_known = active_task.get("known_slots") if isinstance(active_task, dict) and isinstance(active_task.get("known_slots"), dict) else {}
+    content = str(state.get("normalized_content") or "")
+    active_appointment = isinstance(active_task, dict) and active_task.get("type") == "appointment_visit"
+    current_name = extract_customer_name_value(content) if active_appointment else ""
+    current_phone = extract_phone_value(content) if active_appointment else ""
+    recent_identity = recent_identity_values_from_history(state) if active_appointment else {}
+    recent_name = str(recent_identity.get("customer_name") or "").strip()
+    recent_phone = str(recent_identity.get("phone") or "").strip()
     return _compact_slots(
         {
             "city": active_known.get("city")
@@ -114,8 +128,8 @@ def _known_slots(
             "visit_date": active_known.get("visit_date_label") or active_known.get("visit_date_value") or "",
             "visit_time": active_known.get("visit_time") or "",
             "party_size": active_known.get("party_size") or "",
-            "customer_name": active_known.get("customer_name") or customer_context.get("name") or customer_context.get("customer_name") or "",
-            "phone": active_known.get("phone") or customer_context.get("phone") or customer_context.get("mobile") or "",
+            "customer_name": current_name or active_known.get("customer_name") or recent_name or customer_context.get("name") or customer_context.get("customer_name") or "",
+            "phone": current_phone or active_known.get("phone") or recent_phone or customer_context.get("phone") or customer_context.get("mobile") or "",
         }
     )
 
@@ -140,11 +154,15 @@ def _ask_policy(stage: str, content: str, known_slots: dict[str, Any], missing_s
     narrow_store_request = _is_narrow_store_request(content)
     if stage == "store_paving" and (city or narrow_store_request) and not missing_slots:
         return "no_ask"
+    if _is_age_suitability_question(content) and not known_slots.get("city"):
+        return "ask_one"
     if stage == "price_paving" and (_has_clear_need_or_direction(content) or known_slots.get("need") or known_slots.get("project_direction")):
         return "no_ask"
     if stage == "quote" and narrow_fee_question:
         return "no_ask"
     if stage == "opening_intro" and _needs_opening_question(content):
+        return "ask_one"
+    if stage == "opening_intro" and not (known_slots.get("need") or known_slots.get("project_direction")) and not known_slots.get("city"):
         return "ask_one"
     if stage == "collect_info" and missing_slots:
         return "collect_required"
@@ -153,21 +171,29 @@ def _ask_policy(stage: str, content: str, known_slots: dict[str, Any], missing_s
     return "no_ask"
 
 
-def _next_best_action(stage: str, known_slots: dict[str, Any], missing_slots: list[str]) -> str:
+def _next_best_action(stage: str, known_slots: dict[str, Any], missing_slots: list[str], content: str = "") -> str:
     if stage == "opening_intro":
+        if (known_slots.get("need") or known_slots.get("project_direction")) and known_slots.get("city"):
+            return "客户已经同时给出城市和需求时，先短承接这类大多数都可以做；有案例素材就给同类参考；如果客户已确认类型或效果疑问，再轻问今天/明天哪个时间方便到店。"
         if known_slots.get("need") or known_slots.get("project_direction"):
-            return "短承接客户需求，直接给改善方向；如果已有活动口径，就顺带给活动/价格铺垫，不重新追问已知问题。"
-        return "短承接客户需求，给一个方向或只问一个最关键问题。"
+            return "先短承接客户需求，直接说这类大多数都可以做；优先带同类参考；如果客户已给出类型，就不要继续追问类型，改为推进到店检测或时间。"
+        if known_slots.get("city"):
+            return "客户还没说清具体需求时，先按已知城市帮客户定位最近或更方便的门店，不额外发散。"
+        return "新客开场先用一句话介绍淡斑、提亮、毛孔、痘印等可看的改善方向，再收一个城市、区域或当前位置，好先帮客户找最近门店；不要连续追问多个问题。"
     if stage == "store_paving":
+        if known_slots.get("city") and (known_slots.get("need") or known_slots.get("project_direction")):
+            return "客户已同时给出城市和需求时，先说这类大多数都可以做，再推荐更方便的门店；如果有案例素材就顺手带一句我先给你看个同类参考，不要只丢门店清单。"
         if known_slots.get("city"):
             return "直接推荐最近或最方便门店；能给地址、导航、停车就一次发全，不再反问客户选哪家。"
         return "只补问城市或所在区域。"
     if stage == "price_paving":
+        if _is_age_suitability_question(content):
+            return "先回答年龄不是单独否定条件，再问客户所在城市或附近区域，好推荐近一点门店做检测确认。"
         if known_slots.get("need") or known_slots.get("project_direction"):
-            return "先给项目方向或活动方向，再补一句收费口径，让客户形成价格预期，不主动追问。"
+            return "先给项目方向或活动方向，再补一句收费口径；如果没有明确价格事实也不要停在没查到，可以轻问什么时候方便到店核活动价。"
         return "先解释项目/活动价值和收费口径，再自然过渡到报价。"
     if stage == "quote":
-        return "先回答当前价格口径；只有客户明确想来时，才轻提预约登记。"
+        return "先回答当前价格口径；如果客户已有改善意向或门店位置，可以补一个短钩子问今天/明天是否方便到店，不要直接索要姓名电话。"
     if stage == "close_order":
         if missing_slots:
             return f"客户意向已较强，只补一个关键槽位：{missing_slots[0]}，不要连问。"
@@ -185,7 +211,7 @@ def _next_best_action(stage: str, known_slots: dict[str, Any], missing_slots: li
 
 def _push_goal(stage: str) -> str:
     if stage in {"opening_intro", "price_paving"}:
-        return "引导客户形成清晰项目/活动兴趣。"
+        return "先建立信任和方向感，再把客户推进到案例参考、门店检测和到店时间。"
     if stage == "store_paving":
         return "降低到店成本，让客户知道去哪家更方便。"
     if stage in {"quote", "close_order"}:
@@ -205,6 +231,14 @@ def _reply_rhythm(stage: str, ask_policy: str) -> str:
     if stage in {"store_paving", "quote", "close_order"}:
         return "默认1条答核心；只有地址资料和下一步明显不同才拆第2条。"
     return "短承接后最多问一个关键问题；已知信息足够时不追问。"
+
+
+def _should_hold_opening_intro(content: str) -> bool:
+    if _is_early_intro(content):
+        return True
+    if _has_clear_need_or_direction(content):
+        return True
+    return False
 
 
 def _has_arrival_intent(content: str) -> bool:
@@ -316,7 +350,7 @@ def _has_customer_confirmation(content: str) -> bool:
 
 
 def _is_at_store(content: str) -> bool:
-    return any(term in content for term in ["我到了", "到店了", "在前台", "已经到店", "到你们店了", "我在店里"])
+    return any(term in content for term in ["我到了", "到了", "到店了", "在前台", "已经到店", "到你们店了", "我在店里", "在楼下", "到楼下", "找不到门店", "找不到你们"])
 
 
 def _is_early_intro(content: str) -> bool:
@@ -377,6 +411,13 @@ def _is_narrow_store_request(content: str) -> bool:
             "最近的店",
         ]
     )
+
+
+def _is_age_suitability_question(content: str) -> bool:
+    text = str(content or "")
+    age_terms = ["年纪", "年龄", "岁数", "年纪大", "年龄大", "岁数大", "老了", "比较大了", "年纪比较大"]
+    suitability_terms = ["能做", "能不能做", "可以做", "可不可以做", "适合", "还能做", "也能做", "还能不能"]
+    return any(term in text for term in age_terms) and any(term in text for term in suitability_terms)
 
 
 def _has_clear_need_or_direction(content: str) -> bool:

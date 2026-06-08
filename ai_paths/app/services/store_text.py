@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.store_catalog import StoreRecord
@@ -14,9 +15,9 @@ def needs_city_before_lookup(query: str, *, city: str, requested_name: str) -> b
 
 
 def extract_location_preference(query: str) -> str:
-    if any(term in query for term in ["机场附近", "机场周边", "离机场近", "机场近", "高崎机场", "厦门机场", "机场"]):
+    if any(term in query for term in ["机场附近", "机场周边", "离机场近", "机场近点", "高崎机场", "浦东机场", "虹桥机场", "机场"]):
         return "机场附近"
-    if any(term in query for term in ["火车站附近", "离火车站近", "高铁站附近"]):
+    if any(term in query for term in ["火车站附近", "离火车站近", "高铁站附近", "车站附近"]):
         return "火车站附近"
     return ""
 
@@ -25,8 +26,24 @@ def extract_city(query: str, stores: list[StoreRecord]) -> str:
     for city in CITY_NAMES:
         if city in query:
             return city
+    for hint, city in {
+        "浦东机场": "上海",
+        "虹桥机场": "上海",
+        "高崎机场": "厦门",
+        "厦门机场": "厦门",
+        "浦东": "上海",
+        "虹桥": "上海",
+        "枋湖": "厦门",
+        "湖里": "厦门",
+        "中贸": "西安",
+        "小寨": "西安",
+        "未央": "西安",
+        "碑林": "西安",
+    }.items():
+        if hint in query:
+            return city
     for store in stores:
-        if store.name in query:
+        if store.name and store.name in query:
             return store.city
     for area, city in AREA_CITY_MAP.items():
         if area in query:
@@ -37,19 +54,49 @@ def extract_city(query: str, stores: list[StoreRecord]) -> str:
 def extract_store_name(query: str, stores: list[StoreRecord]) -> str:
     city = extract_city(query, stores)
     for store in stores:
-        if store.name in query:
+        if store.name and store.name in query:
             return store.name
     if "百星" in query and city:
         return f"{city}百星"
     for alias, name in QUERY_STORE_ALIASES.items():
         if alias in query:
             return name
+    generic = re.search(r"([\u4e00-\u9fa5A-Za-z0-9]{2,16}(?:门店|店))", query or "")
+    if generic:
+        matched = generic.group(1).strip()
+        if _is_generic_store_phrase(matched, city):
+            return ""
+        if not any(term in matched for term in ["来店", "到店", "店吗", "哪家", "哪个", "不知道", "不确定"]):
+            return matched
     return ""
 
 
+def _is_generic_store_phrase(matched: str, city: str) -> bool:
+    text = str(matched or "").strip()
+    if not text:
+        return True
+    generic_phrases = {
+        "你们门店",
+        "你家门店",
+        "你们店",
+        "你家店",
+        "附近门店",
+        "附近店",
+        "本地门店",
+        "本地店",
+    }
+    if text in generic_phrases:
+        return True
+    if city and text in {f"{city}门店", f"{city}店"}:
+        return True
+    if any(term in text for term in ["附近门店", "附近店", "机场附近", "火车站附近", "高铁站附近"]):
+        return True
+    if text.endswith(("门店", "店")) and any(term in text for term in ["机场", "火车站", "高铁站", "车站", "附近"]):
+        return True
+    return False
+
+
 def store_aliases(name: str) -> list[str]:
-    if name.endswith("百星"):
-        return [name, "百星"]
     return STORE_ALIASES.get(name, [name])
 
 
@@ -162,6 +209,8 @@ def store_hint_terms(query: str) -> list[str]:
         "今天",
         "明天",
         "几点",
+        "发我",
+        "发给我",
     ]
     for term in generic_terms:
         text = text.replace(term, " ")

@@ -18,6 +18,14 @@ class LegacyProjectContextCallbacks:
     recent_conversation_text: Callable[[AgentState], str]
 
 
+def current_turn_explicit_project(state: AgentState, callbacks: LegacyProjectContextCallbacks) -> str:
+    content = state.get("normalized_content") or ""
+    project = callbacks.extract_project(content)
+    if project:
+        return callbacks.canonical_price_project(project)
+    return ""
+
+
 def recent_project_from_state(state: AgentState, callbacks: LegacyProjectContextCallbacks) -> str:
     content = state.get("normalized_content") or ""
     project = callbacks.extract_project(content)
@@ -69,4 +77,3 @@ def project_direction_names_from_state(state: AgentState, callbacks: LegacyProje
     for item in slices:
         names.extend(callbacks.project_direction_name_candidates(str(item.get("replacement_name") or "")))
     return callbacks.dedupe_strings(names)
-

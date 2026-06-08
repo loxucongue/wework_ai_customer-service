@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable
 
+from app.graph.store_anchor import current_store_anchor_from_state
 from app.graph import task_state
 from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference
 
@@ -21,8 +22,12 @@ def appointment_query_from_state(
     callbacks: AppointmentQueryCallbacks,
 ) -> dict[str, Any]:
     stores = store_lookup.get("stores") if isinstance(store_lookup, dict) else []
-    store_name_hint = task_state.appointment_slot_value(state, "store_name")
+    store_name_hint = task_state.appointment_slot_value(state, "store_name") or current_store_anchor_from_state(state)
     store = select_store_for_appointment(stores, store_name_hint)
+    if not store and isinstance(store_lookup, dict):
+        recommended = store_lookup.get("recommended_store") if isinstance(store_lookup.get("recommended_store"), dict) else {}
+        if recommended.get("id"):
+            store = recommended
     if not store:
         store = stores[0] if has_explicit_location_or_store(content, callbacks.extract_city) and isinstance(stores, list) and stores else {}
     explicit_store_id = state.get("confirmed_store_id") or state.get("store_id")

@@ -17,6 +17,14 @@ class PriceQuestionFrame:
 
 
 _DEPOSIT_TERMS = ("定金", "订金", "预约金", "10元", "十元", "10块", "十块")
+_PRICE_FRAME_NAMES = {
+    "deposit_question",
+    "single_fee",
+    "course_payment",
+    "price_conflict",
+    "hidden_fee_concern",
+    "confirm_price",
+}
 
 
 def detect_price_question_frame(content: str) -> str:
@@ -25,19 +33,39 @@ def detect_price_question_frame(content: str) -> str:
         return ""
     if any(term in text for term in _DEPOSIT_TERMS):
         return "deposit_question"
-    if any(term in text for term in ["是不是一次的费用", "是一次的费用吗", "一次的费用", "一次多少钱", "单次费用", "单次多少钱", "一只还是一双", "一边还是两边"]):
+    if any(term in text for term in ["是不是一次的费用", "是不是一次费用", "是一次的费用吗", "一次的费用", "一次费用", "一次多少钱", "单次费用", "单次多少钱", "一只还是一双", "一边还是两边", "一只", "一双"]):
         return "single_fee"
-    if any(term in text for term in ["要做多少次", "做多少次", "做几次", "几次有效果", "一次做好", "一次能好吗", "一次能不能好"]):
+    if any(term in text for term in ["要做多少次", "做多少次", "做几次", "几次有效果", "一次做好", "一次能好吗", "一次能不能好", "一次能不能做好", "保持多久", "维持多久"]):
         return "times_question"
-    if any(term in text for term in ["做疗付费", "疗程付费", "按疗程付费", "到店付费", "是不是到店付费", "是先付费吗"]):
+    if any(term in text for term in ["做疗付费", "疗程付费", "按疗程付费", "到店付费", "到院付费", "到店再付", "做完付费", "是不是到店付费", "是先付费吗", "尾款"]):
         return "course_payment"
-    if any(term in text for term in ["为什么还有", "价格怎么不一样", "怎么跟我说", "怎么又变成", "同样的地方还有", "一个268一个380", "199你又说"]):
+    if any(term in text for term in ["为什么还有", "为什么一样的地方", "一样的地方还有", "价格怎么不一样", "怎么跟我说", "怎么又变成", "同样的地方还有", "一个268一个380", "199你又说", "还有380"]):
         return "price_conflict"
     if any(term in text for term in ["乱收费", "其他收费", "隐形消费", "额外收费", "另外收费", "到店加钱", "会不会加钱", "会不会乱收费"]):
         return "hidden_fee_concern"
     if any(term in text for term in ["确定268", "确定199", "这个价准吗", "就是这个价吗", "这个价格是真的吗", "268吗", "199吗"]):
         return "confirm_price"
     return ""
+
+
+def is_price_frame_question(content: str) -> bool:
+    return detect_price_question_frame(content) in _PRICE_FRAME_NAMES
+
+
+def price_frame_can_skip_project_price(content: str) -> bool:
+    """口径类问题优先解释规则，缺项目时不强查价格库，避免相似品项污染回复。"""
+    return detect_price_question_frame(content) in {
+        "deposit_question",
+        "single_fee",
+        "course_payment",
+        "price_conflict",
+        "hidden_fee_concern",
+        "confirm_price",
+    }
+
+
+def is_generic_times_or_effect_question(content: str) -> bool:
+    return detect_price_question_frame(content) == "times_question"
 
 
 def build_price_question_frame(content: str, digits: list[str] | None = None) -> PriceQuestionFrame | None:
@@ -48,7 +76,7 @@ def build_price_question_frame(content: str, digits: list[str] | None = None) ->
     if frame == "confirm_price":
         return PriceQuestionFrame(
             name=frame,
-            answer_first=f"客户在确认{primary_digit}这个数字本身。先正面回答它可以先按客户看到的活动或体验口径理解，再补一句还要核对对应项目、范围和适用条件。",
+            answer_first=f"客户在确认{primary_digit}这个数字本身。先正面回答它可以先按客户看到的活动或体验口径理解，再补一句还要核对对应项目、范围和适用条件，不要把别的价格混进来。",
             must_answer="先回答这个数字是客户当前看到的参考口径，再解释为什么还要核对活动来源、项目和包含项；不要直接跳预约。",
             reply_point="把价格先解释成‘客户看到的参考口径’，不是一上来否定，也不是直接确认永久有效。",
             follow_up="只在必要时确认客户看到的是哪条广告、哪个项目，最多追问一个。",
@@ -81,13 +109,13 @@ def build_price_question_frame(content: str, digits: list[str] | None = None) ->
     if frame == "hidden_fee_concern":
         return PriceQuestionFrame(
             name=frame,
-            answer_first="客户担心到店后会不会再加钱。先承接这个顾虑，再说明到店前会把项目范围、包含项、尾款和是否有加项逐项核清楚，不会把局部价当成全脸价来讲。",
+            answer_first="客户担心到店后会不会再加钱。先直接说这个您放心，确认好的项目、价格和包含项不会临时再加别的费用；如果现场您自己还想加做别的项目，也会提前跟您说清楚，由您自己决定。",
             must_answer="这是普通收费透明顾虑，先解释收费口径，不要直接升级成人工或投诉场景。",
             reply_point="重点回答收费怎么核、哪里可能产生差异、客户怎么逐项确认。",
             follow_up="如果还要继续，只确认广告截图或项目名其中一个，不转去问门店和预约。",
             missing_slot="广告截图或项目名称",
             suggested_next_step="核对收费口径",
-            do_not_say=("绝不加钱", "绝对没有其他收费", "不会有任何额外费用"),
+            do_not_say=("绝不加钱", "不会有任何额外费用"),
         )
     if frame == "times_question":
         return PriceQuestionFrame(
@@ -118,8 +146,8 @@ def build_price_question_frame(content: str, digits: list[str] | None = None) ->
             must_answer="先把10元、尾款和总价的关系讲清楚，再说明已支付后的具体退款仍要看记录核对。",
             reply_point="解释定金和尾款的关系，不直接许诺已预约成功。",
             follow_up="只解释定金/预约金规则；客户主动说要预约或开单时，再确认门店、日期、时间和手机号。",
-            missing_slot="门店和时间",
-            suggested_next_step="确认预约信息",
+            missing_slot="",
+            suggested_next_step="解释预约金和尾款关系",
             do_not_say=("一定退", "不交也一样", "已经锁位成功", "您想去哪家门店", "哪家门店", "什么时间方便", "哪天方便"),
         )
     return None

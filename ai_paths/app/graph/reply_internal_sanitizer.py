@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 
@@ -55,7 +56,7 @@ def sanitize_customer_visible_messages(messages: list[dict[str, Any]]) -> list[d
             if not content:
                 continue
         visible.append({"type": msg_type, "order": len(visible) + 1, "content": content})
-    return renumber(visible)
+    return renumber(_compact_redundant_text_messages(visible))
 
 
 def has_internal_reply_leak(text: str) -> bool:
@@ -115,3 +116,45 @@ def renumber(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         copied["order"] = index
         ordered.append(copied)
     return ordered
+
+
+def _compact_redundant_text_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(messages) < 2:
+        return messages
+    compacted: list[dict[str, Any]] = []
+    for message in messages:
+        if not compacted:
+            compacted.append(message)
+            continue
+        previous = compacted[-1]
+        if previous.get("type") == "text" and message.get("type") == "text":
+            prev_text = str(previous.get("content") or "").strip()
+            curr_text = str(message.get("content") or "").strip()
+            if _is_redundant_followup_pair(prev_text, curr_text):
+                continue
+        compacted.append(message)
+    return compacted
+
+
+def _is_redundant_followup_pair(previous: str, current: str) -> bool:
+    prev_norm = re.sub(r"\s+", "", previous)
+    curr_norm = re.sub(r"\s+", "", current)
+    if not prev_norm or not curr_norm:
+        return False
+    if prev_norm == curr_norm:
+        return True
+    similarity = SequenceMatcher(None, prev_norm, curr_norm).ratio()
+    if similarity >= 0.76:
+        return True
+    if len(curr_norm) <= len(prev_norm) and curr_norm in prev_norm:
+        return True
+    redundant_question_terms = [
+        "哪家更方便",
+        "如果需要",
+        "如需",
+        "需要我帮你",
+        "要不要我",
+        "可以发给你",
+        "继续确认",
+    ]
+    return any(term in curr_norm for term in redundant_question_terms) and similarity >= 0.45

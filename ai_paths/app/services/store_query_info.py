@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.services.store_catalog import StoreRecord
 from app.services import store_text
+from app.services.store_catalog import StoreRecord
 
 
 @dataclass(frozen=True)

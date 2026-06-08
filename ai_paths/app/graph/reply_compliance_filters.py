@@ -38,7 +38,7 @@ def sanitize_license_promise(text: str, *, strict: bool = False) -> str:
         text = text.replace("产品授权书", "产品来源信息")
         text = text.replace("器械备案信息", "器械备案信息可通过官方渠道核验")
         if any(term in text for term in ["医疗机构执业许可证", "营业执照", "执业许可证"]):
-            return "你要核验证照这个诉求小贝理解，但这类材料我这边不直接发图片或截图。可以先帮你按资质核验、产品来源和服务保障这几块说明；具体证照建议以门店现场或官方渠道核验为准。"
+            return "你要核验证照这个诉求我理解，但这类材料我这边不直接发图片或截图。可以先帮你按资质核验、产品来源和服务保障这几块说明；具体证照建议以门店现场或官方渠道核验为准。"
     return text
 
 
@@ -60,10 +60,13 @@ def allows_specific_project_names(
 
 
 def sanitize_unasked_project_names(text: str) -> str:
-    text = text.replace("皮秒/祛斑类", "针对性色素淡化类")
-    text = text.replace("皮秒或祛斑类", "针对性色素淡化类")
+    text = text.replace("皮秒/祛斑类", "淡斑改善类")
+    text = text.replace("皮秒或祛斑类", "淡斑改善类")
+    text = text.replace("大多数顾客反馈是有改善的", "这类一般都可以先看同类改善参考")
+    text = text.replace("大多数顾客反馈是有基础改善的", "这类一般都可以先看同类改善参考")
+    text = text.replace("顾客反馈是有改善的", "一般都可以先看同类改善参考")
     text = replace_sensitive_terms(text)
-    text = re.sub(r"比如\s*(针对性色素淡化方向|肤色改善类光电方向)这类", "比如更偏淡斑的方向", text)
+    text = re.sub(r"比如\s*(淡斑改善方向|肤色改善类光电方向|针对性色素淡化方向)这类", "比如更偏淡斑的方向", text)
     return dedupe_repeated_phrase_noise(text)
 
 

@@ -73,6 +73,8 @@ def check_store_appointment_price(
     if "store_inquiry" in intents and _store_reply_conflicts_with_query(state, text, content, callbacks):
         return True
     if intents & {"appointment_intent", "appointment_confirm", "appointment_change", "appointment_cancel"}:
+        if _appointment_opening_reply_invalid(state, text):
+            return True
         if _appointment_reply_conflicts_with_slots(state, text, content, callbacks):
             return True
     if "after_sales" in intents and any(term in text for term in ["是正常的", "属于正常", "不用担心", "没事"]):
@@ -106,9 +108,7 @@ def check_final_intent_rules(
         return True
     if "project_process" in intents and not any(term in text for term in ["分钟", "小时", "半小时"]):
         return True
-    if "project_process" in intents and callbacks.asks_followup_question(text):
-        return True
-    if is_broad_ad_intro(content) and any(term in text for term in ["点状斑", "点状斑点", "片状色沉", "肤色不均", "深浅范围"]):
+    if is_broad_ad_intro(content) and _broad_ad_intro_invents_specific_skin_context(state, text, content):
         return True
     if "ad_price_check" in intents and _ad_price_reply_invalid(state, text, content, callbacks):
         return True
@@ -120,12 +120,42 @@ def check_final_intent_rules(
         available = state.get("tool_results", {}).get("available_time") or {}
         if isinstance(available, dict) and callbacks.available_slot_list(available.get("slots") or {}) and re.search(r"\d{1,2}:\d{2}", text):
             return False
+    if _allow_opening_guidance_reply(state, text, content, intents):
+        return False
     if callbacks.too_similar_to_recent_assistant_reply(state, text):
         return True
     return False
 
 
+def _allow_opening_guidance_reply(state: AgentState, text: str, content: str, intents: set[str]) -> bool:
+    """Allow a lightweight sales opening for new add-WeChat or pure greeting turns."""
+    if task_state.is_active_appointment_task(state):
+        return False
+    compact = "".join(str(content or "").split()).lower().strip("，。！？!?~～")
+    opening_inputs = {
+        "你好",
+        "您好",
+        "在吗",
+        "我已经添加了你，现在我们可以开始聊天了。",
+        "我已经添加了你现在我们可以开始聊天了",
+        "已经添加了你",
+        "现在我们可以开始聊天了",
+        "可以开始聊天了",
+    }
+    if compact not in opening_inputs and not any(term in compact for term in ["已经添加了你", "开始聊天"]):
+        return False
+    if intents and intents != {"emotion_chat"}:
+        return False
+    if re.search(r"\d{1,2}:\d{2}|\d+\s*(公里|km|KM|分钟)", text):
+        return False
+    if any(term in text for term in ["地址", "停车场", "导航", "可约时间", "空位", "预约金", "收款"]):
+        return False
+    return any(term in text for term in ["小贝", "皮肤改善", "活动价格", "附近门店", "门店安排", "项目", "价格"])
+
+
 def _store_reply_conflicts_with_query(state: AgentState, text: str, content: str, callbacks: ReplyQualityCallbacks) -> bool:
+    if _city_only_store_refinement_allowed(state, text, content):
+        return False
     city = callbacks.extract_city(content)
     lookup = state.get("tool_results", {}).get("store_lookup") or {}
     stores = lookup.get("stores", []) if isinstance(lookup, dict) else []
@@ -142,6 +172,32 @@ def _store_reply_conflicts_with_query(state: AgentState, text: str, content: str
     if "地址" in content and "地址" not in text and city not in text:
         return True
     return False
+
+
+def _city_only_store_refinement_allowed(state: AgentState, text: str, content: str) -> bool:
+    lookup = state.get("tool_results", {}).get("store_lookup") or {}
+    if not isinstance(lookup, dict):
+        return False
+    city = str(lookup.get("city") or "").strip()
+    stores = lookup.get("stores")
+    if not city or not isinstance(stores, list) or len(stores) <= 1:
+        return False
+    if lookup.get("recommended_store") or lookup.get("location_preference"):
+        return False
+    if lookup.get("wants_route") or lookup.get("wants_parking") or lookup.get("wants_status"):
+        return False
+    source = str(content or "").strip()
+    for prefix in ["我在", "人在", "目前在", "现在在", "住在"]:
+        if source.startswith(prefix):
+            source = source[len(prefix):].strip()
+            break
+    for suffix in ["这边", "这儿", "附近"]:
+        if source.endswith(suffix):
+            source = source[: -len(suffix)].strip()
+    source = source.strip(" ，。！？?~～")
+    if source not in {city, f"{city}市"}:
+        return False
+    return ("？" in text or "?" in text) and any(term in text for term in ["哪个区", "哪一片", "这边呢", "方便呢"])
 
 
 def _store_reply_invents_distance_or_duration(stores: list[Any], text: str) -> bool:
@@ -224,9 +280,72 @@ def _appointment_reply_conflicts_with_slots(state: AgentState, text: str, conten
     available = state.get("tool_results", {}).get("available_time") or {}
     if isinstance(available, dict) and available.get("slots") and not re.search(r"\d{1,2}:\d{2}", text):
         return True
-    if isinstance(available, dict) and available.get("error") and any(term in text for term in ["有空档", "可以安排", "可以预约"]):
-        return True
+    if isinstance(available, dict) and available.get("error"):
+        positive_terms = [
+            "有时间",
+            "有空档",
+            "有空位",
+            "有空",
+            "可约",
+            "能约",
+            "可以约",
+            "可以安排",
+            "可以预约",
+            "可以去",
+            "能去",
+        ]
+        clear_non_commitment_terms = [
+            "不能确定",
+            "不确定",
+            "没法直接确认",
+            "无法直接确认",
+            "还不能直接确认",
+            "不能直接确认",
+            "没拿到实时",
+            "还没拿到实时",
+            "暂时没看到",
+            "暂时没有看到",
+            "没有看到",
+            "没看到",
+        ]
+        if any(term in text for term in positive_terms) and not any(term in text for term in clear_non_commitment_terms):
+            return True
     if callbacks.is_direct_arrival_question(content) and not any(term in text for term in ["不建议直接", "先别直接", "直接过去可能不太方便", "不太方便", "不要直接"]):
+        return True
+    return False
+
+
+def _appointment_opening_reply_invalid(state: AgentState, text: str) -> bool:
+    opening = state.get("tool_results", {}).get("appointment_opening") if isinstance(state.get("tool_results"), dict) else {}
+    if not isinstance(opening, dict) or not opening:
+        return False
+    status = str(opening.get("status") or "").strip()
+    push_terms = ["发小程序", "发一个小程序", "发预约入口", "开预约入口", "按页面确认", "按页面提示"]
+    if status == "needs_customer_confirmation":
+        if not any(term in text for term in push_terms):
+            return False
+        confirmation_terms = ["可以按", "是否按", "要不要按", "您看", "你看", "确认一下", "开预约入口吗", "可以吗"]
+        return not any(term in text for term in confirmation_terms)
+    if status in {"cannot_create", "create_failed", "error", "platform_unavailable"}:
+        if any(term in text for term in push_terms) and not any(term in text for term in ["暂时", "不能", "无法", "没法", "核对"]):
+            return True
+    return False
+
+
+def _broad_ad_intro_invents_specific_skin_context(state: AgentState, text: str, content: str) -> bool:
+    current_image = state.get("current_turn_has_image")
+    image_info = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
+    visible = image_info.get("visible_concerns") if isinstance(image_info.get("visible_concerns"), list) else []
+    known_context = " ".join([content, *[str(item or "") for item in visible]])
+
+    specific_terms = ["点状斑", "点状斑点", "片状色沉", "肤色不均"]
+    if any(term in text for term in specific_terms):
+        if any(term in known_context for term in specific_terms):
+            return False
+        if "？" in text or "?" in text or any(term in text for term in ["更像", "还是", "方便说下", "你这边"]):
+            return False
+        if current_image:
+            return False
         return True
     return False
 
@@ -324,7 +443,7 @@ def _case_reply_misses_case_intent(state: AgentState, text: str, callbacks: Repl
         return True
     if any(term in text for term in ["案例价格", "哪家门店可以看案例"]) and not any(term in text for term in ["同类", "祛斑", "淡斑", "改善"]):
         return True
-    if any(term in text for term in ["第1次", "第一次", "第3次", "第三次", "几天后", "几周后", "顾客反馈"]):
+    if any(term in text for term in ["第1次", "第一次", "第3次", "第三次", "几天后", "几周后"]):
         return not callbacks.tool_results_contain(state, ["真实案例", "案例图", "前后对比"])
     return False
 
@@ -427,7 +546,7 @@ def _allow_tool_backed_store_reply(
             return True
         if business_hours and business_hours in text:
             return True
-        if any(term in text for term in ["营业时间", "营业安排", "先确认一下", "去之前可以先确认一下"]):
+        if any(term in text for term in ["营业时间", "营业安排", "当天接待安排", "小贝帮你再看一下", "我帮你确认一下"]):
             return True
 
     if wants_address and stores:

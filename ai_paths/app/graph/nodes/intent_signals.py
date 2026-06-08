@@ -74,6 +74,35 @@ def has_project_process_question(content: str) -> bool:
     return any(term in content for term in process_terms)
 
 
+def is_broad_ad_intro(content: str) -> bool:
+    if not content:
+        return False
+    text = str(content or "")
+    if not any(term in text for term in ["广告", "活动", "直播", "加你", "加你的"]):
+        return False
+    if not any(term in text for term in ["祛斑", "淡斑", "美白", "毛孔", "抗衰", "项目"]):
+        return False
+    specific_terms = [
+        "点状",
+        "片状",
+        "色沉",
+        "肤色不均",
+        "暗沉",
+        "毛孔粗大",
+        "痘印",
+        "痘坑",
+        "泛红",
+        "敏感",
+        "黑头",
+        "闭口",
+        "松弛",
+        "法令纹",
+        "黑眼圈",
+        "泪沟",
+    ]
+    return not any(term in text for term in specific_terms)
+
+
 def is_generic_project_intro(content: str) -> bool:
     if not content:
         return False
@@ -150,8 +179,31 @@ def has_effect_guarantee_request(content: str) -> bool:
             "包效果",
             "效果有保障",
             "效果保障",
+            "效果能保证",
+            "能保证吗",
+            "效果能保证吗",
             "有保障吗",
+            "真有这么好吗",
+            "真有那么好吗",
+            "真这么好吗",
+            "真的假的",
+            "真能看到效果吗",
             "保障效果",
+            "会不会反弹",
+            "反弹",
+            "返弹",
+            "反复",
+            "又回来",
+            "怕反弹",
+            "担心反弹",
+            "会不会很快又回来",
+            "很快又回来",
+            "会不会又回来",
+            "会不会马上回来",
+            "能维持多久",
+            "维持多久",
+            "保持多久",
+            "能保持多久",
             "不保证就算了",
         ]
     )
@@ -236,6 +288,17 @@ def is_pre_service_effect_concern(content: str) -> bool:
         "担心没效果",
         "担心没有效果",
         "有没有效果",
+        "会不会反弹",
+        "反弹",
+        "返弹",
+        "反复",
+        "又回来",
+        "怕反弹",
+        "担心反弹",
+        "能维持多久",
+        "维持多久",
+        "保持多久",
+        "能保持多久",
         "怕被坑",
         "担心被坑",
         "会不会被坑",

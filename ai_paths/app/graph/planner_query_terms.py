@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from app.graph.state import AgentState
+from app.graph.nodes.intent_signals import is_broad_ad_intro
 from app.policies.constants import PROJECT_KEYWORDS
 
 _BROAD_PROJECT_TERMS = {"祛斑", "淡斑", "斑", "色沉", "肤色不均", "痘印", "痘坑", "毛孔", "抗衰", "紧致", "暗沉"}
@@ -81,6 +82,12 @@ def need_query_from_state(state: AgentState, content: str) -> str:
 
 def need_terms_from_state(state: AgentState, content: str) -> list[str]:
     terms: list[str] = []
+    if is_broad_ad_intro(content):
+        if "祛斑" in content or "淡斑" in content:
+            return ["祛斑"]
+        if "美白" in content:
+            return ["美白"]
+        return []
     image_info = state.get("image_info") or {}
     if isinstance(image_info, dict):
         concerns = image_info.get("visible_concerns")

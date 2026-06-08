@@ -7,6 +7,11 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+try:
+    from .test_conversation_store import append_test_conversations
+except ImportError:
+    from test_conversation_store import append_test_conversations
+
 
 ROOT = Path(__file__).resolve().parents[2]
 PUBLIC_FILE = ROOT / "projects/public/test-conversations.json"
@@ -230,15 +235,7 @@ def main() -> None:
         "updatedAt": int(time.time() * 1000),
     }
 
-    if PUBLIC_FILE.exists():
-        payload = json.loads(PUBLIC_FILE.read_text(encoding="utf-8"))
-    else:
-        payload = {"generatedAt": now_ms, "conversations": []}
-
-    existing = payload.get("conversations") if isinstance(payload.get("conversations"), list) else []
-    payload["conversations"] = [conversation] + existing
-    payload["generatedAt"] = int(time.time() * 1000)
-    PUBLIC_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    append_test_conversations([conversation], path=PUBLIC_FILE)
 
     report = {
         "conversation_id": conv_id,

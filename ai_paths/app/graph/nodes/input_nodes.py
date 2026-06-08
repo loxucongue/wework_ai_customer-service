@@ -5,8 +5,22 @@ from typing import Any, Callable
 from app.graph.nodes.common import looks_bad_text, model_usage_snapshot
 from app.graph.nodes.image_info import fallback_image_info, validated_image_info, build_vision_prompt
 from app.graph.state import AgentState
+from app.services.history_cleaning import clean_conversation_history
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
+
+
+def has_current_image(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip()
+    if not text:
+        return False
+    if text.lower() in {"false", "0", "none", "null", "no", "off"}:
+        return False
+    return True
 
 
 def create_image_understanding_node(
@@ -20,7 +34,7 @@ def create_image_understanding_node(
             "image_understanding",
             {"file_image": state.get("file_image"), "content": state.get("normalized_content")},
         ) as span:
-            has_image = bool(state.get("file_image"))
+            has_image = has_current_image(state.get("file_image"))
             model_call: dict[str, Any] | None = None
             if has_image and model_client and model_client.available:
                 try:
@@ -55,12 +69,17 @@ def create_normalize_input_node(*, trace_logger: TraceLogger) -> Callable[[Agent
     async def normalize_input(state: AgentState) -> dict[str, Any]:
         with trace_logger.node(state, "normalize_input", {"content": state.get("content")}) as span:
             normalized = (state.get("content") or "").strip()
-            if not normalized and state.get("file_image"):
+            if not normalized and has_current_image(state.get("file_image")):
                 normalized = "[图片]"
             errors = list(state.get("errors", []))
             if looks_bad_text(normalized):
                 errors.append({"node": "normalize_input", "message": "输入疑似乱码，已保留原文但后续会降低置信度"})
-            output = {"normalized_content": normalized, "errors": errors, "trace": state.get("trace", [])}
+            output = {
+                "normalized_content": normalized,
+                "conversation_history": clean_conversation_history(state.get("conversation_history") or []),
+                "errors": errors,
+                "trace": state.get("trace", []),
+            }
             span["output_snapshot"] = output
             return output
 

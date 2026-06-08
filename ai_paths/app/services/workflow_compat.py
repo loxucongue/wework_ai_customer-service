@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.schemas import ChatRequest, ChatResponse
+from app.services.history_cleaning import clean_conversation_history
 
 
 def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
@@ -29,12 +30,12 @@ def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
     messages = parameters.get("messages")
     raw_history = parameters.get("conversation_history")
     if isinstance(raw_history, list):
-        conversation_history = [_string(item) for item in raw_history if _string(item)]
+        conversation_history = clean_conversation_history(raw_history)
     elif isinstance(messages, list):
-        conversation_history = _workflow_messages_to_history(messages)
+        conversation_history = clean_conversation_history(_workflow_messages_to_history(messages))
     else:
         message_summary = _string(messages)
-        conversation_history = [f"对话摘要: {message_summary}"] if message_summary else []
+        conversation_history = clean_conversation_history([f"对话摘要: {message_summary}"] if message_summary else [])
 
     customer_id = (
         _string(parameters.get("customer_id"))
@@ -50,7 +51,7 @@ def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
         corp_id=_string(parameters.get("corp_id")) or customer_id,
         conversation_history=conversation_history,
         file_image=image or None,
-        user_id=_int_or_none(parameters.get("user_id")),
+        user_id=_string(parameters.get("user_id")) or None,
         wechat=_string(parameters.get("wechat")) or None,
         external_userid=_string(parameters.get("external_userid")) or None,
         customer_add_wechat_id=_string(parameters.get("customer_add_wechat_id")) or None,
@@ -104,7 +105,7 @@ def _workflow_messages_to_history(messages: list[Any]) -> list[str]:
         message = _record(item)
         if not message:
             continue
-        content = _string(message.get("content"))
+        content = _message_content_value(message.get("content"), "text")
         if not content:
             continue
         direction = _string(message.get("direction"))
@@ -131,6 +132,12 @@ def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
     if message_type == "image":
         content = _message_content_value(raw_content, "url")
         return {"type": "image", "order": order, "content": {"url": content}}
+    if message_type == "appointment_push":
+        content = raw_content if isinstance(raw_content, dict) else {"text": _message_content_value(raw_content, "text")}
+        return {"type": "appointment_push", "order": order, "content": content}
+    if message_type == "book_order":
+        content = raw_content if isinstance(raw_content, dict) else {"order_id": _message_content_value(raw_content, "order_id")}
+        return {"type": "book_order", "order": order, "content": content}
     content = _message_content_value(raw_content, "text")
     return {"type": "text", "order": order, "content": {"text": content}}
 
@@ -158,12 +165,3 @@ def _string(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
-
-
-def _int_or_none(value: Any) -> int | None:
-    if value in (None, ""):
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None

@@ -10,9 +10,32 @@ from app.policies.constants import CITY_NAMES
 
 
 def check_general_trust_image(state: AgentState, text: str, intents: set[str], content: str, project: str, image_info: dict[str, Any], known_visible: list[Any], callbacks: ReplyQualityCallbacks) -> bool | None:
+        if _is_safe_effect_or_case_reply(content, text, intents):
+            return False
+        if (
+            "project_inquiry" in intents
+            and any(term in content for term in ["祛斑", "淡斑", "黑色素", "暗沉", "色沉", "抗衰", "补水", "毛孔"])
+            and any(term in text for term in ["同类参考", "同类改善参考", "同类变化参考"])
+            and any(
+                term in text
+                for term in [
+                    "零散小点",
+                    "成片颜色重",
+                    "整体肤色暗沉不均",
+                    "脸有点松",
+                    "轮廓没以前紧",
+                    "法令纹",
+                    "干燥缺水",
+                    "上妆卡粉",
+                    "毛孔粗",
+                    "出油黑头",
+                ]
+            )
+        ):
+            return False
         if reply_filters.has_internal_reply_leak(text):
             return True
-        if callbacks.rejects_more_questions(content) and callbacks.asks_followup_question(text):
+        if callbacks.rejects_more_questions(content) and callbacks.asks_followup_question(text) and not _contains_direct_business_answer(text):
             return True
         if "trust_issue" in intents and not intents & {"appointment_intent", "appointment_confirm", "appointment_change", "appointment_cancel"}:
             trust_appointment_push_terms = [
@@ -114,6 +137,51 @@ def check_general_trust_image(state: AgentState, text: str, intents: set[str], c
                 return True
         return None
 
+
+def _contains_direct_business_answer(text: str) -> bool:
+        return any(
+            term in text
+            for term in [
+                "可以做",
+                "能做",
+                "能看到",
+                "会有变化",
+                "改善方向",
+                "同类参考",
+                "同类改善参考",
+                "案例",
+                "基础变化",
+                "先给你看",
+                "先发你看",
+                "可以先看",
+            ]
+        )
+
+
+def _is_safe_effect_or_case_reply(content: str, text: str, intents: set[str]) -> bool:
+        if not intents & {"project_inquiry", "case_request", "image_inquiry", "trust_issue"}:
+            return False
+        if not any(term in content for term in ["效果", "变化", "能不能", "可以吗", "黑色素", "淡斑", "祛斑", "色沉", "暗沉", "案例"]):
+            return False
+        if any(term in text for term in ["保证", "包效果", "一定会", "完全消失", "马上见效", "百分之百", "绝对"]):
+            return False
+        return any(
+            term in text
+            for term in [
+                "可以做",
+                "能做",
+                "大多数都可以做",
+                "能看到基础变化",
+                "能看到变化",
+                "改善方向",
+                "同类参考",
+                "同类改善参考",
+                "先给你看",
+                "先发你看",
+                "案例主要是看同类变化趋势",
+            ]
+        )
+
 def check_project_store_dispute(state: AgentState, text: str, intents: set[str], content: str, project: str, image_info: dict[str, Any], known_visible: list[Any], callbacks: ReplyQualityCallbacks) -> bool | None:
         if callbacks.is_generic_project_intro(content) and any(term in text for term in ["肉毒", "水光", "热玛吉", "超声炮", "光子", "皮秒"]):
             return True
@@ -173,26 +241,5 @@ def check_project_store_dispute(state: AgentState, text: str, intents: set[str],
             if any(term in content for term in ["一次见效", "一次就能", "一次就"]) and "一次" not in text:
                 return True
         if callbacks.is_identity_question(content) and any(term in text for term in ["真人客服", "我是人工", "不是AI", "不是机器人"]):
-            return True
-        if callbacks.has_effect_guarantee_request(content) and any(
-            term in text
-            for term in [
-                "多数人",
-                "明显提亮",
-                "3-5次",
-                "3到5次",
-                "一定",
-                "所有项目",
-                "持证",
-                "备案",
-                "资质",
-                "定金可退",
-                "不满意不做",
-                "满意再做",
-                "顾问档期",
-                "先面诊",
-                "不收费",
-            ]
-        ):
             return True
         return None
