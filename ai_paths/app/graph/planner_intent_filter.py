@@ -1634,7 +1634,7 @@ def _type_followup_project_intent(state: AgentState) -> dict[str, Any]:
         "known_info": known_info,
         "missing_info": [],
         "reply_goal": "客户已经补充了上一轮要判断的类型，本轮必须把这个类型当成已知事实来承接；先给适合的改善方向、效果信心和下一步到店检测/预约钩子，禁止重复上一轮的类型三选一问题。",
-        "should_ask": False,
+        "should_ask": True,
         "tool_plan": _need_intro_tool_plan(" ".join(part for part in [need_hint, content] if part), need_hint),
     }
 
