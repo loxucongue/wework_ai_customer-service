@@ -5,7 +5,10 @@ from typing import Any
 
 from app.graph.case_query_terms import build_case_query_candidates, expand_case_query_terms
 from app.graph.appointment_identity_signals import appointment_identity_followup_value
-from app.graph.customer_need_questions import is_customer_need_type_followup
+from app.graph.customer_need_questions import (
+    customer_need_type_label,
+    is_customer_need_type_followup,
+)
 from app.graph.planner_content_signals import (
     has_ad_price_check,
     has_advantage_question,
@@ -1613,12 +1616,15 @@ def _type_followup_project_intent(state: AgentState) -> dict[str, Any]:
     content = str(state.get("normalized_content") or "").strip()
     need_hint = _recent_need_hint_from_state(state)
     city = extract_city(recent_conversation_text(state, limit=8)) or extract_city(content)
+    type_label = customer_need_type_label(content)
     known_info: list[str] = []
     if city:
         known_info.append(f"客户当前城市：{city}")
     if need_hint:
         known_info.append(f"客户当前需求：{need_hint}")
-    if content:
+    if type_label:
+        known_info.append(f"客户已补充类型：{type_label}")
+    elif content:
         known_info.append(f"客户补充类型：{content}")
     return {
         "intent": "project_inquiry",
@@ -1627,7 +1633,7 @@ def _type_followup_project_intent(state: AgentState) -> dict[str, Any]:
         "reason": "客户正在回答上一轮的类型判断问题，应继续项目承接而不是退回闲聊或门店分流。",
         "known_info": known_info,
         "missing_info": [],
-        "reply_goal": "客户已经补充了类型，先基于这个类型给优先改善方向和同类参考；如果城市已知，只轻带后续就近到店方便，不要再重复同一个类型问题。",
+        "reply_goal": "客户已经补充了上一轮要判断的类型，本轮必须把这个类型当成已知事实来承接；先给适合的改善方向、效果信心和下一步到店检测/预约钩子，禁止重复上一轮的类型三选一问题。",
         "should_ask": False,
         "tool_plan": _need_intro_tool_plan(" ".join(part for part in [need_hint, content] if part), need_hint),
     }

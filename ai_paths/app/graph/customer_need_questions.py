@@ -1,18 +1,32 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
 TYPE_FOLLOWUP_GROUPS = {
-    "spot_sparse": ["零散小点", "零散斑点", "小点为主", "点状为主", "小点多"],
-    "spot_patchy": ["成片颜色重", "一片一片", "成片", "颜色重一点", "颜色比较重"],
-    "tone_dull": ["整体肤色暗沉不均", "整体暗沉", "肤色不均", "暗沉不均", "肤色发暗"],
+    "spot_sparse": ["零散小点", "零散斑点", "小点为主", "点状为主", "小点多", "小黑点", "零零散散", "一点一点"],
+    "spot_patchy": ["成片颜色重", "一片一片", "成片", "颜色重一点", "颜色比较重", "一块一块", "片状"],
+    "tone_dull": ["整体肤色暗沉不均", "整体暗沉", "肤色不均", "暗沉不均", "肤色发暗", "整体发暗", "发黄", "发灰"],
     "lift_loose": ["脸有点松", "轮廓没以前紧", "松弛为主", "脸有点垮", "下颌线不清晰"],
     "wrinkle_lines": ["法令纹", "嘴角纹", "苹果肌下移", "纹路更明显", "细纹明显"],
     "hydrate_dry": ["干燥缺水", "上妆卡粉", "起皮发干", "皮肤发干", "很缺水"],
     "hydrate_dull": ["肤色发闷没光泽", "没光泽", "肤色发闷", "脸有点发闷"],
     "pore_oily": ["毛孔粗", "出油黑头", "黑头明显", "出油多", "毛孔明显"],
     "acne_marks": ["痘印痘坑", "痘印", "痘坑", "闭口痘痘"],
+}
+
+
+TYPE_FOLLOWUP_CUSTOMER_LABELS = {
+    "spot_sparse": "零散小点/小黑点",
+    "spot_patchy": "成片或颜色偏重",
+    "tone_dull": "整体暗沉不均",
+    "lift_loose": "松弛下垂",
+    "wrinkle_lines": "纹路明显",
+    "hydrate_dry": "干燥缺水",
+    "hydrate_dull": "肤色发闷没光泽",
+    "pore_oily": "毛孔出油黑头",
+    "acne_marks": "痘印痘坑",
 }
 
 
@@ -72,8 +86,10 @@ def detect_customer_need_type_followup(content: str) -> str:
     text = str(content or "").strip()
     if not text:
         return ""
+    normalized = _normalize_type_followup_text(text)
     for label, phrases in TYPE_FOLLOWUP_GROUPS.items():
-        if any(phrase in text for phrase in phrases):
+        normalized_phrases = [_normalize_type_followup_text(phrase) for phrase in phrases]
+        if any(phrase and phrase in normalized for phrase in normalized_phrases):
             return label
     return ""
 
@@ -82,5 +98,16 @@ def is_customer_need_type_followup(content: str) -> bool:
     return bool(detect_customer_need_type_followup(content))
 
 
+def customer_need_type_label(content: str) -> str:
+    return TYPE_FOLLOWUP_CUSTOMER_LABELS.get(detect_customer_need_type_followup(content), "")
+
+
 def _contains_any(text: str, terms: list[str]) -> bool:
     return any(term in text for term in terms)
+
+
+def _normalize_type_followup_text(text: str) -> str:
+    normalized = re.sub(r"[\s,，。.!！?？、~～…：:；;（）()【】\[\]《》<>\"'“”‘’]", "", str(text or ""))
+    for token in ["就是", "属于", "偏", "比较", "有点", "的", "地", "得", "那种", "这种", "那类", "这类"]:
+        normalized = normalized.replace(token, "")
+    return normalized
