@@ -174,26 +174,26 @@ def _ask_policy(stage: str, content: str, known_slots: dict[str, Any], missing_s
 def _next_best_action(stage: str, known_slots: dict[str, Any], missing_slots: list[str], content: str = "") -> str:
     if stage == "opening_intro":
         if (known_slots.get("need") or known_slots.get("project_direction")) and known_slots.get("city"):
-            return "客户已经同时给出城市和需求时，先短承接这类大多数都可以做；有案例素材就给同类参考；如果客户已确认类型或效果疑问，再轻问今天/明天哪个时间方便到店。"
+            return "先回答当前需求并给方向；如有案例素材可辅助建立信任；如客户已显露到店意向，再轻推进时间确认。"
         if known_slots.get("need") or known_slots.get("project_direction"):
-            return "先短承接客户需求，直接说这类大多数都可以做；优先带同类参考；如果客户已给出类型，就不要继续追问类型，改为推进到店检测或时间。"
+            return "先回答当前需求并给改善方向；优先用同类参考建立信任；如果客户已给出类型，就不要重复追问，改为推进到店检测或时间。"
         if known_slots.get("city"):
-            return "客户还没说清具体需求时，先按已知城市帮客户定位最近或更方便的门店，不额外发散。"
-        return "新客开场先用一句话介绍淡斑、提亮、毛孔、痘印等可看的改善方向，再收一个城市、区域或当前位置，好先帮客户找最近门店；不要连续追问多个问题。"
+            return "客户还没说清具体需求时，先按已知城市定位最近或更方便的门店，不额外发散。"
+        return "新客开场先概括可咨询的改善方向，再收一个城市、区域或当前位置，好先帮客户找最近门店；不要连续追问多个问题。"
     if stage == "store_paving":
         if known_slots.get("city") and (known_slots.get("need") or known_slots.get("project_direction")):
-            return "客户已同时给出城市和需求时，先说这类大多数都可以做，再推荐更方便的门店；如果有案例素材就顺手带一句我先给你看个同类参考，不要只丢门店清单。"
+            return "客户已同时给出城市和需求时，先回答需求再推荐更方便的门店；如果有案例素材可顺手辅助建立信任，不要只丢门店清单。"
         if known_slots.get("city"):
             return "直接推荐最近或最方便门店；能给地址、导航、停车就一次发全，不再反问客户选哪家。"
         return "只补问城市或所在区域。"
     if stage == "price_paving":
         if _is_age_suitability_question(content):
-            return "先回答年龄不是单独否定条件，再问客户所在城市或附近区域，好推荐近一点门店做检测确认。"
+            return "先回答年龄顾虑，再补一个城市或区域信息，好推荐近一点门店做检测确认。"
         if known_slots.get("need") or known_slots.get("project_direction"):
-            return "先给项目方向或活动方向，再补一句收费口径；如果没有明确价格事实也不要停在没查到，可以轻问什么时候方便到店核活动价。"
-        return "先解释项目/活动价值和收费口径，再自然过渡到报价。"
+            return "先给项目方向或活动方向，再补一句收费口径；如果没有明确价格事实，也要自然推进到店核活动价。"
+        return "先解释项目或活动价值和收费口径，再自然过渡到报价。"
     if stage == "quote":
-        return "先回答当前价格口径；如果客户已有改善意向或门店位置，可以补一个短钩子问今天/明天是否方便到店，不要直接索要姓名电话。"
+        return "先回答当前价格口径；如果客户已有改善意向或门店位置，可以补一个短钩子推进到店，不要直接索要姓名电话。"
     if stage == "close_order":
         if missing_slots:
             return f"客户意向已较强，只补一个关键槽位：{missing_slots[0]}，不要连问。"
@@ -201,7 +201,7 @@ def _next_best_action(stage: str, known_slots: dict[str, Any], missing_slots: li
     if stage == "collect_info":
         if missing_slots:
             return f"只收集缺失预约信息：{missing_slots[0]}，优先门店、日期、时间，再到姓名电话。"
-        return "复述预约开单信息，请客户确认后开预约入口和10元预约金小程序。"
+        return "复述预约开单信息，请客户确认后进入预约入口和10元预约金步骤。"
     if stage == "handoff_at_store":
         return "客户已到店，交给门店专业同事接待。"
     if stage == "service_recovery":

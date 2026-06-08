@@ -97,7 +97,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": "客户询问年龄较大是否还能做，属于项目适配和安全顾虑，应先正面回答而不是按闲聊处理。",
                 "known_info": ["客户担心年纪较大是否适合做皮肤改善"],
                 "missing_info": [],
-                "reply_goal": "先回答年纪大不是单独否定条件，重点看身体情况、皮肤状态和是否有禁忌；再轻引导到店先做检测确认。如果还不知道城市或位置，最后只问一句所在城市或附近区域，不要只回复寒暄。",
+                "reply_goal": "先正面回答年龄顾虑，说明是否适合主要看身体情况、皮肤状态和禁忌；如需继续推进，最多补一个城市或区域信息。",
                 "should_ask": True,
                 "tool_plan": [
                     {
@@ -136,7 +136,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": "客户正在接着上一轮预约确认补充姓名或电话信息，应继续预约确认而不是按闲聊承接。",
                 "known_info": known_info,
                 "missing_info": missing_info,
-                "reply_goal": "继续复用已知门店、日期和时间，只补下一个缺失的预约信息，不重复讲门店和可约时间。",
+                "reply_goal": "继续沿用已知预约上下文，只补下一个缺失预约字段，不重复门店和时段信息。",
                 "should_ask": False,
                 "tool_plan": [{"name": "no_tool", "purpose": "继续用已知预约上下文补齐预约信息。"}],
             }
@@ -153,7 +153,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": reason,
                 "known_info": [],
                 "missing_info": [],
-                "reply_goal": "按客户当前预约动作处理，复用已有预约、订单、门店和时间上下文，不要切到门店查询或项目咨询。",
+                "reply_goal": "按当前预约动作继续处理，复用已有预约上下文，不切到门店查询或项目咨询。",
                 "should_ask": False,
                 "tool_plan": [{"name": "no_tool", "purpose": "当前是预约动作确认，交由预约动作服务处理。"}],
             }
@@ -167,7 +167,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": "客户正在确认上一轮预约时间或预约安排，应继续排客/预约动作而不是当普通闲聊处理。",
                 "known_info": [],
                 "missing_info": [],
-                "reply_goal": "复用近期已确认的门店、日期、时间和订单上下文，继续走预约排客动作；不要重新问项目或泛寒暄。",
+                "reply_goal": "沿已确认的预约上下文继续排客或确认动作，不重新回到项目咨询或泛寒暄。",
                 "should_ask": False,
                 "tool_plan": [{"name": "no_tool", "purpose": "当前是预约排客确认，交由预约动作服务处理。"}],
             }
@@ -190,7 +190,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": "客户已补充斑点类型并追问能否达到案例效果，应承接效果预期并进入邀约节奏。",
                 "known_info": ["客户关注零散小点/局部斑点类改善效果"],
                 "missing_info": [],
-                "reply_goal": "先给确定感，说明这类可先看淡斑改善方向；再轻推到店检测或询问今天/明天哪个时间方便，不要继续追问同类问题。",
+                "reply_goal": "先回答效果预期和改善方向，再自然推进到店检测或时间确认；不要重复上一轮的类型判断。",
                 "should_ask": True,
                 "tool_plan": [
                     {
@@ -217,7 +217,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": "客户当前询问做完会不会反弹或效果维持问题，属于效果信任顾虑，应先正面解释效果维护和回访保障。",
                 "known_info": ["客户关注做完后的维持和反弹问题"],
                 "missing_info": [],
-                "reply_goal": "先回答不会一概说反弹，说明多数客户能看到基础改善，后续维护与个人情况有关；再顺势引导到店先看具体情况，不要切到门店查询。",
+                "reply_goal": "先回答维持和反弹顾虑，给出真实边界和跟进保障；如需推进，继续引导到店确认，不切到门店查询。",
                 "should_ask": False,
                 "tool_plan": [
                     {
@@ -287,7 +287,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": "客户已表达预约意向且只给出城市，查询可约时间前需要先确定更方便的门店或片区。",
                 "known_info": [f"客户当前城市：{city}", "客户想预约到店咨询"],
                 "missing_info": ["门店或附近片区"],
-                "reply_goal": "先承接可以安排，再基于城市门店列表让客户选更方便的片区或门店；不能默认某一家门店查询空档。",
+                "reply_goal": "先确认可以继续安排，再基于已知城市缩小到更方便的片区或门店；不要默认具体门店空档。",
                 "should_ask": True,
                 "tool_plan": [
                     {
@@ -320,7 +320,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": "客户用区域或地标短句承接上一轮门店查询。",
                 "known_info": known_info,
                 "missing_info": [],
-                "reply_goal": "根据客户补充的区域或地标直接缩到更方便的门店，不再回到普通寒暄。",
+                "reply_goal": "根据客户补充的区域或地标直接缩小到更方便的门店，不回到普通寒暄。",
                 "should_ask": False,
                 "tool_plan": [
                     {
@@ -346,7 +346,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": "客户当前只补充了所在城市或区域，默认先按最近门店方向承接。",
                 "known_info": [f"客户当前位置线索：{city}"] if city else [],
                 "missing_info": [],
-                "reply_goal": "根据客户当前城市或区域直接推荐更方便的门店，不继续泛寒暄。",
+                "reply_goal": "根据当前城市或区域直接推荐更方便的门店，不继续泛寒暄。",
                 "should_ask": False,
                 "tool_plan": [
                     {
@@ -448,7 +448,7 @@ def filter_spurious_intents(state: AgentState, intents: list[dict[str, Any]]) ->
                 "reason": "客户当前已明确给出改善需求，应直接进入项目承接，不先按普通寒暄处理。",
                 "known_info": known_info,
                 "missing_info": [],
-                "reply_goal": "先承接这类大多数都可以做，再给方向、案例参考和一个客户听得懂的问题；如果城市已知，只把它作为后续到店信息，不回头先问城市。",
+                "reply_goal": "先回答需求是否可承接，再给改善方向和案例参考；如需追问，最多补一个客户容易回答的关键信息，不回头先问已知城市。",
                 "should_ask": False,
                 "tool_plan": _need_intro_tool_plan(content, need_hint),
             }
@@ -759,7 +759,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户表达投诉、退款、强烈不满或已做无效争议，需要专业同事协助。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "先接住情绪和事实诉求，再让专业同事接着核对处理。",
+            "reply_goal": "先承接情绪和事实诉求，再交给专业同事继续核对处理。",
             "should_ask": False,
             "tool_plan": [{"name": "professional_assist", "purpose": "投诉退款或效果争议需要专业协助。"}],
         }
@@ -771,7 +771,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户在做前询问操作疼不疼或感受问题，属于项目咨询和安全顾虑，不应误判为做后售后。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "直接回答操作感受和舒适度边界，再轻带到店先看皮肤状态。",
+            "reply_goal": "直接回答操作感受和舒适度边界，如需推进再轻带到店确认。",
             "should_ask": False,
             "tool_plan": [{"name": "kb_search", "kb_name": "project_qa", "query": text, "purpose": "检索操作感受、流程和做前顾虑说明。"}],
         }
@@ -783,7 +783,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户描述做后反应或护理问题，应进入售后护理承接。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "先确认做后状态和护理方向，必要时让专业同事协助，不要当普通闲聊。",
+            "reply_goal": "先确认做后状态和护理方向，必要时交由专业同事协助，不当普通闲聊。",
             "should_ask": False,
             "tool_plan": [{"name": "kb_search", "kb_name": "after_sales_qa", "query": text, "purpose": "检索做后护理和风险承接口径。"}],
         }
@@ -795,7 +795,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户明确准备发照片或让客服看图判断，应进入图片/面诊咨询承接。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "承接客户可以发图看情况，不要误当案例请求或普通闲聊。",
+            "reply_goal": "承接客户发图看情况的诉求，不误当案例请求或普通闲聊。",
             "should_ask": False,
             "tool_plan": [{"name": "no_tool", "purpose": "等待客户上传图片或由图片理解节点处理。"}],
         }
@@ -807,7 +807,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户在追问案例、效果图、做几次或同类对比，应继承案例上下文。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "承接客户要看效果参考或案例细节，不要退回泛项目咨询。",
+            "reply_goal": "承接客户要看效果参考或案例细节，不退回泛项目咨询。",
             "should_ask": False,
             "tool_plan": [{"name": "kb_search", "kb_name": "case_studies", "query": text, "purpose": "检索同类案例和效果参考。"}],
         }
@@ -819,7 +819,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户在查询自己是否已经预约或约上。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "先承接查询预约记录，不要当普通闲聊。",
+            "reply_goal": "先承接查询预约记录，不当普通闲聊。",
             "should_ask": False,
             "tool_plan": [{"name": "appointment_record_query", "purpose": "查询客户已有预约记录。"}],
         }
@@ -831,7 +831,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户当前关注效果是否稳定、会不会反复或安全顾虑，应先做效果信任承接。",
             "known_info": ["客户关注效果稳定性或安全感"],
             "missing_info": [],
-            "reply_goal": "先给确定感，再讲影响维持的真实因素和做后跟进；不要切回门店或普通闲聊。",
+            "reply_goal": "先给效果确定感，再讲影响维持的真实因素和做后跟进；不要切回门店或普通闲聊。",
             "should_ask": False,
             "tool_plan": [
                 {"name": "kb_search", "kb_name": SALES_TALK_KB_NAME, "query": text, "purpose": "检索效果稳定、安全感和信任承接话术。"},
@@ -858,7 +858,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户提到别家、隔壁、别人家或外部承诺价格效果，应进入竞品对比承接。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "先承接客户对比心理，再解释不能只看价格或承诺，要看项目范围和服务口径。",
+            "reply_goal": "先承接客户对比心理，再解释不能只看价格或承诺，还要看项目范围和服务口径。",
             "should_ask": False,
             "tool_plan": [{"name": "kb_search", "kb_name": "competitor_qa", "query": text, "purpose": "检索竞品对比承接。"}],
         }
@@ -882,7 +882,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户在问资质、身份、老师专业或收费透明问题，属于普通信任顾虑。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "直接肯定并解释资质、收费透明或接待身份，不要当闲聊或门店问题处理。",
+            "reply_goal": "直接解释资质、收费透明或接待身份，不当闲聊或门店问题处理。",
             "should_ask": False,
             "tool_plan": [{"name": "kb_search", "kb_name": SALES_TALK_KB_NAME, "query": text, "purpose": "检索信任和收费透明承接话术。"}],
         }
@@ -894,7 +894,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户询问操作流程、次数、时长或到店步骤，应直接解释流程。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "直接回答流程、次数或时长，不要回到预约或泛寒暄。",
+            "reply_goal": "直接回答流程、次数或时长，不回到预约或泛寒暄。",
             "should_ask": False,
             "tool_plan": [{"name": "kb_search", "kb_name": "project_qa", "query": text, "purpose": "检索流程、次数和时长说明。"}],
         }
@@ -906,7 +906,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户询问具体日期或时段是否有位置，属于预约可约时间查询，不是普通门店位置问题。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "按预约时段查询或补齐门店，不要当门店地址问题处理。",
+            "reply_goal": "按预约时段查询或补齐门店，不当门店地址问题处理。",
             "should_ask": False,
             "tool_plan": [{"name": "appointment_availability", "purpose": "查询或准备查询指定时段是否可约。"}],
         }
@@ -918,7 +918,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户询问门店名称、营业时间、路线、楼层、停车或距离，应进入门店查询。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "基于实时门店事实回答客户问的门店细节，不要退回普通闲聊。",
+            "reply_goal": "基于实时门店事实回答客户问的门店细节，不退回普通闲聊。",
             "should_ask": False,
             "tool_plan": [{"name": "store_lookup", "query": text, "purpose": "查询门店、地址、营业、停车或距离事实。"}],
         }
@@ -930,7 +930,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户表现出报名、参加、留名额、继续办理或补充预约信息，应继续预约推进。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "沿最近预约或活动任务继续推进，只收一个必要信息或说明下一步。",
+            "reply_goal": "沿最近预约或活动任务继续推进，只补一个必要信息或说明下一步。",
             "should_ask": False,
             "tool_plan": [{"name": "no_tool", "purpose": "先按预约上下文推进，必要事实由后续预约节点处理。"}],
         }
@@ -942,7 +942,7 @@ def _semantic_priority_intent(content: str, state: AgentState) -> dict[str, Any]
             "reason": "客户用口语描述改善需求、部位或适配疑问，应进入项目承接。",
             "known_info": [],
             "missing_info": [],
-            "reply_goal": "先回答能不能看、适合什么方向或大概怎么做，再轻推进到店。",
+            "reply_goal": "先回答能否改善、适合什么方向或大概怎么做，再轻推进到店。",
             "should_ask": False,
             "tool_plan": [{"name": "kb_search", "kb_name": "project_qa", "query": text, "purpose": "检索客户口语需求对应的改善方向。"}],
         }
@@ -980,7 +980,7 @@ def _human_risk_intent() -> dict[str, Any]:
         "reason": "客户提到孕期、哺乳期、未成年、过敏期等高风险适配问题，需要专业同事确认。",
         "known_info": [],
         "missing_info": [],
-        "reply_goal": "先接住客户问题，再说明这类情况要让专业同事确认是否适合，不继续承诺可做。",
+        "reply_goal": "先接住客户问题，再说明这类情况需要专业同事确认是否适合，不继续承诺可做。",
         "should_ask": False,
         "tool_plan": [{"name": "professional_assist", "purpose": "高风险适配需要专业协助确认。"}],
     }
@@ -1197,7 +1197,7 @@ def _opening_guidance_intent() -> dict[str, Any]:
         "reason": "客户刚加企微或首次问候，需要按新客接待开场承接，而不是只回复普通寒暄。",
         "known_info": [],
         "missing_info": [],
-        "reply_goal": "用公司前端真人客服/活动负责人口吻自然接待；如果客户没有明确问题，先短介绍淡斑、提亮、毛孔、痘印等可看的皮肤改善方向，再收集城市或附近区域来匹配最近门店；不要给皮肤改善/活动价格/附近门店三选一，也不要只说您好。",
+        "reply_goal": "用真人前端客服口吻自然接待；如果客户没有明确问题，先概括可咨询的改善方向，再补一个城市、区域或附近位置来匹配最近门店；不要只回复寒暄。",
         "should_ask": False,
         "tool_plan": [{"name": "no_tool", "purpose": "新客开场接待，无需工具。"}],
     }
@@ -1526,7 +1526,7 @@ def _normalize_explicit_need_project_intents(state: AgentState, intents: list[di
         "priority": 1,
         "known_info": known_info,
         "missing_info": [],
-        "reply_goal": "先承接这类大多数我们都可以做，再给方向、案例参考和一个客户听得懂的问题；如果城市已知，只把它作为后续到店信息，不回头先问城市。",
+        "reply_goal": "先回答需求是否可承接，再给改善方向和案例参考；如需追问，最多补一个客户容易回答的关键信息，不回头先问已知城市。",
         "should_ask": False,
         "tool_plan": [
             {
@@ -1633,7 +1633,7 @@ def _type_followup_project_intent(state: AgentState) -> dict[str, Any]:
         "reason": "客户正在回答上一轮的类型判断问题，应继续项目承接而不是退回闲聊或门店分流。",
         "known_info": known_info,
         "missing_info": [],
-        "reply_goal": "客户已经补充了上一轮要判断的类型，本轮必须把这个类型当成已知事实来承接；先给适合的改善方向、效果信心和下一步到店检测/预约钩子，禁止重复上一轮的类型三选一问题。",
+        "reply_goal": "客户已经补充了上一轮的类型信息，本轮要把它当成已知事实来承接；先给改善方向、效果信心和下一步推进，禁止重复上一轮的类型判断。",
         "should_ask": True,
         "tool_plan": _need_intro_tool_plan(" ".join(part for part in [need_hint, content] if part), need_hint),
     }

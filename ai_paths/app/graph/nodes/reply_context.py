@@ -3,12 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app.graph.customer_need_questions import customer_friendly_type_question
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
     should_suppress_profile_memory_for_reply,
 )
-from app.graph.nodes.intent_signals import is_broad_ad_intro
 from app.graph.nodes.result_compaction import (
     CompactionCallbacks,
     compact_module_outputs_for_model,
@@ -68,33 +66,6 @@ def reply_user_payload_for_model(state: AgentState, callbacks: ReplyContextCallb
 
 
 def _reply_hard_instruction(state: AgentState, reply_brief: dict[str, Any]) -> str:
-    content = str(state.get("normalized_content") or "").strip()
-    intents = {
-        str(item.get("intent") or "")
-        for item in (state.get("intents") or [])
-        if isinstance(item, dict)
-    }
-    facts = reply_brief.get("available_facts", {}) if isinstance(reply_brief.get("available_facts"), dict) else {}
-    sales_strategy = state.get("sales_strategy") if isinstance(state.get("sales_strategy"), dict) else {}
-    ask_policy = str(sales_strategy.get("ask_policy") or "")
-    case_asset_image_url = str(facts.get("case_asset_image_url") or "").strip()
-    type_question = str(facts.get("customer_friendly_type_question") or "").strip() or customer_friendly_type_question(
-        content,
-        visible_concerns=facts.get("visible_concerns") if isinstance(facts.get("visible_concerns"), list) else [],
-    )
-    if (
-        case_asset_image_url
-        and ask_policy == "ask_one"
-        and (intents & {"project_inquiry", "image_inquiry", "case_request"})
-        and (is_broad_ad_intro(content) or any(term in content for term in ["祛斑", "淡斑", "黑色素", "抗衰", "毛孔", "暗沉"]))
-    ):
-        return (
-            "本轮已有真实同类案例图可发送，客户又是在做宽需求了解。"
-            "单条文字里必须先短承接“这类大多数都可以做”，再提一句我先给你看个同类参考，最后补一个客户听得懂的类型问题。"
-            f"优先使用这个问题：{type_question or '你更像零散小点、成片颜色重一点，还是整体肤色暗沉不均？'}"
-            "这个问题只能问类型判断，不能改问城市、门店、价格或项目名。"
-            "必须保留问号，不能只发案例说明就收住。"
-        )
     return ""
 
 

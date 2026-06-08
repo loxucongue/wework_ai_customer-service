@@ -91,10 +91,9 @@ def project_skill_output(
             case_fact,
         ]
         reply_points = [
-            "先像真人客服一样短承接：这类大多数都可以做，先按淡斑改善、整体提亮、紧致提升这类客户听得懂的话往下聊。",
-            "顺着客户自然带价格、效果参考和到店安排，不要反复让客户补资料。",
-            "如果已有同类案例素材，要主动带一句“先给你看个同类参考”。",
-            "不要一上来细分斑型，也不要直接讲几次见效或完整治疗节奏。",
+            "先承接客户当前需求，再按客户能听懂的改善方向往下回答。",
+            "如果有同类案例素材，可以顺带作为效果参考。",
+            "不要一上来细分斑型，也不要展开完整疗程分析。",
         ]
         _inject_sales_talk_guidance(facts, reply_points, sales_talk)
         return {
@@ -159,13 +158,13 @@ def project_skill_output(
                 )
             )
         if replacement_names:
-            reply_points.append("优先使用知识库里的替换词名称：" + "、".join(callbacks.dedupe_strings(replacement_names)[:3]))
+            reply_points.append("方向表达优先使用客户能听懂的替换词名称。")
     if visible:
         reply_points.append(f"必须承接已上传图片：可见{', '.join(map(str, visible[:4]))}，不要再要求重复发照片。")
     if callbacks.has_image_concern(image_info, ["点状斑", "褐色斑点", "色沉", "肤色不均", "斑点"]):
         reply_points.append("项目方向优先说明：整体提亮方向更偏肤色不均、暗沉和浅层色沉；淡斑改善方向更偏更明确的点状色素，最终还要看深浅、范围和皮肤耐受。")
     if "点状" in content or "斑" in content:
-        reply_points.append("本轮涉及点状斑或斑点，先告诉客户这类大多数都可以做，再按淡斑改善方向继续往下聊。")
+        reply_points.append("本轮涉及点状斑或斑点，先承接能做，再继续解释改善方向。")
     _inject_sales_talk_guidance(facts, reply_points, sales_talk)
 
     suggested_next_step = "确认客户想看的案例方向" if lacks_case_context else "按已知需求给出项目方向，必要时只追问一个关键因素"
@@ -228,8 +227,6 @@ def _inject_sales_talk_guidance(
         facts.append(f"销售话术场景：{sales_talk['scene_type']}")
     if sales_talk.get("target"):
         facts.append(f"承接目标：{sales_talk['target']}")
-    if sales_talk.get("sample_reply"):
-        reply_points.insert(0, f"优先参考这种承接节奏：{sales_talk['sample_reply']}")
     if sales_talk.get("next_step"):
         reply_points.append(f"下一步建议：{sales_talk['next_step']}")
     if sales_talk.get("forbidden"):

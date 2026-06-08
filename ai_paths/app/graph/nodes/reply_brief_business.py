@@ -33,14 +33,13 @@ def _generic_case_request(state: AgentState, callbacks: ReplyBriefCallbacks) -> 
 def apply_direct_reply_context(state: AgentState, brief: dict[str, Any], callbacks: ReplyBriefCallbacks) -> None:
     content = state.get("normalized_content") or ""
     if is_deposit_rule_question(content):
-        brief["answer_first"].append("按活动口径，到店先了解，满意再做；如果到店了解后不满意不做，10元预约登记/活动参与金一般可退。")
+        brief["known_facts"].append("10元通常是预约登记或活动参与口径；到店先了解，满意再做；不做时按活动规则核对。")
         brief["must_answer"].append("客户在问定金、预约金或10元规则，先给公司规则口径；不要只说需要核对，也不要否定定金规则或切到广告价、门店查询、可约时间。")
         brief["known_facts"].append("当前业务规则中，10元通常属于预约登记或活动参与资格确认口径，不等于已预约成功或已锁位；已付款后的退款争议仍需结合付款和活动记录核对。")
         brief["do_not_say"].extend(["没有需要支付定金", "目前没有定金", "不需要定金", "锁位", "锁定", "预留名额", "已预约成功"])
         brief["follow_up"] = "如果客户想继续预约，再确认门店、日期、时间和手机号；否则不用主动推进。"
     if is_low_information_closing(content):
         brief["must_answer"].append("客户当前只是感谢、收到、暂缓或轻量收尾，只需自然收住，不继承历史预约、门店或项目任务。")
-        brief["answer_first"].append("自然回应客户的感谢或收尾，有需要时再来找我即可。")
         brief["do_not_say"].extend(["最近有在关注什么", "想了解什么项目", "哪天方便", "哪个门店", "查一下可约时间", "继续预约"])
         brief["follow_up"] = "不要追加新的问题。"
 
@@ -87,7 +86,7 @@ def apply_image_context(state: AgentState, brief: dict[str, Any], callbacks: Rep
             "淡斑改善方向更偏更明确的点状色素问题",
             "具体适合哪类要看斑点深浅、范围、肤质和预算",
         ]
-        brief["must_answer"].append("如果客户问斑点能不能淡，正面回答可以往淡化方向看，再说明不能承诺完全消失。")
+        brief["must_answer"].append("客户问斑点能不能淡时，先给确定感，再补真实边界。")
         brief["do_not_say"].extend(["改善空间", "明显变化", "多数顾客反馈", "第1次后", "第3次后"])
 
 
@@ -96,7 +95,7 @@ def apply_pre_visit_context(state: AgentState, brief: dict[str, Any], callbacks:
     if not callbacks.has_pre_visit_question(content):
         return
     brief["must_answer"].append("客户问到店前准备时，直接回答准备事项，不要转去问项目或门店。")
-    brief["answer_first"].append("到店前建议素颜或淡妆，避免浓妆、假睫毛和刺激性护肤；一般皮肤咨询不需要空腹。")
+    brief["known_facts"].append("到店前建议素颜或淡妆，避免浓妆、假睫毛和刺激性护肤；一般皮肤咨询不需要空腹。")
     brief["do_not_say"].extend(["不要化妆", "不能化妆", "医生"])
 
 
@@ -115,7 +114,7 @@ def apply_price_context(state: AgentState, brief: dict[str, Any], callbacks: Rep
     if not frame_only:
         brief["must_answer"].append("本轮是价格/活动问题：有明确价格事实就直接答；没有明确价格事实时，不编价格、不拿相似项目替代。")
     if frame:
-        brief["answer_first"].append(frame.answer_first)
+        brief["known_facts"].append(f"价格追问类型：{frame.name}")
         brief["must_answer"].append(frame.must_answer)
         brief["known_facts"].append(frame.reply_point)
         brief["do_not_say"].extend(list(frame.do_not_say))
@@ -196,8 +195,8 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
         if friendly_question:
             brief["available_facts"]["customer_friendly_type_question"] = friendly_question
         if is_customer_need_type_followup(content):
-            brief["must_answer"].append("客户已经在回答上一轮的类型判断，本轮不要再重复问同一个类型问题；直接给优先改善方向和同类参考。")
-            brief["must_answer"].append("如果城市已知，可以轻带一句后续就近到店方便，但不要切到门店清单或预约时间。")
+            brief["must_answer"].append("客户已经在补充上一轮的类型信息，本轮要直接继续给方向、效果参考或下一步，不能重复上一轮问题。")
+            brief["must_answer"].append("如果城市已知，可以轻带一句就近到店或检测更方便，但不要切到门店清单或预约时间。")
             brief["do_not_say"].extend(
                 [
                     "你这个更像零散小点、成片颜色重一点，还是整体肤色暗沉不均",
@@ -208,10 +207,8 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
             )
             brief["follow_up"] = "先给方向和参考，不再重复类型追问。"
         if broad_ad_intro:
-            brief["answer_first"].append("可以的，这类大多数都可以做，我先给你把方向、效果参考和到店这几块说清楚。")
-            brief["must_answer"].append("这是广告引流的初次咨询，先短承接并主动给信息：先说这类大多数都可以做，再说明先按方向看、效果按同类改善参考看、价格按活动口径核。")
+            brief["must_answer"].append("这是广告引流的初次咨询，先短承接并主动给信息：先答能不能做，再顺手覆盖效果参考、价格口径或到店方式。")
             if any(term in content for term in ["价格", "多少钱", "费用", "活动", "广告"]) and any(term in content for term in ["到店", "门店", "安排", "预约"]):
-                brief["answer_first"].append("客户同一句同时问价格、效果和到店安排：回复必须覆盖三点，效果先看同类参考，价格按广告/活动口径核对，到店按城市或位置推荐最近门店。")
                 brief["must_answer"].append("这类多意图首轮不能只发案例或只问斑型；必须用1条短消息把效果、价格口径和到店方式都顺一下。")
                 brief["follow_up"] = "最多问一个关键问题，优先问客户所在城市/位置或让客户发广告图，不能连续追问。"
             brief["must_answer"].append("如果当前已经有同类案例素材，优先把案例当作安全感素材顺带带出来，不要等客户再单独开口要案例。")
@@ -221,7 +218,6 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
                 brief["known_facts"].append("客户可理解的追问方式：" + friendly_question.replace("？", "").replace("?", ""))
             if case_items:
                 image_url = _case_image_url(case_items)
-                brief["answer_first"].append("同类改善参考可以直接先看，客户会更有感觉。")
                 brief["must_answer"].append("本轮已有同类效果案例素材，回复里要主动带出“可以先看同类变化参考”的节奏。")
                 brief["must_answer"].append("即使先发案例，也不要只发图收住；客户只是宽需求时，要顺手补一个客户听得懂的类型问题。")
                 brief["available_facts"]["case_studies"] = [
@@ -266,10 +262,6 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
             )
             brief["follow_up"] = "这一轮不要问问题，直接给结论和一句边界。"
         if _is_initial_broad_project_intro(content):
-            if case_items:
-                brief["answer_first"].append("可以的，这类大多数都可以做，我先给你看个同类参考。")
-            else:
-                brief["answer_first"].append("可以的，这类大多数都可以做，我先帮你判断更偏哪种情况。")
             brief["must_answer"].append("客户只是初步了解该方向，按话术合集标准短承接即可：先说这类通常可以做，再给一个大方向或效果参考；不要先追问专业项目名。")
             brief["must_answer"].append("如果当前已有同类效果参考或案例素材，就顺手带出一条，让客户先建立预期和安全感。")
             brief["must_answer"].append("方向名称尽量翻译成客户听得懂的话，例如淡斑改善、整体肤色提亮、紧致提升；不要直接说内部方向名。")
@@ -280,7 +272,6 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
                 brief["known_facts"].append("客户可理解的追问方式：" + friendly_question.replace("？", "").replace("?", ""))
             if case_items:
                 image_url = _case_image_url(case_items)
-                brief["answer_first"].append("我先给你看个同类改善参考，你会更有感觉。")
                 brief["must_answer"].append("本轮已有同类案例素材，项目初步咨询时要主动带出，不要等客户再单独追问案例。")
                 brief["must_answer"].append("客户只是泛说祛斑/抗衰/淡斑这类宽需求时，发案例的同时仍要补一个客户听得懂的类型问题，不要只发参考图就收住。")
                 brief["available_facts"]["case_studies"] = [
@@ -315,7 +306,6 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
         if case_items and not _generic_case_request(state, callbacks):
             image_url = _case_image_url(case_items)
             brief["must_answer"].append("当前已有同类改善案例素材时，可以直接作为效果参考承接，不要等客户先开口要案例。")
-            brief["answer_first"].append("这类大多数都可以做，我先给你看个同类改善参考。")
             if image_url:
                 brief["available_facts"]["case_asset_image_url"] = image_url
             brief["available_facts"]["case_studies"] = [
@@ -327,7 +317,6 @@ def apply_project_context(state: AgentState, brief: dict[str, Any], callbacks: R
                 if isinstance(item, dict)
             ]
         if not case_items and intent_set & {"project_inquiry", "image_inquiry"}:
-            brief["answer_first"].append("这类大多数都可以做，我先帮你判断更偏哪种情况。")
             brief["must_answer"].append("如果当前没有真实案例素材，不要假装已经发了图；先承接可做方向，再问一个客户能听懂的类型问题。")
         return
 

@@ -25,7 +25,6 @@ def compact_module_outputs_for_model(outputs: list[Any]) -> list[dict[str, Any]]
                 "skill": output.get("skill"),
                 "intent": output.get("intent"),
                 "facts": [str(item)[:160] for item in (output.get("facts") or [])[:4]],
-                "reply_points": [str(item)[:180] for item in (output.get("reply_points") or [])[:3]],
                 "missing_slots": [str(item)[:80] for item in (output.get("missing_slots") or [])[:4]],
                 "risk_flags": [str(item)[:80] for item in (output.get("risk_flags") or [])[:4]],
                 "suggested_next_step": output.get("suggested_next_step"),

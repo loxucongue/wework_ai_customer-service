@@ -24,33 +24,12 @@ def with_action_planning_notes(output: dict[str, Any], action: dict[str, Any]) -
     if not isinstance(output, dict):
         return output
     planned = dict(output)
-    facts = list(planned.get("facts") or [])
-    reply_points = list(planned.get("reply_points") or [])
     missing_slots = list(planned.get("missing_slots") or [])
-
-    for info in action.get("known_info") or []:
-        text = str(info or "").strip()
-        if text and text not in facts:
-            facts.append(text)
     for slot in action.get("missing_info") or []:
         text = str(slot or "").strip()
         if text and text not in missing_slots:
             missing_slots.append(text)
-    reply_goal = str(action.get("reply_goal") or "").strip()
-    if reply_goal and reply_goal not in reply_points:
-        reply_points.append(f"本轮回复目标：{reply_goal}")
-    if action.get("should_ask") is False and missing_slots:
-        reply_points.append("缺失信息不是必须前置条件时，先回答当前问题，再只问一个关键问题。")
-    planned["facts"] = facts[:12]
-    planned["reply_points"] = reply_points[:10]
     planned["missing_slots"] = missing_slots[:8]
-    planned["planner_notes"] = {
-        "known_info": action.get("known_info") or [],
-        "missing_info": action.get("missing_info") or [],
-        "reply_goal": reply_goal,
-        "should_ask": bool(action.get("should_ask")),
-        "tool_plan": action.get("tool_plan") or [],
-    }
     return planned
 
 

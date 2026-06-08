@@ -76,10 +76,9 @@ def _apply_price_frame_guidance(
 ) -> None:
     if not frame:
         return
-    facts.insert(0, f"本轮必须先正面回答客户原问题：{frame.answer_first}")
+    facts.insert(0, f"本轮价格追问类型：{frame.name}")
     reply_points.insert(0, frame.must_answer)
-    reply_points.insert(1, frame.reply_point)
-    reply_points.insert(2, "不要把本轮追问改成泛泛询问项目、城市、门店或预约时间。")
+    reply_points.insert(1, "先回答客户当前追问的收费口径，不要偏到项目、门店或预约。")
 
 
 def price_skill_output(
@@ -110,7 +109,7 @@ def price_skill_output(
             if frame.suggested_next_step:
                 suggested_next_step = frame.suggested_next_step
         else:
-            reply_points.append("先承接本轮提到的价格数字或收费问题，再说明需要核对对应项目、包含项、尾款和是否有额外项目；不要引用知识库相似命中的商品价格，也不要确认未核实的广告价存在。")
+            reply_points.append("先回答客户提到的价格或收费问题，再说明需要核对对应项目、包含项、尾款和是否有额外项目。")
         _inject_sales_talk_guidance(facts, reply_points, sales_talk)
         return {
             "skill": "price_consult",
@@ -129,7 +128,7 @@ def price_skill_output(
             "intent": "price_inquiry",
             "facts": ["本轮询问的是斑点/色沉等大类改善价格，不能拿具体商品价替代。"],
             "reply_points": [
-                "斑点/色沉类价格不能只按大类报固定价，要看斑型、范围、深浅、次数和最终配置；可以先按预算范围沟通，但不要引用不相关项目价格。",
+                "斑点/色沉类价格不能只按大类报固定价，要看范围、深浅和最终配置，不要引用不相关项目价格。",
             ],
             "missing_slots": ["斑型或照片", "预算范围"],
             "risk_flags": callbacks.price_risk_terms(content),
@@ -217,11 +216,6 @@ def _inject_sales_talk_guidance(
         facts.append(f"销售话术场景：{sales_talk['scene_type']}")
     if sales_talk.get("target"):
         facts.append(f"承接目标：{sales_talk['target']}")
-    if sales_talk.get("sample_reply"):
-        insert_at = 0
-        if reply_points and any(term in reply_points[0] for term in ["必须", "先回答", "本轮"]):
-            insert_at = min(3, len(reply_points))
-        reply_points.insert(insert_at, f"优先参考这种价格承接节奏：{sales_talk['sample_reply']}")
     if sales_talk.get("next_step"):
         reply_points.append(f"下一步建议：{sales_talk['next_step']}")
     if sales_talk.get("forbidden"):

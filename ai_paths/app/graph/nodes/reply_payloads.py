@@ -33,10 +33,9 @@ def reply_forced_payload_for_model(state: AgentState, callbacks: ReplyPayloadCal
     ):
         if price_frame:
             hard_instruction = (
-                "客户当前在追问价格口径，fact_brief里没有可直接引用的明确价格。"
-                f"必须先按这个问题类型正面回答：{price_frame.answer_first}"
-                f"还要落实这个要求：{price_frame.must_answer}"
-                "可以说明现在还缺少可直接引用的真实价格事实，但不能把回答变成泛泛的‘暂未查到价格’。"
+                "客户当前在追问价格口径，但没有可直接引用的明确价格。"
+                f"本轮价格追问类型是：{price_frame.name}。"
+                "先回答当前价格口径问题本身，再说明还缺少可直接引用的真实价格事实。"
                 "禁止编造数字、价格区间、档位、费用明细，也不要重新泛问客户想改善什么。"
             )
         else:
@@ -53,9 +52,8 @@ def reply_forced_payload_for_model(state: AgentState, callbacks: ReplyPayloadCal
         )
     if _effect_guarantee_question(content):
         hard_instruction = (
-            "客户只是泛问效果是否有保障。必须先正面回答：基础改善和服务跟进是有保障的，"
-            "会先看客户基础、匹配方案并把预期说清楚，到店了解/检测后满意再做；"
-            "再补充不同人基础不同，不承诺人人同样程度或一次固定变化。"
+            "客户在问效果是否有保障。先给确定感，再补真实边界。"
+            "可以表达基础改善和服务跟进这类确定性，但不要承诺人人同样程度或一次固定变化。"
             "第一句不能以不能保证、不能承诺、因人而异、效果不能承诺完全消失开头。"
             "禁止出现当前消息没有明确提到的具体项目名、门店名、顾客反馈、案例节点、持证、备案、资质、所有项目或定金可退。"
         )
@@ -79,12 +77,10 @@ def reply_forced_payload_for_model(state: AgentState, callbacks: ReplyPayloadCal
         and ask_one_case_followup_needed(state, content, intents, facts)
     ):
         hard_instruction = (
-            "本轮已有真实同类案例图可发送，客户又是在做宽需求了解。"
-            "文字不能只停在“先发你看案例”这一句，必须同时补一个客户听得懂的类型问题，"
+            "本轮已有真实同类案例图，客户又是在做宽需求了解。"
+            "文字不能只停在案例说明，需要顺手补一个客户听得懂的类型问题。"
             f"优先使用这个问题：{type_question or '你更像零散小点、成片颜色重一点，还是整体肤色暗沉不均？'}"
-            "不要追问专业项目名，也不要把问题说得很学术。"
-            "默认1条text即可，这条text里先短承接“这类大多数都可以做”，再带一句我先给你看个同类参考，最后必须带一个问句。"
-            "这个问句只能是类型判断问题，不能问城市、门店、价格、要不要发图，也不能省略问号。"
+            "不要追问专业项目名，也不要改问城市、门店、价格。"
         )
     preferred_time = str(facts.get("customer_preferred_time") or "").strip()
     slots = facts.get("available_time_slots") if isinstance(facts.get("available_time_slots"), list) else []
