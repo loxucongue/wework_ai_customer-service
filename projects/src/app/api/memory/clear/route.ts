@@ -1,5 +1,9 @@
 import { NextRequest } from "next/server";
-import { clearAiPathsCustomerMemory, jsonResponse } from "../../_lib/ai-paths";
+import {
+  clearAiPathsCustomerMemory,
+  frontendTestCustomerId,
+  jsonResponse,
+} from "../../_lib/ai-paths";
 
 export async function POST(request: NextRequest) {
   let body: { customer_id?: string };
@@ -9,7 +13,7 @@ export async function POST(request: NextRequest) {
     return jsonResponse({ error: "invalid json body" }, 400);
   }
 
-  const customerId = String(body.customer_id || "").trim();
+  const customerId = frontendTestCustomerId() || String(body.customer_id || "").trim();
   if (!customerId) {
     return jsonResponse({ error: "customer_id is required" }, 400);
   }

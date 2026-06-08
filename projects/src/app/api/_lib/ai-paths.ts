@@ -58,6 +58,18 @@ export type AiPathsResponse = {
   meta?: Record<string, unknown>;
 };
 
+const FRONTEND_TEST_IDENTITY = {
+  customer_id:
+    process.env.FRONTEND_TEST_CUSTOMER_ID ||
+    "codex_type_followup_online_final_20260609",
+  corp_id: process.env.FRONTEND_TEST_CORP_ID || "test-corp",
+  external_userid:
+    process.env.FRONTEND_TEST_EXTERNAL_USERID ||
+    "codex_type_followup_online_final_20260609",
+  user_id: Number(process.env.FRONTEND_TEST_USER_ID || 7294),
+  wechat: process.env.FRONTEND_TEST_WECHAT || "DY1032",
+};
+
 export async function parseChatRequest(request: NextRequest) {
   try {
     const body = (await request.json()) as ChatRequestBody;
@@ -356,7 +368,8 @@ export async function proxyAiPathsChatWorkflowCompatible(body: ChatRequestBody) 
 
 export async function proxyAiPathsChatForFrontend(body: ChatRequestBody) {
   try {
-    const response = await callAiPathsBackend(body);
+    const frontendBody = withFrontendTestIdentity(body);
+    const response = await callAiPathsBackend(frontendBody);
     const text = await response.text();
     if (!response.ok) {
       return jsonResponse(
@@ -390,6 +403,33 @@ export async function proxyAiPathsChatForFrontend(body: ChatRequestBody) {
     console.error("AI Paths call failed:", error);
     return jsonResponse({ error: "Failed to call AI Paths API" }, 500);
   }
+}
+
+export function frontendTestCustomerId() {
+  return FRONTEND_TEST_IDENTITY.customer_id;
+}
+
+function withFrontendTestIdentity(body: ChatRequestBody): ChatRequestBody {
+  return {
+    ...body,
+    customer_id: FRONTEND_TEST_IDENTITY.customer_id,
+    corp_id: FRONTEND_TEST_IDENTITY.corp_id,
+    external_userid: FRONTEND_TEST_IDENTITY.external_userid,
+    user_id: FRONTEND_TEST_IDENTITY.user_id,
+    wechat: FRONTEND_TEST_IDENTITY.wechat,
+    request_context: {
+      ...(body.request_context || {}),
+      source_protocol: "workflow-compatible",
+      workflow_id: "xiaobei-default",
+      msgtype: "text",
+      corp_id: FRONTEND_TEST_IDENTITY.corp_id,
+      wechat: FRONTEND_TEST_IDENTITY.wechat,
+      external_userid: FRONTEND_TEST_IDENTITY.external_userid,
+      customer_id: FRONTEND_TEST_IDENTITY.customer_id,
+      user_id: FRONTEND_TEST_IDENTITY.user_id,
+      frontend_conversation_id: body.customer_id,
+    },
+  };
 }
 
 export function jsonResponse(payload: unknown, status = 200) {
