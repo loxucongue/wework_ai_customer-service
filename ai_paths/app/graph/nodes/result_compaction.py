@@ -180,13 +180,4 @@ def _store_driving_text(store: dict[str, Any]) -> str:
     driving = store.get("driving_time") if isinstance(store, dict) else None
     if not isinstance(driving, dict):
         return ""
-    summary = str(driving.get("summary") or "").strip()
-    if summary:
-        return summary
-    output = driving.get("raw_output")
-    if isinstance(output, dict):
-        for key in ["duration", "driving_time", "time", "text", "output"]:
-            value = output.get(key)
-            if value:
-                return str(value).strip()
-    return ""
+    return str(driving.get("summary") or "").strip()

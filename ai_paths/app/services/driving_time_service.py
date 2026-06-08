@@ -117,7 +117,6 @@ def _normalize_driving_result(
         "origin": origin,
         "destination": destination,
         "summary": summary,
-        "raw_output": output,
     }
     if not summary:
         normalized["error"] = "empty_driving_summary"
@@ -301,10 +300,16 @@ def _normalize_duration(value: str) -> str:
     if re.search(r"(分钟|小时|min|h|hour)", text, re.IGNORECASE):
         return text
     if re.fullmatch(r"\d+(\.\d+)?", text):
-        number = float(text)
-        if number > 600:
-            return f"{round(number / 60)}分钟"
-        return f"{int(number) if number.is_integer() else number}分钟"
+        seconds = float(text)
+        if seconds >= 3600:
+            hours = int(seconds // 3600)
+            minutes = int(round((seconds % 3600) / 60))
+            if minutes == 60:
+                hours += 1
+                minutes = 0
+            return f"{hours}小时{minutes}分钟" if minutes else f"{hours}小时"
+        minutes = max(1, int(round(seconds / 60)))
+        return f"{minutes}分钟"
     return text
 
 
