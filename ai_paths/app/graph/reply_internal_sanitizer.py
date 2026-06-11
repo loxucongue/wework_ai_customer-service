@@ -122,6 +122,8 @@ def sanitize_handoff_visible_phrasing(text: str) -> str:
         cleaned = cleaned.replace(old, new)
     cleaned = cleaned.replace("帮您登记并让专业同事帮您", "帮您登记，并让专业同事")
     cleaned = cleaned.replace("帮您记录并让专业同事帮您", "帮您记录，并让专业同事")
+    cleaned = cleaned.replace("帮您登记并让专业同事", "帮您登记，并让专业同事")
+    cleaned = cleaned.replace("帮您记录并让专业同事", "帮您记录，并让专业同事")
     cleaned = cleaned.replace("帮您让专业同事", "让专业同事")
     cleaned = cleaned.replace("为您让专业同事", "让专业同事")
     cleaned = cleaned.replace("为您让", "让")
