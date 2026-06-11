@@ -162,7 +162,4 @@ async def _try_repair_reply(
 def _minimal_handoff_messages(state: AgentState) -> list[dict[str, Any]]:
     handoff = planner_handoff(state)
     reason = str(handoff.get("reason") or "").strip() or "当前问题需要进一步核对"
-    return [
-        {"type": "text", "order": 1, "content": {"text": "这个情况我先继续帮您核对一下，避免给您说错。"}},
-        {"type": "human_handoff", "order": 2, "content": {"handoff_reason": reason}},
-    ]
+    return [{"type": "human_handoff", "order": 1, "content": {"handoff_reason": reason}}]
