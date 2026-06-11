@@ -6,19 +6,6 @@ from typing import Any
 from app.graph.nodes.kb_slice_parsing import extract_label_block
 
 
-def project_slices_from_tool_results(tool_results: dict[str, Any]) -> list[dict[str, str]]:
-    project_qa = tool_results.get("project_qa") or {}
-    if isinstance(project_qa, dict):
-        items = project_qa.get("items") or project_qa.get("outputList") or []
-        if not items and (project_qa.get("content") or project_qa.get("output")):
-            items = [project_qa]
-    elif isinstance(project_qa, list):
-        items = project_qa
-    else:
-        items = []
-    return _parse_project_items(items)
-
-
 def project_slices_from_fact_envelope(fact_envelope: dict[str, Any]) -> list[dict[str, str]]:
     structured = fact_envelope.get("structured_facts") or {}
     if not isinstance(structured, dict):

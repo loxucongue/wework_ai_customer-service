@@ -5,7 +5,6 @@ from collections.abc import Callable
 
 from app.graph.nodes.project_kb_parsing import (
     project_slices_from_fact_envelope,
-    project_slices_from_tool_results,
 )
 from app.graph.planner.runtime_plan import planner_tasks
 from app.graph.state import AgentState
@@ -149,10 +148,7 @@ def is_business_project_direction_name(name: str) -> bool:
 
 def project_slices_from_state(state: AgentState) -> list[dict[str, str]]:
     fact_envelope = state.get("fact_envelope") or {}
-    slices = project_slices_from_fact_envelope(fact_envelope) if isinstance(fact_envelope, dict) else []
-    if slices:
-        return slices
-    return project_slices_from_tool_results(state.get("tool_results", {}) or {})
+    return project_slices_from_fact_envelope(fact_envelope) if isinstance(fact_envelope, dict) else []
 
 
 def _is_case_task(task: dict[str, str]) -> bool:
