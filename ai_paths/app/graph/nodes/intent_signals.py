@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.graph.planner_dispute_signals import recent_conversation_text
-from app.graph.planner_project_signals import (
+from app.graph.signals.dispute import recent_conversation_text
+from app.graph.signals.project import (
     has_ad_price_check,
     has_advantage_question,
     has_case_request,
@@ -10,7 +10,7 @@ from app.graph.planner_project_signals import (
     has_project_consult_intent,
     has_project_process_question,
 )
-from app.graph.planner_store_signals import (
+from app.graph.signals.store import (
     has_appointment_change_or_cancel,
     has_appointment_record_query,
     has_store_inquiry,

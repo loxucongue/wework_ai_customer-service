@@ -26,10 +26,10 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     should_show_appointment_context = not should_suspend_appointment_context_for_current_turn(state, planner_views)
     suppress_profile_memory = should_suppress_profile_memory_for_reply(state)
     fact_envelope = {} if suppress_profile_memory else (state.get("fact_envelope") or {})
-    primary_task = planner_primary_task(state)
-    secondary_tasks = planner_secondary_tasks(state)
+    primary_task = _sanitize_planner_context_for_reply(planner_primary_task(state))
+    secondary_tasks = _sanitize_planner_context_for_reply(planner_secondary_tasks(state))
     required_tools = planner_required_tools(state)
-    reply_strategy = planner_reply_strategy(state)
+    reply_strategy = _sanitize_planner_context_for_reply(planner_reply_strategy(state))
     handoff = planner_handoff(state)
     appointment_context = _appointment_context_for_model(state) if should_show_appointment_context else {}
     return {
@@ -46,7 +46,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "secondary_tasks": [] if suppress_profile_memory else secondary_tasks,
         "required_tools": [] if suppress_profile_memory else required_tools,
         "reply_strategy": {} if suppress_profile_memory else reply_strategy,
-        "scene_guidance_context": [] if suppress_profile_memory else state.get("scene_guidance_context", []),
+        "scene_guidance_context": [] if suppress_profile_memory else _sanitize_planner_context_for_reply(state.get("scene_guidance_context", [])),
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "fact_envelope": fact_envelope,
@@ -58,6 +58,50 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
             is_broad_price_category=is_broad_price_category,
         ),
     }
+
+
+_UNSUPPORTED_QUALIFICATION_TERMS = (
+    "医疗美容",
+    "医美",
+    "持证",
+    "备案",
+    "卫健委",
+    "NMPA",
+    "CFDA",
+    "执业许可证",
+    "资格证",
+    "证书",
+    "上岗证",
+    "主诊老师证",
+    "激光操作",
+    "官方渠道",
+    "官网核验",
+    "营业执照",
+    "设备注册证",
+    "设备备案",
+)
+_QUALIFICATION_SAFE_NOTE = "资质相关只能表达为到店可查看/可核对，不能编造证照、备案、监管或老师证书细节。"
+
+
+def _sanitize_planner_context_for_reply(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _sanitize_planner_context_for_reply(item) for key, item in value.items()}
+    if isinstance(value, list):
+        cleaned: list[Any] = []
+        seen: set[str] = set()
+        for item in value:
+            sanitized = _sanitize_planner_context_for_reply(item)
+            marker = repr(sanitized)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            cleaned.append(sanitized)
+        return cleaned
+    if isinstance(value, str):
+        if any(term in value for term in _UNSUPPORTED_QUALIFICATION_TERMS):
+            return _QUALIFICATION_SAFE_NOTE
+        return value
+    return value
 
 
 def _fact_notes_for_model(

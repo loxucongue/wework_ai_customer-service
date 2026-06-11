@@ -11,7 +11,7 @@ from app.graph.nodes.reply_summary_context import (
     has_pre_visit_question,
     is_strong_multi_recap_request,
 )
-from app.graph.planner_dispute_signals import has_effect_dispute, has_fee_or_refund_dispute
+from app.graph.signals.dispute import has_effect_dispute, has_fee_or_refund_dispute
 from app.graph.state import AgentState
 
 

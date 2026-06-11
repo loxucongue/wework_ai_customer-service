@@ -101,6 +101,7 @@ def strip_internal_reply_terms(text: str) -> str:
 def dedupe_repeated_phrase_noise(text: str) -> str:
     cleaned = re.sub(r"\s+", " ", str(text or "")).strip()
     cleaned = cleaned.replace("类项目类方向", "类项目方向")
+    cleaned = re.sub(r"([^，。；、]{4,30})这类\1", r"\1", cleaned)
     cleaned = re.sub(r"(比如|例如)([^，。；]{2,24})\1", r"\1\2", cleaned)
     cleaned = re.sub(r"([^，。；]{2,24})\1", r"\1", cleaned)
     cleaned = re.sub(r"([。！？])\1+", r"\1", cleaned)

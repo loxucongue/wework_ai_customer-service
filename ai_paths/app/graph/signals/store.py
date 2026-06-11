@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.graph.planner_dispute_signals import has_fee_or_refund_dispute
-from app.graph.planner_project_signals import has_advantage_question, has_case_request
+from app.graph.signals.dispute import has_fee_or_refund_dispute
+from app.graph.signals.project import has_advantage_question, has_case_request
 
 
 def has_appointment_change_or_cancel(content: str) -> bool:

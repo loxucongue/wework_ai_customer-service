@@ -4,13 +4,13 @@ import re
 from typing import Any, Callable
 
 from app.graph.nodes.common import dedupe_strings
-from app.graph.planner_dispute_signals import (
+from app.graph.signals.dispute import (
     complaint_terms,
     has_effect_dispute,
     has_recent_complaint_context,
     severe_after_sales_terms,
 )
-from app.graph.planner_general_signals import is_identity_question
+from app.graph.signals.general import is_identity_question
 from app.graph.state import AgentState
 from app.policies.constants import HUMAN_KEYWORDS
 from app.policies.rule_catalog import policy_selection_from_task

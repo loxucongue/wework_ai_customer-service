@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.graph.planner_general_signals import is_identity_question, recent_conversation_text
+from app.graph.signals.general import is_identity_question, recent_conversation_text
 
 
 def dedupe_strings(values: list[str]) -> list[str]:

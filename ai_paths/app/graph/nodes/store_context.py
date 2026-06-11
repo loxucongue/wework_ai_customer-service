@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from app.graph.planner_store_followup import store_location_preference_from_context
+from app.graph.signals.store_followup import store_location_preference_from_context
 from app.graph.state import AgentState
 from app.graph.task_state import appointment_slot_value
 from app.policies.constants import CITY_NAMES

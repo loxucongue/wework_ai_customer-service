@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.graph.planner.runtime_plan import planner_task_views
-from app.graph.planner_general_signals import is_low_information_content
+from app.graph.signals.general import is_low_information_content
 from app.graph.state import AgentState
 
 

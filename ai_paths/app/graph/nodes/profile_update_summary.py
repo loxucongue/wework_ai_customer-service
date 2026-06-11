@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.graph.planner_dispute_signals import is_soft_fee_concern
+from app.graph.signals.dispute import is_soft_fee_concern
 from app.graph.nodes.common import dedupe_strings
 
 

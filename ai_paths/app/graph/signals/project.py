@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from app.graph.planner_general_signals import is_low_information_content
+from app.graph.signals.general import is_low_information_content
 from app.policies.constants import (
     ADVANTAGE_KEYWORDS,
     AFTER_SALES_KEYWORDS,
