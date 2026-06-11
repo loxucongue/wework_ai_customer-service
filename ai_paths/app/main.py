@@ -1,16 +1,17 @@
-from typing import Any
+﻿from typing import Any
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from app.chat_runtime import ChatRuntime
 from app.config import get_settings
-from app.graph.builder import build_graph
+from app.graph.graph_builder import build_graph
 from app.schemas import ChatRequest, ChatResponse
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
+from app.services.appointment_opening_service import AppointmentOpeningService
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.pricing_repository import LocalPricingRepository
 from app.services.storage import AppRepository, SQLiteStore
@@ -33,6 +34,7 @@ pricing_repository = LocalPricingRepository(settings)
 platform_agent_client = PlatformAgentClient(settings)
 customer_context_service = CustomerContextService(platform_agent_client)
 store_service = StoreService(platform_agent_client)
+appointment_opening_service = AppointmentOpeningService(platform_agent_client)
 compiled_graph = build_graph(
     coze_client,
     trace_logger,
@@ -41,6 +43,7 @@ compiled_graph = build_graph(
     pricing_repository,
     customer_context_service,
     store_service,
+    appointment_opening_service,
 )
 chat_runtime = ChatRuntime(compiled_graph, trace_logger, repository)
 

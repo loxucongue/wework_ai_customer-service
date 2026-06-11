@@ -1,24 +1,33 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Callable
 
 from app.graph.nodes.common import dedupe_strings
 from app.graph.nodes.image_info import has_image_concern
 from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
-from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.profile_update_summary import decision_stage, intent_level, profile_summary
+from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.store_context import extract_city
+from app.graph.planner.runtime_plan import planner_task_views
 from app.graph.state import AgentState
 from app.policies.constants import PROJECT_KEYWORDS
 
 
-def extract_profile_update(state: AgentState, callbacks: Any) -> dict[str, Any]:
+def extract_profile_update(
+    state: AgentState,
+    *,
+    contextual_price_project: Callable[[AgentState], str],
+    extract_project: Callable[[str], str],
+    known_visible_concerns: Callable[[AgentState], list[str]],
+    project_direction_names: Callable[[AgentState], list[str]],
+) -> dict[str, object]:
     if should_suppress_profile_memory_for_reply(state):
         return {}
 
-    content = state.get("normalized_content") or ""
+    content = str(state.get("normalized_content") or "")
     image_info = state.get("image_info", {}) or {}
-    intents = {item.get("intent") for item in state.get("intents", []) if isinstance(item, dict)}
+    task_views = planner_task_views(state)
+    task_types = _task_type_names(task_views)
 
     needs: list[str] = []
     pain_points: list[str] = []
@@ -28,15 +37,25 @@ def extract_profile_update(state: AgentState, callbacks: Any) -> dict[str, Any]:
     budget_sens = "unknown"
 
     _collect_need_signals(content, image_info, needs, pain_points, style_tags)
-    _collect_project_signals(content, state, callbacks, projects)
-    _collect_concern_signals(content, intents, concerns, style_tags)
+    _collect_project_signals(
+        content,
+        state,
+        contextual_price_project,
+        extract_project,
+        project_direction_names,
+        projects,
+    )
+    _collect_concern_signals(content, task_types, concerns, style_tags)
 
-    if any(term in content for term in ["预算", "太贵", "贵了", "贵不贵", "便宜", "多少钱", "价格"]):
+    if any(term in content for term in ["预算", "太贵", "贵了", "便宜", "多少钱", "价格"]):
         concerns.append("关注预算")
         style_tags.append("预算敏感")
-        budget_sens = "high" if any(term in content for term in ["预算", "太贵", "贵了", "便宜点", "别太高"]) else "medium"
+        budget_sens = "high" if any(term in content for term in ["预算", "太贵", "贵了", "便宜点", "最低价"]) else "medium"
 
-    update: dict[str, Any] = {}
+    visible_concerns = known_visible_concerns(state)
+    pain_points.extend(str(item).strip() for item in visible_concerns if str(item).strip())
+
+    update: dict[str, object] = {}
     if needs or pain_points or projects or concerns or style_tags:
         update["portrait"] = {
             "summary": profile_summary(needs, pain_points, projects, concerns),
@@ -45,9 +64,9 @@ def extract_profile_update(state: AgentState, callbacks: Any) -> dict[str, Any]:
             "projects": dedupe_strings(projects),
             "concerns": dedupe_strings(concerns),
             "budget_sens": budget_sens,
-            "intent_level": intent_level(intents, content),
-            "trust_level": "low" if "trust_issue" in intents else "unknown",
-            "decision_stage": decision_stage(intents, content),
+            "intent_level": intent_level(task_types, content),
+            "trust_level": "low" if _is_trust_task(task_types) else "unknown",
+            "decision_stage": decision_stage(task_types, content),
             "style_tags": dedupe_strings(style_tags),
         }
 
@@ -57,9 +76,21 @@ def extract_profile_update(state: AgentState, callbacks: Any) -> dict[str, Any]:
     return update
 
 
+def _task_type_names(task_views: list[dict[str, object]]) -> set[str]:
+    return {
+        str(view.get("type") or "").strip()
+        for view in task_views
+        if isinstance(view, dict) and str(view.get("type") or "").strip()
+    }
+
+
+def _is_trust_task(task_types: set[str]) -> bool:
+    return "trust_issue" in task_types
+
+
 def _collect_need_signals(
     content: str,
-    image_info: dict[str, Any],
+    image_info: dict[str, object],
     needs: list[str],
     pain_points: list[str],
     style_tags: list[str],
@@ -81,10 +112,7 @@ def _collect_need_signals(
     if has_image_concern(image_info, ["暗沉", "肤色不均"]):
         pain_points.append("肤色不均")
         needs.append("肤色改善")
-    if has_image_concern(image_info, ["毛孔"]):
-        pain_points.append("毛孔明显")
-        needs.append("肤质改善")
-    if "毛孔" in content:
+    if has_image_concern(image_info, ["毛孔"]) or "毛孔" in content:
         pain_points.append("毛孔明显")
         needs.append("肤质改善")
     if has_image_concern(image_info, ["痘印"]) or "痘印" in content:
@@ -110,54 +138,65 @@ def _collect_need_signals(
         style_tags.append("发图咨询")
 
 
-def _collect_project_signals(content: str, state: AgentState, callbacks: Any, projects: list[str]) -> None:
+def _collect_project_signals(
+    content: str,
+    state: AgentState,
+    contextual_price_project: Callable[[AgentState], str],
+    extract_project: Callable[[str], str],
+    project_direction_names: Callable[[AgentState], list[str]],
+    projects: list[str],
+) -> None:
     for project in PROJECT_KEYWORDS:
         if project in content and project not in projects:
             projects.append(project)
+    direct_project = contextual_price_project(state) or extract_project(content)
+    if direct_project and direct_project not in projects:
+        projects.append(direct_project)
     if case_request_lacks_specific_context(state):
         return
-    for direction in callbacks.project_direction_names(state):
+    for direction in project_direction_names(state):
         if direction and direction not in projects:
             projects.append(direction)
 
 
 def _collect_concern_signals(
     content: str,
-    intents: set[Any],
+    task_types: set[str],
     concerns: list[str],
     style_tags: list[str],
 ) -> None:
-    if "trust_issue" in intents:
+    if _is_trust_task(task_types):
         concerns.append("担心正规性或服务保障")
         style_tags.append("谨慎观望")
-    if "price_inquiry" in intents:
+    if "price_inquiry" in task_types:
         concerns.append("关注价格")
         style_tags.append("直接问价")
-    if any(term in content for term in ["有没有效果", "能不能解决", "能改善", "解决", "明显变化"]):
+    if any(term in content for term in ["有效果吗", "能不能解决", "能改善吗", "解决", "明显变化"]):
         concerns.append("关注改善效果")
-    if any(term in content for term in ["疼", "痛", "恢复", "反黑", "副作用", "风险"]):
+    if any(term in content for term in ["疼", "恢复", "反黑", "副作用", "风险"]):
         concerns.append("关注舒适度和恢复风险")
-    if "competitor_compare" in intents:
+    if "competitor_compare" in task_types:
         style_tags.append("喜欢对比")
-    if "appointment_intent" in intents:
+    if "appointment_intent" in task_types:
         style_tags.append("有到店意向")
     if any(term in content for term in ["不懂", "不知道", "不专业", "不太懂"]):
         style_tags.append("需要引导")
 
 
-def _basic_info_update(content: str, state: AgentState) -> dict[str, Any]:
-    basic_info: dict[str, Any] = {}
+def _basic_info_update(content: str, state: AgentState) -> dict[str, object]:
+    basic_info: dict[str, object] = {}
     city = extract_city(content)
     if city:
         basic_info["city"] = city
 
-    active_task = state.get("active_task") or {}
-    if isinstance(active_task, dict) and active_task.get("type") == "appointment_visit":
-        slots = active_task.get("known_slots") if isinstance(active_task.get("known_slots"), dict) else {}
-        if slots:
-            basic_info["appointment_preference"] = {
-                key: value
-                for key, value in slots.items()
-                if key in {"city", "store_name", "date", "time", "people_count"} and value
-            }
+    appointment_cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    appointment_preference = {
+        "store_name": str(appointment_cache.get("store_name") or "").strip(),
+        "date": str(appointment_cache.get("date") or appointment_cache.get("appointment_date") or "").strip(),
+        "time": str(appointment_cache.get("time") or appointment_cache.get("appointment_time") or "").strip(),
+        "people_count": str(appointment_cache.get("people_count") or "").strip(),
+    }
+    appointment_preference = {key: value for key, value in appointment_preference.items() if value}
+    if appointment_preference:
+        basic_info["appointment_preference"] = appointment_preference
     return basic_info

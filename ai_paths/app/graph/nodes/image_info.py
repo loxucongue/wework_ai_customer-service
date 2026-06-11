@@ -22,7 +22,7 @@ def build_vision_prompt(state: dict[str, Any]) -> str:
         "最终只输出合法JSON，格式："
         "{\"info\":{\"has_image\":true,\"image_desc\":\"\",\"image_type\":\"face_skin|eye_area|face_shape|body_skin|post_treatment|competitor_quote|chat_screenshot|product_package|payment_proof|store_location|document_report|campaign_poster|qr_code|unrelated|unclear\","
         "\"image_intent\":\"face_consult|after_sales|competitor_compare|price_inquiry|campaign_inquiry|store_inquiry|trust_issue|human_request|general_image|unrelated\","
-        "\"body_part\":\"\",\"visible_concerns\":[],\"risk_signals\":[],\"extracted_text\":[],\"text_clues\":[],\"suggested_route\":\"SF4_face_consult|SF5_competitor_response|SF6_store_match|SF7_price_consult|SF8_campaign_push|SF10_trust_build|SF12_after_sales|HUMAN_HANDOFF|DIRECT_REPLY|UNKNOWN\",\"confidence\":0}}。"
+        "\"body_part\":\"\",\"visible_concerns\":[],\"risk_signals\":[],\"extracted_text\":[],\"text_clues\":[],\"confidence\":0}}。"
         f"客户上下文：{json.dumps(context, ensure_ascii=False, default=str)}"
     )
 
@@ -38,7 +38,6 @@ def fallback_image_info(*, has_image: bool) -> dict[str, Any]:
         "risk_signals": [],
         "extracted_text": [],
         "text_clues": [],
-        "suggested_route": "SF4_face_consult" if has_image else "UNKNOWN",
         "confidence": 0.25 if has_image else 0,
     }
 

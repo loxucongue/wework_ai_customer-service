@@ -3,7 +3,11 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from app.graph.nodes.project_kb_parsing import project_slices_from_tool_results
+from app.graph.nodes.project_kb_parsing import (
+    project_slices_from_fact_envelope,
+    project_slices_from_tool_results,
+)
+from app.graph.planner.runtime_plan import planner_tasks
 from app.graph.state import AgentState
 
 
@@ -51,9 +55,10 @@ def case_request_lacks_specific_context(
     *,
     known_visible_concerns_from_state: Callable[[AgentState], list[str]] | None = None,
 ) -> bool:
-    intents = {str(item.get("intent") or "") for item in (state.get("intents") or []) if isinstance(item, dict)}
-    if "case_request" not in intents:
+    tasks = planner_tasks(state)
+    if not any(_is_case_task(task) for task in tasks):
         return False
+
     content = str(state.get("normalized_content") or "")
     image_info = state.get("image_info") or {}
     known_visible_items = known_visible_concerns_from_state(state) if known_visible_concerns_from_state else []
@@ -66,21 +71,18 @@ def case_request_lacks_specific_context(
         "暗沉",
         "毛孔",
         "黑头",
-        "痘",
         "痘印",
         "痘坑",
-        "泛红",
+        "闭口",
+        "痘痘",
         "敏感",
+        "泛红",
         "修护",
         "屏障",
         "松弛",
         "抗衰",
         "轮廓",
-        "水光",
-        "光子",
-        "皮秒",
-        "热玛吉",
-        "超声炮",
+        "补水",
     ]
     return not any(term in context_text for term in specific_terms)
 
@@ -102,7 +104,7 @@ def project_slice_relevant_to_current_need(
         for key in ("title", "replacement_name", "direction", "reply_point", "say")
     )
     need_groups = [
-        (["斑", "点状", "色沉", "肤色不均", "暗沉"], ["斑", "色沉", "色素", "肤色", "淡化", "美白", "暗沉"]),
+        (["斑", "点状", "色沉", "肤色不均", "暗沉"], ["斑", "色沉", "色素", "肤色", "淡化", "提亮", "暗沉"]),
         (["毛孔", "出油", "黑头"], ["毛孔", "出油", "黑头", "肤质"]),
         (["痘印", "痘坑", "闭口", "痘痘"], ["痘印", "痘坑", "闭口", "痘痘", "肤质"]),
         (["敏感", "泛红", "屏障", "红血丝"], ["敏感", "泛红", "屏障", "修护", "舒缓"]),
@@ -118,7 +120,7 @@ def project_direction_name_candidates(name: str) -> list[str]:
     text = str(name or "").strip()
     if not text:
         return []
-    parts = re.split(r"\s*(?:/|｜|\||、|，|,|；|;)\s*", text)
+    parts = re.split(r"\s*(?:/|、|\||，|,|；|;)\s*", text)
     return [part for part in (part.strip() for part in parts) if is_business_project_direction_name(part)]
 
 
@@ -126,15 +128,7 @@ def is_business_project_direction_name(name: str) -> bool:
     text = str(name or "").strip()
     if not text or text in {"合规项目表达", "global_compliance_terms"}:
         return False
-    generic_names = {
-        "优先级方案",
-        "对应方向",
-        "对应项目方向",
-        "可考虑方向",
-        "项目方向",
-        "改善方向",
-        "方案",
-    }
+    generic_names = {"优先级方案", "对应方向", "对应项目方向", "可考虑方向", "项目方向", "改善方向", "方案"}
     if text in generic_names:
         return False
     noisy_terms = [
@@ -143,7 +137,6 @@ def is_business_project_direction_name(name: str) -> bool:
         "初步方向",
         "初步分析",
         "替换词名称",
-        "可考虑方向",
         "回复要点",
         "话术",
         "案例",
@@ -152,3 +145,21 @@ def is_business_project_direction_name(name: str) -> bool:
         "VS",
     ]
     return not any(term in text for term in noisy_terms)
+
+
+def project_slices_from_state(state: AgentState) -> list[dict[str, str]]:
+    fact_envelope = state.get("fact_envelope") or {}
+    slices = project_slices_from_fact_envelope(fact_envelope) if isinstance(fact_envelope, dict) else []
+    if slices:
+        return slices
+    return project_slices_from_tool_results(state.get("tool_results", {}) or {})
+
+
+def _is_case_task(task: dict[str, str]) -> bool:
+    if not isinstance(task, dict):
+        return False
+    candidates = (
+        str(task.get("type") or "").strip().lower(),
+        str(task.get("subtype") or "").strip().lower(),
+    )
+    return "case" in candidates or "case_request" in candidates or "case_reference" in candidates

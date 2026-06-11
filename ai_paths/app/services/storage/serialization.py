@@ -4,6 +4,9 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from app.graph.planner.runtime_plan import planner_public_route
+from app.graph.planner.runtime_plan import planner_task_views
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -47,10 +50,11 @@ def decode_trace(row: dict[str, Any]) -> dict[str, Any]:
 
 def tags_from_state(state: dict[str, Any]) -> list[str]:
     tags: list[str] = []
-    for item in state.get("intents") or []:
-        if isinstance(item, dict) and item.get("intent"):
-            tags.append(str(item["intent"]))
-    route = state.get("route_result") or {}
+    for item in planner_task_views(state):
+        intent = str(item.get("intent") or "").strip()
+        if intent:
+            tags.append(intent)
+    route = planner_public_route(state)
     if route.get("subflow"):
         tags.append(str(route["subflow"]))
     if state.get("image_info", {}).get("has_image"):

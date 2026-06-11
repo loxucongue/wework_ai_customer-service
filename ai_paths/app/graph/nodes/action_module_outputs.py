@@ -1,36 +1,165 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from typing import Any
 
 from app.graph.state import AgentState
 
 
-def build_handoff_output(action: dict[str, Any], state: AgentState) -> dict[str, Any]:
-    handoff_intent = str(action.get("intent") or "")
-    if handoff_intent not in {"human_request", "complaint_refund"}:
-        handoff_intent = "complaint_refund" if any(
-            item.get("intent") == "complaint_refund" for item in state.get("intents", []) if isinstance(item, dict)
-        ) else "human_request"
-    return {
-        "skill": "handoff",
-        "intent": handoff_intent,
-        "facts": [],
-        "reply_points": ["本轮涉及投诉、退款、真实订单/付款/预约记录或高风险事项；最终回复应先承接客户诉求，再说明会让专业同事结合真实记录协助核对。"],
-        "missing_slots": [],
-        "risk_flags": state.get("guardrail_result", {}).get("terms", []),
-        "suggested_next_step": "professional_assist",
-        "confidence": 0.9,
+def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
+    """Provide factual evidence to the final reply model without customer-facing wording."""
+    facts: list[str] = []
+    missing_slots: list[str] = []
+    risk_flags = list((state.get("guardrail_result") or {}).get("terms") or [])
+    structured_facts: dict[str, Any] = {
+        "store_facts": [],
+        "recommended_store": {},
+        "price_facts": [],
+        "case_facts": [],
+        "knowledge_facts": [],
+        "appointment_facts": [],
+        "tool_errors": [],
     }
+    unsupported_claims: list[str] = []
 
+    for key, value in tool_results.items():
+        if not isinstance(value, dict):
+            continue
+        if value.get("error"):
+            facts.append(f"{key}: tool_error={value.get('error')}")
+            structured_facts["tool_errors"].append({"tool": key, "error": str(value.get("error"))[:240]})
+            unsupported_claims.append(f"{key} unavailable")
 
-def build_active_task_output(active_task: dict[str, Any], json_dumps: Any) -> dict[str, Any]:
+        if key == "store_lookup":
+            stores = value.get("stores") or []
+            if stores:
+                structured_facts["store_facts"] = [
+                    {
+                        "id": str(item.get("id") or item.get("store_id") or ""),
+                        "name": str(item.get("name") or ""),
+                        "address": str(item.get("address") or ""),
+                        "business_hours": str(item.get("business_hours") or item.get("business_hours_text") or ""),
+                        "parking": str(item.get("parking") or item.get("parking_info") or ""),
+                    }
+                    for item in stores[:5]
+                    if isinstance(item, dict)
+                ]
+                names = [item["name"] for item in structured_facts["store_facts"][:3] if item.get("name")]
+                if names:
+                    facts.append(f"store_lookup: matched_stores={', '.join(names)}")
+            recommended = value.get("recommended_store") or {}
+            if isinstance(recommended, dict) and recommended:
+                structured_facts["recommended_store"] = {
+                    "id": str(recommended.get("id") or recommended.get("store_id") or ""),
+                    "name": str(recommended.get("name") or ""),
+                    "address": str(recommended.get("address") or ""),
+                    "reason": str(recommended.get("reason") or value.get("recommend_reason") or ""),
+                }
+                facts.append(
+                    "store_lookup: recommended_store="
+                    f"{recommended.get('name') or ''}; address={recommended.get('address') or ''}"
+                )
+            missing_slots.extend(str(item) for item in (value.get("missing") or [])[:4])
+            continue
+
+        if key in {"pricing_db", "pricing_local"}:
+            rows = value.get("rows") or []
+            if rows:
+                structured_facts["price_facts"].extend(
+                    {
+                        "project_name": str(item.get("project_name") or item.get("name") or ""),
+                        "project_code": str(item.get("project_code") or ""),
+                        "category": str(item.get("category") or ""),
+                        "price_range": str(item.get("price_range") or ""),
+                        "daily_price": str(item.get("daily_price") or item.get("original_price") or ""),
+                        "new_price": str(item.get("new_price") or ""),
+                        "promo_price": str(item.get("promo_price") or ""),
+                        "price_note": str(item.get("price_note") or item.get("description") or ""),
+                    }
+                    for item in rows[:5]
+                    if isinstance(item, dict)
+                )
+                names = [item["project_name"] for item in structured_facts["price_facts"][:3] if item.get("project_name")]
+                facts.append(f"{key}: rows={len(rows)}; projects={', '.join(names)}")
+            continue
+
+        if key == "available_time":
+            appointment_fact = {
+                "type": "available_time",
+                "store": value.get("store_name") or value.get("store_id") or "",
+                "date": value.get("date") or "",
+                "slots": value.get("slots") or {},
+                "missing": value.get("missing") or [],
+            }
+            structured_facts["appointment_facts"].append(appointment_fact)
+            facts.append(
+                f"available_time: store={appointment_fact['store']}; "
+                f"date={appointment_fact['date']}; slots={appointment_fact['slots']}"
+            )
+            missing_slots.extend(str(item) for item in appointment_fact["missing"][:4])
+            continue
+
+        if key == "appointment_record_query":
+            appointment_fact = {
+                "type": "appointment_record_query",
+                "status": value.get("status") or "",
+                "store": value.get("store_name") or value.get("store_id") or "",
+                "date": value.get("date") or "",
+                "missing": value.get("missing") or [],
+                "error": value.get("error") or "",
+            }
+            structured_facts["appointment_facts"].append(appointment_fact)
+            facts.append(
+                f"appointment_record_query: status={appointment_fact['status']}; "
+                f"store={appointment_fact['store']}; date={appointment_fact['date']}"
+            )
+            if appointment_fact["error"]:
+                unsupported_claims.append("appointment record unavailable")
+            missing_slots.extend(str(item) for item in appointment_fact["missing"][:4])
+            continue
+
+        if key == "appointment_opening":
+            appointment_fact = {
+                "type": "appointment_opening",
+                "status": value.get("status") or "",
+                "order_id": value.get("order_id") or "",
+                "missing": value.get("missing") or [],
+                "error": value.get("error") or "",
+            }
+            structured_facts["appointment_facts"].append(appointment_fact)
+            facts.append(
+                f"appointment_opening: status={appointment_fact['status']}; "
+                f"order_id={appointment_fact['order_id']}; missing={appointment_fact['missing']}"
+            )
+            continue
+
+        items = value.get("items") or []
+        if items:
+            target = "case_facts" if key == "case_studies" else "knowledge_facts"
+            structured_facts[target].extend(
+                {
+                    "source": key,
+                    "title": str(item.get("title") or item.get("documentId") or "")[:120],
+                    "content": str(item.get("content") or item.get("output") or item)[:500],
+                }
+                for item in items[:5]
+                if isinstance(item, dict)
+            )
+            facts.append(f"{key}: kb_items={len(items)}")
+
     return {
-        "skill": "active_task",
-        "intent": active_task.get("type", ""),
-        "facts": [json_dumps(active_task)],
-        "reply_points": [str(active_task.get("reply_focus") or "")],
-        "missing_slots": active_task.get("missing_slots") or [],
-        "risk_flags": [],
-        "suggested_next_step": active_task.get("next_action", ""),
-        "confidence": 0.85,
+        "intent": "facts_only",
+        "facts": facts[:8],
+        "structured_facts": structured_facts,
+        "fact_envelope": {
+            "usable_facts": facts[:8],
+            "missing_facts": list(dict.fromkeys(missing_slots))[:6],
+            "risky_facts": risk_flags[:6],
+            "unsupported_claims": list(dict.fromkeys(unsupported_claims))[:6],
+            "structured_facts": structured_facts,
+        },
+        "reply_points": [],
+        "missing_slots": list(dict.fromkeys(missing_slots))[:6],
+        "risk_flags": risk_flags[:6],
+        "suggested_next_step": "",
+        "confidence": 0.9,
     }

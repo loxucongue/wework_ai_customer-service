@@ -53,7 +53,6 @@ def validated_image_info(payload: dict[str, Any], *, has_image: bool) -> dict[st
         "risk_signals": list_of_strings(info.get("risk_signals")),
         "extracted_text": list_of_strings(info.get("extracted_text")),
         "text_clues": list_of_strings(info.get("text_clues")),
-        "suggested_route": str(info.get("suggested_route") or "UNKNOWN"),
         "confidence": max(0.0, min(1.0, confidence_float)),
     }
 

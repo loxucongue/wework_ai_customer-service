@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.config import get_settings  # noqa: E402
-from app.graph.builder import build_graph  # noqa: E402
+from app.graph.graph_builder import build_graph  # noqa: E402
 from app.graph.state import AgentState  # noqa: E402
 from app.services.coze_client import CozeClient  # noqa: E402
 from app.services.customer_context import CustomerContextService  # noqa: E402

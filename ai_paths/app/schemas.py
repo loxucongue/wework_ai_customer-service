@@ -23,7 +23,7 @@ class ChatRequest(BaseModel):
 
 
 class ReplyMessage(BaseModel):
-    type: Literal["text", "image", "human_handoff"] = "text"
+    type: Literal["text", "image", "human_handoff", "appointment_push"] = "text"
     order: int
     content: str | dict[str, Any]
 

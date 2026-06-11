@@ -1,41 +1,40 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Callable
 
-from app.graph import task_state
-from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference
-
-
-@dataclass(frozen=True)
-class AppointmentQueryCallbacks:
-    extract_city: Callable[[str], str]
+from app.graph.task_state import appointment_slot_value
 
 
 def appointment_query_from_state(
     content: str,
     store_lookup: dict[str, Any],
     state: dict[str, Any],
-    callbacks: AppointmentQueryCallbacks,
+    extract_city: Callable[[str], str],
 ) -> dict[str, Any]:
     stores = store_lookup.get("stores") if isinstance(store_lookup, dict) else []
-    store_name_hint = task_state.appointment_slot_value(state, "store_name")
+    store_name_hint = appointment_slot_value(state, "store_name")
     store = select_store_for_appointment(stores, store_name_hint)
-    if not store:
-        store = stores[0] if has_explicit_location_or_store(content, callbacks.extract_city) and isinstance(stores, list) and stores else {}
+    if not store and has_explicit_location_or_store(content, extract_city) and isinstance(stores, list) and stores:
+        store = stores[0]
+
     explicit_store_id = state.get("confirmed_store_id") or state.get("store_id")
     explicit_store_name = state.get("confirmed_store_name") or state.get("store_name")
     if explicit_store_id:
         store = {"id": explicit_store_id, "name": explicit_store_name or store.get("name", "")}
+
     if not store and can_use_cached_appointment_store(content):
         appointment = state.get("appointment_cache") or {}
         if isinstance(appointment, dict) and appointment.get("store_id"):
-            store = {"id": appointment.get("store_id"), "name": appointment.get("store_name", "")}
-    date_text = extract_date_value(content) or task_state.appointment_slot_value(state, "visit_date_value")
-    missing = []
-    if not store.get("id"):
+            store = {
+                "id": appointment.get("store_id"),
+                "name": appointment.get("store_name", ""),
+            }
+
+    date_text = extract_date_value(content) or appointment_slot_value(state, "visit_date_value")
+    missing: list[str] = []
+    if not str(store.get("id") or "").strip():
         missing.append("store_id")
     if not date_text:
         missing.append("date")
@@ -53,7 +52,8 @@ def select_store_for_appointment(stores: Any, store_name_hint: str) -> dict[str,
     hint = str(store_name_hint or "").strip()
     if not hint:
         return {}
-    normalized_hint = re.sub(r"(门店|店|吧|呀|啊)$", "", hint)
+    normalized_hint = re.sub(r"(门店|店名|店)$", "", hint)
+    area_aliases = ["百星", "思明", "徐汇", "静安", "浦东", "渝北", "南岸", "渝中", "中贸"]
     for store in stores:
         if not isinstance(store, dict):
             continue
@@ -64,16 +64,9 @@ def select_store_for_appointment(stores: Any, store_name_hint: str) -> dict[str,
             return store
         if normalized_hint and normalized_hint in haystack:
             return store
-        if "百星" in normalized_hint and "百星" in haystack:
-            return store
-        if "思明" in normalized_hint and "思明" in haystack:
-            return store
-        if "徐汇" in normalized_hint and "徐汇" in haystack:
-            return store
-        if "静安" in normalized_hint and "静安" in haystack:
-            return store
-        if "浦东" in normalized_hint and "浦东" in haystack:
-            return store
+        for alias in area_aliases:
+            if alias in normalized_hint and alias in haystack:
+                return store
     return {}
 
 
@@ -82,13 +75,19 @@ def has_explicit_location_or_store(content: str, extract_city: Callable[[str], s
         return False
     if extract_city(content):
         return True
-    return any(term in content for term in ["店", "门店", "这家", "那家", "刚刚那家", "附近", "地址", "上海", "厦门", "重庆", "成都", "北京", "广州", "深圳"])
+    return any(
+        term in content
+        for term in ["店", "门店", "这家", "那家", "附近", "地址", "上海", "厦门", "重庆", "成都", "北京", "广州", "深圳"]
+    )
 
 
 def can_use_cached_appointment_store(content: str) -> bool:
     if not content:
         return False
-    return any(term in content for term in ["原来那家", "之前那家", "上次那家", "预约的门店", "已约的", "还是那家", "改约", "改时间", "换个时间", "取消"])
+    return any(
+        term in content
+        for term in ["原来那家", "之前那家", "上次那家", "预约的门店", "已经约的", "还是那家", "改约", "改时间", "取消"]
+    )
 
 
 def extract_date_value(content: str) -> str:

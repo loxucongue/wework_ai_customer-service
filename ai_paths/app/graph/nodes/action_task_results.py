@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.graph.nodes.action_kb_tasks import ActionToolTask
+ActionToolTask = tuple[str, dict[str, Any], Any]
 
 
 def merge_action_task_results(

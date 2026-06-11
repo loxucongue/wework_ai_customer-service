@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+DEFAULT_BUSINESS_STRATEGY_RULES: list[dict[str, Any]] = [
+    {
+        "id": "new_customer_opening_need_capture",
+        "category": "new_customer_opening",
+        "subtype": "need_capture",
+        "title": "新客破冰与需求承接",
+        "trigger_examples": ["你好", "了解一下", "想看看项目", "不知道做什么"],
+        "decision_goal": "先判断客户是否已有明确需求；没有明确需求时优先收集城市或改善方向，不要直接进入单一项目讲解。",
+        "answer_goal": "像真人客服一样接住客户，说明大多数改善方向都可以先看，再自然引导客户说城市、需求或发照片。",
+        "tool_guidance": ["有category_id时作为默认引流方向", "无需求时可查门店或话术知识库，不要查价格库"],
+        "suggested_moves": ["先问城市便于匹配门店", "客户提到皮肤问题时可引导发照片或描述类型"],
+        "forbidden_moves": ["不要默认客户一定是祛斑", "不要第一句就长篇介绍项目", "不要透露AI身份"],
+        "handoff_policy": "无高风险或明确人工诉求时不转人工。",
+        "priority": 10,
+    },
+    {
+        "id": "project_effect_case_consult",
+        "category": "project_effect_case",
+        "subtype": "case_and_effect",
+        "title": "项目/效果/案例咨询",
+        "trigger_examples": ["这个能解决吗", "效果怎么样", "有没有案例", "做完图片看看", "一次能好吗"],
+        "decision_goal": "识别客户是在问改善方向、效果预期、案例真实性还是操作流程；优先解决当前问题，再轻推到店检测。",
+        "answer_goal": "给正向确定感，说明多数客户反馈和到店检测价值；不承诺根治、百分百见效或固定次数。",
+        "tool_guidance": ["查project_qa获取改善方向", "客户问案例或效果图时查case_studies", "客户问流程/时长时查project_qa"],
+        "suggested_moves": ["可结合照片或描述给初步方向", "可用案例素材建立信任", "必要时引导到店检测"],
+        "forbidden_moves": ["不要把知识库切片直接复制给客户", "不要说根治/保证效果/一次百分百解决", "不要反复追问不关键问题"],
+        "handoff_policy": "客户已做项目后强烈效果不满、投诉或退款诉求时转专业同事。",
+        "priority": 20,
+    },
+    {
+        "id": "price_campaign_deposit_objection",
+        "category": "price_campaign_deposit",
+        "subtype": "activity_price_and_deposit",
+        "title": "价格/活动/定金/尾款异议",
+        "trigger_examples": ["确定199吗", "是一次费用吗", "为什么要交定金", "到店会乱收费吗", "我不交定金"],
+        "decision_goal": "区分活动价确认、价格差异、定金规则、尾款节奏和收费顾虑；必须优先回答价格/付款问题。",
+        "answer_goal": "给客户价格确定感和收费透明感，解释预约金锁活动名额、到店满意再确认后续付款；不编造价格。",
+        "tool_guidance": ["查project_price或本地报价数据", "查sales_talk_qa获取异议承接口径", "价格不可信时标记不可报价"],
+        "suggested_moves": ["价格可信时直接说明活动价和包含项", "定金异议时解释锁名额和活动价", "客户接受后再轻推预约"],
+        "forbidden_moves": ["不要承诺包接送或车费报销", "不要主动说隐形消费", "不要用不存在的价格", "不要贬低同行"],
+        "handoff_policy": "明确退款、投诉、收费争议升级时转专业同事；普通定金规则咨询不直接转人工。",
+        "priority": 30,
+    },
+    {
+        "id": "store_appointment_visit_push",
+        "category": "store_appointment",
+        "subtype": "store_and_visit",
+        "title": "门店/地址/预约/到店推进",
+        "trigger_examples": ["你们门店在哪", "机场附近哪家近", "今天能去吗", "下午5点能约吗", "为什么不发详细地址"],
+        "decision_goal": "区分门店信息、路线停车、最近门店推荐、预约时间确认和到店推进；门店事实必须来自工具。",
+        "answer_goal": "给清晰门店信息和推荐理由，预约场景复用已知城市/门店/时间，不重复索要无关信息。",
+        "tool_guidance": ["查store_lookup", "有明确门店和日期时查available_time", "确认开单信息齐全后才触发预约创建类工具"],
+        "suggested_moves": ["客户问附近时推荐最方便门店", "客户问地址时直接给详细地址", "客户有到店意向时确认时间"],
+        "forbidden_moves": ["不要默认模糊地址", "不要承诺包接送", "不要没有可约时间就说约好了", "不要凭空说1点/5点可约"],
+        "handoff_policy": "客户到店现场、需要开单小程序或门店真实操作时，可转专业同事或输出human_handoff消息。",
+        "priority": 40,
+    },
+    {
+        "id": "trust_qualification_fee_concern",
+        "category": "trust_qualification_fee",
+        "subtype": "qualification_and_fee_trust",
+        "title": "信任/资质/收费顾虑",
+        "trigger_examples": ["有资质吗", "是正规的吗", "会不会伤皮肤", "到店会乱收费吗", "你是门店的人吗"],
+        "decision_goal": "判断客户担心资质、安全、收费、身份还是效果保障；先给确定感，再给可验证路径。",
+        "answer_goal": "建立信任：资质可查可看、到店先检测、老师一对一、费用会先对清楚；不做绝对承诺。",
+        "tool_guidance": ["信任和收费顾虑查sales_talk_qa", "问具体价格时补查project_price"],
+        "suggested_moves": ["可说明到店可看资质", "可说明活动负责人/接待安排角色", "可引导看门店或案例"],
+        "forbidden_moves": ["不要说绝对安全", "不要说没有资质就开不了店这种过度口语化为唯一依据", "不要主动暴露内部工具"],
+        "handoff_policy": "客户明确投诉、退款、维权、医疗高风险时转专业同事。",
+        "priority": 50,
+    },
+    {
+        "id": "after_sales_complaint_handoff",
+        "category": "after_sales_complaint",
+        "subtype": "dissatisfaction_or_refund",
+        "title": "售后/不满/退款/转人工",
+        "trigger_examples": ["做了2次没效果", "这个店我去过没效果", "我要退钱", "不然我投诉", "做完红肿"],
+        "decision_goal": "区分普通术后护理咨询、效果不满、费用争议、退款投诉和高风险不适；严重场景必须转专业同事。",
+        "answer_goal": "先承接情绪和事实，不争辩；询问必要信息用于复盘；涉及退款投诉或真实订单状态时转专业同事。",
+        "tool_guidance": ["普通护理查after_sales_qa", "真实订单/退款/投诉走professional_assist", "可查询预约/订单上下文但不编造结果"],
+        "suggested_moves": ["先问在哪里做、做的什么、什么时候做", "说明需要专业同事核对记录", "给客户被重视的感受"],
+        "forbidden_moves": ["不要承诺已退款", "不要说一定不是我们家", "不要推卸责任", "不要继续硬推预约"],
+        "handoff_policy": "退款、投诉、效果纠纷、严重术后异常、真实订单状态必须输出human_handoff。",
+        "priority": 5,
+    },
+]
+
+
+def compact_rules_for_prompt(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return only the fields the planner and final reply model need."""
+    keys = (
+        "category",
+        "subtype",
+        "title",
+        "trigger_examples",
+        "decision_goal",
+        "answer_goal",
+        "tool_guidance",
+        "suggested_moves",
+        "forbidden_moves",
+        "handoff_policy",
+    )
+    return [{key: rule.get(key) for key in keys if rule.get(key)} for rule in rules]

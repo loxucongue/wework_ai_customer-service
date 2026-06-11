@@ -428,7 +428,7 @@ export function ChatMain() {
               id: generateId(),
               role: "assistant",
               content: item.content,
-              contentType: (item.type as "text" | "image") || "text",
+              contentType: (item.type as "text" | "image" | "human_handoff") || "text",
               timestamp: Date.now(),
               duration: elapsed,
               meta: i === 0 && Object.keys(meta).length > 0 ? meta : undefined,
@@ -483,7 +483,7 @@ export function ChatMain() {
   );
 
   return (
-    <div className="flex h-screen bg-background">
+    <div className="flex h-screen overflow-hidden bg-background">
       {/* Sidebar */}
       <ChatSidebar
         conversations={conversations}
@@ -496,7 +496,7 @@ export function ChatMain() {
       />
 
       {/* Main chat area */}
-      <div className="flex flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         {/* Header */}
         <div className="flex items-center gap-3 border-b px-6 py-3">
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-primary-foreground">
@@ -540,7 +540,7 @@ export function ChatMain() {
         </div>
 
         {/* Messages area */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
           {!activeConversation || activeConversation.messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-4 px-4">
               <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">

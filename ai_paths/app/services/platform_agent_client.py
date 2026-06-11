@@ -120,6 +120,97 @@ class PlatformAgentClient:
             self._with_common_params({"store_id": store_id, "date": date}, request_context),
         )
 
+    def check_customer(
+        self,
+        *,
+        customer_id: int | str,
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not customer_id:
+            return {}
+        data = self._get(
+            "/platform_agent/order/check_customer",
+            self._with_common_params({"customer_id": customer_id}, request_context),
+        )
+        return data if isinstance(data, dict) else {"result": data}
+
+    def category_prepay(
+        self,
+        *,
+        category_id: int | str,
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not category_id:
+            return {}
+        data = self._get(
+            "/platform_agent/category/get_prepay",
+            self._with_common_params({"category_id": category_id}, request_context),
+        )
+        return data if isinstance(data, dict) else {}
+
+    def create_work_order(
+        self,
+        *,
+        customer_id: int | str,
+        store_id: int | str,
+        user_id: int | str,
+        prepay: str | int | float,
+        customer_add_wechat_id: int | str,
+        category_id: int | str | None = None,
+        remark: str = "",
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "customer_id": customer_id,
+            "store_id": store_id,
+            "user_id": user_id,
+            "category_id": category_id,
+            "prepay": prepay,
+            "customer_add_wechat_id": customer_add_wechat_id,
+            "remark": remark[:255],
+        }
+        data = self._post("/platform_agent/order/create_work", self._with_common_params(payload, request_context))
+        return data if isinstance(data, dict) else {"result": data}
+
+    def create_order_plan(
+        self,
+        *,
+        store_id: int | str,
+        date: str,
+        order_id: int | str,
+        user_id: int | str,
+        teacher_id: int | str | None = None,
+        seat_check: int | str | None = None,
+        note: str = "",
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "store_id": store_id,
+            "date": date,
+            "order_id": order_id,
+            "user_id": user_id,
+            "teacher_id": teacher_id,
+            "seat_check": seat_check,
+            "note": note[:200],
+        }
+        data = self._post("/platform_agent/order/schedule/order_plan", self._with_common_params(payload, request_context))
+        return data if isinstance(data, dict) else {"result": data}
+
+    def add_customer_mobile(
+        self,
+        *,
+        customer_id: int | str,
+        mobile: str,
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not customer_id or not mobile:
+            return {}
+        data = self._post(
+            "/platform_agent/customer/add_mobile",
+            self._with_common_params({"customer_id": customer_id, "mobile": mobile}, request_context),
+        )
+        return data if isinstance(data, dict) else {"result": data}
+
     def _with_common_params(self, params: dict[str, Any], request_context: dict[str, Any] | None) -> dict[str, Any]:
         merged = dict(params)
         context = request_context or {}
@@ -141,6 +232,23 @@ class PlatformAgentClient:
         response = httpx.get(
             urljoin(self._base_url, path.lstrip("/")),
             params=clean_params,
+            headers=self._headers(),
+            timeout=self._timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        code = payload.get("code")
+        if code not in (0, 200, "0", "200", None):
+            raise RuntimeError(str(payload.get("msg") or f"Platform agent error: {code}"))
+        return payload.get("data", {})
+
+    def _post(self, path: str, payload: dict[str, Any]) -> Any:
+        if not self.available:
+            raise RuntimeError("Platform agent token is not configured")
+        clean_payload = {key: value for key, value in payload.items() if value not in (None, "")}
+        response = httpx.post(
+            urljoin(self._base_url, path.lstrip("/")),
+            json=clean_payload,
             headers=self._headers(),
             timeout=self._timeout,
         )

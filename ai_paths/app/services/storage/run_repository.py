@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.graph.planner.runtime_plan import planner_task_views
+from app.graph.planner.runtime_plan import planner_public_route
 from app.services.storage.serialization import (
     decode_run,
     decode_trace,
@@ -39,7 +41,10 @@ class RunRepositoryMixin:
         }
         output_snapshot = {
             "reply_messages": final_state.get("reply_messages", []),
-            "route_result": final_state.get("route_result", {}),
+            "planner_route": planner_public_route(final_state),
+            "primary_task": final_state.get("primary_task", {}),
+            "secondary_tasks": final_state.get("secondary_tasks", []),
+            "handoff": final_state.get("handoff", {}),
             "profile_update": final_state.get("profile_update", {}),
             "event_updates": final_state.get("event_updates", []),
         }
@@ -57,7 +62,7 @@ class RunRepositoryMixin:
                     str(final_state.get("customer_id") or ""),
                     dumps(compact(input_snapshot)),
                     dumps(compact(output_snapshot)),
-                    dumps(final_state.get("intents") or []),
+                    dumps(planner_task_views(final_state)),
                     dumps(tags_from_state(final_state)),
                     duration_ms,
                     dumps(token_usage),

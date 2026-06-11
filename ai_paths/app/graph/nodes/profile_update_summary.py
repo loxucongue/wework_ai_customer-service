@@ -35,7 +35,7 @@ def decision_stage(intents: set[Any], content: str) -> str:
 
 
 def profile_summary(needs: list[str], pain_points: list[str], projects: list[str], concerns: list[str]) -> str:
-    parts = []
+    parts: list[str] = []
     if pain_points:
         parts.append(f"关注{'、'.join(dedupe_strings(pain_points)[:3])}")
     if needs:

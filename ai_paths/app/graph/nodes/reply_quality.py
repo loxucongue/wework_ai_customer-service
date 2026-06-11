@@ -1,62 +1,65 @@
-from __future__ import annotations
-
-from typing import Any
+﻿from __future__ import annotations
 
 from app.graph import reply_filters
-from app.graph.nodes.reply_quality_appointment import (
-    claims_unavailable_preferred_time_available,
-    forced_reply_satisfies_hard_instruction,
-)
-from app.graph.nodes.reply_quality_general import check_general_trust_image, check_project_store_dispute
-from app.graph.nodes.reply_quality_rules import (
-    check_final_intent_rules,
-    check_forbidden_and_context,
-    check_store_appointment_price,
-)
-from app.graph.nodes.reply_quality_types import ReplyQualityCallbacks
 from app.graph.nodes.reply_validation import message_content_text
 from app.graph.state import AgentState
 
+_HARD_FORBIDDEN_TERMS = (
+    "包接送",
+    "车费报销",
+    "绝对安全",
+    "保证效果",
+    "包效果",
+    "100%见效",
+    "百分百见效",
+    "根治",
+    "一次根治",
+    "一次一定好",
+    "一定有效",
+    "肯定有效",
+    "真人客服",
+    "我不是AI",
+    "我不是机器人",
+    "系统查询",
+    "工具返回",
+    "知识库",
+    "检索结果",
+    "内部分析",
+    "判断依据",
+    "reply_brief",
+    "module_outputs",
+    "route_result",
+    "subflow",
+    "intent",
+    "debug",
+    "调试信息",
+)
 
-def model_reply_unsafe(state: AgentState, messages: list[dict[str, Any]], callbacks: ReplyQualityCallbacks) -> bool:
+_THIRD_PERSON_CUSTOMER_TERMS = (
+    "客户当前",
+    "客户提到",
+    "客户表示",
+    "客户偏好",
+    "客户问题",
+)
+
+
+def model_reply_unsafe(
+    state: AgentState,
+    messages: list[dict[str, object]],
+) -> bool:
+    del state
     text = "\n".join(
         message_content_text(message.get("content"))
         for message in messages
-        if message.get("type") != "human_handoff"
-    )
+        if isinstance(message, dict) and message.get("type") != "human_handoff"
+    ).strip()
+    if not text:
+        return True
     if reply_filters.has_internal_reply_leak(text):
         return True
-    if any(term in text for term in ["客户偏好", "客户想", "客户问", "客户提到", "客户表示"]):
+    if any(term in text for term in _HARD_FORBIDDEN_TERMS):
         return True
-    intents = {item.get("intent") for item in state.get("intents", [])}
-    content = state.get("normalized_content") or ""
-    project = callbacks.extract_project(content)
-    image_info = state.get("image_info") or {}
-    known_visible = callbacks.known_visible_concerns_from_state(state)
-
-    checks = [
-        lambda: check_general_trust_image(state, text, intents, content, project, image_info, known_visible, callbacks),
-        lambda: check_project_store_dispute(state, text, intents, content, project, image_info, known_visible, callbacks),
-        lambda: check_forbidden_and_context(
-            state,
-            text,
-            intents,
-            content,
-            project,
-            image_info,
-            known_visible,
-            len(messages),
-            callbacks,
-        ),
-        lambda: check_store_appointment_price(state, text, intents, content, project, image_info, known_visible, callbacks),
-        lambda: check_final_intent_rules(state, text, intents, content, project, image_info, known_visible, callbacks),
-    ]
-    for check in checks:
-        decision = check()
-        if decision is not None:
-            return bool(decision)
+    if any(term in text for term in _THIRD_PERSON_CUSTOMER_TERMS):
+        return True
     return False
-
-
-def forced_reply_safe(messages: list[dict[str, Any]], payload: dict[str, Any], callbacks: ReplyQualityCallbacks) -> bool:
-    return forced_reply_satisfies_hard_instruction(messages, payload, callbacks)

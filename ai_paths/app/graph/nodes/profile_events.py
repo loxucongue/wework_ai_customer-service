@@ -1,45 +1,64 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Callable
 
 from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
-from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.profile_event_text import event_impact, event_summary, event_type_for_intent
+from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.store_context import extract_city, extract_time_text
+from app.graph.planner.runtime_plan import planner_scene, planner_task_views
 from app.graph.state import AgentState
 
 
 def extract_event_updates(
     state: AgentState,
-    profile_update: dict[str, Any],
-    callbacks: Any,
-) -> list[dict[str, Any]]:
+    profile_update: dict[str, object],
+    *,
+    canonical_price_project: Callable[[str], str],
+    contextual_price_project: Callable[[AgentState], str],
+    extract_price_digits: Callable[[str], list[str]],
+    extract_project: Callable[[str], str],
+    known_visible_concerns: Callable[[AgentState], list[str]],
+    project_direction_names: Callable[[AgentState], list[str]],
+) -> list[dict[str, object]]:
     if should_suppress_profile_memory_for_reply(state):
         return []
 
-    content = state.get("normalized_content") or ""
-    intents = state.get("intents", [])
-    if not intents and not profile_update:
+    content = str(state.get("normalized_content") or "")
+    task_views = planner_task_views(state)
+    if not task_views and not profile_update:
         return []
 
-    events: list[dict[str, Any]] = []
-    for index, item in enumerate(intents[:3], start=1):
+    events: list[dict[str, object]] = []
+    for index, item in enumerate(task_views[:3], start=1):
         if not isinstance(item, dict):
             continue
-        event_type = event_type_for_intent(str(item.get("intent") or ""))
+        event_type = event_type_for_intent(
+            str(item.get("intent") or item.get("subtype") or item.get("type") or "")
+        )
         if not event_type:
             continue
-        facts = _event_facts(event_type, content, state, callbacks)
+        facts = _event_facts(
+            event_type,
+            content,
+            state,
+            canonical_price_project=canonical_price_project,
+            contextual_price_project=contextual_price_project,
+            extract_price_digits=extract_price_digits,
+            extract_project=extract_project,
+            known_visible_concerns=known_visible_concerns,
+            project_direction_names=project_direction_names,
+        )
         events.append(_event_record(state, index, event_type, facts))
 
     if profile_update and not events:
-        facts = _event_common_facts(content, state, callbacks)
+        facts = _event_common_facts(content, state, known_visible_concerns, project_direction_names)
         events.append(
             {
                 "event_id": f"evt_{state.get('request_id', 'unknown')}_profile",
                 "event_time": "",
                 "event_type": "profile_update",
-                "stage": state.get("route_result", {}).get("scene", "S3_deep_consult"),
+                "stage": planner_scene(state),
                 "summary": event_summary("profile_update", facts),
                 "facts": facts,
                 "impact": "补充客户画像，后续回复应承接已知需求和顾虑。",
@@ -49,12 +68,12 @@ def extract_event_updates(
     return events
 
 
-def _event_record(state: AgentState, index: int, event_type: str, facts: dict[str, Any]) -> dict[str, Any]:
+def _event_record(state: AgentState, index: int, event_type: str, facts: dict[str, object]) -> dict[str, object]:
     return {
         "event_id": f"evt_{state.get('request_id', 'unknown')}_{index}",
         "event_time": "",
         "event_type": event_type,
-        "stage": state.get("route_result", {}).get("scene", "S3_deep_consult"),
+        "stage": planner_scene(state),
         "summary": event_summary(event_type, facts),
         "facts": facts,
         "impact": event_impact(event_type),
@@ -62,17 +81,33 @@ def _event_record(state: AgentState, index: int, event_type: str, facts: dict[st
     }
 
 
-def _event_facts(event_type: str, content: str, state: AgentState, callbacks: Any) -> dict[str, Any]:
+def _event_facts(
+    event_type: str,
+    content: str,
+    state: AgentState,
+    *,
+    canonical_price_project: Callable[[str], str],
+    contextual_price_project: Callable[[AgentState], str],
+    extract_price_digits: Callable[[str], list[str]],
+    extract_project: Callable[[str], str],
+    known_visible_concerns: Callable[[AgentState], list[str]],
+    project_direction_names: Callable[[AgentState], list[str]],
+) -> dict[str, object]:
     image_info = state.get("image_info", {}) or {}
-    project = callbacks.extract_project(content)
-    common = _event_common_facts(content, state, callbacks)
+    project = extract_project(content)
+    common = _event_common_facts(content, state, known_visible_concerns, project_direction_names)
+
     if event_type == "price_inquiry":
         return {
             **common,
-            "project": callbacks.canonical_price_project(callbacks.contextual_price_project(state) or project),
+            "project": canonical_price_project(contextual_price_project(state) or project),
             "price_focus": "价格咨询",
-            "budget_sens": "high" if any(term in content for term in ["贵", "预算", "便宜", "太高"]) else "unknown",
-            "seen_price": callbacks.extract_price_digits(content)[:3],
+            "budget_sens": (
+                "high"
+                if any(term in content for term in ["贵", "预算", "便宜", "太高"])
+                else "unknown"
+            ),
+            "seen_price": extract_price_digits(content)[:3],
         }
     if event_type == "project_inquiry":
         return {
@@ -81,9 +116,7 @@ def _event_facts(event_type: str, content: str, state: AgentState, callbacks: An
             "question_focus": "项目方向",
             "visible_concerns": image_info.get("visible_concerns", []),
             "image_desc": image_info.get("image_desc", ""),
-            "project_directions": []
-            if case_request_lacks_specific_context(state)
-            else callbacks.project_direction_names(state),
+            "project_directions": [] if case_request_lacks_specific_context(state) else project_direction_names(state),
         }
     if event_type == "image_inquiry":
         return {
@@ -95,39 +128,49 @@ def _event_facts(event_type: str, content: str, state: AgentState, callbacks: An
             "text_clues": image_info.get("text_clues", []),
         }
     if event_type == "trust_issue":
-        return {**common, "concern": "正规性/服务保障", "trust_level": "low"}
+        return {**common, "concern": "正规性或服务保障", "trust_level": "low"}
     if event_type == "store_inquiry":
-        return {**common, "city": extract_city(content), "location_focus": "门店/地址/路线", "matched_stores": _matched_store_names(state)}
+        return {
+            **common,
+            "city": extract_city(content),
+            "location_focus": "门店/地址/路线",
+            "matched_stores": _matched_store_names(state),
+        }
     if event_type == "appoint_intent":
         return {
             **common,
             "intent_level": "medium",
-            "preferred_time": extract_time_text(content) or _active_task_slot(state, "time"),
-            "preferred_store": _active_task_slot(state, "store_name"),
-            "preferred_date": _active_task_slot(state, "date"),
-            "people_count": _active_task_slot(state, "people_count"),
+            "preferred_time": extract_time_text(content) or _appointment_cache_slot(state, "time"),
+            "preferred_store": _appointment_cache_slot(state, "store_name"),
+            "preferred_date": _appointment_cache_slot(state, "date"),
+            "people_count": _appointment_cache_slot(state, "people_count"),
         }
     if event_type == "after_sales":
         return {**common, "issue": "售后/恢复咨询", "severity": "unknown"}
     if event_type == "competitor_compare":
         return {**common, "compare_focus": "竞品/报价对比"}
     if event_type == "campaign_inquiry":
-        return {**common, "campaign_focus": "活动/优惠咨询", "seen_price": callbacks.extract_price_digits(content)[:3]}
+        return {**common, "campaign_focus": "活动/优惠咨询", "seen_price": extract_price_digits(content)[:3]}
     if event_type == "human_request":
-        return {**common, "request": "需要专业人士协助"}
+        return {**common, "request": "需要专业同事协助"}
     return common
 
 
-def _event_common_facts(content: str, state: AgentState, callbacks: Any) -> dict[str, Any]:
+def _event_common_facts(
+    content: str,
+    state: AgentState,
+    known_visible_concerns: Callable[[AgentState], list[str]],
+    project_direction_names: Callable[[AgentState], list[str]],
+) -> dict[str, object]:
     image_info = state.get("image_info", {}) or {}
-    facts: dict[str, Any] = {}
+    facts: dict[str, object] = {}
     city = extract_city(content)
     if city:
         facts["city"] = city
-    visible = image_info.get("visible_concerns") or callbacks.known_visible_concerns(state)
+    visible = image_info.get("visible_concerns") or known_visible_concerns(state)
     if visible:
         facts["visible_concerns"] = list(visible[:6])
-    directions = callbacks.project_direction_names(state)
+    directions = project_direction_names(state)
     if directions:
         facts["project_directions"] = directions[:3]
     customer_goal = _customer_goal_from_content(content)
@@ -152,24 +195,29 @@ def _customer_goal_from_content(content: str) -> str:
     return ""
 
 
-def _active_task_slot(state: AgentState, key: str) -> str:
-    active_task = state.get("active_task") or {}
-    if not isinstance(active_task, dict):
-        return ""
-    slots = active_task.get("known_slots")
-    if not isinstance(slots, dict):
-        return ""
-    return str(slots.get(key) or "").strip()
+def _appointment_cache_slot(state: AgentState, key: str) -> str:
+    appointment_cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    alias_map = {
+        "date": ["date", "appointment_date"],
+        "time": ["time", "appointment_time"],
+        "store_name": ["store_name"],
+        "people_count": ["people_count"],
+    }
+    for alias in alias_map.get(key, [key]):
+        text = str(appointment_cache.get(alias) or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _matched_store_names(state: AgentState) -> list[str]:
-    lookup = (state.get("tool_results") or {}).get("store_lookup") or {}
-    stores = lookup.get("stores") if isinstance(lookup, dict) else []
     result: list[str] = []
+    fact_envelope = state.get("fact_envelope") or {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope, dict) else {}
+    stores = structured.get("store_facts") if isinstance(structured, dict) else []
     for store in stores if isinstance(stores, list) else []:
         if isinstance(store, dict):
             name = str(store.get("name") or "").strip()
             if name and name not in result:
                 result.append(name)
     return result[:5]
-

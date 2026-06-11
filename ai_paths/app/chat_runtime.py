@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from app.chat_request_context import build_request_context, conversation_id_from_request, conversation_title
 from app.chat_runtime_helpers import failed_state_from_exception, safe_repository_call
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
+from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
 from app.services.storage import AppRepository
@@ -75,7 +76,7 @@ class ChatRuntime:
                 detail="AI customer service run failed before producing a reply.",
             ) from exc
 
-        route_result = final_state.get("route_result", {})
+        route_result = planner_public_route(final_state)
         model_usage = collect_model_usage(final_state.get("trace", []))
         raw_reply_messages = final_state.get("reply_messages") or []
         if not raw_reply_messages:
@@ -119,7 +120,6 @@ class ChatRuntime:
             subflow=str(route_result.get("subflow", "")),
             trace_url=str(log_path),
             meta={
-                "intents": final_state.get("intents", []),
                 "tool_result_keys": list((final_state.get("tool_results") or {}).keys()),
                 "profile_update": final_state.get("profile_update", {}),
                 "event_updates": final_state.get("event_updates", []),

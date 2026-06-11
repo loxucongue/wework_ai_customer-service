@@ -43,6 +43,7 @@ def quality_judgement(user_text: str, resp: dict[str, Any], expected: str, histo
     replies = [str(m.get("content") or "") for m in reply_items if m.get("type") != "image"]
     joined = "\n".join(replies)
     meta = resp.get("meta") or {}
+    scene = resp.get("scene", "")
     subflow = resp.get("subflow", "")
     intent = resp.get("intent", "")
     problems: list[str] = []
@@ -52,7 +53,7 @@ def quality_judgement(user_text: str, resp: dict[str, Any], expected: str, histo
         problems.append("暴露系统/工具/AI过程")
     if "小贝" in joined:
         good.append("使用小贝人设")
-    if "厦门" in user_text and ("厦门" in joined or subflow == "SF6_store_match"):
+    if "厦门" in user_text and ("厦门" in joined or scene == "S6_store_match"):
         good.append("承接城市门店问题")
     if "思明" in user_text and ("思明" in joined or "厦门" in joined):
         good.append("承接思明/厦门上下文")
@@ -66,8 +67,10 @@ def quality_judgement(user_text: str, resp: dict[str, Any], expected: str, histo
         problems.append("价格轮没有给出任何价格或预算参考")
     if "怕被坑" in user_text and not any(term in joined for term in ["资质", "产品", "售后", "隐形", "正规", "保障", "透明"]):
         problems.append("信任顾虑没有给判断维度")
-    if "周六" in user_text and subflow not in {"SF9_appointment", "SF6_store_match"}:
-        problems.append(f"预约轮路由异常：{subflow}")
+    if "周六" in user_text and scene not in {"S9_appointment", "S6_store_match"} and not any(
+        term in joined for term in ["周六", "下午", "预约", "到店", "时间", "档期"]
+    ):
+        problems.append(f"预约轮承接异常：scene={scene}, subflow={subflow}")
     if any(term in joined for term in ["你在哪个城市", "所在城市", "哪个城市"]) and ("厦门" in "\n".join(history) or "思明" in "\n".join(history)):
         problems.append("已有城市上下文仍重复追问城市")
     if "http" in joined and "ocean-cloud-tos" in joined:
@@ -82,6 +85,7 @@ def quality_judgement(user_text: str, resp: dict[str, Any], expected: str, histo
     return {
         "expected": expected,
         "intent": intent,
+        "scene": scene,
         "subflow": subflow,
         "good": good,
         "problems": problems,

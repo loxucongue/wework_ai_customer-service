@@ -1,93 +1,123 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
-from app.graph.nodes.result_compaction import (
-    CompactionCallbacks,
-    compact_module_outputs_for_model,
-    compact_tool_results_for_model,
-)
+from app.graph.nodes.common import recent_assistant_replies
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
     should_suppress_profile_memory_for_reply,
 )
+from app.graph.nodes.pricing_context import canonical_price_project, is_broad_price_category
+from app.graph.runtime_context import contextual_price_project
+from app.graph.planner.runtime_plan import (
+    planner_handoff,
+    planner_primary_task,
+    planner_reply_strategy,
+    planner_required_tools,
+    planner_secondary_tasks,
+    planner_task_views,
+)
 from app.graph.state import AgentState
+from app.graph.runtime_turn_policy import should_suspend_appointment_context_for_current_turn
 
 
-@dataclass(frozen=True)
-class ReplyContextCallbacks:
-    canonical_price_project: Callable[[str], str]
-    contextual_price_project: Callable[[AgentState], str]
-    is_broad_price_category: Callable[[str], bool]
-    recent_assistant_replies: Callable[[AgentState, int], list[str]]
-    reply_brief: Callable[[AgentState], dict[str, Any]]
-    should_suspend_active_task: Callable[[AgentState, dict[str, Any] | None, list[dict[str, Any]] | None], bool]
-
-
-def reply_user_payload_for_model(state: AgentState, callbacks: ReplyContextCallbacks) -> dict[str, Any]:
-    suspend_active_task = callbacks.should_suspend_active_task(state, state.get("active_task", {}), state.get("intents", []))
+def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
+    planner_views = planner_task_views(state)
+    should_show_appointment_context = not should_suspend_appointment_context_for_current_turn(state, planner_views)
     suppress_profile_memory = should_suppress_profile_memory_for_reply(state)
-    module_outputs = state.get("module_outputs", [])
-    if suspend_active_task:
-        module_outputs = [item for item in module_outputs if not (isinstance(item, dict) and item.get("skill") == "active_task")]
-    if suppress_profile_memory:
-        module_outputs = []
-    tool_results = {} if suppress_profile_memory else state.get("tool_results", {})
+    fact_envelope = {} if suppress_profile_memory else (state.get("fact_envelope") or {})
+    primary_task = planner_primary_task(state)
+    secondary_tasks = planner_secondary_tasks(state)
+    required_tools = planner_required_tools(state)
+    reply_strategy = planner_reply_strategy(state)
+    handoff = planner_handoff(state)
+    appointment_context = _appointment_context_for_model(state) if should_show_appointment_context else {}
     return {
         "content": state.get("normalized_content"),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-6:],
-        "reply_brief": callbacks.reply_brief(state),
         "image_info": state.get("image_info", {}),
         "customer_profile": {} if suppress_profile_memory else state.get("customer_profile", {}),
         "customer_basic_info": {} if suppress_profile_memory else state.get("customer_basic_info", {}),
         "history_events": [] if suppress_profile_memory else state.get("history_events", [])[-8:],
         "memory_usage_policy": memory_usage_policy_for_reply(state),
-        "recent_assistant_replies": [] if suppress_profile_memory else callbacks.recent_assistant_replies(state, 4),
+        "recent_assistant_replies": [] if suppress_profile_memory else recent_assistant_replies(state, 4),
         "guardrail_result": state.get("guardrail_result", {}),
-        "action_plan": {} if suppress_profile_memory else action_plan_for_reply_model(state),
-        "active_task": {} if suspend_active_task else state.get("active_task", {}),
-        "module_outputs": compact_module_outputs_for_model(module_outputs),
-        "tool_results": compact_tool_results_for_model(
-            tool_results,
+        "primary_task": {} if suppress_profile_memory else primary_task,
+        "secondary_tasks": [] if suppress_profile_memory else secondary_tasks,
+        "required_tools": [] if suppress_profile_memory else required_tools,
+        "reply_strategy": {} if suppress_profile_memory else reply_strategy,
+        "handoff": {} if suppress_profile_memory else handoff,
+        "appointment_context": {} if suppress_profile_memory else appointment_context,
+        "fact_envelope": fact_envelope,
+        "fact_notes": _fact_notes_for_model(
+            fact_envelope,
             state,
-            callbacks=CompactionCallbacks(
-                canonical_price_project=callbacks.canonical_price_project,
-                contextual_price_project=callbacks.contextual_price_project,
-                is_broad_price_category=callbacks.is_broad_price_category,
-            ),
+            canonical_price_project=canonical_price_project,
+            contextual_price_project=contextual_price_project,
+            is_broad_price_category=is_broad_price_category,
         ),
     }
 
 
-def action_plan_for_reply_model(state: AgentState) -> dict[str, Any]:
-    plan = state.get("action_plan") if isinstance(state.get("action_plan"), dict) else {}
-    if not plan:
-        return {}
-    if not store_lookup_missing_city(state.get("tool_results", {}) or {}):
-        return plan
+def _fact_notes_for_model(
+    fact_envelope: dict[str, Any],
+    state: AgentState,
+    *,
+    canonical_price_project,
+    contextual_price_project,
+    is_broad_price_category,
+) -> list[str]:
+    notes: list[str] = []
+    project = canonical_price_project(contextual_price_project(state))
+    if project and not is_broad_price_category(project):
+        notes.append(f"当前推测的价格关联方向：{project}")
 
-    cleaned = dict(plan)
-    actions = []
-    for action in plan.get("actions") or []:
-        if not isinstance(action, dict):
-            continue
-        item = dict(action)
-        if item.get("name") == "store" or item.get("intent") == "store_inquiry":
-            item["known_info"] = []
-            item["missing_info"] = ["城市或区域"]
-            item["reply_goal"] = "先请客户补充所在城市或区域，再匹配门店。"
-            item["should_ask"] = True
-            item["tool_plan"] = [{"name": "store_lookup", "query": "", "purpose": "等待客户补充城市或区域"}]
-        actions.append(item)
-    cleaned["actions"] = actions
-    return cleaned
+    structured_facts = fact_envelope.get("structured_facts") or {}
+    if not isinstance(structured_facts, dict):
+        structured_facts = {}
+
+    recommended_store = structured_facts.get("recommended_store") or {}
+    if isinstance(recommended_store, dict) and recommended_store.get("name"):
+        notes.append("已有推荐门店事实，可优先按推荐门店回答。")
+
+    unsupported_claims = {
+        str(item).strip().lower()
+        for item in (fact_envelope.get("unsupported_claims") or [])
+        if str(item).strip()
+    }
+    if "store_lookup unavailable" in unsupported_claims:
+        notes.append("门店事实查询失败，不能编造地址或营业时间。")
+    if "available_time unavailable" in unsupported_claims:
+        notes.append("档期事实查询失败，不能说预约已成功。")
+    if "appointment record unavailable" in unsupported_claims:
+        notes.append("预约记录查询失败，不能编造预约状态。")
+
+    appointment_facts = structured_facts.get("appointment_facts") or []
+    if isinstance(appointment_facts, list):
+        for item in appointment_facts:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "available_time" and item.get("slots"):
+                notes.append("已有档期事实，可直接回答可约时间。")
+                break
+
+    return notes[:6]
 
 
-def store_lookup_missing_city(tool_results: dict[str, Any]) -> bool:
-    lookup = tool_results.get("store_lookup") if isinstance(tool_results, dict) else {}
-    if not isinstance(lookup, dict):
-        return False
-    stores = lookup.get("stores")
-    missing = lookup.get("missing")
-    return not (isinstance(stores, list) and stores) and isinstance(missing, list) and "city" in missing
+def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:
+    appointment_cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    context: dict[str, Any] = {}
+    for source_key, target_key in (
+        ("store_id", "store_id"),
+        ("store_name", "store_name"),
+        ("date", "date"),
+        ("appointment_date", "date"),
+        ("time", "time"),
+        ("appointment_time", "time"),
+        ("people_count", "people_count"),
+    ):
+        value = appointment_cache.get(source_key)
+        text = str(value or "").strip()
+        if text and target_key not in context:
+            context[target_key] = text
+    return context

@@ -28,7 +28,6 @@ def has_project_consult_intent(content: str) -> bool:
         "维持",
         "推荐",
         "方案",
-        "怎么弄",
         "怎么做",
         "做什么",
         "能不能做",
@@ -67,32 +66,31 @@ def has_generic_project_request(content: str) -> bool:
 def has_case_request(content: str) -> bool:
     if not content:
         return False
-    return any(
-        term in content
-        for term in [
-            "案例",
-            "效果案例",
-            "前后对比",
-            "对比照",
-            "做完效果",
-            "客户做完",
-            "案例效果",
-            "案例展示",
-            "效果图",
-            "对比案例",
-            "客户效果",
-            "做完之后的效果",
-            "发我看看效果",
-            "发个效果",
-            "看看效果",
-        ]
-    )
+    case_terms = [
+        "案例",
+        "效果案例",
+        "前后对比",
+        "对比照",
+        "做完效果",
+        "客户做完",
+        "案例效果",
+        "案例展示",
+        "效果图",
+        "对比案例",
+        "客户效果",
+        "做完之后的效果",
+        "发我看看效果",
+        "发个效果",
+        "看看效果",
+    ]
+    return any(term in content for term in case_terms)
 
 
 def has_project_process_question(content: str) -> bool:
     if not content:
         return False
-    return any(term in content for term in ["流程", "操作流程", "怎么操作", "怎么做", "要做多久", "大概要多久", "多久能做完", "时长", "步骤", "过程"])
+    process_terms = ["流程", "操作流程", "怎么操作", "怎么做", "要做多久", "大概要多久", "多久能做完", "时长", "步骤", "过程"]
+    return any(term in content for term in process_terms)
 
 
 def has_ad_price_check(content: str) -> bool:
@@ -118,7 +116,7 @@ def has_ad_price_check(content: str) -> bool:
     ]
     price_terms = PRICE_KEYWORDS + ["199", "299", "268", "10元", "十元", "10块", "十块", "定金", "订金", "预约金", "能退", "可退", "怎么退"]
     return any(term in content for term in context_terms) and (
-        any(term in content for term in price_terms) or bool(re.search(r"\d+\s*元?", content))
+        any(term in content for term in price_terms) or bool(re.search(r"\d+\s*元", content))
     )
 
 
@@ -144,9 +142,7 @@ def has_campaign_inquiry(content: str) -> bool:
 
 
 def is_ad_source_only_project_question(content: str) -> bool:
-    if not content:
-        return False
-    if not any(term in content for term in ["广告", "直播"]):
+    if not content or not any(term in content for term in ["广告", "直播"]):
         return False
     if has_ad_price_check(content) or has_campaign_inquiry(content) or has_price_objection(content):
         return False

@@ -8,9 +8,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.config import get_settings  # noqa: E402
-from app.graph.builder import build_graph  # noqa: E402
+from app.graph.graph_builder import build_graph  # noqa: E402
+from app.graph.planner.runtime_plan import planner_public_route, planner_task_views  # noqa: E402
 from app.graph.state import AgentState  # noqa: E402
+from app.services.appointment_opening_service import AppointmentOpeningService  # noqa: E402
 from app.services.coze_client import CozeClient  # noqa: E402
+from app.services.customer_context import CustomerContextService  # noqa: E402
+from app.services.memory_store import CustomerMemoryStore  # noqa: E402
+from app.services.model_client import ModelClient  # noqa: E402
+from app.services.platform_agent_client import PlatformAgentClient  # noqa: E402
+from app.services.pricing_repository import LocalPricingRepository  # noqa: E402
+from app.services.storage import AppRepository, SQLiteStore  # noqa: E402
+from app.services.store_service import StoreService  # noqa: E402
 from app.services.trace_logger import TraceLogger  # noqa: E402
 
 
@@ -18,7 +27,26 @@ async def main() -> None:
     settings = get_settings()
     trace_logger = TraceLogger(settings)
     coze_client = CozeClient(settings)
-    graph = build_graph(coze_client, trace_logger)
+    model_client = ModelClient(settings)
+    sqlite_store = SQLiteStore(settings)
+    sqlite_store.initialize()
+    repository = AppRepository(sqlite_store)
+    memory_store = CustomerMemoryStore(settings, repository)
+    pricing_repository = LocalPricingRepository(settings)
+    platform_agent_client = PlatformAgentClient(settings)
+    customer_context_service = CustomerContextService(platform_agent_client)
+    store_service = StoreService(platform_agent_client)
+    appointment_opening_service = AppointmentOpeningService(platform_agent_client)
+    graph = build_graph(
+        coze_client,
+        trace_logger,
+        model_client,
+        memory_store,
+        pricing_repository,
+        customer_context_service,
+        store_service,
+        appointment_opening_service,
+    )
 
     request_id = str(uuid4())
     state: AgentState = {
@@ -38,8 +66,8 @@ async def main() -> None:
         json.dumps(
             {
                 "request_id": request_id,
-                "route_result": final_state.get("route_result"),
-                "intents": final_state.get("intents"),
+                "route_result": planner_public_route(final_state),
+                "planner_tasks": planner_task_views(final_state),
                 "reply_messages": final_state.get("reply_messages"),
                 "tool_result_keys": list((final_state.get("tool_results") or {}).keys()),
                 "trace_count": len(final_state.get("trace", [])),

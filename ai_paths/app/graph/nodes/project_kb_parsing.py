@@ -16,31 +16,58 @@ def project_slices_from_tool_results(tool_results: dict[str, Any]) -> list[dict[
         items = project_qa
     else:
         items = []
+    return _parse_project_items(items)
+
+
+def project_slices_from_fact_envelope(fact_envelope: dict[str, Any]) -> list[dict[str, str]]:
+    structured = fact_envelope.get("structured_facts") or {}
+    if not isinstance(structured, dict):
+        return []
+    knowledge_facts = structured.get("knowledge_facts") or []
+    items: list[dict[str, Any]] = []
+    for item in knowledge_facts if isinstance(knowledge_facts, list) else []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source") or "").strip() != "project_qa":
+            continue
+        items.append(
+            {
+                "title": item.get("title") or "",
+                "content": item.get("content") or "",
+            }
+        )
+    return _parse_project_items(items)
+
+
+def _parse_project_items(items: list[Any]) -> list[dict[str, str]]:
     parsed: list[dict[str, str]] = []
-    for item in items[:3]:
+    for item in items[:5]:
         if isinstance(item, dict):
             content = str(item.get("content") or item.get("output") or "")
+            title = str(item.get("title") or "")
         elif isinstance(item, str):
             content = item
+            title = ""
         else:
             continue
         if not content:
             continue
         title_match = re.search(r"(?:##\s*)?(切片\d+\s*\|[^\n\r]+)", content)
         parsed_item = {
-            "title": title_match.group(1).strip() if title_match else "",
-            "scene_type": extract_label_block(content, "场景类型")[:80],
-            "replacement_name": extract_label_block(content, "替换词名称")[:80],
-            "direction": (
-                extract_label_block(content, "可考虑方向")
-                or extract_label_block(content, "项目定位")
-                or extract_label_block(content, "核心逻辑")
-            )[:220],
-            "reply_point": extract_label_block(content, "回复要点")[:220],
-            "say": extract_label_block(content, "可说话术")[:220],
-            "follow_up": extract_label_block(content, "下一步追问")[:120],
+            "title": _clean_project_slice_text(title or (title_match.group(1).strip() if title_match else "")),
+            "scene_type": _clean_project_slice_text(extract_label_block(content, "场景类型")[:80]),
+            "replacement_name": _clean_project_slice_text(extract_label_block(content, "替换名称")[:80]),
+            "direction": _clean_project_slice_text(
+                (
+                    extract_label_block(content, "可考虑方向")
+                    or extract_label_block(content, "项目定位")
+                    or extract_label_block(content, "核心逻辑")
+                )[:220]
+            ),
+            "reply_point": _clean_project_slice_text(extract_label_block(content, "回复要点")[:220]),
+            "say": _clean_project_slice_text(extract_label_block(content, "可说话术")[:220]),
+            "follow_up": _clean_project_slice_text(extract_label_block(content, "下一步追问")[:120]),
         }
-        parsed_item = {key: _clean_project_slice_text(value) for key, value in parsed_item.items()}
         if any(parsed_item.values()):
             parsed.append(parsed_item)
     return parsed
@@ -51,8 +78,6 @@ def _clean_project_slice_text(text: str) -> str:
     if not value:
         return ""
     value = re.sub(r"\s+", " ", value)
-    value = value.replace("类项目类方向", "类项目方向")
-    value = value.replace("类方向类方向", "类方向")
     parts = re.split(r"([、，,；;])", value)
     cleaned: list[str] = []
     seen_phrases: set[str] = set()
