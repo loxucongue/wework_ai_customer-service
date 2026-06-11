@@ -27,6 +27,45 @@ def sanitize_license_promise(text: str, *, strict: bool = False) -> str:
     for old, new in replacements.items():
         cleaned = cleaned.replace(old, new)
 
+    unsupported_fact_replacements = {
+        "所有门店都持有《皮肤管理机构执业许可证》": "门店资质可到店或通过官方渠道核验",
+        "所有门店都持有《医疗机构执业许可证》": "门店资质可到店或通过官方渠道核验",
+        "所有门店均具备医疗美容资质": "资质可到店或通过官方渠道核验",
+        "所有门店均具备资质": "资质可到店或通过官方渠道核验",
+        "我们所有门店资质合规、可查可验": "资质可到店或通过官方渠道核验",
+        "所有门店资质合规、可查可验": "资质可到店或通过官方渠道核验",
+        "所有门店资质合规": "资质可到店或通过官方渠道核验",
+        "持有《皮肤管理机构执业许可证》": "资质可到店或通过官方渠道核验",
+        "持有《医疗机构执业许可证》": "资质可到店或通过官方渠道核验",
+        "医疗美容资质": "资质",
+        "医疗美容": "皮肤管理",
+        "皮肤管理机构执业许可证": "资质",
+        "医疗机构执业许可证": "资质",
+        "执业许可证": "资质",
+        "操作由持证技师执行": "到店会由门店老师按规范安排",
+        "操作老师持证上岗": "到店会由门店老师按规范安排",
+        "老师持证上岗": "老师会按规范安排",
+        "持证技师": "门店老师",
+        "持证老师": "门店老师",
+        "持证合规的": "资质可核验的",
+        "持证合规": "资质可核验",
+        "官网可验": "官方渠道可核验",
+        "持证上岗": "按规范安排",
+        "设备是CFDA认证的进口仪器": "设备和方案到店会提前说明",
+        "CFDA认证的进口仪器": "设备信息以门店说明为准",
+        "CFDA认证": "设备信息以门店说明为准",
+        "进口仪器": "设备信息以门店说明为准",
+        "临床上": "一般",
+        "更安全": "更稳妥",
+        "有接送服务": "可以帮您看路线",
+        "提供接送服务": "可以帮您看路线",
+        "可以接送服务": "可以帮您看路线",
+        "有交通费用支持": "交通费用需自理",
+        "提供交通费用支持": "交通费用需自理",
+    }
+    for old, new in unsupported_fact_replacements.items():
+        cleaned = cleaned.replace(old, new)
+
     if strict:
         cleaned = re.sub(r"https?://\S+", "", cleaned).strip()
         cleaned = cleaned.replace("（附图）", "").replace("附图", "")
@@ -66,6 +105,21 @@ def sanitize_unasked_project_names(text: str) -> str:
     cleaned = cleaned.replace("皮秒/祛斑类", "针对性色素淡化类")
     cleaned = cleaned.replace("皮秒或者祛斑类", "针对性色素淡化类")
     cleaned = replace_sensitive_terms(cleaned)
+    cleaned = re.sub(
+        r"针对性色素淡化类项目[（(]\s*比如针对性色素淡化类项目\s*[）)]",
+        "针对性色素淡化方向",
+        cleaned,
+    )
+    cleaned = cleaned.replace("针对性色素淡化类项目，比如针对性色素淡化类项目", "针对性色素淡化方向")
+    cleaned = cleaned.replace(
+        "针对性色素淡化类项目、肤色改善类项目这类针对性色素淡化项目",
+        "针对性色素淡化和肤色改善方向",
+    )
+    cleaned = cleaned.replace(
+        "针对性色素淡化类项目、肤色改善类项目",
+        "针对性色素淡化和肤色改善方向",
+    )
+    cleaned = cleaned.replace("针对性色素淡化类项目这类针对性色素淡化项目", "针对性色素淡化方向")
     cleaned = re.sub(r"比如\s*(针对性色素淡化方向和肤色改善类光电方向)\s*这类", "比如更偏淡斑的方向", cleaned)
     return dedupe_repeated_phrase_noise(cleaned)
 

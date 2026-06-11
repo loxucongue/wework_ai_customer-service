@@ -44,6 +44,9 @@ def create_synthesize_reply_node(
                 model_call["usage"] = model_usage_snapshot(model_client)
                 messages = validated_model_messages(payload)
                 model_call["draft_messages"] = debug_message_contents(messages)
+                if messages:
+                    messages = postprocess_reply_messages(state, messages)
+                    model_call["postprocessed_messages"] = debug_message_contents(messages)
 
                 if not messages or model_reply_unsafe(state, messages):
                     repair_call: dict[str, Any] = {"name": "reply_repair_model", "input": {"tier": tier, "required": True}}
@@ -55,6 +58,9 @@ def create_synthesize_reply_node(
                         repair_call["usage"] = model_usage_snapshot(model_client)
                         repaired_messages = validated_model_messages(repair_payload)
                         repair_call["draft_messages"] = debug_message_contents(repaired_messages)
+                        if repaired_messages:
+                            repaired_messages = postprocess_reply_messages(state, repaired_messages)
+                            repair_call["postprocessed_messages"] = debug_message_contents(repaired_messages)
                         if repaired_messages and not model_reply_unsafe(state, repaired_messages):
                             messages = repaired_messages
                             model_call["fallback"] = "repaired_model_reply"
@@ -83,8 +89,6 @@ def create_synthesize_reply_node(
                 )
                 messages = []
 
-            if messages:
-                messages = postprocess_reply_messages(state, messages)
             if messages and model_reply_unsafe(state, messages):
                 messages = []
                 errors.append({"node": "synthesize_reply", "message": "final_reply_failed_quality_gate"})
