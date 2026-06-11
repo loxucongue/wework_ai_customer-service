@@ -17,6 +17,10 @@ from app.graph.planner.runtime_plan import (
 )
 from app.graph.state import AgentState
 from app.graph.runtime_turn_policy import should_suspend_appointment_context_for_current_turn
+from app.policies.compliance_terms import (
+    QUALIFICATION_CONTEXT_SAFE_NOTE,
+    UNSUPPORTED_QUALIFICATION_CONTEXT_TERMS,
+)
 
 
 def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
@@ -52,35 +56,6 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     }
 
 
-_UNSUPPORTED_QUALIFICATION_TERMS = (
-    "医疗美容",
-    "医美",
-    "持证",
-    "备案",
-    "卫健委",
-    "NMPA",
-    "CFDA",
-    "执业许可证",
-    "资格证",
-    "证书",
-    "上岗证",
-    "主诊老师证",
-    "激光操作",
-    "官方渠道",
-    "官方认证",
-    "企业微信官方认证入口",
-    "官方查询",
-    "国家企业信用信息公示系统",
-    "企业信用信息公示",
-    "平台可溯",
-    "官网核验",
-    "营业执照",
-    "设备注册证",
-    "设备备案",
-)
-_QUALIFICATION_SAFE_NOTE = "资质相关只能表达为到店可查看/可核对，不能编造证照、备案、监管或老师证书细节。"
-
-
 def _sanitize_planner_context_for_reply(value: Any) -> Any:
     if isinstance(value, dict):
         return {key: _sanitize_planner_context_for_reply(item) for key, item in value.items()}
@@ -96,8 +71,8 @@ def _sanitize_planner_context_for_reply(value: Any) -> Any:
             cleaned.append(sanitized)
         return cleaned
     if isinstance(value, str):
-        if any(term in value for term in _UNSUPPORTED_QUALIFICATION_TERMS):
-            return _QUALIFICATION_SAFE_NOTE
+        if any(term in value for term in UNSUPPORTED_QUALIFICATION_CONTEXT_TERMS):
+            return QUALIFICATION_CONTEXT_SAFE_NOTE
         return value
     return value
 
