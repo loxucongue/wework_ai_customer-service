@@ -5,7 +5,16 @@ import json
 from app.graph.signals.store_followup import store_location_preference_from_context
 from app.graph.state import AgentState
 from app.graph.task_state import appointment_slot_value
-from app.policies.constants import CITY_NAMES
+from app.policies.constants import (
+    CITY_NAMES,
+    KNOWN_STORE_NAMES,
+    STORE_AREA_TERMS,
+    STORE_CONTEXT_FACT_TERMS,
+    STORE_CONTEXT_RECENT_FACT_HINT_TERMS,
+    STORE_CONTEXT_REFERENCE_TERMS,
+    STORE_PREFERRED_HINT_TERMS,
+    TIME_REFERENCE_TERMS,
+)
 
 
 def extract_city(content: str) -> str:
@@ -45,48 +54,17 @@ def should_use_known_store_context(content: str) -> bool:
     content = (content or "").strip()
     if not content:
         return False
-    reference_terms = [
-        "刚刚那家",
-        "刚才那家",
-        "刚说的",
-        "你刚说",
-        "你发的",
-        "那家",
-        "这家",
-        "这个店",
-        "那边",
-        "我约的",
-        "预约的",
-        "之前那个",
-        "上面那个",
-    ]
-    return any(term in content for term in reference_terms)
+    return any(term in content for term in STORE_CONTEXT_REFERENCE_TERMS)
 
 
 def should_use_recent_store_fact_context(content: str, state: AgentState) -> bool:
     content = (content or "").strip()
     if not content or extract_city(content):
         return False
-    fact_terms = [
-        "停车",
-        "停车场",
-        "车位",
-        "导航",
-        "地址",
-        "怎么过去",
-        "营业时间",
-        "几点开",
-        "几点关",
-        "还营业",
-        "还开",
-        "发给我",
-        "发我",
-        "发一个",
-    ]
-    if not any(term in content for term in fact_terms):
+    if not any(term in content for term in STORE_CONTEXT_FACT_TERMS):
         return False
     recent = "\n".join(str(item) for item in (state.get("conversation_history") or [])[-8:])
-    return bool(known_store_name_from_text(recent) or any(term in recent for term in ["门店", "地址", "推荐", "优先"]))
+    return bool(known_store_name_from_text(recent) or any(term in recent for term in STORE_CONTEXT_RECENT_FACT_HINT_TERMS))
 
 
 def known_store_name_from_history(state: AgentState) -> str:
@@ -110,29 +88,14 @@ def preferred_store_name_from_text(text: str) -> str:
     matches = known_store_name_matches(text)
     for name, index in matches:
         window = (text or "")[max(0, index - 80) : index + len(name) + 80]
-        if any(term in window for term in ["优先推荐", "推荐门店", "推荐的门店", "推荐这家", "这家推荐", "优先看"]):
+        if any(term in window for term in STORE_PREFERRED_HINT_TERMS):
             return name
     return ""
 
 
 def known_store_name_matches(text: str) -> list[tuple[str, int]]:
-    known_names = [
-        "厦门百星",
-        "厦门二店",
-        "厦门思明店",
-        "上海徐汇店",
-        "上海静安店",
-        "上海浦东店",
-        "西安中贸店",
-        "西安安康店",
-        "北京朝阳店",
-        "天津河西店",
-        "重庆渝北店",
-        "重庆南岸店",
-        "重庆渝中店",
-    ]
     matches: list[tuple[str, int]] = []
-    for name in known_names:
+    for name in KNOWN_STORE_NAMES:
         index = (text or "").find(name)
         if index >= 0:
             matches.append((name, index))
@@ -171,14 +134,14 @@ def known_city_from_state(state: AgentState) -> str:
 
 
 def extract_store_area(content: str) -> str:
-    for area in ["徐汇", "静安", "浦东", "思明", "湖里", "百星", "渝北", "南岸", "渝中", "中贸"]:
+    for area in STORE_AREA_TERMS:
         if area in content:
             return area
     return ""
 
 
 def extract_time_text(content: str) -> str:
-    for word in ["今天", "明天", "后天", "周六", "周日", "周末", "上午", "下午", "晚上"]:
+    for word in TIME_REFERENCE_TERMS:
         if word in content:
             return word
     return ""
