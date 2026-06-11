@@ -9,6 +9,7 @@ from typing import Any
 
 
 ACTIVE_INJECTION_THRESHOLD = 0.75
+SHORT_KEYWORD_MAX_LEN = 2
 
 
 @dataclass(frozen=True)
@@ -118,12 +119,16 @@ def _keyword_score(text: str, keywords: tuple[str, ...]) -> float:
         return 0.0
     hits = 0
     weighted = 0.0
+    longest_hit = 0
     for keyword in keywords:
         key = _normalize(keyword)
         if key and key in text:
             hits += 1
+            longest_hit = max(longest_hit, len(key))
             weighted += min(0.4, 0.18 + len(key) / 30)
     if hits <= 0:
+        return 0.0
+    if hits == 1 and longest_hit <= SHORT_KEYWORD_MAX_LEN:
         return 0.0
     return min(0.98, 0.45 + weighted)
 

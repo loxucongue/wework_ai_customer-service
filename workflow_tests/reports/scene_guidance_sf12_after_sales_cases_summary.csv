@@ -1,0 +1,2 @@
+﻿family,cases,covered,coverage,high_matches,high_rate,expected,top1_hits,top1_accuracy,top_scenes
+SF12_AFTER_SALES,24,3,12.50%,2,8.33%,0,0,,SF12_POST_CARE_REDNESS:1|SF12_REFUND_REQUEST_HANDOFF:1|SF12_POST_CARE_SCAB:1

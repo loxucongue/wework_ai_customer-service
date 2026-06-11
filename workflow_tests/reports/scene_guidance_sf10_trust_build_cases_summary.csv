@@ -1,0 +1,2 @@
+﻿family,cases,covered,coverage,high_matches,high_rate,expected,top1_hits,top1_accuracy,top_scenes
+SF10_TRUST_BUILD,24,8,33.33%,6,25.00%,0,0,,SF10_SCAM_WORRY:2|SF10_IDENTITY_WORRY:2|SF10_EFFECT_WORRY:2|SF10_QUALIFICATION_INQUIRY:1|SF10_SAFETY_WORRY:1

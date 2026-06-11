@@ -1,0 +1,2 @@
+﻿family,cases,covered,coverage,high_matches,high_rate,expected,top1_hits,top1_accuracy,top_scenes
+SF7_PRICE_ACTIVITY,24,14,58.33%,2,8.33%,0,0,,SF7_PRICE_FIRST_ASK:8|SF7_LOWEST_PRICE_HANDOFF:3|SF7_PRICE_REPEAT_ASK:1|SF7_PRICE_CONFIRM_SPECIFIC_AMOUNT:1|SF7_PRICE_ONCE_FEE:1

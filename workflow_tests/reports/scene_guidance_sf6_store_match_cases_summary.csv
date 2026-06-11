@@ -1,0 +1,2 @@
+﻿family,cases,covered,coverage,high_matches,high_rate,expected,top1_hits,top1_accuracy,top_scenes
+SF6_STORE_INQUIRY,24,11,45.83%,7,29.17%,0,0,,SF6_STORE_LOCATION:8|SF6_PARKING_OR_ROUTE:2|SF6_BUSINESS_HOURS:1

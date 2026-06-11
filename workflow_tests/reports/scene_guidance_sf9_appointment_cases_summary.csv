@@ -1,0 +1,2 @@
+﻿family,cases,covered,coverage,high_matches,high_rate,expected,top1_hits,top1_accuracy,top_scenes
+SF9_APPOINTMENT,24,8,33.33%,2,8.33%,0,0,,SF9_WEEKEND_AVAILABLE:4|SF9_CONFIRM_TIME:3|SF9_VISIT_INTENT:1
