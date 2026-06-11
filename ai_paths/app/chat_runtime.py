@@ -131,6 +131,8 @@ class ChatRuntime:
                 "token_usage": model_usage["summary"],
                 "tool_calls": collect_tool_calls(final_state.get("trace", [])),
                 "planner_source": final_state.get("planner_source", ""),
+                "policy_id": final_state.get("policy_id", ""),
+                "policy_version": final_state.get("policy_version", ""),
                 "reply_source": final_state.get("reply_source", ""),
                 "postprocess_changed": bool(final_state.get("postprocess_changed")),
                 "postprocess_reasons": final_state.get("postprocess_reasons", []),

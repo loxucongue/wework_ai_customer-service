@@ -98,4 +98,5 @@ def planner_public_route(state: AgentState) -> dict[str, Any]:
         "reason": str(primary.get("answer_goal") or primary.get("customer_need") or "").strip(),
         "confidence": confidence,
         "need_human": handoff_needed,
+        "policy_id": str(state.get("policy_id") or "").strip(),
     }

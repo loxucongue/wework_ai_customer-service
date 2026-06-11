@@ -5,6 +5,7 @@ from typing import Any, Callable
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.planner.brain_v2 import run_planner_brain_v2, safety_fallback_plan
 from app.graph.state import AgentState
+from app.policies.rule_catalog import POLICY_VERSION, policy_id_from_task
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
 
@@ -64,6 +65,8 @@ def create_planner_brain_node(
                 "reply_strategy": plan.get("reply_strategy", {}),
                 "handoff": plan.get("handoff", {}),
                 "memory_update_hint": plan.get("memory_update_hint", {}),
+                "policy_id": policy_id_from_task(plan.get("primary_task", {}), plan.get("handoff", {})),
+                "policy_version": POLICY_VERSION,
                 "planner_source": (
                     "guardrail"
                     if (state.get("guardrail_result") or {}).get("blocked")

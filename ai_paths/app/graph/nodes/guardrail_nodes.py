@@ -13,6 +13,7 @@ from app.graph.planner_dispute_signals import (
 from app.graph.planner_general_signals import is_identity_question
 from app.graph.state import AgentState
 from app.policies.constants import HUMAN_KEYWORDS
+from app.policies.rule_catalog import POLICY_VERSION, policy_id_from_task
 from app.services.trace_logger import TraceLogger
 
 
@@ -48,14 +49,21 @@ def create_hard_guardrails_node(*, trace_logger: TraceLogger) -> Callable[[Agent
 def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]:
     task_type = _guardrail_task_type(terms, content)
     reason = "、".join(terms[:4]).strip("、") or "当前问题需要进一步核对"
+    primary_task = {
+        "type": task_type,
+        "subtype": "guardrail_blocked",
+        "customer_need": content[:120],
+        "answer_goal": "先承接客户当前问题，再由专业同事继续核对处理",
+        "scene": "S8_guardrail_handoff",
+        "confidence": 1.0,
+    }
+    handoff = {
+        "needed": True,
+        "reason": reason,
+    }
     return {
         "primary_task": {
-            "type": task_type,
-            "subtype": "guardrail_blocked",
-            "customer_need": content[:120],
-            "answer_goal": "先承接客户当前问题，再由专业同事继续核对处理",
-            "scene": "S8_guardrail_handoff",
-            "confidence": 1.0,
+            **primary_task,
         },
         "secondary_tasks": [],
         "required_tools": [],
@@ -66,10 +74,9 @@ def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]
             "tone": "稳重、简洁、像真人客服",
             "max_questions": 0,
         },
-        "handoff": {
-            "needed": True,
-            "reason": reason,
-        },
+        "handoff": handoff,
+        "policy_id": policy_id_from_task(primary_task, handoff),
+        "policy_version": POLICY_VERSION,
     }
 
 

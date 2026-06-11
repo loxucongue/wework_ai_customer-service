@@ -43,6 +43,8 @@ class RunRepositoryMixin:
             "reply_messages": final_state.get("reply_messages", []),
             "planner_route": planner_public_route(final_state),
             "planner_source": final_state.get("planner_source", ""),
+            "policy_id": final_state.get("policy_id", ""),
+            "policy_version": final_state.get("policy_version", ""),
             "reply_source": final_state.get("reply_source", ""),
             "postprocess_changed": bool(final_state.get("postprocess_changed")),
             "postprocess_reasons": final_state.get("postprocess_reasons", []),

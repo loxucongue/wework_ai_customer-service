@@ -59,6 +59,8 @@ class AgentState(TypedDict, total=False):
     fact_envelope: dict[str, Any]
     reply_messages: list[dict[str, Any]]
     planner_source: str
+    policy_id: str
+    policy_version: str
     reply_source: str
     postprocess_changed: bool
     postprocess_reasons: list[str]
