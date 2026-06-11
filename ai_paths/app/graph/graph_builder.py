@@ -39,10 +39,6 @@ from app.graph.runtime_context import (
     pricing_sql_from_state as _pricing_sql_from_state,
     project_direction_names_from_state as _project_direction_names_from_state,
 )
-from app.graph.nodes.kb_planning import (
-    needs_project_price_followup as _needs_project_price_followup,
-    project_price_followup_queries as _project_price_followup_queries,
-)
 from app.graph.state import AgentState
 from app.graph.nodes.reply_postprocess import postprocess_reply_messages as _postprocess_reply_messages
 from app.graph.nodes.reply_quality import model_reply_unsafe as _model_reply_unsafe
@@ -101,14 +97,9 @@ def build_graph(
             state,
             _extract_city,
         ),
-        canonical_price_project=_canonical_price_project,
-        contextual_price_project=_contextual_price_project,
-        extract_project=_extract_project,
         has_appointment_change_or_cancel=_has_appointment_change_or_cancel,
         has_appointment_record_query=_has_appointment_record_query,
-        needs_project_price_followup=_needs_project_price_followup,
         pricing_sql_from_state=_pricing_sql_from_state,
-        project_price_followup_queries=_project_price_followup_queries,
         store_query_from_state=_store_query_from_state,
     )
 

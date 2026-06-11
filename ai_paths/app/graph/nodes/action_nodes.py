@@ -5,7 +5,6 @@ from typing import Any, Callable
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_task_results import ActionToolTask, merge_action_task_results
-from app.graph.nodes.tool_results import merge_kb_result
 from app.graph.planner.runtime_plan import (
     planner_handoff,
     planner_primary_task,
@@ -29,14 +28,9 @@ def create_execute_actions_node(
     store_service: StoreService | None,
     appointment_opening_service: AppointmentOpeningService | None,
     appointment_query_from_state: Callable[[str, dict[str, Any], AgentState], dict[str, Any]],
-    canonical_price_project: Callable[[str], str],
-    contextual_price_project: Callable[[AgentState], str],
-    extract_project: Callable[[str], str],
     has_appointment_change_or_cancel: Callable[[str], bool],
     has_appointment_record_query: Callable[[str], bool],
-    needs_project_price_followup: Callable[[list[dict[str, Any]], dict[str, Any], AgentState], bool],
     pricing_sql_from_state: Callable[[AgentState], str],
-    project_price_followup_queries: Callable[[dict[str, Any]], list[str]],
     store_query_from_state: Callable[[str, AgentState], str],
 ) -> Callable[[AgentState], Any]:
     async def execute_actions(state: AgentState) -> dict[str, Any]:
@@ -60,6 +54,7 @@ def create_execute_actions_node(
             for tool in required_tools:
                 _queue_planned_tool_tasks(
                     tool=tool,
+                    state=state,
                     coze_client=coze_client,
                     tool_results=tool_results,
                     tool_calls=tool_calls,
@@ -203,43 +198,26 @@ def create_execute_actions_node(
                     tool_calls=tool_calls,
                 )
 
-            if needs_project_price_followup(tasks, tool_results, state):
-                for query in project_price_followup_queries(tool_results):
-                    call = {
-                        "name": "coze_kb_search",
-                        "input": {
-                            "kb_name": "project_price",
-                            "query": query,
-                            "planned": True,
-                            "purpose": "根据项目知识库候选方向补查价格",
-                        },
-                    }
-                    try:
-                        result = await coze_client.search_kb("project_price", query)
-                        merge_kb_result(tool_results, "project_price", result.model_dump())
-                        call["output"] = {"items": len(result.items)}
-                    except Exception as exc:
-                        call["error"] = f"{type(exc).__name__}: {exc}"
-                    tool_calls.append(call)
-
             if _needs_local_pricing(required_tools) and pricing_repository:
-                pricing_query = _planned_local_pricing_query(
-                    required_tools=required_tools,
-                    state=state,
-                    content=content,
-                    canonical_price_project=canonical_price_project,
-                    contextual_price_project=contextual_price_project,
-                    extract_project=extract_project,
-                )
-                local_call = {"name": "local_pricing_xlsx", "input": {"query": pricing_query, "planned": True}}
-                try:
-                    local_rows = pricing_repository.search(pricing_query)
-                    tool_results["pricing_local"] = {"rows": local_rows}
-                    local_call["output"] = {"rows": len(local_rows)}
-                except Exception as exc:
-                    local_call["error"] = f"{type(exc).__name__}: {exc}"
-                    tool_results["pricing_local"] = {"rows": [], "error": local_call["error"]}
-                tool_calls.append(local_call)
+                pricing_query = _planned_tool_query(required_tools, "local_pricing")
+                if pricing_query:
+                    local_call = {"name": "local_pricing_xlsx", "input": {"query": pricing_query, "planned": True}}
+                    try:
+                        local_rows = pricing_repository.search(pricing_query)
+                        tool_results["pricing_local"] = {"rows": local_rows}
+                        local_call["output"] = {"rows": len(local_rows)}
+                    except Exception as exc:
+                        local_call["error"] = f"{type(exc).__name__}: {exc}"
+                        tool_results["pricing_local"] = {"rows": [], "error": local_call["error"]}
+                    tool_calls.append(local_call)
+                else:
+                    _record_tool_argument_error(
+                        tool_results=tool_results,
+                        tool_calls=tool_calls,
+                        key="pricing_local",
+                        error="missing_planner_query",
+                        tool_input={"name": "local_pricing_xlsx", "query": "", "planned": True},
+                    )
 
             planner_fact_output = build_planner_fact_output(tool_results, state)
             fact_envelope = dict(planner_fact_output.get("fact_envelope") or {})
@@ -259,6 +237,7 @@ def create_execute_actions_node(
 def _queue_planned_tool_tasks(
     *,
     tool: dict[str, Any],
+    state: AgentState,
     coze_client: CozeClient,
     tool_results: dict[str, Any],
     tool_calls: list[dict[str, Any]],
@@ -326,7 +305,7 @@ def _record_tool_argument_error(
     tool_results[key] = {
         "items": [],
         "error": error,
-        "missing": ["query"] if error == "missing_planner_query" else ["kb_name"],
+        "missing": _missing_fields_for_error(error),
     }
     tool_calls.append(
         {
@@ -335,6 +314,14 @@ def _record_tool_argument_error(
             "error": error,
         }
     )
+
+
+def _missing_fields_for_error(error: str) -> list[str]:
+    if error == "missing_planner_query":
+        return ["query"]
+    if error == "missing_planner_kb_name":
+        return ["kb_name"]
+    return []
 
 
 def _needs_store_lookup(required_tools: list[dict[str, Any]]) -> bool:
@@ -391,19 +378,11 @@ def _professional_assist_result(
     }
 
 
-def _planned_local_pricing_query(
-    *,
-    required_tools: list[dict[str, Any]],
-    state: AgentState,
-    content: str,
-    canonical_price_project: Callable[[str], str],
-    contextual_price_project: Callable[[AgentState], str],
-    extract_project: Callable[[str], str],
-) -> str:
+def _planned_tool_query(required_tools: list[dict[str, Any]], tool_name: str) -> str:
     for item in required_tools:
-        if not isinstance(item, dict) or str(item.get("name") or "").strip() != "local_pricing":
+        if not isinstance(item, dict) or str(item.get("name") or "").strip() != tool_name:
             continue
         query = str(item.get("query") or "").strip()
         if query:
             return query
-    return canonical_price_project(contextual_price_project(state)) or canonical_price_project(extract_project(content)) or content
+    return ""

@@ -95,6 +95,8 @@ Planning guidance:
 - Complaint / refund / real order / payment / severe abnormal after-sales / high-risk medical condition:
   prefer professional_assist
 - If no external fact is needed, use no_tool
+Every local_pricing tool must include a concrete query string such as the project name, campaign price term,
+or customer-described need. Do not rely on code to infer this query.
 
 Hard tool requirements:
 - no_tool is only valid for pure greeting, pure small talk, simple trust/identity reassurance, or generic acknowledgment turns.
@@ -254,12 +256,13 @@ Rules:
 - Eliminate every violation by either correcting the task type or adding the missing fact tools.
 - Missing tool labels map to exact tool requirements:
   - kb_search(project_price): {"name":"kb_search","kb_name":"project_price","query":"<concrete customer price/project need>","purpose":"Need real price and campaign rules before answering"}
-  - pricing_db_or_local_pricing: {"name":"local_pricing","purpose":"Need local price facts before answering"}
+  - pricing_db_or_local_pricing: {"name":"local_pricing","query":"<concrete customer price/project need>","purpose":"Need local price facts before answering"}
   - store_lookup: {"name":"store_lookup","purpose":"Need real store facts before answering"}
   - kb_search(case_studies): {"name":"kb_search","kb_name":"case_studies","query":"<concrete case/effect request>","purpose":"Need real case facts before answering"}
   - kb_search(competitor_qa): {"name":"kb_search","kb_name":"competitor_qa","query":"<concrete competitor claim or price concern>","purpose":"Need competitor response guidance before answering"}
   - kb_search_missing_query: keep kb_search, but add a concrete query string based on the current user turn and available context.
   - kb_search_missing_kb_name: either add one allowed kb_name or remove kb_search if no knowledge lookup is needed.
+  - local_pricing_missing_query: keep local_pricing, but add a concrete query string based on the current user turn and available context.
   - appointment_record_query: {"name":"appointment_record_query","purpose":"Need real appointment facts before answering"}
   - appointment_fact_tool: use available_time, appointment_record_query, or appointment_create according to the current customer turn.
 - Keep the answer goal focused on the current user turn.
@@ -517,10 +520,20 @@ def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[di
 
     for tool in concrete_tools:
         name = str(tool.get("name") or "").strip()
+        query = str(tool.get("query") or "").strip()
+        if name == "local_pricing" and not query:
+            violations.append(
+                {
+                    "task_type": "tool_argument",
+                    "subtype": "local_pricing",
+                    "missing": "local_pricing_missing_query",
+                    "note": "Every local_pricing tool must include a concrete query; code will not infer missing search terms.",
+                }
+            )
+            continue
         if name != "kb_search":
             continue
         kb_name = str(tool.get("kb_name") or "").strip()
-        query = str(tool.get("query") or "").strip()
         missing_args: list[str] = []
         if not kb_name:
             missing_args.append("kb_name")
