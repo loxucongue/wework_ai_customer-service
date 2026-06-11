@@ -61,7 +61,12 @@ class AgentState(TypedDict, total=False):
     planner_source: str
     policy_id: str
     policy_family_id: str
+    exact_policy_id: str
+    policy_match_level: str
     policy_version: str
+    scene_guidance_candidates: list[dict[str, Any]]
+    scene_guidance_injected: bool
+    scene_guidance_context: list[dict[str, Any]]
     reply_source: str
     postprocess_changed: bool
     postprocess_reasons: list[str]

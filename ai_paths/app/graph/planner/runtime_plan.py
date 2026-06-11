@@ -101,4 +101,6 @@ def planner_public_route(state: AgentState) -> dict[str, Any]:
         "need_human": handoff_needed,
         "policy_id": str(state.get("policy_id") or "").strip(),
         "policy_family_id": str(state.get("policy_family_id") or "").strip(),
+        "exact_policy_id": str(state.get("exact_policy_id") or "").strip(),
+        "policy_match_level": str(state.get("policy_match_level") or "").strip(),
     }

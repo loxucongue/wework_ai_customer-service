@@ -68,6 +68,8 @@ def create_planner_brain_node(
                 "memory_update_hint": plan.get("memory_update_hint", {}),
                 "policy_id": policy["policy_id"],
                 "policy_family_id": policy["policy_family_id"],
+                "exact_policy_id": policy["exact_policy_id"],
+                "policy_match_level": policy["policy_match_level"],
                 "policy_version": policy["policy_version"],
                 "planner_source": (
                     "guardrail"

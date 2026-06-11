@@ -79,6 +79,8 @@ def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]
         "handoff": handoff,
         "policy_id": policy["policy_id"],
         "policy_family_id": policy["policy_family_id"],
+        "exact_policy_id": policy["exact_policy_id"],
+        "policy_match_level": policy["policy_match_level"],
         "policy_version": policy["policy_version"],
     }
 

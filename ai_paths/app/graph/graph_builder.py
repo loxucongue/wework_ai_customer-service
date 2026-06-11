@@ -14,6 +14,7 @@ from app.graph.nodes.intent_signals import (
     has_store_inquiry as _has_store_inquiry,
 )
 from app.graph.nodes.planner_nodes import create_planner_brain_node
+from app.graph.nodes.policy_nodes import create_scene_guidance_node
 from app.graph.nodes.pricing_context import (
     canonical_price_project as _canonical_price_project,
     extract_project as _extract_project,
@@ -89,6 +90,7 @@ def build_graph(
         trace_logger=trace_logger,
         model_client=model_client,
     )
+    scene_guidance = create_scene_guidance_node(trace_logger=trace_logger)
 
     execute_actions = create_execute_actions_node(
         coze_client=coze_client,
@@ -170,6 +172,7 @@ def build_graph(
     graph.add_node("load_memory", load_memory)
     graph.add_node("load_customer_context", load_customer_context)
     graph.add_node("planner_brain", planner_brain)
+    graph.add_node("retrieve_scene_guidance", scene_guidance)
     graph.add_node("execute_actions", execute_actions)
     graph.add_node("synthesize_reply", synthesize_reply)
     graph.add_node("profile_event_extractor", profile_event_extractor)
@@ -187,7 +190,8 @@ def build_graph(
     )
     graph.add_edge("load_memory", "load_customer_context")
     graph.add_edge("load_customer_context", "planner_brain")
-    graph.add_edge("planner_brain", "execute_actions")
+    graph.add_edge("planner_brain", "retrieve_scene_guidance")
+    graph.add_edge("retrieve_scene_guidance", "execute_actions")
     graph.add_edge("execute_actions", "synthesize_reply")
     graph.add_edge("synthesize_reply", "profile_event_extractor")
     graph.add_edge("profile_event_extractor", END)

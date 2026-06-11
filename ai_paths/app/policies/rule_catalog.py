@@ -149,27 +149,40 @@ def policy_selection_from_task(primary_task: dict[str, Any], handoff: dict[str, 
 
     if bool(handoff.get("needed")):
         policy_id = HANDOFF_POLICY_IDS.get(task_type) or "HUMAN_HANDOFF_PROFESSIONAL_ASSIST"
-        return _selection(policy_id)
+        return _selection(policy_id, match_level="hard_guard", exact_policy_id=policy_id)
 
     if task_subtype == "guardrail_blocked":
         policy_id = HANDOFF_POLICY_IDS.get(task_type) or "HUMAN_HANDOFF_PROFESSIONAL_ASSIST"
-        return _selection(policy_id)
+        return _selection(policy_id, match_level="hard_guard", exact_policy_id=policy_id)
 
     if policy_hint in POLICIES:
-        return _selection(policy_hint)
+        return _selection(policy_hint, match_level="exact_policy", exact_policy_id=policy_hint)
 
     policy_id = SUBTYPE_POLICY_IDS.get((task_type, task_subtype))
     if policy_id:
-        return _selection(policy_id)
+        return _selection(policy_id, match_level="exact_policy", exact_policy_id=policy_id)
 
     family_id = TASK_TYPE_POLICY_FAMILY_IDS.get(task_type) or "GENERAL_DIRECT_REPLY"
-    return {"policy_id": family_id, "policy_family_id": family_id, "policy_version": POLICY_VERSION}
+    match_level = "general_fallback" if family_id == "GENERAL_DIRECT_REPLY" else "family_policy"
+    return {
+        "policy_id": family_id,
+        "policy_family_id": family_id,
+        "exact_policy_id": "",
+        "policy_match_level": match_level,
+        "policy_version": POLICY_VERSION,
+    }
 
 
-def _selection(policy_id: str) -> dict[str, str]:
+def _selection(policy_id: str, *, match_level: str, exact_policy_id: str) -> dict[str, str]:
     definition = POLICIES.get(policy_id) or POLICIES["GENERAL_DIRECT_REPLY"]
     family_id = str(definition.get("family") or policy_id)
-    return {"policy_id": policy_id, "policy_family_id": family_id, "policy_version": POLICY_VERSION}
+    return {
+        "policy_id": policy_id,
+        "policy_family_id": family_id,
+        "exact_policy_id": exact_policy_id,
+        "policy_match_level": match_level,
+        "policy_version": POLICY_VERSION,
+    }
 
 
 def _clean_token(value: Any) -> str:
