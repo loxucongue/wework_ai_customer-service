@@ -423,26 +423,21 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
 
 def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
     content = str(state.get("normalized_content") or "").strip()
-    handoff_needed = _has_hard_handoff_signal(content)
     primary_task = {
-        "type": "human_request" if handoff_needed else "general_consult",
-        "subtype": "risk_or_dispute" if handoff_needed else "open_consult",
-        "policy_hint": "HUMAN_HANDOFF_PROFESSIONAL_ASSIST" if handoff_needed else "S1_OPENING_GENERAL",
-        "scene": "S7_dealed_active" if handoff_needed else "S3_deep_consult",
-        "subflow": "HUMAN_HANDOFF" if handoff_needed else "DIRECT_REPLY",
-        "customer_need": "Needs a professional colleague to verify and continue handling" if handoff_needed else "Needs a natural first-turn response",
-        "answer_goal": "Acknowledge the risk/dispute and arrange professional assistance" if handoff_needed else "Acknowledge the customer's current question and let the final reply model answer it naturally",
+        "type": "human_request",
+        "subtype": "planner_unavailable_or_guardrail",
+        "policy_hint": "HUMAN_HANDOFF_PROFESSIONAL_ASSIST",
+        "scene": "S7_dealed_active",
+        "subflow": "HUMAN_HANDOFF",
+        "customer_need": content[:120] or "Needs a professional colleague to continue handling",
+        "answer_goal": "Acknowledge the customer's current message and arrange professional assistance without making up facts",
         "priority": 1,
         "known_info": [],
         "missing_info": [],
         "must_answer": ["Current user question"],
-        "must_avoid": ["Made-up facts", "Guaranteed results"],
+        "must_avoid": ["Made-up facts", "Guaranteed results", "Code-side business judgment"],
         "should_ask": False,
-        "tools": (
-            [{"name": "professional_assist", "purpose": "Risk or dispute requires professional follow-up"}]
-            if handoff_needed
-            else [{"name": "no_tool", "purpose": "This turn can be answered without external facts"}]
-        ),
+        "tools": [{"name": "professional_assist", "purpose": "Planner was unavailable or guardrail required professional follow-up"}],
     }
     return build_planner_plan_v2(
         state,
@@ -452,11 +447,11 @@ def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
             "reply_strategy": {
                 "tone": "Natural, concise, like a real customer-service rep named \u5c0f\u8d1d",
                 "must_answer": ["Current user question"],
-                "can_push": "" if handoff_needed else "Use a light next-step push only if it helps the conversation",
+                "can_push": "",
                 "must_avoid": ["Made-up facts", "Guaranteed results", "Internal process exposure"],
                 "max_questions": 0,
             },
-            "handoff": {"needed": handoff_needed, "reason": "Hit complaint, refund, severe risk, or real-order verification boundary" if handoff_needed else ""},
+            "handoff": {"needed": True, "reason": "Planner unavailable or hard guardrail requires professional assistance"},
             "memory_update_hint": {},
         },
     )
@@ -639,32 +634,6 @@ def _clean_str_list(value: Any) -> list[str]:
             output.append(text[:180])
     return output
 
-
-def _has_hard_handoff_signal(content: str) -> bool:
-    text = content.lower()
-    hard_terms = (
-        "\u6295\u8bc9",
-        "\u9000\u6b3e",
-        "\u7ef4\u6743",
-        "\u62a5\u8b66",
-        "\u8d77\u8bc9",
-        "\u66dd\u5149",
-        "\u6d41\u8113",
-        "\u611f\u67d3",
-        "\u9ad8\u70e7",
-        "\u81ea\u6740",
-        "\u81ea\u6b8b",
-        "\u5b55\u5987",
-        "\u6000\u5b55",
-        "\u54fa\u4e73\u671f",
-        "\u672a\u6210\u5e74",
-        "\u7cd6\u5c3f\u75c5",
-        "\u9ad8\u8840\u538b",
-        "\u5904\u65b9",
-        "\u75c5\u5386",
-        "\u62a5\u544a",
-    )
-    return any(term in text for term in hard_terms)
 
 def _message_type(state: AgentState) -> str:
     image_info = state.get("image_info") or {}
