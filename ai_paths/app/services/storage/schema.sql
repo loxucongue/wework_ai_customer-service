@@ -89,21 +89,3 @@ CREATE TABLE IF NOT EXISTS history_events (
 CREATE INDEX IF NOT EXISTS idx_history_events_customer_id ON history_events(customer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_history_events_type ON history_events(event_type);
 
-CREATE TABLE IF NOT EXISTS business_strategy_rules (
-    id TEXT PRIMARY KEY,
-    category TEXT NOT NULL,
-    subtype TEXT NOT NULL DEFAULT '',
-    title TEXT NOT NULL DEFAULT '',
-    trigger_examples TEXT NOT NULL DEFAULT '[]',
-    decision_goal TEXT NOT NULL DEFAULT '',
-    answer_goal TEXT NOT NULL DEFAULT '',
-    tool_guidance TEXT NOT NULL DEFAULT '[]',
-    suggested_moves TEXT NOT NULL DEFAULT '[]',
-    forbidden_moves TEXT NOT NULL DEFAULT '[]',
-    handoff_policy TEXT NOT NULL DEFAULT '',
-    priority INTEGER NOT NULL DEFAULT 50,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_business_strategy_rules_category ON business_strategy_rules(category, enabled, priority);
