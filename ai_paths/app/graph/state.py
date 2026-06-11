@@ -52,6 +52,7 @@ class AgentState(TypedDict, total=False):
     primary_task: dict[str, Any]
     secondary_tasks: list[dict[str, Any]]
     required_tools: list[dict[str, Any]]
+    tool_policy_violations: list[dict[str, Any]]
     reply_strategy: dict[str, Any]
     handoff: dict[str, Any]
     memory_update_hint: dict[str, Any]

@@ -34,6 +34,7 @@ def create_planner_brain_node(
                         "output": {
                             "primary_task": plan.get("primary_task", {}).get("type", ""),
                             "required_tools": len(plan.get("required_tools", [])),
+                            "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
                         },
                     }
                 elif model_client and model_client.available:
@@ -46,6 +47,7 @@ def create_planner_brain_node(
                         "output": {
                             "primary_task": plan.get("primary_task", {}).get("type", ""),
                             "required_tools": len(plan.get("required_tools", [])),
+                            "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
                         },
                     }
             except Exception as exc:
@@ -63,6 +65,7 @@ def create_planner_brain_node(
                 "primary_task": plan.get("primary_task", {}),
                 "secondary_tasks": plan.get("secondary_tasks", []),
                 "required_tools": plan.get("required_tools", []),
+                "tool_policy_violations": plan.get("tool_policy_violations", []),
                 "reply_strategy": plan.get("reply_strategy", {}),
                 "handoff": plan.get("handoff", {}),
                 "memory_update_hint": plan.get("memory_update_hint", {}),

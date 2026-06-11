@@ -236,6 +236,21 @@ Apply these overrides before finalizing the plan:
 """.strip()
 
 
+PLANNER_REPAIR_PROMPT = """
+# Planner Repair
+The previous planning object failed structural validation. Rewrite the full planning object using the same schema.
+
+Rules:
+- Do not generate customer-facing copy.
+- Do not invent concrete prices, store addresses, appointment status, case results, qualification claims, or order/refund facts in the plan.
+- If the current task needs real facts, add the explicit tools needed to fetch them.
+- If the task type was wrong, correct the task type instead of forcing tools onto the wrong task.
+- no_tool is only valid when no external fact is needed.
+- Keep the answer goal focused on the current user turn.
+- Return valid JSON only.
+""".strip()
+
+
 def planner_v2_model_tier(state: AgentState) -> str:
     content = str(state.get("normalized_content") or "").strip()
     has_image = bool((state.get("image_info") or {}).get("has_image"))
@@ -276,6 +291,35 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
     ]
 
 
+def planner_v2_repair_messages_for_model(
+    state: AgentState,
+    *,
+    original_plan: dict[str, Any],
+    violations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    payload = {
+        "current_message": state.get("normalized_content") or "",
+        "message_type": _message_type(state),
+        "conversation_history": (state.get("conversation_history") or [])[-10:],
+        "image_info": state.get("image_info") or {},
+        "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
+        "customer_profile": state.get("customer_profile") or {},
+        "customer_basic_info": state.get("customer_basic_info") or {},
+        "history_events": (state.get("history_events") or [])[-8:],
+        "appointment_cache": state.get("appointment_cache") or {},
+        "customer_context": _compact_customer_context(state.get("customer_context") or {}),
+        "original_plan": original_plan,
+        "tool_policy_violations": violations,
+    }
+    return [
+        {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
+        {"role": "system", "content": BUSINESS_STRATEGY_PROMPT},
+        {"role": "system", "content": PLANNER_REPAIR_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
+    ]
+
+
 async def run_planner_brain_v2(
     state: AgentState,
     model_client: ModelClient,
@@ -283,6 +327,36 @@ async def run_planner_brain_v2(
     tier = planner_v2_model_tier(state)
     payload = await model_client.chat_json(planner_v2_messages_for_model(state), tier=tier, temperature=0.1)
     plan = build_planner_plan_v2(state, payload)
+    initial_usage = model_usage_snapshot(model_client)
+    nested_calls: list[dict[str, Any]] = []
+    violations = plan.get("tool_policy_violations", [])
+    if violations:
+        repair_call: dict[str, Any] = {
+            "name": "planner_brain_repair",
+            "input": {"tier": tier, "violations": violations},
+        }
+        try:
+            repaired_payload = await model_client.chat_json(
+                planner_v2_repair_messages_for_model(
+                    state,
+                    original_plan=plan,
+                    violations=violations,
+                ),
+                tier=tier,
+                temperature=0.0,
+            )
+            repaired_plan = build_planner_plan_v2(state, repaired_payload)
+            plan = repaired_plan
+            repair_call["output"] = {
+                "primary_task": plan.get("primary_task", {}).get("type", ""),
+                "required_tools": len(plan.get("required_tools", [])),
+                "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
+            }
+            repair_call["usage"] = model_usage_snapshot(model_client)
+        except Exception as exc:
+            repair_call["error"] = f"{type(exc).__name__}: {exc}"
+            repair_call["usage"] = model_usage_snapshot(model_client)
+        nested_calls.append(repair_call)
     model_call = {
         "name": "planner_brain_v2",
         "input": {"tier": tier},
@@ -290,9 +364,12 @@ async def run_planner_brain_v2(
             "primary_task": plan.get("primary_task", {}).get("type", ""),
             "secondary_tasks": len(plan.get("secondary_tasks", [])),
             "required_tools": len(plan.get("required_tools", [])),
+            "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
         },
-        "usage": model_usage_snapshot(model_client),
+        "usage": initial_usage,
     }
+    if nested_calls:
+        model_call["nested_calls"] = nested_calls
     return plan, model_call
 
 
@@ -304,9 +381,8 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     memory_update_raw = model_payload.get("memory_update_hint") if isinstance(model_payload, dict) else {}
 
     primary_task = _normalize_task(primary_raw, default_priority=1)
-    primary_task = _enforce_task_tool_minimum(primary_task)
     secondary_tasks = [
-        _enforce_task_tool_minimum(_normalize_task(item, default_priority=index + 2))
+        _normalize_task(item, default_priority=index + 2)
         for index, item in enumerate(secondary_raw if isinstance(secondary_raw, list) else [])
         if isinstance(item, dict)
     ]
@@ -319,13 +395,15 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     reply_strategy = _normalize_reply_strategy(reply_strategy_raw, all_tasks)
     handoff = _normalize_handoff(handoff_raw, primary_task, secondary_tasks)
     required_tools = _dedupe_tools([tool for task in all_tasks for tool in task.get("tools", [])])
-    required_tools = _enforce_required_tools(required_tools, all_tasks)
+    required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
+    tool_policy_violations = _tool_policy_violations(all_tasks, required_tools)
     memory_update_hint = _normalize_memory_hint(memory_update_raw)
 
     return {
         "primary_task": primary_task,
         "secondary_tasks": secondary_tasks,
         "required_tools": required_tools,
+        "tool_policy_violations": tool_policy_violations,
         "reply_strategy": reply_strategy,
         "handoff": handoff,
         "memory_update_hint": memory_update_hint,
@@ -380,7 +458,7 @@ def _normalize_task(raw: Any, *, default_priority: int) -> dict[str, Any]:
         priority = int(raw.get("priority", default_priority))
     except (TypeError, ValueError):
         priority = default_priority
-    tools = _normalize_tools(raw.get("tools") or [])
+    tools = _dedupe_tools(_normalize_tools(raw.get("tools") or []))
     return {
         "type": str(raw.get("type") or "").strip(),
         "subtype": str(raw.get("subtype") or "").strip(),
@@ -422,29 +500,9 @@ def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
     return tools
 
 
-def _enforce_task_tool_minimum(task: dict[str, Any]) -> dict[str, Any]:
-    if not task:
-        return {}
-    task_type = str(task.get("type") or "").strip()
-    tools = list(task.get("tools") or [])
-    tools = _dedupe_tools(tools)
-    tools = _with_minimum_tools(task_type, tools)
-    normalized = dict(task)
-    normalized["tools"] = tools or [{"name": "no_tool", "purpose": "This turn can be acknowledged directly"}]
-    return normalized
-
-
-def _enforce_required_tools(required_tools: list[dict[str, Any]], tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    tools = _dedupe_tools(required_tools)
-    for task in tasks:
-        task_type = str(task.get("type") or "").strip()
-        tools = _with_minimum_tools(task_type, tools)
-    return tools or [{"name": "no_tool", "purpose": "This turn can be acknowledged directly"}]
-
-
-def _with_minimum_tools(task_type: str, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    task_type = str(task_type or "").strip()
-    concrete_tools = [tool for tool in tools if str(tool.get("name") or "").strip() != "no_tool"]
+def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[dict[str, Any]]) -> list[dict[str, str]]:
+    concrete_tools = [tool for tool in required_tools if str(tool.get("name") or "").strip() != "no_tool"]
+    violations: list[dict[str, str]] = []
 
     def has_tool(name: str, *, kb_name: str = "") -> bool:
         for tool in concrete_tools:
@@ -455,34 +513,40 @@ def _with_minimum_tools(task_type: str, tools: list[dict[str, Any]]) -> list[dic
             return True
         return False
 
-    def add_tool(name: str, purpose: str, *, kb_name: str = "") -> None:
-        tool: dict[str, Any] = {"name": name, "purpose": purpose}
-        if kb_name:
-            tool["kb_name"] = kb_name
-        concrete_tools.append(tool)
+    for task in tasks:
+        task_type = str(task.get("type") or "").strip()
+        missing: list[str] = []
+        if task_type == "price_inquiry":
+            if not has_tool("kb_search", kb_name="project_price"):
+                missing.append("kb_search(project_price)")
+            if not (has_tool("pricing_db") or has_tool("local_pricing")):
+                missing.append("pricing_db_or_local_pricing")
+        elif task_type == "store_inquiry":
+            if not has_tool("store_lookup"):
+                missing.append("store_lookup")
+        elif task_type == "case_request":
+            if not has_tool("kb_search", kb_name="case_studies"):
+                missing.append("kb_search(case_studies)")
+        elif task_type == "competitor_compare":
+            if not has_tool("kb_search", kb_name="competitor_qa"):
+                missing.append("kb_search(competitor_qa)")
+        elif task_type in {"appointment_status", "appointment_change", "appointment_cancel"}:
+            if not has_tool("appointment_record_query"):
+                missing.append("appointment_record_query")
+        elif task_type == "appointment":
+            if not (has_tool("available_time") or has_tool("appointment_create") or has_tool("appointment_record_query")):
+                missing.append("appointment_fact_tool")
 
-    if task_type == "price_inquiry":
-        if not has_tool("kb_search", kb_name="project_price"):
-            add_tool("kb_search", "Need real price and campaign rules before answering", kb_name="project_price")
-        if not (has_tool("pricing_db") or has_tool("local_pricing")):
-            add_tool("local_pricing", "Need local price table facts before answering")
-    elif task_type == "store_inquiry":
-        if not has_tool("store_lookup"):
-            add_tool("store_lookup", "Need real store facts before answering store/location questions")
-    elif task_type == "case_request":
-        if not has_tool("kb_search", kb_name="case_studies"):
-            add_tool("kb_search", "Need real case facts before answering case/effect-image questions", kb_name="case_studies")
-    elif task_type == "competitor_compare":
-        if not has_tool("kb_search", kb_name="competitor_qa"):
-            add_tool("kb_search", "Need real competitor-response guidance before answering comparison questions", kb_name="competitor_qa")
-    elif task_type in {"appointment_status", "appointment_change", "appointment_cancel"}:
-        if not has_tool("appointment_record_query"):
-            add_tool("appointment_record_query", "Need real appointment facts before answering appointment status/change/cancel questions")
-    elif task_type == "appointment":
-        if not (has_tool("available_time") or has_tool("appointment_create") or has_tool("appointment_record_query")):
-            add_tool("available_time", "Need real availability before confirming an appointment")
-
-    return _dedupe_tools(concrete_tools) if concrete_tools else tools
+        if missing:
+            violations.append(
+                {
+                    "task_type": task_type,
+                    "subtype": str(task.get("subtype") or "").strip(),
+                    "missing": ", ".join(missing),
+                    "note": "Planner did not request the fact tools required by its own task type; code did not auto-add them.",
+                }
+            )
+    return violations
 
 
 def _normalize_reply_strategy(raw: Any, tasks: list[dict[str, Any]]) -> dict[str, Any]:
