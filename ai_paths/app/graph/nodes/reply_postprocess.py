@@ -15,6 +15,10 @@ def postprocess_reply_messages(
     state: AgentState,
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    state["postprocess_changed"] = False
+    state["postprocess_reasons"] = []
+    original_messages = [dict(message) for message in messages if isinstance(message, dict)]
+    reasons: list[str] = []
     task_types = {
         str(view.get("type") or "").strip()
         for view in planner_task_views(state)
@@ -40,17 +44,23 @@ def postprocess_reply_messages(
             content = content.strip()
             normalized = re.sub(r"\s+", "", content)
             if not normalized or normalized in seen_text:
+                reasons.append("dedupe_or_limit")
                 continue
             seen_text.add(normalized)
 
         payload: Any = {"text": content} if msg_type == "text" else content
         cleaned.append({"type": msg_type, "order": len(cleaned) + 1, "content": payload})
         if len(cleaned) >= 2:
+            if len(messages) > len(cleaned):
+                reasons.append("dedupe_or_limit")
             break
 
     if not cleaned:
+        state["postprocess_changed"] = bool(original_messages)
+        state["postprocess_reasons"] = ["all_messages_removed"] if original_messages else []
         return []
 
+    before_sensitive = _message_fingerprint(cleaned)
     cleaned = reply_filters.sanitize_sensitive_reply_content(
         cleaned,
         task_types=task_types,
@@ -58,19 +68,34 @@ def postprocess_reply_messages(
         conversation_history=conversation_history,
         contextual_price_project=contextual_price_project(state),
     )
+    if _message_fingerprint(cleaned) != before_sensitive:
+        reasons.append("sensitive_sanitized")
+
+    before_visible = _message_fingerprint(cleaned)
     cleaned = reply_filters.sanitize_customer_visible_messages(cleaned)
+    if _message_fingerprint(cleaned) != before_visible:
+        reasons.append("customer_visible_sanitized")
+
+    before_assets = _message_fingerprint(cleaned)
     cleaned = reply_filters.attach_asset_images(
         cleaned,
-        intents=task_types,
+        task_types=task_types,
         fact_envelope=state.get("fact_envelope", {}) or {},
     )
+    if _message_fingerprint(cleaned) != before_assets:
+        reasons.append("asset_attached_or_adjusted")
     cleaned = renumber_messages(cleaned)
 
     handoff_message = _handoff_message_for_state(state)
     if handoff_message:
         cleaned.append({"type": "human_handoff", "order": len(cleaned) + 1, "content": handoff_message})
+        reasons.append("handoff_appended")
 
-    return renumber_messages(cleaned)
+    cleaned = renumber_messages(cleaned)
+    changed = _message_fingerprint(cleaned) != _message_fingerprint(original_messages)
+    state["postprocess_changed"] = changed
+    state["postprocess_reasons"] = _unique_reasons(reasons) if changed else []
+    return cleaned
 
 
 def _handoff_message_for_state(state: AgentState) -> dict[str, Any] | None:
@@ -79,3 +104,29 @@ def _handoff_message_for_state(state: AgentState) -> dict[str, Any] | None:
         return None
     reason = str(handoff.get("reason") or "").strip() or "当前问题需要专业同事继续协助核对"
     return {"handoff_reason": reason}
+
+
+def _message_fingerprint(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    fingerprint: list[tuple[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(message.get("type") or "")
+        content = message.get("content")
+        if isinstance(content, dict):
+            text = str(content.get("text") or content.get("url") or content.get("handoff_reason") or "").strip()
+        else:
+            text = str(content or "").strip()
+        fingerprint.append((message_type, text))
+    return fingerprint
+
+
+def _unique_reasons(reasons: list[str]) -> list[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        if not reason or reason in seen:
+            continue
+        seen.add(reason)
+        ordered.append(reason)
+    return ordered

@@ -130,6 +130,10 @@ class ChatRuntime:
                 "model_usage": model_usage["calls"],
                 "token_usage": model_usage["summary"],
                 "tool_calls": collect_tool_calls(final_state.get("trace", [])),
+                "planner_source": final_state.get("planner_source", ""),
+                "reply_source": final_state.get("reply_source", ""),
+                "postprocess_changed": bool(final_state.get("postprocess_changed")),
+                "postprocess_reasons": final_state.get("postprocess_reasons", []),
                 "conversation_id": conversation_id,
             },
         )

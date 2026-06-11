@@ -18,7 +18,7 @@ from app.services.trace_logger import TraceLogger
 
 def create_hard_guardrails_node(*, trace_logger: TraceLogger) -> Callable[[AgentState], Any]:
     async def hard_guardrails(state: AgentState) -> dict[str, Any]:
-        content = state.get("normalized_content") or ""
+        content = str(state.get("normalized_content") or "")
         with trace_logger.node(state, "hard_guardrails", {"content": content}) as span:
             hit_terms = [word for word in HUMAN_KEYWORDS if word in content]
             if is_identity_question(content):
@@ -27,10 +27,9 @@ def create_hard_guardrails_node(*, trace_logger: TraceLogger) -> Callable[[Agent
                 hit_terms.append("未成年")
             hit_terms.extend(severe_after_sales_terms(content))
             hit_terms.extend(complaint_terms(content))
-            if has_effect_dispute(content):
+            if has_effect_dispute(content) or is_image_following_complaint(state):
                 hit_terms.append("效果纠纷")
-            if is_image_following_complaint(state):
-                hit_terms.append("效果纠纷")
+
             result = {
                 "blocked": bool(hit_terms),
                 "terms": dedupe_strings(hit_terms),
@@ -39,6 +38,7 @@ def create_hard_guardrails_node(*, trace_logger: TraceLogger) -> Callable[[Agent
             output: dict[str, Any] = {"guardrail_result": result, "trace": state.get("trace", [])}
             if result["blocked"]:
                 output.update(_guardrail_handoff_payload(result["terms"], content))
+                output["planner_source"] = "guardrail"
             span["output_snapshot"] = output
             return output
 
@@ -60,7 +60,7 @@ def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]
         "secondary_tasks": [],
         "required_tools": [],
         "reply_strategy": {
-            "must_answer": ["先承接客户当前问题，不直接给出风险判断结论"],
+            "must_answer": ["先承接客户当前问题，不直接给出高风险判断结论"],
             "can_push": [],
             "must_avoid": ["不要继续一般业务推荐，不要编造事实结论"],
             "tone": "稳重、简洁、像真人客服",
@@ -98,7 +98,7 @@ def has_minor_signal(content: str) -> bool:
 
 
 def is_image_following_complaint(state: AgentState) -> bool:
-    content = (state.get("normalized_content") or "").strip()
+    content = str((state.get("normalized_content") or "")).strip()
     image_info = state.get("image_info") or {}
     if not image_info.get("has_image") and content != "[图片]":
         return False

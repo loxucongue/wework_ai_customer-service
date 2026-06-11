@@ -102,7 +102,7 @@ Hard tool requirements:
   - specific availability or whether a given time can be booked
 - When the user asks direct factual questions such as:
   - "多少钱/价格/199/268/308/定金/尾款/是不是一次费用/会不会乱收费"
-  - "店在哪里/有没有某城市/离某地近吗/几点营业/有没有停车"
+  - "店在哪里/有没有某个城市/离某地近吗/几点营业/有没有停车"
   - "这个案例是真的吗/做了几次/效果图能不能看"
   the first reply depends on real facts, so you must request the corresponding fact tool and must not leave the turn as no_tool.
 - If the user asks "能不能做/适合什么方向/怎么操作/多久恢复/会不会伤皮肤" and no real fact tool is required,
@@ -229,9 +229,9 @@ def planner_v2_model_tier(state: AgentState) -> str:
         "您好",
         "在吗",
         "有人吗",
+        "哈喽",
+        "嗨",
         "喂",
-        "嗯",
-        "哦",
         "好的",
         "可以",
     }

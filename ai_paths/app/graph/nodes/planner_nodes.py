@@ -64,6 +64,11 @@ def create_planner_brain_node(
                 "reply_strategy": plan.get("reply_strategy", {}),
                 "handoff": plan.get("handoff", {}),
                 "memory_update_hint": plan.get("memory_update_hint", {}),
+                "planner_source": (
+                    "guardrail"
+                    if (state.get("guardrail_result") or {}).get("blocked")
+                    else ("llm" if model_client and model_client.available else "fallback")
+                ),
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output

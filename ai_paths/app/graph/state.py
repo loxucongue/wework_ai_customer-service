@@ -58,6 +58,10 @@ class AgentState(TypedDict, total=False):
     tool_results: dict[str, Any]
     fact_envelope: dict[str, Any]
     reply_messages: list[dict[str, Any]]
+    planner_source: str
+    reply_source: str
+    postprocess_changed: bool
+    postprocess_reasons: list[str]
     profile_update: dict[str, Any]
     event_updates: list[dict[str, Any]]
     saved_memory: dict[str, Any]

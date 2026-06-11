@@ -31,6 +31,7 @@ def create_synthesize_reply_node(
             model_call: dict[str, Any] | None = None
             errors = list(state.get("errors", []))
             messages: list[dict[str, Any]] = []
+            reply_source = "main_model"
 
             try:
                 if not (model_client and model_client.available and should_use_model_reply(state)):
@@ -57,6 +58,7 @@ def create_synthesize_reply_node(
                         if repaired_messages and not model_reply_unsafe(state, repaired_messages):
                             messages = repaired_messages
                             model_call["fallback"] = "repaired_model_reply"
+                            reply_source = "repair_model"
                         else:
                             messages = []
                             repair_call["error"] = "repaired_reply_still_unsafe"
@@ -89,10 +91,18 @@ def create_synthesize_reply_node(
 
             if not messages:
                 messages = _minimal_handoff_messages(state)
+                reply_source = "minimal_handoff"
 
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
-            output = {"reply_messages": messages, "errors": errors, "trace": state.get("trace", [])}
+            output = {
+                "reply_messages": messages,
+                "reply_source": reply_source,
+                "postprocess_changed": bool(state.get("postprocess_changed")),
+                "postprocess_reasons": state.get("postprocess_reasons", []),
+                "errors": errors,
+                "trace": state.get("trace", []),
+            }
             span["output_snapshot"] = output
             return output
 

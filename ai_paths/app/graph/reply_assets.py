@@ -10,11 +10,11 @@ from app.graph.reply_internal_sanitizer import renumber as _renumber
 def attach_asset_images(
     messages: list[dict[str, Any]],
     *,
-    intents: set[str],
+    task_types: set[str],
     fact_envelope: dict[str, Any],
 ) -> list[dict[str, Any]]:
     asset_key = ""
-    if "case_request" in intents:
+    if "case_request" in task_types:
         asset_key = "case_studies"
     if not asset_key:
         return _renumber(messages)
