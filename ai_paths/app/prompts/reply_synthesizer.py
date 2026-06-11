@@ -121,6 +121,7 @@ REPAIR_SYSTEM_PROMPT = """
 5. 如果已经包含 human_handoff，保留它
 6. 普通回复尽量压到 40-90 个汉字；复杂回复最多 2 条，总体尽量不超过 180 个汉字
 7. 第 1 条回答当前问题，第 2 条只保留一个轻推进或一个必要问题
+8. 如果 handoff.needed 为 true，或草稿里已经有 human_handoff，必须先给 1 条客户可见 text 承接，再保留 human_handoff
 
 # Do Not
 - 不改变业务结论
@@ -129,12 +130,29 @@ REPAIR_SYSTEM_PROMPT = """
 - 不新增强推预约话术
 
 # Output Schema
+普通回复：
 {
   "reply_messages": [
     {
       "type": "text",
       "order": 1,
       "content": {"text": "..."}
+    }
+  ]
+}
+
+需要专业同事协助时：
+{
+  "reply_messages": [
+    {
+      "type": "text",
+      "order": 1,
+      "content": {"text": "..."}
+    },
+    {
+      "type": "human_handoff",
+      "order": 2,
+      "content": {"handoff_reason": "..."}
     }
   ]
 }

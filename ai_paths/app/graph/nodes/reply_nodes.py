@@ -107,8 +107,9 @@ def create_synthesize_reply_node(
                     errors.append({"node": "synthesize_reply", "message": "final_reply_failed_quality_gate"})
 
             if not messages:
-                messages = _minimal_handoff_messages(state)
-                reply_source = "minimal_handoff"
+                errors.append({"node": "synthesize_reply", "message": "customer_visible_reply_unavailable"})
+                messages = _metadata_only_handoff_messages(state)
+                reply_source = "metadata_only_handoff"
 
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
@@ -159,7 +160,7 @@ async def _try_repair_reply(
     return [], repair_call, False
 
 
-def _minimal_handoff_messages(state: AgentState) -> list[dict[str, Any]]:
+def _metadata_only_handoff_messages(state: AgentState) -> list[dict[str, Any]]:
     handoff = planner_handoff(state)
     reason = str(handoff.get("reason") or "").strip() or "当前问题需要进一步核对"
     return [{"type": "human_handoff", "order": 1, "content": {"handoff_reason": reason}}]
