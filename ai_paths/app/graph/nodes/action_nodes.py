@@ -28,8 +28,6 @@ def create_execute_actions_node(
     store_service: StoreService | None,
     appointment_opening_service: AppointmentOpeningService | None,
     appointment_query_from_state: Callable[[str, dict[str, Any], AgentState], dict[str, Any]],
-    has_appointment_change_or_cancel: Callable[[str], bool],
-    has_appointment_record_query: Callable[[str], bool],
     pricing_sql_from_state: Callable[[AgentState], str],
     store_query_from_state: Callable[[str, AgentState], str],
 ) -> Callable[[AgentState], Any]:
@@ -104,81 +102,81 @@ def create_execute_actions_node(
                         }
                     )
 
-            if _needs_appointment_tools(required_tools) and store_service:
+            if _needs_appointment_record_query(required_tools):
+                tool_results["appointment_record_query"] = {"handled_by_cache": True}
+                tool_calls.append(
+                    {
+                        "name": "appointment_record_query",
+                        "input": {"query": content, "planned": True},
+                        "output": {"handled_by_cache": True},
+                    }
+                )
+
+            if _needs_appointment_lookup(required_tools) and store_service:
                 try:
-                    if has_appointment_record_query(content) or has_appointment_change_or_cancel(content):
-                        tool_results["appointment_record_query"] = {"handled_by_cache": True}
+                    store_query = store_query_from_state(content, state)
+                    lookup = tool_results.get("store_lookup") or store_service.search(
+                        store_query,
+                        customer_context=state.get("customer_context") or {},
+                    )
+                    if "store_lookup" not in tool_results:
+                        tool_results["store_lookup"] = lookup
                         tool_calls.append(
                             {
-                                "name": "appointment_record_query",
-                                "input": {"query": content},
-                                "output": {"handled_by_cache": True},
+                                "name": "store_lookup",
+                                "input": {"query": store_query, "raw_query": content},
+                                "output": lookup,
                             }
                         )
-                    else:
-                        store_query = store_query_from_state(content, state)
-                        lookup = tool_results.get("store_lookup") or store_service.search(
-                            store_query,
-                            customer_context=state.get("customer_context") or {},
-                        )
-                        if "store_lookup" not in tool_results:
-                            tool_results["store_lookup"] = lookup
+                    appointment_query = appointment_query_from_state(content, lookup, state)
+                    if _needs_available_time(required_tools):
+                        if appointment_query.get("store_id") and appointment_query.get("date"):
+                            available = store_service.available_time(
+                                store_id=str(appointment_query["store_id"]),
+                                date=str(appointment_query["date"]),
+                                customer_context=state.get("customer_context") or {},
+                            )
+                            available["store_name"] = appointment_query.get("store_name", "")
+                            available["date"] = appointment_query.get("date", "")
+                            tool_results["available_time"] = available
                             tool_calls.append(
                                 {
-                                    "name": "store_lookup",
-                                    "input": {"query": store_query, "raw_query": content},
-                                    "output": lookup,
+                                    "name": "available_time",
+                                    "input": appointment_query,
+                                    "output": available,
                                 }
                             )
-                        appointment_query = appointment_query_from_state(content, lookup, state)
-                        if _needs_available_time(required_tools):
-                            if appointment_query.get("store_id") and appointment_query.get("date"):
-                                available = store_service.available_time(
-                                    store_id=str(appointment_query["store_id"]),
-                                    date=str(appointment_query["date"]),
-                                    customer_context=state.get("customer_context") or {},
-                                )
-                                available["store_name"] = appointment_query.get("store_name", "")
-                                available["date"] = appointment_query.get("date", "")
-                                tool_results["available_time"] = available
-                                tool_calls.append(
-                                    {
-                                        "name": "available_time",
-                                        "input": appointment_query,
-                                        "output": available,
-                                    }
-                                )
-                            else:
-                                tool_results["available_time"] = {"slots": {}, "missing": appointment_query.get("missing", [])}
-                        if _needs_appointment_create(required_tools) and appointment_opening_service:
-                            opening = appointment_opening_service.maybe_open(
-                                content=content,
-                                state=state,
-                                appointment_query=appointment_query,
-                                available_time=tool_results.get("available_time")
-                                if isinstance(tool_results.get("available_time"), dict)
-                                else {},
+                        else:
+                            tool_results["available_time"] = {"slots": {}, "missing": appointment_query.get("missing", [])}
+                    if _needs_appointment_create(required_tools) and appointment_opening_service:
+                        opening = appointment_opening_service.maybe_open(
+                            content=content,
+                            state=state,
+                            appointment_query=appointment_query,
+                            available_time=tool_results.get("available_time")
+                            if isinstance(tool_results.get("available_time"), dict)
+                            else {},
+                        )
+                        if opening.get("status") != "missing_info":
+                            tool_results["appointment_opening"] = opening
+                            tool_calls.append(
+                                {
+                                    "name": "appointment_create",
+                                    "input": {
+                                        "store_id": appointment_query.get("store_id"),
+                                        "store_name": appointment_query.get("store_name"),
+                                        "date": appointment_query.get("date"),
+                                        "confirmed_by_customer": opening.get("status")
+                                        not in {"needs_customer_confirmation", "missing_info"},
+                                    },
+                                    "output": {
+                                        "status": opening.get("status"),
+                                        "order_id": opening.get("order_id"),
+                                        "missing": opening.get("missing"),
+                                        "error": opening.get("error"),
+                                    },
+                                }
                             )
-                            if opening.get("status") != "missing_info":
-                                tool_results["appointment_opening"] = opening
-                                tool_calls.append(
-                                    {
-                                        "name": "appointment_create",
-                                        "input": {
-                                            "store_id": appointment_query.get("store_id"),
-                                            "store_name": appointment_query.get("store_name"),
-                                            "date": appointment_query.get("date"),
-                                            "confirmed_by_customer": opening.get("status")
-                                            not in {"needs_customer_confirmation", "missing_info"},
-                                        },
-                                        "output": {
-                                            "status": opening.get("status"),
-                                            "order_id": opening.get("order_id"),
-                                            "missing": opening.get("missing"),
-                                            "error": opening.get("error"),
-                                        },
-                                    }
-                                )
                 except Exception as exc:
                     tool_results["available_time"] = {"slots": {}, "error": f"{type(exc).__name__}: {exc}"}
                     tool_calls.append(
@@ -328,9 +326,15 @@ def _needs_store_lookup(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "store_lookup" for item in required_tools if isinstance(item, dict))
 
 
-def _needs_appointment_tools(required_tools: list[dict[str, Any]]) -> bool:
+def _needs_appointment_record_query(required_tools: list[dict[str, Any]]) -> bool:
+    return any(
+        str(item.get("name") or "") == "appointment_record_query" for item in required_tools if isinstance(item, dict)
+    )
+
+
+def _needs_appointment_lookup(required_tools: list[dict[str, Any]]) -> bool:
     names = {str(item.get("name") or "") for item in required_tools if isinstance(item, dict)}
-    return bool(names & {"available_time", "appointment_record_query", "appointment_create"})
+    return bool(names & {"available_time", "appointment_create"})
 
 
 def _needs_available_time(required_tools: list[dict[str, Any]]) -> bool:

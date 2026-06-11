@@ -7,10 +7,6 @@ from app.graph.nodes.context_nodes import create_load_customer_context_node, cre
 from app.graph.nodes.guardrail_nodes import create_hard_guardrails_node
 from app.graph.nodes.image_info import known_visible_concerns_from_state as _known_visible_concerns_from_state
 from app.graph.nodes.input_nodes import create_image_understanding_node, create_normalize_input_node
-from app.graph.nodes.intent_signals import (
-    has_appointment_change_or_cancel as _has_appointment_change_or_cancel,
-    has_appointment_record_query as _has_appointment_record_query,
-)
 from app.graph.nodes.planner_nodes import create_planner_brain_node
 from app.graph.nodes.policy_nodes import create_scene_guidance_node
 from app.graph.nodes.pricing_context import (
@@ -97,8 +93,6 @@ def build_graph(
             state,
             _extract_city,
         ),
-        has_appointment_change_or_cancel=_has_appointment_change_or_cancel,
-        has_appointment_record_query=_has_appointment_record_query,
         pricing_sql_from_state=_pricing_sql_from_state,
         store_query_from_state=_store_query_from_state,
     )
