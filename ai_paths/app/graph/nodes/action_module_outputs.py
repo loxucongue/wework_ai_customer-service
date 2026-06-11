@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+import html
+import re
 from typing import Any
 
 from app.graph.state import AgentState
@@ -135,15 +137,21 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         items = value.get("items") or []
         if items:
             target = "case_facts" if key == "case_studies" else "knowledge_facts"
-            structured_facts[target].extend(
-                {
+            normalized_items: list[dict[str, str]] = []
+            for item in items[:5]:
+                if not isinstance(item, dict):
+                    continue
+                content = str(item.get("content") or item.get("output") or item)[:500]
+                fact = {
                     "source": key,
                     "title": str(item.get("title") or item.get("documentId") or "")[:120],
-                    "content": str(item.get("content") or item.get("output") or item)[:500],
+                    "content": content,
                 }
-                for item in items[:5]
-                if isinstance(item, dict)
-            )
+                image_url = _image_url_from_content(content)
+                if image_url:
+                    fact["image_url"] = image_url
+                normalized_items.append(fact)
+            structured_facts[target].extend(normalized_items)
             facts.append(f"{key}: kb_items={len(items)}")
 
     return {
@@ -163,3 +171,20 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "suggested_next_step": "",
         "confidence": 0.9,
     }
+
+
+def _image_url_from_content(content: str) -> str:
+    if not content:
+        return ""
+    match = re.search(r'<img\s+[^>]*src=["\']([^"\']+)["\']', content, flags=re.IGNORECASE)
+    if match:
+        return html.unescape(match.group(1)).strip()
+
+    stripped = content.strip()
+    if stripped.startswith("http://") or stripped.startswith("https://"):
+        return html.unescape(stripped.split()[0]).strip()
+
+    match = re.search(r"https?://[^\s<>'\")]+", content)
+    if match:
+        return html.unescape(match.group(0)).strip()
+    return ""

@@ -76,14 +76,6 @@ def postprocess_reply_messages(
     if _message_fingerprint(cleaned) != before_visible:
         reasons.append("customer_visible_sanitized")
 
-    before_assets = _message_fingerprint(cleaned)
-    cleaned = reply_filters.attach_asset_images(
-        cleaned,
-        task_types=task_types,
-        fact_envelope=state.get("fact_envelope", {}) or {},
-    )
-    if _message_fingerprint(cleaned) != before_assets:
-        reasons.append("asset_attached_or_adjusted")
     cleaned = renumber_messages(cleaned)
 
     handoff_message = _handoff_message_for_state(state)

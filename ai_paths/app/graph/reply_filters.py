@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.graph.reply_assets import attach_asset_images
 from app.graph.reply_compliance_filters import (
     allows_specific_project_names,
     has_sensitive_external_terms,
@@ -64,7 +63,6 @@ def sanitize_customer_visible_messages(messages: list[dict[str, Any]]) -> list[d
 
 
 __all__ = [
-    "attach_asset_images",
     "has_internal_reply_leak",
     "sanitize_customer_visible_messages",
     "sanitize_sensitive_reply_content",
