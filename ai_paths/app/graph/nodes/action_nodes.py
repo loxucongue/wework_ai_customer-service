@@ -13,6 +13,7 @@ from app.graph.planner.runtime_plan import (
     planner_tasks,
 )
 from app.graph.state import AgentState
+from app.graph.nodes.pricing_context import pricing_sql_for_project
 from app.services.appointment_opening_service import AppointmentOpeningService
 from app.services.coze_client import CozeClient
 from app.services.pricing_repository import LocalPricingRepository
@@ -28,7 +29,6 @@ def create_execute_actions_node(
     store_service: StoreService | None,
     appointment_opening_service: AppointmentOpeningService | None,
     appointment_query_from_state: Callable[[str, dict[str, Any], AgentState], dict[str, Any]],
-    pricing_sql_from_state: Callable[[AgentState], str],
     store_query_from_state: Callable[[str, AgentState], str],
 ) -> Callable[[AgentState], Any]:
     async def execute_actions(state: AgentState) -> dict[str, Any]:
@@ -57,7 +57,6 @@ def create_execute_actions_node(
                     tool_results=tool_results,
                     tool_calls=tool_calls,
                     tool_tasks=tool_tasks,
-                    pricing_sql_from_state=pricing_sql_from_state,
                 )
 
             if _needs_professional_assist(required_tools) or handoff.get("needed"):
@@ -240,7 +239,6 @@ def _queue_planned_tool_tasks(
     tool_results: dict[str, Any],
     tool_calls: list[dict[str, Any]],
     tool_tasks: list[ActionToolTask],
-    pricing_sql_from_state: Callable[[AgentState], str],
 ) -> None:
     name = str(tool.get("name") or "").strip()
     if name == "no_tool":
@@ -283,10 +281,29 @@ def _queue_planned_tool_tasks(
         tool_tasks.append((kb_name, call, coze_client.search_kb(kb_name, query)))
         return
     if name == "pricing_db":
-        sql = pricing_sql_from_state(state)
-        if not sql:
+        query = str(tool.get("query") or "").strip()
+        if not query:
+            _record_tool_argument_error(
+                tool_results=tool_results,
+                tool_calls=tool_calls,
+                key="pricing_db",
+                error="missing_planner_query",
+                tool_input={
+                    "name": "coze_pricing_db",
+                    "query": "",
+                    "planned": True,
+                    "purpose": str(tool.get("purpose") or "").strip(),
+                },
+            )
             return
-        tool_tasks.append(("pricing_db", {"name": "coze_pricing_db", "input": {"sql": sql}}, coze_client.query_pricing_db(sql)))
+        sql = pricing_sql_for_project(query)
+        tool_tasks.append(
+            (
+                "pricing_db",
+                {"name": "coze_pricing_db", "input": {"query": query, "sql": sql, "planned": True}},
+                coze_client.query_pricing_db(sql),
+            )
+        )
         return
     if name == "local_pricing":
         return

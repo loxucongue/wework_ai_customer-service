@@ -8,7 +8,7 @@ from app.graph.nodes.project_kb_context import (
     project_direction_name_candidates,
     project_slices_from_state,
 )
-from app.graph.nodes.pricing_context import canonical_price_project, extract_project, pricing_sql_for_project
+from app.graph.nodes.pricing_context import canonical_price_project, extract_project
 from app.graph.planner.runtime_plan import planner_project_hints
 from app.graph.state import AgentState
 
@@ -43,7 +43,3 @@ def project_direction_names_from_state(state: AgentState) -> list[str]:
         if title and title not in names:
             names.append(title)
     return dedupe_strings(names)[:8]
-
-
-def pricing_sql_from_state(state: AgentState) -> str:
-    return pricing_sql_for_project(contextual_price_project(state))

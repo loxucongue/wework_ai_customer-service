@@ -32,7 +32,6 @@ from app.graph.nodes.action_nodes import create_execute_actions_node
 from app.graph.runtime_common import compact_memory as _compact_memory, extract_price_digits as _extract_price_digits
 from app.graph.runtime_context import (
     contextual_price_project as _contextual_price_project,
-    pricing_sql_from_state as _pricing_sql_from_state,
     project_direction_names_from_state as _project_direction_names_from_state,
 )
 from app.graph.state import AgentState
@@ -93,7 +92,6 @@ def build_graph(
             state,
             _extract_city,
         ),
-        pricing_sql_from_state=_pricing_sql_from_state,
         store_query_from_state=_store_query_from_state,
     )
 
