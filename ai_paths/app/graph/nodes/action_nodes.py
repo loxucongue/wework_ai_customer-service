@@ -68,6 +68,26 @@ def create_execute_actions_node(
                     safe_query_from_state=safe_query_from_state,
                 )
 
+            if _needs_professional_assist(required_tools) or handoff.get("needed"):
+                assist_result = _professional_assist_result(
+                    state=state,
+                    content=content,
+                    tasks=tasks,
+                    handoff=handoff,
+                    required_tools=required_tools,
+                )
+                tool_results["professional_assist"] = assist_result
+                tool_calls.append(
+                    {
+                        "name": "professional_assist",
+                        "input": {
+                            "planned": _needs_professional_assist(required_tools),
+                            "handoff_needed": bool(handoff.get("needed")),
+                        },
+                        "output": assist_result,
+                    }
+                )
+
             if _needs_store_lookup(required_tools) and store_service:
                 try:
                     store_query = store_query_from_state(content, state)
@@ -297,6 +317,39 @@ def _needs_appointment_create(required_tools: list[dict[str, Any]]) -> bool:
 
 def _needs_local_pricing(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "local_pricing" for item in required_tools if isinstance(item, dict))
+
+
+def _needs_professional_assist(required_tools: list[dict[str, Any]]) -> bool:
+    return any(str(item.get("name") or "") == "professional_assist" for item in required_tools if isinstance(item, dict))
+
+
+def _professional_assist_result(
+    *,
+    state: AgentState,
+    content: str,
+    tasks: list[dict[str, Any]],
+    handoff: dict[str, Any],
+    required_tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    primary = tasks[0] if tasks and isinstance(tasks[0], dict) else {}
+    guardrail = state.get("guardrail_result") if isinstance(state.get("guardrail_result"), dict) else {}
+    planned_reasons = [
+        str(tool.get("purpose") or "").strip()
+        for tool in required_tools
+        if isinstance(tool, dict) and str(tool.get("name") or "") == "professional_assist"
+    ]
+    planned_reasons = [reason for reason in planned_reasons if reason]
+    return {
+        "status": "requested",
+        "reason": str(handoff.get("reason") or primary.get("answer_goal") or primary.get("customer_need") or "").strip(),
+        "task_type": str(primary.get("type") or "").strip(),
+        "subtype": str(primary.get("subtype") or "").strip(),
+        "policy_hint": str(primary.get("policy_hint") or "").strip(),
+        "customer_message": content[:240],
+        "guardrail_terms": [str(item) for item in (guardrail.get("terms") or [])[:8]],
+        "planned_reasons": planned_reasons[:3],
+        "required_internal_action": "professional_colleague_review",
+    }
 
 
 def _planned_local_pricing_query(

@@ -180,7 +180,7 @@ def build_graph(
         "hard_guardrails",
         _route_after_hard_guardrails,
         {
-            "blocked": "synthesize_reply",
+            "blocked": "execute_actions",
             "normal": "load_memory",
         },
     )

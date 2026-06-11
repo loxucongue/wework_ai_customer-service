@@ -152,6 +152,10 @@ def _fact_notes_for_model(
                 notes.append("已有档期事实，可直接回答可约时间。")
                 break
 
+    professional_assist = structured_facts.get("professional_assist") or {}
+    if isinstance(professional_assist, dict) and professional_assist.get("status") == "requested":
+        notes.append("本轮已有专业同事协助事实；客户可见回复应先承接当前诉求，再说明会协助核对。")
+
     return notes[:6]
 
 

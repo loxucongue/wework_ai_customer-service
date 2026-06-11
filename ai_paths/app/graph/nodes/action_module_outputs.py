@@ -19,6 +19,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "case_facts": [],
         "knowledge_facts": [],
         "appointment_facts": [],
+        "professional_assist": {},
         "tool_errors": [],
     }
     unsupported_claims: list[str] = []
@@ -131,6 +132,23 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             facts.append(
                 f"appointment_opening: status={appointment_fact['status']}; "
                 f"order_id={appointment_fact['order_id']}; missing={appointment_fact['missing']}"
+            )
+            continue
+
+        if key == "professional_assist":
+            assist_fact = {
+                "status": str(value.get("status") or ""),
+                "reason": str(value.get("reason") or "")[:240],
+                "task_type": str(value.get("task_type") or ""),
+                "subtype": str(value.get("subtype") or ""),
+                "policy_hint": str(value.get("policy_hint") or ""),
+                "guardrail_terms": [str(item) for item in (value.get("guardrail_terms") or [])[:8]],
+                "required_internal_action": str(value.get("required_internal_action") or ""),
+            }
+            structured_facts["professional_assist"] = assist_fact
+            facts.append(
+                "professional_assist: "
+                f"status={assist_fact['status']}; task_type={assist_fact['task_type']}; policy={assist_fact['policy_hint']}"
             )
             continue
 

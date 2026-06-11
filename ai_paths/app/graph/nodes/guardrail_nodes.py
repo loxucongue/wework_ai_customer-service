@@ -68,7 +68,12 @@ def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]
             **primary_task,
         },
         "secondary_tasks": [],
-        "required_tools": [],
+        "required_tools": [
+            {
+                "name": "professional_assist",
+                "purpose": "Hard guardrail hit; professional colleague must verify and continue handling",
+            }
+        ],
         "reply_strategy": {
             "must_answer": ["先承接客户当前问题，不直接给出高风险判断结论"],
             "can_push": [],
