@@ -37,7 +37,6 @@ def create_execute_actions_node(
     needs_project_price_followup: Callable[[list[dict[str, Any]], dict[str, Any], AgentState], bool],
     pricing_sql_from_state: Callable[[AgentState], str],
     project_price_followup_queries: Callable[[dict[str, Any]], list[str]],
-    safe_query_from_state: Callable[[AgentState, str, str], str],
     store_query_from_state: Callable[[str, AgentState], str],
 ) -> Callable[[AgentState], Any]:
     async def execute_actions(state: AgentState) -> dict[str, Any]:
@@ -61,11 +60,11 @@ def create_execute_actions_node(
             for tool in required_tools:
                 _queue_planned_tool_tasks(
                     tool=tool,
-                    state=state,
                     coze_client=coze_client,
+                    tool_results=tool_results,
+                    tool_calls=tool_calls,
                     tool_tasks=tool_tasks,
                     pricing_sql_from_state=pricing_sql_from_state,
-                    safe_query_from_state=safe_query_from_state,
                 )
 
             if _needs_professional_assist(required_tools) or handoff.get("needed"):
@@ -260,11 +259,11 @@ def create_execute_actions_node(
 def _queue_planned_tool_tasks(
     *,
     tool: dict[str, Any],
-    state: AgentState,
     coze_client: CozeClient,
+    tool_results: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
     tool_tasks: list[ActionToolTask],
     pricing_sql_from_state: Callable[[AgentState], str],
-    safe_query_from_state: Callable[[AgentState, str, str], str],
 ) -> None:
     name = str(tool.get("name") or "").strip()
     if name == "no_tool":
@@ -272,11 +271,29 @@ def _queue_planned_tool_tasks(
     if name == "kb_search":
         kb_name = str(tool.get("kb_name") or "").strip()
         if not kb_name:
+            _record_tool_argument_error(
+                tool_results=tool_results,
+                tool_calls=tool_calls,
+                key="kb_search",
+                error="missing_planner_kb_name",
+                tool_input={"planned": True, "purpose": str(tool.get("purpose") or "").strip()},
+            )
             return
         query = str(tool.get("query") or "").strip()
         if not query:
-            task_type, task_subtype = _default_task_for_kb(kb_name)
-            query = safe_query_from_state(state, task_type, task_subtype)
+            _record_tool_argument_error(
+                tool_results=tool_results,
+                tool_calls=tool_calls,
+                key=kb_name,
+                error="missing_planner_query",
+                tool_input={
+                    "kb_name": kb_name,
+                    "query": "",
+                    "planned": True,
+                    "purpose": str(tool.get("purpose") or "").strip(),
+                },
+            )
+            return
         call = {
             "name": "coze_kb_search",
             "input": {
@@ -296,6 +313,28 @@ def _queue_planned_tool_tasks(
         return
     if name == "local_pricing":
         return
+
+
+def _record_tool_argument_error(
+    *,
+    tool_results: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
+    key: str,
+    error: str,
+    tool_input: dict[str, Any],
+) -> None:
+    tool_results[key] = {
+        "items": [],
+        "error": error,
+        "missing": ["query"] if error == "missing_planner_query" else ["kb_name"],
+    }
+    tool_calls.append(
+        {
+            "name": str(tool_input.get("name") or "coze_kb_search"),
+            "input": tool_input,
+            "error": error,
+        }
+    )
 
 
 def _needs_store_lookup(required_tools: list[dict[str, Any]]) -> bool:
@@ -368,14 +407,3 @@ def _planned_local_pricing_query(
         if query:
             return query
     return canonical_price_project(contextual_price_project(state)) or canonical_price_project(extract_project(content)) or content
-
-
-def _default_task_for_kb(kb_name: str) -> tuple[str, str]:
-    return {
-        "project_qa": ("project_inquiry", "project_direction"),
-        "project_price": ("price_inquiry", "activity_price"),
-        "sales_talk_qa": ("general_consult", "sales_talk"),
-        "case_studies": ("case_request", "case_reference"),
-        "competitor_qa": ("competitor_compare", "competitor_price"),
-        "after_sales_qa": ("after_sales", "after_sales_support"),
-    }.get(kb_name, ("general_consult", "open_consult"))

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from langgraph.graph import END, StateGraph
 
-from app.graph.nodes.action_queries import safe_query_from_state
 from app.graph.nodes.appointment_utils import appointment_query_from_state
 from app.graph.nodes.context_nodes import create_load_customer_context_node, create_load_memory_node
 from app.graph.nodes.guardrail_nodes import create_hard_guardrails_node
@@ -110,15 +109,6 @@ def build_graph(
         needs_project_price_followup=_needs_project_price_followup,
         pricing_sql_from_state=_pricing_sql_from_state,
         project_price_followup_queries=_project_price_followup_queries,
-        safe_query_from_state=lambda state, task_type, task_subtype="": safe_query_from_state(
-            state,
-            task_type,
-            task_subtype=task_subtype,
-            canonical_price_project=_canonical_price_project,
-            contextual_price_project=_contextual_price_project,
-            extract_price_digits=_extract_price_digits,
-            extract_project=_extract_project,
-        ),
         store_query_from_state=_store_query_from_state,
     )
 

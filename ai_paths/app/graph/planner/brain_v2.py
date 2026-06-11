@@ -78,6 +78,9 @@ If you use kb_search, kb_name must be one of:
 - case_studies
 - competitor_qa
 - after_sales_qa
+Every kb_search tool must include a concrete query string. The query should be the customer need,
+project/category hint, visible skin concern, price term, case request, or competitor claim that the
+knowledge base should search. Do not rely on code to invent a query later.
 
 Planning guidance:
 - Improvement direction / what can be done / project explanation: prefer kb_search(project_qa)
@@ -250,11 +253,13 @@ Rules:
 - Never return no_tool for a task listed in tool_policy_violations unless you also change that task type to one that truly needs no facts.
 - Eliminate every violation by either correcting the task type or adding the missing fact tools.
 - Missing tool labels map to exact tool requirements:
-  - kb_search(project_price): {"name":"kb_search","kb_name":"project_price","purpose":"Need real price and campaign rules before answering"}
+  - kb_search(project_price): {"name":"kb_search","kb_name":"project_price","query":"<concrete customer price/project need>","purpose":"Need real price and campaign rules before answering"}
   - pricing_db_or_local_pricing: {"name":"local_pricing","purpose":"Need local price facts before answering"}
   - store_lookup: {"name":"store_lookup","purpose":"Need real store facts before answering"}
-  - kb_search(case_studies): {"name":"kb_search","kb_name":"case_studies","purpose":"Need real case facts before answering"}
-  - kb_search(competitor_qa): {"name":"kb_search","kb_name":"competitor_qa","purpose":"Need competitor response guidance before answering"}
+  - kb_search(case_studies): {"name":"kb_search","kb_name":"case_studies","query":"<concrete case/effect request>","purpose":"Need real case facts before answering"}
+  - kb_search(competitor_qa): {"name":"kb_search","kb_name":"competitor_qa","query":"<concrete competitor claim or price concern>","purpose":"Need competitor response guidance before answering"}
+  - kb_search_missing_query: keep kb_search, but add a concrete query string based on the current user turn and available context.
+  - kb_search_missing_kb_name: either add one allowed kb_name or remove kb_search if no knowledge lookup is needed.
   - appointment_record_query: {"name":"appointment_record_query","purpose":"Need real appointment facts before answering"}
   - appointment_fact_tool: use available_time, appointment_record_query, or appointment_create according to the current customer turn.
 - Keep the answer goal focused on the current user turn.
@@ -509,6 +514,27 @@ def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
 def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[dict[str, Any]]) -> list[dict[str, str]]:
     concrete_tools = [tool for tool in required_tools if str(tool.get("name") or "").strip() != "no_tool"]
     violations: list[dict[str, str]] = []
+
+    for tool in concrete_tools:
+        name = str(tool.get("name") or "").strip()
+        if name != "kb_search":
+            continue
+        kb_name = str(tool.get("kb_name") or "").strip()
+        query = str(tool.get("query") or "").strip()
+        missing_args: list[str] = []
+        if not kb_name:
+            missing_args.append("kb_name")
+        if not query:
+            missing_args.append("query")
+        if missing_args:
+            violations.append(
+                {
+                    "task_type": "tool_argument",
+                    "subtype": "kb_search",
+                    "missing": "kb_search_missing_query" if "query" in missing_args else "kb_search_missing_kb_name",
+                    "note": "Every kb_search must include both kb_name and a concrete query; code will not invent missing search terms.",
+                }
+            )
 
     def has_tool(name: str, *, kb_name: str = "") -> bool:
         for tool in concrete_tools:
