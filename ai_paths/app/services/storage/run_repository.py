@@ -44,6 +44,7 @@ class RunRepositoryMixin:
             "planner_route": planner_public_route(final_state),
             "planner_source": final_state.get("planner_source", ""),
             "policy_id": final_state.get("policy_id", ""),
+            "policy_family_id": final_state.get("policy_family_id", ""),
             "policy_version": final_state.get("policy_version", ""),
             "reply_source": final_state.get("reply_source", ""),
             "postprocess_changed": bool(final_state.get("postprocess_changed")),

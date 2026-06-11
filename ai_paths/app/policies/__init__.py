@@ -1,2 +1,1 @@
-"""Business policy constants and deterministic rules for AI Paths."""
-
+"""Business policy catalog and safety boundaries for AI Paths."""

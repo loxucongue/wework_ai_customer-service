@@ -53,6 +53,9 @@ def tags_from_state(state: dict[str, Any]) -> list[str]:
     policy_id = str(state.get("policy_id") or "").strip()
     if policy_id:
         tags.append(policy_id)
+    policy_family_id = str(state.get("policy_family_id") or "").strip()
+    if policy_family_id:
+        tags.append(policy_family_id)
     for item in planner_task_views(state):
         intent = str(item.get("intent") or "").strip()
         if intent:

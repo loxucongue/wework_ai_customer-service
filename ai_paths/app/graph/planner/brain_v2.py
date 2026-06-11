@@ -124,6 +124,7 @@ Task-to-tool minimum mapping:
 primary_task must include:
 - type
 - subtype
+- policy_hint
 - scene
 - subflow
 - customer_need
@@ -135,6 +136,19 @@ primary_task must include:
 - must_avoid
 - should_ask
 - tools
+
+policy_hint is optional but strongly recommended. Use one of these stable IDs when the turn clearly matches:
+- S1_OPENING_GENERAL
+- SF3_PROJECT_NEED_DIRECTION, SF3_PROJECT_DETAIL_EXPLAIN, SF3_PROJECT_UNSUPPORTED_NEED
+- SF4_IMAGE_VISIBLE_OBSERVATION
+- CASE_EFFECT_REFERENCE, CASE_EFFECT_TIMES
+- SF5_COMPETITOR_LOW_PRICE, SF5_COMPETITOR_HIGH_PRICE, SF5_COMPETITOR_SAME_PRICE
+- SF6_STORE_NEAREST, SF6_STORE_ADDRESS_DETAIL, SF6_STORE_BUSINESS_HOURS, SF6_STORE_PARKING_NAVIGATION, SF6_STORE_LOCATION_CONFLICT
+- SF7_PRICE_FIRST_ASK, SF7_PRICE_CONFIRM_199, SF7_PRICE_CONFIRM_268, SF7_PRICE_ONCE_FEE, SF7_HIDDEN_FEE_WORRY, SF7_DEPOSIT_EXPLAIN, SF7_PAYMENT_TIMING, SF7_PRICE_DIFFERENCE, SF7_LOWEST_PRICE_HANDOFF
+- SF9_APPOINTMENT_TIME_CHECK, SF9_APPOINTMENT_CREATE_INFO, SF9_APPOINTMENT_STATUS, SF9_APPOINTMENT_CHANGE, SF9_APPOINTMENT_CANCEL
+- SF10_TRUST_QUALIFICATION, SF10_TRUST_HIDDEN_CHARGE, SF10_TRUST_EFFECT_WORRY, SF10_TRUST_IDENTITY, SF10_TRUST_SAFETY_WORRY
+- SF12_AFTER_SALES_EFFECT_FEEDBACK, SF12_AFTER_SALES_DISCOMFORT
+- HUMAN_HANDOFF_PROFESSIONAL_ASSIST, HUMAN_HANDOFF_COMPLAINT_REFUND, HUMAN_HANDOFF_AFTER_SALES_RISK
 
 secondary_tasks:
 - only include an additional independent task if the user clearly expressed one in the same turn
@@ -163,6 +177,7 @@ Return valid JSON only.
   "primary_task": {
     "type": "",
     "subtype": "",
+    "policy_hint": "",
     "scene": "",
     "subflow": "",
     "customer_need": "",
@@ -323,6 +338,7 @@ def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
     primary_task = {
         "type": "human_request" if handoff_needed else "general_consult",
         "subtype": "risk_or_dispute" if handoff_needed else "open_consult",
+        "policy_hint": "HUMAN_HANDOFF_PROFESSIONAL_ASSIST" if handoff_needed else "S1_OPENING_GENERAL",
         "scene": "S7_dealed_active" if handoff_needed else "S3_deep_consult",
         "subflow": "HUMAN_HANDOFF" if handoff_needed else "DIRECT_REPLY",
         "customer_need": "Needs a professional colleague to verify and continue handling" if handoff_needed else "Needs a natural first-turn response",
@@ -368,6 +384,7 @@ def _normalize_task(raw: Any, *, default_priority: int) -> dict[str, Any]:
     return {
         "type": str(raw.get("type") or "").strip(),
         "subtype": str(raw.get("subtype") or "").strip(),
+        "policy_hint": str(raw.get("policy_hint") or "").strip(),
         "scene": str(raw.get("scene") or "").strip(),
         "subflow": str(raw.get("subflow") or "").strip(),
         "customer_need": str(raw.get("customer_need") or "").strip(),

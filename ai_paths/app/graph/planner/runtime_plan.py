@@ -59,6 +59,7 @@ def planner_task_views(state: AgentState) -> list[dict[str, Any]]:
                 "intent": intent,
                 "type": task_type,
                 "subtype": task_subtype,
+                "policy_hint": str(task.get("policy_hint") or "").strip(),
                 "project_name": project_name,
                 "reply_goal": reply_goal,
                 "reason": customer_need or answer_goal,
@@ -99,4 +100,5 @@ def planner_public_route(state: AgentState) -> dict[str, Any]:
         "confidence": confidence,
         "need_human": handoff_needed,
         "policy_id": str(state.get("policy_id") or "").strip(),
+        "policy_family_id": str(state.get("policy_family_id") or "").strip(),
     }

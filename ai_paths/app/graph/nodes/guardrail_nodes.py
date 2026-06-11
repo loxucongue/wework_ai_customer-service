@@ -13,7 +13,7 @@ from app.graph.planner_dispute_signals import (
 from app.graph.planner_general_signals import is_identity_question
 from app.graph.state import AgentState
 from app.policies.constants import HUMAN_KEYWORDS
-from app.policies.rule_catalog import POLICY_VERSION, policy_id_from_task
+from app.policies.rule_catalog import policy_selection_from_task
 from app.services.trace_logger import TraceLogger
 
 
@@ -52,6 +52,7 @@ def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]
     primary_task = {
         "type": task_type,
         "subtype": "guardrail_blocked",
+        "policy_hint": HANDOFF_POLICY_HINTS.get(task_type, "HUMAN_HANDOFF_PROFESSIONAL_ASSIST"),
         "customer_need": content[:120],
         "answer_goal": "先承接客户当前问题，再由专业同事继续核对处理",
         "scene": "S8_guardrail_handoff",
@@ -61,6 +62,7 @@ def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]
         "needed": True,
         "reason": reason,
     }
+    policy = policy_selection_from_task(primary_task, handoff)
     return {
         "primary_task": {
             **primary_task,
@@ -75,8 +77,9 @@ def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]
             "max_questions": 0,
         },
         "handoff": handoff,
-        "policy_id": policy_id_from_task(primary_task, handoff),
-        "policy_version": POLICY_VERSION,
+        "policy_id": policy["policy_id"],
+        "policy_family_id": policy["policy_family_id"],
+        "policy_version": policy["policy_version"],
     }
 
 
@@ -91,6 +94,13 @@ def _guardrail_task_type(terms: list[str], content: str) -> str:
     if any(keyword in content for keyword in ("人工", "真人", "客服", "接待")):
         return "human_request"
     return "human_request"
+
+
+HANDOFF_POLICY_HINTS = {
+    "complaint_refund": "HUMAN_HANDOFF_COMPLAINT_REFUND",
+    "after_sales": "HUMAN_HANDOFF_AFTER_SALES_RISK",
+    "human_request": "HUMAN_HANDOFF_PROFESSIONAL_ASSIST",
+}
 
 
 def has_minor_signal(content: str) -> bool:

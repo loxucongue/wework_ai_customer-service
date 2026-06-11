@@ -60,6 +60,7 @@ class AgentState(TypedDict, total=False):
     reply_messages: list[dict[str, Any]]
     planner_source: str
     policy_id: str
+    policy_family_id: str
     policy_version: str
     reply_source: str
     postprocess_changed: bool
