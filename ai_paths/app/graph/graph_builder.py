@@ -15,6 +15,7 @@ from app.graph.nodes.pricing_context import (
 )
 from app.graph.nodes.profile_extraction import extract_event_updates, extract_profile_update
 from app.graph.nodes.profile_nodes import create_profile_event_extractor_node
+from app.graph.nodes.professional_assist_node import create_professional_assist_node
 from app.graph.nodes.reply_context import reply_user_payload_for_model
 from app.graph.nodes.reply_input import (
     reply_messages_for_model,
@@ -94,6 +95,7 @@ def build_graph(
         ),
         store_query_from_state=_store_query_from_state,
     )
+    professional_assist = create_professional_assist_node(trace_logger=trace_logger)
 
     profile_event_extractor = create_profile_event_extractor_node(
         trace_logger=trace_logger,
@@ -143,6 +145,7 @@ def build_graph(
     graph.add_node("planner_brain", planner_brain)
     graph.add_node("retrieve_scene_guidance", scene_guidance)
     graph.add_node("execute_actions", execute_actions)
+    graph.add_node("professional_assist", professional_assist)
     graph.add_node("synthesize_reply", synthesize_reply)
     graph.add_node("profile_event_extractor", profile_event_extractor)
 
@@ -161,7 +164,8 @@ def build_graph(
     graph.add_edge("load_customer_context", "planner_brain")
     graph.add_edge("planner_brain", "retrieve_scene_guidance")
     graph.add_edge("retrieve_scene_guidance", "execute_actions")
-    graph.add_edge("execute_actions", "synthesize_reply")
+    graph.add_edge("execute_actions", "professional_assist")
+    graph.add_edge("professional_assist", "synthesize_reply")
     graph.add_edge("synthesize_reply", "profile_event_extractor")
     graph.add_edge("profile_event_extractor", END)
 

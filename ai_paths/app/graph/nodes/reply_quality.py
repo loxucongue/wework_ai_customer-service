@@ -46,8 +46,9 @@ def model_reply_unsafe(
 def _has_unbacked_price_claim(state: AgentState, text: str) -> bool:
     if _has_price_facts(state):
         return False
-    if _PRICE_CLAIM_PATTERN.search(text):
-        return True
+    price_claims = [match.group(0).strip() for match in _PRICE_CLAIM_PATTERN.finditer(text)]
+    if price_claims:
+        return not _price_claims_are_user_echo(state, price_claims)
     return any(term in text for term in REPLY_PRICE_RULE_TERMS)
 
 
@@ -62,6 +63,27 @@ def _has_price_facts(state: AgentState) -> bool:
     if isinstance(usable, list):
         return any("pricing_" in str(item) or "project_price" in str(item) for item in usable)
     return False
+
+
+def _price_claims_are_user_echo(state: AgentState, price_claims: list[str]) -> bool:
+    source_text = "\n".join(
+        [
+            str(state.get("normalized_content") or ""),
+            *[str(item) for item in (state.get("conversation_history") or [])[-6:]],
+        ]
+    )
+    compact_source = re.sub(r"\s+", "", source_text)
+    if not compact_source:
+        return False
+    for claim in price_claims:
+        compact_claim = re.sub(r"\s+", "", claim)
+        if compact_claim and compact_claim in compact_source:
+            continue
+        digits = "".join(re.findall(r"\d+", compact_claim))
+        if digits and digits in compact_source:
+            continue
+        return False
+    return True
 
 
 def _has_poor_visible_format(state: AgentState, messages: list[dict[str, object]]) -> bool:

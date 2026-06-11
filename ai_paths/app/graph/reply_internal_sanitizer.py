@@ -52,6 +52,7 @@ def sanitize_customer_visible_messages(messages: list[dict[str, Any]]) -> list[d
             if is_internal_reply_message(content_text):
                 continue
             content_text = strip_internal_reply_terms(content_text)
+            content_text = sanitize_handoff_visible_phrasing(content_text)
             content_text = dedupe_repeated_phrase_noise(content_text)
             if not content_text:
                 continue
@@ -95,6 +96,35 @@ def strip_internal_reply_terms(text: str) -> str:
         "",
         cleaned,
     )
+    return cleaned.strip()
+
+
+def sanitize_handoff_visible_phrasing(text: str) -> str:
+    cleaned = str(text or "").strip()
+    replacements = (
+        ("转给专业同事核实处理", "让专业同事核实处理"),
+        ("转给专业同事继续核对", "让专业同事继续核对"),
+        ("转给专业同事协助处理", "让专业同事协助处理"),
+        ("转接专业同事核实处理", "让专业同事核实处理"),
+        ("转接专业同事继续核对", "让专业同事继续核对"),
+        ("转接专业同事协助处理", "让专业同事协助处理"),
+        ("转交专业同事核实处理", "让专业同事核实处理"),
+        ("转交专业同事继续核对", "让专业同事继续核对"),
+        ("转交专业同事协助处理", "让专业同事协助处理"),
+        ("转给专业同事", "让专业同事"),
+        ("转接专业同事", "让专业同事"),
+        ("转交专业同事", "让专业同事"),
+        ("转人工处理", "让专业同事协助处理"),
+        ("转人工核实", "让专业同事核实"),
+        ("转人工", "让专业同事继续核对"),
+    )
+    for old, new in replacements:
+        cleaned = cleaned.replace(old, new)
+    cleaned = cleaned.replace("帮您登记并让专业同事帮您", "帮您登记，并让专业同事")
+    cleaned = cleaned.replace("帮您记录并让专业同事帮您", "帮您记录，并让专业同事")
+    cleaned = cleaned.replace("帮您让专业同事", "让专业同事")
+    cleaned = cleaned.replace("为您让专业同事", "让专业同事")
+    cleaned = cleaned.replace("为您让", "让")
     return cleaned.strip()
 
 
