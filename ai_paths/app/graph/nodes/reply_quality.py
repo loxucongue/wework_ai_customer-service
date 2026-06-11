@@ -5,112 +5,18 @@ import re
 from app.graph import reply_filters
 from app.graph.nodes.reply_validation import message_content_text
 from app.graph.state import AgentState
-
-_HARD_FORBIDDEN_TERMS = (
-    "包接送",
-    "车费报销",
-    "医美",
-    "医疗美容",
-    "正规皮肤管理机构",
-    "正规备案",
-    "备案皮肤管理机构",
-    "官方备案",
-    "卫健委",
-    "官网核验",
-    "官方认证",
-    "官方认证入口",
-    "官方查询",
-    "国家企业信用信息公示系统",
-    "企业信用信息公示",
-    "官方渠道核验",
-    "企业微信官方认证入口",
-    "平台可溯",
-    "营业执照",
-    "设备注册证",
-    "设备备案",
-    "CFDA",
-    "进口仪器",
-    "执业许可证",
-    "持证皮肤管理机构",
-    "持证上岗",
-    "持证技师",
-    "持证老师",
-    "持证合规",
-    "主诊老师证",
-    "激光操作上岗证",
-    "NMPA",
-    "临床",
-    "更安全",
-    "所有门店都持有",
-    "所有门店都有资质",
-    "所有门店均有资质",
-    "所有门店均持资质",
-    "所有门店均为持证",
-    "所有门店均具备",
-    "所有门店都是备案",
-    "所有门店资质合规",
-    "操作老师均持有",
-    "老师均持有",
-    "绝无",
-    "绝对安全",
-    "保证效果",
-    "包效果",
-    "100%见效",
-    "百分百见效",
-    "根治",
-    "一次根治",
-    "一次一定好",
-    "一定有效",
-    "肯定有效",
-    "真人客服",
-    "我不是AI",
-    "我不是机器人",
-    "系统查询",
-    "工具返回",
-    "知识库",
-    "检索结果",
-    "内部分析",
-    "判断依据",
-    "reply_brief",
-    "module_outputs",
-    "route_result",
-    "subflow",
-    "intent",
-    "debug",
-    "调试信息",
-)
-
-_THIRD_PERSON_CUSTOMER_TERMS = (
-    "客户当前",
-    "客户提到",
-    "客户表示",
-    "客户偏好",
-    "客户问题",
+from app.policies.reply_quality_policy import (
+    REPLY_HARD_FORBIDDEN_TERMS,
+    REPLY_LONG_FORM_TASK_TYPES,
+    REPLY_MAX_TEXT_MESSAGE_CHARS,
+    REPLY_MAX_TEXT_MESSAGE_CHARS_LONG_FORM,
+    REPLY_MAX_TOTAL_TEXT_CHARS,
+    REPLY_MAX_TOTAL_TEXT_CHARS_LONG_FORM,
+    REPLY_PRICE_RULE_TERMS,
+    REPLY_THIRD_PERSON_CUSTOMER_TERMS,
 )
 
 _PRICE_CLAIM_PATTERN = re.compile(r"(?<!\d)\d{2,5}\s*元|[一二三四五六七八九十百千万]+元")
-_PRICE_RULE_TERMS = (
-    "活动价",
-    "体验价",
-    "最终体验价",
-    "定金",
-    "尾款",
-    "多退少补",
-    "到店再付",
-    "锁定名额",
-)
-
-_LONG_FORM_TASK_TYPES = {
-    "store_inquiry",
-    "appointment",
-    "appointment_status",
-    "appointment_change",
-    "appointment_cancel",
-}
-_MAX_TEXT_MESSAGE_CHARS = 180
-_MAX_TEXT_MESSAGE_CHARS_LONG_FORM = 260
-_MAX_TOTAL_TEXT_CHARS = 300
-_MAX_TOTAL_TEXT_CHARS_LONG_FORM = 460
 
 
 def model_reply_unsafe(
@@ -126,9 +32,9 @@ def model_reply_unsafe(
         return True
     if reply_filters.has_internal_reply_leak(text):
         return True
-    if any(term in text for term in _HARD_FORBIDDEN_TERMS):
+    if any(term in text for term in REPLY_HARD_FORBIDDEN_TERMS):
         return True
-    if any(term in text for term in _THIRD_PERSON_CUSTOMER_TERMS):
+    if any(term in text for term in REPLY_THIRD_PERSON_CUSTOMER_TERMS):
         return True
     if _has_unbacked_price_claim(state, text):
         return True
@@ -142,7 +48,7 @@ def _has_unbacked_price_claim(state: AgentState, text: str) -> bool:
         return False
     if _PRICE_CLAIM_PATTERN.search(text):
         return True
-    return any(term in text for term in _PRICE_RULE_TERMS)
+    return any(term in text for term in REPLY_PRICE_RULE_TERMS)
 
 
 def _has_price_facts(state: AgentState) -> bool:
@@ -169,8 +75,8 @@ def _has_poor_visible_format(state: AgentState, messages: list[dict[str, object]
         return True
 
     long_form = _is_long_form_turn(state)
-    per_message_limit = _MAX_TEXT_MESSAGE_CHARS_LONG_FORM if long_form else _MAX_TEXT_MESSAGE_CHARS
-    total_limit = _MAX_TOTAL_TEXT_CHARS_LONG_FORM if long_form else _MAX_TOTAL_TEXT_CHARS
+    per_message_limit = REPLY_MAX_TEXT_MESSAGE_CHARS_LONG_FORM if long_form else REPLY_MAX_TEXT_MESSAGE_CHARS
+    total_limit = REPLY_MAX_TOTAL_TEXT_CHARS_LONG_FORM if long_form else REPLY_MAX_TOTAL_TEXT_CHARS
     if any(len(text) > per_message_limit for text in text_messages):
         return True
     if sum(len(text) for text in text_messages) > total_limit:
@@ -186,7 +92,7 @@ def _is_long_form_turn(state: AgentState) -> bool:
         for task in [state.get("primary_task") or {}, *(state.get("secondary_tasks") or [])]
         if isinstance(task, dict)
     }
-    return bool(task_types & _LONG_FORM_TASK_TYPES)
+    return bool(task_types & REPLY_LONG_FORM_TASK_TYPES)
 
 
 def _looks_redundant(first: str, second: str) -> bool:
