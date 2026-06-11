@@ -7,8 +7,6 @@ from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
     should_suppress_profile_memory_for_reply,
 )
-from app.graph.nodes.pricing_context import canonical_price_project, is_broad_price_category
-from app.graph.runtime_context import contextual_price_project
 from app.graph.planner.runtime_plan import (
     planner_handoff,
     planner_primary_task,
@@ -50,13 +48,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "fact_envelope": fact_envelope,
-        "fact_notes": _fact_notes_for_model(
-            fact_envelope,
-            state,
-            canonical_price_project=canonical_price_project,
-            contextual_price_project=contextual_price_project,
-            is_broad_price_category=is_broad_price_category,
-        ),
+        "fact_notes": _fact_notes_for_model(fact_envelope),
     }
 
 
@@ -112,17 +104,8 @@ def _sanitize_planner_context_for_reply(value: Any) -> Any:
 
 def _fact_notes_for_model(
     fact_envelope: dict[str, Any],
-    state: AgentState,
-    *,
-    canonical_price_project,
-    contextual_price_project,
-    is_broad_price_category,
 ) -> list[str]:
     notes: list[str] = []
-    project = canonical_price_project(contextual_price_project(state))
-    if project and not is_broad_price_category(project):
-        notes.append(f"当前推测的价格关联方向：{project}")
-
     structured_facts = fact_envelope.get("structured_facts") or {}
     if not isinstance(structured_facts, dict):
         structured_facts = {}
