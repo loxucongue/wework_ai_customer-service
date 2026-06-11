@@ -34,7 +34,6 @@ def create_execute_actions_node(
     extract_project: Callable[[str], str],
     has_appointment_change_or_cancel: Callable[[str], bool],
     has_appointment_record_query: Callable[[str], bool],
-    has_store_inquiry: Callable[[str], bool],
     needs_project_price_followup: Callable[[list[dict[str, Any]], dict[str, Any], AgentState], bool],
     pricing_sql_from_state: Callable[[AgentState], str],
     project_price_followup_queries: Callable[[dict[str, Any]], list[str]],
@@ -70,36 +69,26 @@ def create_execute_actions_node(
                 )
 
             if _needs_store_lookup(required_tools) and store_service:
-                if _has_task_type(tasks, "trust_issue") and not has_store_inquiry(content):
-                    tool_results["store_lookup"] = {"stores": [], "skipped": "trust_issue_without_store_query"}
+                try:
+                    store_query = store_query_from_state(content, state)
+                    result = store_service.search(store_query, customer_context=state.get("customer_context") or {})
+                    tool_results["store_lookup"] = result
+                    tool_calls.append(
+                        {
+                            "name": "store_lookup",
+                            "input": {"query": store_query, "raw_query": content},
+                            "output": result,
+                        }
+                    )
+                except Exception as exc:
+                    tool_results["store_lookup"] = {"stores": [], "error": f"{type(exc).__name__}: {exc}"}
                     tool_calls.append(
                         {
                             "name": "store_lookup",
                             "input": {"query": content},
-                            "output": {"skipped": "trust_issue_without_store_query"},
+                            "error": f"{type(exc).__name__}: {exc}",
                         }
                     )
-                else:
-                    try:
-                        store_query = store_query_from_state(content, state)
-                        result = store_service.search(store_query, customer_context=state.get("customer_context") or {})
-                        tool_results["store_lookup"] = result
-                        tool_calls.append(
-                            {
-                                "name": "store_lookup",
-                                "input": {"query": store_query, "raw_query": content},
-                                "output": result,
-                            }
-                        )
-                    except Exception as exc:
-                        tool_results["store_lookup"] = {"stores": [], "error": f"{type(exc).__name__}: {exc}"}
-                        tool_calls.append(
-                            {
-                                "name": "store_lookup",
-                                "input": {"query": content},
-                                "error": f"{type(exc).__name__}: {exc}",
-                            }
-                        )
 
             if _needs_appointment_tools(required_tools) and store_service:
                 try:
@@ -337,19 +326,3 @@ def _default_task_for_kb(kb_name: str) -> tuple[str, str]:
         "competitor_qa": ("competitor_compare", "competitor_price"),
         "after_sales_qa": ("after_sales", "after_sales_support"),
     }.get(kb_name, ("general_consult", "open_consult"))
-
-
-def _has_task_type(tasks: list[dict[str, Any]], expected: str) -> bool:
-    expected_text = str(expected or "").strip().lower()
-    if not expected_text:
-        return False
-    for task in tasks:
-        if not isinstance(task, dict):
-            continue
-        values = (
-            str(task.get("type") or "").strip().lower(),
-            str(task.get("subtype") or "").strip().lower(),
-        )
-        if expected_text in values:
-            return True
-    return False

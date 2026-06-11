@@ -11,7 +11,6 @@ from app.graph.nodes.input_nodes import create_image_understanding_node, create_
 from app.graph.nodes.intent_signals import (
     has_appointment_change_or_cancel as _has_appointment_change_or_cancel,
     has_appointment_record_query as _has_appointment_record_query,
-    has_store_inquiry as _has_store_inquiry,
 )
 from app.graph.nodes.planner_nodes import create_planner_brain_node
 from app.graph.nodes.policy_nodes import create_scene_guidance_node
@@ -108,7 +107,6 @@ def build_graph(
         extract_project=_extract_project,
         has_appointment_change_or_cancel=_has_appointment_change_or_cancel,
         has_appointment_record_query=_has_appointment_record_query,
-        has_store_inquiry=_has_store_inquiry,
         needs_project_price_followup=_needs_project_price_followup,
         pricing_sql_from_state=_pricing_sql_from_state,
         project_price_followup_queries=_project_price_followup_queries,
