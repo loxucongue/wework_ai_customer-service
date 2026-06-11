@@ -58,6 +58,13 @@ from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
 
+def _route_after_hard_guardrails(state: AgentState) -> str:
+    guardrail = state.get("guardrail_result") or {}
+    if isinstance(guardrail, dict) and guardrail.get("blocked"):
+        return "blocked"
+    return "normal"
+
+
 def build_graph(
     coze_client: CozeClient,
     trace_logger: TraceLogger,
@@ -170,7 +177,14 @@ def build_graph(
     graph.set_entry_point("normalize_input")
     graph.add_edge("normalize_input", "image_understanding")
     graph.add_edge("image_understanding", "hard_guardrails")
-    graph.add_edge("hard_guardrails", "load_memory")
+    graph.add_conditional_edges(
+        "hard_guardrails",
+        _route_after_hard_guardrails,
+        {
+            "blocked": "synthesize_reply",
+            "normal": "load_memory",
+        },
+    )
     graph.add_edge("load_memory", "load_customer_context")
     graph.add_edge("load_customer_context", "planner_brain")
     graph.add_edge("planner_brain", "execute_actions")

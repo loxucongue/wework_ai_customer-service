@@ -36,11 +36,54 @@ def create_hard_guardrails_node(*, trace_logger: TraceLogger) -> Callable[[Agent
                 "terms": dedupe_strings(hit_terms),
                 "action": "professional_assist" if hit_terms else "",
             }
-            output = {"guardrail_result": result, "trace": state.get("trace", [])}
+            output: dict[str, Any] = {"guardrail_result": result, "trace": state.get("trace", [])}
+            if result["blocked"]:
+                output.update(_guardrail_handoff_payload(result["terms"], content))
             span["output_snapshot"] = output
             return output
 
     return hard_guardrails
+
+
+def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]:
+    task_type = _guardrail_task_type(terms, content)
+    reason = "、".join(terms[:4]).strip("、") or "当前问题需要进一步核对"
+    return {
+        "primary_task": {
+            "type": task_type,
+            "subtype": "guardrail_blocked",
+            "customer_need": content[:120],
+            "answer_goal": "先承接客户当前问题，再由专业同事继续核对处理",
+            "scene": "S8_guardrail_handoff",
+            "confidence": 1.0,
+        },
+        "secondary_tasks": [],
+        "required_tools": [],
+        "reply_strategy": {
+            "must_answer": ["先承接客户当前问题，不直接给出风险判断结论"],
+            "can_push": [],
+            "must_avoid": ["不要继续一般业务推荐，不要编造事实结论"],
+            "tone": "稳重、简洁、像真人客服",
+            "max_questions": 0,
+        },
+        "handoff": {
+            "needed": True,
+            "reason": reason,
+        },
+    }
+
+
+def _guardrail_task_type(terms: list[str], content: str) -> str:
+    lowered_terms = {str(term).strip() for term in terms}
+    if {"投诉", "退款", "维权", "报警", "起诉", "曝光"} & lowered_terms:
+        return "complaint_refund"
+    if {"效果纠纷", "感染", "流脓", "高烧"} & lowered_terms:
+        return "after_sales"
+    if "未成年" in lowered_terms:
+        return "human_request"
+    if any(keyword in content for keyword in ("人工", "真人", "客服", "接待")):
+        return "human_request"
+    return "human_request"
 
 
 def has_minor_signal(content: str) -> bool:
