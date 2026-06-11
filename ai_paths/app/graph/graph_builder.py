@@ -18,7 +18,6 @@ from app.graph.nodes.policy_nodes import create_scene_guidance_node
 from app.graph.nodes.pricing_context import (
     canonical_price_project as _canonical_price_project,
     extract_project as _extract_project,
-    is_broad_price_category as _is_broad_price_category,
 )
 from app.graph.nodes.profile_extraction import extract_event_updates, extract_profile_update
 from app.graph.nodes.profile_nodes import create_profile_event_extractor_node
@@ -110,7 +109,6 @@ def build_graph(
         has_appointment_change_or_cancel=_has_appointment_change_or_cancel,
         has_appointment_record_query=_has_appointment_record_query,
         has_store_inquiry=_has_store_inquiry,
-        is_broad_price_category=_is_broad_price_category,
         needs_project_price_followup=_needs_project_price_followup,
         pricing_sql_from_state=_pricing_sql_from_state,
         project_price_followup_queries=_project_price_followup_queries,

@@ -114,7 +114,7 @@ Hard tool requirements:
 You must output one complete planning object.
 
 Task-to-tool minimum mapping:
-- type=price_inquiry -> tools must include one of: kb_search(project_price), pricing_db, local_pricing
+- type=price_inquiry -> tools must include kb_search(project_price) plus one pricing fact tool such as pricing_db or local_pricing
 - type=store_inquiry -> tools must include store_lookup; if the user asks time availability, also include available_time
 - type=case_request -> tools must include kb_search(case_studies)
 - type=competitor_compare -> tools must include kb_search(competitor_qa) and may also include kb_search(project_price)
@@ -462,8 +462,10 @@ def _with_minimum_tools(task_type: str, tools: list[dict[str, Any]]) -> list[dic
         concrete_tools.append(tool)
 
     if task_type == "price_inquiry":
-        if not (has_tool("kb_search", kb_name="project_price") or has_tool("pricing_db") or has_tool("local_pricing")):
+        if not has_tool("kb_search", kb_name="project_price"):
             add_tool("kb_search", "Need real price and campaign rules before answering", kb_name="project_price")
+        if not (has_tool("pricing_db") or has_tool("local_pricing")):
+            add_tool("local_pricing", "Need local price table facts before answering")
     elif task_type == "store_inquiry":
         if not has_tool("store_lookup"):
             add_tool("store_lookup", "Need real store facts before answering store/location questions")

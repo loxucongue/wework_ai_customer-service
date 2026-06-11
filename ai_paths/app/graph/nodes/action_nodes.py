@@ -35,7 +35,6 @@ def create_execute_actions_node(
     has_appointment_change_or_cancel: Callable[[str], bool],
     has_appointment_record_query: Callable[[str], bool],
     has_store_inquiry: Callable[[str], bool],
-    is_broad_price_category: Callable[[str], bool],
     needs_project_price_followup: Callable[[list[dict[str, Any]], dict[str, Any], AgentState], bool],
     pricing_sql_from_state: Callable[[AgentState], str],
     project_price_followup_queries: Callable[[dict[str, Any]], list[str]],
@@ -215,20 +214,24 @@ def create_execute_actions_node(
                         call["error"] = f"{type(exc).__name__}: {exc}"
                     tool_calls.append(call)
 
-            if _has_task_type(tasks, "price_inquiry"):
-                db_rows = tool_results.get("pricing_db", {}).get("rows") or []
-                price_project = canonical_price_project(contextual_price_project(state) or extract_project(content))
-                if not db_rows and pricing_repository and price_project and not is_broad_price_category(price_project):
-                    pricing_query = canonical_price_project(contextual_price_project(state)) or content
-                    local_call = {"name": "local_pricing_xlsx", "input": {"query": pricing_query}}
-                    try:
-                        local_rows = pricing_repository.search(pricing_query)
-                        tool_results["pricing_local"] = {"rows": local_rows}
-                        local_call["output"] = {"rows": len(local_rows)}
-                    except Exception as exc:
-                        local_call["error"] = f"{type(exc).__name__}: {exc}"
-                        tool_results["pricing_local"] = {"rows": [], "error": local_call["error"]}
-                    tool_calls.append(local_call)
+            if _needs_local_pricing(required_tools) and pricing_repository:
+                pricing_query = _planned_local_pricing_query(
+                    required_tools=required_tools,
+                    state=state,
+                    content=content,
+                    canonical_price_project=canonical_price_project,
+                    contextual_price_project=contextual_price_project,
+                    extract_project=extract_project,
+                )
+                local_call = {"name": "local_pricing_xlsx", "input": {"query": pricing_query, "planned": True}}
+                try:
+                    local_rows = pricing_repository.search(pricing_query)
+                    tool_results["pricing_local"] = {"rows": local_rows}
+                    local_call["output"] = {"rows": len(local_rows)}
+                except Exception as exc:
+                    local_call["error"] = f"{type(exc).__name__}: {exc}"
+                    tool_results["pricing_local"] = {"rows": [], "error": local_call["error"]}
+                tool_calls.append(local_call)
 
             planner_fact_output = build_planner_fact_output(tool_results, state)
             fact_envelope = dict(planner_fact_output.get("fact_envelope") or {})
@@ -303,6 +306,28 @@ def _needs_appointment_create(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "appointment_create" for item in required_tools if isinstance(item, dict))
 
 
+def _needs_local_pricing(required_tools: list[dict[str, Any]]) -> bool:
+    return any(str(item.get("name") or "") == "local_pricing" for item in required_tools if isinstance(item, dict))
+
+
+def _planned_local_pricing_query(
+    *,
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+    content: str,
+    canonical_price_project: Callable[[str], str],
+    contextual_price_project: Callable[[AgentState], str],
+    extract_project: Callable[[str], str],
+) -> str:
+    for item in required_tools:
+        if not isinstance(item, dict) or str(item.get("name") or "").strip() != "local_pricing":
+            continue
+        query = str(item.get("query") or "").strip()
+        if query:
+            return query
+    return canonical_price_project(contextual_price_project(state)) or canonical_price_project(extract_project(content)) or content
+
+
 def _default_task_for_kb(kb_name: str) -> tuple[str, str]:
     return {
         "project_qa": ("project_inquiry", "project_direction"),
@@ -328,4 +353,3 @@ def _has_task_type(tasks: list[dict[str, Any]], expected: str) -> bool:
         if expected_text in values:
             return True
     return False
-
