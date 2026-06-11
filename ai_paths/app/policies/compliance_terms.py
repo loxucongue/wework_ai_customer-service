@@ -88,9 +88,12 @@ def compliance_prompt_section() -> str:
     )
 
 
-def replace_sensitive_terms(text: str) -> str:
+def replace_sensitive_terms(text: str, *, include_project_terms: bool = True) -> str:
     value = str(text or "")
-    for mapping in (PROJECT_TERM_REPLACEMENTS, MEDICAL_TERM_REPLACEMENTS, PROMISE_TERM_REPLACEMENTS):
+    mappings = [MEDICAL_TERM_REPLACEMENTS, PROMISE_TERM_REPLACEMENTS]
+    if include_project_terms:
+        mappings.insert(0, PROJECT_TERM_REPLACEMENTS)
+    for mapping in mappings:
         for old, new in mapping.items():
             value = value.replace(old, new)
     return value

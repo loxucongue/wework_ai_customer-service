@@ -44,7 +44,7 @@ def sanitize_sensitive_reply_content(
         content = _message_text(message.get("content"))
         content = sanitize_license_promise(content, strict=license_doc_request or "trust_issue" in task_types)
         if has_sensitive_external_terms(content) or not allow_project_names:
-            content = sanitize_unasked_project_names(content)
+            content = sanitize_unasked_project_names(content, allow_project_names=allow_project_names)
         content = content.strip()
         if not content:
             continue

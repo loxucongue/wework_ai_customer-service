@@ -113,11 +113,12 @@ def allows_specific_project_names(
     return bool(task_types & {"price_inquiry", "campaign_inquiry"} and contextual_price_project)
 
 
-def sanitize_unasked_project_names(text: str) -> str:
+def sanitize_unasked_project_names(text: str, *, allow_project_names: bool = False) -> str:
     cleaned = str(text or "")
-    cleaned = cleaned.replace("皮秒/祛斑类", "针对性色素淡化类")
-    cleaned = cleaned.replace("皮秒或者祛斑类", "针对性色素淡化类")
-    cleaned = replace_sensitive_terms(cleaned)
+    if not allow_project_names:
+        cleaned = cleaned.replace("皮秒/祛斑类", "针对性色素淡化类")
+        cleaned = cleaned.replace("皮秒或者祛斑类", "针对性色素淡化类")
+    cleaned = replace_sensitive_terms(cleaned, include_project_terms=not allow_project_names)
     cleaned = re.sub(
         r"针对性色素淡化类项目[（(]\s*比如针对性色素淡化类项目\s*[）)]",
         "针对性色素淡化方向",

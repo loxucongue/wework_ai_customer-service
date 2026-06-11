@@ -246,6 +246,17 @@ Rules:
 - If the current task needs real facts, add the explicit tools needed to fetch them.
 - If the task type was wrong, correct the task type instead of forcing tools onto the wrong task.
 - no_tool is only valid when no external fact is needed.
+- A plan that repeats any tool_policy_violations is invalid and cannot be used.
+- Never return no_tool for a task listed in tool_policy_violations unless you also change that task type to one that truly needs no facts.
+- Eliminate every violation by either correcting the task type or adding the missing fact tools.
+- Missing tool labels map to exact tool requirements:
+  - kb_search(project_price): {"name":"kb_search","kb_name":"project_price","purpose":"Need real price and campaign rules before answering"}
+  - pricing_db_or_local_pricing: {"name":"local_pricing","purpose":"Need local price facts before answering"}
+  - store_lookup: {"name":"store_lookup","purpose":"Need real store facts before answering"}
+  - kb_search(case_studies): {"name":"kb_search","kb_name":"case_studies","purpose":"Need real case facts before answering"}
+  - kb_search(competitor_qa): {"name":"kb_search","kb_name":"competitor_qa","purpose":"Need competitor response guidance before answering"}
+  - appointment_record_query: {"name":"appointment_record_query","purpose":"Need real appointment facts before answering"}
+  - appointment_fact_tool: use available_time, appointment_record_query, or appointment_create according to the current customer turn.
 - Keep the answer goal focused on the current user turn.
 - Return valid JSON only.
 """.strip()
