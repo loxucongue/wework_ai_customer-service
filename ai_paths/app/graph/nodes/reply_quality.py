@@ -1,5 +1,7 @@
 ﻿from __future__ import annotations
 
+import re
+
 from app.graph import reply_filters
 from app.graph.nodes.reply_validation import message_content_text
 from app.graph.state import AgentState
@@ -60,12 +62,23 @@ _THIRD_PERSON_CUSTOMER_TERMS = (
     "客户问题",
 )
 
+_PRICE_CLAIM_PATTERN = re.compile(r"(?<!\d)\d{2,5}\s*元|[一二三四五六七八九十百千万]+元")
+_PRICE_RULE_TERMS = (
+    "活动价",
+    "体验价",
+    "最终体验价",
+    "定金",
+    "尾款",
+    "多退少补",
+    "到店再付",
+    "锁定名额",
+)
+
 
 def model_reply_unsafe(
     state: AgentState,
     messages: list[dict[str, object]],
 ) -> bool:
-    del state
     text = "\n".join(
         message_content_text(message.get("content"))
         for message in messages
@@ -79,4 +92,27 @@ def model_reply_unsafe(
         return True
     if any(term in text for term in _THIRD_PERSON_CUSTOMER_TERMS):
         return True
+    if _has_unbacked_price_claim(state, text):
+        return True
+    return False
+
+
+def _has_unbacked_price_claim(state: AgentState, text: str) -> bool:
+    if _has_price_facts(state):
+        return False
+    if _PRICE_CLAIM_PATTERN.search(text):
+        return True
+    return any(term in text for term in _PRICE_RULE_TERMS)
+
+
+def _has_price_facts(state: AgentState) -> bool:
+    fact_envelope = state.get("fact_envelope") if isinstance(state, dict) else {}
+    if not isinstance(fact_envelope, dict):
+        return False
+    structured = fact_envelope.get("structured_facts")
+    if isinstance(structured, dict) and structured.get("price_facts"):
+        return True
+    usable = fact_envelope.get("usable_facts")
+    if isinstance(usable, list):
+        return any("pricing_" in str(item) or "project_price" in str(item) for item in usable)
     return False

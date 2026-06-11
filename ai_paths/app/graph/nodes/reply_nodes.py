@@ -49,30 +49,23 @@ def create_synthesize_reply_node(
                     model_call["postprocessed_messages"] = debug_message_contents(messages)
 
                 if not messages or model_reply_unsafe(state, messages):
-                    repair_call: dict[str, Any] = {"name": "reply_repair_model", "input": {"tier": tier, "required": True}}
-                    try:
-                        repair_payload = await model_client.chat_json(
-                            reply_repair_messages_for_model(state, messages),
-                            tier=tier,
-                        )
-                        repair_call["usage"] = model_usage_snapshot(model_client)
-                        repaired_messages = validated_model_messages(repair_payload)
-                        repair_call["draft_messages"] = debug_message_contents(repaired_messages)
-                        if repaired_messages:
-                            repaired_messages = postprocess_reply_messages(state, repaired_messages)
-                            repair_call["postprocessed_messages"] = debug_message_contents(repaired_messages)
-                        if repaired_messages and not model_reply_unsafe(state, repaired_messages):
-                            messages = repaired_messages
-                            model_call["fallback"] = "repaired_model_reply"
-                            reply_source = "repair_model"
-                        else:
-                            messages = []
-                            repair_call["error"] = "repaired_reply_still_unsafe"
-                    except Exception as repair_exc:
-                        messages = []
-                        repair_call["error"] = f"{type(repair_exc).__name__}: {repair_exc}"
+                    messages, repair_call, repaired = await _try_repair_reply(
+                        state=state,
+                        draft_messages=messages,
+                        tier=tier,
+                        model_client=model_client,
+                        model_reply_unsafe=model_reply_unsafe,
+                        postprocess_reply_messages=postprocess_reply_messages,
+                        reply_repair_messages_for_model=reply_repair_messages_for_model,
+                        validated_model_messages=validated_model_messages,
+                        debug_message_contents=debug_message_contents,
+                        reason="initial_quality_gate",
+                    )
                     model_call.setdefault("nested_calls", []).append(repair_call)
-                    if not messages:
+                    if repaired:
+                        model_call["fallback"] = "repaired_model_reply"
+                        reply_source = "repair_model"
+                    else:
                         model_call["fallback"] = "handoff_after_repair_failure"
 
                 model_call["output"] = {"messages": len(messages)}
@@ -90,8 +83,28 @@ def create_synthesize_reply_node(
                 messages = []
 
             if messages and model_reply_unsafe(state, messages):
-                messages = []
-                errors.append({"node": "synthesize_reply", "message": "final_reply_failed_quality_gate"})
+                repaired = False
+                if model_call and model_client and model_client.available:
+                    tier = str((model_call.get("input") or {}).get("tier") or reply_model_tier(state))
+                    messages, repair_call, repaired = await _try_repair_reply(
+                        state=state,
+                        draft_messages=messages,
+                        tier=tier,
+                        model_client=model_client,
+                        model_reply_unsafe=model_reply_unsafe,
+                        postprocess_reply_messages=postprocess_reply_messages,
+                        reply_repair_messages_for_model=reply_repair_messages_for_model,
+                        validated_model_messages=validated_model_messages,
+                        debug_message_contents=debug_message_contents,
+                        reason="final_quality_gate",
+                    )
+                    model_call.setdefault("nested_calls", []).append(repair_call)
+                    if repaired:
+                        reply_source = "repair_model"
+                        model_call["fallback"] = "repaired_after_final_quality_gate"
+                if not repaired:
+                    messages = []
+                    errors.append({"node": "synthesize_reply", "message": "final_reply_failed_quality_gate"})
 
             if not messages:
                 messages = _minimal_handoff_messages(state)
@@ -111,6 +124,39 @@ def create_synthesize_reply_node(
             return output
 
     return synthesize_reply
+
+
+async def _try_repair_reply(
+    *,
+    state: AgentState,
+    draft_messages: list[dict[str, Any]],
+    tier: str,
+    model_client: ModelClient,
+    model_reply_unsafe: Callable[[AgentState, list[dict[str, Any]]], bool],
+    postprocess_reply_messages: Callable[[AgentState, list[dict[str, Any]]], list[dict[str, Any]]],
+    reply_repair_messages_for_model: Callable[[AgentState, list[dict[str, Any]]], list[dict[str, Any]]],
+    validated_model_messages: Callable[[dict[str, Any]], list[dict[str, Any]]],
+    debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
+    reason: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    repair_call: dict[str, Any] = {"name": "reply_repair_model", "input": {"tier": tier, "required": True, "reason": reason}}
+    try:
+        repair_payload = await model_client.chat_json(
+            reply_repair_messages_for_model(state, draft_messages),
+            tier=tier,
+        )
+        repair_call["usage"] = model_usage_snapshot(model_client)
+        repaired_messages = validated_model_messages(repair_payload)
+        repair_call["draft_messages"] = debug_message_contents(repaired_messages)
+        if repaired_messages:
+            repaired_messages = postprocess_reply_messages(state, repaired_messages)
+            repair_call["postprocessed_messages"] = debug_message_contents(repaired_messages)
+        if repaired_messages and not model_reply_unsafe(state, repaired_messages):
+            return repaired_messages, repair_call, True
+        repair_call["error"] = "repaired_reply_still_unsafe"
+    except Exception as repair_exc:
+        repair_call["error"] = f"{type(repair_exc).__name__}: {repair_exc}"
+    return [], repair_call, False
 
 
 def _minimal_handoff_messages(state: AgentState) -> list[dict[str, Any]]:
