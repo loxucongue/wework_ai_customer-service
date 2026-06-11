@@ -135,7 +135,7 @@ def _example_score(text: str, examples: tuple[str, ...]) -> float:
         if not candidate:
             continue
         if candidate in text or text in candidate:
-            best = max(best, 0.92)
+            best = max(best, 0.99)
             continue
         best = max(best, SequenceMatcher(None, text, candidate).ratio())
     return best if best >= 0.5 else 0.0
