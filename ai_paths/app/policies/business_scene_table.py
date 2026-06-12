@@ -43,8 +43,6 @@ FAMILY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "孕妇",
             "哺乳",
             "未成年",
-            "真人",
-            "人工",
         ),
     ),
     (
@@ -201,13 +199,76 @@ HARD_CONSTRAINTS_BY_FAMILY = {
 
 
 def infer_policy_family(*, stage: str = "", scene_type: str = "", question: str = "", business_logic: str = "") -> str:
-    text = _normalize_for_match(" ".join([stage, scene_type, question, business_logic]))
+    stage_text = _normalize_for_match(stage)
+    scene_text = _normalize_for_match(scene_type)
+    question_text = _normalize_for_match(question)
+    logic_text = _normalize_for_match(business_logic)
+    text = " ".join([stage_text, scene_text, question_text])
+
+    if _needs_handoff(question_text, logic_text):
+        return "HUMAN_HANDOFF"
+    if _is_identity_or_trust_question(question_text, scene_text):
+        return "SF10_TRUST_BUILD"
+    if _scene_contains(scene_text, ("竞品", "价格对比", "发竞品", "竞品截图")):
+        return "SF5_COMPETITOR_COMPARE"
+    if _scene_contains(scene_text, ("直接问门店", "问门店", "门店", "地址", "停车", "营业")):
+        return "SF6_STORE_INQUIRY"
+    if _scene_contains(scene_text, ("直接问价格", "问价格", "报价", "价格", "费用", "活动", "定金", "尾款")):
+        return "SF7_PRICE_ACTIVITY"
+    if _scene_contains(scene_text, ("效果咨询", "案例", "效果图")):
+        if _scene_contains(question_text, ("不见效果", "没效果", "没有效果", "做了", "已做")):
+            return "SF12_AFTER_SALES"
+        return "CASE_EFFECT_REFERENCE"
+    if _scene_contains(scene_text, ("恢复期", "术后", "护理", "售后")):
+        return "SF12_AFTER_SALES"
+    if _scene_contains(scene_text, ("安全性", "资质", "信任")):
+        return "SF10_TRUST_BUILD"
+    if _scene_contains(scene_text, ("直接问项目", "项目细节", "问项目", "发图要面诊", "主动暴露画像-困扰", "次数咨询")):
+        return "SF3_PROJECT_CONSULT"
+    if _scene_contains(scene_text, ("预约", "到店", "档期", "改约", "取消", "收款", "通单")):
+        return "SF9_APPOINTMENT"
     for family, keywords in FAMILY_KEYWORDS:
         if any(_normalize_for_match(keyword) in text for keyword in keywords):
             return family
-    if "破冰" in stage or "打招呼" in scene_type:
+    if "破冰" in stage_text or "打招呼" in scene_text or "闲聊" in scene_text or "来源识别" in scene_text:
         return "S1_OPENING_GENERAL"
     return "GENERAL_DIRECT_REPLY"
+
+
+def _scene_contains(text: str, needles: tuple[str, ...]) -> bool:
+    return any(_normalize_for_match(needle) in text for needle in needles)
+
+
+def _needs_handoff(question_text: str, logic_text: str) -> bool:
+    if "强制转人工" in logic_text:
+        return True
+    if _scene_contains(question_text, ("体检报告", "病历", "降压药", "降血糖", "高血压", "糖尿病", "怀孕", "孕妇", "哺乳", "未成年")):
+        return True
+    if _scene_contains(question_text, ("投诉", "退款", "退钱", "退定金", "骗钱", "多收")):
+        return True
+    if re.search(r"(要|想|需要|找|换|转).{0,4}(真人|人工|人)", question_text):
+        return True
+    return False
+
+
+def _is_identity_or_trust_question(question_text: str, scene_text: str) -> bool:
+    if _scene_contains(scene_text, ("质疑真人", "信任", "资质")):
+        return True
+    return _scene_contains(
+        question_text,
+        (
+            "机器人",
+            "你是门店的人",
+            "你们有资质",
+            "医疗资质",
+            "资质",
+            "安全吗",
+            "伤害皮肤",
+            "留疤",
+            "靠谱吗",
+            "正规",
+        ),
+    )
 
 
 def required_tools_for_family(family: str) -> list[str]:

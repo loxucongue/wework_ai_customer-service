@@ -71,9 +71,15 @@ FORBIDDEN_BUSINESS_TERMS = (
     "100%见效",
     "百分百见效",
     "绝对安全",
+    "完全安全",
     "保证效果",
+    "效果有保障",
+    "做完有保障",
     "包效果",
     "一次一定好",
+    "不伤肤",
+    "不会伤害皮肤",
+    "不会留疤",
     "包接送",
     "车费报销",
 )
@@ -124,6 +130,16 @@ SAFE_FALLBACK_TEXT_FRAGMENTS = (
     "这个情况我先帮您记录下来",
     "避免给您说错",
     "继续帮您核对清楚",
+)
+
+BOOKISH_STYLE_FRAGMENTS = (
+    "根据您提供的信息",
+    "综合评估",
+    "个性化方案",
+    "为您匹配更合适",
+    "建议您前往",
+    "如有需要",
+    "方便的话",
 )
 
 
@@ -268,6 +284,10 @@ def judge_result(
         return "可优化：回复条数偏多"
     if any(len(text) > 180 for text in text_replies):
         return "可优化：单条回复偏长"
+    if any(len(text) > 120 for text in text_replies) and "human_handoff" not in reply_types:
+        return "可优化：回复偏长不够像微信"
+    if any(fragment in joined for fragment in BOOKISH_STYLE_FRAGMENTS):
+        return "可优化：回复偏说明书口吻"
     if "human_handoff" in reply_types and len(text_replies) > 2:
         return "可优化：专业协助前回复偏多"
     return "通过"
