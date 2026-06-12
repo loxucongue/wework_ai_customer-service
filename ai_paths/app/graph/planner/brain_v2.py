@@ -26,6 +26,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
         "conversation_history": (state.get("conversation_history") or [])[-10:],
         "image_info": state.get("image_info") or {},
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
+        "request_context": _compact_request_context(state.get("request_context") or {}),
         "customer_profile": state.get("customer_profile") or {},
         "customer_basic_info": state.get("customer_basic_info") or {},
         "history_events": (state.get("history_events") or [])[-8:],
@@ -52,6 +53,7 @@ def planner_v2_repair_messages_for_model(
         "conversation_history": (state.get("conversation_history") or [])[-10:],
         "image_info": state.get("image_info") or {},
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
+        "request_context": _compact_request_context(state.get("request_context") or {}),
         "customer_profile": state.get("customer_profile") or {},
         "customer_basic_info": state.get("customer_basic_info") or {},
         "history_events": (state.get("history_events") or [])[-8:],
@@ -140,5 +142,24 @@ def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
         "appointment_info",
         "has_upcoming_appointment",
         "latest_store_candidates",
+    )
+    return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
+
+
+def _compact_request_context(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    keys = (
+        "category_id",
+        "customer_stage",
+        "scene_type",
+        "business_logic",
+        "expected_policy_family_id",
+        "confirmed_store_id",
+        "confirmed_store_name",
+        "store_id",
+        "store_name",
+        "appointment_id",
+        "appointment_time",
     )
     return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}

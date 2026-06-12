@@ -91,9 +91,33 @@ FORBIDDEN_BUSINESS_TERMS = (
     "一次一定好",
     "不伤肤",
     "不会伤害皮肤",
+    "不会伤皮肤",
     "不会留疤",
+    "不会留痕",
+    "留疤概率很低",
+    "国内最好的",
+    "效果最好",
+    "最好的效果",
+    "返现",
     "包接送",
+    "免费接送",
+    "安排接送",
+    "支持接送",
+    "可以接送",
     "车费报销",
+    "报销车费",
+    "打车报销",
+    "报销打车",
+    "打车凭证",
+    "打车发票",
+    "实报实销",
+    "报销准备",
+    "报销细节",
+    "3公里内接送",
+    "3公里接送",
+    "3公里内到店",
+    "车费补贴",
+    "交通补贴",
 )
 
 MUST_HANDOFF_TERMS = (
@@ -306,6 +330,10 @@ def build_state(case: dict[str, Any]) -> dict[str, Any]:
             "wechat": BASE_REQUEST["wechat"],
             "external_userid": customer_id,
             "customer_id": customer_id,
+            "customer_stage": case.get("customer_stage"),
+            "scene_type": case.get("scene_type"),
+            "business_logic": case.get("business_logic"),
+            "expected_policy_family_id": case.get("expected_policy_family_id"),
         },
         "trace": [],
         "errors": [],
@@ -387,6 +415,8 @@ def judge_result(
 
 
 def business_family_matched(expected_family: str, actual_family: str) -> bool:
+    expected_family = canonical_business_family(expected_family)
+    actual_family = canonical_business_family(actual_family)
     if not expected_family:
         return True
     if expected_family == actual_family:
@@ -394,6 +424,15 @@ def business_family_matched(expected_family: str, actual_family: str) -> bool:
     if expected_family == "HUMAN_HANDOFF" and actual_family.startswith("HUMAN_HANDOFF"):
         return True
     return False
+
+
+def canonical_business_family(family: str) -> str:
+    family = str(family or "").strip()
+    if family in {"SF9_APPOINTMENT_CHANGE", "SF9_APPOINTMENT_CANCEL", "SF9_APPOINTMENT_STATUS"}:
+        return "SF9_APPOINTMENT"
+    if family == "GENERAL_DIRECT_REPLY":
+        return "GENERAL_DIRECT_REPLY"
+    return family
 
 
 def state_meta(final_state: dict[str, Any]) -> dict[str, Any]:

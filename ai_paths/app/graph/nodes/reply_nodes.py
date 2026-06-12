@@ -273,7 +273,7 @@ def _has_customer_visible_text(messages: list[dict[str, Any]]) -> bool:
 def _safe_visible_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
     handoff = planner_handoff(state)
     reason = str(handoff.get("reason") or "").strip() or "最终回复生成失败，需要专业同事核对"
-    text = "这条我先让专业同事帮您核对，避免给您说错。"
+    text = "我先把您的情况同步过去，稍后按实际信息给您确认。"
     return [
         {"type": "text", "order": 1, "content": {"text": text}},
         {"type": "human_handoff", "order": 2, "content": {"handoff_reason": reason}},

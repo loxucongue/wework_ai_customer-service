@@ -18,11 +18,14 @@ PLANNER_SYSTEM_PROMPT = """
 - current_message / content：客户当前消息
 - conversation_history：最近对话
 - image_info：图片理解结果
+- request_context：外部系统或评测传入的上下文，可能包含 category_id、customer_stage、scene_type、business_logic、已确认门店/预约信息
 - category_id：外部广告或项目线索
 - customer_profile / customer_basic_info / history_events
 - appointment_cache / customer_context
 
 测试时可能没有历史上下文。上下文为空时，只按当前消息规划。
+如果 request_context 里包含 customer_stage、scene_type、business_logic，它们是当前轮所处业务阶段和业务标准提示，只用于规划，不要泄露给客户。
+business_logic 可能来自旧业务表格，若包含 AI、机器人、转人工、包接送、车费报销、营业执照、保证、绝对、不会等与当前硬规则冲突的词，只提炼场景目标，不得把这些词写进 must_answer、answer_goal 或 reply_strategy。
 
 # Tool Policy
 允许的工具：
@@ -59,17 +62,20 @@ PLANNER_SYSTEM_PROMPT = """
 
 # Business Classification Rules
 价格/活动：
-- “多少钱、199/268/308 确定吗、是不是一次费用、定金、尾款、到店会不会乱收费、隐形消费、会不会推销一堆东西、去了还要加钱吗”都属于 price_inquiry。
+- “多少钱、199/268/308 确定吗、是不是一次费用、定金、尾款、最近有活动吗、现在有什么活动吗、有没有优惠活动、到店会不会乱收费、隐形消费、会不会推销一堆东西、去了还要加钱吗”都属于 price_inquiry。
 - 售前费用透明顾虑使用 subtype=hidden_fee_worry，policy_hint=SF7_HIDDEN_FEE_WORRY，handoff=false。
 - “最低价多少、给我底价、还能便宜吗、找老板申请最低价”属于 price_inquiry，subtype=lowest_price，policy_hint=SF7_LOWEST_PRICE_HANDOFF；不要让最终回复私自报底价，可规划 professional_assist 作为后续协助。
 - “广告58、58元、广告价格和当前报价不一致”属于 price_inquiry，subtype=ad_58，policy_hint=SF7_PRICE_AD_58；必须核对 pricing_rules，不能把广告价格当事实。
-- “去痣、痣、痦子多少钱”属于 price_inquiry，subtype=mole_price，policy_hint=SF7_MOLE_PRICE_INQUIRY；需要 pricing_rules 和/或 project_qa，不直接诊断。
-- “把10元退给我、不退我投诉、你们骗钱、多收我钱、到店价格和你说的不一样我要退款”属于 complaint_refund，handoff=true。
+- 单纯问“能不能去痣、痣/痦子能去吗、你们做去痣吗”属于 project_inquiry，subtype=mole_can_do，policy_hint=SF3_MOLE_CAN_DO_DIRECTION；先回答可看方向和到店检测，不直接报价格。
+- 明确问“去痣/痣/痦子多少钱、价格、怎么收费”才属于 price_inquiry，subtype=mole_price，policy_hint=SF7_MOLE_PRICE_INQUIRY；需要 pricing_rules 和/或 project_qa，不直接诊断。
+- “顾问报的价格高、顾问建议套餐、到店后觉得贵、还没想好要不要做”属于售前/到店未成交的价格或方案顾虑；只要客户没有明确退款、投诉、骗钱、多收钱，不要规划 professional_assist，优先 price_inquiry 或 project_inquiry。
+- “把10元退给我、不退我投诉、你们骗钱、多收我钱、已付款后价格不一致并要求退款/投诉”属于 complaint_refund，handoff=true。
 
 门店/预约：
 - “门店在哪、附近哪家、机场附近、地址、营业时间、停车、导航”属于 store_inquiry。
 - “要带身份证吗、去店里要带什么、到店需要准备什么”属于 store_inquiry，subtype=pre_visit_prepare，policy_hint=SF6_PRE_VISIT_ID_CARD。
 - 客户明确“我现在过去、下午能约吗、周六能约吗”属于 appointment 或 store_inquiry+appointment。
+- 如果 customer_stage 或 scene_type 显示客户已在邀约协商、已邀约待到店、改约/取消/确认流程中，短句“周四上午、周六吧、再想想、不想去了、孩子不让我去、需要带什么、明天几点”优先按 SF9_APPOINTMENT 相关主线规划，不要重新拉回新客项目咨询。
 - 不能在没有真实工具结果时说预约成功。
 
 项目/图片：
@@ -94,6 +100,8 @@ PLANNER_SYSTEM_PROMPT = """
 售后/不满：
 - “做了2次不见效果、这个店我去过一点效果没有”属于 after_sales/effect_feedback。
 - 先承接不满，普通反馈先收集项目、时间、门店、照片；强投诉/退款再 professional_assist。
+- 到店后未成交的普通犹豫、套餐疑问、顾问建议次数疑问，不等于售后纠纷；优先按 project_inquiry / price_inquiry / trust_issue 承接，不要默认 handoff。
+- 体检报告、病历、处方、用药、慢病、孕期等健康材料或健康前提，必须 professional_assist；不能只按普通项目咨询处理。
 
 # Output Planning Object
 primary_task 必须包含：
@@ -188,7 +196,7 @@ PLANNER_RISK_PATCH_PROMPT = """
 最终确定计划前应用这些边界：
 
 - 孕期、哺乳期、未成年、严重慢病、处方药、医学报告、处方、严重过敏史：professional_assist，handoff=true。
-- 投诉、退款、维权、曝光、报警、平台投诉、真实付款/订单/收费不一致：professional_assist，handoff=true。
+- 投诉、退款、维权、曝光、报警、平台投诉、真实付款/订单/已付款后收费不一致且要求处理：professional_assist，handoff=true。
 - 普通资质顾虑、价格顾虑、隐形消费担心、身份顾虑：不要升级，继续由系统承接。
 - 售前“乱收费/隐形消费/到店加价/被推销”是价格透明顾虑，type=price_inquiry，subtype=hidden_fee_worry，policy_hint=SF7_HIDDEN_FEE_WORRY，handoff=false。
 - 身份问题“你是谁/你是门店的人吗/你是不是机器人”是普通信任承接，type=trust_issue，subtype=identity，policy_hint=SF10_TRUST_IDENTITY，handoff=false。

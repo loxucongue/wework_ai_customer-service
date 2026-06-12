@@ -302,7 +302,6 @@ APPOINTMENT_KEYWORDS = [
 HUMAN_KEYWORDS = [
     "人工",
     "真人",
-    "顾问",
     "投诉",
     "退款",
     "维权",

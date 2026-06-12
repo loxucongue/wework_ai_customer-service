@@ -19,7 +19,9 @@ from app.graph.state import AgentState
 from app.graph.runtime_turn_policy import should_suspend_appointment_context_for_current_turn
 from app.policies.compliance_terms import (
     QUALIFICATION_CONTEXT_SAFE_NOTE,
+    SERVICE_COMMITMENT_CONTEXT_SAFE_NOTE,
     UNSUPPORTED_QUALIFICATION_CONTEXT_TERMS,
+    UNSUPPORTED_SERVICE_COMMITMENT_CONTEXT_TERMS,
 )
 
 
@@ -73,6 +75,8 @@ def _sanitize_planner_context_for_reply(value: Any) -> Any:
     if isinstance(value, str):
         if any(term in value for term in UNSUPPORTED_QUALIFICATION_CONTEXT_TERMS):
             return QUALIFICATION_CONTEXT_SAFE_NOTE
+        if any(term in value for term in UNSUPPORTED_SERVICE_COMMITMENT_CONTEXT_TERMS):
+            return SERVICE_COMMITMENT_CONTEXT_SAFE_NOTE
         return value
     return value
 
