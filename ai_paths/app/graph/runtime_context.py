@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from app.graph.nodes.common import dedupe_strings
 from app.graph.nodes.image_info import has_image_concern
-from app.graph.nodes.intent_signals import recent_conversation_text
 from app.graph.nodes.project_kb_context import (
     business_project_slices,
     project_direction_name_candidates,
@@ -10,6 +9,7 @@ from app.graph.nodes.project_kb_context import (
 )
 from app.graph.nodes.pricing_context import canonical_price_project, extract_project
 from app.graph.planner.runtime_plan import planner_project_hints
+from app.graph.signals.general import recent_conversation_text
 from app.graph.state import AgentState
 
 
