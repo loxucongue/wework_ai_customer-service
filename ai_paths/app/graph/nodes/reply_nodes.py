@@ -152,8 +152,7 @@ def create_synthesize_reply_node(
 
             if not _has_customer_visible_text(messages):
                 errors.append({"node": "synthesize_reply", "message": "customer_visible_reply_unavailable"})
-                messages = _safe_visible_fallback_messages(state)
-                reply_source = "safe_handoff_fallback"
+                messages, reply_source = _safe_visible_fallback_messages(state)
 
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
@@ -270,11 +269,46 @@ def _has_customer_visible_text(messages: list[dict[str, Any]]) -> bool:
     return False
 
 
-def _safe_visible_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
+def _safe_visible_fallback_messages(state: AgentState) -> tuple[list[dict[str, Any]], str]:
     handoff = planner_handoff(state)
     reason = str(handoff.get("reason") or "").strip() or "最终回复生成失败，需要专业同事核对"
-    text = "我先把您的情况同步过去，稍后按实际信息给您确认。"
-    return [
-        {"type": "text", "order": 1, "content": {"text": text}},
-        {"type": "human_handoff", "order": 2, "content": {"handoff_reason": reason}},
-    ]
+    if _fallback_needs_handoff(state, handoff):
+        text = "我先帮您记录清楚，马上让专业同事核对处理。"
+        return (
+            [
+                {"type": "text", "order": 1, "content": {"text": text}},
+                {"type": "human_handoff", "order": 2, "content": {"handoff_reason": reason}},
+            ],
+            "safe_handoff_fallback",
+        )
+
+    text = _safe_text_fallback(state)
+    return ([{"type": "text", "order": 1, "content": {"text": text}}], "safe_text_fallback")
+
+
+def _fallback_needs_handoff(state: AgentState, handoff: dict[str, Any]) -> bool:
+    if bool(handoff.get("needed")):
+        return True
+    policy_family = str(state.get("policy_family_id") or "")
+    if policy_family.startswith("HUMAN_HANDOFF"):
+        return True
+    primary_task = state.get("primary_task") if isinstance(state.get("primary_task"), dict) else {}
+    policy_hint = str(primary_task.get("policy_hint") or "").upper()
+    return policy_hint.startswith("HUMAN_HANDOFF") or policy_hint.startswith("HUMAN_REQUEST")
+
+
+def _safe_text_fallback(state: AgentState) -> str:
+    policy_family = str(state.get("policy_family_id") or "")
+    if policy_family == "SF7_PRICE_ACTIVITY":
+        return "费用会按活动规则和到店检测后的方案提前说清楚，认可再做。"
+    if policy_family == "SF5_COMPETITOR_COMPARE":
+        return "您对比价格很正常，重点看包含内容、部位次数和费用是否透明，认可后再决定。"
+    if policy_family == "SF10_TRUST_BUILD":
+        return "理解您的顾虑，资质、费用和效果参考到店都能实地核对，认可再安排。"
+    if policy_family.startswith("SF9_APPOINTMENT"):
+        return "我先按您的到店意向继续确认，具体门店和时间以真实档期为准。"
+    if policy_family == "SF6_STORE_INQUIRY":
+        return "门店位置和营业时间我会按真实信息确认清楚，再帮您选更方便的一家。"
+    if policy_family == "SF12_AFTER_SALES":
+        return "理解您这次体验不太理想，我先帮您把门店、时间和具体情况问清楚再处理。"
+    return "我先按您的问题继续帮您确认，涉及价格、门店或时间都会以真实信息为准。"

@@ -17,8 +17,8 @@ from app.policies.constants import COMPLAINT_KEYWORDS, COMPETITOR_KEYWORDS, SEVE
 def complaint_terms(content: str) -> list[str]:
     if not content or is_identity_question(content):
         return []
-    soft_trust_markers = ["是不是", "会不会", "怕", "担心", "感觉", "不靠谱", "靠不靠谱"]
-    hard_accusations = ["我要投诉", "要求退款", "退钱", "维权", "曝光", "起诉", "骗我钱", "骗子"]
+    soft_trust_markers = ["是不是", "会不会", "不会", "怕", "担心", "感觉", "不靠谱", "靠不靠谱"]
+    hard_accusations = ["我要投诉", "要求退款", "退钱", "维权", "曝光", "起诉", "骗我钱", "你们就是骗子", "骗子公司"]
     if any(marker in content for marker in soft_trust_markers) and not any(hard in content for hard in hard_accusations):
         return []
     terms = [word for word in COMPLAINT_KEYWORDS if word in content]
@@ -40,31 +40,11 @@ def has_effect_dispute(content: str) -> bool:
         word in content for word in ["没效果", "没用", "被坑", "骗人", "骗子"]
     ):
         return False
-    accusation_terms = ["像骗子", "跟骗子一样", "你们骗人", "你们就是骗人", "骗我", "被你们坑", "坑我", "太坑了"]
+    accusation_terms = ["像骗子", "跟骗子一样", "你们骗人", "你们就是骗人", "骗我钱", "被你们坑", "坑我", "太坑了"]
     if any(term in content for term in accusation_terms):
         return True
-    dissatisfaction_terms = [
-        "效果一点也不好",
-        "效果一点都不好",
-        "效果不好",
-        "一点也没效果",
-        "一点都没效果",
-        "一点效果都没有",
-        "一点用都没",
-        "一点变化都没有",
-        "没有变化",
-        "没变化",
-        "跟没做一样",
-        "完全没用",
-        "白做",
-        "白花钱",
-    ]
-    if any(term in content for term in dissatisfaction_terms):
-        return True
-    past_context = any(word in content for word in ["做了", "做完", "做的", "花了", "付了", "买了"])
-    if any(word in content for word in ["一点用都没", "没有用", "没用", "没效果"]) and past_context:
-        return True
-    if ("没淡" in content or "没有淡" in content) and any(word in content for word in ["斑", "色沉", "痘印"]) and past_context:
+    hard_effect_dispute_terms = ["白花钱", "赔钱", "毁容", "做坏了", "出问题没人管"]
+    if any(term in content for term in hard_effect_dispute_terms):
         return True
     return False
 
