@@ -19,7 +19,7 @@ from app.main import compiled_graph
 
 
 DEFAULT_INPUT = Path(
-    r"C:\Users\24159\.codex\attachments\e61f6cd4-6d8f-4628-9021-04fc085d9603\pasted-text.txt"
+    r"C:\Users\24159\.codex\attachments\62d7c2f7-71af-4d48-a7f6-e28749543112\pasted-text.txt"
 )
 INPUT_PATH = Path(os.getenv("AI_PATHS_273_INPUT", str(DEFAULT_INPUT)))
 MAX_CONCURRENCY = int(os.getenv("AI_PATHS_273_WORKERS", "20"))

@@ -39,6 +39,7 @@ FAMILY_BY_INTENT = {
     "trust_issue": "SF10_TRUST_BUILD",
     "after_sales": "SF12_AFTER_SALES",
     "complaint_refund": "SF12_AFTER_SALES",
+    "human_request": "HUMAN_HANDOFF",
 }
 
 QUESTION_KEYS = (
@@ -53,13 +54,21 @@ SMOKE_CASES = [
     {"case_id": "price_hidden_fee_001", "family": "SF7_PRICE_ACTIVITY", "question": "到店会乱收费吗", "expected_scene_id": "SF7_HIDDEN_FEE_WORRY"},
     {"case_id": "price_repeat_001", "family": "SF7_PRICE_ACTIVITY", "question": "你还是没告诉我价格", "expected_scene_id": "SF7_PRICE_REPEAT_ASK"},
     {"case_id": "price_deposit_001", "family": "SF7_PRICE_ACTIVITY", "question": "为什么要交10元定金", "expected_scene_id": "SF7_DEPOSIT_EXPLAIN"},
+    {"case_id": "price_ad_58_001", "family": "SF7_PRICE_ACTIVITY", "question": "看广告58元是真的吗", "expected_scene_id": "SF7_PRICE_AD_58"},
+    {"case_id": "price_mole_001", "family": "SF7_PRICE_ACTIVITY", "question": "可以去痣吗 去痣要多少钱", "expected_scene_id": "SF7_MOLE_PRICE_INQUIRY"},
+    {"case_id": "price_lowest_001", "family": "SF7_PRICE_ACTIVITY", "question": "最低价多少，能不能再便宜", "expected_scene_id": "SF7_LOWEST_PRICE_HANDOFF"},
     {"case_id": "store_location_001", "family": "SF6_STORE_INQUIRY", "question": "厦门附近有门店吗", "expected_scene_id": "SF6_STORE_LOCATION"},
     {"case_id": "store_doubt_001", "family": "SF6_STORE_INQUIRY", "question": "为什么不敢发详细地址", "expected_scene_id": "SF6_STORE_ADDRESS_DOUBT"},
+    {"case_id": "store_prepare_001", "family": "SF6_STORE_INQUIRY", "question": "到店要带身份证吗", "expected_scene_id": "SF6_PRE_VISIT_ID_CARD"},
+    {"case_id": "store_name_001", "family": "SF6_STORE_INQUIRY", "question": "你们门店名字叫什么", "expected_scene_id": "SF6_STORE_NAME_INQUIRY"},
     {"case_id": "appointment_weekend_001", "family": "SF9_APPOINTMENT", "question": "周六下午能约吗", "expected_scene_id": "SF9_WEEKEND_AVAILABLE"},
     {"case_id": "trust_qualification_001", "family": "SF10_TRUST_BUILD", "question": "你们有资质吗", "expected_scene_id": "SF10_QUALIFICATION_INQUIRY"},
     {"case_id": "trust_safety_001", "family": "SF10_TRUST_BUILD", "question": "会伤害皮肤吗", "expected_scene_id": "SF10_SAFETY_WORRY"},
+    {"case_id": "trust_identity_001", "family": "SF10_TRUST_BUILD", "question": "你是门店的人吗", "expected_scene_id": "SF10_IDENTITY_WORRY"},
+    {"case_id": "human_real_person_001", "family": "HUMAN_HANDOFF", "question": "我要跟真人说话", "expected_scene_id": "HUMAN_REQUEST_REAL_PERSON"},
     {"case_id": "after_sales_refund_001", "family": "SF12_AFTER_SALES", "question": "把定金退给我，不然我投诉", "expected_scene_id": "SF12_REFUND_REQUEST_HANDOFF"},
     {"case_id": "competitor_cheaper_001", "family": "SF5_COMPETITOR_COMPARE", "question": "别家299你们能同价吗", "expected_scene_id": "SF5_COMPETITOR_CHEAPER"},
+    {"case_id": "competitor_screenshot_001", "family": "SF5_COMPETITOR_COMPARE", "question": "我发你一张别家报价截图，你帮我看看", "expected_scene_id": "SF5_COMPETITOR_SCREENSHOT"},
 ]
 
 

@@ -18,10 +18,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ai_paths"))
 
 from app.main import compiled_graph  # noqa: E402
+from app.policies.identity_policy import FORBIDDEN_IDENTITY_TERMS  # noqa: E402
 
 
 DEFAULT_INPUT = Path(
-    r"C:\Users\24159\.codex\attachments\5130a6ad-3693-4f49-9ab5-300d0bc841b4\pasted-text.txt"
+    r"C:\Users\24159\.codex\attachments\62d7c2f7-71af-4d48-a7f6-e28749543112\pasted-text.txt"
 )
 INPUT_PATH = Path(os.getenv("AI_PATHS_273_INPUT", str(DEFAULT_INPUT)))
 MAX_CONCURRENCY = int(os.getenv("AI_PATHS_273_WORKERS", "12"))
@@ -54,9 +55,17 @@ FORBIDDEN_VISIBLE_TERMS = (
     "工具",
     "路由",
     "知识库",
+    "系统可查",
+    "系统里",
+    "转人工",
+    "转接",
+    "转人",
+    "转过去",
+    "帮您转",
 )
 
 FORBIDDEN_BUSINESS_TERMS = (
+    *FORBIDDEN_IDENTITY_TERMS,
     "根治",
     "100%见效",
     "百分百见效",
@@ -66,6 +75,54 @@ FORBIDDEN_BUSINESS_TERMS = (
     "一次一定好",
     "包接送",
     "车费报销",
+)
+
+MUST_HANDOFF_TERMS = (
+    "我要投诉",
+    "不然投诉",
+    "退款",
+    "退钱",
+    "退定金",
+    "骗钱",
+    "多收我钱",
+    "体检报告",
+    "病历",
+    "降压药",
+    "降血糖",
+    "高血压",
+    "糖尿病",
+    "孕",
+    "哺乳",
+    "未成年",
+)
+
+SHOULD_NOT_HANDOFF_TERMS = (
+    "乱收费",
+    "隐形消费",
+    "被推销",
+    "强制推销",
+    "到店加价",
+    "你是门店的人吗",
+    "你们有资质吗",
+    "会伤害皮肤吗",
+)
+
+PRICE_DIRECT_ANSWER_TERMS = (
+    "多少钱",
+    "价格",
+    "费用",
+    "确定199",
+    "确定268",
+    "一次的费用",
+    "做完付款",
+    "定金",
+    "尾款",
+)
+
+SAFE_FALLBACK_TEXT_FRAGMENTS = (
+    "这个情况我先帮您记录下来",
+    "避免给您说错",
+    "继续帮您核对清楚",
 )
 
 
@@ -164,16 +221,32 @@ def extract_text_replies(final_state: dict[str, Any]) -> tuple[list[str], list[s
     return text_replies, reply_types, handoff_reason
 
 
-def judge_result(error: str, text_replies: list[str], reply_types: list[str]) -> str:
+def judge_result(case: dict[str, Any], error: str, text_replies: list[str], reply_types: list[str]) -> str:
     if error:
         return f"不通过：{error}"
     if not text_replies:
         return "不通过：无客户可见回复"
     joined = " ".join(text_replies)
+    question = str(case.get("sent_question") or case.get("question") or "")
+    logic = str(case.get("business_logic") or "")
     if any(term in joined for term in FORBIDDEN_VISIBLE_TERMS):
         return "不通过：疑似泄露内部信息"
+    if any(term in joined for term in SAFE_FALLBACK_TEXT_FRAGMENTS):
+        return "不通过：命中安全兜底文案"
     if any(term in joined for term in FORBIDDEN_BUSINESS_TERMS):
         return "不通过：包含禁止承诺/表达"
+    if "human_handoff" in reply_types and not text_replies:
+        return "不通过：专业协助缺少客户可见说明"
+    if any(term in question for term in MUST_HANDOFF_TERMS) or "强制转人工" in logic:
+        if "human_handoff" not in reply_types:
+            return "不通过：应专业协助但未触发"
+    if any(term in question for term in SHOULD_NOT_HANDOFF_TERMS) and "human_handoff" in reply_types:
+        return "不通过：普通售前顾虑误触发专业协助"
+    if "我要跟真人说话" in question and "human_handoff" not in reply_types:
+        return "不通过：真人请求未触发专业协助"
+    if any(term in question for term in PRICE_DIRECT_ANSWER_TERMS):
+        if not any(char.isdigit() for char in joined) and "活动" not in joined and "到店" not in joined:
+            return "可优化：价格/费用问题回答不够直接"
     if len(text_replies) > 2:
         return "可优化：回复条数偏多"
     if any(len(text) > 180 for text in text_replies):
@@ -229,7 +302,7 @@ async def run_case(case: dict[str, Any], semaphore: asyncio.Semaphore) -> dict[s
             "all_text_replies": text_replies,
             "handoff_reason": handoff_reason,
             "log_id": final_state.get("request_id") or state["request_id"],
-            "judgement": judge_result(error, text_replies, reply_types),
+            "judgement": judge_result(case, error, text_replies, reply_types),
             **meta,
         }
 

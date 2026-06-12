@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from app.policies.identity_policy import FORBIDDEN_IDENTITY_TERMS
+
 
 REPLY_HARD_FORBIDDEN_TERMS = (
+    *FORBIDDEN_IDENTITY_TERMS,
     "包接送",
     "车费报销",
     "医美",
@@ -61,6 +64,8 @@ REPLY_HARD_FORBIDDEN_TERMS = (
     "我不是AI",
     "我不是机器人",
     "系统查询",
+    "系统可查",
+    "系统里",
     "工具返回",
     "知识库",
     "检索结果",
@@ -73,6 +78,11 @@ REPLY_HARD_FORBIDDEN_TERMS = (
     "intent",
     "debug",
     "调试信息",
+    "转人工",
+    "转接",
+    "转人",
+    "转过去",
+    "帮您转",
 )
 
 REPLY_THIRD_PERSON_CUSTOMER_TERMS = (

@@ -53,8 +53,25 @@ class ModelClient:
         tier: ModelTier = "balanced",
         temperature: float = 0.1,
     ) -> dict[str, Any]:
-        text = await self.chat_text(messages, tier=tier, temperature=temperature)
-        return self._parse_json(text)
+        if not self.available:
+            raise RuntimeError("No model API key configured")
+        errors: list[str] = []
+        for index, model in enumerate(self._model_names(tier)):
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            try:
+                raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
+                return self._parse_json(self._extract_text(raw))
+            except Exception as exc:
+                errors.append(f"{model}: {type(exc).__name__}: {exc}")
+                if isinstance(exc, json.JSONDecodeError):
+                    continue
+                if not self._should_try_next_model(exc):
+                    break
+        raise RuntimeError("All JSON model candidates failed: " + " | ".join(errors))
 
     async def vision_json(
         self,
