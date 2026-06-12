@@ -55,6 +55,12 @@ async def startup() -> None:
     sqlite_store.initialize()
 
 
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await model_client.aclose()
+    await coze_client.aclose()
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}

@@ -17,7 +17,14 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ai_paths"))
 
-from app.main import compiled_graph  # noqa: E402
+from app.main import (  # noqa: E402
+    compiled_graph,
+    coze_client,
+    customer_context_service,
+    model_client,
+    platform_agent_client,
+    store_service,
+)
 from app.policies.business_scene_table import infer_policy_family  # noqa: E402
 from app.policies.identity_policy import FORBIDDEN_IDENTITY_TERMS  # noqa: E402
 
@@ -26,8 +33,13 @@ DEFAULT_INPUT = Path(
     r"C:\Users\24159\.codex\attachments\62d7c2f7-71af-4d48-a7f6-e28749543112\pasted-text.txt"
 )
 INPUT_PATH = Path(os.getenv("AI_PATHS_273_INPUT", str(DEFAULT_INPUT)))
-MAX_CONCURRENCY = int(os.getenv("AI_PATHS_273_WORKERS", "12"))
-PER_CASE_TIMEOUT_SECONDS = int(os.getenv("AI_PATHS_273_TIMEOUT", "180"))
+TEST_MODE = os.getenv("AI_PATHS_273_MODE", "reply-full-strict").strip() or "reply-full-strict"
+FAST_MODE = TEST_MODE == "reply-full-fast"
+MAX_CONCURRENCY = int(os.getenv("AI_PATHS_273_WORKERS", "36" if FAST_MODE else "12"))
+PER_CASE_TIMEOUT_SECONDS = int(os.getenv("AI_PATHS_273_TIMEOUT", "90" if FAST_MODE else "180"))
+RETRY_TIMEOUTS = int(os.getenv("AI_PATHS_273_RETRY_TIMEOUTS", "1" if FAST_MODE else "0"))
+RETRY_WORKERS = int(os.getenv("AI_PATHS_273_RETRY_WORKERS", str(min(12, MAX_CONCURRENCY))))
+RETRY_TIMEOUT_SECONDS = int(os.getenv("AI_PATHS_273_RETRY_TIMEOUT", str(PER_CASE_TIMEOUT_SECONDS)))
 LIMIT = int(os.getenv("AI_PATHS_273_LIMIT", "0"))
 
 BASE_REQUEST = {
@@ -141,6 +153,86 @@ BOOKISH_STYLE_FRAGMENTS = (
     "如有需要",
     "方便的话",
 )
+
+
+def _cache_key(*parts: Any) -> str:
+    return json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def configure_fast_runtime() -> None:
+    if not FAST_MODE:
+        return
+
+    original_fast_model = model_client.settings.model_fast
+    fast_model = os.getenv("AI_PATHS_273_FAST_MODEL", original_fast_model).strip()
+    balanced_model = os.getenv("AI_PATHS_273_BALANCED_MODEL", fast_model).strip() or fast_model
+    strong_model = os.getenv("AI_PATHS_273_STRONG_MODEL", balanced_model).strip() or balanced_model
+    if fast_model:
+        model_client.settings.model_fast = fast_model
+    model_client.settings.model_fast_fallbacks = os.getenv("AI_PATHS_273_FAST_FALLBACKS", original_fast_model)
+    model_client.settings.model_balanced = balanced_model
+    model_client.settings.model_strong = strong_model
+    model_client.settings.model_balanced_fallbacks = os.getenv("AI_PATHS_273_BALANCED_FALLBACKS", original_fast_model)
+    model_client.settings.model_strong_fallbacks = os.getenv("AI_PATHS_273_STRONG_FALLBACKS", original_fast_model)
+
+
+def install_fast_caches() -> None:
+    if not FAST_MODE:
+        return
+
+    if os.getenv("AI_PATHS_273_SKIP_CUSTOMER_CONTEXT", "1") != "0":
+        def fast_customer_context_load(*, customer_id: str, memory: dict[str, Any], request_context: dict[str, Any]):
+            del memory
+            return {
+                "customer_id": customer_id,
+                "source": "reply_full_fast_skip_platform",
+                "appointment": {},
+                "request_context": {
+                    key: request_context.get(key)
+                    for key in ["user_id", "corp_id", "wechat", "external_userid", "customer_id"]
+                    if request_context.get(key) not in (None, "")
+                },
+            }
+
+        customer_context_service.load = fast_customer_context_load  # type: ignore[method-assign]
+
+    kb_cache: dict[str, Any] = {}
+    kb_locks: dict[str, asyncio.Lock] = {}
+    original_search_kb = coze_client.search_kb
+
+    async def cached_search_kb(kb_name: str, query: str):
+        key = _cache_key("kb", kb_name, query)
+        if key in kb_cache:
+            return kb_cache[key]
+        lock = kb_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if key not in kb_cache:
+                kb_cache[key] = await original_search_kb(kb_name, query)
+            return kb_cache[key]
+
+    coze_client.search_kb = cached_search_kb  # type: ignore[method-assign]
+
+    store_search_cache: dict[str, Any] = {}
+    original_store_search = store_service.search
+
+    def cached_store_search(query: str, *, customer_context: dict[str, Any] | None = None, limit: int = 3):
+        key = _cache_key("store_search", query, customer_context or {}, limit)
+        if key not in store_search_cache:
+            store_search_cache[key] = original_store_search(query, customer_context=customer_context, limit=limit)
+        return store_search_cache[key]
+
+    store_service.search = cached_store_search  # type: ignore[method-assign]
+
+    option_cache: dict[str, Any] = {}
+    original_list_store_options = platform_agent_client.list_store_options
+
+    def cached_list_store_options(*, request_context: dict[str, Any] | None = None):
+        key = _cache_key("store_options", request_context or {})
+        if key not in option_cache:
+            option_cache[key] = original_list_store_options(request_context=request_context)
+        return option_cache[key]
+
+    platform_agent_client.list_store_options = cached_list_store_options  # type: ignore[method-assign]
 
 
 def read_cases() -> list[dict[str, Any]]:
@@ -318,7 +410,58 @@ def state_meta(final_state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def run_case(case: dict[str, Any], semaphore: asyncio.Semaphore) -> dict[str, Any]:
+def trace_metrics(final_state: dict[str, Any]) -> dict[str, Any]:
+    durations: dict[str, int] = {}
+    model_calls = 0
+    tool_calls = 0
+    model_usages: list[dict[str, Any]] = []
+    for entry in final_state.get("trace") or []:
+        if not isinstance(entry, dict):
+            continue
+        node = str(entry.get("node") or "").strip()
+        if node:
+            durations[node] = durations.get(node, 0) + int(entry.get("duration_ms") or 0)
+        calls = entry.get("tool_calls") or []
+        if isinstance(calls, list):
+            tool_calls += len(calls)
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                name = str(call.get("name") or "")
+                if "model" in name or "planner_brain" in name:
+                    model_calls += 1
+                    if isinstance(call.get("usage"), dict):
+                        usage = dict(call.get("usage") or {})
+                        usage["call_name"] = name
+                        model_usages.append(usage)
+                nested = call.get("nested_calls") or []
+                if isinstance(nested, list):
+                    tool_calls += len(nested)
+                    for item in nested:
+                        if not isinstance(item, dict):
+                            continue
+                        nested_name = str(item.get("name") or "")
+                        if "model" in nested_name:
+                            model_calls += 1
+                            if isinstance(item.get("usage"), dict):
+                                usage = dict(item.get("usage") or {})
+                                usage["call_name"] = nested_name
+                                model_usages.append(usage)
+    return {
+        "node_durations_ms": durations,
+        "model_call_count": model_calls,
+        "tool_call_count": tool_calls,
+        "model_usages": model_usages,
+    }
+
+
+async def run_case(
+    case: dict[str, Any],
+    semaphore: asyncio.Semaphore,
+    *,
+    timeout_seconds: int,
+    attempt: int,
+) -> dict[str, Any]:
     async with semaphore:
         started = time.perf_counter()
         state = build_state(case)
@@ -327,7 +470,7 @@ async def run_case(case: dict[str, Any], semaphore: asyncio.Semaphore) -> dict[s
         try:
             final_state = await asyncio.wait_for(
                 compiled_graph.ainvoke(state),
-                timeout=PER_CASE_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
         except asyncio.TimeoutError:
             error = "TimeoutError"
@@ -336,6 +479,7 @@ async def run_case(case: dict[str, Any], semaphore: asyncio.Semaphore) -> dict[s
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         text_replies, reply_types, handoff_reason = extract_text_replies(final_state)
         meta = state_meta(final_state)
+        metrics = trace_metrics(final_state)
         business_standard_matched = business_family_matched(
             str(case.get("expected_policy_family_id") or ""),
             str(meta.get("policy_family_id") or ""),
@@ -344,6 +488,9 @@ async def run_case(case: dict[str, Any], semaphore: asyncio.Semaphore) -> dict[s
             **case,
             "customer_id": state["customer_id"],
             "elapsed_ms": elapsed_ms,
+            "attempt": attempt,
+            "timeout_seconds": timeout_seconds,
+            "test_mode": TEST_MODE,
             "error": error,
             "state_errors": final_state.get("errors", []),
             "reply_source": str(final_state.get("reply_source") or ""),
@@ -357,6 +504,7 @@ async def run_case(case: dict[str, Any], semaphore: asyncio.Semaphore) -> dict[s
             "business_standard_matched": business_standard_matched,
             "judgement": judge_result(case, error, text_replies, reply_types, meta),
             **meta,
+            **metrics,
         }
 
 
@@ -371,6 +519,26 @@ def counter_table(title: str, counter: Counter[str], limit: int = 30) -> list[st
         lines.append(f"| {md_escape(key or '<empty>')} | {value} |")
     if not counter:
         lines.append("| <none> | 0 |")
+    lines.append("")
+    return lines
+
+
+def timing_table(results: list[dict[str, Any]]) -> list[str]:
+    totals: Counter[str] = Counter()
+    counts: Counter[str] = Counter()
+    for item in results:
+        durations = item.get("node_durations_ms") or {}
+        if not isinstance(durations, dict):
+            continue
+        for node, duration in durations.items():
+            totals[str(node)] += int(duration or 0)
+            counts[str(node)] += 1
+    lines = ["## 节点耗时聚合", "", "| 节点 | 平均ms | 总ms | 样本数 |", "| --- | ---: | ---: | ---: |"]
+    for node, total in totals.most_common():
+        count = max(1, counts[node])
+        lines.append(f"| {md_escape(node)} | {int(total / count)} | {total} | {count} |")
+    if not totals:
+        lines.append("| <none> | 0 | 0 | 0 |")
     lines.append("")
     return lines
 
@@ -419,9 +587,13 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
         "# AI 客服 273 条策略回归报告",
         "",
         f"- 运行方式：`compiled_graph.ainvoke(...)`",
+        f"- 测试模式：`{TEST_MODE}`",
         f"- 输入：`{INPUT_PATH}`",
         f"- 并发：`{MAX_CONCURRENCY}`",
         f"- 单条超时：`{PER_CASE_TIMEOUT_SECONDS}s`",
+        f"- 超时重试轮数：`{RETRY_TIMEOUTS}`",
+        f"- 重试并发：`{RETRY_WORKERS}`",
+        f"- 重试超时：`{RETRY_TIMEOUT_SECONDS}s`",
         f"- 总数：`{len(results)}`",
         f"- human_handoff：`{handoff_count}`",
         f"- no_visible_text：`{len(no_visible_text)}`",
@@ -438,6 +610,7 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
     lines.extend(counter_table("policy_family_id 聚合", family_counter))
     lines.extend(counter_table("exact_policy_id 聚合", policy_counter))
     lines.extend(counter_table("active_scene_id 聚合", scene_counter))
+    lines.extend(timing_table(results))
 
     lines.extend(
         [
@@ -528,15 +701,30 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
     return json_path, md_path
 
 
-async def main_async() -> None:
-    started = time.perf_counter()
-    cases = read_cases()
-    semaphore = asyncio.Semaphore(MAX_CONCURRENCY)
+async def run_batch(
+    cases: list[dict[str, Any]],
+    *,
+    workers: int,
+    timeout_seconds: int,
+    attempt: int,
+    label: str,
+) -> list[dict[str, Any]]:
+    semaphore = asyncio.Semaphore(workers)
     print(
-        f"start cases={len(cases)} workers={MAX_CONCURRENCY} timeout={PER_CASE_TIMEOUT_SECONDS}s",
+        f"start {label} cases={len(cases)} workers={workers} timeout={timeout_seconds}s attempt={attempt}",
         flush=True,
     )
-    tasks = [asyncio.create_task(run_case(case, semaphore)) for case in cases]
+    tasks = [
+        asyncio.create_task(
+            run_case(
+                case,
+                semaphore,
+                timeout_seconds=timeout_seconds,
+                attempt=attempt,
+            )
+        )
+        for case in cases
+    ]
     results: list[dict[str, Any]] = []
     completed = 0
     for task in asyncio.as_completed(tasks):
@@ -561,13 +749,58 @@ async def main_async() -> None:
                 }
             )
         if completed % 20 == 0 or completed == len(cases):
-            print(f"completed {completed}/{len(cases)}", flush=True)
-    results.sort(key=lambda item: int(item.get("index", 0)))
-    json_path, md_path = write_outputs(results)
-    elapsed = time.perf_counter() - started
-    print(f"json={json_path}", flush=True)
-    print(f"report={md_path}", flush=True)
-    print(f"elapsed={elapsed:.1f}s", flush=True)
+            print(f"{label} completed {completed}/{len(cases)}", flush=True)
+    return results
+
+
+async def main_async() -> None:
+    started = time.perf_counter()
+    try:
+        configure_fast_runtime()
+        install_fast_caches()
+        cases = read_cases()
+        results = await run_batch(
+            cases,
+            workers=MAX_CONCURRENCY,
+            timeout_seconds=PER_CASE_TIMEOUT_SECONDS,
+            attempt=1,
+            label="main",
+        )
+
+        by_index = {int(item.get("index", -1)): item for item in results}
+        case_by_index = {int(case.get("index", -1)): case for case in cases}
+        for retry_round in range(1, RETRY_TIMEOUTS + 1):
+            retry_cases = [
+                case_by_index[index]
+                for index, item in sorted(by_index.items())
+                if item.get("error") == "TimeoutError" and index in case_by_index
+            ]
+            if not retry_cases:
+                break
+            retry_results = await run_batch(
+                retry_cases,
+                workers=RETRY_WORKERS,
+                timeout_seconds=RETRY_TIMEOUT_SECONDS,
+                attempt=retry_round + 1,
+                label=f"retry{retry_round}",
+            )
+            for item in retry_results:
+                index = int(item.get("index", -1))
+                previous = by_index.get(index)
+                if previous is None or previous.get("error") == "TimeoutError" or not item.get("error"):
+                    item["retry_round"] = retry_round
+                    by_index[index] = item
+
+        results = list(by_index.values())
+        results.sort(key=lambda item: int(item.get("index", 0)))
+        json_path, md_path = write_outputs(results)
+        elapsed = time.perf_counter() - started
+        print(f"json={json_path}", flush=True)
+        print(f"report={md_path}", flush=True)
+        print(f"elapsed={elapsed:.1f}s", flush=True)
+    finally:
+        await model_client.aclose()
+        await coze_client.aclose()
 
 
 if __name__ == "__main__":

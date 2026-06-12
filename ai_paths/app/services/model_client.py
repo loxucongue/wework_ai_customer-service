@@ -16,6 +16,8 @@ class ModelClient:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.last_usage: dict[str, Any] | None = None
+        self._client: httpx.AsyncClient | None = None
+        self._client_timeout: int | None = None
 
     @property
     def available(self) -> bool:
@@ -123,19 +125,33 @@ class ModelClient:
             "Content-Type": "application/json; charset=utf-8",
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        async with httpx.AsyncClient(timeout=self.settings.model_timeout_seconds) as client:
-            response = await client.post(url, headers=headers, content=body)
-            response.raise_for_status()
-            raw = response.json()
-            self.last_usage = {
-                "provider": self.settings.model_provider,
-                "model": payload.get("model"),
-                "tier": tier,
-                "fallback_index": fallback_index,
-                "fallback_errors": list(errors),
-                "usage": raw.get("usage") or {},
-            }
-            return raw
+        client = self._http_client()
+        response = await client.post(url, headers=headers, content=body)
+        response.raise_for_status()
+        raw = response.json()
+        self.last_usage = {
+            "provider": self.settings.model_provider,
+            "model": payload.get("model"),
+            "tier": tier,
+            "fallback_index": fallback_index,
+            "fallback_errors": list(errors),
+            "usage": raw.get("usage") or {},
+        }
+        return raw
+
+    def _http_client(self) -> httpx.AsyncClient:
+        timeout = int(self.settings.model_timeout_seconds)
+        if self._client is None or self._client.is_closed or self._client_timeout != timeout:
+            self._client = httpx.AsyncClient(
+                timeout=timeout,
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+            )
+            self._client_timeout = timeout
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
     def _api_key(self) -> str:
         return model_selection.api_key(self.settings)

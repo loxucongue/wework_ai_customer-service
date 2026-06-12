@@ -13,6 +13,7 @@ class CozeClient:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.oauth_provider = CozeOAuthTokenProvider(settings)
+        self._client: httpx.AsyncClient | None = None
 
     async def run_workflow(
         self,
@@ -32,21 +33,33 @@ class CozeClient:
         }
         body = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
         last_error: Exception | None = None
-        async with httpx.AsyncClient(timeout=60) as client:
-            for attempt in range(3):
-                try:
-                    response = await client.post(url, headers=headers, content=body)
-                    response.raise_for_status()
-                    return response.json()
-                except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
-                    last_error = exc
-                    if attempt < 2:
-                        await asyncio.sleep(0.5 * (attempt + 1))
-                        continue
-                    raise
+        client = self._http_client()
+        for attempt in range(3):
+            try:
+                response = await client.post(url, headers=headers, content=body)
+                response.raise_for_status()
+                return response.json()
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                raise
         if last_error:
             raise last_error
         raise RuntimeError("Coze workflow request failed without response")
+
+    def _http_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=60,
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
     async def search_kb(self, kb_name: str, query: str) -> CozeKbResult:
         if self._looks_corrupted_query(query):
