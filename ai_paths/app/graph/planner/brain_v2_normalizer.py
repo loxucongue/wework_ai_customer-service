@@ -28,6 +28,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     reply_strategy = _normalize_reply_strategy(reply_strategy_raw, all_tasks)
     handoff = _normalize_handoff(handoff_raw, primary_task, secondary_tasks)
     required_tools = _dedupe_tools([tool for task in all_tasks for tool in task.get("tools", [])])
+    required_tools = _enforce_policy_required_tools(all_tasks, required_tools)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     tool_policy_violations = _tool_policy_violations(all_tasks, required_tools)
     memory_update_hint = _normalize_memory_hint(memory_update_raw)
@@ -126,6 +127,43 @@ def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
             tool["query"] = query
         tools.append(tool)
     return tools
+
+
+def _enforce_policy_required_tools(
+    tasks: list[dict[str, Any]],
+    required_tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    tools = [tool for tool in required_tools if str(tool.get("name") or "").strip() != "no_tool"]
+    if not any(str(task.get("policy_hint") or "").strip() == "SF7_LOWEST_PRICE_HANDOFF" for task in tasks):
+        return required_tools
+
+    query = _policy_tool_query(tasks) or "最低价 活动规则"
+    tools.extend(
+        [
+            {
+                "name": "pricing_rules",
+                "query": query,
+                "purpose": "Need real pricing rules before answering the customer's lowest-price concern",
+            },
+            {
+                "name": "professional_assist",
+                "purpose": "Need a professional colleague to confirm whether there is an approvable price space",
+            },
+        ]
+    )
+    return _dedupe_tools(tools)
+
+
+def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:
+    fragments: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        for key in ("customer_need", "answer_goal", "subtype", "policy_hint"):
+            text = str(task.get(key) or "").strip()
+            if text:
+                fragments.append(text)
+    return " ".join(fragments)[:160].strip()
 
 
 def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[dict[str, Any]]) -> list[dict[str, str]]:

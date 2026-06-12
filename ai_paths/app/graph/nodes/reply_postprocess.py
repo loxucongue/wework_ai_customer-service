@@ -92,10 +92,45 @@ def postprocess_reply_messages(
 
 def _handoff_message_for_state(state: AgentState) -> dict[str, Any] | None:
     handoff = planner_handoff(state)
-    if not handoff.get("needed"):
+    if handoff.get("needed"):
+        reason = str(handoff.get("reason") or "").strip() or "当前问题需要专业同事继续协助核对"
+        return {"handoff_reason": reason}
+
+    assist_reason = _professional_assist_reason(state)
+    if not assist_reason:
         return None
-    reason = str(handoff.get("reason") or "").strip() or "当前问题需要专业同事继续协助核对"
+    reason = assist_reason or "当前问题需要专业同事继续协助核对"
     return {"handoff_reason": reason}
+
+
+def _professional_assist_reason(state: AgentState) -> str:
+    for source in _professional_assist_sources(state):
+        if not isinstance(source, dict) or str(source.get("status") or "").strip() != "requested":
+            continue
+        reason = str(source.get("reason") or source.get("required_internal_action") or "").strip()
+        if reason:
+            return reason[:180]
+    return ""
+
+
+def _professional_assist_sources(state: AgentState) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+
+    structured_facts = state.get("structured_facts")
+    if isinstance(structured_facts, dict) and isinstance(structured_facts.get("professional_assist"), dict):
+        sources.append(structured_facts["professional_assist"])
+
+    fact_envelope = state.get("fact_envelope")
+    if isinstance(fact_envelope, dict):
+        envelope_structured = fact_envelope.get("structured_facts")
+        if isinstance(envelope_structured, dict) and isinstance(envelope_structured.get("professional_assist"), dict):
+            sources.append(envelope_structured["professional_assist"])
+
+    tool_results = state.get("tool_results")
+    if isinstance(tool_results, dict) and isinstance(tool_results.get("professional_assist"), dict):
+        sources.append(tool_results["professional_assist"])
+
+    return sources
 
 
 def _message_fingerprint(messages: list[dict[str, Any]]) -> list[tuple[str, str]]:

@@ -53,6 +53,8 @@ def sanitize_customer_visible_messages(messages: list[dict[str, Any]]) -> list[d
                 continue
             content_text = strip_internal_reply_terms(content_text)
             content_text = sanitize_handoff_visible_phrasing(content_text)
+            content_text = sanitize_health_assist_phrasing(content_text)
+            content_text = sanitize_overpromising_phrasing(content_text)
             content_text = dedupe_repeated_phrase_noise(content_text)
             if not content_text:
                 continue
@@ -128,6 +130,38 @@ def sanitize_handoff_visible_phrasing(text: str) -> str:
     cleaned = cleaned.replace("为您让专业同事", "让专业同事")
     cleaned = cleaned.replace("为您让", "让")
     return cleaned.strip()
+
+
+def sanitize_health_assist_phrasing(text: str) -> str:
+    cleaned = str(text or "").strip()
+    health_markers = ("降压药", "降糖", "高血压", "糖尿病", "血压", "血糖", "心脏病", "慢病", "用药", "体检报告", "病历")
+    assist_markers = ("专业同事", "专业老师", "顾问", "协助", "对接")
+    if not any(marker in cleaned for marker in health_markers):
+        return cleaned
+    if not any(marker in cleaned for marker in assist_markers):
+        return cleaned
+    return "您这个情况需要先让专业同事帮您核对是否适合，我先帮您记录清楚。"
+
+
+def sanitize_overpromising_phrasing(text: str) -> str:
+    cleaned = str(text or "").strip()
+    replacements = (
+        ("确保方案匹配", "确认方案是否适合"),
+        ("确保适配", "确认是否适合"),
+        ("确保安全", "尽量降低风险"),
+        ("安全可控", "先检测评估后更稳妥"),
+        ("绝不会强制消费", "不会强制消费"),
+        ("绝不会临时加价", "不会临时加价"),
+        ("绝不会", "不会随意"),
+        ("一定不会", "不会随意"),
+        ("不会越做越差", "会先评估适不适合再做"),
+        ("所有操作都在安全阈值内", "操作前会先看皮肤状态"),
+        ("专属优惠机制", "当前活动规则"),
+        ("最优方案", "合适方案"),
+    )
+    for old, new in replacements:
+        cleaned = cleaned.replace(old, new)
+    return cleaned
 
 
 def dedupe_repeated_phrase_noise(text: str) -> str:
