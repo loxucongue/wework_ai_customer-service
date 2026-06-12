@@ -43,7 +43,9 @@ def has_effect_dispute(content: str) -> bool:
     accusation_terms = ["像骗子", "跟骗子一样", "你们骗人", "你们就是骗人", "骗我钱", "被你们坑", "坑我", "太坑了"]
     if any(term in content for term in accusation_terms):
         return True
-    hard_effect_dispute_terms = ["白花钱", "赔钱", "毁容", "做坏了", "出问题没人管"]
+    if "做坏了" in content and not any(marker in content for marker in ["万一", "担心", "怕", "会不会"]):
+        return True
+    hard_effect_dispute_terms = ["白花钱", "赔钱", "毁容", "出问题没人管"]
     if any(term in content for term in hard_effect_dispute_terms):
         return True
     return False

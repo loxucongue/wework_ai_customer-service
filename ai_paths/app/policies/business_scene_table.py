@@ -73,7 +73,8 @@ FAMILY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "付钱",
             "199",
             "268",
-            "58",
+            "58元",
+            "广告58",
             "308",
             "380",
             "乱收费",
@@ -207,9 +208,14 @@ def infer_policy_family(*, stage: str = "", scene_type: str = "", question: str 
 
     if _needs_handoff(question_text, logic_text):
         return "HUMAN_HANDOFF"
-    if _scene_contains(scene_text, ("人工接管", "静默")) or _scene_contains(logic_text, ("人工接管", "静默", "不回复")):
+    if (
+        _scene_contains(scene_text, ("人工接管", "静默"))
+        or _scene_contains(logic_text, ("人工接管", "静默", "不回复"))
+    ) and not _is_soft_price_handoff_scene(question_text, scene_text, logic_text):
         return "HUMAN_HANDOFF"
     if _scene_contains(scene_text, ("发图", "面诊")) or question_text in {"[图片]", "（发送斑点照片）你看看我这种能做吗"}:
+        return "SF4_IMAGE_CONSULT"
+    if _is_explicit_image_consult_question(question_text, scene_text):
         return "SF4_IMAGE_CONSULT"
     if _is_opening_scene(stage_text, scene_text, question_text):
         return "S1_OPENING_GENERAL"
@@ -217,10 +223,12 @@ def infer_policy_family(*, stage: str = "", scene_type: str = "", question: str 
         return "SF10_TRUST_BUILD"
     if _is_explicit_competitor_question(question_text):
         return "SF5_COMPETITOR_COMPARE"
-    if _is_explicit_after_sales_question(question_text):
-        return "SF12_AFTER_SALES"
+    if _is_explicit_case_effect_question(question_text):
+        return "CASE_EFFECT_REFERENCE"
     if _is_explicit_price_question(question_text):
         return "SF7_PRICE_ACTIVITY"
+    if _is_explicit_after_sales_question(question_text):
+        return "SF12_AFTER_SALES"
     if _is_explicit_store_or_visit_info_question(question_text):
         return "SF6_STORE_INQUIRY"
     if _is_explicit_project_question(question_text):
@@ -279,6 +287,26 @@ def _needs_handoff(question_text: str, logic_text: str) -> bool:
     return False
 
 
+def _is_soft_price_handoff_scene(question_text: str, scene_text: str, logic_text: str) -> bool:
+    text = question_text + scene_text + logic_text
+    if _scene_contains(text, ("投诉", "退款", "退钱", "骗钱", "多收", "不然")):
+        return False
+    return _scene_contains(
+        text,
+        (
+            "底价",
+            "最低价",
+            "最低多少钱",
+            "再便宜",
+            "太贵",
+            "预算不多",
+            "退休金不多",
+            "顾问报",
+            "套餐没想好",
+        ),
+    )
+
+
 def _is_opening_scene(stage_text: str, scene_text: str, question_text: str) -> bool:
     if _scene_contains(scene_text, ("打招呼", "闲聊", "来源识别")):
         return True
@@ -319,7 +347,21 @@ def _is_explicit_price_question(question_text: str) -> bool:
             "乱收费",
             "隐形消费",
             "最低",
+            "底价",
             "便宜",
+            "太贵",
+            "预算不多",
+            "退休金不多",
+            "顾问报",
+            "套餐",
+            "做完付款",
+            "到店再付",
+            "一只手",
+            "两只手",
+            "一只还是",
+            "单只",
+            "双手",
+            "一双",
             "199",
             "268",
             "308",
@@ -347,6 +389,8 @@ def _is_explicit_competitor_question(question_text: str) -> bool:
 
 
 def _is_explicit_after_sales_question(question_text: str) -> bool:
+    if _scene_contains(question_text, ("做完付款", "到店再付", "尾款", "先付", "付款")):
+        return False
     return _scene_contains(
         question_text,
         (
@@ -367,6 +411,23 @@ def _is_explicit_after_sales_question(question_text: str) -> bool:
             "脸疼",
         ),
     )
+
+
+def _is_explicit_case_effect_question(question_text: str) -> bool:
+    if not _scene_contains(question_text, ("案例", "效果图", "对比图", "做完效果", "图片上的客户", "客户做了多少次", "几次的效果")):
+        return False
+    if _scene_contains(question_text, ("不见效果", "没效果", "没有效果", "效果不好", "上次做", "已经做")):
+        return False
+    return True
+
+
+def _is_explicit_image_consult_question(question_text: str, scene_text: str) -> bool:
+    text = question_text + scene_text
+    if _scene_contains(text, ("报价截图", "活动截图", "竞品截图", "别家", "其他家", "效果图", "案例", "前后对比")):
+        return False
+    has_image_word = _scene_contains(text, ("照片", "图片", "发图", "拍的", "刚拍", "看图"))
+    has_face_or_need = _scene_contains(text, ("脸", "脸颊", "斑", "痣", "痦子", "皮肤", "帮我看看", "这种能做", "适合做什么", "照片糊"))
+    return has_image_word and has_face_or_need
 
 
 def _is_explicit_store_or_visit_info_question(question_text: str) -> bool:
@@ -429,6 +490,9 @@ def _is_identity_or_trust_question(question_text: str, scene_text: str) -> bool:
             "安全吗",
             "伤害皮肤",
             "留疤",
+            "做坏了",
+            "怕出问题",
+            "万一",
             "靠谱吗",
             "正规",
         ),
