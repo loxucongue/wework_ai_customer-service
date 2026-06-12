@@ -17,19 +17,32 @@ class SceneGuidance:
     scene_id: str
     family: str
     status: str
+    stage_scope: tuple[str, ...]
     examples: tuple[str, ...]
     keywords: tuple[str, ...]
     reply_goal: str
     hard_constraints: tuple[str, ...]
     soft_guidance: tuple[str, ...]
+    business_logic: dict[str, Any]
+    style_reference: dict[str, Any]
+    source: dict[str, Any]
 
     def to_prompt_context(self) -> dict[str, Any]:
-        return {
+        context: dict[str, Any] = {
             "scene_id": self.scene_id,
             "reply_goal": self.reply_goal,
             "hard_constraints": list(self.hard_constraints),
             "soft_guidance": list(self.soft_guidance),
         }
+        if self.stage_scope:
+            context["stage_scope"] = list(self.stage_scope)
+        if self.business_logic:
+            context["business_logic"] = self.business_logic
+        if self.style_reference:
+            context["style_reference"] = self.style_reference
+        if self.source:
+            context["source"] = self.source
+        return context
 
 
 def retrieve_scene_guidance(
@@ -85,32 +98,43 @@ def active_scene_guidance_context(candidates: list[dict[str, Any]], *, top_k: in
 
 @lru_cache(maxsize=1)
 def load_scene_guidance() -> tuple[SceneGuidance, ...]:
-    path = Path(__file__).with_name("scene_guidance.jsonl")
+    base = Path(__file__).parent
+    paths = [
+        base / "scene_guidance.jsonl",
+        base / "scene_guidance_business.jsonl",
+    ]
     scenes: list[SceneGuidance] = []
     seen: set[str] = set()
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        text = line.strip()
-        if not text:
+    for path in paths:
+        if not path.exists():
             continue
-        raw = json.loads(text)
-        scene_id = str(raw.get("scene_id") or "").strip()
-        if not scene_id:
-            raise ValueError(f"scene_guidance.jsonl:{line_number} missing scene_id")
-        if scene_id in seen:
-            raise ValueError(f"scene_guidance.jsonl:{line_number} duplicate scene_id {scene_id}")
-        seen.add(scene_id)
-        scenes.append(
-            SceneGuidance(
-                scene_id=scene_id,
-                family=str(raw.get("family") or "").strip(),
-                status=str(raw.get("status") or "shadow").strip(),
-                examples=tuple(_clean_list(raw.get("examples"))),
-                keywords=tuple(_clean_list(raw.get("keywords"))),
-                reply_goal=str(raw.get("reply_goal") or "").strip(),
-                hard_constraints=tuple(_clean_list(raw.get("hard_constraints"))),
-                soft_guidance=tuple(_clean_list(raw.get("soft_guidance"))),
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            text = line.strip()
+            if not text:
+                continue
+            raw = json.loads(text)
+            scene_id = str(raw.get("scene_id") or "").strip()
+            if not scene_id:
+                raise ValueError(f"{path.name}:{line_number} missing scene_id")
+            if scene_id in seen:
+                raise ValueError(f"{path.name}:{line_number} duplicate scene_id {scene_id}")
+            seen.add(scene_id)
+            scenes.append(
+                SceneGuidance(
+                    scene_id=scene_id,
+                    family=str(raw.get("family") or "").strip(),
+                    status=str(raw.get("status") or "shadow").strip(),
+                    stage_scope=tuple(_clean_list(raw.get("stage_scope"))),
+                    examples=tuple(_clean_list(raw.get("examples"))),
+                    keywords=tuple(_clean_list(raw.get("keywords"))),
+                    reply_goal=str(raw.get("reply_goal") or "").strip(),
+                    hard_constraints=tuple(_clean_list(raw.get("hard_constraints"))),
+                    soft_guidance=tuple(_clean_list(raw.get("soft_guidance"))),
+                    business_logic=_clean_dict(raw.get("business_logic")),
+                    style_reference=_clean_dict(raw.get("style_reference")),
+                    source=_clean_dict(raw.get("source")),
+                )
             )
-        )
     return tuple(scenes)
 
 
@@ -158,6 +182,10 @@ def _clean_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item or "").strip()]
+
+
+def _clean_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _normalize(value: str) -> str:

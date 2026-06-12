@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ai_paths"))
 
 from app.main import compiled_graph  # noqa: E402
+from app.policies.business_scene_table import infer_policy_family  # noqa: E402
 from app.policies.identity_policy import FORBIDDEN_IDENTITY_TERMS  # noqa: E402
 
 
@@ -157,6 +158,12 @@ def read_cases() -> list[dict[str, Any]]:
                 "question": question,
                 "sent_question": IMAGE_PLACEHOLDERS.get(question, question),
                 "business_logic": logic,
+                "expected_policy_family_id": infer_policy_family(
+                    stage=current_stage or "未标注",
+                    scene_type=current_scene or "未标注",
+                    question=question,
+                    business_logic=logic,
+                ),
             }
         )
     if LIMIT > 0:
@@ -221,7 +228,13 @@ def extract_text_replies(final_state: dict[str, Any]) -> tuple[list[str], list[s
     return text_replies, reply_types, handoff_reason
 
 
-def judge_result(case: dict[str, Any], error: str, text_replies: list[str], reply_types: list[str]) -> str:
+def judge_result(
+    case: dict[str, Any],
+    error: str,
+    text_replies: list[str],
+    reply_types: list[str],
+    meta: dict[str, Any],
+) -> str:
     if error:
         return f"不通过：{error}"
     if not text_replies:
@@ -235,6 +248,10 @@ def judge_result(case: dict[str, Any], error: str, text_replies: list[str], repl
         return "不通过：命中安全兜底文案"
     if any(term in joined for term in FORBIDDEN_BUSINESS_TERMS):
         return "不通过：包含禁止承诺/表达"
+    expected_family = str(case.get("expected_policy_family_id") or "")
+    actual_family = str(meta.get("policy_family_id") or "")
+    if expected_family and not business_family_matched(expected_family, actual_family):
+        return "可优化：业务标准场景未命中"
     if "human_handoff" in reply_types and not text_replies:
         return "不通过：专业协助缺少客户可见说明"
     if any(term in question for term in MUST_HANDOFF_TERMS) or "强制转人工" in logic:
@@ -254,6 +271,16 @@ def judge_result(case: dict[str, Any], error: str, text_replies: list[str], repl
     if "human_handoff" in reply_types and len(text_replies) > 2:
         return "可优化：专业协助前回复偏多"
     return "通过"
+
+
+def business_family_matched(expected_family: str, actual_family: str) -> bool:
+    if not expected_family:
+        return True
+    if expected_family == actual_family:
+        return True
+    if expected_family == "HUMAN_HANDOFF" and actual_family.startswith("HUMAN_HANDOFF"):
+        return True
+    return False
 
 
 def state_meta(final_state: dict[str, Any]) -> dict[str, Any]:
@@ -289,6 +316,10 @@ async def run_case(case: dict[str, Any], semaphore: asyncio.Semaphore) -> dict[s
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         text_replies, reply_types, handoff_reason = extract_text_replies(final_state)
         meta = state_meta(final_state)
+        business_standard_matched = business_family_matched(
+            str(case.get("expected_policy_family_id") or ""),
+            str(meta.get("policy_family_id") or ""),
+        )
         return {
             **case,
             "customer_id": state["customer_id"],
@@ -302,7 +333,9 @@ async def run_case(case: dict[str, Any], semaphore: asyncio.Semaphore) -> dict[s
             "all_text_replies": text_replies,
             "handoff_reason": handoff_reason,
             "log_id": final_state.get("request_id") or state["request_id"],
-            "judgement": judge_result(case, error, text_replies, reply_types),
+            "expected_policy_family_id": case.get("expected_policy_family_id", ""),
+            "business_standard_matched": business_standard_matched,
+            "judgement": judge_result(case, error, text_replies, reply_types, meta),
             **meta,
         }
 
@@ -342,6 +375,8 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
     scene_counter = Counter(str(item.get("active_scene_id") or "") for item in results)
     judgement_counter = Counter(str(item.get("judgement") or "") for item in results)
     reply_source_counter = Counter(str(item.get("reply_source") or "") for item in results)
+    expected_family_counter = Counter(str(item.get("expected_policy_family_id") or "") for item in results)
+    business_standard_counter = Counter("matched" if item.get("business_standard_matched") else "mismatch" for item in results)
     handoff_count = sum(1 for item in results if "human_handoff" in (item.get("reply_types") or []))
     no_visible_text = [item for item in results if not has_visible_text(item)]
     metadata_only_handoff = [
@@ -378,6 +413,8 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
     ]
     lines.extend(counter_table("评判聚合", judgement_counter))
     lines.extend(counter_table("reply_source 聚合", reply_source_counter))
+    lines.extend(counter_table("expected_policy_family_id 聚合", expected_family_counter))
+    lines.extend(counter_table("business_standard_matched 聚合", business_standard_counter))
     lines.extend(counter_table("policy_family_id 聚合", family_counter))
     lines.extend(counter_table("exact_policy_id 聚合", policy_counter))
     lines.extend(counter_table("active_scene_id 聚合", scene_counter))
@@ -386,8 +423,8 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
         [
             "## 缺少 active_scene_id 样本（前 40 条）",
             "",
-            "| 序号 | 客户阶段 | 场景类型 | 用户问题 | policy_family_id | exact_policy_id | 日志id |",
-            "| ---: | --- | --- | --- | --- | --- | --- |",
+            "| 序号 | 客户阶段 | 场景类型 | 用户问题 | expected_policy_family_id | policy_family_id | exact_policy_id | 日志id |",
+            "| ---: | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for item in missing_scene[:40]:
@@ -399,6 +436,7 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
                     md_escape(item.get("customer_stage")),
                     md_escape(item.get("scene_type")),
                     md_escape(item.get("question")),
+                    md_escape(item.get("expected_policy_family_id")),
                     md_escape(item.get("policy_family_id")),
                     md_escape(item.get("exact_policy_id")),
                     md_escape(item.get("log_id")),
@@ -440,8 +478,8 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
             "",
             "## 全量明细",
             "",
-            "| 客户阶段 | 场景类型 | 用户问题 | AI实际回复（第1条） | AI引导回复（第2条） | 日志id | reply_source | policy_family_id | exact_policy_id | active_scene_id | 评判 |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| 客户阶段 | 场景类型 | 用户问题 | AI实际回复（第1条） | AI引导回复（第2条） | 日志id | reply_source | expected_policy_family_id | policy_family_id | exact_policy_id | active_scene_id | business_standard_matched | 评判 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for item in results:
@@ -456,9 +494,11 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
                     md_escape(item.get("reply_2")),
                     md_escape(item.get("log_id")),
                     md_escape(item.get("reply_source")),
+                    md_escape(item.get("expected_policy_family_id")),
                     md_escape(item.get("policy_family_id")),
                     md_escape(item.get("exact_policy_id")),
                     md_escape(item.get("active_scene_id")),
+                    md_escape("是" if item.get("business_standard_matched") else "否"),
                     md_escape(item.get("judgement")),
                 ]
             )
