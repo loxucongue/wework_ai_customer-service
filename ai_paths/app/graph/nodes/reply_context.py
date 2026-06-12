@@ -48,7 +48,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "secondary_tasks": [] if suppress_profile_memory else secondary_tasks,
         "required_tools": [] if suppress_profile_memory else required_tools,
         "reply_strategy": {} if suppress_profile_memory else reply_strategy,
-        "scene_guidance_context": [] if suppress_profile_memory else _sanitize_planner_context_for_reply(state.get("scene_guidance_context", [])),
+        "scene_guidance_context": _sanitize_planner_context_for_reply(state.get("scene_guidance_context", [])),
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "fact_envelope": fact_envelope,

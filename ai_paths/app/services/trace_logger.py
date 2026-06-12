@@ -8,6 +8,18 @@ from typing import Any, Iterator
 from app.config import Settings
 from app.graph.state import AgentState, TraceEntry
 
+RUN_OBSERVABILITY_KEYS = (
+    "policy_id",
+    "policy_family_id",
+    "policy_match_level",
+    "policy_version",
+    "scene_guidance_injected",
+    "active_scene_id",
+    "active_scene_match_level",
+    "active_scene_score",
+    "scene_guidance_context",
+)
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -70,6 +82,9 @@ class TraceLogger:
         serializable = compact(state, max_chars=50000)
         if isinstance(serializable, dict) and isinstance(state.get("trace"), list):
             serializable["trace"] = [compact(entry, max_chars=20000) for entry in state.get("trace", [])]
+            for key in RUN_OBSERVABILITY_KEYS:
+                if key in state:
+                    serializable[key] = compact(state.get(key), max_chars=20000)
         path.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 

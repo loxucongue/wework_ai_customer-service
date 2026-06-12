@@ -68,6 +68,9 @@ class AgentState(TypedDict, total=False):
     scene_guidance_candidates: list[dict[str, Any]]
     scene_guidance_injected: bool
     scene_guidance_context: list[dict[str, Any]]
+    active_scene_id: str
+    active_scene_match_level: str
+    active_scene_score: float
     reply_source: str
     postprocess_changed: bool
     postprocess_reasons: list[str]
