@@ -157,6 +157,24 @@ REPAIR_SYSTEM_PROMPT = """
 """.strip()
 
 
+TEXT_RESCUE_SYSTEM_PROMPT = """
+# Identity / Mission
+你是最终回复的文本救援模型。上一轮 JSON 结构失败了，你只输出一句可以直接发给客户的中文回复文本。
+
+# Task
+- 只输出客户可见文本，不要 JSON，不要 Markdown，不要解释。
+- 第一优先回答客户当前问题。
+- 默认 15-45 个汉字，最多 80 个汉字。
+- 只能基于输入里的 fact_envelope、scene_guidance_context、reply_strategy 和 handoff。
+- 不编价格、门店、营业时间、预约成功、订单、退款、案例效果。
+- 不输出内部分析、工具名、知识库名、路由、intent、subflow。
+- 不自称 AI、智能客服、机器人或小贝。
+- 不说“转人工、转接、转人”。
+- 如果需要专业同事协助，说“我让专业同事帮您继续核对/协助处理”。
+- 不使用“根治、100%见效、绝对安全、保证效果、一次一定好、包接送、车费报销、不伤肤、不会伤害皮肤、不会留疤、效果有保障、完全安全”。
+""".strip()
+
+
 def build_reply_messages(user_payload: dict[str, Any], *, json_dumps) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": REPLY_SYSTEM_PROMPT},
@@ -175,4 +193,11 @@ def build_repair_messages(
     return [
         {"role": "system", "content": REPAIR_SYSTEM_PROMPT},
         {"role": "user", "content": json_dumps(payload)},
+    ]
+
+
+def build_text_rescue_messages(user_payload: dict[str, Any], *, json_dumps) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": TEXT_RESCUE_SYSTEM_PROMPT},
+        {"role": "user", "content": json_dumps(user_payload)},
     ]

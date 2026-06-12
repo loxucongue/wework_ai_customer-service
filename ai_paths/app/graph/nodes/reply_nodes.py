@@ -19,6 +19,7 @@ def create_synthesize_reply_node(
     reply_messages_for_model: Callable[[AgentState], list[dict[str, Any]]],
     reply_model_tier: Callable[[AgentState], str],
     reply_repair_messages_for_model: Callable[[AgentState, list[dict[str, Any]]], list[dict[str, Any]]],
+    reply_text_rescue_messages_for_model: Callable[[AgentState], list[dict[str, Any]]],
     should_use_model_reply: Callable[[AgentState], bool],
     validated_model_messages: Callable[[dict[str, Any]], list[dict[str, Any]]],
 ):
@@ -33,6 +34,7 @@ def create_synthesize_reply_node(
             messages: list[dict[str, Any]] = []
             reply_source = "main_model"
             repair_attempted = False
+            text_rescue_attempted = False
 
             try:
                 if not (model_client and model_client.available and should_use_model_reply(state)):
@@ -130,6 +132,24 @@ def create_synthesize_reply_node(
                         reply_source = "repair_model"
                         model_call["fallback"] = "repaired_empty_reply_contract"
 
+            if not messages and model_call and model_client and model_client.available and not text_rescue_attempted:
+                tier = str((model_call.get("input") or {}).get("tier") or reply_model_tier(state))
+                messages, rescue_call, rescued = await _try_text_rescue_reply(
+                    state=state,
+                    tier=tier,
+                    model_client=model_client,
+                    model_reply_unsafe=model_reply_unsafe,
+                    postprocess_reply_messages=postprocess_reply_messages,
+                    reply_text_rescue_messages_for_model=reply_text_rescue_messages_for_model,
+                    debug_message_contents=debug_message_contents,
+                    reason=str(model_call.get("fallback") or model_call.get("error") or "empty_reply"),
+                )
+                text_rescue_attempted = True
+                model_call.setdefault("nested_calls", []).append(rescue_call)
+                if rescued:
+                    reply_source = "text_rescue_model"
+                    model_call["fallback"] = "text_rescue_model_reply"
+
             if not _has_customer_visible_text(messages):
                 errors.append({"node": "synthesize_reply", "message": "customer_visible_reply_unavailable"})
                 messages = _safe_visible_fallback_messages(state)
@@ -182,6 +202,58 @@ async def _try_repair_reply(
     except Exception as repair_exc:
         repair_call["error"] = f"{type(repair_exc).__name__}: {repair_exc}"
     return [], repair_call, False
+
+
+async def _try_text_rescue_reply(
+    *,
+    state: AgentState,
+    tier: str,
+    model_client: ModelClient,
+    model_reply_unsafe: Callable[[AgentState, list[dict[str, Any]]], bool],
+    postprocess_reply_messages: Callable[[AgentState, list[dict[str, Any]]], list[dict[str, Any]]],
+    reply_text_rescue_messages_for_model: Callable[[AgentState], list[dict[str, Any]]],
+    debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
+    reason: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
+    rescue_call: dict[str, Any] = {
+        "name": "reply_text_rescue_model",
+        "input": {"tier": tier, "required": True, "reason": reason},
+    }
+    try:
+        text = await model_client.chat_text(
+            reply_text_rescue_messages_for_model(state),
+            tier=tier,
+            temperature=0.1,
+        )
+        rescue_call["usage"] = model_usage_snapshot(model_client)
+        text = _clean_rescue_text(text)
+        rescue_call["draft_text"] = text[:240]
+        if not text:
+            rescue_call["error"] = "empty_text_rescue"
+            return [], rescue_call, False
+
+        rescued_messages = [{"type": "text", "order": 1, "content": {"text": text}}]
+        rescued_messages = postprocess_reply_messages(state, rescued_messages)
+        rescue_call["postprocessed_messages"] = debug_message_contents(rescued_messages)
+        if rescued_messages and not model_reply_unsafe(state, rescued_messages):
+            return rescued_messages, rescue_call, True
+        rescue_call["error"] = "text_rescue_still_unsafe"
+    except Exception as rescue_exc:
+        rescue_call["error"] = f"{type(rescue_exc).__name__}: {rescue_exc}"
+    return [], rescue_call, False
+
+
+def _clean_rescue_text(text: str) -> str:
+    cleaned = str(text or "").strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.lower().startswith("text"):
+            cleaned = cleaned[4:].strip()
+    cleaned = cleaned.strip().strip('"').strip("'").strip()
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if lines:
+        cleaned = " ".join(lines)
+    return cleaned.strip()
 
 
 def _has_customer_visible_text(messages: list[dict[str, Any]]) -> bool:

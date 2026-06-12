@@ -21,6 +21,7 @@ from app.graph.nodes.reply_input import (
     reply_messages_for_model,
     reply_model_tier,
     reply_repair_messages_for_model,
+    reply_text_rescue_messages_for_model,
     should_use_model_reply,
 )
 from app.graph.nodes.reply_nodes import create_synthesize_reply_node
@@ -131,6 +132,10 @@ def build_graph(
         reply_repair_messages_for_model=lambda state, draft_messages: reply_repair_messages_for_model(
             state,
             draft_messages,
+            reply_user_payload_for_model(state),
+        ),
+        reply_text_rescue_messages_for_model=lambda state: reply_text_rescue_messages_for_model(
+            state,
             reply_user_payload_for_model(state),
         ),
         should_use_model_reply=should_use_model_reply,

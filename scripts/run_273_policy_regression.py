@@ -164,8 +164,9 @@ def configure_fast_runtime() -> None:
         return
 
     original_fast_model = model_client.settings.model_fast
-    fast_model = os.getenv("AI_PATHS_273_FAST_MODEL", original_fast_model).strip()
-    balanced_model = os.getenv("AI_PATHS_273_BALANCED_MODEL", fast_model).strip() or fast_model
+    default_fast_model = model_client.settings.model_balanced or original_fast_model
+    fast_model = os.getenv("AI_PATHS_273_FAST_MODEL", default_fast_model).strip()
+    balanced_model = os.getenv("AI_PATHS_273_BALANCED_MODEL", model_client.settings.model_balanced).strip() or fast_model
     strong_model = os.getenv("AI_PATHS_273_STRONG_MODEL", balanced_model).strip() or balanced_model
     if fast_model:
         model_client.settings.model_fast = fast_model
