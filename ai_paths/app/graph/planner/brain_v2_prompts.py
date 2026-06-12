@@ -57,6 +57,9 @@ Planning guidance:
 - Improvement direction / what can be done / project explanation: prefer kb_search(project_qa)
 - Price / campaign / deposit / tail payment / whether it is one-time fee / hidden charge concern:
   prefer kb_search(project_price) or pricing tools
+- Hidden charge / invisible fee / "will you charge extra at the store" is a price/activity transparency task.
+  Plan it as type=price_inquiry, subtype=hidden_fee_worry, policy_hint=SF7_HIDDEN_FEE_WORRY.
+  Do not plan it as SF10_TRUST_HIDDEN_CHARGE unless the user is mainly asking about qualification/trust with no price or fee concern.
 - Cases / effect images / how many times / after-effect reference: prefer kb_search(case_studies)
 - Competitor quote / same-price request / comparison: prefer kb_search(competitor_qa), optionally sales_talk_qa
 - Store / address / parking / navigation / opening hours / nearest store: prefer store_lookup
@@ -122,7 +125,7 @@ policy_hint is optional but strongly recommended. Use one of these stable IDs wh
 - SF6_STORE_NEAREST, SF6_STORE_ADDRESS_DETAIL, SF6_STORE_BUSINESS_HOURS, SF6_STORE_PARKING_NAVIGATION, SF6_STORE_LOCATION_CONFLICT
 - SF7_PRICE_FIRST_ASK, SF7_PRICE_CONFIRM_199, SF7_PRICE_CONFIRM_268, SF7_PRICE_ONCE_FEE, SF7_HIDDEN_FEE_WORRY, SF7_DEPOSIT_EXPLAIN, SF7_PAYMENT_TIMING, SF7_PRICE_DIFFERENCE, SF7_LOWEST_PRICE_HANDOFF
 - SF9_APPOINTMENT_TIME_CHECK, SF9_APPOINTMENT_CREATE_INFO, SF9_APPOINTMENT_STATUS, SF9_APPOINTMENT_CHANGE, SF9_APPOINTMENT_CANCEL
-- SF10_TRUST_QUALIFICATION, SF10_TRUST_HIDDEN_CHARGE, SF10_TRUST_EFFECT_WORRY, SF10_TRUST_IDENTITY, SF10_TRUST_SAFETY_WORRY
+- SF10_TRUST_QUALIFICATION, SF10_TRUST_EFFECT_WORRY, SF10_TRUST_IDENTITY, SF10_TRUST_SAFETY_WORRY
 - SF12_AFTER_SALES_EFFECT_FEEDBACK, SF12_AFTER_SALES_DISCOMFORT
 - HUMAN_HANDOFF_PROFESSIONAL_ASSIST, HUMAN_HANDOFF_COMPLAINT_REFUND, HUMAN_HANDOFF_AFTER_SALES_RISK
 
@@ -208,6 +211,8 @@ Apply these overrides before finalizing the plan:
   do not escalate to professional assist. Keep the task in-system and answer the concern.
 - If the user asks rule-based price questions such as deposit, tail payment, whether full payment is after the visit,
   whether the quoted price is one-time, or campaign price confirmation, prefer price facts instead of chat/general reply.
+- If the user asks whether there will be hidden charges, extra fees, hard selling, or price changes after arriving at the store,
+  treat it as an ordinary pre-sale price transparency concern. Keep handoff false and use price/activity facts.
 - If the user references another institution, another quote, same-price request, or competitor promise, prefer a competitor task.
 """.strip()
 
