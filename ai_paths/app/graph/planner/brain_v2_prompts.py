@@ -60,6 +60,12 @@ Planning guidance:
 - Hidden charge / invisible fee / "will you charge extra at the store" is a price/activity transparency task.
   Plan it as type=price_inquiry, subtype=hidden_fee_worry, policy_hint=SF7_HIDDEN_FEE_WORRY.
   Do not plan it as SF10_TRUST_HIDDEN_CHARGE unless the user is mainly asking about qualification/trust with no price or fee concern.
+- Chinese pre-sale fee concern examples such as "到店会乱收费吗", "会不会有隐形消费",
+  "去了还要加钱吗", "我怕去了被推销一堆东西" are ordinary price/activity transparency tasks:
+  type=price_inquiry, subtype=hidden_fee_worry, policy_hint=SF7_HIDDEN_FEE_WORRY, handoff=false.
+- Chinese real dispute examples such as "把10元退给我", "我要退款", "不然我投诉", "你们骗我钱",
+  "多收我钱了", "上次到店价格和你说的不一样" are complaint/refund or real payment disputes:
+  prefer professional_assist, policy_hint=HUMAN_HANDOFF_COMPLAINT_REFUND, handoff=true.
 - Cases / effect images / how many times / after-effect reference: prefer kb_search(case_studies)
 - Competitor quote / same-price request / comparison: prefer kb_search(competitor_qa), optionally sales_talk_qa
 - Store / address / parking / navigation / opening hours / nearest store: prefer store_lookup
@@ -71,6 +77,12 @@ Planning guidance:
 - If no external fact is needed, use no_tool
 Every pricing_db or local_pricing tool must include a concrete query string such as the project name,
 campaign price term, or customer-described need. Do not rely on code to infer this query.
+
+Chinese direct factual examples:
+- "多少钱/价格/199/268/308/定金/尾款/是不是一次费用/会不会乱收费": request price/activity facts.
+- "店在哪里/有没有某个城市/离某地近吗/几点营业/有没有停车": request store facts.
+- "这个案例是真的吗/做了几次/效果图能不能看": request case facts.
+- "把10元退给我/我要退款/不然投诉/骗钱/多收我钱": request professional_assist and set handoff=true.
 
 Hard tool requirements:
 - no_tool is only valid for pure greeting, pure small talk, simple trust/identity reassurance, or generic acknowledgment turns.
@@ -213,6 +225,9 @@ Apply these overrides before finalizing the plan:
   whether the quoted price is one-time, or campaign price confirmation, prefer price facts instead of chat/general reply.
 - If the user asks whether there will be hidden charges, extra fees, hard selling, or price changes after arriving at the store,
   treat it as an ordinary pre-sale price transparency concern. Keep handoff false and use price/activity facts.
+- If the user asks to return money, refund a deposit, complains with "投诉", "骗钱", "多收", or says a real paid amount
+  is inconsistent with what was promised, this is no longer an ordinary pre-sale concern. Prefer professional_assist and
+  set handoff.needed=true with policy_hint=HUMAN_HANDOFF_COMPLAINT_REFUND.
 - If the user references another institution, another quote, same-price request, or competitor promise, prefer a competitor task.
 """.strip()
 

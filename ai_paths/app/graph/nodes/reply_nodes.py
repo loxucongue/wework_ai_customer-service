@@ -32,6 +32,7 @@ def create_synthesize_reply_node(
             errors = list(state.get("errors", []))
             messages: list[dict[str, Any]] = []
             reply_source = "main_model"
+            repair_attempted = False
 
             try:
                 if not (model_client and model_client.available and should_use_model_reply(state)):
@@ -61,6 +62,7 @@ def create_synthesize_reply_node(
                         debug_message_contents=debug_message_contents,
                         reason="initial_quality_gate",
                     )
+                    repair_attempted = True
                     model_call.setdefault("nested_calls", []).append(repair_call)
                     if repaired:
                         model_call["fallback"] = "repaired_model_reply"
@@ -98,6 +100,7 @@ def create_synthesize_reply_node(
                         debug_message_contents=debug_message_contents,
                         reason="final_quality_gate",
                     )
+                    repair_attempted = True
                     model_call.setdefault("nested_calls", []).append(repair_call)
                     if repaired:
                         reply_source = "repair_model"
@@ -107,9 +110,30 @@ def create_synthesize_reply_node(
                     errors.append({"node": "synthesize_reply", "message": "final_reply_failed_quality_gate"})
 
             if not messages:
+                if model_call and model_client and model_client.available and not repair_attempted:
+                    tier = str((model_call.get("input") or {}).get("tier") or reply_model_tier(state))
+                    messages, repair_call, repaired = await _try_repair_reply(
+                        state=state,
+                        draft_messages=[],
+                        tier=tier,
+                        model_client=model_client,
+                        model_reply_unsafe=model_reply_unsafe,
+                        postprocess_reply_messages=postprocess_reply_messages,
+                        reply_repair_messages_for_model=reply_repair_messages_for_model,
+                        validated_model_messages=validated_model_messages,
+                        debug_message_contents=debug_message_contents,
+                        reason="empty_reply_contract",
+                    )
+                    repair_attempted = True
+                    model_call.setdefault("nested_calls", []).append(repair_call)
+                    if repaired:
+                        reply_source = "repair_model"
+                        model_call["fallback"] = "repaired_empty_reply_contract"
+
+            if not _has_customer_visible_text(messages):
                 errors.append({"node": "synthesize_reply", "message": "customer_visible_reply_unavailable"})
-                messages = _metadata_only_handoff_messages(state)
-                reply_source = "metadata_only_handoff"
+                messages = _safe_visible_fallback_messages(state)
+                reply_source = "safe_visible_fallback"
 
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
@@ -160,7 +184,25 @@ async def _try_repair_reply(
     return [], repair_call, False
 
 
-def _metadata_only_handoff_messages(state: AgentState) -> list[dict[str, Any]]:
+def _has_customer_visible_text(messages: list[dict[str, Any]]) -> bool:
+    for message in messages:
+        if not isinstance(message, dict) or message.get("type") != "text":
+            continue
+        content = message.get("content")
+        if isinstance(content, dict):
+            text = str(content.get("text") or "").strip()
+        else:
+            text = str(content or "").strip()
+        if text:
+            return True
+    return False
+
+
+def _safe_visible_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
     handoff = planner_handoff(state)
     reason = str(handoff.get("reason") or "").strip() or "当前问题需要进一步核对"
-    return [{"type": "human_handoff", "order": 1, "content": {"handoff_reason": reason}}]
+    text = "这个情况我先帮您记录下来，避免给您说错；我会按当前问题继续帮您核对清楚。"
+    messages: list[dict[str, Any]] = [{"type": "text", "order": 1, "content": {"text": text}}]
+    if handoff.get("needed"):
+        messages.append({"type": "human_handoff", "order": 2, "content": {"handoff_reason": reason}})
+    return messages

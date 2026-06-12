@@ -249,6 +249,10 @@ def counter_table(title: str, counter: Counter[str], limit: int = 30) -> list[st
     return lines
 
 
+def has_visible_text(item: dict[str, Any]) -> bool:
+    return bool(str(item.get("reply_1") or "").strip())
+
+
 def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_path = ROOT / "logs" / f"ai_customer_reply_273_policy_results_{timestamp}.jsonl"
@@ -264,7 +268,17 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
     policy_counter = Counter(str(item.get("exact_policy_id") or "") for item in results)
     scene_counter = Counter(str(item.get("active_scene_id") or "") for item in results)
     judgement_counter = Counter(str(item.get("judgement") or "") for item in results)
+    reply_source_counter = Counter(str(item.get("reply_source") or "") for item in results)
     handoff_count = sum(1 for item in results if "human_handoff" in (item.get("reply_types") or []))
+    no_visible_text = [item for item in results if not has_visible_text(item)]
+    metadata_only_handoff = [
+        item
+        for item in results
+        if item.get("reply_source") == "metadata_only_handoff" or ("human_handoff" in (item.get("reply_types") or []) and not has_visible_text(item))
+    ]
+    handoff_without_text = [
+        item for item in results if "human_handoff" in (item.get("reply_types") or []) and not has_visible_text(item)
+    ]
     missing_scene = [
         item
         for item in results
@@ -282,11 +296,15 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
         f"- 单条超时：`{PER_CASE_TIMEOUT_SECONDS}s`",
         f"- 总数：`{len(results)}`",
         f"- human_handoff：`{handoff_count}`",
+        f"- no_visible_text：`{len(no_visible_text)}`",
+        f"- metadata_only_handoff：`{len(metadata_only_handoff)}`",
+        f"- handoff_without_text：`{len(handoff_without_text)}`",
         f"- 缺少 active_scene_id（非 HUMAN）：`{len(missing_scene)}`",
         f"- 生成时间：`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
         "",
     ]
     lines.extend(counter_table("评判聚合", judgement_counter))
+    lines.extend(counter_table("reply_source 聚合", reply_source_counter))
     lines.extend(counter_table("policy_family_id 聚合", family_counter))
     lines.extend(counter_table("exact_policy_id 聚合", policy_counter))
     lines.extend(counter_table("active_scene_id 聚合", scene_counter))
@@ -319,10 +337,38 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
     lines.extend(
         [
             "",
+            "## 无客户可见 text 样本",
+            "",
+            "| 序号 | 客户阶段 | 场景类型 | 用户问题 | reply_source | reply_types | policy_family_id | exact_policy_id | 日志id |",
+            "| ---: | --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for item in no_visible_text:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    md_escape(item.get("index")),
+                    md_escape(item.get("customer_stage")),
+                    md_escape(item.get("scene_type")),
+                    md_escape(item.get("question")),
+                    md_escape(item.get("reply_source")),
+                    md_escape(",".join(item.get("reply_types") or [])),
+                    md_escape(item.get("policy_family_id")),
+                    md_escape(item.get("exact_policy_id")),
+                    md_escape(item.get("log_id")),
+                ]
+            )
+            + " |"
+        )
+
+    lines.extend(
+        [
+            "",
             "## 全量明细",
             "",
-            "| 客户阶段 | 场景类型 | 用户问题 | AI实际回复（第1条） | AI引导回复（第2条） | 日志id | policy_family_id | exact_policy_id | active_scene_id | 评判 |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| 客户阶段 | 场景类型 | 用户问题 | AI实际回复（第1条） | AI引导回复（第2条） | 日志id | reply_source | policy_family_id | exact_policy_id | active_scene_id | 评判 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for item in results:
@@ -336,6 +382,7 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
                     md_escape(item.get("reply_1")),
                     md_escape(item.get("reply_2")),
                     md_escape(item.get("log_id")),
+                    md_escape(item.get("reply_source")),
                     md_escape(item.get("policy_family_id")),
                     md_escape(item.get("exact_policy_id")),
                     md_escape(item.get("active_scene_id")),
