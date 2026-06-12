@@ -207,8 +207,32 @@ def infer_policy_family(*, stage: str = "", scene_type: str = "", question: str 
 
     if _needs_handoff(question_text, logic_text):
         return "HUMAN_HANDOFF"
+    if _scene_contains(scene_text, ("人工接管", "静默")) or _scene_contains(logic_text, ("人工接管", "静默", "不回复")):
+        return "HUMAN_HANDOFF"
+    if _scene_contains(scene_text, ("发图", "面诊")) or question_text in {"[图片]", "（发送斑点照片）你看看我这种能做吗"}:
+        return "SF4_IMAGE_CONSULT"
+    if _is_opening_scene(stage_text, scene_text, question_text):
+        return "S1_OPENING_GENERAL"
     if _is_identity_or_trust_question(question_text, scene_text):
         return "SF10_TRUST_BUILD"
+    if _is_explicit_competitor_question(question_text):
+        return "SF5_COMPETITOR_COMPARE"
+    if _is_explicit_after_sales_question(question_text):
+        return "SF12_AFTER_SALES"
+    if _is_explicit_price_question(question_text):
+        return "SF7_PRICE_ACTIVITY"
+    if _is_explicit_store_or_visit_info_question(question_text):
+        return "SF6_STORE_INQUIRY"
+    if _is_explicit_project_question(question_text):
+        return "SF3_PROJECT_CONSULT"
+    if _is_appointment_negotiation_scene(stage_text, scene_text, question_text, logic_text):
+        return "SF9_APPOINTMENT"
+    if _scene_contains(logic_text, ("进入sf10", "信任建立", "靠谱性顾虑")):
+        return "SF10_TRUST_BUILD"
+    if _scene_contains(scene_text, ("质疑负向情绪", "担心是骗子", "质疑反悔", "家人反对", "安全性", "资质", "信任")):
+        return "SF10_TRUST_BUILD"
+    if _scene_contains(scene_text, ("效果不佳", "质疑担心", "到店不满", "售后", "恢复期", "术后", "护理")):
+        return "SF12_AFTER_SALES"
     if _scene_contains(scene_text, ("竞品", "价格对比", "发竞品", "竞品截图")):
         return "SF5_COMPETITOR_COMPARE"
     if _scene_contains(scene_text, ("直接问门店", "问门店", "门店", "地址", "停车", "营业")):
@@ -240,15 +264,155 @@ def _scene_contains(text: str, needles: tuple[str, ...]) -> bool:
 
 
 def _needs_handoff(question_text: str, logic_text: str) -> bool:
-    if "强制转人工" in logic_text:
+    if _scene_contains(logic_text, ("强制转人工", "立即转人工")):
         return True
     if _scene_contains(question_text, ("体检报告", "病历", "降压药", "降血糖", "高血压", "糖尿病", "怀孕", "孕妇", "哺乳", "未成年")):
+        return True
+    if _scene_contains(question_text, ("退给我", "没有抵扣", "没抵扣")) and _scene_contains(
+        question_text, ("定金", "订金", "预约金", "10元", "十元", "10块", "十块")
+    ):
         return True
     if _scene_contains(question_text, ("投诉", "退款", "退钱", "退定金", "骗钱", "多收")):
         return True
     if re.search(r"(要|想|需要|找|换|转).{0,4}(真人|人工|人)", question_text):
         return True
     return False
+
+
+def _is_opening_scene(stage_text: str, scene_text: str, question_text: str) -> bool:
+    if _scene_contains(scene_text, ("打招呼", "闲聊", "来源识别")):
+        return True
+    return _scene_contains(question_text, ("介绍过来", "朋友介绍", "天气真好", "随便看看"))
+
+
+def _is_appointment_negotiation_scene(stage_text: str, scene_text: str, question_text: str, logic_text: str) -> bool:
+    appointment_stage = _scene_contains(stage_text, ("邀约协商", "已邀约待到店"))
+    appointment_scene = _scene_contains(
+        scene_text,
+        ("确认时间门店", "犹豫", "再考虑", "逼单", "挽留", "反悔", "取消", "改约", "待到店", "收款", "通单"),
+    )
+    appointment_logic = _scene_contains(logic_text, ("进入SF9", "邀约确认", "确认门店时间", "给具体时间"))
+    if not (appointment_stage or appointment_scene or appointment_logic):
+        return False
+    if _scene_contains(question_text + scene_text + logic_text, ("不靠谱", "风险", "担心", "安全", "资质", "家人反对")):
+        return False
+    return True
+
+
+def _is_explicit_price_question(question_text: str) -> bool:
+    if re.search(r"\d+\s*岁", question_text):
+        return False
+    return _scene_contains(
+        question_text,
+        (
+            "多少钱",
+            "价格",
+            "费用",
+            "收费",
+            "尾款",
+            "定金",
+            "订金",
+            "预约金",
+            "活动",
+            "优惠",
+            "加钱",
+            "乱收费",
+            "隐形消费",
+            "最低",
+            "便宜",
+            "199",
+            "268",
+            "308",
+            "380",
+            "58元",
+        ),
+    )
+
+
+def _is_explicit_competitor_question(question_text: str) -> bool:
+    return _scene_contains(
+        question_text,
+        (
+            "别家",
+            "其他家",
+            "竞品",
+            "同行",
+            "机构报价",
+            "报价截图",
+            "对比",
+            "素颜家",
+            "邻居说",
+        ),
+    )
+
+
+def _is_explicit_after_sales_question(question_text: str) -> bool:
+    return _scene_contains(
+        question_text,
+        (
+            "做完",
+            "上次做",
+            "已经做",
+            "做了",
+            "没做好",
+            "不见效果",
+            "没效果",
+            "没有效果",
+            "又深",
+            "效果不好",
+            "服务不好",
+            "体验太差",
+            "结痂",
+            "红肿",
+            "脸疼",
+        ),
+    )
+
+
+def _is_explicit_store_or_visit_info_question(question_text: str) -> bool:
+    return _scene_contains(
+        question_text,
+        (
+            "门店",
+            "地址",
+            "导航",
+            "停车",
+            "地铁",
+            "机场",
+            "附近",
+            "营业时间",
+            "几点开",
+            "几点关",
+            "身份证",
+            "带什么",
+            "空腹",
+            "车费",
+            "接送",
+            "楼下",
+            "怎么走",
+            "路线",
+        ),
+    )
+
+
+def _is_explicit_project_question(question_text: str) -> bool:
+    return _scene_contains(
+        question_text,
+        (
+            "能做吗",
+            "可以做吗",
+            "做几次",
+            "做两次",
+            "做第二次",
+            "痣",
+            "痦子",
+            "斑",
+            "淡斑",
+            "祛斑",
+            "项目",
+            "方案",
+        ),
+    )
 
 
 def _is_identity_or_trust_question(question_text: str, scene_text: str) -> bool:
