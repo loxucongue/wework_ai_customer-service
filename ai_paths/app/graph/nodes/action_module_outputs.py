@@ -64,19 +64,26 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             missing_slots.extend(str(item) for item in (value.get("missing") or [])[:4])
             continue
 
-        if key in {"pricing_db", "pricing_local"}:
+        if key == "pricing_rules":
             rows = value.get("rows") or []
             if rows:
                 structured_facts["price_facts"].extend(
                     {
+                        "rule_id": str(item.get("rule_id") or ""),
                         "project_name": str(item.get("project_name") or item.get("name") or ""),
                         "project_code": str(item.get("project_code") or ""),
                         "category": str(item.get("category") or ""),
-                        "price_range": str(item.get("price_range") or ""),
-                        "daily_price": str(item.get("daily_price") or item.get("original_price") or ""),
-                        "new_price": str(item.get("new_price") or ""),
-                        "promo_price": str(item.get("promo_price") or ""),
-                        "price_note": str(item.get("price_note") or item.get("description") or ""),
+                        "quote_type": str(item.get("quote_type") or ""),
+                        "body_scope": str(item.get("body_scope") or ""),
+                        "customer_segment": str(item.get("customer_segment") or ""),
+                        "prepay_amount": str(item.get("prepay_amount") or ""),
+                        "tail_amount": str(item.get("tail_amount") or ""),
+                        "total_price": str(item.get("total_price") or ""),
+                        "display_price": str(item.get("display_price") or ""),
+                        "original_price": str(item.get("original_price") or ""),
+                        "min_quote": str(item.get("min_quote") or ""),
+                        "conditions": str(item.get("conditions") or ""),
+                        "rule_note": str(item.get("rule_note") or item.get("description") or ""),
                     }
                     for item in rows[:5]
                     if isinstance(item, dict)

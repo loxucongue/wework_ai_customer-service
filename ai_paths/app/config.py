@@ -46,7 +46,6 @@ class Settings(BaseSettings):
     platform_agent_default_wechat: str = ""
 
     kb_workflow_id: str = "7644575365759746083"
-    pricing_db_workflow_id: str = "7641872030061117450"
     pricing_sync_workflow_id: str = "7644090458134609974"
 
     log_dir: Path = Path("logs/runs")

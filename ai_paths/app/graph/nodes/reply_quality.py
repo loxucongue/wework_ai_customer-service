@@ -61,7 +61,7 @@ def _has_price_facts(state: AgentState) -> bool:
         return True
     usable = fact_envelope.get("usable_facts")
     if isinstance(usable, list):
-        return any("pricing_" in str(item) or "project_price" in str(item) for item in usable)
+        return any("pricing_rules" in str(item) for item in usable)
     return False
 
 

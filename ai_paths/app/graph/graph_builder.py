@@ -43,7 +43,7 @@ from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
-from app.services.pricing_repository import LocalPricingRepository
+from app.services.pricing_rules_repository import PricingRulesRepository
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -60,7 +60,7 @@ def build_graph(
     trace_logger: TraceLogger,
     model_client: ModelClient | None = None,
     memory_store: CustomerMemoryStore | None = None,
-    pricing_repository: LocalPricingRepository | None = None,
+    pricing_rules_repository: PricingRulesRepository | None = None,
     customer_context_service: CustomerContextService | None = None,
     store_service: StoreService | None = None,
     appointment_opening_service: AppointmentOpeningService | None = None,
@@ -84,7 +84,7 @@ def build_graph(
     execute_actions = create_execute_actions_node(
         coze_client=coze_client,
         trace_logger=trace_logger,
-        pricing_repository=pricing_repository,
+        pricing_rules_repository=pricing_rules_repository,
         store_service=store_service,
         appointment_opening_service=appointment_opening_service,
         appointment_query_from_state=lambda content, store_lookup, state: appointment_query_from_state(

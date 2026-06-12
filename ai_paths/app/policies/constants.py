@@ -9,6 +9,7 @@ PROJECT_KEYWORDS = [
     "M10",
     "淡斑",
     "祛斑",
+    "斑点",
     "色沉",
     "肤色不均",
     "黑色素",
@@ -42,10 +43,12 @@ CITY_NAMES = [
 PRICE_PROJECT_ALIASES = {
     "淡斑": "S10",
     "祛斑": "S10",
+    "斑点": "S10",
     "色沉": "S10",
     "肤色不均": "S10",
     "黑色素": "S10",
     "补水": "S10N",
+    "干燥": "S10N",
     "毛孔": "K10",
     "痘印": "K10",
     "痘坑": "K10",
@@ -68,6 +71,11 @@ PRICE_KEYWORDS = [
     "单次",
     "一次",
     "报价",
+    "定金",
+    "尾款",
+    "隐形消费",
+    "乱收费",
+    "加钱",
 ]
 
 PRICE_OBJECTION_KEYWORDS = [
@@ -126,7 +134,7 @@ AFTER_SALES_KEYWORDS = [
     "反黑",
     "恢复",
     "疼",
-    "痒",
+    "痛",
     "没效果",
     "流脓",
     "出血",
@@ -181,6 +189,7 @@ COMPETITOR_KEYWORDS = [
     "同价",
     "更便宜",
     "竞品",
+    "别人",
 ]
 
 ADVANTAGE_KEYWORDS = [
@@ -308,8 +317,7 @@ HUMAN_KEYWORDS = [
 
 KB_BY_SKILL = {
     "project_consult": "project_qa",
-    "price_consult": "project_price",
     "trust_build": "sales_talk_qa",
-    "competitor": "competitor_qa",
-    "after_sales": "after_sales_qa",
+    "competitor": "sales_talk_qa",
+    "after_sales": "sales_talk_qa",
 }

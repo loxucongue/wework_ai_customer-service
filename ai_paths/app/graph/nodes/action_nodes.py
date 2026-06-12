@@ -11,10 +11,9 @@ from app.graph.planner.runtime_plan import (
     planner_secondary_tasks,
 )
 from app.graph.state import AgentState
-from app.graph.nodes.pricing_context import pricing_sql_for_project
 from app.services.appointment_opening_service import AppointmentOpeningService
 from app.services.coze_client import CozeClient
-from app.services.pricing_repository import LocalPricingRepository
+from app.services.pricing_rules_repository import PricingRulesRepository
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -23,7 +22,7 @@ def create_execute_actions_node(
     *,
     coze_client: CozeClient,
     trace_logger: TraceLogger,
-    pricing_repository: LocalPricingRepository | None,
+    pricing_rules_repository: PricingRulesRepository | None,
     store_service: StoreService | None,
     appointment_opening_service: AppointmentOpeningService | None,
     appointment_query_from_state: Callable[[str, dict[str, Any], AgentState], dict[str, Any]],
@@ -171,25 +170,25 @@ def create_execute_actions_node(
                     tool_calls=tool_calls,
                 )
 
-            if _needs_local_pricing(required_tools) and pricing_repository:
-                pricing_query = _planned_tool_query(required_tools, "local_pricing")
+            if _needs_pricing_rules(required_tools) and pricing_rules_repository:
+                pricing_query = _planned_tool_query(required_tools, "pricing_rules")
                 if pricing_query:
-                    local_call = {"name": "local_pricing_xlsx", "input": {"query": pricing_query, "planned": True}}
+                    local_call = {"name": "pricing_rules", "input": {"query": pricing_query, "planned": True}}
                     try:
-                        local_rows = pricing_repository.search(pricing_query)
-                        tool_results["pricing_local"] = {"rows": local_rows}
+                        local_rows = pricing_rules_repository.search(pricing_query)
+                        tool_results["pricing_rules"] = {"rows": local_rows}
                         local_call["output"] = {"rows": len(local_rows)}
                     except Exception as exc:
                         local_call["error"] = f"{type(exc).__name__}: {exc}"
-                        tool_results["pricing_local"] = {"rows": [], "error": local_call["error"]}
+                        tool_results["pricing_rules"] = {"rows": [], "error": local_call["error"]}
                     tool_calls.append(local_call)
                 else:
                     _record_tool_argument_error(
                         tool_results=tool_results,
                         tool_calls=tool_calls,
-                        key="pricing_local",
+                        key="pricing_rules",
                         error="missing_planner_query",
-                        tool_input={"name": "local_pricing_xlsx", "query": "", "planned": True},
+                        tool_input={"name": "pricing_rules", "query": "", "planned": True},
                     )
 
             planner_fact_output = build_planner_fact_output(tool_results, state)
@@ -256,32 +255,7 @@ def _queue_planned_tool_tasks(
         }
         tool_tasks.append((kb_name, call, coze_client.search_kb(kb_name, query)))
         return
-    if name == "pricing_db":
-        query = str(tool.get("query") or "").strip()
-        if not query:
-            _record_tool_argument_error(
-                tool_results=tool_results,
-                tool_calls=tool_calls,
-                key="pricing_db",
-                error="missing_planner_query",
-                tool_input={
-                    "name": "coze_pricing_db",
-                    "query": "",
-                    "planned": True,
-                    "purpose": str(tool.get("purpose") or "").strip(),
-                },
-            )
-            return
-        sql = pricing_sql_for_project(query)
-        tool_tasks.append(
-            (
-                "pricing_db",
-                {"name": "coze_pricing_db", "input": {"query": query, "sql": sql, "planned": True}},
-                coze_client.query_pricing_db(sql),
-            )
-        )
-        return
-    if name == "local_pricing":
+    if name == "pricing_rules":
         return
 
 
@@ -338,8 +312,8 @@ def _needs_appointment_create(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "appointment_create" for item in required_tools if isinstance(item, dict))
 
 
-def _needs_local_pricing(required_tools: list[dict[str, Any]]) -> bool:
-    return any(str(item.get("name") or "") == "local_pricing" for item in required_tools if isinstance(item, dict))
+def _needs_pricing_rules(required_tools: list[dict[str, Any]]) -> bool:
+    return any(str(item.get("name") or "") == "pricing_rules" for item in required_tools if isinstance(item, dict))
 
 
 def _planned_tool_query(required_tools: list[dict[str, Any]], tool_name: str) -> str:

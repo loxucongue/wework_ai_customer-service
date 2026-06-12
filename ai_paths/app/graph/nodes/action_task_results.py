@@ -15,14 +15,7 @@ def merge_action_task_results(
     for (key, call, _), result in zip(tool_tasks, results):
         if isinstance(result, Exception):
             call["error"] = f"{type(result).__name__}: {result}"
-            if key == "pricing_db":
-                tool_results[key] = {"rows": [], "error": call["error"]}
-            else:
-                tool_results[key] = {"kb_name": key, "items": [], "error": call["error"]}
-        elif key == "pricing_db":
-            rows = result if isinstance(result, list) else []
-            tool_results[key] = {"rows": rows[:10]}
-            call["output"] = {"rows": len(rows)}
+            tool_results[key] = {"kb_name": key, "items": [], "error": call["error"]}
         else:
             dumped = result.model_dump()
             tool_results[key] = dumped

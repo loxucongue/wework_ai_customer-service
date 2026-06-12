@@ -65,16 +65,6 @@ class CozeClient:
         ]
         return CozeKbResult(kb_name=kb_name, items=items, raw=raw)
 
-    async def query_pricing_db(self, sql: str) -> list[dict[str, Any]]:
-        raw = await self.run_workflow(
-            self.settings.pricing_db_workflow_id,
-            {"input": sql},
-        )
-        self._raise_if_coze_error(raw)
-        payload = self._parse_data(raw)
-        output = payload.get("output", [])
-        return output if isinstance(output, list) else []
-
     async def _run_kb_workflow_with_fallback(self, kb_name: str, query: str) -> dict[str, Any]:
         payloads = [
             {"kb_name": kb_name, "query": query, "top_k": 5},

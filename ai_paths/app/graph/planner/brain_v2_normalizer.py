@@ -135,7 +135,7 @@ def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[di
     for tool in concrete_tools:
         name = str(tool.get("name") or "").strip()
         query = str(tool.get("query") or "").strip()
-        if name in {"pricing_db", "local_pricing"} and not query:
+        if name == "pricing_rules" and not query:
             violations.append(
                 {
                     "task_type": "tool_argument",
@@ -176,10 +176,8 @@ def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[di
         task_type = str(task.get("type") or "").strip()
         missing: list[str] = []
         if task_type == "price_inquiry":
-            if not has_tool("kb_search", kb_name="project_price"):
-                missing.append("kb_search(project_price)")
-            if not (has_tool("pricing_db") or has_tool("local_pricing")):
-                missing.append("pricing_db_or_local_pricing")
+            if not has_tool("pricing_rules"):
+                missing.append("pricing_rules")
         elif task_type == "store_inquiry":
             if not has_tool("store_lookup"):
                 missing.append("store_lookup")
@@ -187,8 +185,8 @@ def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[di
             if not has_tool("kb_search", kb_name="case_studies"):
                 missing.append("kb_search(case_studies)")
         elif task_type == "competitor_compare":
-            if not has_tool("kb_search", kb_name="competitor_qa"):
-                missing.append("kb_search(competitor_qa)")
+            if not has_tool("kb_search", kb_name="sales_talk_qa"):
+                missing.append("kb_search(sales_talk_qa)")
         elif task_type in {"appointment_status", "appointment_change", "appointment_cancel"}:
             if not has_tool("appointment_record_query"):
                 missing.append("appointment_record_query")
