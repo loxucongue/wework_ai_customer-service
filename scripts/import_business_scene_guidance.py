@@ -17,10 +17,13 @@ from app.policies.business_scene_table import (  # noqa: E402
     DEFAULT_BUSINESS_SCENE_STATUS,
     build_keywords,
     business_logic_payload,
+    canonical_sales_reply_payload,
+    copy_strength_for_sales_talk,
     generated_scene_id,
     hard_constraints_for_family,
     infer_policy_family,
     required_tools_for_family,
+    risk_rewrite_payload,
     style_reference_payload,
 )
 
@@ -132,6 +135,7 @@ def build_scene_record(row: dict[str, Any], *, status: str, source_file: str) ->
     scene_type = str(row.get("scene_type") or "").strip()
     question = str(row.get("question") or "").strip()
     standard = str(row.get("business_logic") or "").strip()
+    sales_talk = str(row.get("sales_talk") or "").strip()
     family = infer_policy_family(stage=stage, scene_type=scene_type, question=question, business_logic=standard)
     scene_id = generated_scene_id(
         row_number=int(row.get("row_number") or 0),
@@ -153,8 +157,8 @@ def build_scene_record(row: dict[str, Any], *, status: str, source_file: str) ->
         "hard_constraints": hard_constraints_for_family(family),
         "soft_guidance": [
             "先回答客户当前问题",
-            "只参考销冠话术的短、直接、轻推进风格",
-            "不得机械复述表格话术原句",
+            "有 canonical_sales_reply 时优先保持其句式、节奏和关键词",
+            "只在风险词、事实词和当前客户信息上做最小改写",
         ],
         "business_logic": business_logic_payload(
             family=family,
@@ -163,6 +167,10 @@ def build_scene_record(row: dict[str, Any], *, status: str, source_file: str) ->
             standard=standard,
         ),
         "style_reference": style_reference_payload(),
+        "canonical_sales_reply": canonical_sales_reply_payload(sales_talk),
+        "source_sales_reply": sales_talk,
+        "copy_strength": copy_strength_for_sales_talk(sales_talk),
+        "risk_rewrite": risk_rewrite_payload(sales_talk),
         "source": {
             "type": "business_scene_table",
             "file": source_file,

@@ -15,11 +15,12 @@ PROJECT_ALIASES: dict[str, list[str]] = {
 
 PRICE_INTENT_TERMS = {
     "首次报价": ["首次", "新客", "第一次", "首单", "首次报价"],
-    "大型活动": ["大型活动", "活动价", "活动报价", "特价"],
+    "大型活动": ["大型活动", "特殊活动", "内部活动", "公司通知"],
     "老客报价": ["老客", "复购", "以前来过", "做过"],
 }
 
-ACTIVITY_TERMS = ["大型活动", "活动价", "活动报价", "特价", "券", "广告"]
+SPECIAL_ACTIVITY_TERMS = ["大型活动", "特殊活动", "内部活动", "公司通知"]
+NORMAL_MARKETING_ACTIVITY_TERMS = ["周年庆", "周年庆活动", "活动", "活动价", "活动报价", "优惠", "特价", "券", "广告"]
 
 SCOPE_TERMS = {
     "全脸": ["全脸", "整脸"],
@@ -76,7 +77,9 @@ class PricingRulesRepository:
             if best_score >= 20:
                 matched = [item for item in matched if item[0] >= best_score - 10]
             return [row for _, row in matched[:limit]]
-        return [row for row in rows if row.get("project_code") == "OTHER"][:limit]
+        fallback = [row for row in rows if row.get("project_code") == "OTHER"]
+        fallback.sort(key=lambda row: self._quote_priority(row, text))
+        return fallback[:limit]
 
     def _score(self, row: dict[str, Any], query: str) -> int:
         project_code = str(row.get("project_code") or "")
@@ -104,8 +107,23 @@ class PricingRulesRepository:
             if str(row.get("quote_type") or "") == quote_type and any(term in query for term in terms):
                 score += 8
         quote_type = str(row.get("quote_type") or "")
-        if quote_type == "首次报价" and not any(term in query for term in ACTIVITY_TERMS):
-            score += 6
-        if quote_type.startswith("大型活动") and not any(term in query for term in ACTIVITY_TERMS):
-            score -= 4
+        if quote_type == "首次报价" and (
+            not any(term in query for term in SPECIAL_ACTIVITY_TERMS)
+            or any(term in query for term in NORMAL_MARKETING_ACTIVITY_TERMS)
+        ):
+            score += 8
+        if quote_type.startswith("大型活动") and not any(term in query for term in SPECIAL_ACTIVITY_TERMS):
+            score -= 12
         return score
+
+    @staticmethod
+    def _quote_priority(row: dict[str, Any], query: str) -> tuple[int, int]:
+        quote_type = str(row.get("quote_type") or "")
+        special_requested = any(term in query for term in SPECIAL_ACTIVITY_TERMS)
+        if quote_type.startswith("大型活动"):
+            return (0 if special_requested else 4, int(row.get("total_price") or 0))
+        if quote_type == "首次报价":
+            return (1 if special_requested else 0, int(row.get("total_price") or 0))
+        if "老客" in quote_type:
+            return (3, int(row.get("total_price") or 0))
+        return (2, int(row.get("total_price") or 0))

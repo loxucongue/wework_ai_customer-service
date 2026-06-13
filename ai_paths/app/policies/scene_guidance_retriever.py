@@ -25,6 +25,10 @@ class SceneGuidance:
     soft_guidance: tuple[str, ...]
     business_logic: dict[str, Any]
     style_reference: dict[str, Any]
+    canonical_sales_reply: str
+    source_sales_reply: str
+    copy_strength: str
+    risk_rewrite: dict[str, Any]
     source: dict[str, Any]
 
     def to_prompt_context(self) -> dict[str, Any]:
@@ -40,6 +44,14 @@ class SceneGuidance:
             context["business_logic"] = self.business_logic
         if self.style_reference:
             context["style_reference"] = self.style_reference
+        if self.canonical_sales_reply:
+            context["canonical_sales_reply"] = self.canonical_sales_reply
+        if self.source_sales_reply:
+            context["source_sales_reply"] = self.source_sales_reply
+        if self.copy_strength:
+            context["copy_strength"] = self.copy_strength
+        if self.risk_rewrite:
+            context["risk_rewrite"] = self.risk_rewrite
         if self.source:
             context["source"] = self.source
         return context
@@ -132,6 +144,10 @@ def load_scene_guidance() -> tuple[SceneGuidance, ...]:
                     soft_guidance=tuple(_clean_list(raw.get("soft_guidance"))),
                     business_logic=_clean_dict(raw.get("business_logic")),
                     style_reference=_clean_dict(raw.get("style_reference")),
+                    canonical_sales_reply=str(raw.get("canonical_sales_reply") or "").strip(),
+                    source_sales_reply=str(raw.get("source_sales_reply") or "").strip(),
+                    copy_strength=str(raw.get("copy_strength") or "").strip(),
+                    risk_rewrite=_clean_dict(raw.get("risk_rewrite")),
                     source=_clean_dict(raw.get("source")),
                 )
             )

@@ -12,14 +12,34 @@ SHORT_WECHAT_STYLE = {
         "像微信短聊，先回答当前问题",
         "默认一条 text，必要时最多两条",
         "只带一个轻推进动作",
-        "不机械照抄销冠话术原句",
+        "有 canonical_sales_reply 时优先保持销冠话术骨架和节奏",
     ],
     "avoid_style": [
         "不要长篇科普",
         "不要自我介绍",
         "不要使用小贝、AI、智能客服、机器人等身份表达",
-        "不要复制最先进、最划算、保证效果、一次一定好等高风险销售话术",
+        "不要复制绝对化、贬低竞品、无事实报价等高风险销售话术",
     ],
+}
+
+SALES_RISK_REWRITES: dict[str, str] = {
+    "目前国内最先进的肌源调肤": "目前做的是肌源调肤",
+    "国内最先进的肌源调肤": "目前做的是肌源调肤",
+    "国内最先进": "目前做的是",
+    "最先进": "目前做的是",
+    "最好": "比较适合",
+    "最划算": "性价比比较合适",
+    "保证效果": "到店先看同类改善参考",
+    "效果有保障": "会按皮肤情况评估更稳妥",
+    "一次一定好": "大部分客户做一次会有明显变化",
+    "一次祛干净": "做完能看到明显变化",
+    "不伤肤": "先检测评估，按皮肤状态操作更稳妥",
+    "不会伤害皮肤": "先检测评估，按皮肤状态操作更稳妥",
+    "不会伤皮肤": "先检测评估，按皮肤状态操作更稳妥",
+    "包接送": "我可以帮您查近一点的门店和路线",
+    "免费接送": "我可以帮您查近一点的门店和路线",
+    "车费报销": "交通费用需要自理",
+    "报销车费": "交通费用需要自理",
 }
 
 
@@ -506,7 +526,7 @@ def required_tools_for_family(family: str) -> list[str]:
 def hard_constraints_for_family(family: str) -> list[str]:
     common = [
         "业务逻辑优先于销冠话术风格",
-        "销冠话术只能提炼风格，不得照抄原句",
+        "有 canonical_sales_reply 时优先高相似参考，只在风险词、事实词和当前上下文上做最小改写",
         "不得输出根治、100%见效、绝对安全、保证效果、一次一定好、包接送、车费报销",
     ]
     return common + list(HARD_CONSTRAINTS_BY_FAMILY.get(family, []))
@@ -548,6 +568,29 @@ def business_logic_payload(*, family: str, stage: str, scene_type: str, standard
 
 def style_reference_payload() -> dict[str, Any]:
     return dict(SHORT_WECHAT_STYLE)
+
+
+def risk_rewrite_payload(sales_talk: str) -> dict[str, str]:
+    text = str(sales_talk or "")
+    return {source: target for source, target in SALES_RISK_REWRITES.items() if source in text}
+
+
+def canonical_sales_reply_payload(sales_talk: str) -> str:
+    text = str(sales_talk or "").strip()
+    if not text:
+        return ""
+    for source, target in SALES_RISK_REWRITES.items():
+        text = text.replace(source, target)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:120]
+
+
+def copy_strength_for_sales_talk(sales_talk: str) -> str:
+    if not str(sales_talk or "").strip():
+        return ""
+    if risk_rewrite_payload(sales_talk):
+        return "medium"
+    return "high"
 
 
 def _extract_compact_tokens(text: str) -> list[str]:

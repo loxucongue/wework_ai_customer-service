@@ -10,6 +10,7 @@ import time
 import uuid
 from collections import Counter
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ from app.main import (  # noqa: E402
     platform_agent_client,
     store_service,
 )
-from app.policies.business_scene_table import infer_policy_family  # noqa: E402
+from app.policies.business_scene_table import infer_policy_family, required_tools_for_family  # noqa: E402
 from app.policies.identity_policy import FORBIDDEN_IDENTITY_TERMS  # noqa: E402
 
 
@@ -43,10 +44,14 @@ RETRY_TIMEOUT_SECONDS = int(os.getenv("AI_PATHS_273_RETRY_TIMEOUT", str(PER_CASE
 LIMIT = int(os.getenv("AI_PATHS_273_LIMIT", "0"))
 
 BASE_REQUEST = {
-    "corp_id": "ent-753d018266f7453285311ce1d5ed0d94",
-    "user_id": 7294,
-    "wechat": "DY1032",
+    "corp_id": os.getenv("AI_PATHS_TEST_CORP_ID", "ww943af61cd5d2afe4"),
+    "user_id": os.getenv("AI_PATHS_TEST_USER_ID", "7294"),
+    "wechat": os.getenv("AI_PATHS_TEST_WECHAT", "CS001"),
+    "category_id": os.getenv("AI_PATHS_TEST_CATEGORY_ID", "居家产品"),
+    "customer_id": os.getenv("AI_PATHS_TEST_CUSTOMER_ID", "20615704"),
+    "external_userid": os.getenv("AI_PATHS_TEST_EXTERNAL_USERID", "wmanzqsqaaygjwicitvmos657x39lqtg"),
 }
+USE_FIXED_CUSTOMER_ID = os.getenv("AI_PATHS_273_USE_FIXED_CUSTOMER_ID", "0") == "1"
 
 IMAGE_PLACEHOLDERS: dict[str, str] = {
     "（发送脸部斑点照片）": "我发一张脸部斑点照片，你帮我看看适合什么方向",
@@ -305,18 +310,20 @@ def read_cases() -> list[dict[str, Any]]:
 
 
 def build_state(case: dict[str, Any]) -> dict[str, Any]:
-    customer_id = f"reply273_{case['index']}_{uuid.uuid4().hex[:8]}"
+    customer_id = str(BASE_REQUEST["customer_id"]) if USE_FIXED_CUSTOMER_ID else f"reply273_{case['index']}_{uuid.uuid4().hex[:8]}"
+    external_userid = str(BASE_REQUEST["external_userid"])
     request_id = str(uuid.uuid4())
     return {
         "request_id": request_id,
         "customer_id": customer_id,
         "corp_id": BASE_REQUEST["corp_id"],
         "content": case["sent_question"],
+        "category_id": BASE_REQUEST["category_id"],
         "conversation_history": [],
         "file_image": None,
         "user_id": BASE_REQUEST["user_id"],
         "wechat": BASE_REQUEST["wechat"],
-        "external_userid": customer_id,
+        "external_userid": external_userid,
         "customer_add_wechat_id": None,
         "confirmed_store_id": None,
         "confirmed_store_name": None,
@@ -328,8 +335,10 @@ def build_state(case: dict[str, Any]) -> dict[str, Any]:
             "user_id": BASE_REQUEST["user_id"],
             "corp_id": BASE_REQUEST["corp_id"],
             "wechat": BASE_REQUEST["wechat"],
-            "external_userid": customer_id,
+            "category_id": BASE_REQUEST["category_id"],
+            "external_userid": external_userid,
             "customer_id": customer_id,
+            "platform_customer_id": BASE_REQUEST["customer_id"],
             "customer_stage": case.get("customer_stage"),
             "scene_type": case.get("scene_type"),
             "business_logic": case.get("business_logic"),
@@ -389,6 +398,9 @@ def judge_result(
     actual_family = str(meta.get("policy_family_id") or "")
     if expected_family and not business_family_matched(expected_family, actual_family):
         return "可优化：业务标准场景未命中"
+    required_tool_called, missing_required_tool = required_tool_status(actual_family, list(meta.get("tool_result_keys") or []))
+    if not required_tool_called:
+        return f"不通过：必需工具未调用（{missing_required_tool}）"
     if "human_handoff" in reply_types and not text_replies:
         return "不通过：专业协助缺少客户可见说明"
     if any(term in question for term in MUST_HANDOFF_TERMS) or "强制转人工" in logic:
@@ -436,6 +448,7 @@ def canonical_business_family(family: str) -> str:
 
 
 def state_meta(final_state: dict[str, Any]) -> dict[str, Any]:
+    active_scene = active_scene_context(final_state)
     return {
         "policy_family_id": str(final_state.get("policy_family_id") or ""),
         "exact_policy_id": str(final_state.get("exact_policy_id") or final_state.get("policy_id") or ""),
@@ -444,10 +457,46 @@ def state_meta(final_state: dict[str, Any]) -> dict[str, Any]:
         "active_scene_match_level": str(final_state.get("active_scene_match_level") or ""),
         "active_scene_score": final_state.get("active_scene_score", 0),
         "scene_guidance_injected": bool(final_state.get("scene_guidance_context")),
+        "canonical_sales_reply": str(active_scene.get("canonical_sales_reply") or ""),
+        "source_sales_reply": str(active_scene.get("source_sales_reply") or ""),
+        "copy_strength": str(active_scene.get("copy_strength") or ""),
         "planner_source": str(final_state.get("planner_source") or ""),
         "tool_result_keys": sorted((final_state.get("tool_results") or {}).keys()),
         "primary_task": final_state.get("primary_task") or {},
     }
+
+
+def active_scene_context(final_state: dict[str, Any]) -> dict[str, Any]:
+    contexts = final_state.get("scene_guidance_context") or []
+    if not isinstance(contexts, list) or not contexts:
+        return {}
+    first = contexts[0]
+    return first if isinstance(first, dict) else {}
+
+
+def sales_script_similarity(text_replies: list[str], canonical_sales_reply: str) -> float:
+    canonical = "".join(str(canonical_sales_reply or "").split())
+    actual = "".join("".join(text_replies).split())
+    if not canonical or not actual:
+        return 0.0
+    return round(SequenceMatcher(None, actual, canonical).ratio(), 4)
+
+
+def required_tool_status(policy_family_id: str, tool_result_keys: list[str]) -> tuple[bool, str]:
+    required = required_tools_for_family(policy_family_id)
+    if not required:
+        return True, ""
+    result_keys = set(tool_result_keys)
+    missing: list[str] = []
+    for tool in required:
+        if tool.startswith("kb_search:"):
+            kb_name = tool.split(":", 1)[1]
+            if kb_name not in result_keys and "kb_search" not in result_keys and f"kb_search:{kb_name}" not in result_keys:
+                missing.append(tool)
+            continue
+        if tool not in result_keys:
+            missing.append(tool)
+    return not missing, ", ".join(missing)
 
 
 def trace_metrics(final_state: dict[str, Any]) -> dict[str, Any]:
@@ -519,6 +568,11 @@ async def run_case(
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         text_replies, reply_types, handoff_reason = extract_text_replies(final_state)
         meta = state_meta(final_state)
+        required_tool_called, missing_required_tool = required_tool_status(
+            str(meta.get("policy_family_id") or ""),
+            list(meta.get("tool_result_keys") or []),
+        )
+        script_similarity = sales_script_similarity(text_replies, str(meta.get("canonical_sales_reply") or ""))
         metrics = trace_metrics(final_state)
         business_standard_matched = business_family_matched(
             str(case.get("expected_policy_family_id") or ""),
@@ -542,6 +596,12 @@ async def run_case(
             "log_id": final_state.get("request_id") or state["request_id"],
             "expected_policy_family_id": case.get("expected_policy_family_id", ""),
             "business_standard_matched": business_standard_matched,
+            "canonical_sales_reply": meta.get("canonical_sales_reply", ""),
+            "source_sales_reply": meta.get("source_sales_reply", ""),
+            "copy_strength": meta.get("copy_strength", ""),
+            "sales_script_similarity": script_similarity,
+            "required_tool_called": required_tool_called,
+            "missing_required_tool": missing_required_tool,
             "judgement": judge_result(case, error, text_replies, reply_types, meta),
             **meta,
             **metrics,
@@ -605,6 +665,8 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
     reply_source_counter = Counter(str(item.get("reply_source") or "") for item in results)
     expected_family_counter = Counter(str(item.get("expected_policy_family_id") or "") for item in results)
     business_standard_counter = Counter("matched" if item.get("business_standard_matched") else "mismatch" for item in results)
+    required_tool_counter = Counter("called" if item.get("required_tool_called") else "missing" for item in results)
+    missing_required_tool_counter = Counter(str(item.get("missing_required_tool") or "") for item in results if item.get("missing_required_tool"))
     handoff_count = sum(1 for item in results if "human_handoff" in (item.get("reply_types") or []))
     no_visible_text = [item for item in results if not has_visible_text(item)]
     metadata_only_handoff = [
@@ -647,6 +709,8 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
     lines.extend(counter_table("reply_source 聚合", reply_source_counter))
     lines.extend(counter_table("expected_policy_family_id 聚合", expected_family_counter))
     lines.extend(counter_table("business_standard_matched 聚合", business_standard_counter))
+    lines.extend(counter_table("required_tool_called 聚合", required_tool_counter))
+    lines.extend(counter_table("missing_required_tool 聚合", missing_required_tool_counter))
     lines.extend(counter_table("policy_family_id 聚合", family_counter))
     lines.extend(counter_table("exact_policy_id 聚合", policy_counter))
     lines.extend(counter_table("active_scene_id 聚合", scene_counter))
@@ -711,8 +775,8 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
             "",
             "## 全量明细",
             "",
-            "| 客户阶段 | 场景类型 | 用户问题 | AI实际回复（第1条） | AI引导回复（第2条） | 日志id | reply_source | expected_policy_family_id | policy_family_id | exact_policy_id | active_scene_id | business_standard_matched | 评判 |",
-            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| 客户阶段 | 场景类型 | 用户问题 | AI实际回复（第1条） | AI引导回复（第2条） | 日志id | reply_source | expected_policy_family_id | policy_family_id | exact_policy_id | active_scene_id | canonical_sales_reply | sales_script_similarity | required_tool_called | missing_required_tool | business_standard_matched | 评判 |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---: | --- | --- | --- | --- |",
         ]
     )
     for item in results:
@@ -731,6 +795,10 @@ def write_outputs(results: list[dict[str, Any]]) -> tuple[Path, Path]:
                     md_escape(item.get("policy_family_id")),
                     md_escape(item.get("exact_policy_id")),
                     md_escape(item.get("active_scene_id")),
+                    md_escape(item.get("canonical_sales_reply")),
+                    md_escape(item.get("sales_script_similarity")),
+                    md_escape("是" if item.get("required_tool_called") else "否"),
+                    md_escape(item.get("missing_required_tool")),
                     md_escape("是" if item.get("business_standard_matched") else "否"),
                     md_escape(item.get("judgement")),
                 ]

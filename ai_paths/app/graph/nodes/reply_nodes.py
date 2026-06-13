@@ -43,7 +43,7 @@ def create_synthesize_reply_node(
                 tier = reply_model_tier(state)
                 model_call = {"name": "reply_synthesizer_model", "input": {"tier": tier, "required": True}}
 
-                payload = await model_client.chat_json(reply_messages_for_model(state), tier=tier)
+                payload = await model_client.chat_json(reply_messages_for_model(state), tier=tier, temperature=0.05)
                 model_call["usage"] = model_usage_snapshot(model_client)
                 messages = validated_model_messages(payload)
                 model_call["draft_messages"] = debug_message_contents(messages)
@@ -188,6 +188,7 @@ async def _try_repair_reply(
         repair_payload = await model_client.chat_json(
             reply_repair_messages_for_model(state, draft_messages),
             tier=tier,
+            temperature=0.05,
         )
         repair_call["usage"] = model_usage_snapshot(model_client)
         repaired_messages = validated_model_messages(repair_payload)
@@ -222,7 +223,7 @@ async def _try_text_rescue_reply(
         text = await model_client.chat_text(
             reply_text_rescue_messages_for_model(state),
             tier=tier,
-            temperature=0.1,
+            temperature=0.05,
         )
         rescue_call["usage"] = model_usage_snapshot(model_client)
         text = _clean_rescue_text(text)
