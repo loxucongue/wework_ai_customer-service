@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.graph.state import AgentState
+from app.policies.s10_offer import attach_s10_offer_facts
 
 
 def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
@@ -14,6 +15,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
     risk_flags = list((state.get("guardrail_result") or {}).get("terms") or [])
     structured_facts: dict[str, Any] = {
         "store_facts": [],
+        "store_lookup_status": {},
         "recommended_store": {},
         "price_facts": [],
         "case_facts": [],
@@ -34,6 +36,19 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
 
         if key == "store_lookup":
             stores = value.get("stores") or []
+            missing = [str(item) for item in (value.get("missing") or [])[:4]]
+            platform_error = str(value.get("platform_error") or "").strip()
+            structured_facts["store_lookup_status"] = {
+                "query": str(value.get("query") or "")[:160],
+                "city": str(value.get("city") or ""),
+                "requested_store": str(value.get("requested_store") or ""),
+                "location_preference": str(value.get("location_preference") or ""),
+                "source": str(value.get("source") or ""),
+                "missing": missing,
+                "platform_error": platform_error[:240],
+                "has_store_facts": bool(stores),
+                "no_store_match_confirmed": bool(not stores and not missing and not platform_error),
+            }
             if stores:
                 structured_facts["store_facts"] = [
                     {
@@ -61,7 +76,14 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "store_lookup: recommended_store="
                     f"{recommended.get('name') or ''}; address={recommended.get('address') or ''}"
                 )
-            missing_slots.extend(str(item) for item in (value.get("missing") or [])[:4])
+            if not stores and not missing and not platform_error:
+                facts.append(
+                    "store_lookup: no_matched_stores; "
+                    f"city={value.get('city') or ''}; query={value.get('query') or ''}"
+                )
+            if platform_error and not stores:
+                unsupported_claims.append("store_lookup incomplete")
+            missing_slots.extend(missing)
             continue
 
         if key == "pricing_rules":
@@ -179,17 +201,20 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             structured_facts[target].extend(normalized_items)
             facts.append(f"{key}: kb_items={len(items)}")
 
-    return {
-        "intent": "facts_only",
-        "facts": facts[:8],
-        "structured_facts": structured_facts,
-        "fact_envelope": {
+    fact_envelope = attach_s10_offer_facts(
+        {
             "usable_facts": facts[:8],
             "missing_facts": list(dict.fromkeys(missing_slots))[:6],
             "risky_facts": risk_flags[:6],
             "unsupported_claims": list(dict.fromkeys(unsupported_claims))[:6],
             "structured_facts": structured_facts,
-        },
+        }
+    )
+    return {
+        "intent": "facts_only",
+        "facts": fact_envelope.get("usable_facts", [])[:8],
+        "structured_facts": fact_envelope.get("structured_facts", {}),
+        "fact_envelope": fact_envelope,
         "reply_points": [],
         "missing_slots": list(dict.fromkeys(missing_slots))[:6],
         "risk_flags": risk_flags[:6],

@@ -43,7 +43,7 @@ def create_synthesize_reply_node(
                 tier = reply_model_tier(state)
                 model_call = {"name": "reply_synthesizer_model", "input": {"tier": tier, "required": True}}
 
-                payload = await model_client.chat_json(reply_messages_for_model(state), tier=tier, temperature=0.05)
+                payload = await model_client.chat_json(reply_messages_for_model(state), tier=tier, temperature=0.0)
                 model_call["usage"] = model_usage_snapshot(model_client)
                 messages = validated_model_messages(payload)
                 model_call["draft_messages"] = debug_message_contents(messages)
@@ -274,7 +274,7 @@ def _safe_visible_fallback_messages(state: AgentState) -> tuple[list[dict[str, A
     handoff = planner_handoff(state)
     reason = str(handoff.get("reason") or "").strip() or "最终回复生成失败，需要专业同事核对"
     if _fallback_needs_handoff(state, handoff):
-        text = "我先帮您记录清楚，马上让专业同事核对处理。"
+        text = _canonical_scene_reply(state) or "我先帮您对接专业同事继续跟您说，您稍等一下。"
         return (
             [
                 {"type": "text", "order": 1, "content": {"text": text}},
@@ -299,6 +299,9 @@ def _fallback_needs_handoff(state: AgentState, handoff: dict[str, Any]) -> bool:
 
 
 def _safe_text_fallback(state: AgentState) -> str:
+    canonical = _canonical_scene_reply(state)
+    if canonical:
+        return canonical
     policy_family = str(state.get("policy_family_id") or "")
     if policy_family == "SF7_PRICE_ACTIVITY":
         return "费用会按活动规则和到店检测后的方案提前说清楚，认可再做。"
@@ -309,7 +312,70 @@ def _safe_text_fallback(state: AgentState) -> str:
     if policy_family.startswith("SF9_APPOINTMENT"):
         return "我先按您的到店意向继续确认，具体门店和时间以真实档期为准。"
     if policy_family == "SF6_STORE_INQUIRY":
+        store_reply = _store_fact_text_fallback(state)
+        if store_reply:
+            return store_reply
         return "门店位置和营业时间我会按真实信息确认清楚，再帮您选更方便的一家。"
     if policy_family == "SF12_AFTER_SALES":
         return "理解您这次体验不太理想，我先帮您把门店、时间和具体情况问清楚再处理。"
     return "我先按您的问题继续帮您确认，涉及价格、门店或时间都会以真实信息为准。"
+
+
+def _canonical_scene_reply(state: AgentState) -> str:
+    contexts = state.get("scene_guidance_context")
+    if not isinstance(contexts, list):
+        return ""
+    for item in contexts:
+        if not isinstance(item, dict):
+            continue
+        canonical = str(item.get("canonical_sales_reply") or "").strip()
+        copy_strength = str(item.get("copy_strength") or "").strip().lower()
+        if canonical and copy_strength == "high":
+            return canonical
+    return ""
+
+
+def _store_fact_text_fallback(state: AgentState) -> str:
+    fact_envelope = state.get("fact_envelope") if isinstance(state, dict) else {}
+    if not isinstance(fact_envelope, dict):
+        return ""
+    structured = fact_envelope.get("structured_facts")
+    if not isinstance(structured, dict):
+        return ""
+    status = structured.get("store_lookup_status")
+    status = status if isinstance(status, dict) else {}
+    recommended = structured.get("recommended_store")
+    store: dict[str, object] = recommended if isinstance(recommended, dict) and recommended else {}
+    stores = structured.get("store_facts")
+    if not store and isinstance(stores, list):
+        for item in stores:
+            if isinstance(item, dict) and (item.get("name") or item.get("address")):
+                store = item
+                break
+    if store:
+        name = str(store.get("name") or "").strip()
+        address = str(store.get("address") or "").strip()
+        hours = str(store.get("business_hours") or "").strip()
+        location_preference = str(status.get("location_preference") or "").strip()
+        if location_preference:
+            prefix = f"按您说的{location_preference}，"
+        else:
+            prefix = ""
+        parts = []
+        if name and address:
+            parts.append(f"{prefix}我查到{name}，地址在{address}")
+        elif name:
+            parts.append(f"{prefix}我查到{name}")
+        elif address:
+            parts.append(f"{prefix}我查到门店地址在{address}")
+        if hours:
+            parts.append(f"营业时间{hours}")
+        text = "，".join(parts).strip("，")
+        if text:
+            return f"{text}，具体距离以导航为准。"
+    if bool(status.get("no_store_match_confirmed")):
+        city = str(status.get("city") or "").strip()
+        if city:
+            return f"{city}这边我查了暂时没匹配到门店，我再帮您看近一点的可到门店。"
+        return "这边我查了暂时没匹配到门店，我再帮您看近一点的可到门店。"
+    return ""

@@ -9,11 +9,15 @@ from app.services.store_text_constants import AREA_CITY_MAP, CITY_NAMES, QUERY_S
 def needs_city_before_lookup(query: str, *, city: str, requested_name: str) -> bool:
     if city or requested_name or not query:
         return False
+    if any(term in query for term in ["地铁站", "火车站", "高铁站", "机场", "车站"]):
+        return False
     generic_terms = ["门店", "店", "地址", "哪里", "附近", "停车", "导航", "位置", "怎么过去", "哪家"]
     return any(term in query for term in generic_terms)
 
 
 def extract_location_preference(query: str) -> str:
+    if any(term in query for term in ["蔡塘地铁站", "蔡塘站", "蔡塘"]):
+        return "蔡塘地铁站附近"
     if any(term in query for term in ["机场附近", "机场周边", "离机场近", "机场近", "高崎机场", "厦门机场", "机场"]):
         return "机场附近"
     if any(term in query for term in ["火车站附近", "离火车站近", "高铁站附近"]):

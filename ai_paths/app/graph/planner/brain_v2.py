@@ -8,6 +8,7 @@ from app.graph.planner.planner_contract import SHORT_GREETING_TOKENS
 from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, safety_fallback_plan
 from app.graph.state import AgentState
+from app.policies.s10_offer import s10_offer_context, s10_offer_prompt_section
 from app.prompts.business_strategy import BUSINESS_STRATEGY_PROMPT
 from app.services.model_client import ModelClient
 
@@ -27,6 +28,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
         "image_info": state.get("image_info") or {},
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
         "request_context": _compact_request_context(state.get("request_context") or {}),
+        "active_offer_context": s10_offer_context(),
         "customer_profile": state.get("customer_profile") or {},
         "customer_basic_info": state.get("customer_basic_info") or {},
         "history_events": (state.get("history_events") or [])[-8:],
@@ -35,6 +37,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
     }
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": s10_offer_prompt_section()},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
         {"role": "system", "content": BUSINESS_STRATEGY_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
@@ -54,6 +57,7 @@ def planner_v2_repair_messages_for_model(
         "image_info": state.get("image_info") or {},
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
         "request_context": _compact_request_context(state.get("request_context") or {}),
+        "active_offer_context": s10_offer_context(),
         "customer_profile": state.get("customer_profile") or {},
         "customer_basic_info": state.get("customer_basic_info") or {},
         "history_events": (state.get("history_events") or [])[-8:],
@@ -64,6 +68,7 @@ def planner_v2_repair_messages_for_model(
     }
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": s10_offer_prompt_section()},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
         {"role": "system", "content": BUSINESS_STRATEGY_PROMPT},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
@@ -76,7 +81,7 @@ async def run_planner_brain_v2(
     model_client: ModelClient,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     tier = planner_v2_model_tier(state)
-    payload = await model_client.chat_json(planner_v2_messages_for_model(state), tier=tier, temperature=0.1)
+    payload = await model_client.chat_json(planner_v2_messages_for_model(state), tier=tier, temperature=0.0)
     plan = build_planner_plan_v2(state, payload)
     initial_usage = model_usage_snapshot(model_client)
     nested_calls: list[dict[str, Any]] = []

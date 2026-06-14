@@ -27,7 +27,21 @@ def build_store_query_info(query: str, stores: list[StoreRecord]) -> StoreQueryI
         wants_parking=any(term in cleaned_query for term in ["停车", "停车场", "车位"]),
         wants_route=any(
             term in cleaned_query
-            for term in ["导航", "路线", "怎么过去", "地址", "哪里", "位置", "发给我", "发我", "发一下"]
+            for term in [
+                "导航",
+                "路线",
+                "怎么过去",
+                "地址",
+                "哪里",
+                "位置",
+                "发给我",
+                "发我",
+                "发一下",
+                "地铁站",
+                "机场",
+                "附近",
+                "近吗",
+            ]
         ),
         wants_status=store_text.asks_store_status(cleaned_query),
     )

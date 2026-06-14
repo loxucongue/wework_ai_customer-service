@@ -56,13 +56,14 @@ def create_execute_actions_node(
 
             if _needs_store_lookup(required_tools) and store_service:
                 try:
-                    store_query = store_query_from_state(content, state)
+                    planned_store_query = _planned_tool_query(required_tools, "store_lookup")
+                    store_query = store_query_from_state(planned_store_query or content, state)
                     result = store_service.search(store_query, customer_context=state.get("customer_context") or {})
                     tool_results["store_lookup"] = result
                     tool_calls.append(
                         {
                             "name": "store_lookup",
-                            "input": {"query": store_query, "raw_query": content},
+                            "input": {"query": store_query, "raw_query": content, "planned_query": planned_store_query},
                             "output": result,
                         }
                     )
@@ -88,7 +89,8 @@ def create_execute_actions_node(
 
             if _needs_appointment_lookup(required_tools) and store_service:
                 try:
-                    store_query = store_query_from_state(content, state)
+                    planned_store_query = _planned_tool_query(required_tools, "store_lookup")
+                    store_query = store_query_from_state(planned_store_query or content, state)
                     lookup = tool_results.get("store_lookup") or store_service.search(
                         store_query,
                         customer_context=state.get("customer_context") or {},
@@ -98,7 +100,7 @@ def create_execute_actions_node(
                         tool_calls.append(
                             {
                                 "name": "store_lookup",
-                                "input": {"query": store_query, "raw_query": content},
+                                "input": {"query": store_query, "raw_query": content, "planned_query": planned_store_query},
                                 "output": lookup,
                             }
                         )

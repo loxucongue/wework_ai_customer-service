@@ -61,6 +61,7 @@ def retrieve_scene_guidance(
     *,
     family: str,
     user_message: str,
+    preferred_scene_id: str = "",
     top_k: int = 3,
 ) -> list[dict[str, Any]]:
     family = str(family or "").strip()
@@ -68,9 +69,31 @@ def retrieve_scene_guidance(
     if not family or not text:
         return []
 
+    preferred = str(preferred_scene_id or "").strip()
+    preferred_scene: SceneGuidance | None = None
+    if preferred:
+        for scene in load_scene_guidance():
+            if scene.scene_id == preferred and scene.family == family and scene.status in {"shadow", "active"}:
+                preferred_scene = scene
+                break
+
     scored: list[dict[str, Any]] = []
+    if preferred_scene:
+        scored.append(
+            {
+                "scene_id": preferred_scene.scene_id,
+                "family": preferred_scene.family,
+                "score": 1.0,
+                "status": preferred_scene.status,
+                "match_level": "exact",
+                "reply_goal": preferred_scene.reply_goal,
+            }
+        )
+
     for scene in load_scene_guidance():
         if scene.family != family or scene.status not in {"shadow", "active"}:
+            continue
+        if preferred_scene and scene.scene_id == preferred_scene.scene_id:
             continue
         score = max(_keyword_score(text, scene.keywords), _example_score(text, scene.examples))
         if score <= 0:

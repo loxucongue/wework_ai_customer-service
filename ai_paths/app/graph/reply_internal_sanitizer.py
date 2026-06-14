@@ -55,6 +55,7 @@ def sanitize_customer_visible_messages(messages: list[dict[str, Any]]) -> list[d
             content_text = sanitize_handoff_visible_phrasing(content_text)
             content_text = sanitize_health_assist_phrasing(content_text)
             content_text = sanitize_overpromising_phrasing(content_text)
+            content_text = sanitize_activity_name_phrasing(content_text)
             content_text = dedupe_repeated_phrase_noise(content_text)
             if not content_text:
                 continue
@@ -161,6 +162,77 @@ def sanitize_overpromising_phrasing(text: str) -> str:
     )
     for old, new in replacements:
         cleaned = cleaned.replace(old, new)
+    return cleaned
+
+
+def sanitize_activity_name_phrasing(text: str) -> str:
+    cleaned = str(text or "").strip()
+    replacements = (
+        ("S10 淡斑套餐", "周年庆淡斑活动"),
+        ("S10淡斑套餐", "周年庆淡斑活动"),
+        ("S10 周年庆活动", "周年庆活动"),
+        ("S10周年庆活动", "周年庆活动"),
+        ("S10 活动", "周年庆活动"),
+        ("S10活动", "周年庆活动"),
+        ("S10 单品", "周年庆活动"),
+        ("S10单品", "周年庆活动"),
+        ("焕新体验计划", "周年庆活动"),
+        ("焕新体验季", "周年庆活动"),
+        ("焕新季·限时轻颜礼", "周年庆活动"),
+        ("焕新季限时活动", "周年庆活动"),
+        ("限时焕新活动", "周年庆活动"),
+        ("限时焕新", "周年庆活动"),
+        ("焕新季", "周年庆活动"),
+        ("体验季", "周年庆活动"),
+        ("轻颜礼", "周年庆活动"),
+        ("节日活动", "周年庆活动"),
+        ("大型活动", "周年庆活动"),
+        ("团购活动", "周年庆活动"),
+        ("新客活动", "周年庆活动"),
+        ("新客专属的周年庆活动价", "新客周年庆活动价"),
+        ("新客专属的周年庆淡斑活动价", "新客周年庆淡斑活动价"),
+        ("新客专属的周年庆", "新客周年庆"),
+        ("新客专享价", "新客活动价"),
+        ("指定项目首单可享立减", "现在参加的就是周年庆活动价"),
+        ("指定项目享限时特惠价", "现在参加的就是周年庆活动价"),
+        ("指定项目立减或加赠护理", "按周年庆活动规则参与"),
+        ("享立减+赠护理", "按周年庆活动规则参与"),
+        ("活动有效期到本月底", "名额满活动结束"),
+        ("活动持续到本月底", "名额满活动结束"),
+        ("本月底活动结束", "名额满活动结束"),
+        ("如果最后没做，这10元会原路退还", "如果到店不做，退还10元"),
+        ("如果最后没做，10元会原路退还", "如果到店不做，退还10元"),
+        ("如果临时不来，10元会全额退还", "如果到店不做，退还10元"),
+        ("如果临时不来，这10元会全额退还", "如果到店不做，退还10元"),
+        ("如果不做会原路退还10元", "如果到店不做，退还10元"),
+        ("如果不做会全额退还10元", "如果到店不做，退还10元"),
+    )
+    for old, new in replacements:
+        cleaned = cleaned.replace(old, new)
+    cleaned = re.sub(r"\bS10\b", "周年庆活动", cleaned)
+    cleaned = cleaned.replace("周年庆活动活动", "周年庆活动")
+    cleaned = cleaned.replace("周年庆活动价价", "周年庆活动价")
+    cleaned = cleaned.replace("这10元全额退还", "到店不做退还10元")
+    cleaned = cleaned.replace("10元全额退还", "到店不做退还10元")
+    cleaned = cleaned.replace("全额退还10元", "到店不做退还10元")
+    cleaned = cleaned.replace("不做到店退还10元", "到店不做退还10元")
+    cleaned = cleaned.replace("不做到店会退还10元", "到店不做退还10元")
+    cleaned = cleaned.replace("不做的话10元退还", "到店不做退还10元")
+    cleaned = cleaned.replace("不做的话，10元退还", "到店不做退还10元")
+    cleaned = cleaned.replace("不做会退还10元", "到店不做退还10元")
+    cleaned = cleaned.replace("不做就退10元", "到店不做退还10元")
+    cleaned = cleaned.replace("不做就退还10元", "到店不做退还10元")
+    cleaned = cleaned.replace("这10元会原路退还", "到店不做退还10元")
+    cleaned = cleaned.replace("10元会原路退还", "到店不做退还10元")
+    cleaned = cleaned.replace("这10元会原路退回", "到店不做退还10元")
+    cleaned = cleaned.replace("10元会原路退回", "到店不做退还10元")
+    cleaned = cleaned.replace("原路退还10元", "到店不做退还10元")
+    cleaned = cleaned.replace("原路退回10元", "到店不做退还10元")
+    cleaned = cleaned.replace("不做到店不做退还10元", "到店不做退还10元")
+    cleaned = cleaned.replace("如果到店不做，这10元不退还", "如果到店不做，退还10元")
+    cleaned = cleaned.replace("到店不做，这10元不退还", "到店不做退还10元")
+    cleaned = cleaned.replace("不做不退还10元", "不做退还10元")
+    cleaned = cleaned.replace("不做不退10元", "不做退还10元")
     return cleaned
 
 

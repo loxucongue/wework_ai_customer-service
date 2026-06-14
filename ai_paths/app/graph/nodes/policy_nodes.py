@@ -32,7 +32,12 @@ def create_scene_guidance_node(*, trace_logger: TraceLogger) -> Callable[[AgentS
                 "policy_match_level": state.get("policy_match_level", ""),
             },
         ) as span:
-            candidates = retrieve_scene_guidance(family=family, user_message=content, top_k=3)
+            candidates = retrieve_scene_guidance(
+                family=family,
+                user_message=content,
+                preferred_scene_id=str(state.get("exact_policy_id") or state.get("policy_id") or "").strip(),
+                top_k=3,
+            )
             guidance_context = active_scene_guidance_context(candidates, top_k=1)
             active_meta = _active_scene_meta(guidance_context)
             output = {

@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.graph.nodes.common import recent_assistant_replies
@@ -23,13 +24,14 @@ from app.policies.compliance_terms import (
     UNSUPPORTED_QUALIFICATION_CONTEXT_TERMS,
     UNSUPPORTED_SERVICE_COMMITMENT_CONTEXT_TERMS,
 )
+from app.policies.s10_offer import attach_s10_offer_facts, s10_offer_context
 
 
 def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     planner_views = planner_task_views(state)
     should_show_appointment_context = not should_suspend_appointment_context_for_current_turn(state, planner_views)
     suppress_profile_memory = should_suppress_profile_memory_for_reply(state)
-    fact_envelope = {} if suppress_profile_memory else (state.get("fact_envelope") or {})
+    fact_envelope = attach_s10_offer_facts({} if suppress_profile_memory else (state.get("fact_envelope") or {}))
     primary_task = _sanitize_planner_context_for_reply(planner_primary_task(state))
     secondary_tasks = _sanitize_planner_context_for_reply(planner_secondary_tasks(state))
     required_tools = planner_required_tools(state)
@@ -44,7 +46,9 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_basic_info": {} if suppress_profile_memory else state.get("customer_basic_info", {}),
         "history_events": [] if suppress_profile_memory else state.get("history_events", [])[-8:],
         "memory_usage_policy": memory_usage_policy_for_reply(state),
+        "active_offer_context": s10_offer_context(),
         "recent_assistant_replies": [] if suppress_profile_memory else recent_assistant_replies(state, 4),
+        "recent_image_urls": [] if suppress_profile_memory else _recent_image_urls(state),
         "guardrail_result": state.get("guardrail_result", {}),
         "primary_task": {} if suppress_profile_memory else primary_task,
         "secondary_tasks": [] if suppress_profile_memory else secondary_tasks,
@@ -138,3 +142,35 @@ def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:
         if text and target_key not in context:
             context[target_key] = text
     return context
+
+
+def _recent_image_urls(state: AgentState, *, limit: int = 6) -> list[str]:
+    urls: list[str] = []
+
+    def append_urls(text: str) -> None:
+        for match in re.finditer(r"https?://[^\s<>'\")]+", text or ""):
+            url = match.group(0).strip()
+            if url and url not in urls:
+                urls.append(url)
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            if str(value.get("type") or "").strip() == "image":
+                content = value.get("content")
+                if isinstance(content, str):
+                    append_urls(content)
+                elif isinstance(content, dict):
+                    append_urls(str(content.get("url") or content.get("image_url") or ""))
+            for item in value.values():
+                collect(item)
+            return
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+            return
+        if isinstance(value, str):
+            append_urls(value)
+
+    collect(state.get("conversation_history") or [])
+    collect(state.get("reply_messages") or [])
+    return urls[-limit:]

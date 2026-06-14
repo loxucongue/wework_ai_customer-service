@@ -175,6 +175,11 @@ FAMILY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "安全性",
             "伤害皮肤",
             "家属",
+            "孙子",
+            "儿子",
+            "女儿",
+            "家里人",
+            "别乱花钱",
             "靠谱吗",
             "正规",
         ),
@@ -197,11 +202,11 @@ FAMILY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 REQUIRED_TOOLS_BY_FAMILY = {
-    "SF3_PROJECT_CONSULT": ["kb_search:project_qa"],
+    "SF3_PROJECT_CONSULT": ["kb_search:sales_talk_qa"],
     "CASE_EFFECT_REFERENCE": ["kb_search:case_studies"],
     "SF5_COMPETITOR_COMPARE": ["kb_search:sales_talk_qa"],
     "SF6_STORE_INQUIRY": ["store_lookup"],
-    "SF7_PRICE_ACTIVITY": ["pricing_rules"],
+    "SF7_PRICE_ACTIVITY": ["kb_search:sales_talk_qa"],
     "SF9_APPOINTMENT": ["store_lookup", "available_time"],
     "SF10_TRUST_BUILD": ["kb_search:sales_talk_qa"],
     "SF12_AFTER_SALES": ["kb_search:sales_talk_qa"],

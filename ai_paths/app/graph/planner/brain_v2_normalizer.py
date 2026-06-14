@@ -116,10 +116,14 @@ def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
         name = str(item.get("name") or "").strip()
         if name not in ALLOWED_TOOLS:
             continue
+        if name == "pricing_rules":
+            continue
         tool = {"name": name, "purpose": str(item.get("purpose") or "").strip()}
         kb_name = str(item.get("kb_name") or "").strip()
         if kb_name:
             if name != "kb_search" or kb_name not in ALLOWED_KBS:
+                continue
+            if kb_name == "project_qa":
                 continue
             tool["kb_name"] = kb_name
         query = str(item.get("query") or "").strip()
@@ -136,6 +140,7 @@ def _enforce_policy_required_tools(
 ) -> list[dict[str, Any]]:
     tools = [tool for tool in required_tools if str(tool.get("name") or "").strip() != "no_tool"]
     query = _policy_tool_query(tasks) or str(state.get("normalized_content") or "").strip()[:160]
+    original_user_query = str(state.get("normalized_content") or "").strip()[:160]
 
     def has_tool(name: str, *, kb_name: str = "") -> bool:
         for tool in tools:
@@ -147,8 +152,70 @@ def _enforce_policy_required_tools(
         return False
 
     def add_tool(tool: dict[str, Any]) -> None:
-        if not has_tool(str(tool.get("name") or ""), kb_name=str(tool.get("kb_name") or "")):
-            tools.append(tool)
+        name = str(tool.get("name") or "")
+        kb_name = str(tool.get("kb_name") or "")
+        for existing in tools:
+            if str(existing.get("name") or "").strip() != name:
+                continue
+            if kb_name and str(existing.get("kb_name") or "").strip() != kb_name:
+                continue
+            if str(tool.get("query") or "").strip() and (
+                name == "store_lookup" or not str(existing.get("query") or "").strip()
+            ):
+                existing["query"] = str(tool.get("query") or "").strip()
+            if str(tool.get("purpose") or "").strip() and not str(existing.get("purpose") or "").strip():
+                existing["purpose"] = str(tool.get("purpose") or "").strip()
+            return
+        tools.append(tool)
+
+    def ensure_sales_talk_reference(purpose: str) -> None:
+        if not original_user_query:
+            return
+        for tool in tools:
+            if str(tool.get("name") or "").strip() == "kb_search" and str(tool.get("kb_name") or "").strip() == "sales_talk_qa":
+                tool["query"] = original_user_query
+                tool["purpose"] = purpose
+                return
+        tools.append(
+            {
+                "name": "kb_search",
+                "kb_name": "sales_talk_qa",
+                "query": original_user_query,
+                "purpose": purpose,
+            }
+        )
+
+    def case_study_query() -> str:
+        parts = [original_user_query or query]
+        category_id = str(state.get("category_id") or "").strip()
+        request_context = state.get("request_context")
+        if isinstance(request_context, dict):
+            request_category = str(request_context.get("category_id") or "").strip()
+        else:
+            request_category = ""
+        for item in (category_id, request_category):
+            if item and item not in parts:
+                parts.append(item)
+        base = " ".join(part for part in parts if part).strip()
+        case_markers = ("案例", "效果", "做完", "前后", "对比", "参考")
+        need_markers = ("斑", "淡斑", "肤色", "痘印", "毛孔", "细纹", "皱纹", "痣", "痦子", "黑色素")
+        if not any(token in base for token in case_markers + need_markers):
+            base = f"{base} 效果案例 做完效果 改善参考 斑点 淡斑 肤色不均".strip()
+        elif any(token in base for token in case_markers) and not any(token in base for token in need_markers):
+            base = f"{base} 斑点 淡斑 肤色不均 改善参考".strip()
+        return base[:160]
+
+    def pricing_query() -> str:
+        parts = [original_user_query or query]
+        request_context = state.get("request_context")
+        request_category = ""
+        if isinstance(request_context, dict):
+            request_category = str(request_context.get("category_id") or "").strip()
+        category_id = str(state.get("category_id") or "").strip()
+        for item in (category_id, request_category):
+            if item and item not in parts:
+                parts.append(item)
+        return " ".join(part for part in parts if part).strip()[:160] or "周年庆活动 价格规则"
 
     for task in tasks:
         task_type = str(task.get("type") or "").strip()
@@ -160,15 +227,17 @@ def _enforce_policy_required_tools(
         markers_lower = markers.lower()
 
         if task_type == "price_inquiry" or "SF7_" in markers:
+            ensure_sales_talk_reference("Need sales champion wording for S10 price, activity, deposit, and fee concerns")
+        if task_type == "competitor_compare" or "SF5_" in markers:
+            ensure_sales_talk_reference("Need sales champion wording for competitor comparison while keeping S10 fixed offer facts")
+        if task_type == "store_inquiry" or "SF6_" in markers:
             add_tool(
                 {
-                    "name": "pricing_rules",
-                    "query": query or "周年庆活动 价格规则",
-                    "purpose": "Need real pricing and activity facts before answering price or fee concerns",
+                    "name": "store_lookup",
+                    "query": original_user_query or query,
+                    "purpose": "Need real store facts before answering store, route, address, or hours",
                 }
             )
-        if task_type == "store_inquiry" or "SF6_" in markers:
-            add_tool({"name": "store_lookup", "purpose": "Need real store facts before answering store, route, address, or hours"})
         if task_type in {"appointment_status", "appointment_change", "appointment_cancel"} or any(
             token in markers_upper for token in ("APPOINTMENT_STATUS", "APPOINTMENT_CHANGE", "APPOINTMENT_CANCEL")
         ):
@@ -176,46 +245,71 @@ def _enforce_policy_required_tools(
         if task_type == "appointment" or any(
             token in markers_upper for token in ("TIME_CHECK", "VISIT_INTENT", "CONFIRM_TIME", "WEEKEND", "AVAILABLE")
         ) or "time_check" in markers_lower:
-            add_tool({"name": "store_lookup", "purpose": "Need real store facts before checking appointment time"})
+            add_tool(
+                {
+                    "name": "store_lookup",
+                    "query": original_user_query or query,
+                    "purpose": "Need real store facts before checking appointment time",
+                }
+            )
             add_tool({"name": "available_time", "purpose": "Need real appointment availability before answering time or visit intent"})
         if task_type == "case_request" or "CASE_" in markers:
             add_tool(
                 {
                     "name": "kb_search",
                     "kb_name": "case_studies",
-                    "query": query or str(state.get("normalized_content") or "").strip()[:160],
+                    "query": case_study_query(),
                     "purpose": "Need real case materials before answering effect comparison requests",
                 }
             )
         if task_type == "project_consult" or "SF3_" in markers:
-            add_tool(
-                {
-                    "name": "kb_search",
-                    "kb_name": "project_qa",
-                    "query": query or str(state.get("normalized_content") or "").strip()[:160],
-                    "purpose": "Need project facts before answering project or method questions",
-                }
-            )
-        if task_type in {"competitor_compare", "trust_issue", "after_sales"} or any(
-            marker in markers for marker in ("SF5_", "SF10_", "SF12_")
-        ):
-            add_tool(
-                {
-                    "name": "kb_search",
-                    "kb_name": "sales_talk_qa",
-                    "query": str(state.get("normalized_content") or "").strip()[:160] or query,
-                    "purpose": "Need sales-talk reference for this customer objection using the original user wording",
-                }
+            ensure_sales_talk_reference("Need sales champion wording for S10 project and method questions")
+        if _should_use_sales_talk_reference(task_type, markers):
+            ensure_sales_talk_reference(
+                "Need sales champion wording and business-answer logic using the original customer wording"
             )
 
-    if any(str(task.get("policy_hint") or "").strip() == "SF7_LOWEST_PRICE_HANDOFF" for task in tasks):
-        add_tool(
-            {
-                "name": "professional_assist",
-                "purpose": "Need a professional colleague to confirm whether there is an approvable price space",
-            }
-        )
     return _dedupe_tools(tools)
+
+
+def _should_use_sales_talk_reference(task_type: str, markers: str) -> bool:
+    if task_type == "human_request" or "HUMAN_HANDOFF" in markers:
+        return False
+    business_task_types = {
+        "general_chat",
+        "opening",
+        "project_consult",
+        "image_consult",
+        "case_request",
+        "price_inquiry",
+        "store_inquiry",
+        "appointment",
+        "appointment_status",
+        "appointment_change",
+        "appointment_cancel",
+        "competitor_compare",
+        "trust_issue",
+        "after_sales",
+        "direct_reply",
+    }
+    if task_type in business_task_types:
+        return True
+    markers_upper = markers.upper()
+    business_markers = (
+        "S1_",
+        "SF3_",
+        "SF4_",
+        "SF5_",
+        "SF6_",
+        "SF7_",
+        "SF8_",
+        "SF9_",
+        "SF10_",
+        "SF12_",
+        "CASE_",
+        "GENERAL_",
+    )
+    return any(marker in markers_upper for marker in business_markers)
 
 
 def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:
@@ -277,10 +371,7 @@ def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[di
     for task in tasks:
         task_type = str(task.get("type") or "").strip()
         missing: list[str] = []
-        if task_type == "price_inquiry":
-            if not has_tool("pricing_rules"):
-                missing.append("pricing_rules")
-        elif task_type == "store_inquiry":
+        if task_type == "store_inquiry":
             if not has_tool("store_lookup"):
                 missing.append("store_lookup")
         elif task_type == "case_request":

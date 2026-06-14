@@ -40,11 +40,15 @@ class StoreService:
             }
 
         platform_error = ""
-        try:
-            platform_result = self._search_platform(query_info.query, customer_context or {}, limit=limit)
-        except Exception as exc:
+        if not self._platform_client or not self._platform_client.available:
             platform_result = {}
-            platform_error = f"{type(exc).__name__}: {exc}"
+            platform_error = "platform_agent_unavailable"
+        else:
+            try:
+                platform_result = self._search_platform(query_info.query, customer_context or {}, limit=limit)
+            except Exception as exc:
+                platform_result = {}
+                platform_error = f"{type(exc).__name__}: {exc}"
         if platform_result:
             platform_result = sanitize_platform_result(
                 platform_result,

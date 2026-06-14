@@ -49,10 +49,11 @@ def create_hard_guardrails_node(*, trace_logger: TraceLogger) -> Callable[[Agent
 def _guardrail_handoff_payload(terms: list[str], content: str) -> dict[str, Any]:
     task_type = _guardrail_task_type(terms, content)
     reason = "、".join(terms[:4]).strip("、") or "当前问题需要进一步核对"
+    policy_hint = _guardrail_policy_hint(task_type, content)
     primary_task = {
         "type": task_type,
         "subtype": "guardrail_blocked",
-        "policy_hint": HANDOFF_POLICY_HINTS.get(task_type, "HUMAN_HANDOFF_PROFESSIONAL_ASSIST"),
+        "policy_hint": policy_hint,
         "customer_need": content[:120],
         "answer_goal": "先承接客户当前问题，再由专业同事继续核对处理",
         "scene": "S8_guardrail_handoff",
@@ -108,6 +109,12 @@ HANDOFF_POLICY_HINTS = {
     "after_sales": "HUMAN_HANDOFF_AFTER_SALES_RISK",
     "human_request": "HUMAN_HANDOFF_PROFESSIONAL_ASSIST",
 }
+
+
+def _guardrail_policy_hint(task_type: str, content: str) -> str:
+    if task_type == "human_request" and any(keyword in content for keyword in ("人工", "真人", "换个人")):
+        return "HUMAN_REQUEST_REAL_PERSON"
+    return HANDOFF_POLICY_HINTS.get(task_type, "HUMAN_HANDOFF_PROFESSIONAL_ASSIST")
 
 
 def has_minor_signal(content: str) -> bool:
