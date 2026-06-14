@@ -508,6 +508,14 @@ def _violates_sales_script_contract(state: AgentState, text: str) -> bool:
     if compact_canonical in compact_text:
         return False
 
+    scene_family = str(scene.get("family") or "").strip()
+    scene_id = str(scene.get("scene_id") or "").strip()
+    if scene_family == "SF6_STORE_INQUIRY" or scene_id.startswith("SF6_STORE_"):
+        # Store answers must include real facts such as address or hours. Do not
+        # reject them merely because the visible text is longer than the sales
+        # script skeleton.
+        return False
+
     explanation_terms = (
         "综合评估",
         "需要结合",

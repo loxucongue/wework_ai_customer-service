@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from typing import Any, Literal
 
 import httpx
@@ -18,6 +19,7 @@ class ModelClient:
         self.last_usage: dict[str, Any] | None = None
         self._client: httpx.AsyncClient | None = None
         self._client_timeout: int | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def available(self) -> bool:
@@ -126,7 +128,15 @@ class ModelClient:
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         client = self._http_client()
-        response = await client.post(url, headers=headers, content=body)
+        try:
+            response = await client.post(url, headers=headers, content=body)
+        except RuntimeError as exc:
+            if "Event loop is closed" not in str(exc):
+                raise
+            self._client = None
+            self._client_loop = None
+            client = self._http_client()
+            response = await client.post(url, headers=headers, content=body)
         response.raise_for_status()
         raw = response.json()
         self.last_usage = {
@@ -141,12 +151,20 @@ class ModelClient:
 
     def _http_client(self) -> httpx.AsyncClient:
         timeout = int(self.settings.model_timeout_seconds)
-        if self._client is None or self._client.is_closed or self._client_timeout != timeout:
+        loop = asyncio.get_running_loop()
+        if (
+            self._client is None
+            or self._client.is_closed
+            or self._client_timeout != timeout
+            or self._client_loop is not loop
+            or self._client_loop.is_closed()
+        ):
             self._client = httpx.AsyncClient(
                 timeout=timeout,
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
             )
             self._client_timeout = timeout
+            self._client_loop = loop
         return self._client
 
     async def aclose(self) -> None:

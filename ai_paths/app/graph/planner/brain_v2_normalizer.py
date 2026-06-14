@@ -80,6 +80,44 @@ def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
     )
 
 
+def planner_unavailable_fallback_plan(state: AgentState) -> dict[str, Any]:
+    content = str(state.get("normalized_content") or "").strip()
+    primary_task = {
+        "type": "general_consult",
+        "subtype": "planner_unavailable",
+        "policy_hint": "S1_OPENING_GENERAL",
+        "scene": "planner_unavailable",
+        "subflow": "GENERAL_DIRECT_REPLY",
+        "customer_need": content[:120] or "Customer needs a concise answer",
+        "answer_goal": "Answer the current question briefly using available facts; do not escalate unless hard guardrail is present",
+        "priority": 1,
+        "known_info": [],
+        "missing_info": [],
+        "must_answer": ["Current user question"],
+        "must_avoid": ["Made-up facts", "Guaranteed results", "Professional handoff without hard guardrail"],
+        "should_ask": False,
+        "tools": [{"name": "kb_search", "kb_name": "sales_talk_qa", "query": content[:160], "purpose": "Need sales talk wording when planner is unavailable"}]
+        if content
+        else [{"name": "no_tool", "purpose": "Planner unavailable and no concrete customer content"}],
+    }
+    return build_planner_plan_v2(
+        state,
+        {
+            "primary_task": primary_task,
+            "secondary_tasks": [],
+            "reply_strategy": {
+                "tone": "Natural, concise, like a real customer-service rep",
+                "must_answer": ["Current user question"],
+                "can_push": "Answer first, then ask at most one next-step question if useful",
+                "must_avoid": ["Made-up facts", "Guaranteed results", "Internal process exposure", "Unnecessary professional handoff"],
+                "max_questions": 1,
+            },
+            "handoff": {"needed": False, "reason": ""},
+            "memory_update_hint": {},
+        },
+    )
+
+
 def _normalize_task(raw: Any, *, default_priority: int) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
@@ -243,7 +281,7 @@ def _enforce_policy_required_tools(
         ):
             add_tool({"name": "appointment_record_query", "purpose": "Need real appointment record before status, change, or cancel handling"})
         if task_type == "appointment" or any(
-            token in markers_upper for token in ("TIME_CHECK", "VISIT_INTENT", "CONFIRM_TIME", "WEEKEND", "AVAILABLE")
+            token in markers_upper for token in ("TIME_CHECK", "VISIT_INTENT", "CONFIRM_TIME", "WEEKEND")
         ) or "time_check" in markers_lower:
             add_tool(
                 {

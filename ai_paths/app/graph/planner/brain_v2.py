@@ -5,7 +5,7 @@ from typing import Any
 
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
-from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, safety_fallback_plan
+from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, planner_unavailable_fallback_plan, safety_fallback_plan
 from app.graph.state import AgentState
 from app.policies.s10_offer import s10_offer_context, s10_offer_prompt_section
 from app.prompts.business_strategy import BUSINESS_STRATEGY_PROMPT
