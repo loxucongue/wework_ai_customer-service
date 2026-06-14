@@ -1,6 +1,5 @@
 ﻿from __future__ import annotations
 
-from difflib import SequenceMatcher
 import re
 
 from app.graph import reply_filters
@@ -102,8 +101,6 @@ def model_reply_unsafe(
     if _has_unbacked_order_lookup_claim(state, text):
         return True
     if _has_poor_visible_format(state, messages):
-        return True
-    if _violates_sales_script_contract(state, text):
         return True
     return False
 
@@ -519,64 +516,3 @@ def _char_ngrams(text: str, size: int = 4) -> set[str]:
         return {text}
     return {text[index : index + size] for index in range(0, len(text) - size + 1)}
 
-
-def _violates_sales_script_contract(state: AgentState, text: str) -> bool:
-    scene = _active_scene_context(state)
-    canonical = str(scene.get("canonical_sales_reply") or "").strip()
-    if not canonical:
-        return False
-    copy_strength = str(scene.get("copy_strength") or "").strip().lower()
-    if copy_strength != "high":
-        return False
-
-    compact_text = re.sub(r"\s+", "", text)
-    compact_canonical = re.sub(r"\s+", "", canonical)
-    if not compact_text or not compact_canonical:
-        return False
-    if compact_canonical in compact_text:
-        return False
-
-    scene_family = str(scene.get("family") or "").strip()
-    scene_id = str(scene.get("scene_id") or "").strip()
-    if scene_family == "SF6_STORE_INQUIRY" or scene_id.startswith("SF6_STORE_"):
-        # Store answers must include real facts such as address or hours. Do not
-        # reject them merely because the visible text is longer than the sales
-        # script skeleton.
-        return False
-
-    explanation_terms = (
-        "综合评估",
-        "需要结合",
-        "根据您",
-        "个性化",
-        "匹配适合",
-        "专业皮肤检测分析",
-        "斑的类型",
-        "层次",
-        "肌肤状态",
-        "千篇一律",
-        "专业人员",
-        "推荐合适",
-        "改善方案",
-    )
-    if any(term in text for term in explanation_terms):
-        return True
-
-    allowed_length = max(56, len(compact_canonical) * 2 + 8)
-    if len(compact_text) > allowed_length:
-        return True
-
-    ratio = SequenceMatcher(None, compact_text, compact_canonical).ratio()
-    if len(compact_canonical) <= 24:
-        return ratio < 0.38
-    return ratio < 0.3
-
-
-def _active_scene_context(state: AgentState) -> dict[str, object]:
-    contexts = state.get("scene_guidance_context") if isinstance(state, dict) else []
-    if not isinstance(contexts, list):
-        return {}
-    for item in contexts:
-        if isinstance(item, dict) and item.get("canonical_sales_reply"):
-            return item
-    return {}
