@@ -55,11 +55,11 @@ def s10_price_facts() -> list[dict[str, Any]]:
             "category": "S10单品前端接待",
             "quote_type": "周年庆活动价",
             "body_scope": "单部位体验",
-            "customer_segment": "新客/线上报名客户",
+            "customer_segment": "线上报名客户",
             "prepay_amount": str(context["reservation_deposit"]),
             "tail_amount": str(context["tail_payment"]),
             "total_price": str(context["new_customer_price"]),
-            "display_price": "新客周年庆活动价268元，线上预约金10元，到店抵扣10元，做付258元；不做退还10元",
+            "display_price": "周年庆活动价268元，线上预约金10元，到店抵扣10元，做付258元；不做退还10元",
             "original_price": str(context["original_price"]),
             "min_quote": str(context["new_customer_price"]),
             "conditions": (
@@ -139,7 +139,7 @@ def attach_s10_offer_facts(fact_envelope: dict[str, Any] | None) -> dict[str, An
     usable_facts = envelope.setdefault("usable_facts", [])
     if isinstance(usable_facts, list) and not any("S10周年庆活动" in str(item) for item in usable_facts):
         usable_facts.append(
-            "active_offer: S10周年庆活动；新客268元；线上预约金10元，到店抵扣10元，做付258元，不做退还10元；限30名"
+            "active_offer: S10周年庆活动；公开活动价268元；线上预约金10元，到店抵扣10元，做付258元，不做退还10元；限30名"
         )
     return envelope
 
@@ -153,10 +153,12 @@ def s10_offer_prompt_section() -> str:
 - 不得编造“焕新体验季、新客专属活动、老带新专属活动、内部活动、大型活动、公司统一通知价”等活动名。
 - S10 采用第三代操作斑点技术，围绕淡斑、美白嫩肤、收缩毛孔、痘印、改善细纹等方向承接；可提 ST 色素嫩肤，但不要讲成复杂科普。
 - 适用方向：老年斑、遗传斑、各类斑点、黑色素、肤色不均等。
-- 新客周年庆活动价 268 元；线上报名交 10 元预约金并留电话姓名，到店抵扣 10 元，做付 258 元；不做退还 10 元。
+- 周年庆公开活动价 268 元；线上报名交 10 元预约金并留电话姓名，到店抵扣 10 元，做付 258 元；不做退还 10 元。
 - 套餐包括：操作斑点、检测皮肤、基础清洁、肌肤补水。
 - 活动限 30 名；名额满恢复原价 1980 元；线下客人未预定到店按原价 1980 元；预定后名额到店做付 258 元。
-- 老客报价是内部规则：系统有上一单金额事实时，上一单金额超过 1000 元可报 680 元，不超过 1000 元可报 520 元；没有订单金额事实时，只能说“老客价要按您上次订单记录核对后才报得准”。不要对客户讲超过/不超过1000元对应的价格区别。
+- 客户类型只看系统客户信息 kind：kind=1 新客，kind=2 老客；查不到、接口错误或未知时按新客公开活动价。
+- 老客报价是内部规则：系统确认 kind=2 且有上一单金额事实时，上一单金额超过 1000 元可报 680 元，不超过 1000 元可报 520 元；没有订单金额事实时，只能说“老客价要按您上次订单记录核对后才报得准”。不要对客户讲超过/不超过1000元对应的价格区别。
+- 不允许问客户是新客还是老客，客户自称老客或自称上一单金额不能作为报价依据。
 - 预约金口径固定说“不做退还10元”，不要写成“全额退还10元”；老客价没有真实订单查询结果时，不要说“我去查订单、稍等、稍后同步”。
 - 实在拿不下且客户已明显价格犹豫时，可以说“亲给你的价格已经是最优惠的了，看你也是真诚信任我，我这边再帮你申请一个280元小气泡管理哈”；不要把小气泡说成默认套餐内容。
 """.strip()

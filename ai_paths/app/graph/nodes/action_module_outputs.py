@@ -21,6 +21,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "case_facts": [],
         "knowledge_facts": [],
         "appointment_facts": [],
+        "customer_profile_facts": [],
         "customer_order_facts": [],
         "professional_assist": {},
         "tool_errors": [],
@@ -202,6 +203,16 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             structured_facts[target].extend(normalized_items)
             facts.append(f"{key}: kb_items={len(items)}")
 
+    profile_facts = _customer_profile_facts_from_state(state)
+    if profile_facts:
+        structured_facts["customer_profile_facts"] = profile_facts
+        profile = profile_facts[0]
+        facts.append(
+            "customer_profile: "
+            f"kind={profile.get('kind') or ''}; kind_text={profile.get('kind_text') or ''}; "
+            f"source={profile.get('source') or ''}"
+        )
+
     order_facts = _customer_order_facts_from_state(state)
     if order_facts:
         structured_facts["customer_order_facts"] = order_facts
@@ -231,6 +242,60 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "suggested_next_step": "",
         "confidence": 0.9,
     }
+
+
+def _customer_profile_facts_from_state(state: AgentState) -> list[dict[str, Any]]:
+    customer_context = state.get("customer_context") if isinstance(state, dict) else {}
+    if not isinstance(customer_context, dict):
+        return [_default_new_customer_profile("missing_customer_context")]
+
+    customer = customer_context.get("customer") if isinstance(customer_context.get("customer"), dict) else {}
+    raw_kind = customer.get("kind") if isinstance(customer, dict) else None
+    kind = _normalize_customer_kind(raw_kind)
+    source = str(customer_context.get("source") or "")
+    error = str(customer_context.get("error") or "")
+
+    if kind not in (1, 2):
+        reason = "customer_info_error" if error else "kind_missing_or_unknown"
+        return [_default_new_customer_profile(reason, source=source, error=error)]
+
+    return [
+        {
+            "kind": str(kind),
+            "kind_text": "old_customer" if kind == 2 else "new_customer",
+            "is_old_customer": kind == 2,
+            "source": source or "platform_agent.customer_info",
+            "raw_kind": str(raw_kind),
+            "fallback_reason": "",
+            "error": error[:240],
+            "pricing_note": (
+                "Use old-customer quote only with real previous order amount."
+                if kind == 2
+                else "Use current public anniversary campaign price."
+            ),
+        }
+    ]
+
+
+def _default_new_customer_profile(reason: str, *, source: str = "", error: str = "") -> dict[str, Any]:
+    return {
+        "kind": "1",
+        "kind_text": "new_customer",
+        "is_old_customer": False,
+        "source": source or "default_new_on_missing_customer_info",
+        "raw_kind": "",
+        "fallback_reason": reason,
+        "error": error[:240],
+        "pricing_note": "Customer info missing/error/unknown kind: use current public anniversary campaign price.",
+    }
+
+
+def _normalize_customer_kind(value: Any) -> int | None:
+    try:
+        kind = int(value)
+    except (TypeError, ValueError):
+        return None
+    return kind if kind in (1, 2) else None
 
 
 def _customer_order_facts_from_state(state: AgentState) -> list[dict[str, Any]]:

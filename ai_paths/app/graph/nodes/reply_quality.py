@@ -54,7 +54,7 @@ _APPOINTMENT_TIME_INVITE_PATTERN = re.compile(
 _TRANSPORT_QUESTION_TERMS = ("车费报销", "报销车费", "包接送", "接送", "交通补贴", "打车费", "打车报销")
 _TRANSPORT_REQUIRED_ANSWER_TERMS = ("没有接送", "不提供接送", "交通费用需自理", "交通费需自理", "没有车费报销", "不报销车费", "暂时没有接送")
 _FEE_TRANSPARENCY_QUESTION_TERMS = ("乱收费", "隐形消费", "加价", "加钱", "推销", "强制消费", "额外收费", "另外收费", "其他收费")
-_FEE_TRANSPARENCY_REPLY_TERMS = ("隐形消费", "不推销", "不加价", "乱收费", "强制消费")
+_FEE_TRANSPARENCY_REPLY_TERMS = ("隐形消费", "不推销", "不加价", "乱收费", "强制消费", "额外加收", "额外收费")
 _ORDER_LOOKUP_CLAIM_PATTERN = re.compile(r"(帮您|给您|我这边).{0,6}(查|核对).{0,8}(订单|历史订单|上一次订单|上次订单)")
 _OLD_CUSTOMER_INTERNAL_PRICE_RULE_PATTERN = re.compile(
     r"(超过|超出|大于|高于).{0,6}1000.{0,12}680|"
@@ -100,6 +100,8 @@ def model_reply_unsafe(
     if _proactively_mentions_hidden_fee_terms(state, text):
         return True
     if _leaks_old_customer_internal_price_rule(text):
+        return True
+    if _mentions_old_customer_price_without_old_profile(state, text):
         return True
     if _has_unbacked_order_lookup_claim(state, text):
         return True
@@ -261,6 +263,18 @@ def _has_unbacked_order_lookup_claim(state: AgentState, text: str) -> bool:
 
 def _leaks_old_customer_internal_price_rule(text: str) -> bool:
     return bool(_OLD_CUSTOMER_INTERNAL_PRICE_RULE_PATTERN.search(text))
+
+
+def _mentions_old_customer_price_without_old_profile(state: AgentState, text: str) -> bool:
+    if "老客价" not in text:
+        return False
+    profile_facts = _structured_facts(state).get("customer_profile_facts")
+    if not isinstance(profile_facts, list) or not profile_facts:
+        return True
+    first = profile_facts[0]
+    if not isinstance(first, dict):
+        return True
+    return str(first.get("kind") or "") != "2"
 
 
 def _has_unbacked_store_claim(state: AgentState, text: str) -> bool:

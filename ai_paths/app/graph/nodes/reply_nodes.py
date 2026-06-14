@@ -303,6 +303,19 @@ def _safe_text_fallback(state: AgentState) -> str:
     if canonical:
         return canonical
     policy_family = str(state.get("policy_family_id") or "")
+    exact_policy = str(state.get("exact_policy_id") or "")
+    if exact_policy == "SF7_OLD_CUSTOMER_PRICE" and _customer_profile_kind(state) != "2":
+        return "现在按周年庆活动价268元，线上交10元预约金，到店抵扣后做付258元。"
+    if exact_policy == "SF7_PRICE_ONCE_FEE":
+        return "是的，这次周年庆活动是一次费用，线上交10元预约金，到店抵扣后做付258元。"
+    if exact_policy == "SF7_PRICE_AD_58":
+        return "亲，不是58的哈，您应该是看错了，我们现在是周年庆活动268元操作的哦。"
+    if exact_policy == "SF7_PRICE_DIFFERENCE":
+        return "您看到的可能是之前活动或不同内容，现在能参加的是周年庆活动价268元。"
+    if exact_policy == "SF7_DEPOSIT_EXPLAIN":
+        return "10元是线上预约金，用来锁周年庆活动名额，到店直接抵扣。"
+    if exact_policy == "SF7_PAYMENT_TIMING":
+        return "线上先交10元预约金锁名额，到店检测认可再做，做付258元。"
     if policy_family == "SF7_PRICE_ACTIVITY":
         return "费用会按活动规则和到店检测后的方案提前说清楚，认可再做。"
     if policy_family == "SF5_COMPETITOR_COMPARE":
@@ -328,11 +341,29 @@ def _canonical_scene_reply(state: AgentState) -> str:
     for item in contexts:
         if not isinstance(item, dict):
             continue
+        if str(item.get("scene_id") or "") == "SF7_OLD_CUSTOMER_PRICE" and _customer_profile_kind(state) != "2":
+            continue
         canonical = str(item.get("canonical_sales_reply") or "").strip()
         copy_strength = str(item.get("copy_strength") or "").strip().lower()
         if canonical and copy_strength == "high":
             return canonical
     return ""
+
+
+def _customer_profile_kind(state: AgentState) -> str:
+    fact_envelope = state.get("fact_envelope") if isinstance(state, dict) else {}
+    if not isinstance(fact_envelope, dict):
+        return ""
+    structured = fact_envelope.get("structured_facts")
+    if not isinstance(structured, dict):
+        return ""
+    profile_facts = structured.get("customer_profile_facts")
+    if not isinstance(profile_facts, list) or not profile_facts:
+        return ""
+    first = profile_facts[0]
+    if not isinstance(first, dict):
+        return ""
+    return str(first.get("kind") or "")
 
 
 def _store_fact_text_fallback(state: AgentState) -> str:
