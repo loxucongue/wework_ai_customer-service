@@ -174,7 +174,7 @@ PLANNER_RISK_PATCH_PROMPT = """
 - 交通、接送、车费报销是费用和服务边界问题，通常 S3_PRICE_CLOSE；只有同时问具体门店路线时才加 store_lookup。
 - 客户问城市/门店/地址/机场附近/地铁附近，必须 S2_STORE_ADDRESS + store_lookup。
 - 客户只说“我在深圳/上海/厦门”，也是 S2_STORE_ADDRESS；先查门店事实，再让最终回复问区或地标。
-- 客户问“多少钱/199/58/268/一次费用/定金/尾款/活动”，必须 S3_PRICE_CLOSE；价格事实用 active_offer_context。
+- 客户问“多少钱/199/58/268/一次费用/定金/尾款/活动”，必须 S3_PRICE_CLOSE；价格事实用 active_offer_context；reply_strategy.must_answer 必须包含“直接说明当前周年庆活动价268、线上预约10元、到店做付258”。
 - 客户问“老客/上次做过/复购多少钱”，仍是 S3_PRICE_CLOSE；不要暴露内部新老客或订单阈值规则。
 - 客户问“效果图/案例/做完效果/图片上的客户做了几次”，必须 case_studies。
 - 客户问“能不能做/什么方法/和激光有什么不同/会不会伤肤/要做几次”，通常 S1_GREETING_INTRO。
