@@ -31,7 +31,9 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     planner_views = planner_task_views(state)
     should_show_appointment_context = not should_suspend_appointment_context_for_current_turn(state, planner_views)
     suppress_profile_memory = should_suppress_profile_memory_for_reply(state)
-    fact_envelope = attach_s10_offer_facts({} if suppress_profile_memory else (state.get("fact_envelope") or {}))
+    fact_envelope = _compact_fact_envelope_for_reply(
+        attach_s10_offer_facts({} if suppress_profile_memory else (state.get("fact_envelope") or {}))
+    )
     primary_task = _sanitize_planner_context_for_reply(planner_primary_task(state))
     secondary_tasks = _sanitize_planner_context_for_reply(planner_secondary_tasks(state))
     required_tools = planner_required_tools(state)
@@ -46,7 +48,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_basic_info": {} if suppress_profile_memory else state.get("customer_basic_info", {}),
         "history_events": [] if suppress_profile_memory else state.get("history_events", [])[-8:],
         "memory_usage_policy": memory_usage_policy_for_reply(state),
-        "active_offer_context": s10_offer_context(),
+        "active_offer_context": _compact_active_offer_context(),
         "recent_assistant_replies": [] if suppress_profile_memory else recent_assistant_replies(state, 4),
         "recent_image_urls": [] if suppress_profile_memory else _recent_image_urls(state),
         "guardrail_result": state.get("guardrail_result", {}),
@@ -61,6 +63,113 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "fact_notes": _fact_notes_for_model(fact_envelope),
     }
     return clean_model_value(payload, max_string_chars=1800)
+
+
+def _compact_active_offer_context() -> dict[str, Any]:
+    offer = s10_offer_context()
+    return {
+        "marketing_activity_name": offer.get("marketing_activity_name"),
+        "customer_visible_project_name": offer.get("customer_visible_project_name"),
+        "new_customer_price": offer.get("new_customer_price"),
+        "reservation_deposit": offer.get("reservation_deposit"),
+        "tail_payment": offer.get("tail_payment"),
+        "original_price": offer.get("original_price"),
+        "quota": offer.get("quota"),
+        "package_items": offer.get("package_items"),
+        "signup_rule": offer.get("signup_rule"),
+        "hard_close_benefit": offer.get("hard_close_benefit"),
+        "customer_visible_constraints": [
+            "只说周年庆活动，不说内部活动名或项目编码",
+            "不向客户解释老客报价阈值规则",
+            "客户类型和老客价格必须以系统事实为准",
+        ],
+    }
+
+
+def _compact_fact_envelope_for_reply(fact_envelope: dict[str, Any]) -> dict[str, Any]:
+    envelope = dict(fact_envelope or {})
+    structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
+    compact_structured: dict[str, Any] = {}
+
+    for key, limit in (
+        ("store_facts", 5),
+        ("case_facts", 3),
+        ("knowledge_facts", 3),
+        ("appointment_facts", 4),
+        ("customer_profile_facts", 1),
+    ):
+        value = structured.get(key)
+        if isinstance(value, list):
+            compact_structured[key] = [_compact_fact_item(item, key) for item in value[:limit] if isinstance(item, dict)]
+
+    for key in ("recommended_store", "store_lookup_status", "professional_assist"):
+        value = structured.get(key)
+        if isinstance(value, dict):
+            compact_structured[key] = _compact_fact_item(value, key)
+
+    compact_structured["price_facts"] = _compact_price_facts(structured.get("price_facts"))
+    compact_structured["active_offer_context"] = _compact_active_offer_context()
+
+    order_facts = structured.get("customer_order_facts")
+    if isinstance(order_facts, list) and order_facts:
+        latest = next((item for item in order_facts if isinstance(item, dict)), {})
+        if latest:
+            compact_structured["latest_customer_order_fact"] = {
+                "status": latest.get("status"),
+                "store_name": latest.get("store_name"),
+                "appointment_time": latest.get("appointment_time"),
+                "amount_for_quote": latest.get("amount_for_quote"),
+            }
+
+    return {
+        "usable_facts": list(envelope.get("usable_facts") or [])[:6],
+        "missing_facts": list(envelope.get("missing_facts") or [])[:4],
+        "risky_facts": list(envelope.get("risky_facts") or [])[:4],
+        "unsupported_claims": list(envelope.get("unsupported_claims") or [])[:4],
+        "structured_facts": compact_structured,
+    }
+
+
+def _compact_price_facts(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    compact: list[dict[str, Any]] = []
+    for item in value[:3]:
+        if not isinstance(item, dict):
+            continue
+        compact.append(
+            {
+                "rule_id": item.get("rule_id"),
+                "quote_type": item.get("quote_type"),
+                "total_price": item.get("total_price"),
+                "prepay_amount": item.get("prepay_amount"),
+                "tail_amount": item.get("tail_amount"),
+                "display_price": item.get("display_price"),
+                "conditions": item.get("conditions"),
+                "rule_note": item.get("rule_note"),
+            }
+        )
+    return compact
+
+
+def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
+    keep_by_source: dict[str, tuple[str, ...]] = {
+        "store_facts": ("name", "address", "business_hours", "distance", "route_hint", "city", "district"),
+        "recommended_store": ("name", "address", "business_hours", "distance", "route_hint", "city", "district"),
+        "store_lookup_status": ("status", "query", "city", "count", "error"),
+        "case_facts": ("source", "title", "content", "image_url"),
+        "knowledge_facts": ("source", "title", "content"),
+        "appointment_facts": ("type", "store_name", "date", "time", "slots", "status", "summary"),
+        "customer_profile_facts": ("kind", "kind_text", "is_old_customer", "source", "fallback_reason", "pricing_note"),
+        "professional_assist": ("status", "task_type", "reason", "policy_hint"),
+    }
+    keys = keep_by_source.get(source_key, tuple(item.keys()))
+    compact: dict[str, Any] = {}
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, "", [], {}):
+            compact[key] = value
+    return compact
 
 
 def _sanitize_planner_context_for_reply(value: Any) -> Any:
