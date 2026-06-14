@@ -7,6 +7,7 @@ from datetime import datetime
 from difflib import SequenceMatcher
 import json
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -110,6 +111,16 @@ def _excerpt(text: str, limit: int = 180) -> str:
     return value[:limit]
 
 
+def _extract_field(content: str, *field_names: str) -> str:
+    text = str(content or "")
+    fields = "|".join(re.escape(name) for name in field_names)
+    pattern = re.compile(rf"(?:{fields})\s*[：:]\s*(.*?)(?=\s+(?:切片ID|客户阶段|场景类型|用户问题|业务应答逻辑|销冠话术|回答建议)[：:]|$)", re.S)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    return " ".join(match.group(1).split()).strip()
+
+
 async def evaluate_case(client: CozeClient, case: RecallCase, semaphore: asyncio.Semaphore) -> dict[str, Any]:
     async with semaphore:
         started = datetime.now()
@@ -117,6 +128,15 @@ async def evaluate_case(client: CozeClient, case: RecallCase, semaphore: asyncio
             result = await client.search_kb(KB_NAME, case.question)
             first = result.items[0] if result.items else None
             combined = "\n".join(item.content for item in result.items[:3])
+            first_sales_script = _extract_field(first.content if first else "", "销冠话术", "回答建议", "参考话术")
+            combined_sales_scripts = "\n".join(
+                item
+                for item in (
+                    _extract_field(hit.content, "销冠话术", "回答建议", "参考话术")
+                    for hit in result.items[:3]
+                )
+                if item
+            )
             return {
                 "index": case.index,
                 "customer_stage": case.customer_stage,
@@ -128,7 +148,10 @@ async def evaluate_case(client: CozeClient, case: RecallCase, semaphore: asyncio
                 "hit_count": len(result.items),
                 "first_document_id": first.document_id if first else "",
                 "first_content": _excerpt(first.content if first else ""),
-                "top3_similarity_to_sales_script": _similarity(case.sales_script, combined),
+                "first_sales_script": first_sales_script,
+                "top3_sales_scripts": _excerpt(combined_sales_scripts, 260),
+                "top3_similarity_to_sales_script": _similarity(case.sales_script, combined_sales_scripts or combined),
+                "top3_slice_similarity_to_sales_script": _similarity(case.sales_script, combined),
                 "status": "ok",
                 "elapsed_ms": int((datetime.now() - started).total_seconds() * 1000),
             }
@@ -144,7 +167,10 @@ async def evaluate_case(client: CozeClient, case: RecallCase, semaphore: asyncio
                 "hit_count": 0,
                 "first_document_id": "",
                 "first_content": "",
+                "first_sales_script": "",
+                "top3_sales_scripts": "",
                 "top3_similarity_to_sales_script": 0.0,
+                "top3_slice_similarity_to_sales_script": 0.0,
                 "status": "error",
                 "error": f"{type(exc).__name__}: {exc}",
                 "elapsed_ms": int((datetime.now() - started).total_seconds() * 1000),
@@ -174,18 +200,19 @@ def write_reports(results: list[dict[str, Any]], output_dir: Path) -> tuple[Path
         f"- 请求失败：{errors}",
         f"- 与销冠话术相似度 >= 0.35：{high_similarity}",
         "",
-        "|序号|客户阶段|场景类型|用户问题|命中数|相似度|首条切片摘要|错误|",
-        "|---:|---|---|---|---:|---:|---|---|",
+        "|序号|客户阶段|场景类型|用户问题|命中数|相似度|首条销冠话术|首条切片摘要|错误|",
+        "|---:|---|---|---|---:|---:|---|---|---|",
     ]
     for item in results:
         lines.append(
-            "|{index}|{customer_stage}|{scene_type}|{question}|{hit_count}|{score}|{first}|{error}|".format(
+            "|{index}|{customer_stage}|{scene_type}|{question}|{hit_count}|{score}|{sales}|{first}|{error}|".format(
                 index=item.get("index", ""),
                 customer_stage=_escape_md(item.get("customer_stage", "")),
                 scene_type=_escape_md(item.get("scene_type", "")),
                 question=_escape_md(item.get("question", "")),
                 hit_count=item.get("hit_count", 0),
                 score=item.get("top3_similarity_to_sales_script", 0),
+                sales=_escape_md(item.get("first_sales_script", "")),
                 first=_escape_md(item.get("first_content", "")),
                 error=_escape_md(item.get("error", "")),
             )
