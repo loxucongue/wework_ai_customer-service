@@ -304,6 +304,7 @@ def _safe_text_fallback(state: AgentState) -> str:
         return canonical
     policy_family = str(state.get("policy_family_id") or "")
     exact_policy = str(state.get("exact_policy_id") or "")
+    sop_stage = str(state.get("sop_stage") or "")
     if exact_policy == "SF7_OLD_CUSTOMER_PRICE" and _customer_profile_kind(state) != "2":
         return "现在按周年庆活动价268元，线上交10元预约金，到店抵扣后做付258元。"
     if exact_policy == "SF7_PRICE_ONCE_FEE":
@@ -329,6 +330,11 @@ def _safe_text_fallback(state: AgentState) -> str:
         if store_reply:
             return store_reply
         return "门店位置和营业时间我会按真实信息确认清楚，再帮您选更方便的一家。"
+    if sop_stage == "S2_STORE_ADDRESS":
+        store_reply = _store_fact_text_fallback(state)
+        if store_reply:
+            return store_reply
+        return "您在哪个区或附近什么地标呀？我给您匹配近一点的门店。"
     if policy_family == "SF12_AFTER_SALES":
         return "理解您这次体验不太理想，我先帮您把门店、时间和具体情况问清楚再处理。"
     return "我先按您的问题继续帮您确认，涉及价格、门店或时间都会以真实信息为准。"
