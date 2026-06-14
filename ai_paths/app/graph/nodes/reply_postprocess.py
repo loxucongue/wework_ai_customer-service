@@ -1,9 +1,11 @@
 ﻿from __future__ import annotations
 
+from difflib import SequenceMatcher
 import re
 from typing import Any
 
 from app.graph import reply_filters
+from app.graph.reply_compliance_filters import sanitize_license_promise
 from app.graph.nodes.common import looks_garbled_text, renumber_messages
 from app.graph.runtime_context import contextual_price_project
 from app.graph.nodes.reply_validation import message_content_text
@@ -79,6 +81,11 @@ def postprocess_reply_messages(
     if _message_fingerprint(cleaned) != before_visible:
         reasons.append("customer_visible_sanitized")
 
+    before_canonical_trim = _message_fingerprint(cleaned)
+    cleaned = _trim_extra_text_after_high_canonical(state, cleaned)
+    if _message_fingerprint(cleaned) != before_canonical_trim:
+        reasons.append("canonical_short_reply_trimmed")
+
     cleaned = renumber_messages(cleaned)
 
     handoff_message = _handoff_message_for_state(state)
@@ -149,6 +156,64 @@ def _message_fingerprint(messages: list[dict[str, Any]]) -> list[tuple[str, str]
             text = str(content or "").strip()
         fingerprint.append((message_type, text))
     return fingerprint
+
+
+def _trim_extra_text_after_high_canonical(
+    state: AgentState,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    canonical = _high_strength_canonical_reply(state)
+    if not canonical:
+        return messages
+
+    text_indexes = [
+        index
+        for index, item in enumerate(messages)
+        if isinstance(item, dict) and item.get("type") == "text"
+    ]
+    if len(text_indexes) <= 1:
+        return messages
+
+    first_text = message_content_text(messages[text_indexes[0]].get("content"))
+    if not _text_matches_canonical(first_text, canonical):
+        return messages
+
+    trimmed: list[dict[str, Any]] = []
+    kept_first_text = False
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            if kept_first_text:
+                continue
+            kept_first_text = True
+        trimmed.append(item)
+    return trimmed
+
+
+def _high_strength_canonical_reply(state: AgentState) -> str:
+    contexts = state.get("scene_guidance_context") if isinstance(state, dict) else []
+    if not isinstance(contexts, list):
+        return ""
+    for item in contexts:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("copy_strength") or "").strip().lower() != "high":
+            continue
+        canonical = str(item.get("canonical_sales_reply") or "").strip()
+        if canonical:
+            return sanitize_license_promise(canonical)
+    return ""
+
+
+def _text_matches_canonical(text: str, canonical: str) -> bool:
+    compact_text = re.sub(r"\s+", "", str(text or ""))
+    compact_canonical = re.sub(r"\s+", "", str(canonical or ""))
+    if not compact_text or not compact_canonical:
+        return False
+    if compact_canonical in compact_text:
+        return True
+    return SequenceMatcher(None, compact_text, compact_canonical).ratio() >= 0.42
 
 
 def _unique_reasons(reasons: list[str]) -> list[str]:

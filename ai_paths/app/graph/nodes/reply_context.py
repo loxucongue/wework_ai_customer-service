@@ -95,6 +95,7 @@ def _compact_fact_envelope_for_reply(fact_envelope: dict[str, Any]) -> dict[str,
         ("store_facts", 5),
         ("case_facts", 3),
         ("knowledge_facts", 3),
+        ("sales_talk_scripts", 3),
         ("appointment_facts", 4),
         ("customer_profile_facts", 1),
     ):
@@ -159,6 +160,7 @@ def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
         "store_lookup_status": ("status", "query", "city", "count", "error"),
         "case_facts": ("source", "title", "content", "image_url"),
         "knowledge_facts": ("source", "title", "content"),
+        "sales_talk_scripts": ("matched_question", "business_logic", "sales_script"),
         "appointment_facts": ("type", "store_name", "date", "time", "slots", "status", "summary"),
         "customer_profile_facts": ("kind", "kind_text", "is_old_customer", "source", "fallback_reason", "pricing_note"),
         "professional_assist": ("status", "task_type", "reason", "policy_hint"),
@@ -206,6 +208,10 @@ def _fact_notes_for_model(
     recommended_store = structured_facts.get("recommended_store") or {}
     if isinstance(recommended_store, dict) and recommended_store.get("name"):
         notes.append("已有推荐门店事实，可优先按推荐门店回答。")
+
+    sales_talk_scripts = structured_facts.get("sales_talk_scripts") or []
+    if isinstance(sales_talk_scripts, list) and sales_talk_scripts:
+        notes.append("已有销冠话术骨架；最终回复应优先贴近 sales_talk_scripts.sales_script 的短句节奏。")
 
     unsupported_claims = {
         str(item).strip().lower()

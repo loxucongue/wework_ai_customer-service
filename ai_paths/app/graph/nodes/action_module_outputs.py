@@ -21,6 +21,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "price_facts": [],
         "case_facts": [],
         "knowledge_facts": [],
+        "sales_talk_scripts": [],
         "appointment_facts": [],
         "customer_profile_facts": [],
         "customer_order_facts": [],
@@ -188,10 +189,12 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         if items:
             target = "case_facts" if key == "case_studies" else "knowledge_facts"
             normalized_items: list[dict[str, str]] = []
+            sales_talk_scripts: list[dict[str, str]] = []
             for item in items[:5]:
                 if not isinstance(item, dict):
                     continue
-                content = clean_model_text(str(item.get("content") or item.get("output") or item), max_chars=500)
+                raw_content = clean_model_text(str(item.get("content") or item.get("output") or item), max_chars=1500)
+                content = clean_model_text(raw_content, max_chars=500)
                 if not content:
                     continue
                 fact = {
@@ -199,11 +202,18 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "title": clean_model_text(str(item.get("title") or item.get("documentId") or ""), max_chars=120),
                     "content": content,
                 }
+                if key == "sales_talk_qa":
+                    script = _sales_talk_script_from_content(raw_content)
+                    if script:
+                        fact.update(script)
+                        sales_talk_scripts.append(script)
                 image_url = _image_url_from_content(content)
                 if image_url:
                     fact["image_url"] = image_url
                 normalized_items.append(fact)
             structured_facts[target].extend(normalized_items)
+            if sales_talk_scripts:
+                structured_facts["sales_talk_scripts"].extend(sales_talk_scripts[:3])
             facts.append(f"{key}: kb_items={len(items)}")
 
     profile_facts = _customer_profile_facts_from_state(state)
@@ -330,6 +340,36 @@ def _customer_order_facts_from_state(state: AgentState) -> list[dict[str, Any]]:
             }
         )
     return facts
+
+
+def _sales_talk_script_from_content(content: str) -> dict[str, str]:
+    question = _extract_labeled_field(content, "用户问题")
+    business_logic = _extract_labeled_field(content, "业务应答逻辑")
+    sales_script = _extract_labeled_field(content, "销冠话术", "回答建议", "参考话术")
+    if not (question or business_logic or sales_script):
+        return {}
+    return {
+        "source": "sales_talk_qa",
+        "matched_question": question[:180],
+        "business_logic": business_logic[:260],
+        "sales_script": sales_script[:260],
+    }
+
+
+def _extract_labeled_field(content: str, *field_names: str) -> str:
+    text = str(content or "")
+    if not text or not field_names:
+        return ""
+    fields = "|".join(re.escape(name) for name in field_names)
+    known_labels = (
+        "切片ID|客户阶段|场景类型|用户问题|业务应答逻辑|销冠话术|回答建议|参考话术|"
+        "适用条件|禁用表达|下一步动作"
+    )
+    pattern = re.compile(rf"(?:{fields})\s*[：:]\s*(.*?)(?=\s+(?:{known_labels})[：:]|$)", re.S)
+    match = pattern.search(text)
+    if not match:
+        return ""
+    return clean_model_text(" ".join(match.group(1).split()), max_chars=300)
 
 
 def _first_amount(order: dict[str, Any], *keys: str) -> str:

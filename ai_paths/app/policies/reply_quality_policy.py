@@ -29,6 +29,7 @@ REPLY_HARD_FORBIDDEN_TERMS = (
     "转人",
     "转过去",
     "帮您转",
+    "国内最先进",
 )
 
 REPLY_THIRD_PERSON_CUSTOMER_TERMS = (
