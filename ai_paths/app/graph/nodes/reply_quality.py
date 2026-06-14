@@ -53,7 +53,15 @@ _APPOINTMENT_TIME_INVITE_PATTERN = re.compile(
 )
 _TRANSPORT_QUESTION_TERMS = ("车费报销", "报销车费", "包接送", "接送", "交通补贴", "打车费", "打车报销")
 _TRANSPORT_REQUIRED_ANSWER_TERMS = ("没有接送", "不提供接送", "交通费用需自理", "交通费需自理", "没有车费报销", "不报销车费", "暂时没有接送")
+_FEE_TRANSPARENCY_QUESTION_TERMS = ("乱收费", "隐形消费", "加价", "加钱", "推销", "强制消费", "额外收费", "另外收费", "其他收费")
+_FEE_TRANSPARENCY_REPLY_TERMS = ("隐形消费", "不推销", "不加价", "乱收费", "强制消费")
 _ORDER_LOOKUP_CLAIM_PATTERN = re.compile(r"(帮您|给您|我这边).{0,6}(查|核对).{0,8}(订单|历史订单|上一次订单|上次订单)")
+_OLD_CUSTOMER_INTERNAL_PRICE_RULE_PATTERN = re.compile(
+    r"(超过|超出|大于|高于).{0,6}1000.{0,12}680|"
+    r"(不超过|没超过|低于|小于|不到).{0,6}1000.{0,12}520|"
+    r"680.{0,12}(超过|超出|大于|高于).{0,6}1000|"
+    r"520.{0,12}(不超过|没超过|低于|小于|不到).{0,6}1000"
+)
 
 
 def model_reply_unsafe(
@@ -88,6 +96,10 @@ def model_reply_unsafe(
     if _has_unbacked_appointment_time_claim(state, text):
         return True
     if _transport_question_not_answered(state, text):
+        return True
+    if _proactively_mentions_hidden_fee_terms(state, text):
+        return True
+    if _leaks_old_customer_internal_price_rule(text):
         return True
     if _has_unbacked_order_lookup_claim(state, text):
         return True
@@ -231,6 +243,13 @@ def _transport_question_not_answered(state: AgentState, text: str) -> bool:
     return not any(term in text for term in _TRANSPORT_REQUIRED_ANSWER_TERMS)
 
 
+def _proactively_mentions_hidden_fee_terms(state: AgentState, text: str) -> bool:
+    query = str(state.get("normalized_content") or "")
+    if any(term in query for term in _FEE_TRANSPARENCY_QUESTION_TERMS):
+        return False
+    return any(term in text for term in _FEE_TRANSPARENCY_REPLY_TERMS)
+
+
 def _has_unbacked_order_lookup_claim(state: AgentState, text: str) -> bool:
     exact_policy_id = str(state.get("exact_policy_id") or "")
     if exact_policy_id != "SF7_OLD_CUSTOMER_PRICE":
@@ -238,6 +257,10 @@ def _has_unbacked_order_lookup_claim(state: AgentState, text: str) -> bool:
     if not _ORDER_LOOKUP_CLAIM_PATTERN.search(text):
         return False
     return True
+
+
+def _leaks_old_customer_internal_price_rule(text: str) -> bool:
+    return bool(_OLD_CUSTOMER_INTERNAL_PRICE_RULE_PATTERN.search(text))
 
 
 def _has_unbacked_store_claim(state: AgentState, text: str) -> bool:

@@ -21,6 +21,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "case_facts": [],
         "knowledge_facts": [],
         "appointment_facts": [],
+        "customer_order_facts": [],
         "professional_assist": {},
         "tool_errors": [],
     }
@@ -201,6 +202,15 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             structured_facts[target].extend(normalized_items)
             facts.append(f"{key}: kb_items={len(items)}")
 
+    order_facts = _customer_order_facts_from_state(state)
+    if order_facts:
+        structured_facts["customer_order_facts"] = order_facts
+        latest = order_facts[0]
+        facts.append(
+            "customer_order: latest_order="
+            f"id={latest.get('id') or ''}; amount={latest.get('amount_for_quote') or ''}"
+        )
+
     fact_envelope = attach_s10_offer_facts(
         {
             "usable_facts": facts[:8],
@@ -221,6 +231,49 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "suggested_next_step": "",
         "confidence": 0.9,
     }
+
+
+def _customer_order_facts_from_state(state: AgentState) -> list[dict[str, Any]]:
+    customer_context = state.get("customer_context") if isinstance(state, dict) else {}
+    if not isinstance(customer_context, dict):
+        return []
+    orders = customer_context.get("orders") or []
+    if not isinstance(orders, list):
+        return []
+    facts: list[dict[str, Any]] = []
+    for order in orders[:5]:
+        if not isinstance(order, dict):
+            continue
+        amount = _first_amount(order, "fee_paid_total", "fee_paid", "fee_required")
+        facts.append(
+            {
+                "id": str(order.get("id") or ""),
+                "order_no": str(order.get("order_no") or ""),
+                "status": str(order.get("status") or ""),
+                "store_name": str(order.get("store_name") or ""),
+                "appointment_time": str(order.get("appointment_time") or ""),
+                "store_at": str(order.get("store_at") or ""),
+                "projects": order.get("projects") if isinstance(order.get("projects"), list) else [],
+                "fee_origin": str(order.get("fee_origin") or ""),
+                "fee_required": str(order.get("fee_required") or ""),
+                "fee_paid": str(order.get("fee_paid") or ""),
+                "fee_paid_total": str(order.get("fee_paid_total") or ""),
+                "amount_for_quote": amount,
+            }
+        )
+    return facts
+
+
+def _first_amount(order: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = order.get(key)
+        if value in (None, ""):
+            continue
+        text = str(value).replace(",", "").strip()
+        match = re.search(r"\d+(?:\.\d+)?", text)
+        if match:
+            return match.group(0)
+    return ""
 
 
 def _image_url_from_content(content: str) -> str:
