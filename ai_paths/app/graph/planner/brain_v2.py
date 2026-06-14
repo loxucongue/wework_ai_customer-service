@@ -4,7 +4,6 @@ import json
 from typing import Any
 
 from app.graph.nodes.common import model_usage_snapshot
-from app.graph.planner.planner_contract import SHORT_GREETING_TOKENS
 from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, safety_fallback_plan
 from app.graph.state import AgentState
@@ -13,11 +12,8 @@ from app.prompts.business_strategy import BUSINESS_STRATEGY_PROMPT
 from app.services.model_client import ModelClient
 
 def planner_v2_model_tier(state: AgentState) -> str:
-    content = str(state.get("normalized_content") or "").strip()
-    has_image = bool((state.get("image_info") or {}).get("has_image"))
-    if not has_image and content in SHORT_GREETING_TOKENS:
-        return "fast"
-    return "balanced"
+    del state
+    return "fast"
 
 
 def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:

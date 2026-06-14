@@ -22,13 +22,6 @@ _BARE_PRICE_NUMBER_PATTERN = re.compile(r"(?<![\d年月日:：/.-])([1-9]\d{1,4}
 _S10_ALLOWED_PRICE_NUMBERS = {"10", "258", "268", "280", "520", "680", "1000", "1980"}
 _S10_KNOWN_OLD_PRICE_NUMBERS = {"58", "179", "189", "199", "238", "299", "308", "380", "420", "458", "788", "980", "1280", "1580"}
 _S10_FORBIDDEN_ACTIVITY_NAMES = (
-    "焕新体验季",
-    "新客专属活动",
-    "老带新专属活动",
-    "大型活动",
-    "内部活动",
-    "公司通知价",
-    "内部价",
 )
 _S10_CUSTOMER_VISIBLE_TERMS = ("S10", "S10淡斑套餐", "S10 淡斑套餐")
 _STORE_NEGATIVE_PATTERN = re.compile(
@@ -128,7 +121,7 @@ def _has_s10_offer_violation(state: AgentState, text: str) -> bool:
         return False
     if any(term in text for term in _S10_CUSTOMER_VISIBLE_TERMS):
         return True
-    if any(term in text for term in _S10_FORBIDDEN_ACTIVITY_NAMES):
+    if _S10_FORBIDDEN_ACTIVITY_NAMES and any(term in text for term in _S10_FORBIDDEN_ACTIVITY_NAMES):
         return True
     price_numbers = _price_numbers_from_text(text)
     if not price_numbers:
