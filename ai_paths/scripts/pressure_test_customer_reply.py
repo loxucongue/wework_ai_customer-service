@@ -153,15 +153,29 @@ def judge(case: dict[str, Any], response: dict[str, Any]) -> dict[str, Any]:
     missing_expect = bool(expect_any) and not any(term in joined for term in expect_any)
     forbidden_hit = [term for term in forbid if term in joined]
     empty = not joined.strip()
+    garbled = _looks_garbled(joined)
     too_generic = any(bad in joined for bad in ["小贝先按你当前问题帮你看", "小贝先按你这句来理解"])
-    passed = not empty and not missing_expect and not forbidden_hit and not too_generic
+    passed = not empty and not garbled and not missing_expect and not forbidden_hit and not too_generic
     return {
         "passed": passed,
         "missing_expect": missing_expect,
         "forbidden_hit": forbidden_hit,
+        "garbled": garbled,
         "too_generic": too_generic,
         "reply_text": joined,
     }
+
+
+def _looks_garbled(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or "\ufffd" in value:
+        return bool(value)
+    question_count = value.count("?") + value.count("？")
+    if question_count < 3:
+        return False
+    cjk_count = sum(1 for ch in value if "\u4e00" <= ch <= "\u9fff")
+    visible_count = sum(1 for ch in value if not ch.isspace())
+    return cjk_count == 0 or (visible_count > 0 and question_count / visible_count >= 0.35)
 
 
 def main() -> None:

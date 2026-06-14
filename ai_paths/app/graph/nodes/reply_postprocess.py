@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from app.graph import reply_filters
-from app.graph.nodes.common import renumber_messages
+from app.graph.nodes.common import looks_garbled_text, renumber_messages
 from app.graph.runtime_context import contextual_price_project
 from app.graph.nodes.reply_validation import message_content_text
 from app.graph.planner.runtime_plan import planner_handoff, planner_task_views
@@ -38,6 +38,9 @@ def postprocess_reply_messages(
         msg_type = message.get("type") if message.get("type") in {"text", "image"} else "text"
         content = message_content_text(message.get("content"))
         if not content:
+            continue
+        if looks_garbled_text(content) or "\ufffd" in content:
+            reasons.append("garbled_removed")
             continue
 
         if msg_type == "text":

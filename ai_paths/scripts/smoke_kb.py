@@ -11,10 +11,10 @@ from app.services.coze_client import CozeClient  # noqa: E402
 
 
 CASES = [
-    ("project_qa", "\u76ae\u79d2 \u70b9\u72b6\u6591 \u6de1\u6591"),
-    ("after_sales_qa", "\u76ae\u79d2\u540e\u7ed3\u75c2 \u4e0d\u80fd\u62a0\u75c2"),
-    ("competitor_qa", "\u522b\u5bb6\u6c34\u5149199"),
-    ("trust_assets", "\u6b63\u89c4 \u8d44\u8d28"),
+    ("sales_talk_qa", "\u5230\u5e97\u4f1a\u4e71\u6536\u8d39\u5417"),
+    ("sales_talk_qa", "\u4f60\u4eec\u795b\u6591\u7528\u4ec0\u4e48\u65b9\u6cd5"),
+    ("case_studies", "\u5ba2\u6237\u505a\u5b8c\u4e4b\u540e\u7684\u6548\u679c\u6211\u60f3\u770b\u4e00\u4e0b"),
+    ("project_qa", "\u6591\u70b9 \u80a4\u8272\u4e0d\u5747 \u6539\u5584\u65b9\u5411"),
 ]
 
 

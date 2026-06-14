@@ -4,6 +4,7 @@ from difflib import SequenceMatcher
 import re
 
 from app.graph import reply_filters
+from app.graph.nodes.common import looks_garbled_text
 from app.graph.nodes.reply_validation import message_content_text
 from app.graph.state import AgentState
 from app.policies.reply_quality_policy import (
@@ -68,6 +69,8 @@ def model_reply_unsafe(
     ).strip()
     if not text:
         return True
+    if _has_garbled_visible_text(text):
+        return True
     if reply_filters.has_internal_reply_leak(text):
         return True
     if any(term in text for term in REPLY_HARD_FORBIDDEN_TERMS):
@@ -103,6 +106,17 @@ def model_reply_unsafe(
     if _violates_sales_script_contract(state, text):
         return True
     return False
+
+
+def _has_garbled_visible_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    if "\ufffd" in value:
+        return True
+    if looks_garbled_text(value):
+        return True
+    return any(looks_garbled_text(line) for line in value.splitlines() if line.strip())
 
 
 def _has_unbacked_price_claim(state: AgentState, text: str) -> bool:
@@ -298,6 +312,8 @@ def _has_positive_store_facts(state: AgentState) -> bool:
 def _misses_required_store_fact_use(state: AgentState, text: str) -> bool:
     if not _has_positive_store_facts(state):
         return False
+    if _exact_policy_id(state) == "SF6_STORE_CITY_ASK":
+        return False
     query = str(state.get("normalized_content") or "")
     if not any(term in query for term in ("有店吗", "有门店吗", "有没有店", "有没有门店", "在广西", "在桂林", "在厦门", "在上海", "门店在哪里", "门店在哪")):
         return False
@@ -371,6 +387,8 @@ def _current_turn_asks_store_or_route(state: AgentState) -> bool:
 def _asks_for_location_already_provided(state: AgentState, text: str) -> bool:
     if not _LOCATION_QUESTION_PATTERN.search(text):
         return False
+    if _exact_policy_id(state) == "SF6_STORE_CITY_ASK":
+        return False
     query = str(state.get("normalized_content") or "")
     if not query:
         return False
@@ -399,6 +417,16 @@ def _asks_for_location_already_provided(state: AgentState, text: str) -> bool:
         "泉州",
     )
     return any(marker in query for marker in location_markers)
+
+
+def _exact_policy_id(state: AgentState) -> str:
+    exact = str(state.get("exact_policy_id") or "").strip()
+    if exact:
+        return exact
+    primary_task = state.get("primary_task")
+    if isinstance(primary_task, dict):
+        return str(primary_task.get("policy_hint") or "").strip()
+    return ""
 
 
 def _has_price_facts(state: AgentState) -> bool:
