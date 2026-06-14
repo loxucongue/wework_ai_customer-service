@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.graph.state import AgentState
+from app.policies.sop_rules import DEFAULT_SOP_STAGE, compact_sop_stage_rules_for_reply, normalize_sop_stage, normalize_sop_step
 
 
 def planner_primary_task(state: AgentState) -> dict[str, Any]:
@@ -40,6 +41,24 @@ def planner_reply_strategy(state: AgentState) -> dict[str, Any]:
 def planner_handoff(state: AgentState) -> dict[str, Any]:
     value = state.get("handoff")
     return value if isinstance(value, dict) else {}
+
+
+def planner_sop_stage(state: AgentState) -> str:
+    primary = planner_primary_task(state)
+    return normalize_sop_stage(state.get("sop_stage") or primary.get("sop_stage") or DEFAULT_SOP_STAGE)
+
+
+def planner_sop_step(state: AgentState) -> str:
+    primary = planner_primary_task(state)
+    stage = planner_sop_stage(state)
+    return normalize_sop_step(stage, state.get("sop_step") or primary.get("sop_step"))
+
+
+def planner_sop_stage_rules(state: AgentState) -> dict[str, Any]:
+    value = state.get("sop_stage_rules")
+    if isinstance(value, dict) and value:
+        return value
+    return compact_sop_stage_rules_for_reply(planner_sop_stage(state), planner_sop_step(state))
 
 
 def planner_task_views(state: AgentState) -> list[dict[str, Any]]:
@@ -103,4 +122,6 @@ def planner_public_route(state: AgentState) -> dict[str, Any]:
         "policy_family_id": str(state.get("policy_family_id") or "").strip(),
         "exact_policy_id": str(state.get("exact_policy_id") or "").strip(),
         "policy_match_level": str(state.get("policy_match_level") or "").strip(),
+        "sop_stage": planner_sop_stage(state),
+        "sop_step": planner_sop_step(state),
     }

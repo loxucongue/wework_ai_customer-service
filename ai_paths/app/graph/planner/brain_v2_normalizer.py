@@ -4,6 +4,7 @@ from typing import Any
 
 from app.graph.planner.planner_contract import ALLOWED_KBS, ALLOWED_TOOLS
 from app.graph.state import AgentState
+from app.policies.sop_rules import normalize_sop_stage, normalize_sop_step
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -25,6 +26,19 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         raise ValueError("Planner Brain missing valid primary_task")
 
     all_tasks = [primary_task, *secondary_tasks]
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    request_stage = str(request_context.get("customer_stage") or "").strip()
+    sop_stage = normalize_sop_stage(
+        model_payload.get("sop_stage") or primary_task.get("sop_stage"),
+        task_type=str(primary_task.get("type") or ""),
+        request_stage=request_stage,
+    )
+    sop_step = normalize_sop_step(
+        sop_stage,
+        model_payload.get("sop_step") or primary_task.get("sop_step") or primary_task.get("scene") or primary_task.get("subtype"),
+    )
+    primary_task["sop_stage"] = sop_stage
+    primary_task["sop_step"] = sop_step
     reply_strategy = _normalize_reply_strategy(reply_strategy_raw, all_tasks)
     handoff = _normalize_handoff(handoff_raw, primary_task, secondary_tasks)
     required_tools = _dedupe_tools([tool for task in all_tasks for tool in task.get("tools", [])])
@@ -41,6 +55,8 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "reply_strategy": reply_strategy,
         "handoff": handoff,
         "memory_update_hint": memory_update_hint,
+        "sop_stage": sop_stage,
+        "sop_step": sop_step,
     }
 
 
@@ -52,6 +68,8 @@ def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
         "policy_hint": "HUMAN_HANDOFF_PROFESSIONAL_ASSIST",
         "scene": "S7_dealed_active",
         "subflow": "HUMAN_HANDOFF",
+        "sop_stage": "S4_FOLLOWUP_REACTIVATE",
+        "sop_step": "已成交售后",
         "customer_need": content[:120] or "Needs a professional colleague to continue handling",
         "answer_goal": "Acknowledge the customer's current message and arrange professional assistance without making up facts",
         "priority": 1,
@@ -88,6 +106,8 @@ def planner_unavailable_fallback_plan(state: AgentState) -> dict[str, Any]:
         "policy_hint": "S1_OPENING_GENERAL",
         "scene": "planner_unavailable",
         "subflow": "GENERAL_DIRECT_REPLY",
+        "sop_stage": "S1_GREETING_INTRO",
+        "sop_step": "疑问解答",
         "customer_need": content[:120] or "Customer needs a concise answer",
         "answer_goal": "Answer the current question briefly using available facts; do not escalate unless hard guardrail is present",
         "priority": 1,
@@ -132,6 +152,8 @@ def _normalize_task(raw: Any, *, default_priority: int) -> dict[str, Any]:
         "policy_hint": str(raw.get("policy_hint") or "").strip(),
         "scene": str(raw.get("scene") or "").strip(),
         "subflow": str(raw.get("subflow") or "").strip(),
+        "sop_stage": str(raw.get("sop_stage") or "").strip(),
+        "sop_step": str(raw.get("sop_step") or "").strip(),
         "customer_need": str(raw.get("customer_need") or "").strip(),
         "answer_goal": str(raw.get("answer_goal") or "").strip(),
         "priority": priority,

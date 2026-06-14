@@ -59,6 +59,12 @@ def tags_from_state(state: dict[str, Any]) -> list[str]:
     exact_policy_id = str(state.get("exact_policy_id") or "").strip()
     if exact_policy_id:
         tags.append(exact_policy_id)
+    sop_stage = str(state.get("sop_stage") or "").strip()
+    if sop_stage:
+        tags.append(sop_stage)
+    sop_step = str(state.get("sop_step") or "").strip()
+    if sop_step:
+        tags.append(sop_step)
     active_scene_id = str(state.get("active_scene_id") or "").strip()
     if active_scene_id:
         tags.append(active_scene_id)

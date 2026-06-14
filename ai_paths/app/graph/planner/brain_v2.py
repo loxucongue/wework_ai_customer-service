@@ -8,6 +8,7 @@ from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RI
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, planner_unavailable_fallback_plan, safety_fallback_plan
 from app.graph.state import AgentState
 from app.policies.s10_offer import s10_offer_context, s10_offer_prompt_section
+from app.policies.sop_rules import sop_planner_prompt_section
 from app.prompts.business_strategy import BUSINESS_STRATEGY_PROMPT
 from app.services.model_client import ModelClient
 
@@ -33,6 +34,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
     }
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": sop_planner_prompt_section()},
         {"role": "system", "content": s10_offer_prompt_section()},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
         {"role": "system", "content": BUSINESS_STRATEGY_PROMPT},
@@ -64,6 +66,7 @@ def planner_v2_repair_messages_for_model(
     }
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": sop_planner_prompt_section()},
         {"role": "system", "content": s10_offer_prompt_section()},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
         {"role": "system", "content": BUSINESS_STRATEGY_PROMPT},
@@ -114,6 +117,8 @@ async def run_planner_brain_v2(
         "input": {"tier": tier},
         "output": {
             "primary_task": plan.get("primary_task", {}).get("type", ""),
+            "sop_stage": plan.get("sop_stage") or plan.get("primary_task", {}).get("sop_stage", ""),
+            "sop_step": plan.get("sop_step") or plan.get("primary_task", {}).get("sop_step", ""),
             "secondary_tasks": len(plan.get("secondary_tasks", [])),
             "required_tools": len(plan.get("required_tools", [])),
             "tool_policy_violations": len(plan.get("tool_policy_violations", [])),

@@ -14,6 +14,9 @@ from app.graph.planner.runtime_plan import (
     planner_reply_strategy,
     planner_required_tools,
     planner_secondary_tasks,
+    planner_sop_stage,
+    planner_sop_stage_rules,
+    planner_sop_step,
     planner_task_views,
 )
 from app.graph.state import AgentState
@@ -39,6 +42,9 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     required_tools = planner_required_tools(state)
     reply_strategy = _sanitize_planner_context_for_reply(planner_reply_strategy(state))
     handoff = planner_handoff(state)
+    sop_stage = planner_sop_stage(state)
+    sop_step = planner_sop_step(state)
+    sop_stage_rules = _sanitize_planner_context_for_reply(planner_sop_stage_rules(state))
     appointment_context = _appointment_context_for_model(state) if should_show_appointment_context else {}
     payload = {
         "content": state.get("normalized_content"),
@@ -49,6 +55,9 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "history_events": [] if suppress_profile_memory else state.get("history_events", [])[-8:],
         "memory_usage_policy": memory_usage_policy_for_reply(state),
         "active_offer_context": _compact_active_offer_context(),
+        "sop_stage": sop_stage,
+        "sop_step": sop_step,
+        "sop_stage_rules": sop_stage_rules,
         "recent_assistant_replies": [] if suppress_profile_memory else recent_assistant_replies(state, 4),
         "recent_image_urls": [] if suppress_profile_memory else _recent_image_urls(state),
         "guardrail_result": state.get("guardrail_result", {}),

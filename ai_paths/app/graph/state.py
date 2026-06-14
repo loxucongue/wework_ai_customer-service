@@ -56,6 +56,9 @@ class AgentState(TypedDict, total=False):
     reply_strategy: dict[str, Any]
     handoff: dict[str, Any]
     memory_update_hint: dict[str, Any]
+    sop_stage: str
+    sop_step: str
+    sop_stage_rules: dict[str, Any]
     tool_results: dict[str, Any]
     fact_envelope: dict[str, Any]
     reply_messages: list[dict[str, Any]]

@@ -136,6 +136,8 @@ class ChatRuntime:
                 "exact_policy_id": final_state.get("exact_policy_id", ""),
                 "policy_match_level": final_state.get("policy_match_level", ""),
                 "policy_version": final_state.get("policy_version", ""),
+                "sop_stage": final_state.get("sop_stage", ""),
+                "sop_step": final_state.get("sop_step", ""),
                 "scene_guidance_candidates": final_state.get("scene_guidance_candidates", []),
                 "scene_guidance_injected": bool(final_state.get("scene_guidance_injected")),
                 "active_scene_id": final_state.get("active_scene_id", ""),
