@@ -34,7 +34,7 @@ PROJECT_ALIASES: dict[str, list[str]] = {
 }
 
 PRICE_INTENT_TERMS = {
-    "周年庆活动价": ["周年庆", "活动", "活动价", "优惠", "广告", "券", "新客", "第一次", "首单"],
+    "周年庆活动价": ["周年庆", "活动", "活动价", "优惠", "广告", "券", "第一次", "首单"],
     "老客报价": ["老客", "复购", "以前来过", "做过", "上次", "订单"],
 }
 
@@ -50,6 +50,7 @@ EXPECTED_S10_RULE_IDS = {
     "S10_OLD_GT_1000_680",
     "S10_OLD_LE_1000_520",
 }
+
 
 class PricingRulesRepository:
     def __init__(self, store: SQLiteStore):
@@ -133,7 +134,7 @@ class PricingRulesRepository:
         total_price = str(row.get("total_price") or "")
         if total_price and total_price != "0" and total_price in query:
             score += 20
-        if display_price and any(part and part in query for part in display_price.replace("，", " ").split()):
+        if display_price and any(part and part in query for part in display_price.replace("，", " ").replace("；", " ").split()):
             score += 4
         if any(term in haystack for term in query.split()):
             score += 2
@@ -143,7 +144,7 @@ class PricingRulesRepository:
         segment = str(row.get("customer_segment") or "")
         if "1000" in segment or "1k" in segment.lower():
             high_order_terms = ("超过1000", "大于1000", "高于1000", "1000以上", "1k以上", "超过1k")
-            low_order_terms = ("不超过1000", "低于1000", "小于1000", "1000以下", "1k以下", "低于1k")
+            low_order_terms = ("不超过1000", "低于1000", "小于1000", "1000以下", "1k以下", "低于1k", "没超过1000")
             high_query = any(term in query for term in high_order_terms) and not any(
                 term in query for term in ("不超过1000", "没超过1000", "不满1000", "不到1000", "不超过1k")
             )
