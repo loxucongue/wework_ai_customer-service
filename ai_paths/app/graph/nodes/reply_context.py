@@ -3,7 +3,7 @@
 import re
 from typing import Any
 
-from app.graph.nodes.common import recent_assistant_replies
+from app.graph.nodes.common import clean_model_value, recent_assistant_replies
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
     should_suppress_profile_memory_for_reply,
@@ -38,7 +38,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     reply_strategy = _sanitize_planner_context_for_reply(planner_reply_strategy(state))
     handoff = planner_handoff(state)
     appointment_context = _appointment_context_for_model(state) if should_show_appointment_context else {}
-    return {
+    payload = {
         "content": state.get("normalized_content"),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-6:],
         "image_info": state.get("image_info", {}),
@@ -60,6 +60,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "fact_envelope": fact_envelope,
         "fact_notes": _fact_notes_for_model(fact_envelope),
     }
+    return clean_model_value(payload, max_string_chars=1800)
 
 
 def _sanitize_planner_context_for_reply(value: Any) -> Any:

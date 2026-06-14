@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from app.graph.nodes.common import clean_model_text
 from app.graph.nodes.kb_slice_parsing import extract_label_block
 
 
@@ -30,10 +31,10 @@ def _parse_project_items(items: list[Any]) -> list[dict[str, str]]:
     parsed: list[dict[str, str]] = []
     for item in items[:5]:
         if isinstance(item, dict):
-            content = str(item.get("content") or item.get("output") or "")
-            title = str(item.get("title") or "")
+            content = clean_model_text(str(item.get("content") or item.get("output") or ""))
+            title = clean_model_text(str(item.get("title") or ""))
         elif isinstance(item, str):
-            content = item
+            content = clean_model_text(item)
             title = ""
         else:
             continue
@@ -61,7 +62,7 @@ def _parse_project_items(items: list[Any]) -> list[dict[str, str]]:
 
 
 def _clean_project_slice_text(text: str) -> str:
-    value = str(text or "").strip()
+    value = clean_model_text(str(text or "")).strip()
     if not value:
         return ""
     value = re.sub(r"\s+", " ", value)

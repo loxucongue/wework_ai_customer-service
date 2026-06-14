@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings
+from app.graph.nodes.common import clean_model_text
 from app.schemas import CozeKbItem, CozeKbResult
 from app.services.coze_oauth import CozeOAuthTokenProvider
 
@@ -68,14 +69,19 @@ class CozeClient:
         self._raise_if_coze_error(raw)
         payload = self._parse_data(raw)
         output_list = payload.get("outputList") or payload.get("outputlist") or raw.get("outputList") or []
-        items = [
-            CozeKbItem(
-                content=str(item.get("output", "")),
-                document_id=str(item.get("documentId", "")),
+        items: list[CozeKbItem] = []
+        for item in output_list:
+            if not isinstance(item, dict) or not item.get("output"):
+                continue
+            content = clean_model_text(str(item.get("output", "")))
+            if not content:
+                continue
+            items.append(
+                CozeKbItem(
+                    content=content,
+                    document_id=str(item.get("documentId", "")),
+                )
             )
-            for item in output_list
-            if isinstance(item, dict) and item.get("output")
-        ]
         return CozeKbResult(kb_name=kb_name, items=items, raw=raw)
 
     async def _run_kb_workflow_with_fallback(self, kb_name: str, query: str) -> dict[str, Any]:

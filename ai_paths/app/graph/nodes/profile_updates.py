@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from app.graph.nodes.common import dedupe_strings
+from app.graph.nodes.common import clean_model_text, dedupe_strings
 from app.graph.nodes.image_info import has_image_concern
 from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.profile_update_summary import decision_stage, intent_level, profile_summary
@@ -53,7 +53,7 @@ def extract_profile_update(
         budget_sens = "high" if any(term in content for term in ["预算", "太贵", "贵了", "便宜点", "最低价"]) else "medium"
 
     visible_concerns = known_visible_concerns(state)
-    pain_points.extend(str(item).strip() for item in visible_concerns if str(item).strip())
+    pain_points.extend(clean_model_text(str(item).strip()) for item in visible_concerns if clean_model_text(str(item).strip()))
 
     update: dict[str, object] = {}
     if needs or pain_points or projects or concerns or style_tags:
@@ -155,8 +155,9 @@ def _collect_project_signals(
     if case_request_lacks_specific_context(state):
         return
     for direction in project_direction_names(state):
-        if direction and direction not in projects:
-            projects.append(direction)
+        clean_direction = clean_model_text(direction)
+        if clean_direction and clean_direction not in projects:
+            projects.append(clean_direction)
 
 
 def _collect_concern_signals(

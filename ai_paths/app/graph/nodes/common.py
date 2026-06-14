@@ -18,6 +18,61 @@ def looks_bad_text(text: str) -> bool:
     return text.count("?") >= 2 and not any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
+def looks_garbled_text(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value:
+        return False
+    question_count = value.count("?") + value.count("？")
+    if question_count < 3:
+        return False
+    cjk_count = sum(1 for ch in value if "\u4e00" <= ch <= "\u9fff")
+    alnum_count = sum(1 for ch in value if ch.isalnum())
+    visible_count = sum(1 for ch in value if not ch.isspace())
+    if visible_count == 0:
+        return False
+    if cjk_count == 0 and alnum_count <= question_count:
+        return True
+    return question_count / visible_count >= 0.35
+
+
+def clean_model_text(text: str, *, max_chars: int | None = None) -> str:
+    """Remove obvious mojibake lines before they enter facts, memory, or prompts."""
+    lines: list[str] = []
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line or looks_garbled_text(line):
+            continue
+        lines.append(line)
+    cleaned = "\n".join(lines).strip()
+    if looks_garbled_text(cleaned):
+        return ""
+    if max_chars is not None and max_chars >= 0:
+        return cleaned[:max_chars]
+    return cleaned
+
+
+def clean_model_value(value: Any, *, max_string_chars: int | None = None) -> Any:
+    if isinstance(value, str):
+        return clean_model_text(value, max_chars=max_string_chars)
+    if isinstance(value, list):
+        cleaned_list: list[Any] = []
+        for item in value:
+            cleaned = clean_model_value(item, max_string_chars=max_string_chars)
+            if cleaned in ("", [], {}):
+                continue
+            cleaned_list.append(cleaned)
+        return cleaned_list
+    if isinstance(value, dict):
+        cleaned_dict: dict[str, Any] = {}
+        for key, item in value.items():
+            cleaned = clean_model_value(item, max_string_chars=max_string_chars)
+            if cleaned in ("", [], {}):
+                continue
+            cleaned_dict[key] = cleaned
+        return cleaned_dict
+    return value
+
+
 def model_usage_snapshot(model_client: Any | None) -> dict[str, Any]:
     usage = getattr(model_client, "last_usage", None) if model_client else None
     if not isinstance(usage, dict):

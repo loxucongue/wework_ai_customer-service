@@ -29,9 +29,9 @@ class Settings(BaseSettings):
     model_balanced: str = "qwen-turbo"
     model_strong: str = "qwen-turbo"
     model_vision: str = "qwen-vl-plus"
-    model_fast_fallbacks: str = "kimi-k2.6,qwen3.6-flash"
-    model_balanced_fallbacks: str = "kimi-k2.6,qwen3.7-max-2026-05-20,qwen3.6-flash"
-    model_strong_fallbacks: str = "qwen3.7-max-2026-05-20,kimi-k2.6,qwen-plus"
+    model_fast_fallbacks: str = ""
+    model_balanced_fallbacks: str = ""
+    model_strong_fallbacks: str = ""
     model_vision_fallbacks: str = ""
     model_timeout_seconds: int = 45
     memory_dir: Path = Path("logs/memory")

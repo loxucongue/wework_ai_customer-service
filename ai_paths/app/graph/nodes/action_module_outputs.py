@@ -4,6 +4,7 @@ import html
 import re
 from typing import Any
 
+from app.graph.nodes.common import clean_model_text
 from app.graph.state import AgentState
 from app.policies.s10_offer import attach_s10_offer_facts
 
@@ -190,10 +191,12 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             for item in items[:5]:
                 if not isinstance(item, dict):
                     continue
-                content = str(item.get("content") or item.get("output") or item)[:500]
+                content = clean_model_text(str(item.get("content") or item.get("output") or item), max_chars=500)
+                if not content:
+                    continue
                 fact = {
                     "source": key,
-                    "title": str(item.get("title") or item.get("documentId") or "")[:120],
+                    "title": clean_model_text(str(item.get("title") or item.get("documentId") or ""), max_chars=120),
                     "content": content,
                 }
                 image_url = _image_url_from_content(content)
