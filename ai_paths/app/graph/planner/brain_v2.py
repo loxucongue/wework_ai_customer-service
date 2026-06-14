@@ -9,7 +9,6 @@ from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, planner
 from app.graph.state import AgentState
 from app.policies.s10_offer import s10_offer_context, s10_offer_prompt_section
 from app.policies.sop_rules import sop_planner_prompt_section
-from app.prompts.business_strategy import BUSINESS_STRATEGY_PROMPT
 from app.services.model_client import ModelClient
 
 def planner_v2_model_tier(state: AgentState) -> str:
@@ -37,7 +36,6 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
         {"role": "system", "content": sop_planner_prompt_section()},
         {"role": "system", "content": s10_offer_prompt_section()},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": BUSINESS_STRATEGY_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
 
@@ -69,7 +67,6 @@ def planner_v2_repair_messages_for_model(
         {"role": "system", "content": sop_planner_prompt_section()},
         {"role": "system", "content": s10_offer_prompt_section()},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": BUSINESS_STRATEGY_PROMPT},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]

@@ -198,45 +198,48 @@ def _enforce_policy_required_tools(
     tasks: list[dict[str, Any]],
     required_tools: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    tools = [tool for tool in required_tools if str(tool.get("name") or "").strip() != "no_tool"]
-    query = _policy_tool_query(tasks) or str(state.get("normalized_content") or "").strip()[:160]
-    original_user_query = str(state.get("normalized_content") or "").strip()[:160]
+    """Keep tool enforcement fact-only and SOP-driven.
 
-    def has_tool(name: str, *, kb_name: str = "") -> bool:
-        for tool in tools:
-            if str(tool.get("name") or "").strip() != name:
-                continue
-            if kb_name and str(tool.get("kb_name") or "").strip() != kb_name:
-                continue
-            return True
-        return False
+    Planner decides the business task. Code only makes sure fact tools exist when
+    a task/stage cannot be answered safely without external facts.
+    """
+    tools = [tool for tool in required_tools if str(tool.get("name") or "").strip() != "no_tool"]
+    original_user_query = str(state.get("normalized_content") or "").strip()[:160]
+    fallback_query = _policy_tool_query(tasks) or original_user_query
+    primary_task_type = str((tasks[0] if tasks else {}).get("type") or "").strip()
+    sop_stage = normalize_sop_stage(state.get("sop_stage") or (tasks[0].get("sop_stage") if tasks else ""), task_type=primary_task_type)
 
     def add_tool(tool: dict[str, Any]) -> None:
-        name = str(tool.get("name") or "")
-        kb_name = str(tool.get("kb_name") or "")
+        name = str(tool.get("name") or "").strip()
+        kb_name = str(tool.get("kb_name") or "").strip()
+        if name not in ALLOWED_TOOLS:
+            return
+        if name == "kb_search" and kb_name not in ALLOWED_KBS:
+            return
         for existing in tools:
             if str(existing.get("name") or "").strip() != name:
                 continue
             if kb_name and str(existing.get("kb_name") or "").strip() != kb_name:
                 continue
-            if str(tool.get("query") or "").strip() and (
-                name == "store_lookup" or not str(existing.get("query") or "").strip()
-            ):
-                existing["query"] = str(tool.get("query") or "").strip()
-            if str(tool.get("purpose") or "").strip() and not str(existing.get("purpose") or "").strip():
-                existing["purpose"] = str(tool.get("purpose") or "").strip()
+            query = str(tool.get("query") or "").strip()
+            purpose = str(tool.get("purpose") or "").strip()
+            if query and (name == "store_lookup" or not str(existing.get("query") or "").strip()):
+                existing["query"] = query
+            if purpose and not str(existing.get("purpose") or "").strip():
+                existing["purpose"] = purpose
             return
-        tools.append(tool)
+        normalized = {"name": name, "purpose": str(tool.get("purpose") or "").strip()}
+        if kb_name:
+            normalized["kb_name"] = kb_name
+        query = str(tool.get("query") or "").strip()
+        if query:
+            normalized["query"] = query
+        tools.append(normalized)
 
     def ensure_sales_talk_reference(purpose: str) -> None:
         if not original_user_query:
             return
-        for tool in tools:
-            if str(tool.get("name") or "").strip() == "kb_search" and str(tool.get("kb_name") or "").strip() == "sales_talk_qa":
-                tool["query"] = original_user_query
-                tool["purpose"] = purpose
-                return
-        tools.append(
+        add_tool(
             {
                 "name": "kb_search",
                 "kb_name": "sales_talk_qa",
@@ -245,131 +248,52 @@ def _enforce_policy_required_tools(
             }
         )
 
-    def case_study_query() -> str:
-        parts = [original_user_query or query]
-        category_id = str(state.get("category_id") or "").strip()
-        request_context = state.get("request_context")
-        if isinstance(request_context, dict):
-            request_category = str(request_context.get("category_id") or "").strip()
-        else:
-            request_category = ""
-        for item in (category_id, request_category):
-            if item and item not in parts:
-                parts.append(item)
-        base = " ".join(part for part in parts if part).strip()
-        case_markers = ("案例", "效果", "做完", "前后", "对比", "参考")
-        need_markers = ("斑", "淡斑", "肤色", "痘印", "毛孔", "细纹", "皱纹", "痣", "痦子", "黑色素")
-        if not any(token in base for token in case_markers + need_markers):
-            base = f"{base} 效果案例 做完效果 改善参考 斑点 淡斑 肤色不均".strip()
-        elif any(token in base for token in case_markers) and not any(token in base for token in need_markers):
-            base = f"{base} 斑点 淡斑 肤色不均 改善参考".strip()
-        return base[:160]
+    def ensure_store_lookup(purpose: str) -> None:
+        add_tool(
+            {
+                "name": "store_lookup",
+                "query": original_user_query or fallback_query,
+                "purpose": purpose,
+            }
+        )
 
-    def pricing_query() -> str:
-        parts = [original_user_query or query]
-        request_context = state.get("request_context")
-        request_category = ""
-        if isinstance(request_context, dict):
-            request_category = str(request_context.get("category_id") or "").strip()
-        category_id = str(state.get("category_id") or "").strip()
-        for item in (category_id, request_category):
-            if item and item not in parts:
-                parts.append(item)
-        return " ".join(part for part in parts if part).strip()[:160] or "周年庆活动 价格规则"
+    def ensure_case_studies() -> None:
+        add_tool(
+            {
+                "name": "kb_search",
+                "kb_name": "case_studies",
+                "query": original_user_query or fallback_query,
+                "purpose": "Need real case materials before answering effect or comparison requests",
+            }
+        )
 
     for task in tasks:
         task_type = str(task.get("type") or "").strip()
         subtype = str(task.get("subtype") or "").strip()
-        policy_hint = str(task.get("policy_hint") or "").strip()
-        subflow = str(task.get("subflow") or "").strip()
-        markers = " ".join([task_type, subtype, policy_hint, subflow])
-        markers_upper = markers.upper()
-        markers_lower = markers.lower()
+        policy_hint = str(task.get("policy_hint") or "").strip().upper()
+        subflow = str(task.get("subflow") or "").strip().upper()
+        task_stage = normalize_sop_stage(task.get("sop_stage") or sop_stage, task_type=task_type)
+        markers = " ".join([task_type, subtype, policy_hint, subflow, task_stage]).upper()
 
-        if task_type == "price_inquiry" or "SF7_" in markers:
-            ensure_sales_talk_reference("Need sales champion wording for S10 price, activity, deposit, and fee concerns")
-        if task_type == "competitor_compare" or "SF5_" in markers:
-            ensure_sales_talk_reference("Need sales champion wording for competitor comparison while keeping S10 fixed offer facts")
-        if task_type == "store_inquiry" or "SF6_" in markers:
-            add_tool(
-                {
-                    "name": "store_lookup",
-                    "query": original_user_query or query,
-                    "purpose": "Need real store facts before answering store, route, address, or hours",
-                }
-            )
+        if task_stage in {"S1_GREETING_INTRO", "S3_PRICE_CLOSE", "S4_FOLLOWUP_REACTIVATE"}:
+            ensure_sales_talk_reference("Need sales talk wording for the current SOP stage")
+        if task_type in {"project_consult", "image_consult", "price_inquiry", "competitor_compare", "trust_issue", "after_sales"}:
+            ensure_sales_talk_reference("Need sales champion wording and business-answer logic using the original customer wording")
+        if task_stage == "S2_STORE_ADDRESS" or task_type == "store_inquiry":
+            ensure_store_lookup("Need real store facts before answering store, address, route, hours, or parking")
+        if task_type == "appointment" or any(token in markers for token in ("TIME_CHECK", "VISIT_INTENT", "CONFIRM_TIME", "WEEKEND")):
+            ensure_store_lookup("Need real store facts before checking appointment availability")
+            add_tool({"name": "available_time", "purpose": "Need real appointment availability before answering time or visit intent"})
         if task_type in {"appointment_status", "appointment_change", "appointment_cancel"} or any(
-            token in markers_upper for token in ("APPOINTMENT_STATUS", "APPOINTMENT_CHANGE", "APPOINTMENT_CANCEL")
+            token in markers for token in ("APPOINTMENT_STATUS", "APPOINTMENT_CHANGE", "APPOINTMENT_CANCEL")
         ):
             add_tool({"name": "appointment_record_query", "purpose": "Need real appointment record before status, change, or cancel handling"})
-        if task_type == "appointment" or any(
-            token in markers_upper for token in ("TIME_CHECK", "VISIT_INTENT", "CONFIRM_TIME", "WEEKEND")
-        ) or "time_check" in markers_lower:
-            add_tool(
-                {
-                    "name": "store_lookup",
-                    "query": original_user_query or query,
-                    "purpose": "Need real store facts before checking appointment time",
-                }
-            )
-            add_tool({"name": "available_time", "purpose": "Need real appointment availability before answering time or visit intent"})
         if task_type == "case_request" or "CASE_" in markers:
-            add_tool(
-                {
-                    "name": "kb_search",
-                    "kb_name": "case_studies",
-                    "query": case_study_query(),
-                    "purpose": "Need real case materials before answering effect comparison requests",
-                }
-            )
-        if task_type == "project_consult" or "SF3_" in markers:
-            ensure_sales_talk_reference("Need sales champion wording for S10 project and method questions")
-        if _should_use_sales_talk_reference(task_type, markers):
-            ensure_sales_talk_reference(
-                "Need sales champion wording and business-answer logic using the original customer wording"
-            )
+            ensure_case_studies()
+        if task_type in {"human_request", "complaint_refund"} or "HUMAN_HANDOFF" in markers:
+            add_tool({"name": "professional_assist", "purpose": "Need professional colleague for complaint, refund, order/payment, or high-risk handling"})
 
     return _dedupe_tools(tools)
-
-
-def _should_use_sales_talk_reference(task_type: str, markers: str) -> bool:
-    if task_type == "human_request" or "HUMAN_HANDOFF" in markers:
-        return False
-    business_task_types = {
-        "general_chat",
-        "opening",
-        "project_consult",
-        "image_consult",
-        "case_request",
-        "price_inquiry",
-        "store_inquiry",
-        "appointment",
-        "appointment_status",
-        "appointment_change",
-        "appointment_cancel",
-        "competitor_compare",
-        "trust_issue",
-        "after_sales",
-        "direct_reply",
-    }
-    if task_type in business_task_types:
-        return True
-    markers_upper = markers.upper()
-    business_markers = (
-        "S1_",
-        "SF3_",
-        "SF4_",
-        "SF5_",
-        "SF6_",
-        "SF7_",
-        "SF8_",
-        "SF9_",
-        "SF10_",
-        "SF12_",
-        "CASE_",
-        "GENERAL_",
-    )
-    return any(marker in markers_upper for marker in business_markers)
 
 
 def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:
