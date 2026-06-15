@@ -29,6 +29,8 @@ def postprocess_reply_messages(
     cleaned: list[dict[str, Any]] = []
     special_messages: list[dict[str, Any]] = []
     seen_text: set[str] = set()
+    text_count = 0
+    image_count = 0
 
     for message in messages:
         if not isinstance(message, dict):
@@ -50,19 +52,26 @@ def postprocess_reply_messages(
             continue
 
         if msg_type == "text":
+            if text_count >= 2:
+                reasons.append("text_limit")
+                continue
             content = content.strip()
             normalized = re.sub(r"\s+", "", content)
             if not normalized or normalized in seen_text:
                 reasons.append("dedupe_or_limit")
                 continue
             seen_text.add(normalized)
+        elif msg_type == "image":
+            if image_count >= 1:
+                reasons.append("image_limit")
+                continue
 
         payload: Any = {"text": content} if msg_type == "text" else content
         cleaned.append({"type": msg_type, "order": len(cleaned) + 1, "content": payload})
-        if len(cleaned) >= 2:
-            if len(messages) > len(cleaned):
-                reasons.append("dedupe_or_limit")
-            break
+        if msg_type == "text":
+            text_count += 1
+        elif msg_type == "image":
+            image_count += 1
 
     if not cleaned:
         state["postprocess_changed"] = bool(original_messages)
@@ -84,6 +93,12 @@ def postprocess_reply_messages(
     cleaned = reply_filters.sanitize_customer_visible_messages(cleaned)
     if _message_fingerprint(cleaned) != before_visible:
         reasons.append("customer_visible_sanitized")
+
+    if not _has_visible_image(cleaned):
+        case_image = _case_image_message_for_state(state, cleaned)
+        if case_image:
+            cleaned.append(case_image)
+            reasons.append("case_image_appended")
 
     cleaned = renumber_messages(cleaned)
 
@@ -138,6 +153,82 @@ def _book_order_message_for_state(
     if not order_id:
         return None
     return {"type": "book_order", "order": 0, "content": {"order_id": order_id}}
+
+
+def _has_visible_image(messages: list[dict[str, Any]]) -> bool:
+    return any(isinstance(message, dict) and message.get("type") == "image" for message in messages)
+
+
+def _case_image_message_for_state(state: AgentState, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not _looks_like_case_or_effect_turn(state):
+        return None
+    recent_urls = set(_recent_image_urls_from_state(state))
+    for image_url in _case_image_urls_from_state(state):
+        if image_url and image_url not in recent_urls:
+            return {"type": "image", "order": len(messages) + 1, "content": image_url}
+    return None
+
+
+def _looks_like_case_or_effect_turn(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "")
+    if any(term in text for term in ("效果图", "案例", "对比图", "做完效果", "恢复后", "客户做完", "图片上的客户")):
+        return True
+    for view in planner_task_views(state):
+        if not isinstance(view, dict):
+            continue
+        joined = " ".join(str(view.get(key) or "").lower() for key in ("type", "subtype", "policy_hint", "scene", "subflow"))
+        if "case" in joined or "effect" in joined:
+            return True
+    return False
+
+
+def _case_image_urls_from_state(state: AgentState) -> list[str]:
+    urls: list[str] = []
+    for case in _case_facts_from_state(state):
+        if not isinstance(case, dict):
+            continue
+        image_url = str(case.get("image_url") or "").strip()
+        if image_url and image_url.startswith(("http://", "https://")):
+            urls.append(image_url)
+    return list(dict.fromkeys(urls))
+
+
+def _case_facts_from_state(state: AgentState) -> list[dict[str, Any]]:
+    sources: list[Any] = []
+    structured_facts = state.get("structured_facts")
+    if isinstance(structured_facts, dict):
+        sources.append(structured_facts.get("case_facts"))
+    fact_envelope = state.get("fact_envelope")
+    if isinstance(fact_envelope, dict):
+        envelope_structured = fact_envelope.get("structured_facts")
+        if isinstance(envelope_structured, dict):
+            sources.append(envelope_structured.get("case_facts"))
+    results: list[dict[str, Any]] = []
+    for source in sources:
+        if isinstance(source, list):
+            results.extend(item for item in source if isinstance(item, dict))
+    return results
+
+
+def _recent_image_urls_from_state(state: AgentState) -> list[str]:
+    urls: list[str] = []
+    for key in ("recent_image_urls",):
+        value = state.get(key)
+        if isinstance(value, list):
+            urls.extend(str(item).strip() for item in value if str(item).strip())
+    for message in state.get("conversation_history") or []:
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("type") or message.get("msgtype") or "").lower() not in {"image", "图片"}:
+            continue
+        content = message.get("content")
+        if isinstance(content, dict):
+            url = str(content.get("url") or content.get("image_url") or "").strip()
+        else:
+            url = str(content or "").strip()
+        if url:
+            urls.append(url)
+    return list(dict.fromkeys(urls))
 
 
 def _professional_assist_reason(state: AgentState) -> str:

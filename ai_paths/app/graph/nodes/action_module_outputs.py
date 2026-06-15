@@ -207,7 +207,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     if script:
                         fact.update(script)
                         sales_talk_scripts.append(script)
-                image_url = _image_url_from_content(content)
+                image_url = _image_url_from_item(item) or _image_url_from_content(raw_content)
                 if image_url:
                     fact["image_url"] = image_url
                 normalized_items.append(fact)
@@ -398,4 +398,20 @@ def _image_url_from_content(content: str) -> str:
     match = re.search(r"https?://[^\s<>'\")]+", content)
     if match:
         return html.unescape(match.group(0)).strip()
+    return ""
+
+
+def _image_url_from_item(item: dict[str, Any]) -> str:
+    for key in ("image_url", "imageUrl", "url", "file_url", "fileUrl", "cover_url", "coverUrl"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            image_url = _image_url_from_content(value)
+            if image_url:
+                return image_url
+    for key in ("content", "output", "text", "markdown"):
+        value = item.get(key)
+        if isinstance(value, str):
+            image_url = _image_url_from_content(value)
+            if image_url:
+                return image_url
     return ""
