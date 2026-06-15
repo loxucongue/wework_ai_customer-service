@@ -63,11 +63,19 @@ def postprocess_reply_messages(
             if _contains_fake_placeholder_text(content):
                 reasons.append("placeholder_text_removed")
                 continue
+            without_unasked_offer = _suppress_unasked_offer_for_store_turn(state, content)
+            if without_unasked_offer != content:
+                content = without_unasked_offer
+                reasons.append("unasked_offer_removed_for_store_turn")
             content = _sanitize_unbacked_case_image_promise(state, content)
             sanitized_sales = _sanitize_sales_close_risk_terms(content)
             if sanitized_sales != content:
                 content = sanitized_sales
                 reasons.append("sales_close_terms_sanitized")
+            with_navigation = _append_navigation_url_if_requested(state, content)
+            if with_navigation != content:
+                content = with_navigation
+                reasons.append("navigation_url_appended")
             one_question = _limit_to_one_customer_question(content)
             if one_question != content:
                 content = one_question
@@ -218,6 +226,106 @@ def _sanitize_sales_close_risk_terms(text: str) -> str:
         content = content.replace(source, target)
     content = re.sub(r"(仅剩|只剩|剩下|最后)\s*[0-9一二三四五六七八九十]+\s*个名额", "名额有限", content)
     return content
+
+
+def _suppress_unasked_offer_for_store_turn(state: AgentState, text: str) -> str:
+    if not _is_pure_store_or_navigation_turn(state):
+        return text
+    parts = re.split(r"(?<=[。！？!?；;])", str(text or "").strip())
+    if not parts:
+        return text
+    kept: list[str] = []
+    removed = False
+    for part in parts:
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if _looks_like_unasked_offer_sentence(chunk):
+            prefix = _prefix_before_unasked_offer(chunk)
+            if prefix:
+                kept.append(prefix)
+            removed = True
+            continue
+        kept.append(chunk)
+    if not removed:
+        return text
+    result = "".join(kept).strip()
+    return result or text
+
+
+def _is_pure_store_or_navigation_turn(state: AgentState) -> bool:
+    content = str(state.get("normalized_content") or "")
+    store_terms = ("门店", "地址", "导航", "定位", "路线", "怎么去", "哪里", "哪家", "附近", "机场", "地铁", "商圈", "科技园", "我在")
+    price_terms = ("多少钱", "价格", "活动", "268", "199", "58", "预约金", "定金", "尾款", "名额", "报名")
+    if any(term in content for term in price_terms):
+        return False
+    task_views = planner_task_views(state)
+    has_store_task = any(
+        isinstance(view, dict) and str(view.get("type") or "").strip() == "store_inquiry"
+        for view in task_views
+    )
+    policy_family = str(state.get("policy_family_id") or "")
+    return (has_store_task or policy_family == "SF6_STORE_INQUIRY") and any(term in content for term in store_terms)
+
+
+def _looks_like_unasked_offer_sentence(text: str) -> bool:
+    content = str(text or "")
+    offer_terms = (
+        "周年庆",
+        "活动价",
+        "268",
+        "预约金",
+        "定金",
+        "做付",
+        "258",
+        "名额",
+        "登记",
+        "报名",
+        "不满意",
+        "不来",
+        "退还10",
+        "占个位",
+    )
+    return any(term in content for term in offer_terms)
+
+
+def _prefix_before_unasked_offer(text: str) -> str:
+    content = str(text or "").strip()
+    positions = [
+        content.find(term)
+        for term in (
+            "现在周年庆",
+            "周年庆",
+            "活动价",
+            "268",
+            "预约金",
+            "定金",
+            "做付",
+            "名额",
+            "登记",
+            "报名",
+        )
+        if content.find(term) >= 0
+    ]
+    if not positions:
+        return ""
+    prefix = content[: min(positions)].strip(" ，。；;")
+    if len(prefix) < 8:
+        return ""
+    return prefix + "。"
+
+
+def _append_navigation_url_if_requested(state: AgentState, text: str) -> str:
+    if not _current_query_asks_navigation(state):
+        return text
+    content = str(text or "").strip()
+    if "http://" in content or "https://" in content:
+        return text
+    map_url = _recommended_store_field(state, "map_url")
+    if not map_url:
+        return text
+    separator = " " if content.endswith(("。", "！", "？", "!", "?")) else "，"
+    return f"{content}{separator}导航链接：{map_url}"
 
 
 def _limit_to_one_customer_question(text: str) -> str:
@@ -394,6 +502,29 @@ def _structured_facts_from_state(state: AgentState) -> dict[str, Any]:
     if isinstance(fact_envelope, dict) and isinstance(fact_envelope.get("structured_facts"), dict):
         return fact_envelope["structured_facts"]
     return {}
+
+
+def _recommended_store_field(state: AgentState, field: str) -> str:
+    structured = _structured_facts_from_state(state)
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        value = str(recommended.get(field) or "").strip()
+        if value:
+            return value
+    stores = structured.get("store_facts")
+    if isinstance(stores, list):
+        for item in stores:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get(field) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _current_query_asks_navigation(state: AgentState) -> bool:
+    content = str(state.get("normalized_content") or "")
+    return any(term in content for term in ("导航", "定位", "路线", "怎么去", "发我", "发一下", "发个"))
 
 
 def _first_dict(value: Any) -> dict[str, Any]:
