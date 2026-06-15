@@ -45,7 +45,7 @@ def build_store_query_info(query: str, stores: list[StoreRecord]) -> StoreQueryI
                 "位置",
                 "发给我",
                 "发我",
-                "发一下",
+                "发一个",
                 "地铁站",
                 "机场",
                 "附近",

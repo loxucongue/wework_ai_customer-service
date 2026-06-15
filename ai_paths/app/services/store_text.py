@@ -3,7 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.store_catalog import StoreRecord
-from app.services.store_text_constants import AREA_CITY_MAP, CITY_NAMES, EXTERNAL_LOCATION_NAMES, QUERY_STORE_ALIASES, STORE_ALIASES
+from app.services.store_text_constants import (
+    AREA_CITY_MAP,
+    CITY_NAMES,
+    EXTERNAL_LOCATION_NAMES,
+    QUERY_STORE_ALIASES,
+    STORE_ALIASES,
+)
 
 
 def needs_city_before_lookup(query: str, *, city: str, requested_name: str) -> bool:
@@ -138,9 +144,7 @@ def text_matches_city(*, name: str, city_field: str, address: str, city: str) ->
         return True
     if name.startswith(city) or f"{city}店" in name:
         return True
-    if f"{city}市" in address:
-        return True
-    if city in {"北京", "上海", "天津", "重庆"} and city in address:
+    if f"{city}市" in address or city in address:
         return True
     return False
 

@@ -250,7 +250,7 @@ def _suppress_unasked_offer_for_store_turn(state: AgentState, text: str) -> str:
     if not removed:
         return text
     result = "".join(kept).strip()
-    return result or text
+    return result
 
 
 def _is_pure_store_or_navigation_turn(state: AgentState) -> bool:
@@ -259,6 +259,8 @@ def _is_pure_store_or_navigation_turn(state: AgentState) -> bool:
     price_terms = ("多少钱", "价格", "活动", "268", "199", "58", "预约金", "定金", "尾款", "名额", "报名")
     if any(term in content for term in price_terms):
         return False
+    if any(term in content for term in store_terms):
+        return True
     task_views = planner_task_views(state)
     has_store_task = any(
         isinstance(view, dict) and str(view.get("type") or "").strip() == "store_inquiry"
@@ -318,14 +320,21 @@ def _prefix_before_unasked_offer(text: str) -> str:
 def _append_navigation_url_if_requested(state: AgentState, text: str) -> str:
     if not _current_query_asks_navigation(state):
         return text
-    content = str(text or "").strip()
+    content = _remove_bare_tencent_shortlink_fragment(str(text or "").strip())
     if "http://" in content or "https://" in content:
-        return text
+        return content
     map_url = _recommended_store_field(state, "map_url")
     if not map_url:
-        return text
+        return content
     separator = " " if content.endswith(("。", "！", "？", "!", "?")) else "，"
     return f"{content}{separator}导航链接：{map_url}"
+
+
+def _remove_bare_tencent_shortlink_fragment(text: str) -> str:
+    content = str(text or "")
+    content = re.sub(r"[，,。；;、\\s]*l=[A-Za-z0-9_-]{8,}(?:&tempSource=\\w+)?", "", content)
+    content = re.sub(r"[，,。；;、\\s]*short\\?l=[A-Za-z0-9_-]{8,}(?:&tempSource=\\w+)?", "", content)
+    return content.strip()
 
 
 def _limit_to_one_customer_question(text: str) -> str:

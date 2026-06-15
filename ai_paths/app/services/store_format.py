@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from app.services import store_text
 from app.services.platform_agent_client import PlatformAgentClient
@@ -47,7 +48,7 @@ def platform_store_to_dict(
     begin = info.get("business_hours_begin") or row.get("business_hours_begin") or ""
     end = info.get("business_hours_end") or row.get("business_hours_end") or ""
     address = info.get("tencent_address") or row.get("tencent_address") or row.get("address") or ""
-    map_url = info.get("tencent_map_store") or row.get("tencent_map_store") or row.get("map_store") or ""
+    map_url = _normalize_map_url(info.get("tencent_map_store") or row.get("tencent_map_store") or row.get("map_store") or "")
 
     return {
         "id": store_id,
@@ -57,7 +58,7 @@ def platform_store_to_dict(
         "map_url": map_url,
         "parking_name": parking.get("park_name") or "",
         "parking_address": parking.get("park_address") or "",
-        "parking_link": parking.get("park_link") or "",
+        "parking_link": _normalize_map_url(parking.get("park_link") or ""),
         "business_hours": f"{begin}-{end}" if begin and end else "",
         "status_code": row.get("status"),
         "shore_show_code": row.get("shore_show"),
@@ -106,10 +107,10 @@ def store_record_to_dict(store: StoreRecord) -> dict[str, Any]:
         "name": store.name,
         "city": store.city,
         "address": store.address,
-        "map_url": store.map_url,
+        "map_url": _normalize_map_url(store.map_url),
         "parking_name": store.parking_name,
         "parking_address": store.parking_address,
-        "parking_link": store.parking_link,
+        "parking_link": _normalize_map_url(store.parking_link),
         "business_hours": store.business_hours,
         "status_summary": store.status_summary,
         "is_public": store.is_public,
@@ -118,3 +119,25 @@ def store_record_to_dict(store: StoreRecord) -> dict[str, Any]:
         "has_detail": False,
         "address_source": "local_store_fallback",
     }
+
+
+def _normalize_map_url(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        parsed = urlparse(text)
+        query = parse_qs(parsed.query)
+        link_id = (query.get("l") or [""])[0]
+        if parsed.netloc and parsed.path and link_id:
+            return text
+        if link_id:
+            return f"https://mmapgwh.map.qq.com/shortlink/short?l={link_id}&tempSource=pcMap"
+        return text
+    if text.startswith("l="):
+        link_id = text.split("=", 1)[1].split("&", 1)[0].strip()
+        if link_id:
+            return f"https://mmapgwh.map.qq.com/shortlink/short?l={link_id}&tempSource=pcMap"
+    if len(text) >= 16 and all(ch.isalnum() or ch in "-_" for ch in text):
+        return f"https://mmapgwh.map.qq.com/shortlink/short?l={text}&tempSource=pcMap"
+    return text

@@ -42,7 +42,7 @@ def location_preference_rank(store: dict[str, Any], location_preference: str) ->
         if any(term in text for term in ["思明", "厦禾", "国骏"]):
             return 8
     if location_preference == "蔡塘地铁站附近":
-        if any(term in text for term in ["蔡塘"]):
+        if "蔡塘" in text:
             return 0
         if any(term in text for term in ["湖里", "枋湖", "百星", "嘉园", "创新技术园"]):
             return 1
@@ -56,10 +56,10 @@ def recommendation_reason(store: dict[str, Any], location_preference: str) -> st
     address = str(store.get("address") or "").strip()
     if location_preference == "机场附近":
         if any(term in f"{name} {address}" for term in ["湖里", "枋湖", "百星", "安岭", "钟宅"]):
-            return f"客户偏好机场附近，按当前门店地址看，{name}在湖里区方向，比思明区门店更贴近机场区域。"
-        return f"客户偏好机场附近，按当前门店地址看，可优先对比{name}。"
+            return f"客户偏好机场附近，按当前门店地址看，{name}在湖里区方向，更贴近机场区域。"
+        return f"客户偏好机场附近，可优先对比{name}。"
     if location_preference == "蔡塘地铁站附近":
         if any(term in f"{name} {address}" for term in ["湖里", "枋湖", "百星", "嘉园", "创新技术园"]):
-            return f"客户提到蔡塘地铁站，按当前门店地址看，可优先对比{name}，具体步行距离以导航为准。"
-        return f"客户提到蔡塘地铁站，按当前门店地址看，可优先对比{name}。"
+            return f"客户提到蔡塘地铁站，按当前门店地址看，可优先对比{name}，具体距离以导航为准。"
+        return f"客户提到蔡塘地铁站，可优先对比{name}。"
     return f"按客户位置偏好，可优先对比{name}。"
