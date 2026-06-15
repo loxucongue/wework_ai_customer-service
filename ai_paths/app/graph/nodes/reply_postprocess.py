@@ -26,6 +26,7 @@ def postprocess_reply_messages(
     }
     content_text = str(state.get("normalized_content") or "")
     conversation_history = state.get("conversation_history", [])
+    recent_assistant = _recent_assistant_texts_for_dedupe(state)
     cleaned: list[dict[str, Any]] = []
     special_messages: list[dict[str, Any]] = []
     seen_text: set[str] = set()
@@ -56,14 +57,24 @@ def postprocess_reply_messages(
                 reasons.append("text_limit")
                 continue
             content = content.strip()
+            if _contains_blocked_placeholder_url(content):
+                reasons.append("placeholder_url_removed")
+                continue
+            content = _sanitize_unbacked_case_image_promise(state, content)
             normalized = re.sub(r"\s+", "", content)
             if not normalized or normalized in seen_text:
                 reasons.append("dedupe_or_limit")
+                continue
+            if _too_similar_to_recent_reply(normalized, recent_assistant):
+                reasons.append("recent_reply_dedupe")
                 continue
             seen_text.add(normalized)
         elif msg_type == "image":
             if image_count >= 1:
                 reasons.append("image_limit")
+                continue
+            if not _is_usable_case_image_url(content):
+                reasons.append("invalid_image_url_removed")
                 continue
 
         payload: Any = {"text": content} if msg_type == "text" else content
@@ -188,9 +199,91 @@ def _case_image_urls_from_state(state: AgentState) -> list[str]:
         if not isinstance(case, dict):
             continue
         image_url = str(case.get("image_url") or "").strip()
-        if image_url and image_url.startswith(("http://", "https://")):
+        if _is_usable_case_image_url(image_url):
             urls.append(image_url)
     return list(dict.fromkeys(urls))
+
+
+def _is_usable_case_image_url(image_url: str) -> bool:
+    if not image_url or not image_url.startswith(("http://", "https://")):
+        return False
+    lowered = image_url.lower()
+    blocked_hosts = ("example.com", "example.cn", "localhost", "127.0.0.1")
+    if any(host in lowered for host in blocked_hosts):
+        return False
+    return True
+
+
+def _contains_blocked_placeholder_url(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(host in lowered for host in ("example.com", "example.cn", "localhost", "127.0.0.1"))
+
+
+def _sanitize_unbacked_case_image_promise(state: AgentState, text: str) -> str:
+    if _case_image_urls_from_state(state):
+        return text
+    content = str(text or "")
+    if not any(term in content for term in ("发你看", "发您看", "发图", "效果图", "对比图")):
+        return content
+    replacements = {
+        "我先发你看同类效果对比": "我先按同类方向帮你找参考",
+        "我先发您看同类效果对比": "我先按同类方向帮您找参考",
+        "先发你看同类效果对比": "先按同类方向帮你找参考",
+        "先发您看同类效果对比": "先按同类方向帮您找参考",
+        "下面发图": "先帮你找参考",
+        "发你看": "帮你找参考",
+        "发您看": "帮您找参考",
+    }
+    for source, target in replacements.items():
+        content = content.replace(source, target)
+    content = content.replace("我先按同类方向帮你找参考，方便", "方便")
+    if not _current_query_has_visible_concern(state):
+        content = re.sub(r"你主要是[^。！？!?]{0,80}[。！？!?]?", "", content).strip()
+    return content
+
+
+def _current_query_has_visible_concern(state: AgentState) -> bool:
+    query = str(state.get("normalized_content") or "")
+    if any(term in query for term in ("斑", "黑色素", "色沉", "痘印", "毛孔", "细纹", "皱纹", "肤色", "敏感", "红")):
+        return True
+    image_info = state.get("image_info")
+    if isinstance(image_info, dict) and image_info.get("visible_concerns"):
+        return True
+    return False
+
+
+def _recent_assistant_texts_for_dedupe(state: AgentState) -> list[str]:
+    texts: list[str] = []
+    for item in (state.get("conversation_history") or [])[-8:]:
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role not in {"assistant", "staff", "bot"}:
+                continue
+            content = item.get("content")
+            text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
+        else:
+            raw = str(item or "").strip()
+            if not raw.startswith(("小贝：", "客服：", "AI回复：")):
+                continue
+            text = raw.split("：", 1)[-1].strip()
+        normalized = re.sub(r"\s+", "", text)
+        if normalized:
+            texts.append(normalized)
+    return texts[-4:]
+
+
+def _too_similar_to_recent_reply(normalized: str, recent_replies: list[str]) -> bool:
+    if len(normalized) < 18:
+        return False
+    for recent in recent_replies:
+        if len(recent) < 18:
+            continue
+        if normalized == recent or normalized in recent or recent in normalized:
+            return True
+        overlap = len(set(normalized) & set(recent)) / max(1, len(set(normalized)))
+        if overlap >= 0.88 and abs(len(normalized) - len(recent)) <= max(12, int(len(normalized) * 0.25)):
+            return True
+    return False
 
 
 def _case_facts_from_state(state: AgentState) -> list[dict[str, Any]]:

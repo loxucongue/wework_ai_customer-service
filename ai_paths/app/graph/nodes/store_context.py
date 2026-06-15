@@ -28,7 +28,7 @@ def store_query_from_state(content: str, state: AgentState) -> str:
     content = (content or "").strip()
     use_context_store = should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state)
     city = extract_city(content) or (known_city_from_state(state) if use_context_store else "")
-    area = extract_store_area(content)
+    area = extract_store_area(content) or (known_store_area_from_history(state) if use_context_store else "")
     location_preference = store_location_preference_from_context(state)
     explicit_store = ""
     if use_context_store:
@@ -77,6 +77,38 @@ def known_store_name_from_history(state: AgentState) -> str:
         if not fallback:
             fallback = known_store_name_from_text(text)
     return fallback
+
+
+def known_store_area_from_history(state: AgentState) -> str:
+    for item in reversed(state.get("conversation_history", [])[-10:]):
+        if not _is_customer_history_item(item):
+            continue
+        area = extract_store_area(str(item))
+        if area:
+            return area
+    for event in reversed(state.get("history_events", [])[-10:]):
+        text = _json_dumps(event) if isinstance(event, dict) else str(event)
+        area = extract_store_area(text)
+        if area:
+            return area
+    return ""
+
+
+def _is_customer_history_item(item: object) -> bool:
+    if isinstance(item, dict):
+        role = str(item.get("role") or item.get("direction") or "").lower()
+        if role:
+            return role in {"user", "customer"}
+        sender = str(item.get("sender") or item.get("sender_type") or "").lower()
+        if sender:
+            return sender in {"user", "customer"}
+        return True
+    text = str(item or "").strip()
+    if text.startswith(("小贝：", "客服：", "AI回复：", "助手：")):
+        return False
+    if text.startswith(("客户：", "用户：")):
+        return True
+    return True
 
 
 def known_store_name_from_text(text: str) -> str:

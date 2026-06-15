@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from typing import Any, Callable
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
@@ -75,6 +76,7 @@ def create_execute_actions_node(
                     )
                     if distance_result:
                         tool_results["distance_lookup"] = distance_result
+                        _apply_distance_recommendation(tool_results.get("store_lookup"), distance_result)
                         tool_calls.append(
                             {
                                 "name": "distance_lookup",
@@ -126,6 +128,7 @@ def create_execute_actions_node(
                     )
                     if distance_result and "distance_lookup" not in tool_results:
                         tool_results["distance_lookup"] = distance_result
+                        _apply_distance_recommendation(tool_results.get("store_lookup"), distance_result)
                         tool_calls.append(
                             {
                                 "name": "distance_lookup",
@@ -392,7 +395,19 @@ async def _maybe_run_distance_lookup(
     }
     try:
         raw = await coze_client.run_workflow(workflow_id, payload)
+        code = raw.get("code") if isinstance(raw, dict) else None
         distances = _parse_distance_workflow_output(raw, candidates)
+        usable = [item for item in distances if str(item.get("distance_text") or "").strip()]
+        if code not in (None, 0) or not usable:
+            return {
+                "status": "error",
+                "source": "coze_distance_workflow",
+                "workflow_id": workflow_id,
+                "input": payload,
+                "distances": distances,
+                "raw": raw,
+                "error": f"distance_lookup_unavailable: code={code}",
+            }
         return {
             "status": "ok",
             "source": "coze_distance_workflow",
@@ -436,6 +451,42 @@ def _parse_distance_workflow_output(raw: dict[str, Any], candidates: list[dict[s
         ).strip()
         output.append({**candidate, "distance_text": distance_text})
     return output
+
+
+def _apply_distance_recommendation(store_lookup: Any, distance_result: dict[str, Any]) -> None:
+    if not isinstance(store_lookup, dict) or not isinstance(distance_result, dict):
+        return
+    distances = [item for item in (distance_result.get("distances") or []) if isinstance(item, dict)]
+    usable = [item for item in distances if str(item.get("distance_text") or "").strip()]
+    if not usable:
+        return
+    ranked = sorted(usable, key=lambda item: _distance_sort_key(str(item.get("distance_text") or "")))
+    recommended_distance = ranked[0]
+    stores = [item for item in (store_lookup.get("stores") or []) if isinstance(item, dict)]
+    recommended_name = str(recommended_distance.get("name") or "").strip()
+    recommended = next((item for item in stores if str(item.get("name") or "").strip() == recommended_name), {})
+    if not recommended:
+        recommended = {
+            "id": recommended_distance.get("id"),
+            "name": recommended_distance.get("name"),
+            "address": recommended_distance.get("address"),
+        }
+    recommended = dict(recommended)
+    recommended["distance_text"] = recommended_distance.get("distance_text")
+    recommended["distance"] = recommended_distance.get("distance_text")
+    store_lookup["recommended_store"] = recommended
+    store_lookup["recommendation_reason"] = f"距离查询结果显示{recommended.get('name') or '这家门店'}更适合优先推荐。"
+
+
+def _distance_sort_key(text: str) -> tuple[int, float, str]:
+    value = (text or "").strip().lower()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(km|公里|千米|m|米)", value)
+    if not match:
+        return (1, 999999.0, value)
+    number = float(match.group(1))
+    unit = match.group(2)
+    meters = number * 1000 if unit in {"km", "公里", "千米"} else number
+    return (0, meters, value)
 
 
 def _distance_raw_text(raw: dict[str, Any]) -> str:

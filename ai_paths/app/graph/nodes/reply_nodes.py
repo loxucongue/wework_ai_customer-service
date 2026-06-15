@@ -397,6 +397,15 @@ def _store_fact_text_fallback(state: AgentState) -> str:
     recommended = structured.get("recommended_store")
     store: dict[str, object] = recommended if isinstance(recommended, dict) and recommended else {}
     stores = structured.get("store_facts")
+    if _current_query_asks_nearest_store(state) and not _state_has_distance_facts(state):
+        city = str(status.get("city") or "").strip()
+        names: list[str] = []
+        if isinstance(stores, list):
+            names = [str(item.get("name") or "").strip() for item in stores if isinstance(item, dict) and item.get("name")]
+        if names:
+            prefix = f"{city}这边" if city else "这边"
+            return f"{prefix}我查到{ '、'.join(names[:3]) }，具体哪家离您更近我还需要继续核对距离。"
+        return "我正在帮您核对近一点的门店，具体距离以真实查询和导航为准。"
     if not store and isinstance(stores, list):
         for item in stores:
             if isinstance(item, dict) and (item.get("name") or item.get("address")):
@@ -429,3 +438,22 @@ def _store_fact_text_fallback(state: AgentState) -> str:
             return f"{city}这边我查了暂时没匹配到门店，我再帮您看近一点的可到门店。"
         return "这边我查了暂时没匹配到门店，我再帮您看近一点的可到门店。"
     return ""
+
+
+def _current_query_asks_nearest_store(state: AgentState) -> bool:
+    query = str(state.get("normalized_content") or "")
+    return any(term in query for term in ("哪家近", "离我近", "近一点", "最近", "附近哪家"))
+
+
+def _state_has_distance_facts(state: AgentState) -> bool:
+    fact_envelope = state.get("fact_envelope") if isinstance(state, dict) else {}
+    if not isinstance(fact_envelope, dict):
+        return False
+    structured = fact_envelope.get("structured_facts")
+    if not isinstance(structured, dict):
+        return False
+    for item in structured.get("distance_facts") or []:
+        if isinstance(item, dict) and str(item.get("distance_text") or "").strip():
+            return True
+    recommended = structured.get("recommended_store")
+    return isinstance(recommended, dict) and bool(str(recommended.get("distance") or "").strip())

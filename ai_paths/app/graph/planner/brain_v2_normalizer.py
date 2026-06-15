@@ -4,6 +4,12 @@ from typing import Any
 
 from app.graph.planner.planner_contract import ALLOWED_KBS, ALLOWED_TOOLS
 from app.graph.state import AgentState
+from app.graph.nodes.store_context import (
+    should_use_known_store_context,
+    should_use_recent_store_fact_context,
+    store_query_from_state,
+)
+from app.graph.signals.project import has_case_request
 from app.policies.sop_rules import normalize_sop_stage, normalize_sop_step
 
 
@@ -249,10 +255,11 @@ def _enforce_policy_required_tools(
         )
 
     def ensure_store_lookup(purpose: str) -> None:
+        query = store_query_from_state(original_user_query or fallback_query, state)
         add_tool(
             {
                 "name": "store_lookup",
-                "query": original_user_query or fallback_query,
+                "query": query or original_user_query or fallback_query,
                 "purpose": purpose,
             }
         )
@@ -266,6 +273,11 @@ def _enforce_policy_required_tools(
                 "purpose": "Need real case materials before answering effect or comparison requests",
             }
         )
+
+    if _needs_context_store_lookup(state, original_user_query):
+        ensure_store_lookup("Customer is asking for nearby or preferred store using recent city/area/landmark context")
+    if has_case_request(original_user_query):
+        ensure_case_studies()
 
     for task in tasks:
         task_type = str(task.get("type") or "").strip()
@@ -294,6 +306,14 @@ def _enforce_policy_required_tools(
             add_tool({"name": "professional_assist", "purpose": "Need professional colleague for complaint, refund, order/payment, or high-risk handling"})
 
     return _dedupe_tools(tools)
+
+
+def _needs_context_store_lookup(state: AgentState, content: str) -> bool:
+    if not content:
+        return False
+    if should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state):
+        return True
+    return False
 
 
 def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:
