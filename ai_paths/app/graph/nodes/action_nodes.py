@@ -144,6 +144,8 @@ def create_execute_actions_node(
                             )
                             available["store_name"] = appointment_query.get("store_name", "")
                             available["date"] = appointment_query.get("date", "")
+                            available["target_time"] = appointment_query.get("time", "") or appointment_query.get("time_text", "")
+                            available["query"] = content
                             tool_results["available_time"] = available
                             tool_calls.append(
                                 {

@@ -13,7 +13,7 @@ class PlatformAgentClient:
     """Typed wrapper around the current WeCom third-party platform APIs."""
 
     def __init__(self, settings: Settings) -> None:
-        self._base_url = str(settings.platform_agent_base_url).rstrip("/") + "/"
+        self._base_url = _normalize_platform_base_url(str(settings.platform_agent_base_url)).rstrip("/") + "/"
         self._token = settings.platform_agent_token
         self._request_from = settings.platform_agent_request_from
         self._timeout = float(settings.platform_agent_timeout_seconds)
@@ -264,6 +264,13 @@ class PlatformAgentClient:
             "token": self._token,
             "Request-From": self._request_from,
         }
+
+
+def _normalize_platform_base_url(value: str) -> str:
+    text = str(value or "").strip() or "https://www.henm.cn"
+    if "v2.henm.cn" in text:
+        return text.replace("v2.henm.cn", "www.henm.cn")
+    return text
 
 
 def unix_to_text(value: Any) -> str:

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services import store_text
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_catalog import StoreRecord
-from app.services import store_text
 
 
 def is_public_store(row: dict[str, Any]) -> bool:
@@ -28,23 +28,33 @@ def platform_store_to_dict(
     request_context: dict[str, Any],
 ) -> dict[str, Any]:
     store_id = str(row.get("id") or "")
-    info = {}
+    info: dict[str, Any] = {}
+    detail_error = ""
+    detail_source = "store_index_only"
     if store_id and platform_client and platform_client.available:
         try:
-            info = platform_client.store_info(store_id, request_context=request_context)
-        except Exception:
-            info = {}
+            raw_info = platform_client.store_info(store_id, request_context=request_context)
+            if isinstance(raw_info, dict):
+                info = raw_info
+                detail_source = "platform_agent.store_info"
+        except Exception as exc:
+            detail_error = f"{type(exc).__name__}: {exc}"
+
     parking = info.get("parking_info") if isinstance(info, dict) else {}
     if not isinstance(parking, dict):
         parking = {}
-    begin = row.get("business_hours_begin") or ""
-    end = row.get("business_hours_end") or ""
+
+    begin = info.get("business_hours_begin") or row.get("business_hours_begin") or ""
+    end = info.get("business_hours_end") or row.get("business_hours_end") or ""
+    address = info.get("tencent_address") or row.get("tencent_address") or row.get("address") or ""
+    map_url = info.get("tencent_map_store") or row.get("tencent_map_store") or row.get("map_store") or ""
+
     return {
         "id": store_id,
         "name": info.get("name") or row.get("name") or "",
         "city": store_text.city_from_row(row, info),
-        "address": info.get("tencent_address") or row.get("tencent_address") or row.get("address") or "",
-        "map_url": info.get("tencent_map_store") or row.get("tencent_map_store") or row.get("map_store") or "",
+        "address": address,
+        "map_url": map_url,
         "parking_name": parking.get("park_name") or "",
         "parking_address": parking.get("park_address") or "",
         "parking_link": parking.get("park_link") or "",
@@ -58,6 +68,10 @@ def platform_store_to_dict(
         "pause_end": row.get("pause_end") or "",
         "is_public": is_public_store(row),
         "status_summary": status_summary(row),
+        "detail_source": detail_source,
+        "detail_error": detail_error,
+        "has_detail": detail_source == "platform_agent.store_info",
+        "address_source": "platform_agent.store_info" if address and detail_source == "platform_agent.store_info" else "store_index",
     }
 
 
@@ -75,14 +89,14 @@ def status_summary(row: dict[str, Any]) -> str:
     pause_end = str(row.get("pause_end") or "").strip()
     if is_pause == 1:
         if pause_start or pause_end:
-            return f"门店当前有暂停标记，暂停时间：{pause_start or '未写明'}-{pause_end or '未写明'}"
+            return f"门店当前有暂停标记，暂停时间：{pause_start or '未填写'}-{pause_end or '未填写'}"
         return "门店当前有暂停标记"
     if status == 0:
         return "门店当前不是正常启用状态"
     if shore_show not in (-1, 1):
         return "门店当前不是常规对外展示状态"
     if status == 1:
-        return "门店当前资料状态为正常"
+        return "门店当前资料状态正常"
     return ""
 
 
@@ -99,4 +113,8 @@ def store_record_to_dict(store: StoreRecord) -> dict[str, Any]:
         "business_hours": store.business_hours,
         "status_summary": store.status_summary,
         "is_public": store.is_public,
+        "detail_source": "local_store_fallback",
+        "detail_error": "",
+        "has_detail": False,
+        "address_source": "local_store_fallback",
     }

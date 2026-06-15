@@ -84,13 +84,14 @@ def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
         name = str(item.get("name") or "").strip()
         if name not in ALLOWED_TOOLS:
             continue
-        tool = {"name": name, "purpose": str(item.get("purpose") or "").strip()}
         kb_name = str(item.get("kb_name") or "").strip()
-        if kb_name:
-            if name != "kb_search" or kb_name not in ALLOWED_KBS:
-                continue
-            tool["kb_name"] = kb_name
         query = str(item.get("query") or "").strip()
+        if name == "kb_search":
+            if kb_name not in ALLOWED_KBS or not query:
+                continue
+        tool = {"name": name, "purpose": str(item.get("purpose") or "").strip()}
+        if kb_name:
+            tool["kb_name"] = kb_name
         if query:
             tool["query"] = query
         tools.append(tool)
@@ -114,16 +115,16 @@ def enforce_required_tools(
     def add_tool(tool: dict[str, Any]) -> None:
         name = str(tool.get("name") or "").strip()
         kb_name = str(tool.get("kb_name") or "").strip()
+        query = str(tool.get("query") or "").strip()
         if name not in ALLOWED_TOOLS:
             return
-        if name == "kb_search" and kb_name not in ALLOWED_KBS:
+        if name == "kb_search" and (kb_name not in ALLOWED_KBS or not query):
             return
         for existing in tools:
             if str(existing.get("name") or "").strip() != name:
                 continue
             if kb_name and str(existing.get("kb_name") or "").strip() != kb_name:
                 continue
-            query = str(tool.get("query") or "").strip()
             purpose = str(tool.get("purpose") or "").strip()
             if query and (name == "store_lookup" or not str(existing.get("query") or "").strip()):
                 existing["query"] = query
@@ -133,7 +134,6 @@ def enforce_required_tools(
         normalized = {"name": name, "purpose": str(tool.get("purpose") or "").strip()}
         if kb_name:
             normalized["kb_name"] = kb_name
-        query = str(tool.get("query") or "").strip()
         if query:
             normalized["query"] = query
         tools.append(normalized)
@@ -276,8 +276,12 @@ def dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         name = str(item.get("name") or "").strip()
         kb_name = str(item.get("kb_name") or "").strip()
         query = str(item.get("query") or "").strip()
+        if name not in ALLOWED_TOOLS:
+            continue
+        if name == "kb_search" and (kb_name not in ALLOWED_KBS or not query):
+            continue
         key = (name, kb_name, query)
-        if name not in ALLOWED_TOOLS or key in seen:
+        if key in seen:
             continue
         seen.add(key)
         normalized = {"name": name, "purpose": str(item.get("purpose") or "").strip()}

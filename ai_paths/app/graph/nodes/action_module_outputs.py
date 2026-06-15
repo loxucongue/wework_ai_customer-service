@@ -4,6 +4,7 @@ import html
 import re
 from typing import Any
 
+from app.graph.nodes.appointment_time_utils import target_time_status
 from app.graph.nodes.common import clean_model_text
 from app.graph.state import AgentState
 from app.policies.s10_offer import attach_s10_offer_facts
@@ -58,6 +59,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "has_city_store_candidates": bool(value.get("has_city_store_candidates")),
                 "needs_area_or_landmark": bool(value.get("needs_area_or_landmark")),
                 "no_store_match_confirmed": bool(not stores and not missing and not platform_error),
+                "detail_lookup_required": bool(stores),
             }
             if stores:
                 structured_facts["store_facts"] = [
@@ -66,7 +68,15 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                         "name": str(item.get("name") or ""),
                         "address": str(item.get("address") or ""),
                         "business_hours": str(item.get("business_hours") or item.get("business_hours_text") or ""),
-                        "parking": str(item.get("parking") or item.get("parking_info") or ""),
+                        "map_url": str(item.get("map_url") or ""),
+                        "parking_name": str(item.get("parking_name") or ""),
+                        "parking_address": str(item.get("parking_address") or ""),
+                        "parking_link": str(item.get("parking_link") or ""),
+                        "parking": str(item.get("parking") or item.get("parking_info") or item.get("parking_address") or ""),
+                        "detail_source": str(item.get("detail_source") or ""),
+                        "detail_error": str(item.get("detail_error") or "")[:180],
+                        "has_detail": bool(item.get("has_detail")),
+                        "address_source": str(item.get("address_source") or ""),
                     }
                     for item in stores[:5]
                     if isinstance(item, dict)
@@ -93,6 +103,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 )
             if platform_error and not stores:
                 unsupported_claims.append("store_lookup incomplete")
+            if stores and not any(item.get("has_detail") for item in stores if isinstance(item, dict)):
+                unsupported_claims.append("store details unavailable")
             missing_slots.extend(missing)
             continue
 
@@ -117,15 +129,26 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     )
             if value.get("error"):
                 unsupported_claims.append("distance_lookup unavailable")
+            if not structured_facts["distance_facts"] and not value.get("error"):
+                unsupported_claims.append("distance_lookup unavailable")
             continue
 
         if key == "available_time":
+            time_status = target_time_status(
+                value.get("slots") if isinstance(value.get("slots"), dict) else {},
+                str(value.get("target_time") or ""),
+                str(value.get("query") or ""),
+            )
             appointment_fact = {
                 "type": "available_time",
                 "store": value.get("store_name") or value.get("store_id") or "",
                 "date": value.get("date") or "",
                 "slots": value.get("slots") or {},
                 "missing": value.get("missing") or [],
+                "target_time": time_status.get("target_time") or "",
+                "target_time_available": time_status.get("target_time_available"),
+                "available_times": time_status.get("available_times") or [],
+                "nearby_times": time_status.get("nearby_times") or [],
             }
             structured_facts["appointment_facts"].append(appointment_fact)
             facts.append(

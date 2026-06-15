@@ -158,6 +158,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 # 事实边界
 - 价格、活动、定金、尾款：必须来自 active_offer_context 或 price_facts。
 - 门店地址、营业时间、停车、距离、最近门店：必须来自 store_facts / recommended_store / store_lookup_status。
+- 具体地址、导航链接、停车信息优先使用 detail_source=platform_agent.store_info 且 has_detail=true 的门店详情事实；如果只有列表事实或详情失败，不要补充细地址/导航。
 - 如果 store_lookup_status.needs_area_or_landmark=true，说明客户只给了城市；这时禁止输出具体门店事实，必须追问区/地标/机场/商圈。
 - 如果 store_lookup_status.no_store_match_confirmed=true，说明该城市暂未匹配本地门店；不要编推荐，询问客户是否接受邻近城市或换一个常去城市。
 - 距离、最近、路线优先级必须来自 distance_facts；没有 distance_facts 时不要说“最近”，只能说“按地址看更方便/具体以导航为准”。

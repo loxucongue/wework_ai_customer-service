@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     memory_dir: Path = Path("logs/memory")
     pricing_xlsx_path: Path = Path("projects/public/items_pricing_system.xlsx")
     db_path: Path = Field(default=Path("data/ai_paths.db"), alias="AI_PATHS_DB_PATH")
-    platform_agent_base_url: str = "https://v2.henm.cn"
+    platform_agent_base_url: str = "https://www.henm.cn"
     platform_agent_token: str = Field(default="", repr=False)
     platform_agent_request_from: str = "platform_agent"
     platform_agent_timeout_seconds: int = 12

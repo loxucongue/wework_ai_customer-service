@@ -19,7 +19,7 @@ class StoreService:
         self._platform_client = platform_client
         self._stores = local_store_records()
 
-    def search(self, query: str, *, customer_context: dict[str, Any] | None = None, limit: int = 3) -> dict[str, Any]:
+    def search(self, query: str, *, customer_context: dict[str, Any] | None = None, limit: int = 8) -> dict[str, Any]:
         query_info = build_store_query_info(query, self._stores)
         if store_text.needs_city_before_lookup(
             query_info.query,
@@ -69,6 +69,8 @@ class StoreService:
                     with_location_recommendation(platform_result, query_info.location_preference),
                     query_info=query_info,
                 )
+            if platform_result.get("source") == "platform_agent.store_index_missing_params":
+                return _apply_location_gate(platform_result, query_info=query_info)
 
         candidates = self._stores
         if query_info.requested_name:
@@ -108,16 +110,34 @@ class StoreService:
         if not self._platform_client or not self._platform_client.available:
             return {}
         platform_context = store_platform_context(customer_context)
-        if platform_context.customer_id and platform_context.customer_add_wechat_id:
-            rows = self._platform_client.list_stores(
-                customer_id=platform_context.customer_id,
-                customer_add_wechat_id=platform_context.customer_add_wechat_id,
-                request_context=platform_context.request_context,
-            )
-            source = "platform_agent.store_index"
-        else:
-            rows = self._platform_client.list_store_options(request_context=platform_context.request_context)
-            source = "platform_agent.option_store"
+        missing_params: list[str] = []
+        if not platform_context.customer_id:
+            missing_params.append("customer_id")
+        if not platform_context.customer_add_wechat_id:
+            missing_params.append("customer_add_wechat_id")
+        if missing_params:
+            query_info = build_store_query_info(query, self._stores)
+            return {
+                "query": query,
+                "city": query_info.city,
+                "requested_store": query_info.requested_name,
+                "wants_parking": query_info.wants_parking,
+                "wants_route": query_info.wants_route,
+                "wants_status": query_info.wants_status,
+                "area_or_landmark": query_info.area_or_landmark,
+                "location_granularity": query_info.location_granularity,
+                "stores": [],
+                "missing": missing_params,
+                "source": "platform_agent.store_index_missing_params",
+                "platform_error": "store/index requires customer_id and customer_add_wechat_id",
+            }
+
+        rows = self._platform_client.list_stores(
+            customer_id=platform_context.customer_id,
+            customer_add_wechat_id=platform_context.customer_add_wechat_id,
+            request_context=platform_context.request_context,
+        )
+        source = "platform_agent.store_index"
         query_info = build_store_query_info(query, self._stores)
         requested_name = query_info.requested_name
         city = query_info.city or store_text.city_for_store_name(requested_name, self._stores)
