@@ -76,6 +76,9 @@ def extract_store_name(query: str, stores: list[StoreRecord]) -> str:
         return f"{city}百星"
     for alias, name in QUERY_STORE_ALIASES.items():
         if alias in query:
+            alias_city = city_for_store_name(name, stores)
+            if city and alias_city and city != alias_city:
+                continue
             return name
     return ""
 

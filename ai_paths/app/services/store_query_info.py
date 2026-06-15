@@ -21,10 +21,15 @@ class StoreQueryInfo:
 
 def build_store_query_info(query: str, stores: list[StoreRecord]) -> StoreQueryInfo:
     cleaned_query = (query or "").strip()
+    city = store_text.extract_city(cleaned_query, stores)
+    requested_name = store_text.extract_store_name(cleaned_query, stores)
+    requested_city = store_text.city_for_store_name(requested_name, stores)
+    if city and requested_city and city != requested_city:
+        requested_name = ""
     return StoreQueryInfo(
         query=cleaned_query,
-        city=store_text.extract_city(cleaned_query, stores),
-        requested_name=store_text.extract_store_name(cleaned_query, stores),
+        city=city,
+        requested_name=requested_name,
         area_or_landmark=store_text.extract_area_or_landmark(cleaned_query),
         location_granularity=store_text.location_granularity(cleaned_query, stores),
         location_preference=store_text.extract_location_preference(cleaned_query),

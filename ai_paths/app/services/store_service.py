@@ -79,6 +79,8 @@ class StoreService:
             candidates = [store for store in candidates if store.city == query_info.city and store.is_public]
 
         stores = [store_format.store_record_to_dict(store) for store in candidates[:limit]]
+        if query_info.city:
+            stores = [store for store in stores if store_text.store_matches_city(store, query_info.city)]
         result = {
             "query": query_info.query,
             "city": query_info.city,
