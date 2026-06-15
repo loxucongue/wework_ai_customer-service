@@ -27,14 +27,21 @@ def base_url(settings: Settings) -> str:
 def model_name(settings: Settings, tier: ModelTier) -> str:
     if tier == "vision":
         return settings.model_vision
+    if tier == "strong":
+        return settings.model_strong or settings.model_balanced or settings.model_fast
+    if tier == "balanced":
+        return settings.model_balanced or settings.model_fast
     return settings.model_fast
 
 
 def model_names(settings: Settings, tier: ModelTier) -> list[str]:
     primary = model_name(settings, tier)
-    if tier != "vision":
-        return [primary]
-    fallback_text = settings.model_vision_fallbacks
+    fallback_text = {
+        "fast": settings.model_fast_fallbacks,
+        "balanced": settings.model_balanced_fallbacks,
+        "strong": settings.model_strong_fallbacks,
+        "vision": settings.model_vision_fallbacks,
+    }.get(tier, "")
     models = [primary]
     for name in split_models(fallback_text):
         if name and name not in models:

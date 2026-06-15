@@ -35,6 +35,7 @@ def create_synthesize_reply_node(
             reply_source = "main_model"
             repair_attempted = False
             text_rescue_attempted = False
+            pending_model_errors: list[dict[str, Any]] = []
 
             try:
                 if not (model_client and model_client.available and should_use_model_reply(state)):
@@ -77,7 +78,7 @@ def create_synthesize_reply_node(
                 model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
                 primary_error = f"{type(exc).__name__}: {exc}"
                 model_call["error"] = primary_error
-                errors.append(
+                pending_model_errors.append(
                     {
                         "node": "synthesize_reply",
                         "message": "final_reply_model_failed",
@@ -151,17 +152,24 @@ def create_synthesize_reply_node(
                     model_call["fallback"] = "text_rescue_model_reply"
 
             if not _has_customer_visible_text(messages):
+                errors.extend(pending_model_errors)
                 errors.append({"node": "synthesize_reply", "message": "customer_visible_reply_unavailable"})
                 messages, reply_source = _safe_visible_fallback_messages(state)
 
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
+            recovered_errors = []
+            if pending_model_errors and reply_source in {"repair_model", "text_rescue_model"}:
+                recovered_errors = pending_model_errors
+            elif pending_model_errors and reply_source in {"safe_text_fallback", "safe_handoff_fallback"}:
+                errors.extend(error for error in pending_model_errors if error not in errors)
             output = {
                 "reply_messages": messages,
                 "reply_source": reply_source,
                 "postprocess_changed": bool(state.get("postprocess_changed")),
                 "postprocess_reasons": state.get("postprocess_reasons", []),
                 "errors": errors,
+                "recovered_errors": recovered_errors,
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output
