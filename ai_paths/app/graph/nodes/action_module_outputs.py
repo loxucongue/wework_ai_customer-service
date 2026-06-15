@@ -86,10 +86,30 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     facts.append(f"store_lookup: matched_stores={', '.join(names)}")
             recommended = value.get("recommended_store") or {}
             if isinstance(recommended, dict) and recommended:
+                store_facts = structured_facts.get("store_facts") if isinstance(structured_facts.get("store_facts"), list) else []
+                matched_store = next(
+                    (
+                        item
+                        for item in store_facts
+                        if isinstance(item, dict)
+                        and (
+                            str(item.get("id") or "") == str(recommended.get("id") or recommended.get("store_id") or "")
+                            or str(item.get("name") or "") == str(recommended.get("name") or "")
+                        )
+                    ),
+                    {},
+                )
                 structured_facts["recommended_store"] = {
                     "id": str(recommended.get("id") or recommended.get("store_id") or ""),
                     "name": str(recommended.get("name") or ""),
                     "address": str(recommended.get("address") or ""),
+                    "business_hours": str(recommended.get("business_hours") or matched_store.get("business_hours") or ""),
+                    "map_url": str(recommended.get("map_url") or matched_store.get("map_url") or ""),
+                    "parking_name": str(recommended.get("parking_name") or matched_store.get("parking_name") or ""),
+                    "parking_address": str(recommended.get("parking_address") or matched_store.get("parking_address") or ""),
+                    "parking_link": str(recommended.get("parking_link") or matched_store.get("parking_link") or ""),
+                    "detail_source": str(recommended.get("detail_source") or matched_store.get("detail_source") or ""),
+                    "has_detail": bool(recommended.get("has_detail") or matched_store.get("has_detail")),
                     "reason": str(recommended.get("reason") or value.get("recommend_reason") or ""),
                 }
                 facts.append(

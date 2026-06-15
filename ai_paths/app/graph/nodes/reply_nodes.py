@@ -252,6 +252,10 @@ def _store_fact_text_fallback(state: AgentState) -> str:
         name = str(store.get("name") or "").strip()
         address = str(store.get("address") or "").strip()
         hours = str(store.get("business_hours") or "").strip()
+        map_url = str(store.get("map_url") or "").strip()
+        parking_name = str(store.get("parking_name") or "").strip()
+        parking_address = str(store.get("parking_address") or "").strip()
+        parking_link = str(store.get("parking_link") or "").strip()
         location_preference = str(status.get("location_preference") or "").strip()
         if location_preference:
             prefix = f"按您说的{location_preference}，"
@@ -266,6 +270,13 @@ def _store_fact_text_fallback(state: AgentState) -> str:
             parts.append(f"{prefix}我查到门店地址在{address}")
         if hours:
             parts.append(f"营业时间{hours}")
+        if _current_query_asks_navigation(state) and map_url:
+            parts.append(f"导航链接：{map_url}")
+        if _current_query_asks_parking(state):
+            if parking_name or parking_address:
+                parts.append(f"停车可以看{parking_name or parking_address}")
+            if parking_link:
+                parts.append(f"停车导航：{parking_link}")
         text = "，".join(parts).strip("，")
         if text:
             return f"{text}，具体距离以导航为准。"
@@ -280,6 +291,16 @@ def _store_fact_text_fallback(state: AgentState) -> str:
 def _current_query_asks_nearest_store(state: AgentState) -> bool:
     query = str(state.get("normalized_content") or "")
     return any(term in query for term in ("哪家近", "离我近", "近一点", "最近", "附近哪家"))
+
+
+def _current_query_asks_navigation(state: AgentState) -> bool:
+    query = str(state.get("normalized_content") or "")
+    return any(term in query for term in ("导航", "路线", "怎么去", "地址发", "位置发", "发我", "定位"))
+
+
+def _current_query_asks_parking(state: AgentState) -> bool:
+    query = str(state.get("normalized_content") or "")
+    return any(term in query for term in ("停车", "停车场", "车位"))
 
 
 def _state_has_distance_facts(state: AgentState) -> bool:
