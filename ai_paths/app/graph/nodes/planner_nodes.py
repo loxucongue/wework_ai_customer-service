@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from app.graph.nodes.common import model_usage_snapshot
-from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_planner_brain_v2, safety_fallback_plan
+from app.graph.planner.brain_v2 import run_planner_brain_v2, safety_fallback_plan
 from app.graph.state import AgentState
 from app.policies.sop_rules import compact_sop_stage_rules_for_reply, normalize_sop_stage, normalize_sop_step
 from app.policies.rule_catalog import policy_selection_from_task
@@ -41,9 +41,9 @@ def create_planner_brain_node(
                 elif model_client and model_client.available:
                     plan, planner_call = await run_planner_brain_v2(state, model_client)
                 else:
-                    plan = planner_unavailable_fallback_plan(state)
+                    plan = safety_fallback_plan(state)
                     planner_call = {
-                        "name": "planner_brain_model_unavailable_fallback",
+                        "name": "planner_brain_model_unavailable_safety_plan",
                         "input": {},
                         "output": {
                             "primary_task": plan.get("primary_task", {}).get("type", ""),
@@ -52,7 +52,7 @@ def create_planner_brain_node(
                         },
                     }
             except Exception as exc:
-                plan = planner_unavailable_fallback_plan(state)
+                plan = safety_fallback_plan(state)
                 planner_call = planner_call or {"name": "planner_brain_v2", "input": {}}
                 planner_call["error"] = f"{type(exc).__name__}: {exc}"
                 if model_client and model_client.available:

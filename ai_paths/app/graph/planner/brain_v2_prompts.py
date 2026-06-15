@@ -77,7 +77,7 @@ S4_FOLLOWUP_REACTIVATE：第四阶段，回访 / 逼单 / 已邀约 / 售后
 - no_tool：寒暄、简单承接，且不需要外部事实。
 
 停用工具/库：
-- 不规划 project_price、pricing_db、local_pricing、competitor_qa、after_sales_qa。
+- 不规划 project_price、pricing_db、local_pricing、project_qa、competitor_qa、after_sales_qa。
 - 当前只承接S10周年庆淡斑活动；价格和活动规则来自 active_offer_context。
 - 普通销售表达查 sales_talk_qa；案例图片查 case_studies。
 
@@ -194,10 +194,10 @@ PLANNER_REPAIR_PROMPT = """
 - 保持四阶段SOP判断，不要回到过细规则机器人。
 - 缺少门店事实时补 store_lookup。
 - 缺少案例事实时补 kb_search(case_studies)。
-- 价格/活动不要补 pricing_rules；使用 active_offer_context。
+- 价格/活动不要补任何价格工具；使用 active_offer_context。
 - 普通话术参考补 kb_search(sales_talk_qa)。
 - 真实投诉、退款、付款订单异常补 professional_assist。
-- 不得返回停用工具：project_price、pricing_db、local_pricing、competitor_qa、after_sales_qa。
+- 不得返回停用工具或旧知识库：project_price、pricing_db、local_pricing、project_qa、competitor_qa、after_sales_qa。
 
 只返回合法JSON。
 """.strip()

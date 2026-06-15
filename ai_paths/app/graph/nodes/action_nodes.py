@@ -15,7 +15,6 @@ from app.graph.planner.runtime_plan import (
 from app.graph.state import AgentState
 from app.services.appointment_opening_service import AppointmentOpeningService
 from app.services.coze_client import CozeClient
-from app.services.pricing_rules_repository import PricingRulesRepository
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -24,7 +23,6 @@ def create_execute_actions_node(
     *,
     coze_client: CozeClient,
     trace_logger: TraceLogger,
-    pricing_rules_repository: PricingRulesRepository | None,
     store_service: StoreService | None,
     appointment_opening_service: AppointmentOpeningService | None,
     appointment_query_from_state: Callable[[str, dict[str, Any], AgentState], dict[str, Any]],
@@ -204,27 +202,6 @@ def create_execute_actions_node(
                     tool_calls=tool_calls,
                 )
 
-            if _needs_pricing_rules(required_tools) and pricing_rules_repository:
-                pricing_query = _planned_tool_query(required_tools, "pricing_rules")
-                if pricing_query:
-                    local_call = {"name": "pricing_rules", "input": {"query": pricing_query, "planned": True}}
-                    try:
-                        local_rows = pricing_rules_repository.search(pricing_query)
-                        tool_results["pricing_rules"] = {"rows": local_rows}
-                        local_call["output"] = {"rows": len(local_rows)}
-                    except Exception as exc:
-                        local_call["error"] = f"{type(exc).__name__}: {exc}"
-                        tool_results["pricing_rules"] = {"rows": [], "error": local_call["error"]}
-                    tool_calls.append(local_call)
-                else:
-                    _record_tool_argument_error(
-                        tool_results=tool_results,
-                        tool_calls=tool_calls,
-                        key="pricing_rules",
-                        error="missing_planner_query",
-                        tool_input={"name": "pricing_rules", "query": "", "planned": True},
-                    )
-
             planner_fact_output = build_planner_fact_output(tool_results, state)
             fact_envelope = dict(planner_fact_output.get("fact_envelope") or {})
 
@@ -289,9 +266,6 @@ def _queue_planned_tool_tasks(
         }
         tool_tasks.append((kb_name, call, coze_client.search_kb(kb_name, query)))
         return
-    if name == "pricing_rules":
-        return
-
 
 def _record_tool_argument_error(
     *,
@@ -346,10 +320,6 @@ def _needs_appointment_create(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "appointment_create" for item in required_tools if isinstance(item, dict))
 
 
-def _needs_pricing_rules(required_tools: list[dict[str, Any]]) -> bool:
-    return any(str(item.get("name") or "") == "pricing_rules" for item in required_tools if isinstance(item, dict))
-
-
 def _planned_tool_query(required_tools: list[dict[str, Any]], tool_name: str) -> str:
     for item in required_tools:
         if not isinstance(item, dict) or str(item.get("name") or "").strip() != tool_name:
@@ -388,68 +358,98 @@ async def _maybe_run_distance_lookup(
     ]
     if not candidates:
         return {}
-    payload = {
-        "origin": origin,
-        "destinations": candidates,
-        "query": store_query,
-    }
+    requests = [
+        {
+            "candidate": candidate,
+            "payload": {
+                "origin": origin,
+                "destination": _distance_destination_text(candidate),
+            },
+        }
+        for candidate in candidates
+    ]
     try:
-        raw = await coze_client.run_workflow(workflow_id, payload)
-        code = raw.get("code") if isinstance(raw, dict) else None
-        distances = _parse_distance_workflow_output(raw, candidates)
+        raw_results = await asyncio.gather(
+            *(coze_client.run_workflow(workflow_id, item["payload"]) for item in requests),
+            return_exceptions=True,
+        )
+        distances = _parse_distance_workflow_output(raw_results, requests)
         usable = [item for item in distances if str(item.get("distance_text") or "").strip()]
-        if code not in (None, 0) or not usable:
+        raw_entries = [
+            {
+                "candidate": item["candidate"],
+                "payload": item["payload"],
+                "raw": _distance_error_payload(result)
+                if isinstance(result, Exception)
+                else result,
+            }
+            for item, result in zip(requests, raw_results, strict=False)
+        ]
+        if not usable:
             return {
                 "status": "error",
                 "source": "coze_distance_workflow",
                 "workflow_id": workflow_id,
-                "input": payload,
+                "input": {"origin": origin, "requests": [item["payload"] for item in requests], "query": store_query},
                 "distances": distances,
-                "raw": raw,
-                "error": f"distance_lookup_unavailable: code={code}",
+                "raw": raw_entries,
+                "error": "distance_lookup_unavailable",
             }
         return {
             "status": "ok",
             "source": "coze_distance_workflow",
             "workflow_id": workflow_id,
-            "input": payload,
+            "input": {"origin": origin, "requests": [item["payload"] for item in requests], "query": store_query},
             "distances": distances,
-            "raw": raw,
+            "raw": raw_entries,
         }
     except Exception as exc:
         return {
             "status": "error",
             "source": "coze_distance_workflow",
             "workflow_id": workflow_id,
-            "input": payload,
+            "input": {"origin": origin, "requests": [item["payload"] for item in requests], "query": store_query},
             "error": f"{type(exc).__name__}: {exc}",
         }
 
 
-def _parse_distance_workflow_output(raw: dict[str, Any], candidates: list[dict[str, str]]) -> list[dict[str, str]]:
-    text = _distance_raw_text(raw)
-    parsed = _json_object_from_text(text)
-    rows: list[Any] = []
-    if isinstance(parsed, dict):
-        for key in ("distances", "results", "outputList", "output_list"):
-            value = parsed.get(key)
-            if isinstance(value, list):
-                rows = value
-                break
-    elif isinstance(parsed, list):
-        rows = parsed
-    output: list[dict[str, str]] = []
-    for index, candidate in enumerate(candidates):
-        row = rows[index] if index < len(rows) and isinstance(rows[index], dict) else {}
-        distance_text = str(
-            row.get("distance")
-            or row.get("distance_text")
-            or row.get("route_distance")
-            or row.get("duration")
-            or row.get("walk_time")
-            or ""
-        ).strip()
-        output.append({**candidate, "distance_text": distance_text})
+def _parse_distance_workflow_output(
+    raw_results: list[Any],
+    requests: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for request_item, raw in zip(requests, raw_results, strict=False):
+        candidate = request_item["candidate"]
+        if isinstance(raw, Exception):
+            output.append(
+                {
+                    **candidate,
+                    "distance_text": "",
+                    "distance_meters": None,
+                    "duration_text": "",
+                    "duration_seconds": None,
+                    "status": "0",
+                    "info": f"{type(raw).__name__}: {raw}",
+                    "infocode": "",
+                }
+            )
+            continue
+        parsed = _distance_output_object(raw if isinstance(raw, dict) else {})
+        distance_meters = _distance_meters(parsed)
+        duration_seconds = _duration_seconds(parsed)
+        output.append(
+            {
+                **candidate,
+                "distance_text": _format_distance_text(parsed, distance_meters),
+                "distance_meters": distance_meters,
+                "duration_text": _format_duration_text(parsed, duration_seconds),
+                "duration_seconds": duration_seconds,
+                "status": str(parsed.get("status") or ""),
+                "info": str(parsed.get("info") or ""),
+                "infocode": str(parsed.get("infocode") or ""),
+                "raw_output": parsed,
+            }
+        )
     return output
 
 
@@ -460,7 +460,13 @@ def _apply_distance_recommendation(store_lookup: Any, distance_result: dict[str,
     usable = [item for item in distances if str(item.get("distance_text") or "").strip()]
     if not usable:
         return
-    ranked = sorted(usable, key=lambda item: _distance_sort_key(str(item.get("distance_text") or "")))
+    ranked = sorted(
+        usable,
+        key=lambda item: _distance_sort_key(
+            text=str(item.get("distance_text") or ""),
+            meters=item.get("distance_meters"),
+        ),
+    )
     recommended_distance = ranked[0]
     stores = [item for item in (store_lookup.get("stores") or []) if isinstance(item, dict)]
     recommended_name = str(recommended_distance.get("name") or "").strip()
@@ -478,7 +484,9 @@ def _apply_distance_recommendation(store_lookup: Any, distance_result: dict[str,
     store_lookup["recommendation_reason"] = f"距离查询结果显示{recommended.get('name') or '这家门店'}更适合优先推荐。"
 
 
-def _distance_sort_key(text: str) -> tuple[int, float, str]:
+def _distance_sort_key(text: str, meters: Any = None) -> tuple[int, float, str]:
+    if isinstance(meters, (int, float)) and meters >= 0:
+        return (0, float(meters), (text or "").strip().lower())
     value = (text or "").strip().lower()
     match = re.search(r"(\d+(?:\.\d+)?)\s*(km|公里|千米|m|米)", value)
     if not match:
@@ -506,3 +514,103 @@ def _json_object_from_text(text: str) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return {}
+
+
+def _distance_destination_text(candidate: dict[str, str]) -> str:
+    address = str(candidate.get("address") or "").strip()
+    name = str(candidate.get("name") or "").strip()
+    return address or name
+
+
+def _distance_error_payload(exc: Exception) -> dict[str, Any]:
+    return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def _distance_output_object(raw: dict[str, Any]) -> dict[str, Any]:
+    payload = _distance_parse_data(raw)
+    if isinstance(payload, dict):
+        output = payload.get("output")
+        if isinstance(output, dict):
+            return output
+        if isinstance(output, str):
+            parsed_output = _json_object_from_text(output)
+            if isinstance(parsed_output, dict):
+                return parsed_output
+        return payload
+    return {}
+
+
+def _distance_parse_data(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    data = raw.get("data")
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, str) and data.strip():
+        parsed = _json_object_from_text(data)
+        if isinstance(parsed, dict):
+            return parsed
+    return raw
+
+
+def _distance_meters(payload: dict[str, Any]) -> int | None:
+    for key in ("distance", "route_distance", "distance_meters"):
+        value = payload.get(key)
+        meters = _int_from_value(value)
+        if meters is not None:
+            return meters
+    return None
+
+
+def _duration_seconds(payload: dict[str, Any]) -> int | None:
+    for key in ("duration", "duration_seconds", "route_duration"):
+        value = payload.get(key)
+        seconds = _int_from_value(value)
+        if seconds is not None:
+            return seconds
+    return None
+
+
+def _int_from_value(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value or "").strip()
+    if not text:
+        return None
+    match = re.search(r"\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+    try:
+        return int(float(match.group(0)))
+    except ValueError:
+        return None
+
+
+def _format_distance_text(payload: dict[str, Any], meters: int | None) -> str:
+    existing = str(payload.get("distance_text") or "").strip()
+    if existing:
+        return existing
+    if meters is None:
+        return ""
+    if meters >= 1000:
+        km = meters / 1000
+        return f"{km:.1f}公里" if km % 1 else f"{int(km)}公里"
+    return f"{meters}米"
+
+
+def _format_duration_text(payload: dict[str, Any], seconds: int | None) -> str:
+    existing = str(payload.get("duration_text") or "").strip()
+    if existing:
+        return existing
+    if seconds is None:
+        return ""
+    minutes = max(1, round(seconds / 60))
+    if minutes >= 60:
+        hours = minutes // 60
+        remain = minutes % 60
+        return f"{hours}小时{remain}分钟" if remain else f"{hours}小时"
+    return f"{minutes}分钟"

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 ALLOWED_TOOLS = (
     "kb_search",
-    "pricing_rules",
     "store_lookup",
     "available_time",
     "appointment_record_query",
@@ -13,7 +12,6 @@ ALLOWED_TOOLS = (
 )
 
 ALLOWED_KBS = (
-    "project_qa",
     "sales_talk_qa",
     "case_studies",
 )

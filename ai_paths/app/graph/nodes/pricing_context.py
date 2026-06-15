@@ -21,14 +21,6 @@ def is_broad_price_category(project: str) -> bool:
     }
 
 
-def pricing_sql_for_project(project: str) -> str:
-    # Historical compatibility only. Runtime pricing now uses pricing_rules.
-    if not project:
-        return "SELECT * FROM items_pricing_system WHERE 1=0"
-    escaped = project.replace("'", "''")
-    return f"SELECT * FROM items_pricing_system WHERE project_name LIKE '%{escaped}%' AND status='true' ORDER BY id LIMIT 10"
-
-
 def extract_project(content: str) -> str:
     for word in PROJECT_KEYWORDS:
         if word in content:

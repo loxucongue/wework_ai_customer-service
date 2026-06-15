@@ -3,10 +3,10 @@ from __future__ import annotations
 from typing import Callable
 
 from app.graph.nodes.common import clean_model_text, dedupe_strings
+from app.graph.nodes.case_context import case_request_lacks_specific_context
 from app.graph.nodes.image_info import has_image_concern
 from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.profile_update_summary import decision_stage, intent_level, profile_summary
-from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.store_context import extract_city
 from app.graph.planner.runtime_plan import planner_task_views
 from app.graph.state import AgentState

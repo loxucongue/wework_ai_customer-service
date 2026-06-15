@@ -13,7 +13,6 @@ from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
 from app.services.appointment_opening_service import AppointmentOpeningService
 from app.services.platform_agent_client import PlatformAgentClient
-from app.services.pricing_rules_repository import PricingRulesRepository
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
@@ -30,7 +29,6 @@ repository = AppRepository(sqlite_store)
 coze_client = CozeClient(settings)
 model_client = ModelClient(settings)
 memory_store = CustomerMemoryStore(settings, repository)
-pricing_rules_repository = PricingRulesRepository(sqlite_store)
 platform_agent_client = PlatformAgentClient(settings)
 customer_context_service = CustomerContextService(platform_agent_client)
 store_service = StoreService(platform_agent_client)
@@ -40,7 +38,6 @@ compiled_graph = build_graph(
     trace_logger,
     model_client,
     memory_store,
-    pricing_rules_repository,
     customer_context_service,
     store_service,
     appointment_opening_service,

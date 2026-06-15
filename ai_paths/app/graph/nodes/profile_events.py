@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Callable
 
 from app.graph.nodes.common import clean_model_value
+from app.graph.nodes.case_context import case_request_lacks_specific_context
 from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.profile_event_text import event_impact, event_summary, event_type_for_intent
-from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.store_context import extract_city, extract_time_text
 from app.graph.planner.runtime_plan import planner_scene, planner_task_views
 from app.graph.state import AgentState

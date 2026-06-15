@@ -442,9 +442,6 @@ def _has_price_facts(state: AgentState) -> bool:
         offer = structured.get("active_offer_context")
         if isinstance(offer, dict) and offer.get("new_customer_price"):
             return True
-    usable = fact_envelope.get("usable_facts")
-    if isinstance(usable, list):
-        return any("pricing_rules" in str(item) for item in usable)
     return False
 
 
