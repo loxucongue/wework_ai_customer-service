@@ -112,6 +112,10 @@ reply_strategy 要告诉 Final Reply：
 - must_avoid：不能说的内容。
 - tone：短、直、像优秀销售微信承接。
 - max_questions：默认1。
+- next_slot：从 city、area_or_landmark、confirmed_store、offer_explained、visit_time、signup_state、confirmed 中选择本轮最应该补齐的一个环节。
+- push_intensity：soft、medium、close 三选一。soft=早期承接/补信息；medium=解释价值和活动并推进；close=客户高意向且门店/活动事实较完整，可以推进10元预约金。
+- deposit_ready：只有客户有明确报名/预约/支付意图，且已匹配意向门店并具备创建预约金订单所需事实时才为 true。
+- defer_logistics：客户问路线、停车、几点、怎么去等后置细节，但尚未完成报名/预约金时可为 true；最终回复应简短回答后拉回报名或补齐关键字段。
 
 不要让 Final Reply 只做被动回答。普通售前场景要给它一个下一步节奏，例如：
 - 问城市/区/地标。
@@ -121,6 +125,16 @@ reply_strategy 要告诉 Final Reply：
 - 登记活动名额。
 - 收姓名电话。
 - 有预约意向且真实创建出预约金订单后，让 Final Reply 解释10元预约金并输出 book_order；没有真实 order_id 时只推进补齐门店/日期/时间/姓名电话，不允许 book_order。
+
+推进链路优先级：
+1. 先确认城市。
+2. 再确认区/地标/机场/商圈。
+3. 再确认更方便的意向门店。
+4. 再讲清周年庆活动和10元预约金规则。
+5. 再确认时间/姓名电话/报名意向。
+6. 最后才创建预约金订单并允许 book_order。
+
+不要为了推进而跳过事实：没有确认门店时不规划 book_order；只有城市没有区/地标时不要让最终回复直接说“最近门店”。
 
 # 输出契约
 只返回合法JSON，不要解释。
@@ -152,7 +166,11 @@ reply_strategy 要告诉 Final Reply：
     "must_answer": [],
     "can_push": "",
     "must_avoid": [],
-    "max_questions": 1
+    "max_questions": 1,
+    "next_slot": "",
+    "push_intensity": "soft | medium | close",
+    "deposit_ready": false,
+    "defer_logistics": false
   },
   "handoff": {
     "needed": false,

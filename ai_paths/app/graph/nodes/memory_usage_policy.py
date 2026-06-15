@@ -238,6 +238,9 @@ def order_session_state(state: AgentState) -> dict[str, object]:
             state.get("appointment_order_id"),
         ),
     )
+    offer_explained = _offer_already_explained(state)
+    if offer_explained:
+        session["offer_explained"] = True
 
     if session.get("appointment_order_id"):
         session["signup_state"] = "created_order"
@@ -251,6 +254,11 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         session["signup_state"] = "city_known"
 
     if session:
+        session["next_slot"] = _next_order_slot(session)
+        session["deposit_ready_candidate"] = bool(
+            session.get("confirmed_store_name")
+            or session.get("confirmed_store_id")
+        ) and bool(offer_explained)
         session["usage_note"] = "这是本轮成交/到店链路硬状态，不属于软画像；不要重复追问已存在字段。"
     return session
 
@@ -259,6 +267,39 @@ def _structured_facts(state: AgentState) -> dict[str, object]:
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = fact_envelope.get("structured_facts")
     return structured if isinstance(structured, dict) else {}
+
+
+def _offer_already_explained(state: AgentState) -> bool:
+    texts: list[str] = []
+    for item in state.get("conversation_history") or []:
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role not in {"assistant", "staff", "bot"}:
+                continue
+            content = item.get("content")
+            texts.append(str(content.get("text") if isinstance(content, dict) else content or ""))
+        else:
+            raw = str(item or "")
+            if raw.startswith(("小贝：", "客服：", "AI回复：")):
+                texts.append(raw.split("：", 1)[-1])
+    combined = "\n".join(texts[-8:])
+    return any(term in combined for term in ("268", "预约金", "做付258", "周年庆", "活动价", "报名10"))
+
+
+def _next_order_slot(session: dict[str, object]) -> str:
+    if not session.get("city"):
+        return "city"
+    if not session.get("area_or_landmark"):
+        return "area_or_landmark"
+    if not (session.get("confirmed_store_name") or session.get("confirmed_store_id")):
+        return "confirmed_store"
+    if not session.get("offer_explained"):
+        return "offer_explained"
+    if not (session.get("visit_date") or session.get("visit_time")):
+        return "visit_time"
+    if not session.get("appointment_order_id"):
+        return "signup_state"
+    return "confirmed"
 
 
 def _latest_appointment_fact(structured: dict[str, object]) -> dict[str, object]:

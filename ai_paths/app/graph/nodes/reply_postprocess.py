@@ -64,6 +64,14 @@ def postprocess_reply_messages(
                 reasons.append("placeholder_text_removed")
                 continue
             content = _sanitize_unbacked_case_image_promise(state, content)
+            sanitized_sales = _sanitize_sales_close_risk_terms(content)
+            if sanitized_sales != content:
+                content = sanitized_sales
+                reasons.append("sales_close_terms_sanitized")
+            one_question = _limit_to_one_customer_question(content)
+            if one_question != content:
+                content = one_question
+                reasons.append("question_limit")
             normalized = re.sub(r"\s+", "", content)
             if not normalized or normalized in seen_text:
                 reasons.append("dedupe_or_limit")
@@ -150,6 +158,8 @@ def _book_order_message_for_state(
     state: AgentState,
     model_messages: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
+    if not _has_confirmed_store_for_booking(state):
+        return None
     for message in model_messages:
         order_id = message_content_order_id(message.get("content"))
         if order_id:
@@ -167,6 +177,69 @@ def _book_order_message_for_state(
     if not order_id:
         return None
     return {"type": "book_order", "order": 0, "content": {"order_id": order_id}}
+
+
+def _has_confirmed_store_for_booking(state: AgentState) -> bool:
+    for key in ("confirmed_store_id", "confirmed_store_name", "store_id", "store_name"):
+        if str(state.get(key) or "").strip():
+            return True
+    appointment = state.get("appointment_cache")
+    if isinstance(appointment, dict):
+        if str(appointment.get("store_id") or appointment.get("store_name") or "").strip():
+            return True
+    tool_results = state.get("tool_results")
+    opening = tool_results.get("appointment_opening") if isinstance(tool_results, dict) else {}
+    if isinstance(opening, dict) and str(opening.get("store_id") or opening.get("store_name") or "").strip():
+        return True
+    structured = _structured_facts_from_state(state)
+    latest = _first_dict(structured.get("appointment_facts"))
+    if str(latest.get("store_id") or latest.get("store_name") or "").strip():
+        return True
+    return False
+
+
+def _sanitize_sales_close_risk_terms(text: str) -> str:
+    content = str(text or "")
+    replacements = {
+        "锁定死": "先保留",
+        "绝对没有任何强制加价": "费用会提前说清楚",
+        "绝对没有": "费用会提前说清楚",
+        "无任何不良反应": "整体比较温和",
+        "没有不良反应": "整体比较温和",
+        "保证效果": "很多客户反馈不错",
+        "包效果": "很多客户反馈不错",
+        "广告是错的": "以现在周年庆活动为准",
+        "直接输密码": "按页面提示操作",
+        "无需授权": "按页面提示操作",
+        "不用确认": "按页面提示操作",
+        "自动扣款": "按页面提示操作",
+    }
+    for source, target in replacements.items():
+        content = content.replace(source, target)
+    content = re.sub(r"(仅剩|只剩|剩下|最后)\s*[0-9一二三四五六七八九十]+\s*个名额", "名额有限", content)
+    return content
+
+
+def _limit_to_one_customer_question(text: str) -> str:
+    content = str(text or "").strip()
+    if content.count("？") + content.count("?") <= 1:
+        return content
+    parts = re.split(r"(?<=[。！？!?])", content)
+    kept: list[str] = []
+    question_seen = False
+    changed = False
+    for part in parts:
+        if not part:
+            continue
+        is_question = "？" in part or "?" in part
+        if is_question:
+            if question_seen:
+                changed = True
+                continue
+            question_seen = True
+        kept.append(part)
+    result = "".join(kept).strip()
+    return result or content if not changed else result
 
 
 def _has_visible_image(messages: list[dict[str, Any]]) -> bool:
@@ -311,6 +384,26 @@ def _case_facts_from_state(state: AgentState) -> list[dict[str, Any]]:
         if isinstance(source, list):
             results.extend(item for item in source if isinstance(item, dict))
     return results
+
+
+def _structured_facts_from_state(state: AgentState) -> dict[str, Any]:
+    structured = state.get("structured_facts")
+    if isinstance(structured, dict):
+        return structured
+    fact_envelope = state.get("fact_envelope")
+    if isinstance(fact_envelope, dict) and isinstance(fact_envelope.get("structured_facts"), dict):
+        return fact_envelope["structured_facts"]
+    return {}
+
+
+def _first_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                return item
+    if isinstance(value, dict):
+        return value
+    return {}
 
 
 def _recent_image_urls_from_state(state: AgentState) -> list[str]:
