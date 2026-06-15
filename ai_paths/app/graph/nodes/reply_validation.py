@@ -7,7 +7,7 @@ from typing import Any
 from app.graph.nodes.common import renumber_messages
 
 VISIBLE_MESSAGE_TYPES = {"text", "image"}
-ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff", "book_order"}
 
 
 def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -35,6 +35,18 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 }
             )
             has_handoff = True
+            continue
+        if msg_type == "book_order":
+            order_id = message_content_order_id(item.get("content"))
+            if not order_id:
+                continue
+            result.append(
+                {
+                    "type": "book_order",
+                    "order": len(result) + 1,
+                    "content": {"order_id": order_id},
+                }
+            )
             continue
         if visible_count >= 3:
             continue
@@ -71,6 +83,13 @@ def message_content_text(content: Any) -> str:
                 return text
         return ""
     return str(content or "").strip()
+
+
+def message_content_order_id(content: Any) -> str:
+    if isinstance(content, dict):
+        value = content.get("order_id") or content.get("id")
+        return str(value or "").strip()
+    return ""
 
 
 def looks_like_image_url(content: str) -> bool:

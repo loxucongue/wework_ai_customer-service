@@ -143,9 +143,18 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - 价格、活动、定金、尾款：必须来自 active_offer_context 或 price_facts。
 - 门店地址、营业时间、停车、距离、最近门店：必须来自 store_facts / recommended_store / store_lookup_status。
 - 档期、预约状态、预约成功：必须来自 appointment_facts 或 appointment_create。
+- 预约金收款小程序：必须来自 appointment_opening / appointment_create 真实返回的 order_id；没有 order_id 时不能输出 book_order。
 - 案例图片：必须来自 case_facts.image_url；不要连续发同一张图。
 - 订单、付款、退款状态：不能编，必须专业同事或真实接口核对。
 - 没有事实时，继续帮客户核对，不编结论。
+
+# 预约金 / 开单链路
+目标是把有意向客户推进到线上报名交10元预约金，但必须按真实门店和真实订单事实执行。
+- 预约前必须先有门店：通过询问客户城市和区域/地标匹配最近门店，并沟通获得客户意向门店。
+- 客户已有明确预约意向、已匹配到门店，并且 appointment_create / appointment_opening 已真实返回 order_id 时，才可以追加 book_order。
+- 发送 book_order 前后，text 里要解释清楚：点击支付或者转账红包10元都可以；姓名、电话发我，我给您登记安排；任何不放心、不满意、不来，订金10元全额退还。
+- 如果客户有预约意向但还没有门店、日期、时间、姓名电话等必要信息，不要输出 book_order；先用1句话补齐最关键的一个信息。
+- 不能说“预约成功”“已锁定名额”“收款已发送”，除非 fact_envelope 里有真实 appointment_opening/order_id 事实。
 
 # 图片 / 案例输出
 - 客户明确要看案例、效果图、做完效果，如果 case_facts 有 image_url，可以输出1条image。
@@ -181,6 +190,14 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
     {"type": "human_handoff", "order": 2, "content": {"handoff_reason": "..."}}
   ]
 }
+
+需要发送预约金收款小程序：
+{
+  "reply_messages": [
+    {"type": "text", "order": 1, "content": {"text": "可以的，点击支付或者转账红包10元都可以，姓名和电话发我，我给您登记安排；任何不放心不满意不来，订金10元全额退还。"}},
+    {"type": "book_order", "order": 2, "content": {"order_id": "..."}}
+  ]
+}
 """.strip(),
         identity_prompt_section(),
         s10_offer_prompt_section(),
@@ -200,8 +217,9 @@ REPAIR_SYSTEM_PROMPT = """
 3. 删除重复句、无意义客套、明显违规承诺。
 4. 压缩为默认1条text，必要时最多2条text。
 5. 如果已有 human_handoff，保留它；如果 handoff.needed=true，必须先有1条客户可见text。
-6. 保留当前问题的直接答案，不要为了贴近话术而漏答。
-7. 如果有 canonical_sales_reply 或 sales_script，尽量保留短句节奏和核心词。
+6. 如果已有 book_order 且包含 order_id，保留它；没有真实 order_id 时不要新增 book_order。
+7. 保留当前问题的直接答案，不要为了贴近话术而漏答。
+8. 如果有 canonical_sales_reply 或 sales_script，尽量保留短句节奏和核心词。
 
 # 禁止
 - 不新增事实。

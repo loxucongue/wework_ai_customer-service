@@ -6,7 +6,7 @@ from typing import Any
 from app.graph import reply_filters
 from app.graph.nodes.common import looks_garbled_text, renumber_messages
 from app.graph.runtime_context import contextual_price_project
-from app.graph.nodes.reply_validation import message_content_text
+from app.graph.nodes.reply_validation import message_content_order_id, message_content_text
 from app.graph.planner.runtime_plan import planner_handoff, planner_task_views
 from app.graph.state import AgentState
 
@@ -27,12 +27,18 @@ def postprocess_reply_messages(
     content_text = str(state.get("normalized_content") or "")
     conversation_history = state.get("conversation_history", [])
     cleaned: list[dict[str, Any]] = []
+    special_messages: list[dict[str, Any]] = []
     seen_text: set[str] = set()
 
     for message in messages:
         if not isinstance(message, dict):
             continue
         if message.get("type") == "human_handoff":
+            continue
+        if message.get("type") == "book_order":
+            order_id = message_content_order_id(message.get("content"))
+            if order_id:
+                special_messages.append({"type": "book_order", "order": 0, "content": {"order_id": order_id}})
             continue
 
         msg_type = message.get("type") if message.get("type") in {"text", "image"} else "text"
@@ -85,6 +91,11 @@ def postprocess_reply_messages(
     if handoff_message:
         cleaned.append({"type": "human_handoff", "order": len(cleaned) + 1, "content": handoff_message})
         reasons.append("handoff_appended")
+    else:
+        book_order_message = _book_order_message_for_state(state, special_messages)
+        if book_order_message:
+            cleaned.append(book_order_message)
+            reasons.append("book_order_appended")
 
     cleaned = renumber_messages(cleaned)
     changed = _message_fingerprint(cleaned) != _message_fingerprint(original_messages)
@@ -104,6 +115,29 @@ def _handoff_message_for_state(state: AgentState) -> dict[str, Any] | None:
         return None
     reason = assist_reason or "当前问题需要专业同事继续协助核对"
     return {"handoff_reason": reason}
+
+
+def _book_order_message_for_state(
+    state: AgentState,
+    model_messages: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    for message in model_messages:
+        order_id = message_content_order_id(message.get("content"))
+        if order_id:
+            return {"type": "book_order", "order": 0, "content": {"order_id": order_id}}
+
+    tool_results = state.get("tool_results")
+    opening = tool_results.get("appointment_opening") if isinstance(tool_results, dict) else {}
+    if not isinstance(opening, dict) or opening.get("status") not in {"created", "dry_run_created"}:
+        return None
+    order_id = str(opening.get("order_id") or "").strip()
+    if not order_id:
+        push = opening.get("appointment_push")
+        if isinstance(push, dict):
+            order_id = str(push.get("order_id") or "").strip()
+    if not order_id:
+        return None
+    return {"type": "book_order", "order": 0, "content": {"order_id": order_id}}
 
 
 def _professional_assist_reason(state: AgentState) -> str:
@@ -144,7 +178,13 @@ def _message_fingerprint(messages: list[dict[str, Any]]) -> list[tuple[str, str]
         message_type = str(message.get("type") or "")
         content = message.get("content")
         if isinstance(content, dict):
-            text = str(content.get("text") or content.get("url") or content.get("handoff_reason") or "").strip()
+            text = str(
+                content.get("text")
+                or content.get("url")
+                or content.get("handoff_reason")
+                or content.get("order_id")
+                or ""
+            ).strip()
         else:
             text = str(content or "").strip()
         fingerprint.append((message_type, text))
