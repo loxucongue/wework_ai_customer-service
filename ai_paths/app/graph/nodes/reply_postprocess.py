@@ -60,6 +60,9 @@ def postprocess_reply_messages(
             if _contains_blocked_placeholder_url(content):
                 reasons.append("placeholder_url_removed")
                 continue
+            if _contains_fake_placeholder_text(content):
+                reasons.append("placeholder_text_removed")
+                continue
             content = _sanitize_unbacked_case_image_promise(state, content)
             normalized = re.sub(r"\s+", "", content)
             if not normalized or normalized in seen_text:
@@ -73,7 +76,7 @@ def postprocess_reply_messages(
             if image_count >= 1:
                 reasons.append("image_limit")
                 continue
-            if not _is_usable_case_image_url(content):
+            if content not in _case_image_urls_from_state(state):
                 reasons.append("invalid_image_url_removed")
                 continue
 
@@ -208,7 +211,7 @@ def _is_usable_case_image_url(image_url: str) -> bool:
     if not image_url or not image_url.startswith(("http://", "https://")):
         return False
     lowered = image_url.lower()
-    blocked_hosts = ("example.com", "example.cn", "localhost", "127.0.0.1")
+    blocked_hosts = ("example.com", "example.cn", "localhost", "127.0.0.1", "picsum.photos", "placehold.co")
     if any(host in lowered for host in blocked_hosts):
         return False
     return True
@@ -216,7 +219,14 @@ def _is_usable_case_image_url(image_url: str) -> bool:
 
 def _contains_blocked_placeholder_url(text: str) -> bool:
     lowered = (text or "").lower()
-    return any(host in lowered for host in ("example.com", "example.cn", "localhost", "127.0.0.1"))
+    return any(host in lowered for host in ("example.com", "example.cn", "localhost", "127.0.0.1", "picsum.photos", "placehold.co"))
+
+
+def _contains_fake_placeholder_text(text: str) -> bool:
+    content = str(text or "")
+    if re.search(r"[XxＸｘ]{2,}", content):
+        return True
+    return any(term in content for term in ("某某地址", "某某路", "某某大厦", "测试地址"))
 
 
 def _sanitize_unbacked_case_image_promise(state: AgentState, text: str) -> str:

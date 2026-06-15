@@ -6,6 +6,7 @@ from typing import Any
 from app.graph.nodes.common import clean_model_value, recent_assistant_replies
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
+    order_session_state,
     should_suppress_profile_memory_for_reply,
 )
 from app.graph.planner.runtime_plan import (
@@ -35,7 +36,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     should_show_appointment_context = not should_suspend_appointment_context_for_current_turn(state, planner_views)
     suppress_profile_memory = should_suppress_profile_memory_for_reply(state)
     fact_envelope = _compact_fact_envelope_for_reply(
-        attach_s10_offer_facts({} if suppress_profile_memory else (state.get("fact_envelope") or {}))
+        attach_s10_offer_facts(state.get("fact_envelope") or {})
     )
     primary_task = _sanitize_planner_context_for_reply(planner_primary_task(state))
     secondary_tasks = _sanitize_planner_context_for_reply(planner_secondary_tasks(state))
@@ -46,6 +47,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     sop_step = planner_sop_step(state)
     sop_stage_rules = _sanitize_planner_context_for_reply(planner_sop_stage_rules(state))
     appointment_context = _appointment_context_for_model(state) if should_show_appointment_context else {}
+    order_session = order_session_state(state)
     payload = {
         "content": state.get("normalized_content"),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-6:],
@@ -54,12 +56,13 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_basic_info": {} if suppress_profile_memory else state.get("customer_basic_info", {}),
         "history_events": [] if suppress_profile_memory else state.get("history_events", [])[-8:],
         "memory_usage_policy": memory_usage_policy_for_reply(state),
+        "order_session": order_session,
         "active_offer_context": _compact_active_offer_context(),
         "sop_stage": sop_stage,
         "sop_step": sop_step,
         "sop_stage_rules": sop_stage_rules,
-        "recent_assistant_replies": [] if suppress_profile_memory else recent_assistant_replies(state, 4),
-        "recent_image_urls": [] if suppress_profile_memory else _recent_image_urls(state),
+        "recent_assistant_replies": recent_assistant_replies(state, 4),
+        "recent_image_urls": _recent_image_urls(state),
         "guardrail_result": state.get("guardrail_result", {}),
         "primary_task": {} if suppress_profile_memory else primary_task,
         "secondary_tasks": [] if suppress_profile_memory else secondary_tasks,
@@ -67,7 +70,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "reply_strategy": {} if suppress_profile_memory else reply_strategy,
         "scene_guidance_context": _sanitize_planner_context_for_reply(state.get("scene_guidance_context", [])),
         "handoff": {} if suppress_profile_memory else handoff,
-        "appointment_context": {} if suppress_profile_memory else appointment_context,
+        "appointment_context": appointment_context,
         "fact_envelope": fact_envelope,
         "fact_notes": _fact_notes_for_model(fact_envelope),
     }

@@ -114,3 +114,172 @@ def memory_usage_policy_for_reply(state: AgentState) -> dict[str, object]:
             else "可以在不盖过当前问题的前提下，少量引用相关历史信息。"
         ),
     }
+
+
+def order_session_state(state: AgentState) -> dict[str, object]:
+    """提取本轮成交/到店链路的硬状态。
+
+    这类信息不是软画像；即使低信息开场或清空画像测试，也应该给最终回复模型使用，
+    避免客户已经给过城市、地标、门店或预约时间后又被重复追问。
+    """
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    appointment = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    request_context = (
+        customer_context.get("request_context")
+        if isinstance(customer_context.get("request_context"), dict)
+        else {}
+    )
+    appointment_pref = (
+        basic.get("appointment_preference")
+        if isinstance(basic.get("appointment_preference"), dict)
+        else {}
+    )
+    structured = _structured_facts(state)
+    store_lookup_status = (
+        structured.get("store_lookup_status")
+        if isinstance(structured.get("store_lookup_status"), dict)
+        else {}
+    )
+    recommended_store = (
+        structured.get("recommended_store")
+        if isinstance(structured.get("recommended_store"), dict)
+        else {}
+    )
+    latest_appointment = _latest_appointment_fact(structured)
+
+    session: dict[str, object] = {}
+    _put(
+        session,
+        "city",
+        _pick(
+            store_lookup_status.get("city"),
+            appointment_pref.get("city"),
+            basic.get("city"),
+            customer_context.get("city"),
+            request_context.get("city"),
+            state.get("city"),
+        ),
+    )
+    _put(
+        session,
+        "area_or_landmark",
+        _pick(
+            store_lookup_status.get("area_or_landmark"),
+            store_lookup_status.get("location_preference"),
+            appointment_pref.get("area_or_landmark"),
+            appointment_pref.get("area"),
+            request_context.get("area_or_landmark"),
+            request_context.get("location_preference"),
+            state.get("area_or_landmark"),
+        ),
+    )
+    _put(
+        session,
+        "confirmed_store_name",
+        _pick(
+            appointment.get("store_name"),
+            latest_appointment.get("store_name"),
+            request_context.get("confirmed_store_name"),
+            customer_context.get("confirmed_store_name"),
+            state.get("confirmed_store_name"),
+            recommended_store.get("name"),
+        ),
+    )
+    _put(
+        session,
+        "confirmed_store_id",
+        _pick(
+            appointment.get("store_id"),
+            latest_appointment.get("store_id"),
+            request_context.get("confirmed_store_id"),
+            customer_context.get("confirmed_store_id"),
+            state.get("confirmed_store_id"),
+            recommended_store.get("store_id"),
+            recommended_store.get("id"),
+        ),
+    )
+    _put(
+        session,
+        "visit_date",
+        _pick(
+            appointment.get("date"),
+            appointment.get("appointment_date"),
+            latest_appointment.get("date"),
+            latest_appointment.get("appointment_date"),
+            request_context.get("visit_date"),
+            request_context.get("appointment_date"),
+            state.get("visit_date"),
+        ),
+    )
+    _put(
+        session,
+        "visit_time",
+        _pick(
+            appointment.get("time"),
+            appointment.get("appointment_time"),
+            latest_appointment.get("time"),
+            latest_appointment.get("appointment_time"),
+            request_context.get("visit_time"),
+            request_context.get("appointment_time"),
+            state.get("visit_time"),
+        ),
+    )
+    _put(
+        session,
+        "appointment_order_id",
+        _pick(
+            appointment.get("order_id"),
+            appointment.get("appointment_id"),
+            latest_appointment.get("order_id"),
+            latest_appointment.get("appointment_id"),
+            request_context.get("order_id"),
+            request_context.get("appointment_id"),
+            state.get("appointment_order_id"),
+        ),
+    )
+
+    if session.get("appointment_order_id"):
+        session["signup_state"] = "created_order"
+    elif session.get("visit_date") or session.get("visit_time"):
+        session["signup_state"] = "time_intent_known"
+    elif session.get("confirmed_store_name") or session.get("confirmed_store_id"):
+        session["signup_state"] = "store_matched"
+    elif session.get("area_or_landmark"):
+        session["signup_state"] = "area_known"
+    elif session.get("city"):
+        session["signup_state"] = "city_known"
+
+    if session:
+        session["usage_note"] = "这是本轮成交/到店链路硬状态，不属于软画像；不要重复追问已存在字段。"
+    return session
+
+
+def _structured_facts(state: AgentState) -> dict[str, object]:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts")
+    return structured if isinstance(structured, dict) else {}
+
+
+def _latest_appointment_fact(structured: dict[str, object]) -> dict[str, object]:
+    facts = structured.get("appointment_facts")
+    if not isinstance(facts, list):
+        return {}
+    for item in facts:
+        if isinstance(item, dict):
+            return item
+    return {}
+
+
+def _pick(*values: object) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _put(target: dict[str, object], key: str, value: object) -> None:
+    text = str(value or "").strip()
+    if text:
+        target[key] = text
