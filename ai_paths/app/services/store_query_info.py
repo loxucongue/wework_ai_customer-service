@@ -11,6 +11,8 @@ class StoreQueryInfo:
     query: str
     city: str
     requested_name: str
+    area_or_landmark: str
+    location_granularity: str
     location_preference: str
     wants_parking: bool
     wants_route: bool
@@ -23,6 +25,8 @@ def build_store_query_info(query: str, stores: list[StoreRecord]) -> StoreQueryI
         query=cleaned_query,
         city=store_text.extract_city(cleaned_query, stores),
         requested_name=store_text.extract_store_name(cleaned_query, stores),
+        area_or_landmark=store_text.extract_area_or_landmark(cleaned_query),
+        location_granularity=store_text.location_granularity(cleaned_query, stores),
         location_preference=store_text.extract_location_preference(cleaned_query),
         wants_parking=any(term in cleaned_query for term in ["停车", "停车场", "车位"]),
         wants_route=any(

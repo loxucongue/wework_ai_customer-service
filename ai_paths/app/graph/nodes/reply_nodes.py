@@ -389,6 +389,11 @@ def _store_fact_text_fallback(state: AgentState) -> str:
         return ""
     status = structured.get("store_lookup_status")
     status = status if isinstance(status, dict) else {}
+    if bool(status.get("needs_area_or_landmark")):
+        city = str(status.get("city") or "").strip()
+        if city:
+            return f"{city}这边可以帮您查，您在{city}哪个区或附近什么地标呀？我给您匹配近一点的门店。"
+        return "您在哪个城市或附近什么地标呀？我给您匹配近一点的门店。"
     recommended = structured.get("recommended_store")
     store: dict[str, object] = recommended if isinstance(recommended, dict) and recommended else {}
     stores = structured.get("store_facts")

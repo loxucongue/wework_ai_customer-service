@@ -71,6 +71,8 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 节奏：
 - 没城市：问城市/市区。
 - 只有城市：可以说帮他查，再问哪个区或附近地标。
+- 如果 store_lookup_status.needs_area_or_landmark=true，说明客户只给了城市；禁止输出具体门店、地址、营业时间或最近门店，只追问区、地标、机场、地铁站或商圈。
+- 有区、机场、地铁、商圈、地标时，如果有 distance_facts，可优先推荐距离或路线更合适的一家；没有距离事实时，只能说按门店地址看更方便，具体以导航为准。
 - 有区、机场、地铁、商圈、地标：根据真实门店事实推荐，不继续重复问城市。
 - 客户要详细地址：有事实就给清晰地址。
 - 客户问营业时间、停车、路线：必须基于门店工具事实。
@@ -142,6 +144,9 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 # 事实边界
 - 价格、活动、定金、尾款：必须来自 active_offer_context 或 price_facts。
 - 门店地址、营业时间、停车、距离、最近门店：必须来自 store_facts / recommended_store / store_lookup_status。
+- 如果 store_lookup_status.needs_area_or_landmark=true，说明客户只给了城市；这时禁止输出具体门店事实，必须追问区/地标/机场/商圈。
+- 如果 store_lookup_status.no_store_match_confirmed=true，说明该城市暂未匹配本地门店；不要编推荐，询问客户是否接受邻近城市或换一个常去城市。
+- 距离、最近、路线优先级必须来自 distance_facts；没有 distance_facts 时不要说“最近”，只能说“按地址看更方便/具体以导航为准”。
 - 档期、预约状态、预约成功：必须来自 appointment_facts 或 appointment_create。
 - 预约金收款小程序：必须来自 appointment_opening / appointment_create 真实返回的 order_id；没有 order_id 时不能输出 book_order。
 - 案例图片：必须来自 case_facts.image_url；不要连续发同一张图。

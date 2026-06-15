@@ -205,7 +205,7 @@ def _has_unbacked_distance_claim(state: AgentState, text: str) -> bool:
 
 def _has_distance_facts(state: AgentState) -> bool:
     structured = _structured_facts(state)
-    for key in ("store_facts", "recommended_store"):
+    for key in ("store_facts", "recommended_store", "distance_facts"):
         value = structured.get(key)
         items = value if isinstance(value, list) else [value]
         for item in items:
@@ -515,4 +515,3 @@ def _char_ngrams(text: str, size: int = 4) -> set[str]:
     if len(text) <= size:
         return {text}
     return {text[index : index + size] for index in range(0, len(text) - size + 1)}
-

@@ -47,6 +47,7 @@ class Settings(BaseSettings):
 
     kb_workflow_id: str = "7644575365759746083"
     pricing_sync_workflow_id: str = "7644090458134609974"
+    distance_workflow_id: str = "7647753819456192558"
 
     log_dir: Path = Path("logs/runs")
     trace_log_dir: Path | None = Field(default=None, alias="AI_PATHS_TRACE_LOG_DIR")

@@ -3,16 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.store_catalog import StoreRecord
-from app.services.store_text_constants import AREA_CITY_MAP, CITY_NAMES, QUERY_STORE_ALIASES, STORE_ALIASES
+from app.services.store_text_constants import AREA_CITY_MAP, CITY_NAMES, EXTERNAL_LOCATION_NAMES, QUERY_STORE_ALIASES, STORE_ALIASES
 
 
 def needs_city_before_lookup(query: str, *, city: str, requested_name: str) -> bool:
     if city or requested_name or not query:
         return False
-    if any(term in query for term in ["地铁站", "火车站", "高铁站", "机场", "车站"]):
-        return False
-    generic_terms = ["门店", "店", "地址", "哪里", "附近", "停车", "导航", "位置", "怎么过去", "哪家"]
-    return any(term in query for term in generic_terms)
+    return True
 
 
 def extract_location_preference(query: str) -> str:
@@ -25,6 +22,35 @@ def extract_location_preference(query: str) -> str:
     return ""
 
 
+def extract_area_or_landmark(query: str) -> str:
+    text = query or ""
+    preference = extract_location_preference(text)
+    if preference:
+        return preference
+    for area in AREA_CITY_MAP:
+        if area in text:
+            return area
+    for suffix in ("机场", "火车站", "高铁站", "地铁站", "商圈", "广场", "大厦", "医院", "学校"):
+        index = text.find(suffix)
+        if index >= 0:
+            start = max(0, index - 8)
+            return text[start : index + len(suffix)].strip()
+    return ""
+
+
+def location_granularity(query: str, stores: list[StoreRecord]) -> str:
+    text = (query or "").strip()
+    if not text:
+        return "unknown"
+    if extract_store_name(text, stores):
+        return "store_name"
+    if extract_area_or_landmark(text):
+        return "area_or_landmark"
+    if extract_city(text, stores):
+        return "city_only"
+    return "unknown"
+
+
 def extract_city(query: str, stores: list[StoreRecord]) -> str:
     for city in CITY_NAMES:
         if city in query:
@@ -35,6 +61,9 @@ def extract_city(query: str, stores: list[StoreRecord]) -> str:
     for area, city in AREA_CITY_MAP.items():
         if area in query:
             return city
+    for location in EXTERNAL_LOCATION_NAMES:
+        if location in query:
+            return location
     return ""
 
 

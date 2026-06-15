@@ -65,7 +65,10 @@ class StoreService:
                     limit=limit,
                 )
             if platform_result.get("stores"):
-                return with_location_recommendation(platform_result, query_info.location_preference)
+                return _apply_location_gate(
+                    with_location_recommendation(platform_result, query_info.location_preference),
+                    query_info=query_info,
+                )
 
         candidates = self._stores
         if query_info.requested_name:
@@ -86,7 +89,7 @@ class StoreService:
             "source": "local_store_fallback",
             "platform_error": platform_error,
         }
-        return with_location_recommendation(result, query_info.location_preference)
+        return _apply_location_gate(with_location_recommendation(result, query_info.location_preference), query_info=query_info)
 
     def available_time(self, *, store_id: str, date: str, customer_context: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._platform_client or not self._platform_client.available:
@@ -154,6 +157,36 @@ class StoreService:
             "wants_parking": query_info.wants_parking,
             "wants_route": query_info.wants_route,
             "wants_status": wants_status,
+            "area_or_landmark": query_info.area_or_landmark,
+            "location_granularity": query_info.location_granularity,
             "stores": stores,
             "source": source,
         }
+
+
+def _apply_location_gate(result: dict[str, Any], *, query_info: Any) -> dict[str, Any]:
+    output = dict(result or {})
+    output["area_or_landmark"] = query_info.area_or_landmark
+    output["location_granularity"] = query_info.location_granularity
+    stores = output.get("stores") if isinstance(output.get("stores"), list) else []
+    output["city_store_count"] = len(stores)
+    output["has_city_store_candidates"] = bool(stores)
+    if query_info.location_granularity != "city_only":
+        if query_info.location_granularity in {"area_or_landmark", "store_name"} and stores:
+            output["distance_lookup_required"] = True
+            output["distance_origin"] = query_info.area_or_landmark or query_info.location_preference or query_info.query
+        return output
+
+    if not stores:
+        output["needs_area_or_landmark"] = False
+        return output
+
+    gated = dict(output)
+    gated["stores"] = []
+    gated.pop("recommended_store", None)
+    gated.pop("recommendation_reason", None)
+    gated["missing"] = list(dict.fromkeys([*(gated.get("missing") or []), "area_or_landmark"]))
+    gated["needs_area_or_landmark"] = True
+    source = str(gated.get("source") or "").strip()
+    gated["source"] = f"{source}+city_only_gate" if source else "city_only_gate"
+    return gated

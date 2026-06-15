@@ -102,6 +102,7 @@ def _compact_fact_envelope_for_reply(fact_envelope: dict[str, Any]) -> dict[str,
 
     for key, limit in (
         ("store_facts", 5),
+        ("distance_facts", 5),
         ("case_facts", 3),
         ("knowledge_facts", 3),
         ("sales_talk_scripts", 3),
@@ -166,7 +167,21 @@ def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
     keep_by_source: dict[str, tuple[str, ...]] = {
         "store_facts": ("name", "address", "business_hours", "distance", "route_hint", "city", "district"),
         "recommended_store": ("name", "address", "business_hours", "distance", "route_hint", "city", "district"),
-        "store_lookup_status": ("status", "query", "city", "count", "error"),
+        "store_lookup_status": (
+            "status",
+            "query",
+            "city",
+            "area_or_landmark",
+            "location_granularity",
+            "location_preference",
+            "city_store_count",
+            "has_city_store_candidates",
+            "needs_area_or_landmark",
+            "no_store_match_confirmed",
+            "count",
+            "error",
+        ),
+        "distance_facts": ("name", "address", "distance_text"),
         "case_facts": ("source", "title", "content", "image_url"),
         "knowledge_facts": ("source", "title", "content"),
         "sales_talk_scripts": ("matched_question", "business_logic", "sales_script"),
@@ -217,6 +232,19 @@ def _fact_notes_for_model(
     recommended_store = structured_facts.get("recommended_store") or {}
     if isinstance(recommended_store, dict) and recommended_store.get("name"):
         notes.append("已有推荐门店事实，可优先按推荐门店回答。")
+    store_status = structured_facts.get("store_lookup_status") or {}
+    if isinstance(store_status, dict) and store_status.get("needs_area_or_landmark"):
+        city = str(store_status.get("city") or "").strip()
+        if city:
+            notes.append(f"客户只提供了城市{city}，不要输出具体门店地址；先追问区、地标、机场或商圈。")
+        else:
+            notes.append("客户位置不完整，不要输出具体门店地址；先追问城市/区/地标。")
+    if isinstance(store_status, dict) and store_status.get("no_store_match_confirmed"):
+        city = str(store_status.get("city") or "").strip()
+        if city:
+            notes.append(f"门店工具未匹配到{city}本地门店；不要编门店，询问客户是否接受附近城市或常去城市。")
+        else:
+            notes.append("门店工具未匹配到本地门店；不要编门店，询问客户是否接受附近城市或常去城市。")
 
     sales_talk_scripts = structured_facts.get("sales_talk_scripts") or []
     if isinstance(sales_talk_scripts, list) and sales_talk_scripts:

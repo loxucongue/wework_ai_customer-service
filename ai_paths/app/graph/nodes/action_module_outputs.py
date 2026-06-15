@@ -18,6 +18,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "store_facts": [],
         "store_lookup_status": {},
         "recommended_store": {},
+        "distance_facts": [],
         "price_facts": [],
         "case_facts": [],
         "knowledge_facts": [],
@@ -46,11 +47,16 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "query": str(value.get("query") or "")[:160],
                 "city": str(value.get("city") or ""),
                 "requested_store": str(value.get("requested_store") or ""),
+                "area_or_landmark": str(value.get("area_or_landmark") or ""),
+                "location_granularity": str(value.get("location_granularity") or ""),
                 "location_preference": str(value.get("location_preference") or ""),
                 "source": str(value.get("source") or ""),
                 "missing": missing,
                 "platform_error": platform_error[:240],
                 "has_store_facts": bool(stores),
+                "city_store_count": value.get("city_store_count") or 0,
+                "has_city_store_candidates": bool(value.get("has_city_store_candidates")),
+                "needs_area_or_landmark": bool(value.get("needs_area_or_landmark")),
                 "no_store_match_confirmed": bool(not stores and not missing and not platform_error),
             }
             if stores:
@@ -88,6 +94,29 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             if platform_error and not stores:
                 unsupported_claims.append("store_lookup incomplete")
             missing_slots.extend(missing)
+            continue
+
+        if key == "distance_lookup":
+            distances = value.get("distances") or []
+            if isinstance(distances, list):
+                structured_facts["distance_facts"] = [
+                    {
+                        "store_id": str(item.get("id") or ""),
+                        "name": str(item.get("name") or ""),
+                        "address": str(item.get("address") or ""),
+                        "distance_text": str(item.get("distance_text") or ""),
+                    }
+                    for item in distances[:5]
+                    if isinstance(item, dict)
+                ]
+                usable = [item for item in structured_facts["distance_facts"] if item.get("distance_text")]
+                if usable:
+                    facts.append(
+                        "distance_lookup: "
+                        + "; ".join(f"{item.get('name')}: {item.get('distance_text')}" for item in usable[:3])
+                    )
+            if value.get("error"):
+                unsupported_claims.append("distance_lookup unavailable")
             continue
 
         if key == "pricing_rules":
