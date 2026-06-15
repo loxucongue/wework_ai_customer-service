@@ -333,15 +333,15 @@ def _append_navigation_url_if_requested(state: AgentState, text: str) -> str:
 
 def _remove_bare_tencent_shortlink_fragment(text: str) -> str:
     content = str(text or "")
-    content = re.sub(r"[，,。；;、\\s]*l=[A-Za-z0-9_-]{8,}(?:&tempSource=\\w+)?", "", content)
-    content = re.sub(r"[，,。；;、\\s]*short\\?l=[A-Za-z0-9_-]{8,}(?:&tempSource=\\w+)?", "", content)
+    content = re.sub(r"[，,。；;、\s]*l=[A-Za-z0-9_-]{8,}(?:&tempSource=\w+)?", "", content)
+    content = re.sub(r"[，,。；;、\s]*short\?l=[A-Za-z0-9_-]{8,}(?:&tempSource=\w+)?", "", content)
     return content.strip()
 
 
 def _remove_incomplete_tencent_shortlink_url(text: str) -> str:
     content = str(text or "")
-    content = re.sub(r"https?://mmapgwh\\.map\\.qq\\.com/shortlink/short\\?(?![^\\s，。；;、]*l=)[^\\s，。；;、]*", "", content)
-    return re.sub(r"\\s{2,}", " ", content).strip(" ，。；;、")
+    content = re.sub(r"https?://mmapgwh\.map\.qq\.com/shortlink/short\?(?![^\s，。；;、]*l=)[^\s，。；;、]*", "", content)
+    return re.sub(r"\s{2,}", " ", content).strip(" ，。；;、")
 
 
 def _limit_to_one_customer_question(text: str) -> str:
