@@ -44,7 +44,7 @@ def store_query_from_state(content: str, state: AgentState) -> str:
         parts.append(area)
     if location_preference and location_preference not in content:
         parts.append(location_preference)
-    if explicit_store and explicit_store not in content:
+    if explicit_store and explicit_store not in content and not (area or location_preference):
         parts.append(explicit_store)
     parts.append(content)
     return " ".join(part for part in parts if part).strip()

@@ -196,7 +196,7 @@ def _apply_location_gate(result: dict[str, Any], *, query_info: Any) -> dict[str
     if query_info.location_granularity != "city_only":
         if query_info.location_granularity in {"area_or_landmark", "store_name"} and stores:
             output["distance_lookup_required"] = True
-            output["distance_origin"] = query_info.area_or_landmark or query_info.location_preference or query_info.query
+            output["distance_origin"] = _distance_origin_from_query_info(query_info)
         return output
 
     if not stores:
@@ -212,3 +212,31 @@ def _apply_location_gate(result: dict[str, Any], *, query_info: Any) -> dict[str
     source = str(gated.get("source") or "").strip()
     gated["source"] = f"{source}+city_only_gate" if source else "city_only_gate"
     return gated
+
+
+def _distance_origin_from_query_info(query_info: Any) -> str:
+    city = str(getattr(query_info, "city", "") or "").strip()
+    area = str(getattr(query_info, "area_or_landmark", "") or "").strip()
+    preference = str(getattr(query_info, "location_preference", "") or "").strip()
+    query = str(getattr(query_info, "query", "") or "").strip()
+    location = area or preference
+    if "机场" in location or "机场" in query:
+        airport = {
+            "厦门": "厦门高崎国际机场",
+            "深圳": "深圳宝安国际机场",
+            "上海": "上海虹桥国际机场",
+            "广州": "广州白云国际机场",
+            "成都": "成都双流国际机场",
+            "重庆": "重庆江北国际机场",
+            "杭州": "杭州萧山国际机场",
+            "南京": "南京禄口国际机场",
+            "武汉": "武汉天河国际机场",
+            "长沙": "长沙黄花国际机场",
+            "福州": "福州长乐国际机场",
+            "西安": "西安咸阳国际机场",
+        }.get(city)
+        if airport:
+            return airport
+    if city and location and not location.startswith(city):
+        return f"{city}{location}"
+    return location or query

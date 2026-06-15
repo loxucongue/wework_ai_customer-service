@@ -27,14 +27,14 @@ def extract_area_or_landmark(query: str) -> str:
     preference = extract_location_preference(text)
     if preference:
         return preference
-    for area in AREA_CITY_MAP:
-        if area in text:
-            return area
     for suffix in ("机场", "火车站", "高铁站", "地铁站", "商圈", "广场", "大厦", "医院", "学校", "科技园", "产业园", "园区"):
         index = text.find(suffix)
         if index >= 0:
             start = max(0, index - 8)
             return text[start : index + len(suffix)].strip()
+    for area in AREA_CITY_MAP:
+        if area in text:
+            return area
     return ""
 
 
