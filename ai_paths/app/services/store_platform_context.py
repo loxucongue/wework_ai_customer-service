@@ -22,6 +22,13 @@ def store_platform_context(customer_context: dict[str, Any]) -> StorePlatformCon
         customer_add_wechat_id=(
             customer.get("customer_add_wechat_id")
             or request_context.get("customer_add_wechat_id")
+            or customer_context.get("customer_add_wechat_id")
+            or customer_context.get("external_userid")
+            or request_context.get("external_userid")
+            or customer.get("external_userid")
+            or customer.get("id")
+            or customer_context.get("customer_id")
+            or request_context.get("customer_id")
         ),
     )
 

@@ -44,6 +44,16 @@ def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
     if not customer_id:
         raise ValueError("missing required parameter: customer_id")
 
+    external_userid = _string(parameters.get("external_userid")) or None
+    customer_add_wechat_id = (
+        _string(parameters.get("customer_add_wechat_id"))
+        or _string(parameters.get("customer_add_wechat_userid"))
+        or _string(parameters.get("customer_add_wechat_id_str"))
+        or _string(request_context.get("customer_add_wechat_id"))
+        or (external_userid or "")
+        or customer_id
+    )
+
     return ChatRequest(
         content=content,
         customer_id=customer_id,
@@ -52,8 +62,8 @@ def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
         file_image=image or None,
         user_id=_int_or_none(parameters.get("user_id")),
         wechat=_string(parameters.get("wechat")) or None,
-        external_userid=_string(parameters.get("external_userid")) or None,
-        customer_add_wechat_id=_string(parameters.get("customer_add_wechat_id")) or None,
+        external_userid=external_userid,
+        customer_add_wechat_id=customer_add_wechat_id or None,
         confirmed_store_id=_string(parameters.get("confirmed_store_id")) or None,
         confirmed_store_name=_string(parameters.get("confirmed_store_name")) or None,
         store_id=_string(parameters.get("store_id")) or None,
