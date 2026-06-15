@@ -258,6 +258,7 @@ def _store_fact_text_fallback(state: AgentState) -> str:
         name = str(store.get("name") or "").strip()
         address = str(store.get("address") or "").strip()
         hours = str(store.get("business_hours") or "").strip()
+        distance_text = str(store.get("distance_text") or store.get("distance") or "").strip()
         map_url = str(store.get("map_url") or "").strip()
         parking_name = str(store.get("parking_name") or "").strip()
         parking_address = str(store.get("parking_address") or "").strip()
@@ -269,9 +270,15 @@ def _store_fact_text_fallback(state: AgentState) -> str:
             prefix = ""
         parts = []
         if name and address:
-            parts.append(f"{prefix}我查到{name}，地址在{address}")
+            if distance_text:
+                parts.append(f"{prefix}离您近的是{name}，约{distance_text}，地址在{address}")
+            else:
+                parts.append(f"{prefix}我查到{name}，地址在{address}")
         elif name:
-            parts.append(f"{prefix}我查到{name}")
+            if distance_text:
+                parts.append(f"{prefix}离您近的是{name}，约{distance_text}")
+            else:
+                parts.append(f"{prefix}我查到{name}")
         elif address:
             parts.append(f"{prefix}我查到门店地址在{address}")
         if hours:
