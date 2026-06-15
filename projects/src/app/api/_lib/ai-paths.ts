@@ -229,6 +229,23 @@ export async function clearAiPathsCustomerMemory(customerId: string) {
   );
 }
 
+export async function getAiPathsCustomerMemory(customerId: string) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers: Record<string, string> = {};
+  if (process.env.AI_PATHS_API_KEY) {
+    headers.Authorization = `Bearer ${process.env.AI_PATHS_API_KEY}`;
+  }
+
+  return fetch(
+    `${apiBase.replace(/\/$/, "")}/admin/customers/${encodeURIComponent(customerId)}/memory`,
+    {
+      method: "GET",
+      headers,
+      cache: "no-store",
+    }
+  );
+}
+
 export type AiPathsRunsQuery = {
   limit?: string;
   customer_id?: string;

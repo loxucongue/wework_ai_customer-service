@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Activity, Bot, Sparkles, Settings, UserRoundX } from "lucide-react";
+import { Activity, Bot, Search, Sparkles, Settings, UserRoundSearch, UserRoundX, X } from "lucide-react";
 import Link from "next/link";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatInput } from "./chat-input";
@@ -86,6 +86,11 @@ export function ChatMain() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isClearingMemory, setIsClearingMemory] = useState(false);
+  const [isMemoryPanelOpen, setIsMemoryPanelOpen] = useState(false);
+  const [memoryCustomerId, setMemoryCustomerId] = useState("");
+  const [isLoadingMemory, setIsLoadingMemory] = useState(false);
+  const [memoryResult, setMemoryResult] = useState<Record<string, unknown> | null>(null);
+  const [memoryError, setMemoryError] = useState("");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mounted, setMounted] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -226,6 +231,44 @@ export function ChatMain() {
       setIsClearingMemory(false);
     }
   }, [activeConversation, isClearingMemory]);
+
+  const openMemoryPanel = useCallback(() => {
+    setMemoryCustomerId(activeConversation?.id || "");
+    setMemoryResult(null);
+    setMemoryError("");
+    setIsMemoryPanelOpen(true);
+  }, [activeConversation]);
+
+  const queryCustomerMemory = useCallback(async () => {
+    const customerId = memoryCustomerId.trim();
+    if (!customerId || isLoadingMemory) return;
+
+    setIsLoadingMemory(true);
+    setMemoryError("");
+    try {
+      const response = await fetch(
+        `/api/memory/customer?customer_id=${encodeURIComponent(customerId)}`,
+        { cache: "no-store" }
+      );
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail =
+          typeof payload.detail === "string"
+            ? payload.detail
+            : typeof payload.error === "string"
+              ? payload.error
+              : `HTTP ${response.status}`;
+        throw new Error(detail);
+      }
+      setMemoryResult(payload.memory && typeof payload.memory === "object" ? payload.memory : {});
+    } catch (error) {
+      console.error("Failed to query customer memory:", error);
+      setMemoryResult(null);
+      setMemoryError(error instanceof Error ? error.message : "查询失败");
+    } finally {
+      setIsLoadingMemory(false);
+    }
+  }, [isLoadingMemory, memoryCustomerId]);
 
   const sendMessage = useCallback(
     async (content: string, imageFile?: File) => {
@@ -518,6 +561,14 @@ export function ChatMain() {
               <UserRoundX className="h-3.5 w-3.5" />
               {isClearingMemory ? "清理中" : "清空画像"}
             </button>
+            <button
+              type="button"
+              onClick={openMemoryPanel}
+              className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              <UserRoundSearch className="h-3.5 w-3.5" />
+              画像
+            </button>
             <Link href="/logs">
               <button
                 type="button"
@@ -592,6 +643,90 @@ export function ChatMain() {
         {/* Input area */}
         <ChatInput onSend={sendMessage} disabled={isLoading} />
       </div>
+
+      {isMemoryPanelOpen && (
+        <div className="fixed inset-y-0 right-0 z-30 flex w-full max-w-xl flex-col border-l bg-background shadow-xl">
+          <div className="flex items-center gap-3 border-b px-5 py-4">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <UserRoundSearch className="h-4 w-4" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold">客户画像与历史事件</h2>
+              <p className="text-xs text-muted-foreground">输入 customer_id 查询当前服务器记忆</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsMemoryPanelOpen(false)}
+              className="ml-auto rounded-lg border p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              aria-label="关闭画像面板"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="border-b p-5">
+            <div className="flex gap-2">
+              <input
+                value={memoryCustomerId}
+                onChange={(event) => setMemoryCustomerId(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") queryCustomerMemory();
+                }}
+                className="min-w-0 flex-1 rounded-lg border bg-background px-3 py-2 text-sm outline-none transition-colors focus:border-primary"
+                placeholder="输入 customer_id"
+              />
+              <button
+                type="button"
+                onClick={queryCustomerMemory}
+                disabled={!memoryCustomerId.trim() || isLoadingMemory}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Search className="h-4 w-4" />
+                {isLoadingMemory ? "查询中" : "查询"}
+              </button>
+            </div>
+            {memoryError && (
+              <p className="mt-2 text-xs text-destructive">{memoryError}</p>
+            )}
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            {memoryResult ? (
+              <div className="space-y-4">
+                <MemorySection title="基础信息" value={memoryResult.basic_info} />
+                <MemorySection title="客户画像" value={memoryResult.portrait} />
+                <MemorySection title="生命周期阶段" value={memoryResult.lifecycle_stage} />
+                <MemorySection title="历史事件" value={memoryResult.history_events} />
+                <MemorySection title="完整原始数据" value={memoryResult} />
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed p-6 text-sm text-muted-foreground">
+                输入客户 ID 后，可以看到服务器保存的画像、基础信息和历史事件。
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function MemorySection({ title, value }: { title: string; value: unknown }) {
+  const isEmpty =
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    (Array.isArray(value) && value.length === 0) ||
+    (typeof value === "object" && !Array.isArray(value) && Object.keys(value as object).length === 0);
+
+  return (
+    <section className="rounded-lg border">
+      <div className="border-b px-4 py-2 text-xs font-medium text-muted-foreground">
+        {title}
+      </div>
+      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words p-4 text-xs leading-5">
+        {isEmpty ? "暂无数据" : JSON.stringify(value, null, 2)}
+      </pre>
+    </section>
   );
 }
