@@ -133,6 +133,8 @@ def _normalize_map_url(value: Any) -> str:
             return text
         if link_id:
             return f"https://mmapgwh.map.qq.com/shortlink/short?l={link_id}&tempSource=pcMap"
+        if "mmapgwh.map.qq.com/shortlink/short" in text:
+            return ""
         return text
     if text.startswith("l="):
         link_id = text.split("=", 1)[1].split("&", 1)[0].strip()

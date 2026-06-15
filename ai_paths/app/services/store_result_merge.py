@@ -76,7 +76,7 @@ def merge_local_store_details(store: dict[str, Any], stores_catalog: list[StoreR
         (
             record
             for record in stores_catalog
-            if record.name == name or any(alias and alias in record.name for alias in aliases)
+            if _local_record_matches_platform_name(record, name, aliases)
         ),
         None,
     )
@@ -90,3 +90,11 @@ def merge_local_store_details(store: dict[str, Any], stores_catalog: list[StoreR
     if not merged.get("address") and local_data.get("address"):
         merged["address"] = local_data["address"]
     return merged
+
+
+def _local_record_matches_platform_name(record: StoreRecord, name: str, aliases: list[str]) -> bool:
+    if record.name == name or record.name in name or name in record.name:
+        return True
+    local_aliases = store_text.store_aliases(record.name)
+    haystack = f"{name} {record.name}"
+    return any(alias and alias in haystack for alias in [*aliases, *local_aliases])

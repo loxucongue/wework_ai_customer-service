@@ -321,6 +321,7 @@ def _append_navigation_url_if_requested(state: AgentState, text: str) -> str:
     if not _current_query_asks_navigation(state):
         return text
     content = _remove_bare_tencent_shortlink_fragment(str(text or "").strip())
+    content = _remove_incomplete_tencent_shortlink_url(content)
     if "http://" in content or "https://" in content:
         return content
     map_url = _recommended_store_field(state, "map_url")
@@ -335,6 +336,12 @@ def _remove_bare_tencent_shortlink_fragment(text: str) -> str:
     content = re.sub(r"[，,。；;、\\s]*l=[A-Za-z0-9_-]{8,}(?:&tempSource=\\w+)?", "", content)
     content = re.sub(r"[，,。；;、\\s]*short\\?l=[A-Za-z0-9_-]{8,}(?:&tempSource=\\w+)?", "", content)
     return content.strip()
+
+
+def _remove_incomplete_tencent_shortlink_url(text: str) -> str:
+    content = str(text or "")
+    content = re.sub(r"https?://mmapgwh\\.map\\.qq\\.com/shortlink/short\\?(?![^\\s，。；;、]*l=)[^\\s，。；;、]*", "", content)
+    return re.sub(r"\\s{2,}", " ", content).strip(" ，。；;、")
 
 
 def _limit_to_one_customer_question(text: str) -> str:
