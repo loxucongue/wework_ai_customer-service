@@ -31,11 +31,12 @@ class ModelClient:
         *,
         tier: ModelTier = "balanced",
         temperature: float = 0.2,
+        model_names: list[str] | None = None,
     ) -> str:
         if not self.available:
             raise RuntimeError("No model API key configured")
         errors: list[str] = []
-        for index, model in enumerate(self._model_names(tier)):
+        for index, model in enumerate(model_names or self._model_names(tier)):
             payload = {
                 "model": model,
                 "messages": messages,
@@ -56,16 +57,20 @@ class ModelClient:
         *,
         tier: ModelTier = "balanced",
         temperature: float = 0.1,
+        model_names: list[str] | None = None,
+        response_format: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         if not self.available:
             raise RuntimeError("No model API key configured")
         errors: list[str] = []
-        for index, model in enumerate(self._model_names(tier)):
+        for index, model in enumerate(model_names or self._model_names(tier)):
             payload = {
                 "model": model,
                 "messages": messages,
                 "temperature": temperature,
             }
+            if response_format:
+                payload["response_format"] = response_format
             try:
                 raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
                 return self._parse_json(self._extract_text(raw))
@@ -137,7 +142,11 @@ class ModelClient:
             self._client_loop = None
             client = self._http_client()
             response = await client.post(url, headers=headers, content=body)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            body = response.text[:800].replace("\n", " ").strip()
+            raise RuntimeError(f"model_http_{response.status_code}: {body}") from exc
         raw = response.json()
         self.last_usage = {
             "provider": self.settings.model_provider,

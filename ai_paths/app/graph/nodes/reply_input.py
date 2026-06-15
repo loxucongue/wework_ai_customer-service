@@ -11,7 +11,7 @@ from app.graph.planner.runtime_plan import (
 )
 from app.graph.state import AgentState
 from app.graph.nodes.common import json_dumps
-from app.prompts.reply_synthesizer import build_repair_messages, build_reply_messages, build_text_rescue_messages
+from app.prompts.reply_synthesizer import build_reply_messages
 
 
 def should_use_model_reply(state: AgentState) -> bool:
@@ -31,17 +31,3 @@ def reply_model_tier(state: AgentState) -> str:
 
 def reply_messages_for_model(state: AgentState, reply_user_payload: dict[str, Any]) -> list[dict[str, Any]]:
     return build_reply_messages(reply_user_payload, json_dumps=json_dumps)
-
-
-def reply_repair_messages_for_model(
-    state: AgentState,
-    draft_messages: list[dict[str, Any]],
-    reply_user_payload: dict[str, Any],
-) -> list[dict[str, Any]]:
-    del state
-    return build_repair_messages(reply_user_payload, draft_messages, json_dumps=json_dumps)
-
-
-def reply_text_rescue_messages_for_model(state: AgentState, reply_user_payload: dict[str, Any]) -> list[dict[str, Any]]:
-    del state
-    return build_text_rescue_messages(reply_user_payload, json_dumps=json_dumps)

@@ -9,6 +9,11 @@ from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
 
 
+FINAL_REPLY_MODEL_NAMES = ["deepseek-v4-flash"]
+FINAL_REPLY_JSON_FORMAT = {"type": "json_object"}
+FINAL_REPLY_TEMPERATURE = 0.25
+
+
 def create_synthesize_reply_node(
     *,
     trace_logger: TraceLogger,
@@ -18,8 +23,6 @@ def create_synthesize_reply_node(
     postprocess_reply_messages: Callable[[AgentState, list[dict[str, Any]]], list[dict[str, Any]]],
     reply_messages_for_model: Callable[[AgentState], list[dict[str, Any]]],
     reply_model_tier: Callable[[AgentState], str],
-    reply_repair_messages_for_model: Callable[[AgentState, list[dict[str, Any]]], list[dict[str, Any]]],
-    reply_text_rescue_messages_for_model: Callable[[AgentState], list[dict[str, Any]]],
     should_use_model_reply: Callable[[AgentState], bool],
     validated_model_messages: Callable[[dict[str, Any]], list[dict[str, Any]]],
 ):
@@ -33,8 +36,6 @@ def create_synthesize_reply_node(
             errors = list(state.get("errors", []))
             messages: list[dict[str, Any]] = []
             reply_source = "main_model"
-            repair_attempted = False
-            text_rescue_attempted = False
             pending_model_errors: list[dict[str, Any]] = []
 
             try:
@@ -44,34 +45,19 @@ def create_synthesize_reply_node(
                 tier = reply_model_tier(state)
                 model_call = {"name": "reply_synthesizer_model", "input": {"tier": tier, "required": True}}
 
-                payload = await model_client.chat_json(reply_messages_for_model(state), tier=tier, temperature=0.0)
+                payload = await model_client.chat_json(
+                    reply_messages_for_model(state),
+                    tier=tier,
+                    temperature=FINAL_REPLY_TEMPERATURE,
+                    model_names=FINAL_REPLY_MODEL_NAMES,
+                    response_format=FINAL_REPLY_JSON_FORMAT,
+                )
                 model_call["usage"] = model_usage_snapshot(model_client)
                 messages = validated_model_messages(payload)
                 model_call["draft_messages"] = debug_message_contents(messages)
                 if messages:
                     messages = postprocess_reply_messages(state, messages)
                     model_call["postprocessed_messages"] = debug_message_contents(messages)
-
-                if not messages or model_reply_unsafe(state, messages):
-                    messages, repair_call, repaired = await _try_repair_reply(
-                        state=state,
-                        draft_messages=messages,
-                        tier=tier,
-                        model_client=model_client,
-                        model_reply_unsafe=model_reply_unsafe,
-                        postprocess_reply_messages=postprocess_reply_messages,
-                        reply_repair_messages_for_model=reply_repair_messages_for_model,
-                        validated_model_messages=validated_model_messages,
-                        debug_message_contents=debug_message_contents,
-                        reason="initial_quality_gate",
-                    )
-                    repair_attempted = True
-                    model_call.setdefault("nested_calls", []).append(repair_call)
-                    if repaired:
-                        model_call["fallback"] = "repaired_model_reply"
-                        reply_source = "repair_model"
-                    else:
-                        model_call["fallback"] = "handoff_after_repair_failure"
 
                 model_call["output"] = {"messages": len(messages)}
             except Exception as exc:
@@ -88,68 +74,7 @@ def create_synthesize_reply_node(
                 messages = []
 
             if messages and model_reply_unsafe(state, messages):
-                repaired = False
-                if model_call and model_client and model_client.available:
-                    tier = str((model_call.get("input") or {}).get("tier") or reply_model_tier(state))
-                    messages, repair_call, repaired = await _try_repair_reply(
-                        state=state,
-                        draft_messages=messages,
-                        tier=tier,
-                        model_client=model_client,
-                        model_reply_unsafe=model_reply_unsafe,
-                        postprocess_reply_messages=postprocess_reply_messages,
-                        reply_repair_messages_for_model=reply_repair_messages_for_model,
-                        validated_model_messages=validated_model_messages,
-                        debug_message_contents=debug_message_contents,
-                        reason="final_quality_gate",
-                    )
-                    repair_attempted = True
-                    model_call.setdefault("nested_calls", []).append(repair_call)
-                    if repaired:
-                        reply_source = "repair_model"
-                        model_call["fallback"] = "repaired_after_final_quality_gate"
-                if not repaired:
-                    messages = []
-                    errors.append({"node": "synthesize_reply", "message": "final_reply_failed_quality_gate"})
-
-            if not messages:
-                if model_call and model_client and model_client.available and not repair_attempted:
-                    tier = str((model_call.get("input") or {}).get("tier") or reply_model_tier(state))
-                    messages, repair_call, repaired = await _try_repair_reply(
-                        state=state,
-                        draft_messages=[],
-                        tier=tier,
-                        model_client=model_client,
-                        model_reply_unsafe=model_reply_unsafe,
-                        postprocess_reply_messages=postprocess_reply_messages,
-                        reply_repair_messages_for_model=reply_repair_messages_for_model,
-                        validated_model_messages=validated_model_messages,
-                        debug_message_contents=debug_message_contents,
-                        reason="empty_reply_contract",
-                    )
-                    repair_attempted = True
-                    model_call.setdefault("nested_calls", []).append(repair_call)
-                    if repaired:
-                        reply_source = "repair_model"
-                        model_call["fallback"] = "repaired_empty_reply_contract"
-
-            if not messages and model_call and model_client and model_client.available and not text_rescue_attempted:
-                tier = str((model_call.get("input") or {}).get("tier") or reply_model_tier(state))
-                messages, rescue_call, rescued = await _try_text_rescue_reply(
-                    state=state,
-                    tier=tier,
-                    model_client=model_client,
-                    model_reply_unsafe=model_reply_unsafe,
-                    postprocess_reply_messages=postprocess_reply_messages,
-                    reply_text_rescue_messages_for_model=reply_text_rescue_messages_for_model,
-                    debug_message_contents=debug_message_contents,
-                    reason=str(model_call.get("fallback") or model_call.get("error") or "empty_reply"),
-                )
-                text_rescue_attempted = True
-                model_call.setdefault("nested_calls", []).append(rescue_call)
-                if rescued:
-                    reply_source = "text_rescue_model"
-                    model_call["fallback"] = "text_rescue_model_reply"
+                errors.append({"node": "synthesize_reply", "message": "final_reply_failed_quality_gate"})
 
             if not _has_customer_visible_text(messages):
                 errors.extend(pending_model_errors)
@@ -159,9 +84,7 @@ def create_synthesize_reply_node(
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
             recovered_errors = []
-            if pending_model_errors and reply_source in {"repair_model", "text_rescue_model"}:
-                recovered_errors = pending_model_errors
-            elif pending_model_errors and reply_source in {"safe_text_fallback", "safe_handoff_fallback"}:
+            if pending_model_errors and reply_source in {"safe_text_fallback", "safe_handoff_fallback"}:
                 errors.extend(error for error in pending_model_errors if error not in errors)
             output = {
                 "reply_messages": messages,
@@ -176,92 +99,6 @@ def create_synthesize_reply_node(
             return output
 
     return synthesize_reply
-
-
-async def _try_repair_reply(
-    *,
-    state: AgentState,
-    draft_messages: list[dict[str, Any]],
-    tier: str,
-    model_client: ModelClient,
-    model_reply_unsafe: Callable[[AgentState, list[dict[str, Any]]], bool],
-    postprocess_reply_messages: Callable[[AgentState, list[dict[str, Any]]], list[dict[str, Any]]],
-    reply_repair_messages_for_model: Callable[[AgentState, list[dict[str, Any]]], list[dict[str, Any]]],
-    validated_model_messages: Callable[[dict[str, Any]], list[dict[str, Any]]],
-    debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
-    reason: str,
-) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
-    repair_call: dict[str, Any] = {"name": "reply_repair_model", "input": {"tier": tier, "required": True, "reason": reason}}
-    try:
-        repair_payload = await model_client.chat_json(
-            reply_repair_messages_for_model(state, draft_messages),
-            tier=tier,
-            temperature=0.05,
-        )
-        repair_call["usage"] = model_usage_snapshot(model_client)
-        repaired_messages = validated_model_messages(repair_payload)
-        repair_call["draft_messages"] = debug_message_contents(repaired_messages)
-        if repaired_messages:
-            repaired_messages = postprocess_reply_messages(state, repaired_messages)
-            repair_call["postprocessed_messages"] = debug_message_contents(repaired_messages)
-        if repaired_messages and not model_reply_unsafe(state, repaired_messages):
-            return repaired_messages, repair_call, True
-        repair_call["error"] = "repaired_reply_still_unsafe"
-    except Exception as repair_exc:
-        repair_call["error"] = f"{type(repair_exc).__name__}: {repair_exc}"
-    return [], repair_call, False
-
-
-async def _try_text_rescue_reply(
-    *,
-    state: AgentState,
-    tier: str,
-    model_client: ModelClient,
-    model_reply_unsafe: Callable[[AgentState, list[dict[str, Any]]], bool],
-    postprocess_reply_messages: Callable[[AgentState, list[dict[str, Any]]], list[dict[str, Any]]],
-    reply_text_rescue_messages_for_model: Callable[[AgentState], list[dict[str, Any]]],
-    debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
-    reason: str,
-) -> tuple[list[dict[str, Any]], dict[str, Any], bool]:
-    rescue_call: dict[str, Any] = {
-        "name": "reply_text_rescue_model",
-        "input": {"tier": tier, "required": True, "reason": reason},
-    }
-    try:
-        text = await model_client.chat_text(
-            reply_text_rescue_messages_for_model(state),
-            tier=tier,
-            temperature=0.05,
-        )
-        rescue_call["usage"] = model_usage_snapshot(model_client)
-        text = _clean_rescue_text(text)
-        rescue_call["draft_text"] = text[:240]
-        if not text:
-            rescue_call["error"] = "empty_text_rescue"
-            return [], rescue_call, False
-
-        rescued_messages = [{"type": "text", "order": 1, "content": {"text": text}}]
-        rescued_messages = postprocess_reply_messages(state, rescued_messages)
-        rescue_call["postprocessed_messages"] = debug_message_contents(rescued_messages)
-        if rescued_messages and not model_reply_unsafe(state, rescued_messages):
-            return rescued_messages, rescue_call, True
-        rescue_call["error"] = "text_rescue_still_unsafe"
-    except Exception as rescue_exc:
-        rescue_call["error"] = f"{type(rescue_exc).__name__}: {rescue_exc}"
-    return [], rescue_call, False
-
-
-def _clean_rescue_text(text: str) -> str:
-    cleaned = str(text or "").strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`").strip()
-        if cleaned.lower().startswith("text"):
-            cleaned = cleaned[4:].strip()
-    cleaned = cleaned.strip().strip('"').strip("'").strip()
-    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
-    if lines:
-        cleaned = " ".join(lines)
-    return cleaned.strip()
 
 
 def _has_customer_visible_text(messages: list[dict[str, Any]]) -> bool:

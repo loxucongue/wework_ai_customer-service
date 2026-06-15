@@ -5,6 +5,7 @@ from typing import Any
 from app.graph.planner.tool_policy import (
     dedupe_tools,
     enforce_required_tools,
+    needs_appointment_time_request,
     needs_store_lookup_request,
     normalize_tools,
     tool_policy_violations,
@@ -32,7 +33,10 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         raise ValueError("Planner Brain missing valid primary_task")
 
     all_tasks = [primary_task, *secondary_tasks]
-    if needs_store_lookup_request(state, str(state.get("normalized_content") or "")):
+    normalized_content = str(state.get("normalized_content") or "")
+    if needs_appointment_time_request(normalized_content):
+        _coerce_primary_task_to_appointment_time(primary_task, reply_strategy_raw)
+    elif needs_store_lookup_request(state, normalized_content):
         _coerce_primary_task_to_store_lookup(primary_task, reply_strategy_raw)
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     request_stage = str(request_context.get("customer_stage") or "").strip()
@@ -126,6 +130,28 @@ def _coerce_primary_task_to_store_lookup(primary_task: dict[str, Any], reply_str
     ]
     if isinstance(reply_strategy_raw, dict):
         reply_strategy_raw.setdefault("can_push", "帮客户确认更近门店或下一步到店时间")
+
+
+def _coerce_primary_task_to_appointment_time(primary_task: dict[str, Any], reply_strategy_raw: Any) -> None:
+    primary_task["type"] = "appointment"
+    primary_task["subtype"] = primary_task.get("subtype") or "time_check"
+    primary_task["policy_hint"] = primary_task.get("policy_hint") or "SF9_APPOINTMENT_TIME_CHECK"
+    primary_task["scene"] = primary_task.get("scene") or "S3 报价收单"
+    primary_task["subflow"] = primary_task.get("subflow") or "APPOINTMENT_TIME_CHECK"
+    primary_task["sop_stage"] = "S3_PRICE_CLOSE"
+    primary_task["sop_step"] = primary_task.get("sop_step") or "收单"
+    primary_task["answer_goal"] = (
+        primary_task.get("answer_goal")
+        or "Check real store and availability facts before answering whether the customer can visit at that time."
+    )
+    primary_task["must_answer"] = list(primary_task.get("must_answer") or []) or [
+        "根据真实门店和档期事实回答客户能不能约这个时间"
+    ]
+    primary_task["must_avoid"] = list(primary_task.get("must_avoid") or []) + [
+        "没有真实档期时说预约成功或确认可约"
+    ]
+    if isinstance(reply_strategy_raw, dict):
+        reply_strategy_raw.setdefault("can_push", "确认门店、时间或补齐预约信息")
 
 
 def _normalize_task(raw: Any, *, default_priority: int) -> dict[str, Any]:

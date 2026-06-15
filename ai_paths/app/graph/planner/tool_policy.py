@@ -53,6 +53,26 @@ STORE_CITY_TERMS = (
     "天津",
 )
 
+APPOINTMENT_TIME_TERMS = (
+    "能约",
+    "可以约",
+    "预约",
+    "几点",
+    "今天",
+    "明天",
+    "上午",
+    "下午",
+    "晚上",
+    "周一",
+    "周二",
+    "周三",
+    "周四",
+    "周五",
+    "周六",
+    "周日",
+    "星期",
+)
+
 
 def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
@@ -151,6 +171,9 @@ def enforce_required_tools(
 
     if needs_store_lookup_request(state, original_user_query):
         ensure_store_lookup("Customer is asking for nearby or preferred store using recent city/area/landmark context")
+    if needs_appointment_time_request(original_user_query):
+        ensure_store_lookup("Need real store facts before checking appointment availability")
+        add_tool({"name": "available_time", "purpose": "Need real appointment availability before answering time or visit intent"})
     if has_case_request(original_user_query):
         ensure_case_studies()
 
@@ -275,6 +298,14 @@ def needs_store_lookup_request(state: AgentState, content: str) -> bool:
     ):
         return True
     return should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state)
+
+
+def needs_appointment_time_request(content: str) -> bool:
+    if not content:
+        return False
+    if "约" in content and any(term in content for term in APPOINTMENT_TIME_TERMS):
+        return True
+    return any(term in content for term in ("几点去", "几点过来", "什么时候去", "什么时候过来"))
 
 
 def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:

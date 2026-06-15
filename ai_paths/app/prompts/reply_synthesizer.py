@@ -190,6 +190,9 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 话术方向：我先帮您记清楚，我让专业同事继续核对/协助处理。
 
 # 输出格式
+You must return a valid json object. Do not return markdown or plain text.
+The json object must contain the key "reply_messages".
+
 普通回复：
 {
   "reply_messages": [
@@ -228,70 +231,8 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 )
 
 
-REPAIR_SYSTEM_PROMPT = """
-# 身份 / 使命
-你是最终回复的轻量修复模型，只修结构、格式和明显风险，不改业务结论。
-
-# 任务
-只做这些事：
-1. 修复 JSON 结构。
-2. 删除内部分析、工具名、知识库名、路由字段。
-3. 删除重复句、无意义客套、明显违规承诺。
-4. 压缩为默认1条text，必要时最多2条text。
-5. 如果已有 human_handoff，保留它；如果 handoff.needed=true，必须先有1条客户可见text。
-6. 如果已有 book_order 且包含 order_id，保留它；没有真实 order_id 时不要新增 book_order。
-7. 保留当前问题的直接答案，不要为了贴近话术而漏答。
-8. 如果有 canonical_sales_reply 或 sales_script，尽量保留短句节奏和核心词。
-
-# 禁止
-- 不新增事实。
-- 不编价格、门店、营业时间、档期、预约成功、订单、退款、案例结果。
-- 客户问最近/离我近/哪家近时，没有 distance_facts 不能指定某一家是最近或优先推荐，只能说已查到候选门店，具体距离继续核对或以导航为准。
-- 客户问效果图/案例时，没有 case_facts.image_url 不能说“我发你看”“下面发图”，也不能输出占位链接。
-- 不说 AI、机器人、转人工。
-- 不新增强推话术。
-
-# 输出
-只返回合法JSON，格式与主回复模型一致。
-""".strip()
-
-
-TEXT_RESCUE_SYSTEM_PROMPT = """
-你是最终回复的文本救援模型。上轮 JSON 失败时，只输出一句可以直接发给客户的中文文本。
-规则：
-- 先答客户当前问题。
-- 15-60字，像微信短聊。
-- 不编价格、门店、档期、预约、订单、退款、案例结果。
-- 问最近门店但没有距离事实时，不指定某一家最近或优先推荐。
-- 问效果图但没有真实案例图片URL时，不说“我发你看”。
-- 不说 AI、机器人、转人工。
-- 如果事实不足，说继续帮客户核对。
-""".strip()
-
-
 def build_reply_messages(user_payload: dict[str, Any], *, json_dumps) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": REPLY_SYSTEM_PROMPT},
-        {"role": "user", "content": json_dumps(user_payload)},
-    ]
-
-
-def build_repair_messages(
-    user_payload: dict[str, Any],
-    draft_messages: list[dict[str, Any]],
-    *,
-    json_dumps,
-) -> list[dict[str, str]]:
-    payload = dict(user_payload)
-    payload["draft_reply_messages"] = draft_messages
-    return [
-        {"role": "system", "content": REPAIR_SYSTEM_PROMPT},
-        {"role": "user", "content": json_dumps(payload)},
-    ]
-
-
-def build_text_rescue_messages(user_payload: dict[str, Any], *, json_dumps) -> list[dict[str, str]]:
-    return [
-        {"role": "system", "content": TEXT_RESCUE_SYSTEM_PROMPT},
         {"role": "user", "content": json_dumps(user_payload)},
     ]
