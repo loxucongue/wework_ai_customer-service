@@ -124,17 +124,6 @@ def _compact_fact_envelope_for_reply(fact_envelope: dict[str, Any]) -> dict[str,
     compact_structured["price_facts"] = _compact_price_facts(structured.get("price_facts"))
     compact_structured["active_offer_context"] = _compact_active_offer_context()
 
-    order_facts = structured.get("customer_order_facts")
-    if isinstance(order_facts, list) and order_facts:
-        latest = next((item for item in order_facts if isinstance(item, dict)), {})
-        if latest:
-            compact_structured["latest_customer_order_fact"] = {
-                "status": latest.get("status"),
-                "store_name": latest.get("store_name"),
-                "appointment_time": latest.get("appointment_time"),
-                "amount_for_quote": latest.get("amount_for_quote"),
-            }
-
     return {
         "usable_facts": list(envelope.get("usable_facts") or [])[:6],
         "missing_facts": list(envelope.get("missing_facts") or [])[:4],

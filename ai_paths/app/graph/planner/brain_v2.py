@@ -31,7 +31,6 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
         "customer_profile": state.get("customer_profile") or {},
         "customer_basic_info": state.get("customer_basic_info") or {},
         "history_events": (state.get("history_events") or [])[-8:],
-        "appointment_cache": state.get("appointment_cache") or {},
         "customer_context": _compact_customer_context(state.get("customer_context") or {}),
     }
     return [
@@ -60,7 +59,6 @@ def planner_v2_repair_messages_for_model(
         "customer_profile": state.get("customer_profile") or {},
         "customer_basic_info": state.get("customer_basic_info") or {},
         "history_events": (state.get("history_events") or [])[-8:],
-        "appointment_cache": state.get("appointment_cache") or {},
         "customer_context": _compact_customer_context(state.get("customer_context") or {}),
         "original_plan": original_plan,
         "tool_policy_violations": violations,
@@ -149,13 +147,14 @@ def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     keys = (
+        "source",
+        "kind",
+        "platform_customer_id",
+        "customer_add_wechat_id",
         "city",
         "confirmed_store_id",
         "confirmed_store_name",
         "detected_city",
-        "appointment_info",
-        "has_upcoming_appointment",
-        "latest_store_candidates",
     )
     return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
 

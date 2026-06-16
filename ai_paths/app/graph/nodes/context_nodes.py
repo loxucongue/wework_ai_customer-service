@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from app.graph.state import AgentState
 from app.services.customer_context import CustomerContextService
+from app.services.customer_context_extractors import appointment_from_request_context
 from app.services.memory_store import CustomerMemoryStore
 from app.services.trace_logger import TraceLogger
 
@@ -27,18 +28,20 @@ def create_load_customer_context_node(
         ) as span:
             context = {}
             error = None
+            request_context = request_context_from_state(state)
             if customer_context_service:
                 try:
                     context = customer_context_service.load(
                         customer_id=str(state.get("customer_id") or "unknown"),
                         memory=state.get("saved_memory") or {},
-                        request_context=request_context_from_state(state),
+                        request_context=request_context,
                     )
                 except Exception as exc:
                     error = f"{type(exc).__name__}: {exc}"
+            appointment_cache = appointment_from_request_context(request_context)
             output = {
                 "customer_context": context,
-                "appointment_cache": context.get("appointment", {}) if isinstance(context, dict) else {},
+                "appointment_cache": appointment_cache if isinstance(appointment_cache, dict) else {},
                 "customer_context_error": error,
                 "trace": state.get("trace", []),
             }
