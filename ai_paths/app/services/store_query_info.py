@@ -40,6 +40,7 @@ def build_store_query_info(query: str, stores: list[StoreRecord]) -> StoreQueryI
                 "导航",
                 "路线",
                 "怎么过去",
+                "怎么去",
                 "地址",
                 "哪里",
                 "位置",

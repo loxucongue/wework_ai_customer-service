@@ -19,11 +19,16 @@ def needs_city_before_lookup(query: str, *, city: str, requested_name: str) -> b
 
 
 def extract_location_preference(query: str) -> str:
-    if any(term in query for term in ["蔡塘地铁站", "蔡塘站", "蔡塘"]):
-        return "蔡塘地铁站附近"
-    if any(term in query for term in ["机场附近", "机场周边", "离机场近", "机场近", "高崎机场", "厦门机场", "机场"]):
+    text = query or ""
+    if any(term in text for term in ["南山科技园", "科技园"]):
+        return "南山科技园"
+    if any(term in text for term in ["高崎机场", "厦门机场", "厦门高崎", "机场附近", "机场周边", "离机场近", "机场"]):
+        if "厦门" in text or "高崎" in text:
+            return "厦门高崎机场"
         return "机场附近"
-    if any(term in query for term in ["火车站附近", "离火车站近", "高铁站附近"]):
+    if any(term in text for term in ["蔡塘地铁站", "蔡塘站", "蔡塘"]):
+        return "蔡塘地铁站"
+    if any(term in text for term in ["火车站附近", "离火车站近", "高铁站附近", "火车站", "高铁站"]):
         return "火车站附近"
     return ""
 
@@ -38,7 +43,7 @@ def extract_area_or_landmark(query: str) -> str:
         if index >= 0:
             start = max(0, index - 8)
             return text[start : index + len(suffix)].strip()
-    for area in AREA_CITY_MAP:
+    for area in sorted(AREA_CITY_MAP, key=len, reverse=True):
         if area in text:
             return area
     return ""
@@ -58,41 +63,40 @@ def location_granularity(query: str, stores: list[StoreRecord]) -> str:
 
 
 def extract_city(query: str, stores: list[StoreRecord]) -> str:
+    text = query or ""
     for city in CITY_NAMES:
-        if city in query:
+        if city in text:
             return city
     for store in stores:
-        if store.name in query:
+        if store.name and store.name in text:
             return store.city
-    for area, city in AREA_CITY_MAP.items():
-        if area in query:
+    for area, city in sorted(AREA_CITY_MAP.items(), key=lambda item: len(item[0]), reverse=True):
+        if area in text:
             return city
     for location in EXTERNAL_LOCATION_NAMES:
-        if location in query:
+        if location in text:
             return location
     return ""
 
 
 def extract_store_name(query: str, stores: list[StoreRecord]) -> str:
-    city = extract_city(query, stores)
+    text = query or ""
+    city = extract_city(text, stores)
     for store in stores:
-        if store.name in query:
+        if store.name and store.name in text:
             return store.name
-    if "百星" in query and city:
-        return f"{city}百星"
     for alias, name in QUERY_STORE_ALIASES.items():
-        if alias in query:
-            alias_city = city_for_store_name(name, stores)
-            if city and alias_city and city != alias_city:
-                continue
-            return name
+        if alias not in text:
+            continue
+        alias_city = city_for_store_name(name, stores)
+        if city and alias_city and city != alias_city:
+            continue
+        return name
     return ""
 
 
 def store_aliases(name: str) -> list[str]:
-    if name.endswith("百星"):
-        return [name, "百星"]
-    return STORE_ALIASES.get(name, [name])
+    return STORE_ALIASES.get(name, [name] if name else [])
 
 
 def city_for_store_name(name: str, stores: list[StoreRecord]) -> str:
@@ -157,7 +161,7 @@ def store_matches_requested_name(store: dict[str, Any], requested_name: str, ali
 
 
 def asks_store_status(query: str) -> bool:
-    return any(term in query for term in ["关门", "开门", "闭店", "停业", "还开", "还营业", "营业吗", "营业时间", "几点开", "几点关"])
+    return any(term in (query or "") for term in ["关门", "开门", "闭店", "停业", "还开", "还营业", "营业吗", "营业时间", "几点开", "几点关"])
 
 
 def match_rows_by_query_name(rows: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:

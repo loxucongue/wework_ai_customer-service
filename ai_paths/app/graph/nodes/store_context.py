@@ -104,9 +104,9 @@ def _is_customer_history_item(item: object) -> bool:
             return sender in {"user", "customer"}
         return True
     text = str(item or "").strip()
-    if text.startswith(("小贝：", "客服：", "AI回复：", "助手：")):
+    if text.startswith(("小贝：", "小贝:", "客服：", "客服:", "AI回复：", "AI回复:", "助手：", "助手:")):
         return False
-    if text.startswith(("客户：", "用户：")):
+    if text.startswith(("客户：", "客户:", "用户：", "用户:")):
         return True
     return True
 

@@ -53,7 +53,7 @@ def select_store_for_appointment(stores: Any, store_name_hint: str) -> dict[str,
     if not hint:
         return {}
     normalized_hint = re.sub(r"(门店|店名|店)$", "", hint)
-    area_aliases = ["百星", "思明", "徐汇", "静安", "浦东", "渝北", "南岸", "渝中", "中贸"]
+    area_aliases = ["集美", "湖里", "徐汇", "静安", "浦东", "虹口", "嘉定", "罗湖", "福田", "宝安", "渝北", "南岸", "渝中", "小寨", "未央", "碑林", "高新"]
     for store in stores:
         if not isinstance(store, dict):
             continue
@@ -77,7 +77,7 @@ def has_explicit_location_or_store(content: str, extract_city: Callable[[str], s
         return True
     return any(
         term in content
-        for term in ["店", "门店", "这家", "那家", "附近", "地址", "上海", "厦门", "重庆", "成都", "北京", "广州", "深圳"]
+        for term in ["店", "门店", "这家", "那家", "附近", "地址", "上海", "厦门", "重庆", "成都", "北京", "广州", "深圳", "西安"]
     )
 
 
@@ -91,7 +91,7 @@ def can_use_cached_appointment_store(content: str) -> bool:
 
 
 def extract_date_value(content: str) -> str:
-    explicit = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", content)
+    explicit = re.search(r"(20\d{2})(?:[-/.年])(\d{1,2})(?:[-/.月])(\d{1,2})", content)
     if explicit:
         year, month, day = [int(part) for part in explicit.groups()]
         return date(year, month, day).isoformat()
@@ -117,6 +117,7 @@ def extract_date_value(content: str) -> str:
         "星期六": 5,
         "周日": 6,
         "星期日": 6,
+        "星期天": 6,
         "周末": 5,
     }
     for text, target in weekday_map.items():
