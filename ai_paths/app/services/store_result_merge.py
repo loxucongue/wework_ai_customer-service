@@ -27,7 +27,10 @@ def sanitize_platform_result(
             continue
         if requested_name and not store_text.store_matches_requested_name(store, requested_name, aliases):
             continue
-        clean_stores.append(merge_local_store_details(store, stores_catalog))
+        merged = merge_local_store_details(store, stores_catalog)
+        if not store_format.is_public_store(merged):
+            continue
+        clean_stores.append(merged)
         if len(clean_stores) >= limit:
             break
     output = dict(result)
@@ -44,7 +47,11 @@ def merge_local_city_stores(
     stores_catalog: list[StoreRecord],
     limit: int,
 ) -> dict[str, Any]:
-    stores = [store for store in result.get("stores", []) if isinstance(store, dict)]
+    stores = [
+        store
+        for store in result.get("stores", [])
+        if isinstance(store, dict) and store_format.is_public_store(store)
+    ]
     seen = {
         (str(store.get("id") or ""), str(store.get("name") or ""), str(store.get("address") or ""))
         for store in stores

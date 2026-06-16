@@ -8,8 +8,8 @@ from app.graph.nodes.store_context import (
     store_query_from_state,
 )
 from app.graph.planner.planner_contract import ALLOWED_KBS, ALLOWED_TOOLS
-from app.graph.state import AgentState
 from app.graph.signals.project import has_case_request
+from app.graph.state import AgentState
 from app.policies.sop_rules import normalize_sop_stage
 
 
@@ -18,13 +18,16 @@ STORE_FACT_TERMS = (
     "店",
     "地址",
     "位置",
+    "定位",
     "导航",
     "路线",
+    "怎么去",
     "营业时间",
     "几点开门",
     "几点关门",
     "停车",
     "机场",
+    "高铁",
     "地铁",
     "附近",
     "离我近",
@@ -86,9 +89,8 @@ def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
             continue
         kb_name = str(item.get("kb_name") or "").strip()
         query = str(item.get("query") or "").strip()
-        if name == "kb_search":
-            if kb_name not in ALLOWED_KBS or not query:
-                continue
+        if name == "kb_search" and (kb_name not in ALLOWED_KBS or not query):
+            continue
         tool = {"name": name, "purpose": str(item.get("purpose") or "").strip()}
         if kb_name:
             tool["kb_name"] = kb_name
@@ -178,10 +180,15 @@ def enforce_required_tools(
         )
 
     if needs_store_lookup_request(state, original_user_query):
-        ensure_store_lookup("Customer is asking for nearby or preferred store using recent city/area/landmark context")
+        ensure_store_lookup("Customer asks for store/address/route/nearby store facts")
     if needs_appointment_time_request(original_user_query):
         ensure_store_lookup("Need real store facts before checking appointment availability")
-        add_tool({"name": "available_time", "purpose": "Need real appointment availability before answering time or visit intent"})
+        add_tool(
+            {
+                "name": "available_time",
+                "purpose": "Need real appointment availability before answering time or visit intent",
+            }
+        )
     if has_case_request(original_user_query):
         ensure_case_studies()
 
@@ -201,15 +208,30 @@ def enforce_required_tools(
             ensure_store_lookup("Need real store facts before answering store, address, route, hours, or parking")
         if task_type == "appointment" or any(token in markers for token in ("TIME_CHECK", "VISIT_INTENT", "CONFIRM_TIME", "WEEKEND")):
             ensure_store_lookup("Need real store facts before checking appointment availability")
-            add_tool({"name": "available_time", "purpose": "Need real appointment availability before answering time or visit intent"})
+            add_tool(
+                {
+                    "name": "available_time",
+                    "purpose": "Need real appointment availability before answering time or visit intent",
+                }
+            )
         if task_type in {"appointment_status", "appointment_change", "appointment_cancel"} or any(
             token in markers for token in ("APPOINTMENT_STATUS", "APPOINTMENT_CHANGE", "APPOINTMENT_CANCEL")
         ):
-            add_tool({"name": "appointment_record_query", "purpose": "Need real appointment record before status, change, or cancel handling"})
+            add_tool(
+                {
+                    "name": "appointment_record_query",
+                    "purpose": "Need real appointment record before status, change, or cancel handling",
+                }
+            )
         if task_type == "case_request" or "CASE_" in markers:
             ensure_case_studies()
         if task_type in {"human_request", "complaint_refund"} or "HUMAN_HANDOFF" in markers:
-            add_tool({"name": "professional_assist", "purpose": "Need professional colleague for complaint, refund, order/payment, or high-risk handling"})
+            add_tool(
+                {
+                    "name": "professional_assist",
+                    "purpose": "Need professional colleague for complaint, refund, order/payment, or high-risk handling",
+                }
+            )
 
     return dedupe_tools(tools)
 
@@ -257,7 +279,9 @@ def tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[dic
             missing.append("kb_search(case_studies)")
         elif task_type == "competitor_compare" and not has_tool("kb_search", kb_name="sales_talk_qa"):
             missing.append("kb_search(sales_talk_qa)")
-        elif task_type in {"appointment_status", "appointment_change", "appointment_cancel"} and not has_tool("appointment_record_query"):
+        elif task_type in {"appointment_status", "appointment_change", "appointment_cancel"} and not has_tool(
+            "appointment_record_query"
+        ):
             missing.append("appointment_record_query")
         elif task_type == "appointment" and not (
             has_tool("available_time") or has_tool("appointment_create") or has_tool("appointment_record_query")
@@ -307,10 +331,11 @@ def dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def needs_store_lookup_request(state: AgentState, content: str) -> bool:
     if not content:
         return False
-    if any(term in content for term in STORE_FACT_TERMS) and (
-        any(city in content for city in STORE_CITY_TERMS)
-        or any(term in content for term in ("门店", "地址", "位置", "导航", "附近", "哪家近", "离我近", "机场", "地铁"))
-    ):
+    asks_store_fact = any(term in content for term in STORE_FACT_TERMS)
+    has_location_hint = any(city in content for city in STORE_CITY_TERMS) or any(
+        term in content for term in ("门店", "地址", "位置", "导航", "附近", "哪家近", "离我近", "机场", "地铁", "高铁")
+    )
+    if asks_store_fact and has_location_hint:
         return True
     return should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state)
 

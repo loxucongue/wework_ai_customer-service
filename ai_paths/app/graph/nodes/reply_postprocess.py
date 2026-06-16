@@ -499,7 +499,22 @@ def _case_image_message_for_state(state: AgentState, messages: list[dict[str, An
 
 def _looks_like_case_or_effect_turn(state: AgentState) -> bool:
     text = str(state.get("normalized_content") or "")
-    if any(term in text for term in ("效果图", "案例", "对比图", "做完效果", "恢复后", "客户做完", "图片上的客户")):
+    if any(
+        term in text
+        for term in (
+            "效果图",
+            "案例",
+            "对比图",
+            "做完效果",
+            "恢复后",
+            "客户做完",
+            "图片上的客户",
+            "客户做完后的效果",
+            "看看效果",
+            "发个效果",
+            "效果对比",
+        )
+    ):
         return True
     for view in planner_task_views(state):
         if not isinstance(view, dict):

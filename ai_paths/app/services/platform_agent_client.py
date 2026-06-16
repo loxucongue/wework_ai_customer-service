@@ -106,6 +106,18 @@ class PlatformAgentClient:
             return flattened
         return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
+    def list_categories(self, *, request_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        data = self._get(
+            "/platform_agent/option",
+            self._with_common_params({"option": "category"}, request_context),
+        )
+        rows = []
+        if isinstance(data, dict):
+            rows = data.get("category") or data.get("list") or data.get("data") or []
+        elif isinstance(data, list):
+            rows = data
+        return _flatten_category_rows(rows)
+
     def store_info(self, store_id: int | str, *, request_context: dict[str, Any] | None = None) -> dict[str, Any]:
         if not store_id:
             return {}
@@ -147,6 +159,29 @@ class PlatformAgentClient:
             self._with_common_params({"category_id": category_id}, request_context),
         )
         return data if isinstance(data, dict) else {}
+
+    def my_collection(self, *, request_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        data = self._get("/platform_agent/union/my_collection", self._with_common_params({}, request_context))
+        rows = data.get("list") if isinstance(data, dict) else data
+        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+    def prepay_order(
+        self,
+        *,
+        customer_id: int | str,
+        order_id: int | str,
+        payment_id: int | str = 12,
+        collection_id: int | str,
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "customer_id": customer_id,
+            "order_id": order_id,
+            "payment_id": payment_id,
+            "collection_id": collection_id,
+        }
+        data = self._post("/platform_agent/pay/prepay", self._with_common_params(payload, request_context))
+        return data if isinstance(data, dict) else {"result": data}
 
     def create_work_order(
         self,
@@ -196,6 +231,31 @@ class PlatformAgentClient:
         data = self._post("/platform_agent/order/schedule/order_plan", self._with_common_params(payload, request_context))
         return data if isinstance(data, dict) else {"result": data}
 
+    def change_plan_time(
+        self,
+        *,
+        order_id: int | str,
+        date: str,
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        data = self._post(
+            "/platform_agent/order/schedule/change_plan_time",
+            self._with_common_params({"order_id": order_id, "date": date}, request_context),
+        )
+        return data if isinstance(data, dict) else {"result": data}
+
+    def cancel_plan(
+        self,
+        *,
+        order_id: int | str,
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        data = self._post(
+            "/platform_agent/order/schedule/cancel_plan",
+            self._with_common_params({"order_id": order_id}, request_context),
+        )
+        return data if isinstance(data, dict) else {"result": data}
+
     def add_customer_mobile(
         self,
         *,
@@ -239,7 +299,17 @@ class PlatformAgentClient:
         payload = response.json()
         code = payload.get("code")
         if code not in (0, 200, "0", "200", None):
-            raise RuntimeError(str(payload.get("msg") or f"Platform agent error: {code}"))
+            raise RuntimeError(
+                str(
+                    {
+                        "method": "GET",
+                        "path": path,
+                        "params": clean_params,
+                        "code": code,
+                        "msg": payload.get("msg") or f"Platform agent error: {code}",
+                    }
+                )
+            )
         return payload.get("data", {})
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
@@ -256,7 +326,17 @@ class PlatformAgentClient:
         payload = response.json()
         code = payload.get("code")
         if code not in (0, 200, "0", "200", None):
-            raise RuntimeError(str(payload.get("msg") or f"Platform agent error: {code}"))
+            raise RuntimeError(
+                str(
+                    {
+                        "method": "POST",
+                        "path": path,
+                        "payload": clean_payload,
+                        "code": code,
+                        "msg": payload.get("msg") or f"Platform agent error: {code}",
+                    }
+                )
+            )
         return payload.get("data", {})
 
     def _headers(self) -> dict[str, str]:
@@ -271,6 +351,33 @@ def _normalize_platform_base_url(value: str) -> str:
     if "v2.henm.cn" in text:
         return text.replace("v2.henm.cn", "www.henm.cn")
     return text
+
+
+def _flatten_category_rows(rows: Any) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+
+    def visit(items: Any, parent_name: str = "") -> None:
+        if isinstance(items, dict):
+            iterable = items.values()
+        elif isinstance(items, list):
+            iterable = items
+        else:
+            return
+        for item in iterable:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            name = str(row.get("name") or row.get("title") or "").strip()
+            if parent_name and name:
+                row["full_name"] = f"{parent_name}/{name}"
+            elif name:
+                row["full_name"] = name
+            output.append(row)
+            children = row.get("children") or row.get("child") or []
+            visit(children, str(row.get("full_name") or name or parent_name))
+
+    visit(rows)
+    return output
 
 
 def unix_to_text(value: Any) -> str:

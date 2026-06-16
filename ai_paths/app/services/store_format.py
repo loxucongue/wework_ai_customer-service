@@ -8,12 +8,20 @@ from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_catalog import StoreRecord
 
 
+BLOCKED_STORE_TERMS = ("其他门店", "医美外协", "没有地址", "测试")
+
+
 def is_public_store(row: dict[str, Any]) -> bool:
     def int_value(key: str, default: int = 1) -> int:
         try:
             return int(row.get(key, default))
         except (TypeError, ValueError):
             return default
+
+    name = str(row.get("name") or "").strip()
+    address = str(row.get("address") or row.get("tencent_address") or "").strip()
+    if any(term in f"{name} {address}" for term in BLOCKED_STORE_TERMS):
+        return False
 
     return (
         int_value("status") == 1
@@ -47,10 +55,16 @@ def platform_store_to_dict(
 
     begin = info.get("business_hours_begin") or row.get("business_hours_begin") or ""
     end = info.get("business_hours_end") or row.get("business_hours_end") or ""
-    address = info.get("tencent_address") or row.get("tencent_address") or row.get("address") or ""
-    map_url = _normalize_map_url(info.get("tencent_map_store") or row.get("tencent_map_store") or row.get("map_store") or "")
+    address = info.get("tencent_address") or info.get("address") or row.get("tencent_address") or row.get("address") or ""
+    map_url = _normalize_map_url(
+        info.get("tencent_map_store")
+        or info.get("map_store")
+        or row.get("tencent_map_store")
+        or row.get("map_store")
+        or ""
+    )
 
-    return {
+    output = {
         "id": store_id,
         "name": info.get("name") or row.get("name") or "",
         "city": store_text.city_from_row(row, info),
@@ -67,13 +81,16 @@ def platform_store_to_dict(
         "is_pause": row.get("is_pause"),
         "pause_start": row.get("pause_start") or "",
         "pause_end": row.get("pause_end") or "",
-        "is_public": is_public_store(row),
+        "is_public": is_public_store({**row, **({"name": info.get("name")} if info.get("name") else {})}),
         "status_summary": status_summary(row),
         "detail_source": detail_source,
         "detail_error": detail_error,
         "has_detail": detail_source == "platform_agent.store_info",
         "address_source": "platform_agent.store_info" if address and detail_source == "platform_agent.store_info" else "store_index",
     }
+    if any(term in f"{output['name']} {output['address']}" for term in BLOCKED_STORE_TERMS):
+        output["is_public"] = False
+    return output
 
 
 def status_summary(row: dict[str, Any]) -> str:
@@ -113,7 +130,7 @@ def store_record_to_dict(store: StoreRecord) -> dict[str, Any]:
         "parking_link": _normalize_map_url(store.parking_link),
         "business_hours": store.business_hours,
         "status_summary": store.status_summary,
-        "is_public": store.is_public,
+        "is_public": store.is_public and not any(term in f"{store.name} {store.address}" for term in BLOCKED_STORE_TERMS),
         "detail_source": "local_store_fallback",
         "detail_error": "",
         "has_detail": False,

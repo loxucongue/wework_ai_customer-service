@@ -103,12 +103,13 @@ def create_execute_actions_node(
                     )
 
             if _needs_appointment_record_query(required_tools):
-                tool_results["appointment_record_query"] = {"handled_by_cache": True}
+                appointment_record = _appointment_record_from_state(state)
+                tool_results["appointment_record_query"] = appointment_record
                 tool_calls.append(
                     {
                         "name": "appointment_record_query",
                         "input": {"query": content, "planned": True},
-                        "output": {"handled_by_cache": True},
+                        "output": appointment_record,
                     }
                 )
 
@@ -329,6 +330,65 @@ def _needs_appointment_record_query(required_tools: list[dict[str, Any]]) -> boo
 def _needs_appointment_lookup(required_tools: list[dict[str, Any]]) -> bool:
     names = {str(item.get("name") or "") for item in required_tools if isinstance(item, dict)}
     return bool(names & {"available_time", "appointment_create"})
+
+
+def _appointment_record_from_state(state: AgentState) -> dict[str, Any]:
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    customer_id = str(customer_context.get("customer_id") or state.get("customer_id") or "").strip()
+    appointment = customer_context.get("appointment") if isinstance(customer_context.get("appointment"), dict) else {}
+    orders = [item for item in (customer_context.get("orders") or []) if isinstance(item, dict)]
+
+    if appointment and (appointment.get("has_active") or appointment.get("appointment_time") or appointment.get("store_name")):
+        return {
+            "status": "found",
+            "source": appointment.get("source") or customer_context.get("source") or "customer_context",
+            "customer_id": customer_id,
+            "appointment": appointment,
+            "orders": orders[:3],
+        }
+
+    scheduled_orders = [
+        order
+        for order in orders
+        if str(order.get("appointment_time") or "").strip()
+        or str(order.get("store_at") or "").strip()
+        or str(order.get("store_name") or "").strip()
+    ]
+    if scheduled_orders:
+        latest = scheduled_orders[0]
+        return {
+            "status": "found",
+            "source": customer_context.get("source") or "customer_context.orders",
+            "customer_id": customer_id,
+            "appointment": {
+                "has_active": True,
+                "status": latest.get("status") or "unknown",
+                "order_id": str(latest.get("id") or ""),
+                "store_id": str(latest.get("store_id") or ""),
+                "store_name": str(latest.get("store_name") or ""),
+                "appointment_time": str(latest.get("appointment_time") or latest.get("store_at") or ""),
+                "projects": latest.get("projects") or [],
+                "source": "customer_context.orders",
+            },
+            "orders": scheduled_orders[:3],
+        }
+
+    if not customer_id:
+        return {
+            "status": "missing_info",
+            "missing": ["customer_id"],
+            "source": customer_context.get("source") or "none",
+            "appointment": {},
+            "orders": [],
+        }
+
+    return {
+        "status": "not_found",
+        "source": customer_context.get("source") or "customer_context",
+        "customer_id": customer_id,
+        "appointment": {},
+        "orders": orders[:3],
+    }
 
 
 def _needs_available_time(required_tools: list[dict[str, Any]]) -> bool:

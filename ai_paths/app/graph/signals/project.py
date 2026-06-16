@@ -31,7 +31,7 @@ def has_project_consult_intent(content: str) -> bool:
         "怎么做",
         "做什么",
         "能不能做",
-        "哪个好",
+        "哪个",
         "区别",
         "改善",
         "解决",
@@ -82,6 +82,10 @@ def has_case_request(content: str) -> bool:
         "发我看看效果",
         "发个效果",
         "看看效果",
+        "效果对比",
+        "恢复后",
+        "做几次的效果",
+        "图片上的客户",
     ]
     return any(term in content for term in case_terms)
 
@@ -89,7 +93,19 @@ def has_case_request(content: str) -> bool:
 def has_project_process_question(content: str) -> bool:
     if not content:
         return False
-    process_terms = ["流程", "操作流程", "怎么操作", "怎么做", "要做多久", "大概要多久", "多久能做完", "时长", "步骤", "过程"]
+    process_terms = [
+        "流程",
+        "操作流程",
+        "怎么操作",
+        "怎么做",
+        "要做多久",
+        "大概要多久",
+        "多久能做完",
+        "操作多久",
+        "时长",
+        "步骤",
+        "过程",
+    ]
     return any(term in content for term in process_terms)
 
 
@@ -127,8 +143,7 @@ def has_campaign_inquiry(content: str) -> bool:
         "活动",
         "优惠",
         "福利",
-        "新客活动",
-        "节日活动",
+        "周年庆",
         "团购",
         "预约金",
         "定金",

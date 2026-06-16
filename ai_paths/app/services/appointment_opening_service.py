@@ -31,9 +31,14 @@ class AppointmentOpeningService:
         if facts.get("preferred_time_available") is False:
             return {"status": "preferred_time_unavailable", "facts": facts}
         if not self.platform_client or not self.platform_client.available:
-            return {"status": "platform_unavailable", "facts": facts, "error": "PLATFORM_AGENT_TOKEN is not configured"}
+            return {
+                "status": "platform_unavailable",
+                "facts": facts,
+                "error": "PLATFORM_AGENT_TOKEN is not configured",
+            }
 
         request_context = _request_context(state)
+        facts = _resolve_category_and_prepay(self.platform_client, facts, request_context)
         if _truthy(request_context.get("appointment_opening_dry_run")):
             return _dry_run_result(facts)
 
@@ -61,9 +66,14 @@ class AppointmentOpeningService:
             )
             order_id = str(order.get("order_id") or order.get("id") or "").strip()
             if not order_id:
-                return {"status": "create_failed", "facts": facts, "create_result": order, "error": "create_work returned no order_id"}
+                return {
+                    "status": "create_failed",
+                    "facts": facts,
+                    "create_result": order,
+                    "error": "create_work returned no order_id",
+                }
             return _created_result(facts, order_id=order_id, create_result=order, dry_run=False)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             return {"status": "error", "facts": facts, "error": f"{type(exc).__name__}: {exc}"}
 
 
@@ -114,7 +124,12 @@ def _appointment_facts(
         "time": preferred_time,
         "preferred_time_available": preferred_time in slots if preferred_time and slots else None,
         "available_time_slots": slots[:12],
-        "category_id": str(request_context.get("category_id") or "").strip(),
+        "category_id": str(
+            request_context.get("category_id")
+            or customer.get("category_id")
+            or state.get("category_id")
+            or ""
+        ).strip(),
         "prepay": str(request_context.get("prepay") or "10.00").strip(),
     }
 
@@ -161,6 +176,11 @@ def _customer_confirmed_opening(content: str) -> bool:
         "开单",
         "付定金",
         "付预约金",
+        "交10",
+        "交十",
+        "先交",
+        "登记",
+        "报名",
     ]
     negative_terms = ["取消", "不约", "不用", "算了", "退", "投诉", "不要"]
     if any(term in text for term in negative_terms):
@@ -221,6 +241,74 @@ def _remark_for_order(facts: dict[str, Any]) -> str:
     date_text = " ".join(part for part in [facts.get("date"), facts.get("time")] if part)
     project_text = f"，意向分类{facts['category_id']}" if facts.get("category_id") else "，项目到店确认"
     return f"AI客服预约开单：{facts.get('store_name') or facts.get('store_id')}，{date_text}{project_text}".strip("，")
+
+
+def _resolve_category_and_prepay(
+    platform_client: PlatformAgentClient | None,
+    facts: dict[str, Any],
+    request_context: dict[str, Any],
+) -> dict[str, Any]:
+    updated = dict(facts)
+    category_id = str(updated.get("category_id") or "").strip()
+    if platform_client and platform_client.available and category_id and not category_id.isdigit():
+        resolved = _resolve_category_id(platform_client, category_id, request_context)
+        if resolved:
+            updated["category_id"] = resolved
+            category_id = resolved
+    if platform_client and platform_client.available and category_id and category_id.isdigit():
+        try:
+            data = platform_client.category_prepay(category_id=category_id, request_context=request_context)
+            prepay = _select_prepay_amount(data)
+            if prepay and not str(request_context.get("prepay") or "").strip():
+                updated["prepay"] = prepay
+            updated["prepay_options"] = data.get("prepay") if isinstance(data, dict) else []
+        except Exception as exc:  # noqa: BLE001
+            updated["prepay_error"] = f"{type(exc).__name__}: {exc}"
+    return updated
+
+
+def _resolve_category_id(
+    platform_client: PlatformAgentClient,
+    category_name: str,
+    request_context: dict[str, Any],
+) -> str:
+    target = str(category_name or "").strip()
+    if not target:
+        return ""
+    try:
+        categories = platform_client.list_categories(request_context=request_context)
+    except Exception:
+        return ""
+    for row in categories:
+        if not isinstance(row, dict):
+            continue
+        candidates = [
+            str(row.get("name") or "").strip(),
+            str(row.get("title") or "").strip(),
+            str(row.get("full_name") or "").strip(),
+        ]
+        if any(candidate and (candidate == target or target in candidate or candidate in target) for candidate in candidates):
+            return str(row.get("id") or row.get("value") or "").strip()
+    return ""
+
+
+def _select_prepay_amount(data: dict[str, Any]) -> str:
+    rows = data.get("prepay") if isinstance(data, dict) else []
+    if isinstance(rows, dict):
+        rows = list(rows.values())
+    amounts: list[float] = []
+    if isinstance(rows, list):
+        for row in rows:
+            value = row.get("prepay") or row.get("amount") if isinstance(row, dict) else row
+            try:
+                amount = float(str(value).replace(",", "").strip())
+            except (TypeError, ValueError):
+                continue
+            if amount > 0:
+                amounts.append(amount)
+    if not amounts:
+        return ""
+    return f"{min(amounts):.2f}"
 
 
 def _truthy(value: Any) -> bool:
