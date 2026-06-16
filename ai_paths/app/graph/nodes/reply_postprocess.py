@@ -106,34 +106,30 @@ def postprocess_reply_messages(
         elif msg_type == "image":
             image_count += 1
 
-    if not cleaned:
-        state["postprocess_changed"] = bool(original_messages)
-        state["postprocess_reasons"] = ["all_messages_removed"] if original_messages else []
-        return []
+    if cleaned:
+        before_sensitive = _message_fingerprint(cleaned)
+        cleaned = reply_filters.sanitize_sensitive_reply_content(
+            cleaned,
+            task_types=task_types,
+            normalized_content=content_text,
+            conversation_history=conversation_history,
+            contextual_price_project=contextual_price_project(state),
+        )
+        if _message_fingerprint(cleaned) != before_sensitive:
+            reasons.append("sensitive_sanitized")
 
-    before_sensitive = _message_fingerprint(cleaned)
-    cleaned = reply_filters.sanitize_sensitive_reply_content(
-        cleaned,
-        task_types=task_types,
-        normalized_content=content_text,
-        conversation_history=conversation_history,
-        contextual_price_project=contextual_price_project(state),
-    )
-    if _message_fingerprint(cleaned) != before_sensitive:
-        reasons.append("sensitive_sanitized")
+        before_visible = _message_fingerprint(cleaned)
+        cleaned = reply_filters.sanitize_customer_visible_messages(cleaned)
+        if _message_fingerprint(cleaned) != before_visible:
+            reasons.append("customer_visible_sanitized")
 
-    before_visible = _message_fingerprint(cleaned)
-    cleaned = reply_filters.sanitize_customer_visible_messages(cleaned)
-    if _message_fingerprint(cleaned) != before_visible:
-        reasons.append("customer_visible_sanitized")
+        if not _has_visible_image(cleaned):
+            case_image = _case_image_message_for_state(state, cleaned)
+            if case_image:
+                cleaned.append(case_image)
+                reasons.append("case_image_appended")
 
-    if not _has_visible_image(cleaned):
-        case_image = _case_image_message_for_state(state, cleaned)
-        if case_image:
-            cleaned.append(case_image)
-            reasons.append("case_image_appended")
-
-    cleaned = renumber_messages(cleaned)
+        cleaned = renumber_messages(cleaned)
 
     handoff_message = _handoff_message_for_state(state)
     if handoff_message:
@@ -148,6 +144,11 @@ def postprocess_reply_messages(
         if book_order_message:
             cleaned.append(book_order_message)
             reasons.append("book_order_appended")
+
+    if not cleaned:
+        state["postprocess_changed"] = bool(original_messages)
+        state["postprocess_reasons"] = ["all_messages_removed"] if original_messages else []
+        return []
 
     cleaned = renumber_messages(cleaned)
     changed = _message_fingerprint(cleaned) != _message_fingerprint(original_messages)

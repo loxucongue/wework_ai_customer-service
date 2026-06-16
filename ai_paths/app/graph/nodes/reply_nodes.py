@@ -115,7 +115,12 @@ def create_synthesize_reply_node(
 
 def _has_customer_visible_text(messages: list[dict[str, Any]]) -> bool:
     for message in messages:
-        if not isinstance(message, dict) or message.get("type") != "text":
+        if not isinstance(message, dict):
+            continue
+        msg_type = str(message.get("type") or "").strip()
+        if msg_type in {"image", "store_address", "book_order"}:
+            return True
+        if msg_type != "text":
             continue
         content = message.get("content")
         if isinstance(content, dict):

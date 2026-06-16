@@ -5,6 +5,7 @@ from typing import Any
 from app.graph.nodes.memory_usage_policy import order_session_state
 from app.graph.nodes.store_context import (
     known_city_from_state,
+    known_store_area_from_history,
     should_use_known_store_context,
     should_use_recent_store_fact_context,
     store_query_from_state,
@@ -522,6 +523,7 @@ def _distance_origin_from_state_or_text(state: AgentState, content: str) -> str:
     area_or_landmark = (
         str(session.get("area_or_landmark") or "").strip()
         or str(session.get("location_preference") or "").strip()
+        or known_store_area_from_history(state)
     )
     text = str(content or "").strip()
     concrete_landmark_terms = ("机场", "高崎", "科技园", "高铁", "火车站", "地铁", "商圈", "广场", "大厦")

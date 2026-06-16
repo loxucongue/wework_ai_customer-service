@@ -35,6 +35,13 @@ def store_query_from_state(content: str, state: AgentState) -> str:
     explicit_store = ""
     if use_explicit_store_context:
         explicit_store = _current_store_name_from_state(state) or known_store_name_from_history(state)
+    pin_current_store = _should_pin_current_store_followup(
+        content=content,
+        state=state,
+        current_area=current_area,
+        location_preference=location_preference,
+        explicit_store=explicit_store,
+    )
     parts: list[str] = []
     if city and city not in content:
         parts.append(city)
@@ -42,7 +49,7 @@ def store_query_from_state(content: str, state: AgentState) -> str:
         parts.append(area)
     if location_preference and location_preference not in content:
         parts.append(location_preference)
-    if explicit_store and explicit_store not in content and not (area or location_preference):
+    if explicit_store and explicit_store not in content and (pin_current_store or not (area or location_preference)):
         parts.append(explicit_store)
     parts.append(content)
     return " ".join(part for part in parts if part).strip()
@@ -206,6 +213,60 @@ def _current_store_city_from_state(state: AgentState) -> str:
             if city:
                 return city
     return ""
+
+
+def _current_store_is_real(state: AgentState) -> bool:
+    structured = state.get("structured_facts") if isinstance(state.get("structured_facts"), dict) else {}
+    if not structured:
+        fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+        structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    status = structured.get("store_lookup_status") if isinstance(structured, dict) else {}
+    if isinstance(status, dict):
+        authority = str(status.get("data_authority") or "").strip().lower()
+        if authority == "platform":
+            return True
+    recommended = structured.get("recommended_store") if isinstance(structured, dict) else {}
+    if isinstance(recommended, dict):
+        store_id = str(recommended.get("store_id") or recommended.get("id") or "").strip()
+        if store_id:
+            return True
+    return False
+
+
+def _should_pin_current_store_followup(
+    *,
+    content: str,
+    state: AgentState,
+    current_area: str,
+    location_preference: str,
+    explicit_store: str,
+) -> bool:
+    content = (content or "").strip()
+    if not content or not explicit_store:
+        return False
+    if not _current_store_is_real(state):
+        return False
+    if extract_city(content) or current_area or extract_store_area(content) or extract_location_preference(content):
+        return False
+    followup_terms = (
+        "哪家",
+        "最近",
+        "近一点",
+        "发我",
+        "发下",
+        "发一下",
+        "地址",
+        "定位",
+        "导航",
+        "路线",
+        "停车",
+        "营业时间",
+    )
+    if not any(term in content for term in followup_terms):
+        return False
+    if location_preference and location_preference in content:
+        return False
+    return True
 
 
 def extract_store_area(content: str) -> str:
