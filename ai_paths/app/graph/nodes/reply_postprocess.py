@@ -5,6 +5,7 @@ from typing import Any
 
 from app.graph import reply_filters
 from app.graph.nodes.common import looks_garbled_text, renumber_messages
+from app.graph.nodes.memory_usage_policy import order_session_state
 from app.graph.runtime_context import contextual_price_project
 from app.graph.nodes.reply_validation import message_content_order_id, message_content_text
 from app.graph.planner.runtime_plan import planner_handoff, planner_task_views
@@ -67,6 +68,10 @@ def postprocess_reply_messages(
             if without_unasked_offer != content:
                 content = without_unasked_offer
                 reasons.append("unasked_offer_removed_for_store_turn")
+            fixed_navigation = _fix_incomplete_navigation_url(state, content)
+            if fixed_navigation != content:
+                content = fixed_navigation
+                reasons.append("incomplete_navigation_url_fixed")
             content = _sanitize_unbacked_case_image_promise(state, content)
             sanitized_sales = _sanitize_sales_close_risk_terms(content)
             if sanitized_sales != content:
@@ -80,6 +85,10 @@ def postprocess_reply_messages(
             if one_question != content:
                 content = one_question
                 reasons.append("question_limit")
+            without_known_slot_question = _remove_known_slot_requestion(state, content)
+            if without_known_slot_question != content:
+                content = without_known_slot_question
+                reasons.append("known_slot_requestion_removed")
             normalized = re.sub(r"\s+", "", content)
             if not normalized or normalized in seen_text:
                 reasons.append("dedupe_or_limit")
@@ -331,6 +340,19 @@ def _append_navigation_url_if_requested(state: AgentState, text: str) -> str:
     return f"{content}{separator}导航链接：{map_url}"
 
 
+def _fix_incomplete_navigation_url(state: AgentState, text: str) -> str:
+    content = str(text or "").strip()
+    fixed = _remove_incomplete_tencent_shortlink_url(content)
+    if fixed == content:
+        return content
+    fixed = _cleanup_dangling_navigation_label(fixed)
+    map_url = _recommended_store_field(state, "map_url")
+    if map_url and "http://" not in fixed and "https://" not in fixed:
+        separator = " " if fixed.endswith(("。", "！", "？", "!", "?")) else "，"
+        fixed = f"{fixed}{separator}导航链接：{map_url}"
+    return fixed.strip()
+
+
 def _remove_bare_tencent_shortlink_fragment(text: str) -> str:
     content = str(text or "")
     content = re.sub(r"[，,。；;、\s]*l=[A-Za-z0-9_-]{8,}(?:&tempSource=\w+)?", "", content)
@@ -344,11 +366,20 @@ def _remove_incomplete_tencent_shortlink_url(text: str) -> str:
     return re.sub(r"\s{2,}", " ", content).strip(" ，。；;、")
 
 
+def _cleanup_dangling_navigation_label(text: str) -> str:
+    content = str(text or "")
+    content = re.sub(r"导航链接[:：]\s*(?=，|。|；|;|$)", "", content)
+    content = content.replace("：，", "，").replace(":，", "，")
+    content = re.sub(r"(导航链接[:：]\s*){2,}", "导航链接：", content)
+    return content.strip(" ，。；;、")
+
+
 def _limit_to_one_customer_question(text: str) -> str:
     content = str(text or "").strip()
-    if content.count("？") + content.count("?") <= 1:
+    masked, url_tokens = _mask_url_question_marks(content)
+    if masked.count("？") + masked.count("?") <= 1:
         return content
-    parts = re.split(r"(?<=[。！？!?])", content)
+    parts = re.split(r"(?<=[。！？!?])", masked)
     kept: list[str] = []
     question_seen = False
     changed = False
@@ -363,7 +394,93 @@ def _limit_to_one_customer_question(text: str) -> str:
             question_seen = True
         kept.append(part)
     result = "".join(kept).strip()
-    return result or content if not changed else result
+    if not changed:
+        return content
+    return _restore_url_question_marks(result, url_tokens) or content
+
+
+def _mask_url_question_marks(text: str) -> tuple[str, dict[str, str]]:
+    tokens: dict[str, str] = {}
+
+    def replace_url(match: re.Match[str]) -> str:
+        original = match.group(0)
+        token = f"__URL_QMARK_{len(tokens)}__"
+        tokens[token] = original
+        return original.replace("?", token)
+
+    return re.sub(r"https?://[^\s，。；;、]+", replace_url, str(text or "")), tokens
+
+
+def _restore_url_question_marks(text: str, tokens: dict[str, str]) -> str:
+    content = str(text or "")
+    for token in tokens:
+        content = content.replace(token, "?")
+    return content
+
+
+def _remove_known_slot_requestion(state: AgentState, text: str) -> str:
+    session = order_session_state(state)
+    if not session:
+        return text
+    parts = re.split(r"(?<=[。！？!?；;])", str(text or "").strip())
+    if not parts:
+        return text
+    kept: list[str] = []
+    changed = False
+    for part in parts:
+        chunk = part.strip()
+        if not chunk:
+            continue
+        if _asks_known_order_slot(session, chunk):
+            changed = True
+            continue
+        kept.append(chunk)
+    if not changed:
+        return text
+    return "".join(kept).strip()
+
+
+def _asks_known_order_slot(session: dict[str, object], text: str) -> bool:
+    content = re.sub(r"\s+", "", str(text or ""))
+    if not content or ("？" not in content and "?" not in content and not _looks_like_slot_request(content)):
+        return False
+    if session.get("city") and any(term in content for term in ("哪个城市", "哪座城市", "所在城市", "您在哪个市", "你在哪个市", "在哪个城市")):
+        return True
+    if session.get("area_or_landmark") and any(
+        term in content
+        for term in ("哪个区", "哪一区", "附近什么地标", "附近地标", "所在区域", "您在哪个区", "你在哪个区", "具体位置")
+    ):
+        return True
+    if (session.get("confirmed_store_name") or session.get("confirmed_store_id")) and any(
+        term in content
+        for term in ("哪家门店", "哪个门店", "哪一家", "选哪家", "确认哪家店", "方便哪家")
+    ):
+        return True
+    if (session.get("visit_date") or session.get("visit_time")) and any(
+        term in content
+        for term in ("哪天", "什么时候", "几点", "上午还是下午", "什么时间", "到店时间", "方便时间")
+    ):
+        return True
+    return False
+
+
+def _looks_like_slot_request(text: str) -> bool:
+    return any(
+        term in text
+        for term in (
+            "告诉我您在哪",
+            "发我位置",
+            "发一下位置",
+            "发一下附近地标",
+            "告诉我附近地标",
+            "说下附近地标",
+            "附近地标",
+            "说下位置",
+            "告诉我时间",
+            "发我时间",
+            "确认一下门店",
+        )
+    )
 
 
 def _has_visible_image(messages: list[dict[str, Any]]) -> bool:

@@ -2,6 +2,7 @@
 
 from typing import Any, Callable
 
+from app.graph import reply_filters
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.planner.runtime_plan import planner_handoff
 from app.graph.state import AgentState
@@ -125,7 +126,7 @@ def _safe_visible_fallback_messages(state: AgentState) -> tuple[list[dict[str, A
     handoff = planner_handoff(state)
     reason = str(handoff.get("reason") or "").strip() or "最终回复生成失败，需要专业同事核对"
     if _fallback_needs_handoff(state, handoff):
-        text = _canonical_scene_reply(state) or "我先帮您对接专业同事继续跟您说，您稍等一下。"
+        text = _sanitize_fallback_text(_canonical_scene_reply(state) or "我先帮您对接专业同事继续跟您说，您稍等一下。")
         return (
             [
                 {"type": "text", "order": 1, "content": {"text": text}},
@@ -134,7 +135,7 @@ def _safe_visible_fallback_messages(state: AgentState) -> tuple[list[dict[str, A
             "safe_handoff_fallback",
         )
 
-    text = _safe_text_fallback(state)
+    text = _sanitize_fallback_text(_safe_text_fallback(state))
     return ([{"type": "text", "order": 1, "content": {"text": text}}], "safe_text_fallback")
 
 
@@ -189,6 +190,20 @@ def _safe_text_fallback(state: AgentState) -> str:
     if policy_family == "SF12_AFTER_SALES":
         return "理解您这次体验不太理想，我先帮您把门店、时间和具体情况问清楚再处理。"
     return "我先按您的问题继续帮您确认，涉及价格、门店或时间都会以真实信息为准。"
+
+
+def _sanitize_fallback_text(text: str) -> str:
+    messages = reply_filters.sanitize_customer_visible_messages(
+        [{"type": "text", "order": 1, "content": {"text": str(text or "").strip()}}]
+    )
+    if not messages:
+        return "我先帮您把情况确认清楚，再继续给您安排。"
+    content = messages[0].get("content")
+    if isinstance(content, dict):
+        cleaned = str(content.get("text") or "").strip()
+    else:
+        cleaned = str(content or "").strip()
+    return cleaned or "我先帮您把情况确认清楚，再继续给您安排。"
 
 
 def _canonical_scene_reply(state: AgentState) -> str:

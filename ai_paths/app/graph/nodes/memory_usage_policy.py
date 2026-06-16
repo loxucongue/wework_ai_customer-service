@@ -37,6 +37,7 @@ GENERIC_OPENING_TERMS = [
 SPECIFIC_NEED_TERMS = [
     "斑",
     "痘",
+    "痣",
     "毛孔",
     "暗沉",
     "色沉",

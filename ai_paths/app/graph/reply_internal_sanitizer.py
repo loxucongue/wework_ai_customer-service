@@ -159,9 +159,16 @@ def sanitize_overpromising_phrasing(text: str) -> str:
         ("所有操作都在安全阈值内", "操作前会先看皮肤状态"),
         ("专属优惠机制", "当前活动规则"),
         ("最优方案", "合适方案"),
+        ("锁定死", "先保留"),
+        ("直接输密码", "按页面提示操作"),
+        ("无需授权", "按页面提示操作"),
+        ("不用确认", "按页面提示操作"),
+        ("自动扣款", "按页面提示操作"),
     )
     for old, new in replacements:
         cleaned = cleaned.replace(old, new)
+    cleaned = re.sub(r"(仅剩|只剩|剩下|最后)\s*[0-9一二三四五六七八九十]+\s*个名额", "名额有限", cleaned)
+    cleaned = re.sub(r"名额\s*(仅剩|只剩|剩下|最后)\s*[0-9一二三四五六七八九十]+\s*个?", "名额有限", cleaned)
     return cleaned
 
 
