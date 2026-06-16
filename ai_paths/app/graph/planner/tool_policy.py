@@ -400,6 +400,8 @@ def dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def needs_store_lookup_request(state: AgentState, content: str) -> bool:
     if not content:
         return False
+    if _looks_like_fee_or_price_only_turn(content) and not _has_specific_store_or_location_signal(content):
+        return False
     asks_store_fact = any(term in content for term in STORE_FACT_TERMS)
     has_location_hint = any(term in content for term in STORE_LOCATION_HINT_TERMS)
     if asks_store_fact or has_location_hint:
@@ -461,6 +463,52 @@ def _is_appointment_marker(markers: str) -> bool:
 
 def _is_case_marker(markers: str) -> bool:
     return any(token in markers for token in ("CASE", "EFFECT_REFERENCE", "EFFECT_CASE", "效果案例", "对比"))
+
+
+def _looks_like_fee_or_price_only_turn(content: str) -> bool:
+    return any(
+        term in content
+        for term in (
+            "乱收费",
+            "隐形消费",
+            "加价",
+            "推销",
+            "定金",
+            "订金",
+            "预约金",
+            "尾款",
+            "全款",
+            "到店再付",
+            "多少钱",
+            "价格",
+            "费用",
+        )
+    )
+
+
+def _has_specific_store_or_location_signal(content: str) -> bool:
+    return any(term in content for term in CITY_NAMES + STORE_AREA_TERMS) or any(
+        term in content
+        for term in (
+            "我在",
+            "我住",
+            "附近",
+            "机场",
+            "高铁",
+            "地铁",
+            "科技园",
+            "哪家",
+            "最近",
+            "离我近",
+            "地址",
+            "位置",
+            "导航",
+            "停车",
+            "营业时间",
+            "门店在哪里",
+            "哪里有店",
+        )
+    )
 
 
 def _distance_origin_from_state_or_text(state: AgentState, content: str) -> str:
