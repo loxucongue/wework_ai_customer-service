@@ -67,15 +67,13 @@ def postprocess_reply_messages(
             if _contains_fake_placeholder_text(content):
                 reasons.append("placeholder_text_removed")
                 continue
-            without_unasked_offer = _suppress_unasked_offer_for_store_turn(state, content)
-            if without_unasked_offer != content:
-                content = without_unasked_offer
-                reasons.append("unasked_offer_removed_for_store_turn")
             fixed_navigation = _fix_incomplete_navigation_url(state, content)
             if fixed_navigation != content:
                 content = fixed_navigation
                 reasons.append("incomplete_navigation_url_fixed")
-            content = _sanitize_unbacked_case_image_promise(state, content)
+            if _has_unbacked_case_image_promise(state, content):
+                reasons.append("unbacked_case_image_promise_blocked")
+                continue
             sanitized_sales = _sanitize_sales_close_risk_terms(content)
             if sanitized_sales != content:
                 content = sanitized_sales
@@ -84,10 +82,6 @@ def postprocess_reply_messages(
             if with_navigation != content:
                 content = with_navigation
                 reasons.append("navigation_url_appended")
-            one_question = _limit_to_one_customer_question(content)
-            if one_question != content:
-                content = one_question
-                reasons.append("question_limit")
             without_known_slot_question = _remove_known_slot_requestion(state, content)
             if without_known_slot_question != content:
                 content = without_known_slot_question
@@ -305,95 +299,6 @@ def _sanitize_sales_close_risk_terms(text: str) -> str:
     return content
 
 
-def _suppress_unasked_offer_for_store_turn(state: AgentState, text: str) -> str:
-    if not _is_pure_store_or_navigation_turn(state):
-        return text
-    parts = re.split(r"(?<=[。！？!?；;])", str(text or "").strip())
-    if not parts:
-        return text
-    kept: list[str] = []
-    removed = False
-    for part in parts:
-        chunk = part.strip()
-        if not chunk:
-            continue
-        if _looks_like_unasked_offer_sentence(chunk):
-            prefix = _prefix_before_unasked_offer(chunk)
-            if prefix:
-                kept.append(prefix)
-            removed = True
-            continue
-        kept.append(chunk)
-    if not removed:
-        return text
-    result = "".join(kept).strip()
-    return result
-
-
-def _is_pure_store_or_navigation_turn(state: AgentState) -> bool:
-    content = str(state.get("normalized_content") or "")
-    store_terms = ("门店", "地址", "导航", "定位", "路线", "怎么去", "哪里", "哪家", "附近", "机场", "地铁", "商圈", "科技园", "我在")
-    price_terms = ("多少钱", "价格", "活动", "268", "199", "58", "预约金", "定金", "尾款", "名额", "报名")
-    if any(term in content for term in price_terms):
-        return False
-    if any(term in content for term in store_terms):
-        return True
-    task_views = planner_task_views(state)
-    has_store_task = any(
-        isinstance(view, dict) and str(view.get("type") or "").strip() == "store_inquiry"
-        for view in task_views
-    )
-    policy_family = str(state.get("policy_family_id") or "")
-    return (has_store_task or policy_family == "SF6_STORE_INQUIRY") and any(term in content for term in store_terms)
-
-
-def _looks_like_unasked_offer_sentence(text: str) -> bool:
-    content = str(text or "")
-    offer_terms = (
-        "周年庆",
-        "活动价",
-        "268",
-        "预约金",
-        "定金",
-        "做付",
-        "258",
-        "名额",
-        "登记",
-        "报名",
-        "不满意",
-        "不来",
-        "退还10",
-        "占个位",
-    )
-    return any(term in content for term in offer_terms)
-
-
-def _prefix_before_unasked_offer(text: str) -> str:
-    content = str(text or "").strip()
-    positions = [
-        content.find(term)
-        for term in (
-            "现在周年庆",
-            "周年庆",
-            "活动价",
-            "268",
-            "预约金",
-            "定金",
-            "做付",
-            "名额",
-            "登记",
-            "报名",
-        )
-        if content.find(term) >= 0
-    ]
-    if not positions:
-        return ""
-    prefix = content[: min(positions)].strip(" ，。；;")
-    if len(prefix) < 8:
-        return ""
-    return prefix + "。"
-
-
 def _append_navigation_url_if_requested(state: AgentState, text: str) -> str:
     if not _current_query_asks_navigation(state):
         return text
@@ -440,50 +345,6 @@ def _cleanup_dangling_navigation_label(text: str) -> str:
     content = content.replace("：，", "，").replace(":，", "，")
     content = re.sub(r"(导航链接[:：]\s*){2,}", "导航链接：", content)
     return content.strip(" ，。；;、")
-
-
-def _limit_to_one_customer_question(text: str) -> str:
-    content = str(text or "").strip()
-    masked, url_tokens = _mask_url_question_marks(content)
-    if masked.count("？") + masked.count("?") <= 1:
-        return content
-    parts = re.split(r"(?<=[。！？!?])", masked)
-    kept: list[str] = []
-    question_seen = False
-    changed = False
-    for part in parts:
-        if not part:
-            continue
-        is_question = "？" in part or "?" in part
-        if is_question:
-            if question_seen:
-                changed = True
-                continue
-            question_seen = True
-        kept.append(part)
-    result = "".join(kept).strip()
-    if not changed:
-        return content
-    return _restore_url_question_marks(result, url_tokens) or content
-
-
-def _mask_url_question_marks(text: str) -> tuple[str, dict[str, str]]:
-    tokens: dict[str, str] = {}
-
-    def replace_url(match: re.Match[str]) -> str:
-        original = match.group(0)
-        token = f"__URL_QMARK_{len(tokens)}__"
-        tokens[token] = original
-        return original.replace("?", token)
-
-    return re.sub(r"https?://[^\s，。；;、]+", replace_url, str(text or "")), tokens
-
-
-def _restore_url_question_marks(text: str, tokens: dict[str, str]) -> str:
-    content = str(text or "")
-    for token in tokens:
-        content = content.replace(token, "?")
-    return content
 
 
 def _remove_known_slot_requestion(state: AgentState, text: str) -> str:
@@ -626,37 +487,13 @@ def _contains_fake_placeholder_text(text: str) -> bool:
     return any(term in content for term in ("某某地址", "某某路", "某某大厦", "测试地址"))
 
 
-def _sanitize_unbacked_case_image_promise(state: AgentState, text: str) -> str:
+def _has_unbacked_case_image_promise(state: AgentState, text: str) -> bool:
     if _case_image_urls_from_state(state):
-        return text
+        return False
     content = str(text or "")
     if not any(term in content for term in ("发你看", "发您看", "发图", "效果图", "对比图")):
-        return content
-    replacements = {
-        "我先发你看同类效果对比": "我先按同类方向帮你找参考",
-        "我先发您看同类效果对比": "我先按同类方向帮您找参考",
-        "先发你看同类效果对比": "先按同类方向帮你找参考",
-        "先发您看同类效果对比": "先按同类方向帮您找参考",
-        "下面发图": "先帮你找参考",
-        "发你看": "帮你找参考",
-        "发您看": "帮您找参考",
-    }
-    for source, target in replacements.items():
-        content = content.replace(source, target)
-    content = content.replace("我先按同类方向帮你找参考，方便", "方便")
-    if not _current_query_has_visible_concern(state):
-        content = re.sub(r"你主要是[^。！？!?]{0,80}[。！？!?]?", "", content).strip()
-    return content
-
-
-def _current_query_has_visible_concern(state: AgentState) -> bool:
-    query = str(state.get("normalized_content") or "")
-    if any(term in query for term in ("斑", "黑色素", "色沉", "痘印", "毛孔", "细纹", "皱纹", "肤色", "敏感", "红")):
-        return True
-    image_info = state.get("image_info")
-    if isinstance(image_info, dict) and image_info.get("visible_concerns"):
-        return True
-    return False
+        return False
+    return True
 
 
 def _recent_assistant_texts_for_dedupe(state: AgentState) -> list[str]:
