@@ -235,9 +235,12 @@ def _apply_location_gate(result: dict[str, Any], *, query_info: Any) -> dict[str
 
 def _with_planner_distance_origin(result: dict[str, Any], *, planner_distance_origin: str) -> dict[str, Any]:
     output = dict(result or {})
+    planned_origin = str(planner_distance_origin or "").strip()
+    if planned_origin:
+        output["planned_distance_origin"] = planned_origin
     if not output.get("distance_lookup_required"):
         return output
-    origin = str(planner_distance_origin or "").strip() or str(output.get("area_or_landmark") or "").strip()
+    origin = planned_origin or str(output.get("area_or_landmark") or "").strip()
     if origin:
         output["distance_origin"] = origin
     return output

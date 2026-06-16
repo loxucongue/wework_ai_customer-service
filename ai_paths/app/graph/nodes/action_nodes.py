@@ -372,14 +372,14 @@ async def _maybe_run_distance_lookup(
         return {"status": "skipped", "reason": "missing_distance_workflow_id"}
     stores = [item for item in (store_lookup.get("stores") or []) if isinstance(item, dict)]
     if not stores:
-        return {}
+        return {"status": "skipped", "reason": "no_store_candidates"}
     origin = (
         str(store_lookup.get("distance_origin") or "").strip()
         or str(store_lookup.get("area_or_landmark") or "").strip()
         or store_query.strip()
     )
     if not origin:
-        return {}
+        return {"status": "skipped", "reason": "missing_distance_origin"}
     candidates = [
         {
             "id": str(item.get("id") or item.get("store_id") or ""),
@@ -390,7 +390,11 @@ async def _maybe_run_distance_lookup(
         if str(item.get("address") or "").strip()
     ]
     if not candidates:
-        return {}
+        return {
+            "status": "skipped",
+            "reason": "no_candidate_addresses",
+            "input": {"origin": origin, "query": store_query},
+        }
     requests = [
         {
             "candidate": candidate,

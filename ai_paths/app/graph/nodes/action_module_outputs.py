@@ -44,6 +44,9 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             stores = value.get("stores") or []
             missing = [str(item) for item in (value.get("missing") or [])[:4]]
             platform_error = str(value.get("platform_error") or "").strip()
+            distance_lookup = tool_results.get("distance_lookup")
+            if not isinstance(distance_lookup, dict):
+                distance_lookup = {}
             structured_facts["store_lookup_status"] = {
                 "query": str(value.get("query") or "")[:160],
                 "city": str(value.get("city") or ""),
@@ -54,7 +57,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "source": str(value.get("source") or ""),
                 "data_authority": str(value.get("data_authority") or ""),
                 "distance_origin": str(value.get("distance_origin") or ""),
+                "planned_distance_origin": str(value.get("planned_distance_origin") or ""),
+                "final_distance_origin": str(value.get("distance_origin") or ""),
                 "distance_lookup_required": bool(value.get("distance_lookup_required")),
+                "distance_lookup_status": str(distance_lookup.get("status") or ""),
+                "distance_lookup_reason": str(distance_lookup.get("reason") or distance_lookup.get("error") or "")[:240],
                 "missing": missing,
                 "platform_error": platform_error[:240],
                 "has_store_facts": bool(stores),
