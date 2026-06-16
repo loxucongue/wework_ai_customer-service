@@ -117,29 +117,6 @@ def status_summary(row: dict[str, Any]) -> str:
     return ""
 
 
-def store_record_to_dict(store: Any) -> dict[str, Any]:
-    name = str(getattr(store, "name", "") or "").strip()
-    address = str(getattr(store, "address", "") or "").strip()
-    return {
-        "id": str(getattr(store, "id", "") or "").strip(),
-        "name": name,
-        "city": str(getattr(store, "city", "") or "").strip(),
-        "address": address,
-        "map_url": _normalize_map_url(getattr(store, "map_url", "") or ""),
-        "parking_name": str(getattr(store, "parking_name", "") or "").strip(),
-        "parking_address": str(getattr(store, "parking_address", "") or "").strip(),
-        "parking_link": _normalize_map_url(getattr(store, "parking_link", "") or ""),
-        "business_hours": str(getattr(store, "business_hours", "") or "").strip(),
-        "status_summary": str(getattr(store, "status_summary", "") or "").strip(),
-        "is_public": bool(getattr(store, "is_public", True))
-        and not any(term in f"{name} {address}" for term in BLOCKED_STORE_TERMS),
-        "detail_source": "local_store_fallback",
-        "detail_error": "",
-        "has_detail": False,
-        "address_source": "local_store_fallback",
-    }
-
-
 def _normalize_map_url(value: Any) -> str:
     text = str(value or "").strip()
     if not text:

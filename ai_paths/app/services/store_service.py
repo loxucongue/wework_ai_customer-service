@@ -6,7 +6,6 @@ from app.services import store_format, store_text
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_platform_context import request_context_from_customer_context, store_platform_context
 from app.services.store_query_info import StoreQueryInfo, build_store_query_info
-from app.services.store_recommendation import with_location_recommendation
 
 
 class StoreService:
@@ -54,7 +53,7 @@ class StoreService:
 
         return _with_planner_distance_origin(
             _apply_location_gate(
-                with_location_recommendation(platform_result, query_info.location_preference),
+                platform_result,
                 query_info=query_info,
             ),
             planner_distance_origin=planner_distance_origin,
