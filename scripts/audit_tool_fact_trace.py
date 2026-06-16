@@ -194,7 +194,7 @@ def fabricated_store_names(reply_text: str, store_facts: list[dict[str, Any]]) -
 
 
 def unbacked_map_urls(reply_text: str, store_facts: list[dict[str, Any]]) -> list[str]:
-    urls = set(re.findall(r"https?://[^\s，。)）]+", reply_text or ""))
+    urls = set(re.findall(r"https?://[^\s，。？]+", reply_text or ""))
     if not urls:
         return []
     fact_urls = {

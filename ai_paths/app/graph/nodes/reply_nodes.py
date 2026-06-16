@@ -46,22 +46,32 @@ def create_synthesize_reply_node(
 
                 tier = reply_model_tier(state)
                 model_call = {"name": "reply_synthesizer_model", "input": {"tier": tier, "required": True}}
-
-                payload = await model_client.chat_json(
-                    reply_messages_for_model(state),
-                    tier=tier,
-                    temperature=FINAL_REPLY_TEMPERATURE,
-                    model_names=FINAL_REPLY_MODEL_NAMES,
-                    response_format=FINAL_REPLY_JSON_FORMAT,
-                )
-                model_call["usage"] = model_usage_snapshot(model_client)
-                messages = validated_model_messages(payload)
-                model_call["draft_messages"] = debug_message_contents(messages)
-                if messages:
-                    messages = postprocess_reply_messages(state, messages)
-                    model_call["postprocessed_messages"] = debug_message_contents(messages)
-
-                model_call["output"] = {"messages": len(messages)}
+                attempt_errors: list[str] = []
+                for attempt in (1, 2):
+                    try:
+                        payload = await model_client.chat_json(
+                            reply_messages_for_model(state),
+                            tier=tier,
+                            temperature=FINAL_REPLY_TEMPERATURE,
+                            model_names=FINAL_REPLY_MODEL_NAMES,
+                            response_format=FINAL_REPLY_JSON_FORMAT,
+                        )
+                        model_call["usage"] = model_usage_snapshot(model_client)
+                        messages = validated_model_messages(payload)
+                        model_call["draft_messages"] = debug_message_contents(messages)
+                        if messages:
+                            messages = postprocess_reply_messages(state, messages)
+                            model_call["postprocessed_messages"] = debug_message_contents(messages)
+                        if not _has_customer_visible_text(messages):
+                            raise RuntimeError("reply_messages_empty_after_postprocess")
+                        model_call["output"] = {"messages": len(messages), "attempt": attempt}
+                        model_call["attempt_errors"] = list(attempt_errors)
+                        break
+                    except Exception as exc:
+                        attempt_errors.append(f"attempt={attempt}: {type(exc).__name__}: {exc}")
+                        if attempt == 2:
+                            raise RuntimeError(" | ".join(attempt_errors)) from exc
+                        continue
             except Exception as exc:
                 model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
                 primary_error = f"{type(exc).__name__}: {exc}"

@@ -60,7 +60,7 @@ def create_execute_actions_node(
                 try:
                     planned_store_query = _planned_tool_query(required_tools, "store_lookup")
                     planned_distance_origin = _planned_distance_origin(required_tools)
-                    store_query = store_query_from_state(planned_store_query or content, state)
+                    store_query = store_query_from_state(content, state)
                     result = store_service.search(
                         store_query,
                         customer_context=state.get("customer_context") or {},
@@ -119,7 +119,7 @@ def create_execute_actions_node(
                 try:
                     planned_store_query = _planned_tool_query(required_tools, "store_lookup")
                     planned_distance_origin = _planned_distance_origin(required_tools)
-                    store_query = store_query_from_state(planned_store_query or content, state)
+                    store_query = store_query_from_state(content, state)
                     lookup = tool_results.get("store_lookup") or store_service.search(
                         store_query,
                         customer_context=state.get("customer_context") or {},
@@ -440,7 +440,6 @@ async def _maybe_run_distance_lookup(
     origin = (
         str(store_lookup.get("distance_origin") or "").strip()
         or str(store_lookup.get("area_or_landmark") or "").strip()
-        or store_query.strip()
     )
     origin = _qualify_distance_origin(origin, store_lookup=store_lookup)
     if not origin:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.graph.nodes.memory_usage_policy import order_session_state
 from app.graph.nodes.store_context import (
+    known_city_from_state,
     should_use_known_store_context,
     should_use_recent_store_fact_context,
     store_query_from_state,
@@ -515,7 +517,22 @@ def _distance_origin_from_state_or_text(state: AgentState, content: str) -> str:
     existing = str(state.get("distance_origin") or "").strip()
     if existing:
         return existing
+    session = order_session_state(state)
+    city = str(session.get("city") or "").strip() or known_city_from_state(state)
+    area_or_landmark = (
+        str(session.get("area_or_landmark") or "").strip()
+        or str(session.get("location_preference") or "").strip()
+    )
     text = str(content or "").strip()
-    if any(term in text for term in ("机场", "高崎", "科技园", "高铁", "火车站", "地铁", "附近")):
+    concrete_landmark_terms = ("机场", "高崎", "科技园", "高铁", "火车站", "地铁", "商圈", "广场", "大厦")
+    if text and any(term in text for term in concrete_landmark_terms):
+        if city and city not in text:
+            return f"{city}{text}"
         return text
+    if city and area_or_landmark:
+        if city in area_or_landmark:
+            return area_or_landmark
+        return f"{city}{area_or_landmark}"
+    if city and any(term in text for term in ("附近", "最近", "离我近", "哪家近", "哪个近")):
+        return city
     return ""

@@ -5,7 +5,6 @@ from urllib.parse import parse_qs, urlparse
 
 from app.services import store_text
 from app.services.platform_agent_client import PlatformAgentClient
-from app.services.store_catalog import StoreRecord
 
 
 BLOCKED_STORE_TERMS = ("其他门店", "医美外协", "没有地址", "测试")
@@ -118,19 +117,22 @@ def status_summary(row: dict[str, Any]) -> str:
     return ""
 
 
-def store_record_to_dict(store: StoreRecord) -> dict[str, Any]:
+def store_record_to_dict(store: Any) -> dict[str, Any]:
+    name = str(getattr(store, "name", "") or "").strip()
+    address = str(getattr(store, "address", "") or "").strip()
     return {
-        "id": store.id,
-        "name": store.name,
-        "city": store.city,
-        "address": store.address,
-        "map_url": _normalize_map_url(store.map_url),
-        "parking_name": store.parking_name,
-        "parking_address": store.parking_address,
-        "parking_link": _normalize_map_url(store.parking_link),
-        "business_hours": store.business_hours,
-        "status_summary": store.status_summary,
-        "is_public": store.is_public and not any(term in f"{store.name} {store.address}" for term in BLOCKED_STORE_TERMS),
+        "id": str(getattr(store, "id", "") or "").strip(),
+        "name": name,
+        "city": str(getattr(store, "city", "") or "").strip(),
+        "address": address,
+        "map_url": _normalize_map_url(getattr(store, "map_url", "") or ""),
+        "parking_name": str(getattr(store, "parking_name", "") or "").strip(),
+        "parking_address": str(getattr(store, "parking_address", "") or "").strip(),
+        "parking_link": _normalize_map_url(getattr(store, "parking_link", "") or ""),
+        "business_hours": str(getattr(store, "business_hours", "") or "").strip(),
+        "status_summary": str(getattr(store, "status_summary", "") or "").strip(),
+        "is_public": bool(getattr(store, "is_public", True))
+        and not any(term in f"{name} {address}" for term in BLOCKED_STORE_TERMS),
         "detail_source": "local_store_fallback",
         "detail_error": "",
         "has_detail": False,

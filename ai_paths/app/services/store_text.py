@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Iterable
 
-from app.services.store_catalog import StoreRecord
 from app.services.store_text_constants import (
     AREA_CITY_MAP,
     CITY_NAMES,
@@ -12,201 +12,318 @@ from app.services.store_text_constants import (
 )
 
 
-def needs_city_before_lookup(query: str, *, city: str, requested_name: str) -> bool:
-    if city or requested_name or not query:
-        return False
-    return True
+STORE_ROUTE_TERMS = (
+    "地址",
+    "位置",
+    "导航",
+    "路线",
+    "怎么去",
+    "怎么过去",
+    "发我",
+    "发给我",
+    "地铁",
+    "停车",
+    "停车场",
+    "停车位",
+)
+
+STORE_STATUS_TERMS = (
+    "营业",
+    "营业时间",
+    "几点开门",
+    "几点关门",
+    "今天开吗",
+    "还开着吗",
+    "还在吗",
+    "搬走",
+    "关门",
+    "停业",
+)
+
+LOCATION_PREFERENCE_TERMS = (
+    "最近",
+    "近一点",
+    "离我近",
+    "方便一点",
+    "近不近",
+    "就近",
+)
+
+LANDMARK_SUFFIXES = (
+    "机场",
+    "高铁站",
+    "高铁",
+    "火车站",
+    "地铁站",
+    "地铁口",
+    "科技园",
+    "软件园",
+    "产业园",
+    "商圈",
+    "广场",
+    "大厦",
+    "中心",
+    "城",
+    "口岸",
+    "码头",
+    "大学城",
+    "会展中心",
+    "万象城",
+    "万达",
+)
+
+SPECIAL_LANDMARKS = tuple(
+    sorted(
+        set(AREA_CITY_MAP.keys())
+        | {
+            "高崎机场",
+            "高崎国际机场",
+            "厦门高崎机场",
+            "厦门高崎国际机场",
+            "南山科技园",
+            "深圳湾口岸",
+            "宝安机场",
+            "虹桥机场",
+            "浦东机场",
+            "西安高新",
+        },
+        key=len,
+        reverse=True,
+    )
+)
+
+
+def city_from_row(row: dict[str, Any], info: dict[str, Any] | None = None) -> str:
+    sources = [
+        _text(row.get("city")),
+        _text((info or {}).get("city")),
+        _text((info or {}).get("district")),
+        _text((info or {}).get("region")),
+        _text(row.get("address")),
+        _text(row.get("tencent_address")),
+        _text((info or {}).get("address")),
+        _text((info or {}).get("tencent_address")),
+        _text(row.get("name")),
+        _text((info or {}).get("name")),
+    ]
+    return _infer_city_from_texts(sources)
+
+
+def extract_city(query: str, store_refs: Iterable[Any] | None = None) -> str:
+    text = _text(query)
+    direct = _infer_city_from_texts([text])
+    if direct:
+        return direct
+    requested_name = extract_store_name(text, store_refs)
+    if requested_name:
+        city = city_for_store_name(requested_name, store_refs)
+        if city:
+            return city
+    return ""
+
+
+def extract_store_name(query: str, store_refs: Iterable[Any] | None = None) -> str:
+    text = _text(query)
+    if not text:
+        return ""
+
+    for alias, canonical in QUERY_STORE_ALIASES.items():
+        if alias and alias in text:
+            return canonical
+
+    for ref in store_refs or []:
+        name = _store_name(ref)
+        if not name:
+            continue
+        aliases = store_aliases(name)
+        if any(alias and alias in text for alias in aliases):
+            return name
+    return ""
+
+
+def city_for_store_name(name: str, store_refs: Iterable[Any] | None = None) -> str:
+    store_name = _text(name)
+    if not store_name:
+        return ""
+    for ref in store_refs or []:
+        if _store_name(ref) != store_name:
+            continue
+        city = _store_city(ref)
+        if city:
+            return city
+    return _infer_city_from_texts([store_name])
+
+
+def location_granularity(query: str, store_refs: Iterable[Any] | None = None) -> str:
+    text = _text(query)
+    if extract_store_name(text, store_refs):
+        return "store_name"
+    city = extract_city(text, store_refs)
+    landmark = extract_area_or_landmark(text)
+    if city and landmark:
+        return "area_or_landmark"
+    if city:
+        return "city_only"
+    if landmark:
+        return "area_or_landmark"
+    return "unknown"
 
 
 def extract_location_preference(query: str) -> str:
-    text = query or ""
-    if any(term in text for term in ["南山科技园", "科技园"]):
-        return "南山科技园"
-    if any(term in text for term in ["高崎机场", "厦门机场", "厦门高崎", "机场附近", "机场周边", "离机场近", "机场"]):
-        if "厦门" in text or "高崎" in text:
-            return "厦门高崎机场"
-        return "机场附近"
-    if any(term in text for term in ["蔡塘地铁站", "蔡塘站", "蔡塘"]):
-        return "蔡塘地铁站"
-    if any(term in text for term in ["火车站附近", "离火车站近", "高铁站附近", "火车站", "高铁站"]):
-        return "火车站附近"
+    text = _text(query)
+    if any(term in text for term in LOCATION_PREFERENCE_TERMS):
+        return "nearest"
     return ""
 
 
 def extract_area_or_landmark(query: str) -> str:
-    text = query or ""
-    preference = extract_location_preference(text)
-    if preference:
-        return preference
-    for suffix in ("机场", "火车站", "高铁站", "地铁站", "商圈", "广场", "大厦", "医院", "学校", "科技园", "产业园", "园区"):
-        index = text.find(suffix)
-        if index >= 0:
-            start = max(0, index - 8)
-            return text[start : index + len(suffix)].strip()
-    for area in sorted(AREA_CITY_MAP, key=len, reverse=True):
-        if area in text:
+    text = _text(query)
+    if not text:
+        return ""
+
+    for landmark in SPECIAL_LANDMARKS:
+        if landmark and landmark in text:
+            return landmark
+
+    match = re.search(
+        r"([\u4e00-\u9fa5A-Za-z0-9]{2,20}(?:%s))" % "|".join(map(re.escape, LANDMARK_SUFFIXES)),
+        text,
+    )
+    if match:
+        return match.group(1)
+
+    for area in sorted(AREA_CITY_MAP.keys(), key=len, reverse=True):
+        if area and area in text:
             return area
     return ""
 
 
-def location_granularity(query: str, stores: list[StoreRecord]) -> str:
-    text = (query or "").strip()
-    if not text:
-        return "unknown"
-    if extract_store_name(text, stores):
-        return "store_name"
-    if extract_area_or_landmark(text):
-        return "area_or_landmark"
-    if extract_city(text, stores):
-        return "city_only"
-    return "unknown"
+def asks_store_status(query: str) -> bool:
+    text = _text(query)
+    return any(term in text for term in STORE_STATUS_TERMS)
 
 
-def extract_city(query: str, stores: list[StoreRecord]) -> str:
-    text = query or ""
-    for city in CITY_NAMES:
-        if city in text:
-            return city
-    for store in stores:
-        if store.name and store.name in text:
-            return store.city
-    for area, city in sorted(AREA_CITY_MAP.items(), key=lambda item: len(item[0]), reverse=True):
-        if area in text:
-            return city
-    for location in EXTERNAL_LOCATION_NAMES:
-        if location in text:
-            return location
-    return ""
-
-
-def extract_store_name(query: str, stores: list[StoreRecord]) -> str:
-    text = query or ""
-    city = extract_city(text, stores)
-    for store in stores:
-        if store.name and store.name in text:
-            return store.name
-    for alias, name in QUERY_STORE_ALIASES.items():
-        if alias not in text:
-            continue
-        alias_city = city_for_store_name(name, stores)
-        if city and alias_city and city != alias_city:
-            continue
-        return name
-    return ""
-
-
-def store_aliases(name: str) -> list[str]:
-    return STORE_ALIASES.get(name, [name] if name else [])
-
-
-def city_for_store_name(name: str, stores: list[StoreRecord]) -> str:
-    if not name:
-        return ""
-    for store in stores:
-        if store.name == name:
-            return store.city
-    for city in CITY_NAMES:
-        if city in name:
-            return city
-    return ""
-
-
-def row_matches_city(row: dict[str, Any], city: str) -> bool:
-    name = str(row.get("name") or "")
-    city_field = str(row.get("city") or row.get("city_name") or "")
-    address = " ".join(str(row.get(key) or "") for key in ["address", "tencent_address"])
-    return text_matches_city(name=name, city_field=city_field, address=address, city=city)
-
-
-def store_matches_city(store: dict[str, Any], city: str) -> bool:
-    return text_matches_city(
-        name=str(store.get("name") or ""),
-        city_field=str(store.get("city") or ""),
-        address=str(store.get("address") or ""),
-        city=city,
-    )
-
-
-def city_from_row(row: dict[str, Any], info: dict[str, Any]) -> str:
-    city_field = str(row.get("city") or row.get("city_name") or info.get("city") or info.get("city_name") or "")
-    if city_field:
-        for city in CITY_NAMES:
-            if city in city_field:
-                return city
-    name = str(info.get("name") or row.get("name") or "")
-    address = str(info.get("tencent_address") or row.get("tencent_address") or row.get("address") or "")
-    for city in CITY_NAMES:
-        if text_matches_city(name=name, city_field="", address=address, city=city):
-            return city
-    return ""
-
-
-def text_matches_city(*, name: str, city_field: str, address: str, city: str) -> bool:
-    if not city:
+def needs_city_before_lookup(query: str, *, city: str, requested_name: str) -> bool:
+    text = _text(query)
+    if requested_name or city:
         return False
-    if city_field and city in city_field:
+    if any(term in text for term in STORE_ROUTE_TERMS + STORE_STATUS_TERMS + LOCATION_PREFERENCE_TERMS):
         return True
-    if name.startswith(city) or f"{city}店" in name:
-        return True
-    if f"{city}市" in address or city in address:
+    if "门店" in text or "店" in text or "地址" in text:
         return True
     return False
 
 
-def store_matches_requested_name(store: dict[str, Any], requested_name: str, aliases: list[str]) -> bool:
-    haystack = " ".join(str(store.get(key) or "") for key in ["name", "address", "city"])
-    if requested_name and requested_name in haystack:
-        return True
-    return any(alias and alias in haystack for alias in aliases)
+def row_matches_city(row: dict[str, Any], city: str) -> bool:
+    return bool(city) and city_from_row(row) == city
 
 
-def asks_store_status(query: str) -> bool:
-    return any(term in (query or "") for term in ["关门", "开门", "闭店", "停业", "还开", "还营业", "营业吗", "营业时间", "几点开", "几点关"])
+def store_matches_city(store: dict[str, Any], city: str) -> bool:
+    text = " ".join(
+        filter(
+            None,
+            [
+                _text(store.get("city")),
+                _text(store.get("name")),
+                _text(store.get("address")),
+            ],
+        )
+    )
+    inferred = _infer_city_from_texts([text])
+    return bool(city) and inferred == city
+
+
+def store_aliases(name: str) -> list[str]:
+    store_name = _text(name)
+    if not store_name:
+        return []
+    aliases = STORE_ALIASES.get(store_name, [])
+    values = [store_name, *_normalize_aliases(aliases)]
+    normalized_name = _normalize_store_name(store_name)
+    if normalized_name and normalized_name not in values:
+        values.append(normalized_name)
+    return list(dict.fromkeys(filter(None, values)))
 
 
 def match_rows_by_query_name(rows: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
-    terms = store_hint_terms(query)
-    if not terms:
+    requested = extract_store_name(query, rows)
+    if not requested:
         return []
-    matched: list[dict[str, Any]] = []
-    for row in rows:
-        haystack = " ".join(str(row.get(key) or "") for key in ["name", "address", "tencent_address"])
-        if any(term in haystack for term in terms):
-            matched.append(row)
-    return matched
+    aliases = store_aliases(requested)
+    return [row for row in rows if _row_matches_requested_name(row, requested, aliases)]
 
 
-def store_hint_terms(query: str) -> list[str]:
-    text = query or ""
-    generic_terms = [
-        "这边",
-        "那边",
-        "附近",
-        "关门",
-        "开门",
-        "闭店",
-        "停业",
-        "营业",
-        "营业时间",
-        "了吗",
-        "吗",
-        "是不是",
-        "还有",
-        "还在",
-        "还开",
-        "门店",
-        "店",
-        "地址",
-        "哪里",
-        "位置",
-        "导航",
-        "停车",
-        "现在",
-        "目前",
-        "今天",
-        "明天",
-        "几点",
-    ]
-    for term in generic_terms:
-        text = text.replace(term, " ")
-    return [term for term in text.split() if len(term) >= 2]
+def store_matches_requested_name(store: dict[str, Any], requested_name: str, aliases: list[str]) -> bool:
+    return _row_matches_requested_name(store, requested_name, aliases)
+
+
+def _row_matches_requested_name(ref: Any, requested_name: str, aliases: list[str]) -> bool:
+    name = _store_name(ref)
+    if not name:
+        return False
+    if name == requested_name:
+        return True
+    normalized_name = _normalize_store_name(name)
+    requested_normalized = _normalize_store_name(requested_name)
+    if normalized_name and normalized_name == requested_normalized:
+        return True
+    return any(alias and alias in name for alias in aliases)
+
+
+def _infer_city_from_texts(texts: Iterable[str]) -> str:
+    values = [value for value in (_text(item) for item in texts) if value]
+    merged = " ".join(values)
+    for city in CITY_NAMES:
+        if city in merged:
+            return city
+    for area, city in sorted(AREA_CITY_MAP.items(), key=lambda item: len(item[0]), reverse=True):
+        if area in merged:
+            return city
+    for city in EXTERNAL_LOCATION_NAMES:
+        if city in merged:
+            return city
+    return ""
+
+
+def _normalize_aliases(values: Iterable[str]) -> list[str]:
+    aliases: list[str] = []
+    for value in values:
+        text = _text(value)
+        if not text:
+            continue
+        aliases.append(text)
+        normalized = _normalize_store_name(text)
+        if normalized and normalized not in aliases:
+            aliases.append(normalized)
+    return aliases
+
+
+def _store_name(ref: Any) -> str:
+    if isinstance(ref, dict):
+        return _text(ref.get("name"))
+    return _text(getattr(ref, "name", ""))
+
+
+def _store_city(ref: Any) -> str:
+    if isinstance(ref, dict):
+        city = _text(ref.get("city"))
+        if city:
+            return city
+        return _infer_city_from_texts([_text(ref.get("address")), _text(ref.get("name"))])
+    city = _text(getattr(ref, "city", ""))
+    if city:
+        return city
+    return _infer_city_from_texts([_text(getattr(ref, "address", "")), _text(getattr(ref, "name", ""))])
+
+
+def _normalize_store_name(value: str) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    text = re.sub(r"(BEIFACE|贝颜|百星)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"(门店|体验店|门诊部|门诊|机构)", "", text)
+    return text.strip()
+
+
+def _text(value: Any) -> str:
+    return str(value or "").strip()
