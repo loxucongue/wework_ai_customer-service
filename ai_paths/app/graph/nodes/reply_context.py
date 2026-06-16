@@ -255,6 +255,13 @@ def _fact_notes_for_model(
     if isinstance(recommended_store, dict) and recommended_store.get("name"):
         notes.append("已有推荐门店事实，可优先按推荐门店回答。")
     store_status = structured_facts.get("store_lookup_status") or {}
+    if (
+        isinstance(recommended_store, dict)
+        and recommended_store.get("name")
+        and isinstance(store_status, dict)
+        and str(store_status.get("location_granularity") or "") in {"area_or_landmark", "store_name"}
+    ):
+        notes.append("客户已给具体区/地标或明确门店，本轮可直接推荐这家真实门店，不要再追问方向。")
     if isinstance(store_status, dict) and store_status.get("needs_area_or_landmark"):
         city = str(store_status.get("city") or "").strip()
         if city:
@@ -291,6 +298,12 @@ def _fact_notes_for_model(
                 continue
             if item.get("type") == "available_time" and item.get("slots"):
                 notes.append("已有档期事实，可直接回答可约时间。")
+                break
+        for item in appointment_facts:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "appointment_opening" and item.get("status") in {"created", "dry_run_created"} and item.get("order_id"):
+                notes.append("已有真实预约金订单，可直接解释10元预约金并输出 book_order。")
                 break
 
     professional_assist = structured_facts.get("professional_assist") or {}

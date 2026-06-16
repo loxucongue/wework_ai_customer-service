@@ -149,8 +149,6 @@ def _missing_fields(facts: dict[str, Any]) -> list[str]:
         "customer_add_wechat_id": "加微记录",
         "user_id": "员工ID",
         "store_id": "门店",
-        "date": "到店日期",
-        "time": "到店时间",
         "prepay": "预约金",
     }
     return [label for key, label in required.items() if not facts.get(key)]

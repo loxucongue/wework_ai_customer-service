@@ -95,7 +95,8 @@ store_lookup 参数规则：
 - S2 门店/地址/营业时间/停车/路线/附近门店：必须调用 store_lookup。
 - S3 价格/活动/定金/尾款/名额/费用透明：通常调用 kb_search(sales_talk_qa)，价格事实用 active_offer_context，不用价格库。
 - S3 客户明确要预约或问某天某点是否可来：store_lookup + available_time。
-- S3 客户已有预约意向且已匹配到意向门店，并明确要登记/预约/支付10元预约金：store_lookup + available_time + appointment_create。appointment_create 只能在门店、到店日期、到店时间、客户ID、员工ID、加微记录等必要事实满足时规划；缺信息时先规划补齐缺失信息，不要让最终回复输出 book_order。
+- S3 客户已有预约意向且已匹配到意向门店，并明确要登记/预约/支付10元预约金：store_lookup + appointment_create。只有客户同时明确问某天某点是否可来时，再额外加 available_time。
+- appointment_create 以真实客户ID、员工ID、加微记录、意向门店、预约金事实为前提；日期、时间、姓名电话可以在后续继续补齐。只要真实 order_id 已创建，就允许最终回复输出 book_order。
 - S4 已有预约状态、改约、取消：appointment_record_query；必要时 available_time。
 - 案例/效果图/做完效果：必须调用 kb_search(case_studies)。
 - 真实投诉、退款、付款订单、多收钱、威胁投诉：必须调用 professional_assist。
@@ -133,14 +134,15 @@ reply_strategy 要告诉 Final Reply：
 - 登记活动名额。
 - 收姓名电话。
 - 有预约意向且真实创建出预约金订单后，让 Final Reply 解释10元预约金并输出 book_order；没有真实 order_id 时只推进补齐门店/日期/时间/姓名电话，不允许 book_order。
+- 客户明确报名意向时，不要被动等所有后置细节都补齐才推进；先拿真实门店和真实 order_id，再在后续补日期、时间、姓名电话。
 
 推进链路优先级：
 1. 先确认城市。
 2. 再确认区/地标/机场/商圈。
 3. 再确认更方便的意向门店。
 4. 再讲清周年庆活动和10元预约金规则。
-5. 再确认时间/姓名电话/报名意向。
-6. 最后才创建预约金订单并允许 book_order。
+5. 客户明确报名意向时，优先创建预约金订单并允许 book_order。
+6. 再补时间/姓名电话等后置信息。
 
 不要为了推进而跳过事实：没有确认门店时不规划 book_order；只有城市没有区/地标时不要让最终回复直接说“最近门店”。
 
@@ -207,6 +209,7 @@ PLANNER_RISK_PATCH_PROMPT = """
 - 客户问“效果图/案例/做完效果/图片上的客户做了几次”，必须 case_studies。
 - 客户问“能不能做/什么方法/和激光有什么不同/会不会伤肤/要做几次”，通常 S1_GREETING_INTRO。
 - 客户说“退钱/退款/投诉/骗钱/多收钱/付款异常/订单状态”，必须 professional_assist。
+- 客户说“帮我登记/先约一下/我先交10/先付预约金/帮我安排”且已匹配真实门店时，优先规划 appointment_create；只有客户同时明确问某天某点，才加 available_time。
 """.strip()
 
 

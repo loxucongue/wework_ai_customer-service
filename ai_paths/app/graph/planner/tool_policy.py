@@ -127,6 +127,29 @@ _APPOINTMENT_EXPLICIT_TIME_TERMS = (
     "现在过来",
 )
 
+_APPOINTMENT_BOOKING_INTENT_TERMS = (
+    "预约",
+    "约一下",
+    "先约",
+    "安排一下",
+    "帮我安排",
+    "登记一下",
+    "帮我登记",
+    "报个名",
+    "报名",
+    "留个名额",
+    "锁个名额",
+    "锁一下",
+    "交10",
+    "交十",
+    "先交10",
+    "先付10",
+    "付10",
+    "预约金",
+    "定金",
+    "订金",
+)
+
 
 def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
@@ -241,11 +264,22 @@ def enforce_required_tools(
             }
         )
 
+    def ensure_appointment_create() -> None:
+        ensure_store_lookup("Need real store facts before creating appointment deposit order")
+        add_tool(
+            {
+                "name": "appointment_create",
+                "purpose": "Customer shows explicit booking or deposit intent and a real appointment order may be needed",
+            }
+        )
+
     # Text signals are mandatory facts, not optional model preferences.
     if needs_store_lookup_request(state, original_user_query):
         ensure_store_lookup("Customer mentions city, area, address, route, nearby, hours, or parking")
     if needs_appointment_time_request(original_user_query):
         ensure_available_time()
+    if needs_appointment_create_request(state, original_user_query):
+        ensure_appointment_create()
     if has_case_request(original_user_query):
         ensure_case_studies()
 
@@ -280,6 +314,8 @@ def enforce_required_tools(
             ensure_store_lookup("Need real store facts before answering store, address, route, hours, or parking")
         if task_type == "appointment" or _is_appointment_marker(markers):
             ensure_available_time()
+        if task_type in {"appointment_create", "signup_close"} or "BOOK_ORDER" in markers:
+            ensure_appointment_create()
         if task_type in {"appointment_status", "appointment_change", "appointment_cancel"} or any(
             token in markers for token in ("APPOINTMENT_STATUS", "APPOINTMENT_CHANGE", "APPOINTMENT_CANCEL")
         ):
@@ -424,6 +460,17 @@ def needs_appointment_time_request(content: str) -> bool:
     if any(term in content for term in ("现在过来", "现在过去", "现在到店", "现在来店")):
         return True
     return False
+
+
+def needs_appointment_create_request(state: AgentState, content: str) -> bool:
+    if not content:
+        return False
+    if not any(term in content for term in _APPOINTMENT_BOOKING_INTENT_TERMS):
+        return False
+    session = order_session_state(state)
+    if str(session.get("confirmed_store_id") or "").strip() or str(session.get("confirmed_store_name") or "").strip():
+        return True
+    return should_use_recent_store_fact_context(content, state)
 
 
 def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:

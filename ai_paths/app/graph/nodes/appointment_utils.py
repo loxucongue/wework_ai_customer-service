@@ -33,6 +33,7 @@ def appointment_query_from_state(
             }
 
     date_text = extract_date_value(content) or appointment_slot_value(state, "visit_date_value")
+    time_text = extract_time_value(content) or appointment_slot_value(state, "visit_time")
     missing: list[str] = []
     if not str(store.get("id") or "").strip():
         missing.append("store_id")
@@ -42,6 +43,8 @@ def appointment_query_from_state(
         "store_id": str(store.get("id") or ""),
         "store_name": str(store.get("name") or ""),
         "date": date_text,
+        "time": time_text,
+        "time_text": time_text,
         "missing": missing,
     }
 
@@ -135,3 +138,19 @@ def extract_date_value(content: str) -> str:
             candidate = date(year + 1, month, day)
         return candidate.isoformat()
     return ""
+
+
+def extract_time_value(content: str) -> str:
+    explicit = re.search(r"(\d{1,2})[:：](\d{2})", content)
+    if explicit:
+        return f"{int(explicit.group(1)):02d}:{explicit.group(2)}"
+    hour_match = re.search(r"(上午|下午|晚上|中午)?\s*(\d{1,2})\s*点", content)
+    if not hour_match:
+        return ""
+    prefix = hour_match.group(1) or ""
+    hour = int(hour_match.group(2))
+    if prefix in {"下午", "晚上"} and hour < 12:
+        hour += 12
+    if prefix == "中午" and hour < 11:
+        hour += 12
+    return f"{hour:02d}:00"
