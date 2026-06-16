@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from typing import Any, Callable
 
 from app.graph.task_state import appointment_slot_value
+from app.graph.nodes.store_context import current_real_store_from_state, known_store_name_from_history
 
 
 def appointment_query_from_state(
@@ -14,8 +15,27 @@ def appointment_query_from_state(
     extract_city: Callable[[str], str],
 ) -> dict[str, Any]:
     stores = store_lookup.get("stores") if isinstance(store_lookup, dict) else []
-    store_name_hint = appointment_slot_value(state, "store_name")
+    store_name_hint = appointment_slot_value(state, "store_name") or known_store_name_from_history(state)
     store = select_store_for_appointment(stores, store_name_hint)
+    if not store:
+        current_store = current_real_store_from_state(state)
+        current_id = str(current_store.get("id") or "").strip()
+        current_name = str(current_store.get("name") or "").strip()
+        if current_id or current_name:
+            if isinstance(stores, list) and stores:
+                for item in stores:
+                    if not isinstance(item, dict):
+                        continue
+                    item_id = str(item.get("id") or "").strip()
+                    item_name = str(item.get("name") or "").strip()
+                    if current_id and item_id == current_id:
+                        store = item
+                        break
+                    if current_name and item_name and (item_name == current_name or current_name in item_name or item_name in current_name):
+                        store = item
+                        break
+            if not store and (current_id or current_name):
+                store = current_store
     if not store and has_explicit_location_or_store(content, extract_city) and isinstance(stores, list) and stores:
         store = stores[0]
 
@@ -32,8 +52,16 @@ def appointment_query_from_state(
                 "name": appointment.get("store_name", ""),
             }
 
-    date_text = extract_date_value(content) or appointment_slot_value(state, "visit_date_value")
-    time_text = extract_time_value(content) or appointment_slot_value(state, "visit_time")
+    date_text = (
+        extract_date_value(content)
+        or appointment_slot_value(state, "visit_date_value")
+        or _history_date_value(state)
+    )
+    time_text = (
+        extract_time_value(content)
+        or appointment_slot_value(state, "visit_time")
+        or _history_time_value(state)
+    )
     missing: list[str] = []
     if not str(store.get("id") or "").strip():
         missing.append("store_id")
@@ -47,6 +75,42 @@ def appointment_query_from_state(
         "time_text": time_text,
         "missing": missing,
     }
+
+
+def _history_date_value(state: dict[str, Any]) -> str:
+    for text in _recent_customer_texts(state):
+        value = extract_date_value(text)
+        if value:
+            return value
+    return ""
+
+
+def _history_time_value(state: dict[str, Any]) -> str:
+    for text in _recent_customer_texts(state):
+        value = extract_time_value(text)
+        if value:
+            return value
+    return ""
+
+
+def _recent_customer_texts(state: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for item in reversed(state.get("conversation_history") or []):
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role and role not in {"user", "customer"}:
+                continue
+            content = item.get("content")
+            text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
+        else:
+            text = str(item or "").strip()
+            if text.startswith(("小贝：", "小贝:", "客服：", "客服:", "AI回复：", "AI回复:", "助手：", "助手:")):
+                continue
+            if text.startswith(("客户：", "客户:", "用户：", "用户:")):
+                text = text.split("：", 1)[-1] if "：" in text else text.split(":", 1)[-1]
+        if text:
+            texts.append(text)
+    return texts[:10]
 
 
 def select_store_for_appointment(stores: Any, store_name_hint: str) -> dict[str, Any]:

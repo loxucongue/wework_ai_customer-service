@@ -22,6 +22,7 @@ PLANNER_SYSTEM_PROMPT = """
 - 普通售前顾虑默认由系统承接，不要轻易交给 professional_assist。
 - 价格、门店、档期、预约、订单、退款、案例图片等事实不能猜，必须规划对应工具或依赖已给事实。
 - 不输出客户可见回复，不输出长篇内部分析。
+- 如果当前消息很短、像续接句、像确认句或像补一句，而上下文里已有门店、时间、活动或预约硬状态，不要重置成 greeting 或 generic_consult；要继续当前成交链路。
 
 # 四阶段SOP判断
 必须输出 sop_stage 和 sop_step。
@@ -75,6 +76,13 @@ S4_FOLLOWUP_REACTIVATE：第四阶段，回访 / 逼单 / 已邀约 / 售后
 - appointment_create：客户明确要预约且必要信息满足时创建预约。
 - professional_assist：真实投诉、退款、付款/订单异常、严重不适、高风险健康情况、客户明确要求真人。
 - no_tool：寒暄、简单承接，且不需要外部事实。
+
+order_session 使用规则：
+- 这是当前成交链路的硬状态，不属于软画像。
+- 如果 order_session 已有 city、area_or_landmark、confirmed_store、visit_time、appointment_order_id，就视为客户已经给过这些信息。
+- 当前消息很短但 order_session 显示已处于 store_matched、time_intent_known、created_order 时，不要回到打招呼，不要重新问“您在哪个城市”“您想做什么项目”。
+- 如果 order_session.signup_state = store_matched 且客户表达“登记/报名/先交10/先约一下”，优先规划 appointment_create。
+- 如果 order_session.signup_state = created_order，则优先围绕预约金订单、姓名电话、到店时间继续推进。
 
 停用工具/库：
 - 不规划 project_price、pricing_db、local_pricing、project_qa、competitor_qa、after_sales_qa。
@@ -146,6 +154,10 @@ reply_strategy 要告诉 Final Reply：
 
 不要为了推进而跳过事实：没有确认门店时不规划 book_order；只有城市没有区/地标时不要让最终回复直接说“最近门店”。
 
+短句续接判定：
+- “那你先帮我登记一下”“那就这个吧”“可以”“周六下午三点”“先发我地址”“那我先交10”“帮我留个名额”这类短句，通常不是新话题，而是沿着已有门店、时间、报价链路继续推进。
+- 这类输入若缺少表面信息，不代表回到 greeting；要优先结合 conversation_history、request_context、order_session 判断当前是在继续门店、预约金还是时间确认。
+
 # 输出契约
 只返回合法JSON，不要解释。
 {
@@ -210,6 +222,7 @@ PLANNER_RISK_PATCH_PROMPT = """
 - 客户问“能不能做/什么方法/和激光有什么不同/会不会伤肤/要做几次”，通常 S1_GREETING_INTRO。
 - 客户说“退钱/退款/投诉/骗钱/多收钱/付款异常/订单状态”，必须 professional_assist。
 - 客户说“帮我登记/先约一下/我先交10/先付预约金/帮我安排”且已匹配真实门店时，优先规划 appointment_create；只有客户同时明确问某天某点，才加 available_time。
+- 当前消息低信息量但 order_session 显示已匹配门店、已解释活动或已确认时间时，优先按当前成交阶段续接，不要误判为 greeting。
 """.strip()
 
 

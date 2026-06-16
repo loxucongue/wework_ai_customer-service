@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from app.graph.nodes.appointment_utils import extract_date_value, extract_time_value
+from app.graph.nodes.store_context import (
+    known_city_from_state,
+    known_store_area_from_history,
+    known_store_name_from_history,
+)
 from app.graph.planner.runtime_plan import planner_task_views
 from app.graph.signals.general import is_low_information_content
 from app.graph.state import AgentState
@@ -144,6 +150,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
             store_lookup_status.get("city"),
             request_context.get("city"),
             state.get("city"),
+            known_city_from_state(state),
         ),
     )
     _put(
@@ -155,6 +162,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
             request_context.get("area_or_landmark"),
             request_context.get("location_preference"),
             state.get("area_or_landmark"),
+            known_store_area_from_history(state),
         ),
     )
     _put(
@@ -164,6 +172,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
             request_context.get("confirmed_store_name"),
             state.get("confirmed_store_name"),
             recommended_store.get("name"),
+            known_store_name_from_history(state),
         ),
     )
     _put(
@@ -183,6 +192,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
             request_context.get("visit_date"),
             request_context.get("appointment_date"),
             state.get("visit_date"),
+            _history_visit_date(state),
         ),
     )
     _put(
@@ -192,6 +202,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
             request_context.get("visit_time"),
             request_context.get("appointment_time"),
             state.get("visit_time"),
+            _history_visit_time(state),
         ),
     )
     _put(
@@ -249,6 +260,41 @@ def _offer_already_explained(state: AgentState) -> bool:
                 texts.append(raw.split("：", 1)[-1])
     combined = "\n".join(texts[-8:])
     return any(term in combined for term in ("268", "预约金", "做付258", "周年庆", "活动价", "报名10"))
+
+
+def _history_visit_date(state: AgentState) -> str:
+    for text in _recent_customer_texts(state):
+        value = extract_date_value(text)
+        if value:
+            return value
+    return ""
+
+
+def _history_visit_time(state: AgentState) -> str:
+    for text in _recent_customer_texts(state):
+        value = extract_time_value(text)
+        if value:
+            return value
+    return ""
+
+
+def _recent_customer_texts(state: AgentState) -> list[str]:
+    texts: list[str] = []
+    for item in reversed(state.get("conversation_history") or []):
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role and role not in {"user", "customer"}:
+                continue
+            content = item.get("content")
+            texts.append(str(content.get("text") if isinstance(content, dict) else content or ""))
+            continue
+        raw = str(item or "").strip()
+        if raw.startswith(("小贝：", "客服：", "AI回复：", "助手：")):
+            continue
+        if raw.startswith(("客户：", "用户：")):
+            raw = raw.split("：", 1)[-1]
+        texts.append(raw)
+    return [text for text in texts if text][:10]
 
 
 def _next_order_slot(session: dict[str, object]) -> str:

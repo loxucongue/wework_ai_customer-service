@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from app.graph.nodes.common import model_usage_snapshot
+from app.graph.nodes.memory_usage_policy import order_session_state
 from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, safety_fallback_plan
 from app.graph.state import AgentState
@@ -20,6 +21,7 @@ def planner_v2_model_tier(state: AgentState) -> str:
 
 
 def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
+    order_session = _compact_order_session(order_session_state(state))
     payload = {
         "current_message": state.get("normalized_content") or "",
         "message_type": _message_type(state),
@@ -32,6 +34,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
         "customer_basic_info": state.get("customer_basic_info") or {},
         "history_events": (state.get("history_events") or [])[-8:],
         "customer_context": _compact_customer_context(state.get("customer_context") or {}),
+        "order_session": order_session,
     }
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
@@ -48,6 +51,7 @@ def planner_v2_repair_messages_for_model(
     original_plan: dict[str, Any],
     violations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    order_session = _compact_order_session(order_session_state(state))
     payload = {
         "current_message": state.get("normalized_content") or "",
         "message_type": _message_type(state),
@@ -60,6 +64,7 @@ def planner_v2_repair_messages_for_model(
         "customer_basic_info": state.get("customer_basic_info") or {},
         "history_events": (state.get("history_events") or [])[-8:],
         "customer_context": _compact_customer_context(state.get("customer_context") or {}),
+        "order_session": order_session,
         "original_plan": original_plan,
         "tool_policy_violations": violations,
     }
@@ -174,5 +179,24 @@ def _compact_request_context(raw: dict[str, Any]) -> dict[str, Any]:
         "store_name",
         "appointment_id",
         "appointment_time",
+    )
+    return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
+
+
+def _compact_order_session(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    keys = (
+        "city",
+        "area_or_landmark",
+        "confirmed_store_id",
+        "confirmed_store_name",
+        "visit_date",
+        "visit_time",
+        "appointment_order_id",
+        "offer_explained",
+        "signup_state",
+        "next_slot",
+        "deposit_ready_candidate",
     )
     return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}

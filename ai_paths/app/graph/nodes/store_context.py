@@ -17,6 +17,21 @@ from app.policies.constants import (
 from app.services.store_text import extract_area_or_landmark, extract_location_preference
 
 
+BOOKING_FOLLOWUP_TERMS = (
+    "登记",
+    "报名",
+    "先交10",
+    "交10",
+    "付预约金",
+    "预约金",
+    "先约一下",
+    "先帮我约",
+    "帮我登记",
+    "帮我安排",
+    "先定一下",
+)
+
+
 def extract_city(content: str) -> str:
     for city in CITY_NAMES:
         if city in content:
@@ -59,6 +74,8 @@ def should_inherit_store_location_context(content: str, state: AgentState) -> bo
     content = (content or "").strip()
     if not content:
         return False
+    if _looks_like_booking_followup(content) and (_current_store_name_from_state(state) or known_store_name_from_history(state)):
+        return True
     if should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state):
         return True
     if extract_city(content):
@@ -246,6 +263,8 @@ def _should_pin_current_store_followup(
         return False
     if not _current_store_is_real(state):
         return False
+    if _looks_like_booking_followup(content):
+        return True
     if extract_city(content) or current_area or extract_store_area(content) or extract_location_preference(content):
         return False
     followup_terms = (
@@ -285,3 +304,33 @@ def extract_time_text(content: str) -> str:
 
 def _json_dumps(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def current_real_store_from_state(state: AgentState) -> dict[str, str]:
+    structured = state.get("structured_facts") if isinstance(state.get("structured_facts"), dict) else {}
+    if not structured:
+        fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+        structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    recommended = structured.get("recommended_store") if isinstance(structured, dict) else {}
+    if isinstance(recommended, dict):
+        store_id = str(recommended.get("store_id") or recommended.get("id") or "").strip()
+        store_name = str(recommended.get("name") or "").strip()
+        if store_id or store_name:
+            return {"id": store_id, "name": store_name}
+    stores = structured.get("store_facts") if isinstance(structured, dict) else None
+    if isinstance(stores, list):
+        for item in stores:
+            if not isinstance(item, dict):
+                continue
+            store_id = str(item.get("id") or "").strip()
+            store_name = str(item.get("name") or "").strip()
+            if store_id or store_name:
+                return {"id": store_id, "name": store_name}
+    return {}
+
+
+def _looks_like_booking_followup(content: str) -> bool:
+    text = (content or "").strip()
+    if not text:
+        return False
+    return any(term in text for term in BOOKING_FOLLOWUP_TERMS)
