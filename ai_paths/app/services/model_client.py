@@ -37,17 +37,30 @@ class ModelClient:
             raise RuntimeError("No model API key configured")
         errors: list[str] = []
         for index, model in enumerate(model_names or self._model_names(tier)):
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-            }
-            try:
-                raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
-                return self._extract_text(raw)
-            except Exception as exc:
-                errors.append(f"{model}: {type(exc).__name__}: {exc}")
-                if not self._should_try_next_model(exc):
+            retry_reason = ""
+            for attempt in (1, 2):
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                }
+                try:
+                    raw = await self._post_chat(
+                        payload,
+                        tier=tier,
+                        fallback_index=index,
+                        errors=errors,
+                        attempt=attempt,
+                        retry_reason=retry_reason,
+                    )
+                    return self._extract_text(raw)
+                except Exception as exc:
+                    errors.append(f"{model}[attempt={attempt}]: {type(exc).__name__}: {exc}")
+                    if attempt == 1 and self._should_retry_same_model(exc):
+                        retry_reason = f"{type(exc).__name__}: {exc}"
+                        continue
+                    if not self._should_try_next_model(exc):
+                        raise RuntimeError("All model candidates failed: " + " | ".join(errors)) from exc
                     break
         raise RuntimeError("All model candidates failed: " + " | ".join(errors))
 
@@ -64,21 +77,34 @@ class ModelClient:
             raise RuntimeError("No model API key configured")
         errors: list[str] = []
         for index, model in enumerate(model_names or self._model_names(tier)):
-            payload = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-            }
-            if response_format:
-                payload["response_format"] = response_format
-            try:
-                raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
-                return self._parse_json(self._extract_text(raw))
-            except Exception as exc:
-                errors.append(f"{model}: {type(exc).__name__}: {exc}")
-                if isinstance(exc, json.JSONDecodeError):
-                    continue
-                if not self._should_try_next_model(exc):
+            retry_reason = ""
+            for attempt in (1, 2):
+                payload = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                }
+                if response_format:
+                    payload["response_format"] = response_format
+                try:
+                    raw = await self._post_chat(
+                        payload,
+                        tier=tier,
+                        fallback_index=index,
+                        errors=errors,
+                        attempt=attempt,
+                        retry_reason=retry_reason,
+                    )
+                    return self._parse_json(self._extract_text(raw))
+                except Exception as exc:
+                    errors.append(f"{model}[attempt={attempt}]: {type(exc).__name__}: {exc}")
+                    if attempt == 1 and self._should_retry_same_model(exc):
+                        retry_reason = f"{type(exc).__name__}: {exc}"
+                        continue
+                    if isinstance(exc, json.JSONDecodeError):
+                        break
+                    if not self._should_try_next_model(exc):
+                        raise RuntimeError("All JSON model candidates failed: " + " | ".join(errors)) from exc
                     break
         raise RuntimeError("All JSON model candidates failed: " + " | ".join(errors))
 
@@ -108,13 +134,26 @@ class ModelClient:
         }
         errors: list[str] = []
         for index, model in enumerate(self._model_names(tier)):
-            payload["model"] = model
-            try:
-                raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
-                return self._parse_json(self._extract_text(raw))
-            except Exception as exc:
-                errors.append(f"{model}: {type(exc).__name__}: {exc}")
-                if not self._should_try_next_model(exc):
+            retry_reason = ""
+            for attempt in (1, 2):
+                payload["model"] = model
+                try:
+                    raw = await self._post_chat(
+                        payload,
+                        tier=tier,
+                        fallback_index=index,
+                        errors=errors,
+                        attempt=attempt,
+                        retry_reason=retry_reason,
+                    )
+                    return self._parse_json(self._extract_text(raw))
+                except Exception as exc:
+                    errors.append(f"{model}[attempt={attempt}]: {type(exc).__name__}: {exc}")
+                    if attempt == 1 and self._should_retry_same_model(exc):
+                        retry_reason = f"{type(exc).__name__}: {exc}"
+                        continue
+                    if not self._should_try_next_model(exc):
+                        raise RuntimeError("All vision model candidates failed: " + " | ".join(errors)) from exc
                     break
         raise RuntimeError("All vision model candidates failed: " + " | ".join(errors))
 
@@ -125,6 +164,8 @@ class ModelClient:
         tier: ModelTier,
         fallback_index: int,
         errors: list[str],
+        attempt: int,
+        retry_reason: str,
     ) -> dict[str, Any]:
         url = f"{self._base_url().rstrip('/')}/chat/completions"
         headers = {
@@ -153,6 +194,8 @@ class ModelClient:
             "model": payload.get("model"),
             "tier": tier,
             "fallback_index": fallback_index,
+            "attempt": attempt,
+            "retry_reason": retry_reason,
             "fallback_errors": list(errors),
             "usage": raw.get("usage") or {},
         }
@@ -199,6 +242,28 @@ class ModelClient:
     @staticmethod
     def _should_try_next_model(exc: Exception) -> bool:
         return model_selection.should_try_next_model(exc)
+
+    @staticmethod
+    def _should_retry_same_model(exc: Exception) -> bool:
+        if isinstance(exc, json.JSONDecodeError):
+            return True
+        if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
+            return True
+        text = str(exc).lower()
+        return any(
+            marker in text
+            for marker in (
+                "model_http_429",
+                "model_http_500",
+                "model_http_502",
+                "model_http_503",
+                "model_http_504",
+                "timeout",
+                "timed out",
+                "empty",
+                "expecting value",
+            )
+        )
 
     @staticmethod
     def _extract_text(raw: dict[str, Any]) -> str:

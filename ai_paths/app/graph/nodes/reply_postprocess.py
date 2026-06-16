@@ -6,6 +6,7 @@ from typing import Any
 from app.graph import reply_filters
 from app.graph.nodes.common import looks_garbled_text, renumber_messages
 from app.graph.nodes.memory_usage_policy import order_session_state
+from app.graph.nodes.store_context import should_use_known_store_context, should_use_recent_store_fact_context
 from app.graph.runtime_context import contextual_price_project
 from app.graph.nodes.reply_validation import message_content_order_id, message_content_store_id, message_content_text
 from app.graph.planner.runtime_plan import planner_handoff, planner_task_views
@@ -204,7 +205,7 @@ def _store_address_message_for_state(
         for message in model_messages
         if isinstance(message, dict) and message.get("type") == "store_address"
     ]
-    if not intents:
+    if not intents and not _should_auto_append_store_address(state):
         return None
     real_store_ids = _real_store_ids_from_state(state)
     if not real_store_ids:
@@ -236,6 +237,7 @@ def _real_store_ids_from_state(state: AgentState) -> list[str]:
             store_id = _store_id_from_fact(item)
             if store_id:
                 ids.append(store_id)
+    ids.extend(_recent_store_card_ids_from_history(state))
     return list(dict.fromkeys(ids))
 
 
@@ -246,12 +248,106 @@ def _preferred_store_id_from_state(state: AgentState) -> str:
         store_id = _store_id_from_fact(recommended)
         if store_id:
             return store_id
+    stores = structured.get("store_facts")
+    if isinstance(stores, list):
+        for item in stores:
+            if not isinstance(item, dict):
+                continue
+            store_id = _store_id_from_fact(item)
+            if store_id:
+                return store_id
+    recent_ids = _recent_store_card_ids_from_history(state)
+    if recent_ids:
+        return recent_ids[-1]
     ids = _real_store_ids_from_state(state)
     return ids[0] if ids else ""
 
 
 def _store_id_from_fact(value: dict[str, Any]) -> str:
     return str(value.get("store_id") or value.get("id") or "").strip()
+
+
+def _should_auto_append_store_address(state: AgentState) -> bool:
+    structured = _structured_facts_from_state(state)
+    status = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    recommended = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
+    if isinstance(status, dict) and isinstance(recommended, dict):
+        if str(status.get("data_authority") or "").strip().lower() == "platform":
+            if not bool(status.get("needs_area_or_landmark")) and not bool(status.get("no_store_match_confirmed")):
+                if bool(recommended.get("has_detail")) and _store_id_from_fact(recommended):
+                    granularity = str(status.get("location_granularity") or "").strip()
+                    if granularity in {"area_or_landmark", "store_name"}:
+                        return True
+                    if _looks_like_store_card_turn(state):
+                        return True
+    if _recent_store_card_ids_from_history(state) and _looks_like_store_card_turn(state):
+        return True
+    return False
+
+
+def _looks_like_store_card_turn(state: AgentState) -> bool:
+    content = str(state.get("normalized_content") or "").strip()
+    if not content:
+        return False
+    direct_terms = (
+        "地址",
+        "位置",
+        "导航",
+        "路线",
+        "怎么去",
+        "哪家",
+        "最近",
+        "离我近",
+        "附近",
+        "机场",
+        "高铁",
+        "地铁",
+        "科技园",
+        "停车",
+        "营业时间",
+        "发我",
+        "发给我",
+    )
+    if any(term in content for term in direct_terms):
+        return True
+    return should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state)
+
+
+def _recent_store_card_ids_from_history(state: AgentState) -> list[str]:
+    ids: list[str] = []
+    for item in state.get("conversation_history") or []:
+        if isinstance(item, str):
+            store_id = _store_id_from_history_content(item)
+            if store_id:
+                ids.append(store_id)
+            continue
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or item.get("direction") or "").lower()
+        if role not in {"assistant", "staff", "bot"}:
+            continue
+        msg_type = str(item.get("type") or item.get("msgtype") or "").lower()
+        if msg_type == "store_address":
+            store_id = _store_id_from_history_content(item.get("content"))
+            if store_id:
+                ids.append(store_id)
+                continue
+        store_id = _store_id_from_history_content(item.get("content"))
+        if store_id:
+            ids.append(store_id)
+    return list(dict.fromkeys(ids))
+
+
+def _store_id_from_history_content(content: Any) -> str:
+    if isinstance(content, dict):
+        return str(content.get("store_id") or "").strip()
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    match = re.search(r'"store_id"\s*:\s*"?(?P<store_id>\d+)"?', text)
+    if match:
+        return str(match.group("store_id") or "").strip()
+    return ""
 
 
 def _has_confirmed_store_for_booking(state: AgentState) -> bool:

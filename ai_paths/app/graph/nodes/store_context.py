@@ -4,7 +4,6 @@ import json
 
 from app.graph.signals.store_followup import store_location_preference_from_context
 from app.graph.state import AgentState
-from app.graph.task_state import appointment_slot_value
 from app.policies.constants import (
     CITY_NAMES,
     KNOWN_STORE_NAMES,
@@ -15,6 +14,7 @@ from app.policies.constants import (
     STORE_PREFERRED_HINT_TERMS,
     TIME_REFERENCE_TERMS,
 )
+from app.services.store_text import extract_area_or_landmark, extract_location_preference
 
 
 def extract_city(content: str) -> str:
@@ -26,17 +26,15 @@ def extract_city(content: str) -> str:
 
 def store_query_from_state(content: str, state: AgentState) -> str:
     content = (content or "").strip()
-    use_context_store = should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state)
-    city = extract_city(content) or (known_city_from_state(state) if use_context_store else "")
-    area = extract_store_area(content) or (known_store_area_from_history(state) if use_context_store else "")
+    inherit_location_context = should_inherit_store_location_context(content, state)
+    use_explicit_store_context = should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state)
+    city = extract_city(content) or (known_city_from_state(state) if inherit_location_context else "")
+    current_area = extract_area_or_landmark(content) or extract_store_area(content)
+    area = current_area or (known_store_area_from_history(state) if inherit_location_context else "")
     location_preference = store_location_preference_from_context(state)
     explicit_store = ""
-    if use_context_store:
-        explicit_store = (
-            str(state.get("confirmed_store_name") or state.get("store_name") or "").strip()
-            or appointment_slot_value(state, "store_name")
-            or known_store_name_from_history(state)
-        )
+    if use_explicit_store_context:
+        explicit_store = _current_store_name_from_state(state) or known_store_name_from_history(state)
     parts: list[str] = []
     if city and city not in content:
         parts.append(city)
@@ -48,6 +46,19 @@ def store_query_from_state(content: str, state: AgentState) -> str:
         parts.append(explicit_store)
     parts.append(content)
     return " ".join(part for part in parts if part).strip()
+
+
+def should_inherit_store_location_context(content: str, state: AgentState) -> bool:
+    content = (content or "").strip()
+    if not content:
+        return False
+    if should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state):
+        return True
+    if extract_city(content):
+        return True
+    if extract_area_or_landmark(content) or extract_location_preference(content) or extract_store_area(content):
+        return True
+    return any(term in content for term in STORE_CONTEXT_FACT_TERMS)
 
 
 def should_use_known_store_context(content: str) -> bool:
@@ -83,11 +94,10 @@ def known_store_area_from_history(state: AgentState) -> str:
     for item in reversed(state.get("conversation_history", [])[-10:]):
         if not _is_customer_history_item(item):
             continue
-        area = extract_store_area(str(item))
-        if area:
-            return area
-    for event in reversed(state.get("history_events", [])[-10:]):
-        text = _json_dumps(event) if isinstance(event, dict) else str(event)
+        text = str(item)
+        landmark = extract_area_or_landmark(text)
+        if landmark:
+            return landmark
         area = extract_store_area(text)
         if area:
             return area
@@ -136,32 +146,65 @@ def known_store_name_matches(text: str) -> list[tuple[str, int]]:
 
 
 def known_city_from_state(state: AgentState) -> str:
-    basic = state.get("customer_basic_info") or {}
-    if isinstance(basic, dict):
-        city = str(basic.get("city") or "").strip()
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    for key in ("city", "current_city"):
+        city = str(request_context.get(key) or "").strip()
         if city:
             return city
-    for event in reversed(state.get("history_events", [])[-10:]):
-        if isinstance(event, dict):
-            facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
-            city = str(facts.get("city") or "").strip()
-            if city:
-                return city
-            text = _json_dumps(event)
-        else:
-            text = str(event)
-        city = extract_city(text)
-        if city:
-            return city
+    current_store_city = _current_store_city_from_state(state)
+    if current_store_city:
+        return current_store_city
     for message in reversed(state.get("conversation_history", [])[-10:]):
         city = extract_city(str(message))
         if city:
             return city
-    profile = state.get("customer_profile") or {}
-    if isinstance(profile, dict):
-        city = extract_city(_json_dumps(profile))
+    return ""
+
+
+def _current_store_name_from_state(state: AgentState) -> str:
+    structured = state.get("structured_facts") if isinstance(state.get("structured_facts"), dict) else {}
+    if not structured:
+        fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+        structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    recommended = structured.get("recommended_store") if isinstance(structured, dict) else {}
+    if isinstance(recommended, dict):
+        name = str(recommended.get("name") or "").strip()
+        if name:
+            return name
+    stores = structured.get("store_facts") if isinstance(structured, dict) else None
+    if isinstance(stores, list):
+        for item in stores:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name:
+                return name
+    return ""
+
+
+def _current_store_city_from_state(state: AgentState) -> str:
+    structured = state.get("structured_facts") if isinstance(state.get("structured_facts"), dict) else {}
+    if not structured:
+        fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+        structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    status = structured.get("store_lookup_status") if isinstance(structured, dict) else {}
+    if isinstance(status, dict):
+        city = str(status.get("city") or "").strip()
         if city:
             return city
+    recommended = structured.get("recommended_store") if isinstance(structured, dict) else {}
+    if isinstance(recommended, dict):
+        city = str(recommended.get("city") or "").strip()
+        if city:
+            return city
+    stores = structured.get("store_facts") if isinstance(structured, dict) else None
+    if isinstance(stores, list):
+        for item in stores:
+            if not isinstance(item, dict):
+                continue
+            city = str(item.get("city") or "").strip()
+            if city:
+                return city
     return ""
 
 

@@ -123,19 +123,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
     这类信息不是软画像；即使低信息开场或清空画像测试，也应该给最终回复模型使用，
     避免客户已经给过城市、地标、门店或预约时间后又被重复追问。
     """
-    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    appointment = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
-    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
-    request_context = (
-        customer_context.get("request_context")
-        if isinstance(customer_context.get("request_context"), dict)
-        else {}
-    )
-    appointment_pref = (
-        basic.get("appointment_preference")
-        if isinstance(basic.get("appointment_preference"), dict)
-        else {}
-    )
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     structured = _structured_facts(state)
     store_lookup_status = (
         structured.get("store_lookup_status")
@@ -147,7 +135,6 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         if isinstance(structured.get("recommended_store"), dict)
         else {}
     )
-    latest_appointment = _latest_appointment_fact(structured)
 
     session: dict[str, object] = {}
     _put(
@@ -155,9 +142,6 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         "city",
         _pick(
             store_lookup_status.get("city"),
-            appointment_pref.get("city"),
-            basic.get("city"),
-            customer_context.get("city"),
             request_context.get("city"),
             state.get("city"),
         ),
@@ -168,8 +152,6 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         _pick(
             store_lookup_status.get("area_or_landmark"),
             store_lookup_status.get("location_preference"),
-            appointment_pref.get("area_or_landmark"),
-            appointment_pref.get("area"),
             request_context.get("area_or_landmark"),
             request_context.get("location_preference"),
             state.get("area_or_landmark"),
@@ -179,10 +161,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         session,
         "confirmed_store_name",
         _pick(
-            appointment.get("store_name"),
-            latest_appointment.get("store_name"),
             request_context.get("confirmed_store_name"),
-            customer_context.get("confirmed_store_name"),
             state.get("confirmed_store_name"),
             recommended_store.get("name"),
         ),
@@ -191,10 +170,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         session,
         "confirmed_store_id",
         _pick(
-            appointment.get("store_id"),
-            latest_appointment.get("store_id"),
             request_context.get("confirmed_store_id"),
-            customer_context.get("confirmed_store_id"),
             state.get("confirmed_store_id"),
             recommended_store.get("store_id"),
             recommended_store.get("id"),
@@ -204,10 +180,6 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         session,
         "visit_date",
         _pick(
-            appointment.get("date"),
-            appointment.get("appointment_date"),
-            latest_appointment.get("date"),
-            latest_appointment.get("appointment_date"),
             request_context.get("visit_date"),
             request_context.get("appointment_date"),
             state.get("visit_date"),
@@ -217,10 +189,6 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         session,
         "visit_time",
         _pick(
-            appointment.get("time"),
-            appointment.get("appointment_time"),
-            latest_appointment.get("time"),
-            latest_appointment.get("appointment_time"),
             request_context.get("visit_time"),
             request_context.get("appointment_time"),
             state.get("visit_time"),
@@ -230,10 +198,6 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         session,
         "appointment_order_id",
         _pick(
-            appointment.get("order_id"),
-            appointment.get("appointment_id"),
-            latest_appointment.get("order_id"),
-            latest_appointment.get("appointment_id"),
             request_context.get("order_id"),
             request_context.get("appointment_id"),
             state.get("appointment_order_id"),
@@ -301,16 +265,6 @@ def _next_order_slot(session: dict[str, object]) -> str:
     if not session.get("appointment_order_id"):
         return "signup_state"
     return "confirmed"
-
-
-def _latest_appointment_fact(structured: dict[str, object]) -> dict[str, object]:
-    facts = structured.get("appointment_facts")
-    if not isinstance(facts, list):
-        return {}
-    for item in facts:
-        if isinstance(item, dict):
-            return item
-    return {}
 
 
 def _pick(*values: object) -> str:

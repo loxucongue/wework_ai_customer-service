@@ -2,22 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services import store_format, store_text
 from app.services.platform_agent_client import PlatformAgentClient
-from app.services.store_catalog import local_store_records
-from app.services import store_format
-from app.services.store_query_info import build_store_query_info
-from app.services.store_recommendation import with_location_recommendation
-from app.services.store_result_merge import merge_local_city_stores, sanitize_platform_result
 from app.services.store_platform_context import request_context_from_customer_context, store_platform_context
-from app.services import store_text
+from app.services.store_query_info import StoreQueryInfo, build_store_query_info
+from app.services.store_recommendation import with_location_recommendation
 
 
 class StoreService:
-    """Store lookup with platform-agent API first and a clean local fallback for tests."""
+    """Store lookup backed only by real platform APIs."""
 
     def __init__(self, platform_client: PlatformAgentClient | None = None) -> None:
         self._platform_client = platform_client
-        self._stores = local_store_records()
 
     def search(
         self,
@@ -27,7 +23,7 @@ class StoreService:
         limit: int = 8,
         planner_distance_origin: str = "",
     ) -> dict[str, Any]:
-        query_info = build_store_query_info(query, self._stores)
+        query_info = build_store_query_info(query, [])
         if store_text.needs_city_before_lookup(
             query_info.query,
             city=query_info.city,
@@ -45,71 +41,22 @@ class StoreService:
                 "missing": ["city"],
                 "source": "need_city_before_store_lookup",
                 "data_authority": "none",
+                "store_data_authority": "none",
             }
 
-        platform_error = ""
         if not self._platform_client or not self._platform_client.available:
-            platform_result = {}
-            platform_error = "platform_agent_unavailable"
+            platform_result = _store_lookup_unavailable(query_info, "platform_agent_unavailable")
         else:
             try:
                 platform_result = self._search_platform(query_info.query, customer_context or {}, limit=limit)
             except Exception as exc:
-                platform_result = {}
-                platform_error = f"{type(exc).__name__}: {exc}"
-        if platform_result:
-            platform_result = sanitize_platform_result(
-                platform_result,
-                requested_name=query_info.requested_name,
-                city=query_info.city,
-                stores_catalog=self._stores,
-                limit=limit,
-            )
-            if query_info.city and not query_info.requested_name and platform_result.get("stores"):
-                platform_result = merge_local_city_stores(
-                    platform_result,
-                    city=query_info.city,
-                    stores_catalog=self._stores,
-                    limit=limit,
-                )
-            if platform_result.get("stores"):
-                return _with_planner_distance_origin(
-                    _apply_location_gate(
-                        with_location_recommendation(platform_result, query_info.location_preference),
-                        query_info=query_info,
-                    ),
-                    planner_distance_origin=planner_distance_origin,
-                )
-            if platform_result.get("source") == "platform_agent.store_index_missing_params":
-                return _with_planner_distance_origin(
-                    _apply_location_gate(platform_result, query_info=query_info),
-                    planner_distance_origin=planner_distance_origin,
-                )
+                platform_result = _store_lookup_unavailable(query_info, f"{type(exc).__name__}: {exc}")
 
-        candidates = self._stores
-        if query_info.requested_name:
-            candidates = [store for store in candidates if query_info.requested_name == store.name]
-        elif query_info.city:
-            candidates = [store for store in candidates if store.city == query_info.city and store.is_public]
-
-        stores = [store_format.store_record_to_dict(store) for store in candidates[:limit]]
-        if query_info.city:
-            stores = [store for store in stores if store_text.store_matches_city(store, query_info.city)]
-        result = {
-            "query": query_info.query,
-            "city": query_info.city,
-            "requested_store": query_info.requested_name,
-            "wants_parking": query_info.wants_parking,
-            "wants_route": query_info.wants_route,
-            "wants_status": query_info.wants_status,
-            "location_preference": query_info.location_preference,
-            "stores": stores,
-            "source": "local_store_fallback",
-            "data_authority": "fallback",
-            "platform_error": platform_error,
-        }
         return _with_planner_distance_origin(
-            _apply_location_gate(with_location_recommendation(result, query_info.location_preference), query_info=query_info),
+            _apply_location_gate(
+                with_location_recommendation(platform_result, query_info.location_preference),
+                query_info=query_info,
+            ),
             planner_distance_origin=planner_distance_origin,
         )
 
@@ -127,8 +74,9 @@ class StoreService:
             return {"source": "platform_agent.available_time", "date": date, "store_id": store_id, "slots": {}, "error": f"{type(exc).__name__}: {exc}"}
 
     def _search_platform(self, query: str, customer_context: dict[str, Any], *, limit: int) -> dict[str, Any]:
-        if not self._platform_client or not self._platform_client.available:
-            return {}
+        assert self._platform_client is not None
+
+        base_query_info = build_store_query_info(query, [])
         platform_context = store_platform_context(customer_context)
         missing_params: list[str] = []
         if not platform_context.customer_id:
@@ -136,21 +84,23 @@ class StoreService:
         if not platform_context.customer_add_wechat_id:
             missing_params.append("customer_add_wechat_id")
         if missing_params:
-            query_info = build_store_query_info(query, self._stores)
             return {
                 "query": query,
-                "city": query_info.city,
-                "requested_store": query_info.requested_name,
-                "wants_parking": query_info.wants_parking,
-                "wants_route": query_info.wants_route,
-                "wants_status": query_info.wants_status,
-                "area_or_landmark": query_info.area_or_landmark,
-                "location_granularity": query_info.location_granularity,
+                "city": base_query_info.city,
+                "requested_store": base_query_info.requested_name,
+                "wants_parking": base_query_info.wants_parking,
+                "wants_route": base_query_info.wants_route,
+                "wants_status": base_query_info.wants_status,
+                "area_or_landmark": base_query_info.area_or_landmark,
+                "location_granularity": base_query_info.location_granularity,
                 "stores": [],
                 "missing": missing_params,
                 "source": "platform_agent.store_index_missing_params",
                 "data_authority": "none",
+                "store_data_authority": "none",
                 "platform_error": "store/index requires customer_id and customer_add_wechat_id",
+                "needs_handoff": True,
+                "unsupported_claims": ["无法获取真实门店数据，不能提供门店名称、地址或距离"],
             }
 
         rows = self._platform_client.list_stores(
@@ -158,27 +108,34 @@ class StoreService:
             customer_add_wechat_id=platform_context.customer_add_wechat_id,
             request_context=platform_context.request_context,
         )
-        source = "platform_agent.store_index"
-        query_info = build_store_query_info(query, self._stores)
+        query_info = build_store_query_info(query, rows)
         requested_name = query_info.requested_name
-        city = query_info.city or store_text.city_for_store_name(requested_name, self._stores)
+        city = query_info.city or store_text.city_for_store_name(requested_name, rows)
         wants_status = query_info.wants_status
         query_matches = store_text.match_rows_by_query_name(rows, query)
         candidates = [row for row in rows if store_format.is_public_store(row)]
+
         if requested_name:
             base_rows = rows if wants_status else candidates
-            exact_candidates = [row for row in base_rows if str(row.get("name") or "") == requested_name]
+            exact_candidates = [row for row in base_rows if str(row.get("name") or "").strip() == requested_name]
             if exact_candidates:
                 candidates = exact_candidates
             else:
                 aliases = store_text.store_aliases(requested_name)
-                candidates = [row for row in base_rows if any(alias in str(row.get("name") or "") for alias in aliases)]
+                candidates = [row for row in base_rows if store_text.store_matches_requested_name(row, requested_name, aliases)]
             if city:
                 candidates = [row for row in candidates if store_text.row_matches_city(row, city)]
         elif city:
             candidates = [row for row in candidates if store_text.row_matches_city(row, city)]
         elif query_matches:
             candidates = query_matches if wants_status else [row for row in query_matches if store_format.is_public_store(row)]
+
+        if query_info.area_or_landmark and candidates:
+            candidates = sorted(
+                candidates,
+                key=lambda row: 0 if _row_mentions_location(row, query_info.area_or_landmark) else 1,
+            )
+
         stores: list[dict[str, Any]] = []
         for row in candidates:
             store = store_format.platform_store_to_dict(
@@ -191,6 +148,8 @@ class StoreService:
             stores.append(store)
             if len(stores) >= limit:
                 break
+
+        source = "platform_agent.store_index" if stores else "platform_agent.store_index_no_match"
         return {
             "query": query,
             "city": city,
@@ -198,15 +157,19 @@ class StoreService:
             "wants_parking": query_info.wants_parking,
             "wants_route": query_info.wants_route,
             "wants_status": wants_status,
+            "location_preference": query_info.location_preference,
             "area_or_landmark": query_info.area_or_landmark,
             "location_granularity": query_info.location_granularity,
             "stores": stores,
             "source": source,
             "data_authority": "platform",
+            "store_data_authority": "platform",
+            "platform_customer_id": str(platform_context.customer_id or ""),
+            "customer_add_wechat_id": str(platform_context.customer_add_wechat_id or ""),
         }
 
 
-def _apply_location_gate(result: dict[str, Any], *, query_info: Any) -> dict[str, Any]:
+def _apply_location_gate(result: dict[str, Any], *, query_info: StoreQueryInfo) -> dict[str, Any]:
     output = dict(result or {})
     output["area_or_landmark"] = query_info.area_or_landmark
     output["location_granularity"] = query_info.location_granularity
@@ -256,3 +219,41 @@ def _qualified_distance_origin(origin: str, *, city: str) -> str:
     if not city or city in value:
         return value
     return f"{city}{value}"
+
+
+def _row_mentions_location(row: dict[str, Any], location: str) -> bool:
+    needle = str(location or "").strip()
+    if not needle:
+        return False
+    haystack = " ".join(
+        filter(
+            None,
+            [
+                str(row.get("name") or "").strip(),
+                str(row.get("address") or "").strip(),
+                str(row.get("tencent_address") or "").strip(),
+            ],
+        )
+    )
+    return needle in haystack
+
+
+def _store_lookup_unavailable(query_info: StoreQueryInfo, platform_error: str) -> dict[str, Any]:
+    return {
+        "query": query_info.query,
+        "city": query_info.city,
+        "requested_store": query_info.requested_name,
+        "wants_parking": query_info.wants_parking,
+        "wants_route": query_info.wants_route,
+        "wants_status": query_info.wants_status,
+        "location_preference": query_info.location_preference,
+        "area_or_landmark": query_info.area_or_landmark,
+        "location_granularity": query_info.location_granularity,
+        "stores": [],
+        "source": "store_lookup_unavailable",
+        "data_authority": "none",
+        "store_data_authority": "none",
+        "platform_error": platform_error,
+        "needs_handoff": True,
+        "unsupported_claims": ["无法获取真实门店数据，不能提供门店名称、地址或距离"],
+    }

@@ -312,18 +312,15 @@ def _fact_notes_for_model(
 
 
 def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:
-    appointment_cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    session = order_session_state(state)
     context: dict[str, Any] = {}
-    for source_key, target_key in (
-        ("store_id", "store_id"),
-        ("store_name", "store_name"),
-        ("date", "date"),
-        ("appointment_date", "date"),
-        ("time", "time"),
-        ("appointment_time", "time"),
-        ("people_count", "people_count"),
+    for session_key, target_key in (
+        ("confirmed_store_id", "store_id"),
+        ("confirmed_store_name", "store_name"),
+        ("visit_date", "date"),
+        ("visit_time", "time"),
     ):
-        value = appointment_cache.get(source_key)
+        value = session.get(session_key) if isinstance(session, dict) else ""
         text = str(value or "").strip()
         if text and target_key not in context:
             context[target_key] = text

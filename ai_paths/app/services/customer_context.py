@@ -59,18 +59,28 @@ class CustomerContextService:
                 wechat=request_context.get("wechat"),
                 external_userid=request_context.get("external_userid"),
             )
-        if not info and request_context.get("customer_id"):
+        if not info and request_context.get("platform_customer_id"):
             info = {
-                "id": request_context.get("customer_id"),
-                "customer_add_wechat_id": request_context.get("customer_add_wechat_id"),
+                "id": request_context.get("platform_customer_id"),
+                "customer_add_wechat_id": request_context.get("customer_add_wechat_id") or request_context.get("customer_id"),
             }
         if not info.get("id"):
             return {}
         platform_customer_id = str(info.get("id") or customer_id or "")
+        customer_add_wechat_id = str(
+            info.get("customer_add_wechat_id")
+            or request_context.get("customer_add_wechat_id")
+            or request_context.get("customer_id")
+            or ""
+        )
+        kind = info.get("kind")
         orders = self._platform_client.list_orders(customer_id=platform_customer_id, page=1, limit=10, request_context=request_context)
         appointment = appointment_from_request_context(request_context) or appointment_from_orders(orders)
         return {
             "customer_id": platform_customer_id,
+            "platform_customer_id": platform_customer_id,
+            "customer_add_wechat_id": customer_add_wechat_id,
+            "kind": kind,
             "source": "platform_agent",
             "customer": compact_customer(info),
             "appointment": appointment,
