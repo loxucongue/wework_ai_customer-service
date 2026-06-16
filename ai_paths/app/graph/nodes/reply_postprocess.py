@@ -67,10 +67,6 @@ def postprocess_reply_messages(
             if _contains_fake_placeholder_text(content):
                 reasons.append("placeholder_text_removed")
                 continue
-            fixed_navigation = _fix_incomplete_navigation_url(state, content)
-            if fixed_navigation != content:
-                content = fixed_navigation
-                reasons.append("incomplete_navigation_url_fixed")
             if _has_unbacked_case_image_promise(state, content):
                 reasons.append("unbacked_case_image_promise_blocked")
                 continue
@@ -78,10 +74,6 @@ def postprocess_reply_messages(
             if sanitized_sales != content:
                 content = sanitized_sales
                 reasons.append("sales_close_terms_sanitized")
-            with_navigation = _append_navigation_url_if_requested(state, content)
-            if with_navigation != content:
-                content = with_navigation
-                reasons.append("navigation_url_appended")
             without_known_slot_question = _remove_known_slot_requestion(state, content)
             if without_known_slot_question != content:
                 content = without_known_slot_question
@@ -299,54 +291,6 @@ def _sanitize_sales_close_risk_terms(text: str) -> str:
     return content
 
 
-def _append_navigation_url_if_requested(state: AgentState, text: str) -> str:
-    if not _current_query_asks_navigation(state):
-        return text
-    content = _remove_bare_tencent_shortlink_fragment(str(text or "").strip())
-    content = _remove_incomplete_tencent_shortlink_url(content)
-    if "http://" in content or "https://" in content:
-        return content
-    map_url = _recommended_store_field(state, "map_url")
-    if not map_url:
-        return content
-    separator = " " if content.endswith(("。", "！", "？", "!", "?")) else "，"
-    return f"{content}{separator}导航链接：{map_url}"
-
-
-def _fix_incomplete_navigation_url(state: AgentState, text: str) -> str:
-    content = str(text or "").strip()
-    fixed = _remove_incomplete_tencent_shortlink_url(content)
-    if fixed == content:
-        return content
-    fixed = _cleanup_dangling_navigation_label(fixed)
-    map_url = _recommended_store_field(state, "map_url")
-    if map_url and "http://" not in fixed and "https://" not in fixed:
-        separator = " " if fixed.endswith(("。", "！", "？", "!", "?")) else "，"
-        fixed = f"{fixed}{separator}导航链接：{map_url}"
-    return fixed.strip()
-
-
-def _remove_bare_tencent_shortlink_fragment(text: str) -> str:
-    content = str(text or "")
-    content = re.sub(r"[，,。；;、\s]*l=[A-Za-z0-9_-]{8,}(?:&tempSource=\w+)?", "", content)
-    content = re.sub(r"[，,。；;、\s]*short\?l=[A-Za-z0-9_-]{8,}(?:&tempSource=\w+)?", "", content)
-    return content.strip()
-
-
-def _remove_incomplete_tencent_shortlink_url(text: str) -> str:
-    content = str(text or "")
-    content = re.sub(r"https?://mmapgwh\.map\.qq\.com/shortlink/short\?(?![^\s，。；;、]*l=)[^\s，。；;、]*", "", content)
-    return re.sub(r"\s{2,}", " ", content).strip(" ，。；;、")
-
-
-def _cleanup_dangling_navigation_label(text: str) -> str:
-    content = str(text or "")
-    content = re.sub(r"导航链接[:：]\s*(?=，|。|；|;|$)", "", content)
-    content = content.replace("：，", "，").replace(":，", "，")
-    content = re.sub(r"(导航链接[:：]\s*){2,}", "导航链接：", content)
-    return content.strip(" ，。；;、")
-
-
 def _remove_known_slot_requestion(state: AgentState, text: str) -> str:
     session = order_session_state(state)
     if not session:
@@ -555,29 +499,6 @@ def _structured_facts_from_state(state: AgentState) -> dict[str, Any]:
     if isinstance(fact_envelope, dict) and isinstance(fact_envelope.get("structured_facts"), dict):
         return fact_envelope["structured_facts"]
     return {}
-
-
-def _recommended_store_field(state: AgentState, field: str) -> str:
-    structured = _structured_facts_from_state(state)
-    recommended = structured.get("recommended_store")
-    if isinstance(recommended, dict):
-        value = str(recommended.get(field) or "").strip()
-        if value:
-            return value
-    stores = structured.get("store_facts")
-    if isinstance(stores, list):
-        for item in stores:
-            if not isinstance(item, dict):
-                continue
-            value = str(item.get(field) or "").strip()
-            if value:
-                return value
-    return ""
-
-
-def _current_query_asks_navigation(state: AgentState) -> bool:
-    content = str(state.get("normalized_content") or "")
-    return any(term in content for term in ("导航", "定位", "路线", "怎么去", "发我", "发一下", "发个"))
 
 
 def _first_dict(value: Any) -> dict[str, Any]:

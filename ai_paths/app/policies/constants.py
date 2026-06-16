@@ -151,7 +151,6 @@ STORE_CONTEXT_REFERENCE_TERMS = (
     "你刚说的",
     "最近那家",
     "推荐那家",
-    "店",
 )
 
 STORE_CONTEXT_FACT_TERMS = (
