@@ -7,7 +7,7 @@ from typing import Any
 from app.graph.nodes.common import renumber_messages
 
 VISIBLE_MESSAGE_TYPES = {"text", "image"}
-ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff", "book_order"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff", "book_order", "store_address"}
 
 
 def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -38,13 +38,21 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         if msg_type == "book_order":
             order_id = message_content_order_id(item.get("content"))
-            if not order_id:
-                continue
             result.append(
                 {
                     "type": "book_order",
                     "order": len(result) + 1,
                     "content": {"order_id": order_id},
+                }
+            )
+            continue
+        if msg_type == "store_address":
+            store_id = message_content_store_id(item.get("content"))
+            result.append(
+                {
+                    "type": "store_address",
+                    "order": len(result) + 1,
+                    "content": {"store_id": store_id},
                 }
             )
             continue
@@ -88,6 +96,13 @@ def message_content_text(content: Any) -> str:
 def message_content_order_id(content: Any) -> str:
     if isinstance(content, dict):
         value = content.get("order_id") or content.get("id")
+        return str(value or "").strip()
+    return ""
+
+
+def message_content_store_id(content: Any) -> str:
+    if isinstance(content, dict):
+        value = content.get("store_id") or content.get("id")
         return str(value or "").strip()
     return ""
 

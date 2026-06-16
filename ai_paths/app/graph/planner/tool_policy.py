@@ -10,70 +10,90 @@ from app.graph.nodes.store_context import (
 from app.graph.planner.planner_contract import ALLOWED_KBS, ALLOWED_TOOLS
 from app.graph.signals.project import has_case_request
 from app.graph.state import AgentState
+from app.policies.constants import APPOINTMENT_KEYWORDS, CITY_NAMES, STORE_AREA_TERMS, STORE_KEYWORDS
 from app.policies.sop_rules import normalize_sop_stage
 
 
-STORE_FACT_TERMS = (
-    "门店",
-    "店",
-    "地址",
-    "位置",
-    "定位",
-    "导航",
-    "路线",
-    "怎么去",
-    "营业时间",
-    "几点开门",
-    "几点关门",
-    "停车",
-    "机场",
-    "高铁",
-    "地铁",
-    "附近",
-    "离我近",
-    "哪家近",
-    "最近",
-    "我在",
-    "我住",
-    "我到",
+STORE_FACT_TERMS = tuple(
+    dict.fromkeys(
+        STORE_KEYWORDS
+        + (
+            "哪家近",
+            "离我近",
+            "最近门店",
+            "附近门店",
+            "发地址",
+            "详细地址",
+            "门店位置",
+            "定位发我",
+            "导航链接",
+            "地铁怎么去",
+            "机场附近",
+            "高铁附近",
+            "停车场",
+        )
+    )
 )
 
-STORE_CITY_TERMS = (
-    "深圳",
-    "上海",
-    "厦门",
-    "重庆",
-    "杭州",
-    "广州",
-    "成都",
-    "武汉",
-    "长沙",
-    "福州",
-    "泉州",
-    "南京",
-    "北京",
-    "西安",
-    "天津",
+STORE_LOCATION_HINT_TERMS = tuple(
+    dict.fromkeys(
+        CITY_NAMES
+        + STORE_AREA_TERMS
+        + (
+            "我在",
+            "我住",
+            "我到",
+            "附近",
+            "机场",
+            "地铁",
+            "高铁",
+            "火车站",
+            "商圈",
+            "科技园",
+            "哪家",
+            "最近",
+            "离我近",
+        )
+    )
 )
 
-APPOINTMENT_TIME_TERMS = (
-    "能约",
-    "可以约",
-    "预约",
-    "几点",
-    "今天",
-    "明天",
-    "上午",
-    "下午",
-    "晚上",
-    "周一",
-    "周二",
-    "周三",
-    "周四",
-    "周五",
-    "周六",
-    "周日",
-    "星期",
+APPOINTMENT_TIME_TERMS = tuple(
+    dict.fromkeys(
+        APPOINTMENT_KEYWORDS
+        + (
+            "能约",
+            "可以约",
+            "能不能约",
+            "今天",
+            "明天",
+            "后天",
+            "上午",
+            "中午",
+            "下午",
+            "晚上",
+            "周一",
+            "周二",
+            "周三",
+            "周四",
+            "周五",
+            "周六",
+            "周日",
+            "星期一",
+            "星期二",
+            "星期三",
+            "星期四",
+            "星期五",
+            "星期六",
+            "星期天",
+            "几点",
+            "现在过去",
+            "现在过来",
+            "过去",
+            "过来",
+            "到店",
+            "见",
+        )
+    )
 )
 
 
@@ -116,6 +136,7 @@ def enforce_required_tools(
         state.get("sop_stage") or (tasks[0].get("sop_stage") if tasks else ""),
         task_type=primary_task_type,
     )
+    state_markers = _state_policy_markers(state, sop_stage)
 
     def add_tool(tool: dict[str, Any]) -> None:
         name = str(tool.get("name") or "").strip()
@@ -165,6 +186,7 @@ def enforce_required_tools(
             {
                 "name": "store_lookup",
                 "query": query or original_user_query or fallback_query,
+                "distance_origin": _distance_origin_from_state_or_text(state, original_user_query),
                 "purpose": purpose,
             }
         )
@@ -179,9 +201,7 @@ def enforce_required_tools(
             }
         )
 
-    if needs_store_lookup_request(state, original_user_query):
-        ensure_store_lookup("Customer asks for store/address/route/nearby store facts")
-    if needs_appointment_time_request(original_user_query):
+    def ensure_available_time() -> None:
         ensure_store_lookup("Need real store facts before checking appointment availability")
         add_tool(
             {
@@ -189,7 +209,21 @@ def enforce_required_tools(
                 "purpose": "Need real appointment availability before answering time or visit intent",
             }
         )
+
+    # Text signals are mandatory facts, not optional model preferences.
+    if needs_store_lookup_request(state, original_user_query):
+        ensure_store_lookup("Customer mentions city, area, address, route, nearby, hours, or parking")
+    if needs_appointment_time_request(original_user_query):
+        ensure_available_time()
     if has_case_request(original_user_query):
+        ensure_case_studies()
+
+    # Policy/SOP markers are a second safety net when the planner type drifts.
+    if _is_store_marker(state_markers):
+        ensure_store_lookup("Policy/SOP indicates store, address, route, or nearby-store facts")
+    if _is_appointment_marker(state_markers):
+        ensure_available_time()
+    if _is_case_marker(state_markers):
         ensure_case_studies()
 
     for task in tasks:
@@ -202,18 +236,19 @@ def enforce_required_tools(
 
         if task_stage in {"S1_GREETING_INTRO", "S3_PRICE_CLOSE", "S4_FOLLOWUP_REACTIVATE"}:
             ensure_sales_talk_reference("Need sales talk wording for the current SOP stage")
-        if task_type in {"project_consult", "image_consult", "price_inquiry", "competitor_compare", "trust_issue", "after_sales"}:
-            ensure_sales_talk_reference("Need sales champion wording and business-answer logic using the original customer wording")
-        if task_stage == "S2_STORE_ADDRESS" or task_type == "store_inquiry":
+        if task_type in {
+            "project_consult",
+            "image_consult",
+            "price_inquiry",
+            "competitor_compare",
+            "trust_issue",
+            "after_sales",
+        }:
+            ensure_sales_talk_reference("Need sales champion wording and business-answer logic using the original wording")
+        if task_stage == "S2_STORE_ADDRESS" or task_type == "store_inquiry" or _is_store_marker(markers):
             ensure_store_lookup("Need real store facts before answering store, address, route, hours, or parking")
-        if task_type == "appointment" or any(token in markers for token in ("TIME_CHECK", "VISIT_INTENT", "CONFIRM_TIME", "WEEKEND")):
-            ensure_store_lookup("Need real store facts before checking appointment availability")
-            add_tool(
-                {
-                    "name": "available_time",
-                    "purpose": "Need real appointment availability before answering time or visit intent",
-                }
-            )
+        if task_type == "appointment" or _is_appointment_marker(markers):
+            ensure_available_time()
         if task_type in {"appointment_status", "appointment_change", "appointment_cancel"} or any(
             token in markers for token in ("APPOINTMENT_STATUS", "APPOINTMENT_CHANGE", "APPOINTMENT_CANCEL")
         ):
@@ -223,7 +258,7 @@ def enforce_required_tools(
                     "purpose": "Need real appointment record before status, change, or cancel handling",
                 }
             )
-        if task_type == "case_request" or "CASE_" in markers:
+        if task_type == "case_request" or _is_case_marker(markers):
             ensure_case_studies()
         if task_type in {"human_request", "complaint_refund"} or "HUMAN_HANDOFF" in markers:
             add_tool(
@@ -272,10 +307,16 @@ def tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[dic
 
     for task in tasks:
         task_type = str(task.get("type") or "").strip()
+        markers = " ".join(
+            str(task.get(key) or "")
+            for key in ("type", "subtype", "policy_hint", "subflow", "sop_stage")
+        ).upper()
         missing: list[str] = []
-        if task_type == "store_inquiry" and not has_tool("store_lookup"):
+        if (task_type == "store_inquiry" or _is_store_marker(markers)) and not has_tool("store_lookup"):
             missing.append("store_lookup")
-        elif task_type == "case_request" and not has_tool("kb_search", kb_name="case_studies"):
+        elif (task_type == "case_request" or _is_case_marker(markers)) and not has_tool(
+            "kb_search", kb_name="case_studies"
+        ):
             missing.append("kb_search(case_studies)")
         elif task_type == "competitor_compare" and not has_tool("kb_search", kb_name="sales_talk_qa"):
             missing.append("kb_search(sales_talk_qa)")
@@ -283,7 +324,7 @@ def tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[dic
             "appointment_record_query"
         ):
             missing.append("appointment_record_query")
-        elif task_type == "appointment" and not (
+        elif (task_type == "appointment" or _is_appointment_marker(markers)) and not (
             has_tool("available_time") or has_tool("appointment_create") or has_tool("appointment_record_query")
         ):
             missing.append("appointment_fact_tool")
@@ -293,7 +334,7 @@ def tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[dic
                     "task_type": task_type,
                     "subtype": str(task.get("subtype") or "").strip(),
                     "missing": ", ".join(missing),
-                    "note": "Planner did not request the fact tools required by its own task type.",
+                    "note": "Planner did not request the fact tools required by its own task or policy marker.",
                 }
             )
     return violations
@@ -332,10 +373,8 @@ def needs_store_lookup_request(state: AgentState, content: str) -> bool:
     if not content:
         return False
     asks_store_fact = any(term in content for term in STORE_FACT_TERMS)
-    has_location_hint = any(city in content for city in STORE_CITY_TERMS) or any(
-        term in content for term in ("门店", "地址", "位置", "导航", "附近", "哪家近", "离我近", "机场", "地铁", "高铁")
-    )
-    if asks_store_fact and has_location_hint:
+    has_location_hint = any(term in content for term in STORE_LOCATION_HINT_TERMS)
+    if asks_store_fact or has_location_hint:
         return True
     return should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state)
 
@@ -343,9 +382,9 @@ def needs_store_lookup_request(state: AgentState, content: str) -> bool:
 def needs_appointment_time_request(content: str) -> bool:
     if not content:
         return False
-    if "约" in content and any(term in content for term in APPOINTMENT_TIME_TERMS):
+    if any(term in content for term in APPOINTMENT_TIME_TERMS):
         return True
-    return any(term in content for term in ("几点去", "几点过来", "什么时候去", "什么时候过来"))
+    return any(term in content for term in ("什么时候去", "什么时候过来", "几点去", "几点过来", "哪天去"))
 
 
 def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:
@@ -358,3 +397,43 @@ def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:
             if text:
                 fragments.append(text)
     return " ".join(fragments)[:160].strip()
+
+
+def _state_policy_markers(state: AgentState, sop_stage: str) -> str:
+    values: list[str] = [sop_stage]
+    for key in (
+        "policy_family_id",
+        "exact_policy_id",
+        "active_scene_id",
+        "active_scene_match_level",
+        "sop_stage",
+        "sop_step",
+        "intent",
+        "subflow",
+    ):
+        value = state.get(key)
+        if isinstance(value, str) and value:
+            values.append(value)
+    return " ".join(values).upper()
+
+
+def _is_store_marker(markers: str) -> bool:
+    return any(token in markers for token in ("SF6", "STORE", "ADDRESS", "NEAREST", "PARKING", "NAVIGATION", "ROUTE"))
+
+
+def _is_appointment_marker(markers: str) -> bool:
+    return any(token in markers for token in ("SF9", "APPOINTMENT", "TIME_CHECK", "VISIT_INTENT", "CONFIRM_TIME", "WEEKEND"))
+
+
+def _is_case_marker(markers: str) -> bool:
+    return any(token in markers for token in ("CASE", "EFFECT_REFERENCE", "EFFECT_CASE", "效果案例", "对比"))
+
+
+def _distance_origin_from_state_or_text(state: AgentState, content: str) -> str:
+    existing = str(state.get("distance_origin") or "").strip()
+    if existing:
+        return existing
+    text = str(content or "").strip()
+    if any(term in text for term in ("机场", "高崎", "科技园", "高铁", "火车站", "地铁", "附近")):
+        return text
+    return ""

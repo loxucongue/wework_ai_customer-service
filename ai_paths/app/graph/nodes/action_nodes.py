@@ -227,6 +227,8 @@ def create_execute_actions_node(
 
             span["entry"]["tool_calls"] = tool_calls
             output = {
+                "planned_tools": required_tools,
+                "executed_tool_calls": tool_calls,
                 "tool_results": tool_results,
                 "fact_envelope": fact_envelope,
                 "trace": state.get("trace", []),

@@ -7,7 +7,7 @@ from app.graph import reply_filters
 from app.graph.nodes.common import looks_garbled_text, renumber_messages
 from app.graph.nodes.memory_usage_policy import order_session_state
 from app.graph.runtime_context import contextual_price_project
-from app.graph.nodes.reply_validation import message_content_order_id, message_content_text
+from app.graph.nodes.reply_validation import message_content_order_id, message_content_store_id, message_content_text
 from app.graph.planner.runtime_plan import planner_handoff, planner_task_views
 from app.graph.state import AgentState
 
@@ -41,8 +41,11 @@ def postprocess_reply_messages(
             continue
         if message.get("type") == "book_order":
             order_id = message_content_order_id(message.get("content"))
-            if order_id:
-                special_messages.append({"type": "book_order", "order": 0, "content": {"order_id": order_id}})
+            special_messages.append({"type": "book_order", "order": 0, "content": {"order_id": order_id}})
+            continue
+        if message.get("type") == "store_address":
+            store_id = message_content_store_id(message.get("content"))
+            special_messages.append({"type": "store_address", "order": 0, "content": {"store_id": store_id}})
             continue
 
         msg_type = message.get("type") if message.get("type") in {"text", "image"} else "text"
@@ -146,6 +149,10 @@ def postprocess_reply_messages(
         cleaned.append({"type": "human_handoff", "order": len(cleaned) + 1, "content": handoff_message})
         reasons.append("handoff_appended")
     else:
+        store_address_message = _store_address_message_for_state(state, special_messages)
+        if store_address_message:
+            cleaned.append(store_address_message)
+            reasons.append("store_address_appended")
         book_order_message = _book_order_message_for_state(state, special_messages)
         if book_order_message:
             cleaned.append(book_order_message)
@@ -175,25 +182,86 @@ def _book_order_message_for_state(
     state: AgentState,
     model_messages: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
+    if not any(isinstance(message, dict) and message.get("type") == "book_order" for message in model_messages):
+        return None
     if not _has_confirmed_store_for_booking(state):
         return None
-    for message in model_messages:
-        order_id = message_content_order_id(message.get("content"))
-        if order_id:
-            return {"type": "book_order", "order": 0, "content": {"order_id": order_id}}
+    order_id = _trusted_book_order_id_from_state(state)
+    if not order_id:
+        return None
+    return {"type": "book_order", "order": 0, "content": {"order_id": order_id}}
 
+
+def _trusted_book_order_id_from_state(state: AgentState) -> str:
     tool_results = state.get("tool_results")
     opening = tool_results.get("appointment_opening") if isinstance(tool_results, dict) else {}
     if not isinstance(opening, dict) or opening.get("status") not in {"created", "dry_run_created"}:
-        return None
+        return ""
     order_id = str(opening.get("order_id") or "").strip()
     if not order_id:
         push = opening.get("appointment_push")
         if isinstance(push, dict):
             order_id = str(push.get("order_id") or "").strip()
-    if not order_id:
+    return order_id
+
+
+def _store_address_message_for_state(
+    state: AgentState,
+    model_messages: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    intents = [
+        message
+        for message in model_messages
+        if isinstance(message, dict) and message.get("type") == "store_address"
+    ]
+    if not intents:
         return None
-    return {"type": "book_order", "order": 0, "content": {"order_id": order_id}}
+    real_store_ids = _real_store_ids_from_state(state)
+    if not real_store_ids:
+        return None
+    requested_id = ""
+    for message in intents:
+        requested_id = message_content_store_id(message.get("content"))
+        if requested_id:
+            break
+    store_id = requested_id if requested_id in real_store_ids else _preferred_store_id_from_state(state)
+    if not store_id:
+        store_id = real_store_ids[0]
+    return {"type": "store_address", "order": 0, "content": {"store_id": store_id}}
+
+
+def _real_store_ids_from_state(state: AgentState) -> list[str]:
+    structured = _structured_facts_from_state(state)
+    ids: list[str] = []
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        store_id = _store_id_from_fact(recommended)
+        if store_id:
+            ids.append(store_id)
+    stores = structured.get("store_facts")
+    if isinstance(stores, list):
+        for item in stores:
+            if not isinstance(item, dict):
+                continue
+            store_id = _store_id_from_fact(item)
+            if store_id:
+                ids.append(store_id)
+    return list(dict.fromkeys(ids))
+
+
+def _preferred_store_id_from_state(state: AgentState) -> str:
+    structured = _structured_facts_from_state(state)
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        store_id = _store_id_from_fact(recommended)
+        if store_id:
+            return store_id
+    ids = _real_store_ids_from_state(state)
+    return ids[0] if ids else ""
+
+
+def _store_id_from_fact(value: dict[str, Any]) -> str:
+    return str(value.get("store_id") or value.get("id") or "").strip()
 
 
 def _has_confirmed_store_for_booking(state: AgentState) -> bool:
@@ -749,6 +817,7 @@ def _message_fingerprint(messages: list[dict[str, Any]]) -> list[tuple[str, str]
                 or content.get("url")
                 or content.get("handoff_reason")
                 or content.get("order_id")
+                or content.get("store_id")
                 or ""
             ).strip()
         else:

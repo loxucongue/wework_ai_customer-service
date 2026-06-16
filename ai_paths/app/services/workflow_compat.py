@@ -147,6 +147,9 @@ def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
     if message_type == "book_order":
         content = raw_content if isinstance(raw_content, dict) else {"order_id": _message_content_value(raw_content, "order_id")}
         return {"type": "book_order", "order": order, "content": {"order_id": _message_content_value(content, "order_id")}}
+    if message_type == "store_address":
+        content = raw_content if isinstance(raw_content, dict) else {"store_id": _message_content_value(raw_content, "store_id")}
+        return {"type": "store_address", "order": order, "content": {"store_id": _message_content_value(content, "store_id")}}
     content = _message_content_value(raw_content, "text")
     return {"type": "text", "order": order, "content": {"text": content}}
 
@@ -162,7 +165,7 @@ def _record(value: Any) -> dict[str, Any]:
 
 def _message_content_value(value: Any, preferred_key: str) -> str:
     if isinstance(value, dict):
-        for key in [preferred_key, "handoff_reason", "text", "url", "order_id"]:
+        for key in [preferred_key, "handoff_reason", "text", "url", "order_id", "store_id"]:
             text = _message_content_value(value.get(key), preferred_key)
             if text:
                 return text
