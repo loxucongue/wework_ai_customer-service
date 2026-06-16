@@ -57,13 +57,23 @@ def create_execute_actions_node(
             if _needs_store_lookup(required_tools) and store_service:
                 try:
                     planned_store_query = _planned_tool_query(required_tools, "store_lookup")
+                    planned_distance_origin = _planned_distance_origin(required_tools)
                     store_query = store_query_from_state(planned_store_query or content, state)
-                    result = store_service.search(store_query, customer_context=state.get("customer_context") or {})
+                    result = store_service.search(
+                        store_query,
+                        customer_context=state.get("customer_context") or {},
+                        planner_distance_origin=planned_distance_origin,
+                    )
                     tool_results["store_lookup"] = result
                     tool_calls.append(
                         {
                             "name": "store_lookup",
-                            "input": {"query": store_query, "raw_query": content, "planned_query": planned_store_query},
+                            "input": {
+                                "query": store_query,
+                                "raw_query": content,
+                                "planned_query": planned_store_query,
+                                "distance_origin": planned_distance_origin,
+                            },
                             "output": result,
                         }
                     )
@@ -105,17 +115,24 @@ def create_execute_actions_node(
             if _needs_appointment_lookup(required_tools) and store_service:
                 try:
                     planned_store_query = _planned_tool_query(required_tools, "store_lookup")
+                    planned_distance_origin = _planned_distance_origin(required_tools)
                     store_query = store_query_from_state(planned_store_query or content, state)
                     lookup = tool_results.get("store_lookup") or store_service.search(
                         store_query,
                         customer_context=state.get("customer_context") or {},
+                        planner_distance_origin=planned_distance_origin,
                     )
                     if "store_lookup" not in tool_results:
                         tool_results["store_lookup"] = lookup
                         tool_calls.append(
                             {
                                 "name": "store_lookup",
-                                "input": {"query": store_query, "raw_query": content, "planned_query": planned_store_query},
+                                "input": {
+                                    "query": store_query,
+                                    "raw_query": content,
+                                    "planned_query": planned_store_query,
+                                    "distance_origin": planned_distance_origin,
+                                },
                                 "output": lookup,
                             }
                         )
@@ -332,6 +349,16 @@ def _planned_tool_query(required_tools: list[dict[str, Any]], tool_name: str) ->
     return ""
 
 
+def _planned_distance_origin(required_tools: list[dict[str, Any]]) -> str:
+    for item in required_tools:
+        if not isinstance(item, dict) or str(item.get("name") or "").strip() != "store_lookup":
+            continue
+        origin = str(item.get("distance_origin") or "").strip()
+        if origin:
+            return origin
+    return ""
+
+
 async def _maybe_run_distance_lookup(
     *,
     coze_client: CozeClient,
@@ -346,7 +373,11 @@ async def _maybe_run_distance_lookup(
     stores = [item for item in (store_lookup.get("stores") or []) if isinstance(item, dict)]
     if not stores:
         return {}
-    origin = str(store_lookup.get("distance_origin") or store_lookup.get("area_or_landmark") or store_query or "").strip()
+    origin = (
+        str(store_lookup.get("distance_origin") or "").strip()
+        or str(store_lookup.get("area_or_landmark") or "").strip()
+        or store_query.strip()
+    )
     if not origin:
         return {}
     candidates = [

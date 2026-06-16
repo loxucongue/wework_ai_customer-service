@@ -88,6 +88,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - 只有城市：可以说帮他查，再问哪个区或附近地标。
 - 如果 store_lookup_status.needs_area_or_landmark=true，说明客户只给了城市；禁止输出具体门店、地址、营业时间或最近门店，只追问区、地标、机场、地铁站或商圈。
 - 有区、机场、地铁、商圈、地标时，如果有 distance_facts，可优先推荐距离或路线更合适的一家；没有距离事实时，只能说按门店地址看更方便，具体以导航为准。
+- 如果 store_lookup_status.data_authority="fallback"，门店数据来自备用来源，不要当作权威事实报详细地址/营业时间/最近门店；只能说我帮您再核对最近门店，或让专业同事确认。
 - 有区、机场、地铁、商圈、地标：根据真实门店事实推荐，不继续重复问城市。
 - 客户要详细地址：有事实就给清晰地址。
 - 默认给到市、区、路、楼/大厦即可；没有客户明确要求，不主动报门头名称或xx号xx室细门牌。
@@ -197,6 +198,7 @@ push_intensity 用法：
 - 如果 store_lookup_status.needs_area_or_landmark=true，说明客户只给了城市；这时禁止输出具体门店事实，必须追问区/地标/机场/商圈。
 - 如果 store_lookup_status.no_store_match_confirmed=true，说明该城市暂未匹配本地门店；不要编推荐，询问客户是否接受邻近城市或换一个常去城市。
 - 距离、最近、路线优先级必须来自 distance_facts；没有 distance_facts 时不要说“最近”，只能说“按地址看更方便/具体以导航为准”。
+- store_lookup_status.data_authority="fallback" 时，不要把门店地址、营业时间、导航链接当成权威事实输出。
 - 档期、预约状态、预约成功：必须来自 appointment_facts 或 appointment_create。
 - 预约金收款小程序：必须来自 appointment_opening / appointment_create 真实返回的 order_id；没有 order_id 时不能输出 book_order。
 - 案例图片：必须来自 case_facts.image_url；不要连续发同一张图。

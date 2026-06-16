@@ -19,7 +19,14 @@ class StoreService:
         self._platform_client = platform_client
         self._stores = local_store_records()
 
-    def search(self, query: str, *, customer_context: dict[str, Any] | None = None, limit: int = 8) -> dict[str, Any]:
+    def search(
+        self,
+        query: str,
+        *,
+        customer_context: dict[str, Any] | None = None,
+        limit: int = 8,
+        planner_distance_origin: str = "",
+    ) -> dict[str, Any]:
         query_info = build_store_query_info(query, self._stores)
         if store_text.needs_city_before_lookup(
             query_info.query,
@@ -37,6 +44,7 @@ class StoreService:
                 "stores": [],
                 "missing": ["city"],
                 "source": "need_city_before_store_lookup",
+                "data_authority": "none",
             }
 
         platform_error = ""
@@ -65,12 +73,18 @@ class StoreService:
                     limit=limit,
                 )
             if platform_result.get("stores"):
-                return _apply_location_gate(
-                    with_location_recommendation(platform_result, query_info.location_preference),
-                    query_info=query_info,
+                return _with_planner_distance_origin(
+                    _apply_location_gate(
+                        with_location_recommendation(platform_result, query_info.location_preference),
+                        query_info=query_info,
+                    ),
+                    planner_distance_origin=planner_distance_origin,
                 )
             if platform_result.get("source") == "platform_agent.store_index_missing_params":
-                return _apply_location_gate(platform_result, query_info=query_info)
+                return _with_planner_distance_origin(
+                    _apply_location_gate(platform_result, query_info=query_info),
+                    planner_distance_origin=planner_distance_origin,
+                )
 
         candidates = self._stores
         if query_info.requested_name:
@@ -91,9 +105,13 @@ class StoreService:
             "location_preference": query_info.location_preference,
             "stores": stores,
             "source": "local_store_fallback",
+            "data_authority": "fallback",
             "platform_error": platform_error,
         }
-        return _apply_location_gate(with_location_recommendation(result, query_info.location_preference), query_info=query_info)
+        return _with_planner_distance_origin(
+            _apply_location_gate(with_location_recommendation(result, query_info.location_preference), query_info=query_info),
+            planner_distance_origin=planner_distance_origin,
+        )
 
     def available_time(self, *, store_id: str, date: str, customer_context: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._platform_client or not self._platform_client.available:
@@ -131,6 +149,7 @@ class StoreService:
                 "stores": [],
                 "missing": missing_params,
                 "source": "platform_agent.store_index_missing_params",
+                "data_authority": "none",
                 "platform_error": "store/index requires customer_id and customer_add_wechat_id",
             }
 
@@ -183,6 +202,7 @@ class StoreService:
             "location_granularity": query_info.location_granularity,
             "stores": stores,
             "source": source,
+            "data_authority": "platform",
         }
 
 
@@ -196,7 +216,6 @@ def _apply_location_gate(result: dict[str, Any], *, query_info: Any) -> dict[str
     if query_info.location_granularity != "city_only":
         if query_info.location_granularity in {"area_or_landmark", "store_name"} and stores:
             output["distance_lookup_required"] = True
-            output["distance_origin"] = _distance_origin_from_query_info(query_info)
         return output
 
     if not stores:
@@ -214,29 +233,11 @@ def _apply_location_gate(result: dict[str, Any], *, query_info: Any) -> dict[str
     return gated
 
 
-def _distance_origin_from_query_info(query_info: Any) -> str:
-    city = str(getattr(query_info, "city", "") or "").strip()
-    area = str(getattr(query_info, "area_or_landmark", "") or "").strip()
-    preference = str(getattr(query_info, "location_preference", "") or "").strip()
-    query = str(getattr(query_info, "query", "") or "").strip()
-    location = area or preference
-    if "机场" in location or "机场" in query:
-        airport = {
-            "厦门": "厦门高崎国际机场",
-            "深圳": "深圳宝安国际机场",
-            "上海": "上海虹桥国际机场",
-            "广州": "广州白云国际机场",
-            "成都": "成都双流国际机场",
-            "重庆": "重庆江北国际机场",
-            "杭州": "杭州萧山国际机场",
-            "南京": "南京禄口国际机场",
-            "武汉": "武汉天河国际机场",
-            "长沙": "长沙黄花国际机场",
-            "福州": "福州长乐国际机场",
-            "西安": "西安咸阳国际机场",
-        }.get(city)
-        if airport:
-            return airport
-    if city and location and not location.startswith(city):
-        return f"{city}{location}"
-    return location or query
+def _with_planner_distance_origin(result: dict[str, Any], *, planner_distance_origin: str) -> dict[str, Any]:
+    output = dict(result or {})
+    if not output.get("distance_lookup_required"):
+        return output
+    origin = str(planner_distance_origin or "").strip() or str(output.get("area_or_landmark") or "").strip()
+    if origin:
+        output["distance_origin"] = origin
+    return output

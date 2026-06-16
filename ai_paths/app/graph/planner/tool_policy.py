@@ -94,6 +94,9 @@ def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
             tool["kb_name"] = kb_name
         if query:
             tool["query"] = query
+        distance_origin = str(item.get("distance_origin") or "").strip()
+        if name == "store_lookup" and distance_origin:
+            tool["distance_origin"] = distance_origin
         tools.append(tool)
     return tools
 
@@ -116,6 +119,7 @@ def enforce_required_tools(
         name = str(tool.get("name") or "").strip()
         kb_name = str(tool.get("kb_name") or "").strip()
         query = str(tool.get("query") or "").strip()
+        distance_origin = str(tool.get("distance_origin") or "").strip()
         if name not in ALLOWED_TOOLS:
             return
         if name == "kb_search" and (kb_name not in ALLOWED_KBS or not query):
@@ -128,6 +132,8 @@ def enforce_required_tools(
             purpose = str(tool.get("purpose") or "").strip()
             if query and (name == "store_lookup" or not str(existing.get("query") or "").strip()):
                 existing["query"] = query
+            if name == "store_lookup" and distance_origin:
+                existing["distance_origin"] = distance_origin
             if purpose and not str(existing.get("purpose") or "").strip():
                 existing["purpose"] = purpose
             return
@@ -136,6 +142,8 @@ def enforce_required_tools(
             normalized["kb_name"] = kb_name
         if query:
             normalized["query"] = query
+        if name == "store_lookup" and distance_origin:
+            normalized["distance_origin"] = distance_origin
         tools.append(normalized)
 
     def ensure_sales_talk_reference(purpose: str) -> None:
@@ -289,6 +297,9 @@ def dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             normalized["kb_name"] = kb_name
         if query:
             normalized["query"] = query
+        distance_origin = str(item.get("distance_origin") or "").strip()
+        if name == "store_lookup" and distance_origin:
+            normalized["distance_origin"] = distance_origin
         unique.append(normalized)
     return unique
 
