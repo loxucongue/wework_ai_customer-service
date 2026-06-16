@@ -96,6 +96,34 @@ APPOINTMENT_TIME_TERMS = tuple(
     )
 )
 
+_APPOINTMENT_EXPLICIT_TIME_TERMS = (
+    "今天",
+    "明天",
+    "后天",
+    "上午",
+    "中午",
+    "下午",
+    "晚上",
+    "周一",
+    "周二",
+    "周三",
+    "周四",
+    "周五",
+    "周六",
+    "周日",
+    "星期一",
+    "星期二",
+    "星期三",
+    "星期四",
+    "星期五",
+    "星期六",
+    "星期天",
+    "星期日",
+    "几点",
+    "现在过去",
+    "现在过来",
+)
+
 
 def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
@@ -234,7 +262,7 @@ def enforce_required_tools(
         task_stage = normalize_sop_stage(task.get("sop_stage") or sop_stage, task_type=task_type)
         markers = " ".join([task_type, subtype, policy_hint, subflow, task_stage]).upper()
 
-        if task_stage in {"S1_GREETING_INTRO", "S3_PRICE_CLOSE", "S4_FOLLOWUP_REACTIVATE"}:
+        if task_stage in {"S1_GREETING_INTRO", "S2_STORE_ADDRESS", "S3_PRICE_CLOSE", "S4_FOLLOWUP_REACTIVATE"}:
             ensure_sales_talk_reference("Need sales talk wording for the current SOP stage")
         if task_type in {
             "project_consult",
@@ -382,9 +410,15 @@ def needs_store_lookup_request(state: AgentState, content: str) -> bool:
 def needs_appointment_time_request(content: str) -> bool:
     if not content:
         return False
-    if any(term in content for term in APPOINTMENT_TIME_TERMS):
+    if any(term in content for term in _APPOINTMENT_EXPLICIT_TIME_TERMS):
         return True
-    return any(term in content for term in ("什么时候去", "什么时候过来", "几点去", "几点过来", "哪天去"))
+    if any(term in content for term in ("什么时候去", "什么时候过来", "几点去", "几点过来", "哪天去")):
+        return True
+    if "点" in content and any(term in content for term in ("去", "过来", "过去", "到店", "来店", "见")):
+        return True
+    if any(term in content for term in ("现在过来", "现在过去", "现在到店", "现在来店")):
+        return True
+    return False
 
 
 def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:

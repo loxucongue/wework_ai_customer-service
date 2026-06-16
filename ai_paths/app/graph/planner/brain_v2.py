@@ -11,6 +11,9 @@ from app.policies.s10_offer import s10_offer_context, s10_offer_prompt_section
 from app.policies.sop_rules import sop_planner_prompt_section
 from app.services.model_client import ModelClient
 
+PLANNER_MODEL_NAMES = ["deepseek-v4-flash"]
+
+
 def planner_v2_model_tier(state: AgentState) -> str:
     del state
     return "fast"
@@ -77,7 +80,13 @@ async def run_planner_brain_v2(
     model_client: ModelClient,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     tier = planner_v2_model_tier(state)
-    payload = await model_client.chat_json(planner_v2_messages_for_model(state), tier=tier, temperature=0.0)
+    payload = await model_client.chat_json(
+        planner_v2_messages_for_model(state),
+        tier=tier,
+        temperature=0.0,
+        model_names=PLANNER_MODEL_NAMES,
+        response_format={"type": "json_object"},
+    )
     plan = build_planner_plan_v2(state, payload)
     initial_usage = model_usage_snapshot(model_client)
     nested_calls: list[dict[str, Any]] = []
@@ -96,6 +105,8 @@ async def run_planner_brain_v2(
                 ),
                 tier=tier,
                 temperature=0.0,
+                model_names=PLANNER_MODEL_NAMES,
+                response_format={"type": "json_object"},
             )
             repaired_plan = build_planner_plan_v2(state, repaired_payload)
             plan = repaired_plan

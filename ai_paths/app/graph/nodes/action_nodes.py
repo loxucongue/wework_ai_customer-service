@@ -18,6 +18,8 @@ from app.services.coze_client import CozeClient
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
+MAX_REASONABLE_STORE_DISTANCE_METERS = 150_000
+
 
 def create_execute_actions_node(
     *,
@@ -440,6 +442,7 @@ async def _maybe_run_distance_lookup(
         or str(store_lookup.get("area_or_landmark") or "").strip()
         or store_query.strip()
     )
+    origin = _qualify_distance_origin(origin, store_lookup=store_lookup)
     if not origin:
         return {"status": "skipped", "reason": "missing_distance_origin"}
     candidates = [
@@ -473,6 +476,7 @@ async def _maybe_run_distance_lookup(
             return_exceptions=True,
         )
         distances = _parse_distance_workflow_output(raw_results, requests)
+        distances = _drop_unreasonable_same_city_distances(distances)
         usable = [item for item in distances if str(item.get("distance_text") or "").strip()]
         raw_entries = [
             {
@@ -581,6 +585,33 @@ def _apply_distance_recommendation(store_lookup: Any, distance_result: dict[str,
     recommended["distance"] = recommended_distance.get("distance_text")
     store_lookup["recommended_store"] = recommended
     store_lookup["recommendation_reason"] = f"距离查询结果显示{recommended.get('name') or '这家门店'}更适合优先推荐。"
+
+
+def _qualify_distance_origin(origin: str, *, store_lookup: dict[str, Any]) -> str:
+    value = str(origin or "").strip()
+    if not value:
+        return ""
+    city = str(store_lookup.get("city") or "").strip()
+    if not city or city in value:
+        return value
+    return f"{city}{value}"
+
+
+def _drop_unreasonable_same_city_distances(distances: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for item in distances:
+        if not isinstance(item, dict):
+            continue
+        meters = item.get("distance_meters")
+        if isinstance(meters, (int, float)) and meters > MAX_REASONABLE_STORE_DISTANCE_METERS:
+            cleaned = dict(item)
+            cleaned["distance_text"] = ""
+            cleaned["duration_text"] = ""
+            cleaned["distance_rejected_reason"] = "distance_over_same_city_threshold"
+            output.append(cleaned)
+            continue
+        output.append(item)
+    return output
 
 
 def _distance_sort_key(text: str, meters: Any = None) -> tuple[int, float, str]:

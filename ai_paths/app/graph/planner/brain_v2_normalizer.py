@@ -10,6 +10,7 @@ from app.graph.planner.tool_policy import (
     normalize_tools,
     tool_policy_violations,
 )
+from app.graph.signals.project import has_case_request
 from app.graph.state import AgentState
 from app.policies.sop_rules import normalize_sop_stage, normalize_sop_step
 
@@ -34,14 +35,15 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
 
     all_tasks = [primary_task, *secondary_tasks]
     normalized_content = str(state.get("normalized_content") or "")
+    _coerce_primary_task_from_text_signals(primary_task, normalized_content)
     if needs_appointment_time_request(normalized_content):
         _coerce_primary_task_to_appointment_time(primary_task, reply_strategy_raw)
-    elif needs_store_lookup_request(state, normalized_content):
+    elif needs_store_lookup_request(state, normalized_content) and _looks_like_location_or_store_question(normalized_content):
         _coerce_primary_task_to_store_lookup(primary_task, reply_strategy_raw)
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     request_stage = str(request_context.get("customer_stage") or "").strip()
     sop_stage = normalize_sop_stage(
-        model_payload.get("sop_stage") or primary_task.get("sop_stage"),
+        primary_task.get("sop_stage") or model_payload.get("sop_stage"),
         task_type=str(primary_task.get("type") or ""),
         request_stage=request_stage,
     )
@@ -152,6 +154,164 @@ def _coerce_primary_task_to_appointment_time(primary_task: dict[str, Any], reply
     ]
     if isinstance(reply_strategy_raw, dict):
         reply_strategy_raw.setdefault("can_push", "确认门店、时间或补齐预约信息")
+
+
+def _coerce_primary_task_from_text_signals(primary_task: dict[str, Any], content: str) -> None:
+    text = str(content or "").strip()
+    current_type = str(primary_task.get("type") or "").strip()
+    if not text:
+        primary_task["type"] = _normalize_task_type_alias(current_type)
+        return
+    if _looks_like_complaint_or_refund(text):
+        primary_task["type"] = "complaint_refund"
+        primary_task.setdefault("policy_hint", "HUMAN_HANDOFF_COMPLAINT_REFUND")
+        primary_task.setdefault("subflow", "HUMAN_HANDOFF")
+        primary_task["sop_stage"] = "S4_FOLLOWUP_REACTIVATE"
+        return
+    if _looks_like_after_sales_feedback(text):
+        primary_task["type"] = "after_sales"
+        primary_task.setdefault("policy_hint", "SF12_AFTER_SALES_EFFECT_FEEDBACK")
+        primary_task["sop_stage"] = "S4_FOLLOWUP_REACTIVATE"
+        return
+    if has_case_request(text):
+        primary_task["type"] = "case_request"
+        primary_task.setdefault("policy_hint", "CASE_EFFECT_REFERENCE_SAFE")
+        primary_task["sop_stage"] = "S3_PRICE_CLOSE"
+        return
+    if _looks_like_booking_intent(text):
+        primary_task["type"] = "appointment"
+        primary_task.setdefault("policy_hint", "SF9_APPOINTMENT_BOOKING_INTENT")
+        primary_task["sop_stage"] = "S3_PRICE_CLOSE"
+        return
+    if _looks_like_price_or_fee_concern(text):
+        primary_task["type"] = "price_inquiry"
+        primary_task.setdefault("policy_hint", "SF7_PRICE_ACTIVITY")
+        primary_task["sop_stage"] = "S3_PRICE_CLOSE"
+        return
+    if _looks_like_trust_question(text):
+        primary_task["type"] = "trust_issue"
+        primary_task.setdefault("policy_hint", "SF10_TRUST_BUILD")
+        return
+    if _looks_like_project_question(text):
+        primary_task["type"] = "project_consult"
+        primary_task.setdefault("policy_hint", "SF3_PROJECT_CONSULT")
+        return
+    primary_task["type"] = _normalize_task_type_alias(current_type)
+
+
+def _normalize_task_type_alias(task_type: str) -> str:
+    text = str(task_type or "").strip()
+    aliases = {
+        "greeting": "opening",
+        "greeting_activation": "opening",
+        "greeting_and_activation": "opening",
+        "opening_greeting": "opening",
+        "承接": "opening",
+        "inquiry": "project_consult",
+        "general_inquiry": "project_consult",
+        "method_inquiry": "project_consult",
+        "project_inquiry": "project_consult",
+        "question": "project_consult",
+        "effect_showcase": "case_request",
+        "效果案例": "case_request",
+        "trust_building": "trust_issue",
+        "fee_transparency": "price_inquiry",
+        "deposit_concern": "price_inquiry",
+    }
+    return aliases.get(text, text)
+
+
+def _looks_like_location_or_store_question(text: str) -> bool:
+    return any(
+        term in text
+        for term in (
+            "我在",
+            "我住",
+            "附近",
+            "机场",
+            "高铁",
+            "地铁",
+            "科技园",
+            "哪个区",
+            "哪家",
+            "门店",
+            "地址",
+            "位置",
+            "导航",
+            "停车",
+            "营业时间",
+        )
+    )
+
+
+def _looks_like_price_or_fee_concern(text: str) -> bool:
+    return any(
+        term in text
+        for term in (
+            "多少钱",
+            "价格",
+            "费用",
+            "报价",
+            "活动",
+            "优惠",
+            "199",
+            "268",
+            "308",
+            "58",
+            "380",
+            "乱收费",
+            "隐形消费",
+            "加价",
+            "推销",
+            "定金",
+            "订金",
+            "预约金",
+            "尾款",
+            "全款",
+            "不交",
+            "到店再付",
+        )
+    )
+
+
+def _looks_like_booking_intent(text: str) -> bool:
+    positive_terms = ("帮我登记", "给我登记", "预约一个", "报名", "先交10", "交10元", "付10元", "支付10元")
+    negative_terms = ("不交", "不付", "到店再付", "退", "退款", "投诉")
+    return any(term in text for term in positive_terms) and not any(term in text for term in negative_terms)
+
+
+def _looks_like_after_sales_feedback(text: str) -> bool:
+    return any(term in text for term in ("不见效果", "没效果", "没有效果", "一点效果", "做了2次", "做了两次", "已做"))
+
+
+def _looks_like_complaint_or_refund(text: str) -> bool:
+    return any(term in text for term in ("投诉", "退款", "退钱", "骗", "多收", "乱收费")) and any(
+        term in text for term in ("退", "投诉", "处理", "骗", "多收")
+    )
+
+
+def _looks_like_trust_question(text: str) -> bool:
+    return any(term in text for term in ("资质", "正规吗", "靠谱吗", "是不是门店", "你是门店", "营业执照"))
+
+
+def _looks_like_project_question(text: str) -> bool:
+    return any(
+        term in text
+        for term in (
+            "淡斑",
+            "祛斑",
+            "斑",
+            "黑色素",
+            "敏感皮",
+            "敏感肌",
+            "方法",
+            "可以做",
+            "能做",
+            "痣",
+            "痦子",
+            "伤皮肤",
+        )
+    )
 
 
 def _normalize_task(raw: Any, *, default_priority: int) -> dict[str, Any]:

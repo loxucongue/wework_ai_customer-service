@@ -11,10 +11,6 @@ from app.services.trace_logger import TraceLogger
 
 FINAL_REPLY_MODEL_NAMES = [
     "deepseek-v4-flash",
-    "qwen3.6-flash",
-    "qwen-turbo",
-    "qwen3.6-27b",
-    "qwen3.7-max-2026-05-20",
 ]
 FINAL_REPLY_JSON_FORMAT = {"type": "json_object"}
 FINAL_REPLY_TEMPERATURE = 0.25

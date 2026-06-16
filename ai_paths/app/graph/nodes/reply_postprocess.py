@@ -70,6 +70,10 @@ def postprocess_reply_messages(
             if _has_unbacked_case_image_promise(state, content):
                 reasons.append("unbacked_case_image_promise_blocked")
                 continue
+            fabricated_store_names = _unsupported_store_names_from_text(state, content)
+            if fabricated_store_names:
+                reasons.append("fabricated_store_name_blocked")
+                continue
             sanitized_sales = _sanitize_sales_close_risk_terms(content)
             if sanitized_sales != content:
                 content = sanitized_sales
@@ -499,6 +503,86 @@ def _structured_facts_from_state(state: AgentState) -> dict[str, Any]:
     if isinstance(fact_envelope, dict) and isinstance(fact_envelope.get("structured_facts"), dict):
         return fact_envelope["structured_facts"]
     return {}
+
+
+def _unsupported_store_names_from_text(state: AgentState, text: str) -> list[str]:
+    real_names = _real_store_names_from_state(state)
+    if not real_names:
+        return []
+    unsupported: list[str] = []
+    for candidate in _candidate_store_names(text):
+        if _is_generic_store_reference(candidate):
+            continue
+        if _store_name_is_supported(candidate, real_names):
+            continue
+        unsupported.append(candidate)
+    return list(dict.fromkeys(unsupported))
+
+
+def _real_store_names_from_state(state: AgentState) -> list[str]:
+    structured = _structured_facts_from_state(state)
+    names: list[str] = []
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        name = str(recommended.get("name") or "").strip()
+        if name:
+            names.append(name)
+    stores = structured.get("store_facts")
+    if isinstance(stores, list):
+        for item in stores:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if name:
+                names.append(name)
+    return list(dict.fromkeys(names))
+
+
+def _candidate_store_names(text: str) -> list[str]:
+    content = str(text or "")
+    candidates: list[str] = []
+    for match in re.finditer(r"([\u4e00-\u9fffA-Za-z0-9]{1,12}(?:店|二店))", content):
+        value = match.group(1).strip("，。！？：:；;、（）()[]【】")
+        if value:
+            candidates.append(value)
+    return candidates
+
+
+def _is_generic_store_reference(candidate: str) -> bool:
+    value = str(candidate or "").strip()
+    if not value:
+        return True
+    generic = {
+        "门店",
+        "到店",
+        "店里",
+        "店内",
+        "店铺",
+        "本店",
+        "这家店",
+        "那家店",
+        "哪家店",
+        "附近店",
+        "最近店",
+        "意向店",
+        "预约店",
+        "活动店",
+    }
+    if value in generic or value.endswith(("到店", "门店", "店里", "店内")):
+        return True
+    return any(term in value for term in ("哪家店", "哪个店", "这家店", "那家店", "到店", "门店", "店里", "店内"))
+
+
+def _store_name_is_supported(candidate: str, real_names: list[str]) -> bool:
+    value = str(candidate or "").strip()
+    if not value:
+        return True
+    for name in real_names:
+        if not name:
+            continue
+        if value == name or value in name or name in value:
+            return True
+    return False
 
 
 def _first_dict(value: Any) -> dict[str, Any]:

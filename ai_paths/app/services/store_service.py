@@ -240,7 +240,19 @@ def _with_planner_distance_origin(result: dict[str, Any], *, planner_distance_or
         output["planned_distance_origin"] = planned_origin
     if not output.get("distance_lookup_required"):
         return output
-    origin = planned_origin or str(output.get("area_or_landmark") or "").strip()
+    origin = _qualified_distance_origin(
+        planned_origin or str(output.get("area_or_landmark") or "").strip(),
+        city=str(output.get("city") or "").strip(),
+    )
     if origin:
         output["distance_origin"] = origin
     return output
+
+
+def _qualified_distance_origin(origin: str, *, city: str) -> str:
+    value = str(origin or "").strip()
+    if not value:
+        return ""
+    if not city or city in value:
+        return value
+    return f"{city}{value}"
