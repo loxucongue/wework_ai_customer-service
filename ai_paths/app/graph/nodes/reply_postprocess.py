@@ -218,6 +218,8 @@ def _store_address_message_for_state(
     store_id = requested_id if requested_id in real_store_ids else _preferred_store_id_from_state(state)
     if not store_id:
         store_id = real_store_ids[0]
+    if not _should_send_store_address_now(state, store_id):
+        return None
     return {"type": "store_address", "order": 0, "content": {"store_id": store_id}}
 
 
@@ -281,6 +283,36 @@ def _should_auto_append_store_address(state: AgentState) -> bool:
                     if _looks_like_store_card_turn(state):
                         return True
     if _recent_store_card_ids_from_history(state) and _looks_like_store_card_turn(state):
+        return True
+    return False
+
+
+def _should_send_store_address_now(state: AgentState, store_id: str) -> bool:
+    if not store_id:
+        return False
+    recent_ids = _recent_store_card_ids_from_history(state)
+    if store_id not in recent_ids:
+        return True
+    content = str(state.get("normalized_content") or "").strip()
+    if not content:
+        return False
+    explicit_resend_terms = (
+        "地址",
+        "定位",
+        "位置发",
+        "发位置",
+        "发定位",
+        "发地址",
+        "导航",
+        "路线",
+        "怎么去",
+        "停车",
+        "找不到",
+        "忘了",
+        "再发",
+        "重新发",
+    )
+    if any(term in content for term in explicit_resend_terms):
         return True
     return False
 
