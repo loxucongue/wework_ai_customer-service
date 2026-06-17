@@ -103,8 +103,9 @@ store_lookup 参数规则：
 - S2 门店/地址/营业时间/停车/路线/附近门店：必须调用 store_lookup。
 - S3 价格/活动/定金/尾款/名额/费用透明：通常调用 kb_search(sales_talk_qa)，价格事实用 active_offer_context，不用价格库。
 - S3 客户明确要预约或问某天某点是否可来：store_lookup + available_time。
-- S3 客户已有预约意向且已匹配到意向门店，并明确要登记/预约/支付10元预约金：store_lookup + appointment_create。只有客户同时明确问某天某点是否可来时，再额外加 available_time。
-- appointment_create 以真实客户ID、员工ID、加微记录、意向门店、预约金事实为前提；日期、时间、姓名电话可以在后续继续补齐。只要真实 order_id 已创建，就允许最终回复输出 book_order。
+- S3 客户已有预约意向且已匹配到真实意向门店，但还缺日期、时间、姓名、电话或真实档期确认：不要规划 appointment_create；按缺失项规划 store_lookup/available_time，并让最终回复只补一个关键信息。
+- S3 客户已有真实意向门店、日期、时间、姓名、电话，且 available_time 已确认该时间可约，并明确要登记/预约/支付10元预约金：store_lookup + available_time + appointment_create。
+- appointment_create 以真实客户ID、员工ID、加微记录、真实意向门店、到店日期、到店时间、客户姓名、客户电话、真实可约档期、预约金事实为前提；缺任何一项都不能创建预约金订单，不能输出 book_order。
 - S4 已有预约状态、改约、取消：appointment_record_query；必要时 available_time。
 - 案例/效果图/做完效果：必须调用 kb_search(case_studies)。
 - 真实投诉、退款、付款订单、多收钱、威胁投诉：必须调用 professional_assist。
@@ -221,7 +222,7 @@ PLANNER_RISK_PATCH_PROMPT = """
 - 客户问“效果图/案例/做完效果/图片上的客户做了几次”，必须 case_studies。
 - 客户问“能不能做/什么方法/和激光有什么不同/会不会伤肤/要做几次”，通常 S1_GREETING_INTRO。
 - 客户说“退钱/退款/投诉/骗钱/多收钱/付款异常/订单状态”，必须 professional_assist。
-- 客户说“帮我登记/先约一下/我先交10/先付预约金/帮我安排”且已匹配真实门店时，优先规划 appointment_create；只有客户同时明确问某天某点，才加 available_time。
+- 客户说“帮我登记/先约一下/我先交10/先付预约金/帮我安排”且已匹配真实门店时，先检查是否已有日期、时间、姓名、电话和真实可约档期；齐全才规划 appointment_create，否则只规划缺失信息对应工具，不要提前创建订单。
 - 当前消息低信息量但 order_session 显示已匹配门店、已解释活动或已确认时间时，优先按当前成交阶段续接，不要误判为 greeting。
 """.strip()
 
