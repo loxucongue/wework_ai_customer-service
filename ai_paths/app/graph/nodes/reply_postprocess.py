@@ -751,28 +751,7 @@ def _store_name_is_supported(candidate: str, real_names: list[str]) -> bool:
     value = str(candidate or "").strip()
     if not value:
         return True
-    for name in real_names:
-        if not name:
-            continue
-        if value == name or value in name or name in value:
-            return True
-        for alias in _store_name_aliases(name):
-            if alias and alias in value:
-                return True
-    return False
-
-
-def _store_name_aliases(name: str) -> list[str]:
-    text = str(name or "").strip()
-    aliases: list[str] = []
-    if not text.endswith("店"):
-        return aliases
-    for prefix in ("北京", "上海", "深圳", "广州", "厦门", "西安", "杭州", "南京", "成都", "重庆", "武汉", "长沙"):
-        if text.startswith(prefix) and len(text) > len(prefix) + 1:
-            aliases.append(text[len(prefix) :])
-    parts = re.split(r"[（）()\\s-]+", text)
-    aliases.extend(part for part in parts if part.endswith("店") and 2 <= len(part) <= 8)
-    return list(dict.fromkeys(aliases))
+    return value in {str(name or "").strip() for name in real_names if str(name or "").strip()}
 
 
 def _first_dict(value: Any) -> dict[str, Any]:

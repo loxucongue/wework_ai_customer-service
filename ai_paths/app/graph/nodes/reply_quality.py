@@ -31,7 +31,7 @@ _STORE_NEGATIVE_PATTERN = re.compile(
 )
 _STORE_CONCRETE_PATTERN = re.compile(
     r"最近的是|离.{0,20}最近.{0,8}(是|的)|推荐.{0,12}(门店|店)"
-    r"|地址[：:是]|门店.{0,8}(在|位于)|营业时间|停车场|导航"
+    r"|地址[：:是]|门店[^。！？!?，,；;]{0,8}(在|位于)|营业时间|停车场|导航"
     r"|步行.{0,8}(米|分钟)|\d+\.?\d*\s*(公里|千米|米)|走.{0,8}(米|分钟)"
 )
 _STORE_EXISTENCE_PATTERN = re.compile(r"(有的|有店|有门店|有.{0,4}(门店|店))")
@@ -73,7 +73,7 @@ def model_reply_unsafe(
         if isinstance(message, dict) and message.get("type") != "human_handoff"
     ).strip()
     if not text:
-        return True
+        return not _has_non_text_customer_visible_message(messages)
     if _has_garbled_visible_text(text):
         return True
     if reply_filters.has_internal_reply_leak(text):
@@ -305,7 +305,16 @@ def _has_unbacked_store_claim(state: AgentState, text: str, messages: list[dict[
     if _STORE_CONCRETE_PATTERN.search(text):
         return not has_store_facts
     if _STORE_EXISTENCE_PATTERN.search(text) and not has_store_facts:
-        return True
+        return not _has_city_store_candidates(state)
+    return False
+
+
+def _has_non_text_customer_visible_message(messages: list[dict[str, object]]) -> bool:
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("type") or "").strip() in {"image", "store_address", "book_order"}:
+            return True
     return False
 
 
@@ -325,6 +334,16 @@ def _has_positive_store_facts(state: AgentState) -> bool:
         return True
     recommended = structured.get("recommended_store")
     return isinstance(recommended, dict) and bool(recommended.get("name") or recommended.get("address"))
+
+
+def _has_city_store_candidates(state: AgentState) -> bool:
+    structured = _structured_facts(state)
+    status = structured.get("store_lookup_status")
+    return (
+        isinstance(status, dict)
+        and str(status.get("data_authority") or "").strip().lower() == "platform"
+        and bool(status.get("has_city_store_candidates"))
+    )
 
 
 def _misses_required_store_fact_use(state: AgentState, text: str) -> bool:
