@@ -58,6 +58,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = dedupe_tools([tool for task in all_tasks for tool in task.get("tools", [])])
     required_tools = enforce_required_tools(state, all_tasks, required_tools)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
+    primary_task["tools"] = required_tools
     violations = tool_policy_violations(all_tasks, required_tools)
     memory_update_hint = _normalize_memory_hint(memory_update_raw)
 
