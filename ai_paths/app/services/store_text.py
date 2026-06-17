@@ -3,25 +3,20 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from app.services.store_text_constants import (
-    AREA_CITY_MAP,
-    CITY_NAMES,
-    EXTERNAL_LOCATION_NAMES,
-    QUERY_STORE_ALIASES,
-    STORE_ALIASES,
-)
+from app.services.store_text_constants import AREA_CITY_MAP, CITY_NAMES, EXTERNAL_LOCATION_NAMES
 
 
 STORE_ROUTE_TERMS = (
     "地址",
     "位置",
+    "定位",
     "导航",
     "路线",
     "怎么去",
     "怎么过去",
     "发我",
     "发给我",
-    "地铁",
+    "地图",
     "停车",
     "停车场",
     "停车位",
@@ -94,6 +89,8 @@ SPECIAL_LANDMARKS = tuple(
             "虹桥机场",
             "浦东机场",
             "西安高新",
+            "宁乡县城",
+            "岳麓区",
         },
         key=len,
         reverse=True,
@@ -137,11 +134,6 @@ def extract_store_name(query: str, store_refs: Iterable[Any] | None = None) -> s
     text = _text(query)
     if not text:
         return ""
-
-    for alias, canonical in QUERY_STORE_ALIASES.items():
-        if alias and alias in text:
-            return canonical
-
     for ref in store_refs or []:
         name = _store_name(ref)
         if not name:
@@ -196,10 +188,6 @@ def extract_area_or_landmark(query: str) -> str:
         if landmark and landmark in text:
             return landmark
 
-    for area in sorted(AREA_CITY_MAP.keys(), key=len, reverse=True):
-        if area and area in text:
-            return area
-
     match = re.search(
         r"([\u4e00-\u9fa5A-Za-z0-9]{2,20}(?:%s))" % "|".join(map(re.escape, LANDMARK_SUFFIXES)),
         text,
@@ -222,12 +210,6 @@ def city_for_area_or_landmark(area_or_landmark: str) -> str:
     return ""
 
 
-def _clean_location_phrase(value: str) -> str:
-    text = _text(value)
-    text = re.sub(r"^(我在|我住在|住在|在|离)", "", text)
-    return text.strip()
-
-
 def asks_store_status(query: str) -> bool:
     text = _text(query)
     return any(term in text for term in STORE_STATUS_TERMS)
@@ -239,9 +221,7 @@ def needs_city_before_lookup(query: str, *, city: str, requested_name: str, area
         return False
     if any(term in text for term in STORE_ROUTE_TERMS + STORE_STATUS_TERMS + LOCATION_PREFERENCE_TERMS):
         return True
-    if "门店" in text or "店" in text or "地址" in text:
-        return True
-    return False
+    return "门店" in text or "店" in text or "地址" in text
 
 
 def row_matches_city(row: dict[str, Any], city: str) -> bool:
@@ -267,8 +247,7 @@ def store_aliases(name: str) -> list[str]:
     store_name = _text(name)
     if not store_name:
         return []
-    aliases = STORE_ALIASES.get(store_name, [])
-    values = [store_name, *_normalize_aliases(aliases)]
+    values = [store_name]
     normalized_name = _normalize_store_name(store_name)
     if normalized_name and normalized_name not in values:
         values.append(normalized_name)
@@ -285,6 +264,12 @@ def match_rows_by_query_name(rows: list[dict[str, Any]], query: str) -> list[dic
 
 def store_matches_requested_name(store: dict[str, Any], requested_name: str, aliases: list[str]) -> bool:
     return _row_matches_requested_name(store, requested_name, aliases)
+
+
+def _clean_location_phrase(value: str) -> str:
+    text = _text(value)
+    text = re.sub(r"^(我在|我住在|住在|在|离)", "", text)
+    return text.strip()
 
 
 def _row_matches_requested_name(ref: Any, requested_name: str, aliases: list[str]) -> bool:
@@ -306,6 +291,13 @@ def _infer_city_from_texts(texts: Iterable[str]) -> str:
     for city in CITY_NAMES:
         if city in merged:
             return city
+    # Platform addresses commonly contain the actual city as "XX市".
+    # Prefer this before area keywords such as "龙岗/福田", otherwise streets
+    # in other cities (e.g. 常德市龙岗路) can be misclassified as Shenzhen.
+    for value in values:
+        match = re.search(r"([\u4e00-\u9fa5]{2,8})市", value)
+        if match:
+            return match.group(1)
     for area, city in sorted(AREA_CITY_MAP.items(), key=lambda item: len(item[0]), reverse=True):
         if area in merged:
             return city
@@ -313,19 +305,6 @@ def _infer_city_from_texts(texts: Iterable[str]) -> str:
         if city in merged:
             return city
     return ""
-
-
-def _normalize_aliases(values: Iterable[str]) -> list[str]:
-    aliases: list[str] = []
-    for value in values:
-        text = _text(value)
-        if not text:
-            continue
-        aliases.append(text)
-        normalized = _normalize_store_name(text)
-        if normalized and normalized not in aliases:
-            aliases.append(normalized)
-    return aliases
 
 
 def _store_name(ref: Any) -> str:
@@ -339,7 +318,11 @@ def _store_city(ref: Any) -> str:
         city = _text(ref.get("city"))
         if city:
             return city
-        return _infer_city_from_texts([_text(ref.get("address")), _text(ref.get("name"))])
+        return _infer_city_from_texts([
+            _text(ref.get("address")),
+            _text(ref.get("tencent_address")),
+            _text(ref.get("name")),
+        ])
     city = _text(getattr(ref, "city", ""))
     if city:
         return city

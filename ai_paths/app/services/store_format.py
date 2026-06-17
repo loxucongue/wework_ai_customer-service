@@ -54,7 +54,13 @@ def platform_store_to_dict(
 
     begin = info.get("business_hours_begin") or row.get("business_hours_begin") or ""
     end = info.get("business_hours_end") or row.get("business_hours_end") or ""
-    address = info.get("tencent_address") or info.get("address") or row.get("tencent_address") or row.get("address") or ""
+    address = (
+        info.get("tencent_address")
+        or info.get("address")
+        or row.get("tencent_address")
+        or row.get("address")
+        or ""
+    )
     map_url = _normalize_map_url(
         info.get("tencent_map_store")
         or info.get("map_store")
