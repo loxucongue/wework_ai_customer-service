@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-from app.graph.nodes.common import dedupe_strings
+from app.graph.nodes.common import dedupe_strings, looks_garbled_text
 from app.graph.signals.dispute import (
     complaint_terms,
     has_effect_dispute,
@@ -22,6 +22,8 @@ def create_hard_guardrails_node(*, trace_logger: TraceLogger) -> Callable[[Agent
         content = str(state.get("normalized_content") or "")
         with trace_logger.node(state, "hard_guardrails", {"content": content}) as span:
             hit_terms = [word for word in HUMAN_KEYWORDS if word in content]
+            if looks_garbled_text(content):
+                hit_terms.append("输入乱码")
             if is_identity_question(content):
                 hit_terms = [term for term in hit_terms if term not in {"真人", "人工", "客服接待"}]
             if has_minor_signal(content):
@@ -98,6 +100,8 @@ def _guardrail_task_type(terms: list[str], content: str) -> str:
     if {"效果纠纷", "感染", "流脓", "高烧"} & lowered_terms:
         return "after_sales"
     if "未成年" in lowered_terms:
+        return "human_request"
+    if "输入乱码" in lowered_terms:
         return "human_request"
     if any(keyword in content for keyword in ("人工", "真人", "客服", "接待")):
         return "human_request"
