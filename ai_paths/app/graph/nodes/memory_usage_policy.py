@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.graph.nodes.appointment_utils import extract_date_value, extract_time_value
 from app.graph.nodes.store_context import (
+    current_real_store_from_state,
     known_city_from_state,
     known_store_area_from_history,
     known_store_name_from_history,
@@ -141,6 +142,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         if isinstance(structured.get("recommended_store"), dict)
         else {}
     )
+    current_store = current_real_store_from_state(state)
 
     session: dict[str, object] = {}
     _put(
@@ -172,6 +174,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
             request_context.get("confirmed_store_name"),
             state.get("confirmed_store_name"),
             recommended_store.get("name"),
+            current_store.get("name"),
             known_store_name_from_history(state),
         ),
     )
@@ -183,6 +186,7 @@ def order_session_state(state: AgentState) -> dict[str, object]:
             state.get("confirmed_store_id"),
             recommended_store.get("store_id"),
             recommended_store.get("id"),
+            current_store.get("id"),
         ),
     )
     _put(
@@ -305,6 +309,14 @@ def _recent_customer_texts(state: AgentState) -> list[str]:
 
 
 def _next_order_slot(session: dict[str, object]) -> str:
+    if session.get("confirmed_store_name") or session.get("confirmed_store_id"):
+        if not session.get("offer_explained"):
+            return "offer_explained"
+        if not (session.get("visit_date") or session.get("visit_time")):
+            return "visit_time"
+        if not session.get("appointment_order_id"):
+            return "signup_state"
+        return "confirmed"
     if not session.get("city"):
         return "city"
     if not session.get("area_or_landmark"):
