@@ -366,5 +366,8 @@ def _store_id_from_history_content(content: object) -> str:
     text = str(content or "").strip()
     if not text:
         return ""
-    match = re.search(r'"store_id"\s*:\s*"?(?P<store_id>\d+)"?', text)
+    match = re.search(r'["\']store_id["\']\s*:\s*["\']?(?P<store_id>\d+)["\']?', text)
+    if match:
+        return str(match.group("store_id") or "").strip()
+    match = re.search(r"(?:store_address|门店卡片)\s*[:：]\s*(?P<store_id>\d+)", text, flags=re.IGNORECASE)
     return str(match.group("store_id") or "").strip() if match else ""
