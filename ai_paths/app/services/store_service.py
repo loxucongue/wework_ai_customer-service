@@ -224,7 +224,10 @@ def _apply_location_gate(result: dict[str, Any], *, query_info: StoreQueryInfo) 
 
 def _with_planner_distance_origin(result: dict[str, Any], *, planner_distance_origin: str) -> dict[str, Any]:
     output = dict(result or {})
-    planned_origin = str(planner_distance_origin or "").strip()
+    planned_origin = _clean_distance_origin(
+        str(planner_distance_origin or "").strip(),
+        city=str(output.get("city") or "").strip(),
+    )
     if planned_origin:
         output["planned_distance_origin"] = planned_origin
     if not output.get("distance_lookup_required"):
@@ -236,6 +239,20 @@ def _with_planner_distance_origin(result: dict[str, Any], *, planner_distance_or
     if origin:
         output["distance_origin"] = origin
     return output
+
+
+def _clean_distance_origin(origin: str, *, city: str) -> str:
+    value = str(origin or "").strip()
+    if not value:
+        return ""
+    parsed_city = store_text.extract_city(value, [])
+    parsed_area = store_text.extract_area_or_landmark(value)
+    final_city = parsed_city or city
+    if parsed_area:
+        if final_city and final_city not in parsed_area:
+            return f"{final_city}{parsed_area}"
+        return parsed_area
+    return value
 
 
 def _qualified_distance_origin(origin: str, *, city: str) -> str:
