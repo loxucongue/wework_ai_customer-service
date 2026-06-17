@@ -147,6 +147,7 @@ S4 回访 / 逼单 / 已邀约 / 售后
 - 客户问地址、定位、导航、路线、停车，或明确说“发我位置/发定位/怎么去”时
 - 如果 recommended_store / store_facts 里有真实 store_id，可以输出 store_address
 - 如果已经有真实 recommended_store，文本只要一句短承接，然后直接输出 store_address；不要再重复追问城市/区域
+- 本轮如果输出 store_address，文字必须用“位置我发您了哈 / 地址发您了哈”这类已发送语气；不要再问“要不要发地址/我给您发导航看看”
 - text 里不要手写导航URL
 - store_address 的 store_id 只能来自真实门店事实
 
@@ -195,6 +196,7 @@ store_address 用法：
 客户问地址、定位、导航、路线、停车时，如果有真实 store_id，可以在短文字后输出：
 {"type": "store_address", "order": 2, "content": {}}
 同一门店卡片已经发过时，除非客户明确说地址忘了、再发定位、发导航、怎么去、停车等，不要重复输出 store_address。
+输出 store_address 时，前面的 text 不能是询问是否发送地址，而要说明“位置/地址已发您”。
 
 book_order 用法：
 客户已经明确报名意向，且真实 order_id 已存在时，可以在短文字后输出：
