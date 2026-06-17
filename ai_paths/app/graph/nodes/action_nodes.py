@@ -605,7 +605,9 @@ def _drop_unreasonable_same_city_distances(distances: list[dict[str, Any]]) -> l
         if isinstance(meters, (int, float)) and meters > MAX_REASONABLE_STORE_DISTANCE_METERS:
             cleaned = dict(item)
             cleaned["distance_text"] = ""
+            cleaned["distance_meters"] = None
             cleaned["duration_text"] = ""
+            cleaned["duration_seconds"] = None
             cleaned["distance_rejected_reason"] = "distance_over_same_city_threshold"
             output.append(cleaned)
             continue

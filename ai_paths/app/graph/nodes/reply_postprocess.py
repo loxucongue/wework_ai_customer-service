@@ -224,6 +224,8 @@ def _store_address_message_for_state(
 
 
 def _real_store_ids_from_state(state: AgentState) -> list[str]:
+    if not _has_current_platform_store_facts(state):
+        return []
     structured = _structured_facts_from_state(state)
     ids: list[str] = []
     recommended = structured.get("recommended_store")
@@ -239,11 +241,12 @@ def _real_store_ids_from_state(state: AgentState) -> list[str]:
             store_id = _store_id_from_fact(item)
             if store_id:
                 ids.append(store_id)
-    ids.extend(_recent_store_card_ids_from_history(state))
     return list(dict.fromkeys(ids))
 
 
 def _preferred_store_id_from_state(state: AgentState) -> str:
+    if not _has_current_platform_store_facts(state):
+        return ""
     structured = _structured_facts_from_state(state)
     recommended = structured.get("recommended_store")
     if isinstance(recommended, dict):
@@ -258,9 +261,6 @@ def _preferred_store_id_from_state(state: AgentState) -> str:
             store_id = _store_id_from_fact(item)
             if store_id:
                 return store_id
-    recent_ids = _recent_store_card_ids_from_history(state)
-    if recent_ids:
-        return recent_ids[-1]
     ids = _real_store_ids_from_state(state)
     return ids[0] if ids else ""
 
@@ -282,8 +282,6 @@ def _should_auto_append_store_address(state: AgentState) -> bool:
                         return True
                     if _looks_like_store_card_turn(state):
                         return True
-    if _recent_store_card_ids_from_history(state) and _looks_like_store_card_turn(state):
-        return True
     return False
 
 
@@ -656,13 +654,38 @@ def _structured_facts_from_state(state: AgentState) -> dict[str, Any]:
     return {}
 
 
+def _has_current_platform_store_facts(state: AgentState) -> bool:
+    structured = _structured_facts_from_state(state)
+    status = structured.get("store_lookup_status")
+    if not isinstance(status, dict):
+        return False
+    if str(status.get("data_authority") or "").strip().lower() != "platform":
+        return False
+    if bool(status.get("needs_area_or_landmark")) or bool(status.get("no_store_match_confirmed")):
+        return False
+    return bool(_current_store_facts_from_state(state))
+
+
+def _current_store_facts_from_state(state: AgentState) -> list[dict[str, Any]]:
+    structured = _structured_facts_from_state(state)
+    facts: list[dict[str, Any]] = []
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        facts.append(recommended)
+    stores = structured.get("store_facts")
+    if isinstance(stores, list):
+        facts.extend(item for item in stores if isinstance(item, dict))
+    return facts
+
+
 def _unsupported_store_names_from_text(state: AgentState, text: str) -> list[str]:
     real_names = _real_store_names_from_state(state)
-    if not real_names:
-        return []
     unsupported: list[str] = []
     for candidate in _candidate_store_names(text):
         if _is_generic_store_reference(candidate):
+            continue
+        if not real_names or not _has_current_platform_store_facts(state):
+            unsupported.append(candidate)
             continue
         if _store_name_is_supported(candidate, real_names):
             continue
@@ -733,7 +756,23 @@ def _store_name_is_supported(candidate: str, real_names: list[str]) -> bool:
             continue
         if value == name or value in name or name in value:
             return True
+        for alias in _store_name_aliases(name):
+            if alias and alias in value:
+                return True
     return False
+
+
+def _store_name_aliases(name: str) -> list[str]:
+    text = str(name or "").strip()
+    aliases: list[str] = []
+    if not text.endswith("店"):
+        return aliases
+    for prefix in ("北京", "上海", "深圳", "广州", "厦门", "西安", "杭州", "南京", "成都", "重庆", "武汉", "长沙"):
+        if text.startswith(prefix) and len(text) > len(prefix) + 1:
+            aliases.append(text[len(prefix) :])
+    parts = re.split(r"[（）()\\s-]+", text)
+    aliases.extend(part for part in parts if part.endswith("店") and 2 <= len(part) <= 8)
+    return list(dict.fromkeys(aliases))
 
 
 def _first_dict(value: Any) -> dict[str, Any]:

@@ -9,8 +9,8 @@ from typing import Any
 
 
 MAX_REASONABLE_SAME_CITY_DISTANCE_METERS = 150_000
-STORE_NAME_PATTERN = re.compile(r"[\u4e00-\u9fffA-Za-z0-9（）()·\-]{2,24}店")
-DISTANCE_PATTERN = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>公里|千米|km|KM|米)")
+STORE_NAME_PATTERN = re.compile(r"([\u4e00-\u9fffA-Za-z0-9（）()路\-]{1,24}(?:店|二店))")
+DISTANCE_PATTERN = re.compile(r"(?P<num>\d+(?:\.\d+)?)\s*(?P<unit>公里|千米|km|KM|米|m)")
 
 
 def main() -> int:
@@ -54,15 +54,34 @@ def audit_run_file(path: Path) -> dict[str, Any]:
     synth = _find_node(trace, "synthesize_reply")
     executed_calls = _executed_tool_calls(execute)
     final_messages = _reply_messages(synth)
-    store_outputs = [call.get("output") for call in executed_calls if call.get("name") == "store_lookup" and isinstance(call.get("output"), dict)]
-    distance_outputs = [call.get("output") for call in executed_calls if call.get("name") == "distance_lookup" and isinstance(call.get("output"), dict)]
+    store_outputs = [
+        call.get("output")
+        for call in executed_calls
+        if call.get("name") == "store_lookup" and isinstance(call.get("output"), dict)
+    ]
+    distance_outputs = [
+        call.get("output")
+        for call in executed_calls
+        if call.get("name") == "distance_lookup" and isinstance(call.get("output"), dict)
+    ]
 
     store_facts = _store_facts(store_outputs)
-    real_store_ids = {str(item.get("id") or item.get("store_id") or "").strip() for item in store_facts if isinstance(item, dict)}
-    real_store_names = {str(item.get("name") or "").strip() for item in store_facts if isinstance(item, dict) and str(item.get("name") or "").strip()}
+    real_store_ids = {
+        str(item.get("id") or item.get("store_id") or "").strip()
+        for item in store_facts
+        if isinstance(item, dict)
+    }
+    real_store_names = {
+        str(item.get("name") or "").strip()
+        for item in store_facts
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
 
     issues: list[str] = []
-    store_authorities = [str(output.get("data_authority") or output.get("store_data_authority") or "").strip() for output in store_outputs]
+    store_authorities = [
+        str(output.get("data_authority") or output.get("store_data_authority") or "").strip()
+        for output in store_outputs
+    ]
     has_store_message = any(_message_type(message) == "store_address" for message in final_messages)
     has_store_text = bool(_store_names_in_text(final_messages, real_store_names))
 
@@ -81,8 +100,7 @@ def audit_run_file(path: Path) -> dict[str, Any]:
         elif store_id not in real_store_ids:
             issues.append(f"store_address_untraceable:{store_id}")
 
-    fabricated = _fabricated_store_mentions(final_messages, real_store_names)
-    for name in fabricated:
+    for name in _fabricated_store_mentions(final_messages, real_store_names):
         issues.append(f"fabricated_store_name:{name}")
 
     for claim in _distance_claims(final_messages):
@@ -93,6 +111,8 @@ def audit_run_file(path: Path) -> dict[str, Any]:
 
     for output in distance_outputs:
         for item in _distance_items(output):
+            if str(item.get("distance_rejected_reason") or "").strip():
+                continue
             meters = _safe_int(item.get("distance_meters"))
             if meters and meters > MAX_REASONABLE_SAME_CITY_DISTANCE_METERS:
                 issues.append(f"abnormal_distance_fact:{item.get('name') or item.get('id')}:{meters}")
@@ -102,7 +122,7 @@ def audit_run_file(path: Path) -> dict[str, Any]:
         "request_id": data.get("request_id") or data.get("run_id") or _wrapped_request_id(data) or path.stem,
         "executed_tool_calls": [str(call.get("name") or "") for call in executed_calls],
         "store_data_authority": store_authorities,
-        "store_ids": sorted(real_store_ids),
+        "store_ids": sorted(value for value in real_store_ids if value),
         "store_names": sorted(real_store_names),
         "reply_messages": final_messages,
         "issues": issues,
@@ -172,15 +192,66 @@ def _store_names_in_text(messages: list[dict[str, Any]], real_names: set[str]) -
 
 def _fabricated_store_mentions(messages: list[dict[str, Any]], real_names: set[str]) -> list[str]:
     text = "\n".join(_message_text(message) for message in messages if _message_type(message) == "text")
-    matches = set(match.group(0).strip() for match in STORE_NAME_PATTERN.finditer(text))
+    matches = {match.group(1).strip() for match in STORE_NAME_PATTERN.finditer(text)}
     fabricated: list[str] = []
     for name in matches:
-        if name in real_names:
+        if _is_generic_store_reference(name):
             continue
-        if any(real_name and real_name in name for real_name in real_names):
+        if _store_name_supported(name, real_names):
             continue
         fabricated.append(name)
     return sorted(fabricated)
+
+
+def _store_name_supported(candidate: str, real_names: set[str]) -> bool:
+    value = str(candidate or "").strip()
+    if not value:
+        return True
+    for name in real_names:
+        if value == name or value in name or name in value:
+            return True
+        for alias in _store_name_aliases(name):
+            if alias and alias in value:
+                return True
+    return False
+
+
+def _store_name_aliases(name: str) -> list[str]:
+    text = str(name or "").strip()
+    aliases: list[str] = []
+    if not text.endswith("店"):
+        return aliases
+    for prefix in ("北京", "上海", "深圳", "广州", "厦门", "西安", "杭州", "南京", "成都", "重庆", "武汉", "长沙"):
+        if text.startswith(prefix) and len(text) > len(prefix) + 1:
+            aliases.append(text[len(prefix) :])
+    parts = re.split(r"[（）()\\s-]+", text)
+    aliases.extend(part for part in parts if part.endswith("店") and 2 <= len(part) <= 8)
+    return list(dict.fromkeys(aliases))
+
+
+def _is_generic_store_reference(candidate: str) -> bool:
+    value = str(candidate or "").strip()
+    if not value:
+        return True
+    generic = {
+        "门店",
+        "到店",
+        "店里",
+        "店内",
+        "店铺",
+        "本店",
+        "这家店",
+        "那家店",
+        "哪家店",
+        "附近店",
+        "最近店",
+        "意向店",
+        "预约店",
+        "活动店",
+    }
+    if value in generic or value.endswith(("到店", "门店", "店里", "店内")):
+        return True
+    return any(term in value for term in ("哪家店", "哪个店", "这家店", "那家店", "到店", "门店", "店里", "店内"))
 
 
 def _distance_claims(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -189,7 +260,7 @@ def _distance_claims(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for match in DISTANCE_PATTERN.finditer(text):
         num = float(match.group("num"))
         unit = match.group("unit").lower()
-        meters = int(num if unit == "米" else num * 1000)
+        meters = int(num if unit in {"米", "m"} else num * 1000)
         claims.append({"text": match.group(0), "meters": meters})
     return claims
 
