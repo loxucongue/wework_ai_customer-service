@@ -173,8 +173,6 @@ def _book_order_message_for_state(
     state: AgentState,
     model_messages: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    if not any(isinstance(message, dict) and message.get("type") == "book_order" for message in model_messages):
-        return None
     if not _has_confirmed_store_for_booking(state):
         return None
     order_id = _trusted_book_order_id_from_state(state)
