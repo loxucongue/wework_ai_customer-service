@@ -246,6 +246,13 @@ def _structured_facts(state: AgentState) -> dict[str, object]:
 
 
 def _offer_already_explained(state: AgentState) -> bool:
+    for event in state.get("history_events") or []:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or "").strip()
+        if event_type in {"offer_explained", "deposit_explained", "book_order_sent"}:
+            return True
+
     texts: list[str] = []
     for item in state.get("conversation_history") or []:
         if isinstance(item, dict):

@@ -87,6 +87,15 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                         "detail_error": str(item.get("detail_error") or "")[:180],
                         "has_detail": bool(item.get("has_detail")),
                         "address_source": str(item.get("address_source") or ""),
+                        "status_code": item.get("status_code"),
+                        "shore_show_code": item.get("shore_show_code"),
+                        "schedule_status": item.get("schedule_status"),
+                        "plan_status": item.get("plan_status"),
+                        "is_pause": item.get("is_pause"),
+                        "pause_start": str(item.get("pause_start") or ""),
+                        "pause_end": str(item.get("pause_end") or ""),
+                        "is_public": bool(item.get("is_public")),
+                        "status_summary": str(item.get("status_summary") or ""),
                     }
                     for item in stores[:5]
                     if isinstance(item, dict)
@@ -120,6 +129,15 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "parking_link": str(recommended.get("parking_link") or matched_store.get("parking_link") or ""),
                     "detail_source": str(recommended.get("detail_source") or matched_store.get("detail_source") or ""),
                     "has_detail": bool(recommended.get("has_detail") or matched_store.get("has_detail")),
+                    "status_code": recommended.get("status_code", matched_store.get("status_code")),
+                    "shore_show_code": recommended.get("shore_show_code", matched_store.get("shore_show_code")),
+                    "schedule_status": recommended.get("schedule_status", matched_store.get("schedule_status")),
+                    "plan_status": recommended.get("plan_status", matched_store.get("plan_status")),
+                    "is_pause": recommended.get("is_pause", matched_store.get("is_pause")),
+                    "pause_start": str(recommended.get("pause_start") or matched_store.get("pause_start") or ""),
+                    "pause_end": str(recommended.get("pause_end") or matched_store.get("pause_end") or ""),
+                    "is_public": bool(recommended.get("is_public") if "is_public" in recommended else matched_store.get("is_public")),
+                    "status_summary": str(recommended.get("status_summary") or matched_store.get("status_summary") or ""),
                     "reason": str(recommended.get("reason") or value.get("recommend_reason") or ""),
                 }
                 facts.append(

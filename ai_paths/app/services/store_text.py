@@ -50,6 +50,12 @@ LOCATION_PREFERENCE_TERMS = (
 )
 
 LANDMARK_SUFFIXES = (
+    "高新区",
+    "开发区",
+    "经开区",
+    "新区",
+    "县级市",
+    "县城",
     "机场",
     "高铁站",
     "高铁",
@@ -70,6 +76,8 @@ LANDMARK_SUFFIXES = (
     "会展中心",
     "万象城",
     "万达",
+    "区",
+    "县",
 )
 
 SPECIAL_LANDMARKS = tuple(
@@ -114,6 +122,9 @@ def extract_city(query: str, store_refs: Iterable[Any] | None = None) -> str:
     direct = _infer_city_from_texts([text])
     if direct:
         return direct
+    area_city = city_for_area_or_landmark(extract_area_or_landmark(text))
+    if area_city:
+        return area_city
     requested_name = extract_store_name(text, store_refs)
     if requested_name:
         city = city_for_store_name(requested_name, store_refs)
@@ -185,17 +196,36 @@ def extract_area_or_landmark(query: str) -> str:
         if landmark and landmark in text:
             return landmark
 
+    for area in sorted(AREA_CITY_MAP.keys(), key=len, reverse=True):
+        if area and area in text:
+            return area
+
     match = re.search(
         r"([\u4e00-\u9fa5A-Za-z0-9]{2,20}(?:%s))" % "|".join(map(re.escape, LANDMARK_SUFFIXES)),
         text,
     )
     if match:
-        return match.group(1)
+        return _clean_location_phrase(match.group(1))
 
-    for area in sorted(AREA_CITY_MAP.keys(), key=len, reverse=True):
-        if area and area in text:
-            return area
     return ""
+
+
+def city_for_area_or_landmark(area_or_landmark: str) -> str:
+    value = _text(area_or_landmark)
+    if not value:
+        return ""
+    if value in AREA_CITY_MAP:
+        return AREA_CITY_MAP[value]
+    stripped = re.sub(r"(县城|县级市|高新区|开发区|经开区|新区|区|县)$", "", value)
+    if stripped in AREA_CITY_MAP:
+        return AREA_CITY_MAP[stripped]
+    return ""
+
+
+def _clean_location_phrase(value: str) -> str:
+    text = _text(value)
+    text = re.sub(r"^(我在|我住在|住在|在|离)", "", text)
+    return text.strip()
 
 
 def asks_store_status(query: str) -> bool:
@@ -203,9 +233,9 @@ def asks_store_status(query: str) -> bool:
     return any(term in text for term in STORE_STATUS_TERMS)
 
 
-def needs_city_before_lookup(query: str, *, city: str, requested_name: str) -> bool:
+def needs_city_before_lookup(query: str, *, city: str, requested_name: str, area_or_landmark: str = "") -> bool:
     text = _text(query)
-    if requested_name or city:
+    if requested_name or city or area_or_landmark:
         return False
     if any(term in text for term in STORE_ROUTE_TERMS + STORE_STATUS_TERMS + LOCATION_PREFERENCE_TERMS):
         return True

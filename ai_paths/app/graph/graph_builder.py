@@ -28,6 +28,7 @@ from app.graph.nodes.reply_validation import (
     validated_model_messages as _validated_model_messages,
 )
 from app.graph.nodes.store_context import extract_city as _extract_city, store_query_from_state as _store_query_from_state
+from app.graph.nodes.system_action_events import extract_system_action_events as _extract_system_action_events
 from app.graph.nodes.action_nodes import create_execute_actions_node
 from app.graph.runtime_common import compact_memory as _compact_memory, extract_price_digits as _extract_price_digits
 from app.graph.runtime_context import (
@@ -114,6 +115,7 @@ def build_graph(
             known_visible_concerns=_known_visible_concerns_from_state,
             project_direction_names=_project_direction_names_from_state,
         ),
+        extract_system_action_events=_extract_system_action_events,
     )
 
     synthesize_reply = create_synthesize_reply_node(

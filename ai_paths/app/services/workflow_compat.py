@@ -121,7 +121,7 @@ def _workflow_messages_to_history(messages: list[Any]) -> list[str]:
         if direction in {"customer", "user", "external"}:
             role = "用户"
         elif direction in {"staff", "assistant", "service"}:
-            role = "小贝"
+            role = "销售"
         else:
             role = "对话"
         history.append(f"{role}: {content}")

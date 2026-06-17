@@ -16,6 +16,7 @@ from app.graph.signals.project import has_case_request
 from app.graph.state import AgentState
 from app.policies.constants import APPOINTMENT_KEYWORDS, CITY_NAMES, STORE_AREA_TERMS, STORE_KEYWORDS
 from app.policies.sop_rules import normalize_sop_stage
+from app.services import store_text
 
 
 STORE_FACT_TERMS = tuple(
@@ -445,7 +446,11 @@ def needs_store_lookup_request(state: AgentState, content: str) -> bool:
         return False
     asks_store_fact = any(term in content for term in STORE_FACT_TERMS)
     has_location_hint = any(term in content for term in STORE_LOCATION_HINT_TERMS)
-    if asks_store_fact or has_location_hint:
+    has_district_or_county_store_question = bool(
+        re.search(r"[\u4e00-\u9fa5A-Za-z0-9]{2,20}(区|县城|县级市|开发区|经开区|新区|高新区|县)", content)
+        and any(term in content for term in ("店", "门店", "地址", "位置", "附近", "最近", "哪家"))
+    )
+    if asks_store_fact or has_location_hint or has_district_or_county_store_question:
         return True
     return should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state)
 
@@ -573,6 +578,14 @@ def _has_specific_store_or_location_signal(content: str) -> bool:
             "我在",
             "我住",
             "附近",
+            "区",
+            "县",
+            "县城",
+            "县级市",
+            "开发区",
+            "经开区",
+            "新区",
+            "高新区",
             "机场",
             "高铁",
             "地铁",
@@ -603,6 +616,16 @@ def _distance_origin_from_state_or_text(state: AgentState, content: str) -> str:
         or known_store_area_from_history(state)
     )
     text = str(content or "").strip()
+    parsed_city = store_text.extract_city(text, [])
+    parsed_area = store_text.extract_area_or_landmark(text)
+    if parsed_city and parsed_area:
+        if parsed_city in parsed_area:
+            return parsed_area
+        return f"{parsed_city}{parsed_area}"
+    if parsed_area and not city:
+        parsed_area_city = store_text.city_for_area_or_landmark(parsed_area)
+        if parsed_area_city:
+            return f"{parsed_area_city}{parsed_area}"
     concrete_landmark_terms = ("机场", "高崎", "科技园", "高铁", "火车站", "地铁", "商圈", "广场", "大厦")
     if text and any(term in text for term in concrete_landmark_terms):
         if city and city not in text:

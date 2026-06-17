@@ -31,6 +31,16 @@ from app.policies.compliance_terms import (
 from app.policies.s10_offer import attach_s10_offer_facts, s10_offer_context
 
 
+SYSTEM_ACTION_EVENT_TYPES = {
+    "store_address_sent",
+    "case_image_sent",
+    "book_order_sent",
+    "handoff_requested",
+    "offer_explained",
+    "deposit_explained",
+}
+
+
 def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     planner_views = planner_task_views(state)
     should_show_appointment_context = not should_suspend_appointment_context_for_current_turn(state, planner_views)
@@ -54,7 +64,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "image_info": state.get("image_info", {}),
         "customer_profile": {} if suppress_profile_memory else state.get("customer_profile", {}),
         "customer_basic_info": {} if suppress_profile_memory else state.get("customer_basic_info", {}),
-        "history_events": [] if suppress_profile_memory else state.get("history_events", [])[-8:],
+        "history_events": _history_events_for_reply(state, suppress_profile_memory),
         "memory_usage_policy": memory_usage_policy_for_reply(state),
         "order_session": order_session,
         "active_offer_context": _compact_active_offer_context(),
@@ -75,6 +85,20 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "fact_notes": _fact_notes_for_model(fact_envelope),
     }
     return clean_model_value(payload, max_string_chars=1800)
+
+
+def _history_events_for_reply(state: AgentState, suppress_profile_memory: bool) -> list[dict[str, Any]]:
+    events = [item for item in state.get("history_events", []) if isinstance(item, dict)]
+    if not suppress_profile_memory:
+        return events[-8:]
+
+    # 低信息开场只隐藏客户软画像；系统已经执行过的动作仍要保留，
+    # 否则模型会重复发门店卡片、案例图或完整复述报价。
+    return [
+        item
+        for item in events
+        if str(item.get("event_type") or "").strip() in SYSTEM_ACTION_EVENT_TYPES
+    ][-8:]
 
 
 def _compact_active_offer_context() -> dict[str, Any]:
@@ -172,6 +196,15 @@ def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
             "parking_link",
             "detail_source",
             "has_detail",
+            "status_code",
+            "shore_show_code",
+            "schedule_status",
+            "plan_status",
+            "is_pause",
+            "pause_start",
+            "pause_end",
+            "is_public",
+            "status_summary",
         ),
         "recommended_store": (
             "name",
@@ -188,6 +221,15 @@ def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
             "parking_link",
             "detail_source",
             "has_detail",
+            "status_code",
+            "shore_show_code",
+            "schedule_status",
+            "plan_status",
+            "is_pause",
+            "pause_start",
+            "pause_end",
+            "is_public",
+            "status_summary",
         ),
         "store_lookup_status": (
             "status",

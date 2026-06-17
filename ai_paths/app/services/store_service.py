@@ -27,6 +27,7 @@ class StoreService:
             query_info.query,
             city=query_info.city,
             requested_name=query_info.requested_name,
+            area_or_landmark=query_info.area_or_landmark,
         ):
             return {
                 "query": query_info.query,
@@ -47,7 +48,12 @@ class StoreService:
             platform_result = _store_lookup_unavailable(query_info, "platform_agent_unavailable")
         else:
             try:
-                platform_result = self._search_platform(query_info.query, customer_context or {}, limit=limit)
+                platform_result = self._search_platform(
+                    query_info.query,
+                    customer_context or {},
+                    limit=limit,
+                    planner_distance_origin=planner_distance_origin,
+                )
             except Exception as exc:
                 platform_result = _store_lookup_unavailable(query_info, f"{type(exc).__name__}: {exc}")
 
@@ -72,7 +78,14 @@ class StoreService:
         except Exception as exc:
             return {"source": "platform_agent.available_time", "date": date, "store_id": store_id, "slots": {}, "error": f"{type(exc).__name__}: {exc}"}
 
-    def _search_platform(self, query: str, customer_context: dict[str, Any], *, limit: int) -> dict[str, Any]:
+    def _search_platform(
+        self,
+        query: str,
+        customer_context: dict[str, Any],
+        *,
+        limit: int,
+        planner_distance_origin: str = "",
+    ) -> dict[str, Any]:
         assert self._platform_client is not None
 
         base_query_info = build_store_query_info(query, [])
@@ -109,12 +122,22 @@ class StoreService:
         )
         query_info = build_store_query_info(query, rows)
         requested_name = query_info.requested_name
-        city = query_info.city or store_text.city_for_store_name(requested_name, rows)
+        planned_origin = str(planner_distance_origin or "").strip()
+        planned_city = store_text.extract_city(planned_origin, rows)
+        planned_area = store_text.extract_area_or_landmark(planned_origin)
+        city = (
+            query_info.city
+            or planned_city
+            or store_text.city_for_store_name(requested_name, rows)
+            or _infer_city_from_real_rows(rows, query_info.area_or_landmark or planned_area)
+        )
         wants_status = query_info.wants_status
         query_matches = store_text.match_rows_by_query_name(rows, query)
         candidates = [row for row in rows if store_format.is_public_store(row)]
 
-        if requested_name:
+        if query_info.area_or_landmark and not city and not requested_name:
+            candidates = []
+        elif requested_name:
             base_rows = rows if wants_status else candidates
             exact_candidates = [row for row in base_rows if str(row.get("name") or "").strip() == requested_name]
             if exact_candidates:
@@ -149,6 +172,9 @@ class StoreService:
                 break
 
         source = "platform_agent.store_index" if stores else "platform_agent.store_index_no_match"
+        missing = []
+        if query_info.area_or_landmark and not city:
+            missing.append("city")
         return {
             "query": query,
             "city": city,
@@ -160,6 +186,7 @@ class StoreService:
             "area_or_landmark": query_info.area_or_landmark,
             "location_granularity": query_info.location_granularity,
             "stores": stores,
+            "missing": missing,
             "source": source,
             "data_authority": "platform",
             "store_data_authority": "platform",
@@ -235,6 +262,44 @@ def _row_mentions_location(row: dict[str, Any], location: str) -> bool:
         )
     )
     return needle in haystack
+
+
+def _infer_city_from_real_rows(rows: list[dict[str, Any]], location: str) -> str:
+    needle = _normalized_location_token(location)
+    if not needle:
+        return ""
+    city_scores: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        haystack = " ".join(
+            filter(
+                None,
+                [
+                    str(row.get("name") or "").strip(),
+                    str(row.get("address") or "").strip(),
+                    str(row.get("tencent_address") or "").strip(),
+                ],
+            )
+        )
+        if needle not in haystack:
+            continue
+        city = store_text.city_from_row(row)
+        if city:
+            city_scores[city] = city_scores.get(city, 0) + 1
+    if not city_scores:
+        return ""
+    return sorted(city_scores.items(), key=lambda item: item[1], reverse=True)[0][0]
+
+
+def _normalized_location_token(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for suffix in ("县城", "县级市", "高新区", "开发区", "经开区", "新区", "区", "县"):
+        if text.endswith(suffix) and len(text) > len(suffix) + 1:
+            return text[: -len(suffix)]
+    return text
 
 
 def _store_lookup_unavailable(query_info: StoreQueryInfo, platform_error: str) -> dict[str, Any]:
