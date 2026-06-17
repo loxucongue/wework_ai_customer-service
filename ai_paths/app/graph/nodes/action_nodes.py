@@ -185,26 +185,26 @@ def create_execute_actions_node(
                             if isinstance(tool_results.get("available_time"), dict)
                             else {},
                         )
-                        if opening.get("status") != "missing_info":
-                            tool_results["appointment_opening"] = opening
-                            tool_calls.append(
-                                {
-                                    "name": "appointment_create",
-                                    "input": {
-                                        "store_id": appointment_query.get("store_id"),
-                                        "store_name": appointment_query.get("store_name"),
-                                        "date": appointment_query.get("date"),
-                                        "confirmed_by_customer": opening.get("status")
-                                        not in {"needs_customer_confirmation", "missing_info"},
-                                    },
-                                    "output": {
-                                        "status": opening.get("status"),
-                                        "order_id": opening.get("order_id"),
-                                        "missing": opening.get("missing"),
-                                        "error": opening.get("error"),
-                                    },
-                                }
-                            )
+                        tool_results["appointment_opening"] = opening
+                        tool_calls.append(
+                            {
+                                "name": "appointment_create",
+                                "input": {
+                                    "store_id": appointment_query.get("store_id"),
+                                    "store_name": appointment_query.get("store_name"),
+                                    "date": appointment_query.get("date"),
+                                    "time": appointment_query.get("time") or appointment_query.get("time_text"),
+                                    "confirmed_by_customer": opening.get("status")
+                                    not in {"needs_customer_confirmation", "missing_info"},
+                                },
+                                "output": {
+                                    "status": opening.get("status"),
+                                    "order_id": opening.get("order_id"),
+                                    "missing": opening.get("missing"),
+                                    "error": opening.get("error"),
+                                },
+                            }
+                        )
                 except Exception as exc:
                     tool_results["available_time"] = {"slots": {}, "error": f"{type(exc).__name__}: {exc}"}
                     tool_calls.append(

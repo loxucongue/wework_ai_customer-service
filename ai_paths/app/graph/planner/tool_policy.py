@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.graph.nodes.memory_usage_policy import order_session_state
@@ -266,6 +267,7 @@ def enforce_required_tools(
 
     def ensure_appointment_create() -> None:
         ensure_store_lookup("Need real store facts before creating appointment deposit order")
+        ensure_available_time()
         add_tool(
             {
                 "name": "appointment_create",
@@ -465,12 +467,40 @@ def needs_appointment_time_request(content: str) -> bool:
 def needs_appointment_create_request(state: AgentState, content: str) -> bool:
     if not content:
         return False
-    if not any(term in content for term in _APPOINTMENT_BOOKING_INTENT_TERMS):
+    has_booking_intent = any(term in content for term in _APPOINTMENT_BOOKING_INTENT_TERMS)
+    has_customer_details_after_booking = _has_contact_detail(content) and _recent_booking_intent(state)
+    if not has_booking_intent and not has_customer_details_after_booking:
         return False
     session = order_session_state(state)
     if str(session.get("confirmed_store_id") or "").strip() or str(session.get("confirmed_store_name") or "").strip():
         return True
     return should_use_recent_store_fact_context(content, state)
+
+
+def _has_contact_detail(content: str) -> bool:
+    text = str(content or "")
+    if re.search(r"1[3-9]\d{9}", text):
+        return True
+    return any(term in text for term in ("我叫", "姓名", "名字", "电话", "手机号", "手机"))
+
+
+def _recent_booking_intent(state: AgentState) -> bool:
+    for item in reversed(state.get("conversation_history") or []):
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role and role not in {"user", "customer"}:
+                continue
+            content = item.get("content")
+            text = str(content.get("text") if isinstance(content, dict) else content or "")
+        else:
+            text = str(item or "")
+            if text.startswith(("小贝：", "小贝:", "客服：", "客服:", "AI回复：", "AI回复:", "助手：", "助手:")):
+                continue
+            if text.startswith(("客户：", "客户:", "用户：", "用户:")):
+                text = text.split("：", 1)[-1] if "：" in text else text.split(":", 1)[-1]
+        if any(term in text for term in _APPOINTMENT_BOOKING_INTENT_TERMS):
+            return True
+    return False
 
 
 def _policy_tool_query(tasks: list[dict[str, Any]]) -> str:

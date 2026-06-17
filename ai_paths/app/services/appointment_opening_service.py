@@ -96,20 +96,35 @@ def _appointment_facts(
     customer = customer_context.get("customer") if isinstance(customer_context.get("customer"), dict) else {}
     request_context = _request_context(state)
     appointment_cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    normalized_content = str(state.get("normalized_content") or "")
+    history_text = "\n".join(_recent_customer_texts(state))
     preferred_time = str(
-        _extract_time(state.get("normalized_content") or "")
+        _extract_time(normalized_content)
         or appointment_query.get("time")
         or appointment_cache.get("time")
         or appointment_cache.get("appointment_time")
+        or _extract_time(history_text)
         or state.get("appointment_time")
         or request_context.get("appointment_time")
         or ""
     ).strip()
     slots = available_time_values(available_time.get("slots") or {}) if isinstance(available_time, dict) else []
+    customer_name = _extract_customer_name(normalized_content) or _extract_customer_name(history_text) or str(
+        request_context.get("customer_name") or request_context.get("name") or customer.get("name") or ""
+    ).strip()
+    customer_phone = _extract_phone(normalized_content) or _extract_phone(history_text) or str(
+        request_context.get("customer_phone") or request_context.get("phone") or customer.get("phone") or ""
+    ).strip()
     return {
         "customer_id": str(customer.get("id") or customer_context.get("customer_id") or request_context.get("customer_id") or "").strip(),
         "customer_add_wechat_id": str(
-            customer.get("customer_add_wechat_id") or request_context.get("customer_add_wechat_id") or state.get("customer_add_wechat_id") or ""
+            customer.get("customer_add_wechat_id")
+            or request_context.get("customer_add_wechat_id")
+            or request_context.get("customer_add_id")
+            or state.get("customer_add_wechat_id")
+            or state.get("customer_add_id")
+            or request_context.get("customer_id")
+            or ""
         ).strip(),
         "user_id": str(request_context.get("user_id") or state.get("user_id") or "").strip(),
         "store_id": str(appointment_query.get("store_id") or state.get("confirmed_store_id") or state.get("store_id") or "").strip(),
@@ -124,6 +139,8 @@ def _appointment_facts(
         "time": preferred_time,
         "preferred_time_available": preferred_time in slots if preferred_time and slots else None,
         "available_time_slots": slots[:12],
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
         "category_id": str(
             request_context.get("category_id")
             or customer.get("category_id")
@@ -149,9 +166,16 @@ def _missing_fields(facts: dict[str, Any]) -> list[str]:
         "customer_add_wechat_id": "加微记录",
         "user_id": "员工ID",
         "store_id": "门店",
+        "date": "到店日期",
+        "time": "到店时间",
+        "customer_name": "姓名",
+        "customer_phone": "电话",
         "prepay": "预约金",
     }
-    return [label for key, label in required.items() if not facts.get(key)]
+    missing = [label for key, label in required.items() if not facts.get(key)]
+    if facts.get("date") and facts.get("time") and facts.get("preferred_time_available") is not True:
+        missing.append("真实档期确认")
+    return missing
 
 
 def _customer_confirmed_opening(content: str) -> bool:
@@ -190,16 +214,81 @@ def _extract_time(content: str) -> str:
     match = re.search(r"(\d{1,2})[:：](\d{2})", content)
     if match:
         return f"{int(match.group(1)):02d}:{match.group(2)}"
-    hour_match = re.search(r"(上午|下午|晚上|中午)?\s*(\d{1,2})\s*点", content)
+    hour_match = re.search(r"(上午|下午|晚上|中午)?\s*(\d{1,2}|[一二两三四五六七八九十十一十二])\s*点", content)
     if not hour_match:
         return ""
     prefix = hour_match.group(1) or ""
-    hour = int(hour_match.group(2))
+    hour = _hour_number(hour_match.group(2))
+    if hour is None:
+        return ""
     if prefix in {"下午", "晚上"} and hour < 12:
         hour += 12
     if prefix == "中午" and hour < 11:
         hour += 12
     return f"{hour:02d}:00"
+
+
+def _hour_number(value: str) -> int | None:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return int(text)
+    mapping = {
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+        "十一": 11,
+        "十二": 12,
+    }
+    return mapping.get(text)
+
+
+def _extract_phone(content: str) -> str:
+    match = re.search(r"1[3-9]\d{9}", str(content or ""))
+    return match.group(0) if match else ""
+
+
+def _extract_customer_name(content: str) -> str:
+    text = str(content or "").strip()
+    patterns = (
+        r"(?:我叫|叫我|名字叫|姓名是|姓名|名字是)\s*([\u4e00-\u9fa5A-Za-z]{1,12})",
+        r"([\u4e00-\u9fa5]{2,4})\s*(?:电话|手机|手机号)\s*1[3-9]\d{9}",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        name = re.sub(r"(电话|手机|手机号|是|叫)$", "", match.group(1).strip())
+        if name and name not in {"电话", "手机", "姓名", "名字"}:
+            return name
+    return ""
+
+
+def _recent_customer_texts(state: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for item in reversed(state.get("conversation_history") or []):
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role and role not in {"user", "customer"}:
+                continue
+            content = item.get("content")
+            text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
+        else:
+            text = str(item or "").strip()
+            if text.startswith(("小贝：", "小贝:", "客服：", "客服:", "AI回复：", "AI回复:", "助手：", "助手:")):
+                continue
+            if text.startswith(("客户：", "客户:", "用户：", "用户:")):
+                text = text.split("：", 1)[-1] if "：" in text else text.split(":", 1)[-1]
+        if text:
+            texts.append(text)
+    return texts[:10]
 
 
 def _dry_run_result(facts: dict[str, Any]) -> dict[str, Any]:
@@ -222,6 +311,8 @@ def _created_result(
         "store_name": facts.get("store_name", ""),
         "appointment_date": facts.get("date", ""),
         "appointment_time": facts.get("time", ""),
+        "customer_name": facts.get("customer_name", ""),
+        "customer_phone": facts.get("customer_phone", ""),
         "prepay": facts.get("prepay", "10.00"),
         "category_id": facts.get("category_id", ""),
         "remark": _remark_for_order(facts),

@@ -146,9 +146,10 @@ S4 回访 / 逼单 / 已邀约 / 售后
 
 预约金规则：
 - 目标是推进到 10 元预约金，但不能跳过门店确认
-- 只有 confirmed_store 已明确，且 appointment_opening / appointment_create 已返回真实 order_id，才可以输出 book_order
-- 客户明确说“登记/报名/先约/交10元/付预约金”等，且真实 order_id 已存在时，可以先发 book_order；姓名电话、到店日期时间可以在文字里继续补，不要因为还缺这些字段就放弃发 book_order
-- 如果还没有真实 order_id，只补当前最关键的一个字段，不要硬发 book_order
+- 只有门店、到店日期、到店时间、姓名、电话都已明确，且 appointment_opening / appointment_create 已返回真实 order_id，才可以输出 book_order
+- 客户明确说“登记/报名/先约/交10元/付预约金”等，但还缺姓名、电话、到店日期、到店时间或真实档期确认时，只补当前最关键的一个字段，不要输出 book_order
+- 如果 appointment_opening 没有返回 created / dry_run_created 和真实 order_id，不要输出 book_order
+- 不能说“已登记好、已预约成功、门店有位置”，除非有真实建单或真实档期事实支持
 
 案例图片规则：
 - 客户要效果图、案例、客户做完后的效果时

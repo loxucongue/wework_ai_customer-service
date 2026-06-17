@@ -7,13 +7,30 @@ from typing import Any
 def available_time_values(slots: dict[str, Any]) -> list[str]:
     result: list[str] = []
     for key in ["new", "old", "pre", "new_addon", "old_addon"]:
-        values = slots.get(key) or []
-        if isinstance(values, list):
-            for value in values:
-                text = str(value).strip()
-                if text and text not in result:
-                    result.append(text)
+        _append_time_values(result, slots.get(key))
+    _append_time_values(result, slots)
     return result
+
+
+def _append_time_values(result: list[str], value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, str):
+        text = normalize_time_text(value) or value.strip()
+        if text and text not in result:
+            result.append(text)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _append_time_values(result, item)
+        return
+    if isinstance(value, dict):
+        for nested_key in ("time", "plan_at", "store_at", "begin", "start", "value"):
+            if nested_key in value:
+                _append_time_values(result, value.get(nested_key))
+        for nested_value in value.values():
+            if isinstance(nested_value, (list, dict)):
+                _append_time_values(result, nested_value)
 
 
 def normalize_time_text(value: str) -> str:

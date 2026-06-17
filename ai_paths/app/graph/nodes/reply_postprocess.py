@@ -12,21 +12,6 @@ from app.graph.nodes.reply_validation import message_content_order_id, message_c
 from app.graph.planner.runtime_plan import planner_handoff, planner_task_views
 from app.graph.state import AgentState
 
-BOOK_ORDER_TRIGGER_TERMS = (
-    "登记",
-    "报名",
-    "先交10",
-    "交10",
-    "付预约金",
-    "预约金",
-    "先约一下",
-    "先帮我约",
-    "帮我登记",
-    "帮我安排",
-    "先定一下",
-)
-
-
 def postprocess_reply_messages(
     state: AgentState,
     messages: list[dict[str, Any]],
@@ -189,30 +174,13 @@ def _book_order_message_for_state(
     model_messages: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     if not any(isinstance(message, dict) and message.get("type") == "book_order" for message in model_messages):
-        if not _should_auto_append_book_order(state):
-            return None
+        return None
     if not _has_confirmed_store_for_booking(state):
         return None
     order_id = _trusted_book_order_id_from_state(state)
     if not order_id:
         return None
     return {"type": "book_order", "order": 0, "content": {"order_id": order_id}}
-
-
-def _should_auto_append_book_order(state: AgentState) -> bool:
-    content = str(state.get("normalized_content") or state.get("content") or "").strip()
-    if not content:
-        return False
-    if not any(term in content for term in BOOK_ORDER_TRIGGER_TERMS):
-        return False
-    task_types = {
-        str(view.get("type") or "").strip()
-        for view in planner_task_views(state)
-        if isinstance(view, dict) and str(view.get("type") or "").strip()
-    }
-    if task_types and not task_types.intersection({"appointment", "appointment_create", "signup_close", "price_close"}):
-        return False
-    return True
 
 
 def _trusted_book_order_id_from_state(state: AgentState) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from app.graph.signals.store_followup import store_location_preference_from_context
 from app.graph.state import AgentState
@@ -326,6 +327,9 @@ def current_real_store_from_state(state: AgentState) -> dict[str, str]:
             store_name = str(item.get("name") or "").strip()
             if store_id or store_name:
                 return {"id": store_id, "name": store_name}
+    recent_store_id = _recent_store_card_id_from_history(state)
+    if recent_store_id:
+        return {"id": recent_store_id, "name": ""}
     return {}
 
 
@@ -334,3 +338,33 @@ def _looks_like_booking_followup(content: str) -> bool:
     if not text:
         return False
     return any(term in text for term in BOOKING_FOLLOWUP_TERMS)
+
+
+def _recent_store_card_id_from_history(state: AgentState) -> str:
+    for item in reversed(state.get("conversation_history") or []):
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role and role not in {"assistant", "staff", "bot"}:
+                continue
+            store_id = _store_id_from_history_content(item.get("content"))
+            if store_id:
+                return store_id
+            if str(item.get("type") or item.get("msgtype") or "").lower() == "store_address":
+                store_id = _store_id_from_history_content(item)
+                if store_id:
+                    return store_id
+            continue
+        store_id = _store_id_from_history_content(item)
+        if store_id:
+            return store_id
+    return ""
+
+
+def _store_id_from_history_content(content: object) -> str:
+    if isinstance(content, dict):
+        return str(content.get("store_id") or "").strip()
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    match = re.search(r'"store_id"\s*:\s*"?(?P<store_id>\d+)"?', text)
+    return str(match.group("store_id") or "").strip() if match else ""

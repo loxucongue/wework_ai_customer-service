@@ -208,13 +208,37 @@ def extract_time_value(content: str) -> str:
     explicit = re.search(r"(\d{1,2})[:：](\d{2})", content)
     if explicit:
         return f"{int(explicit.group(1)):02d}:{explicit.group(2)}"
-    hour_match = re.search(r"(上午|下午|晚上|中午)?\s*(\d{1,2})\s*点", content)
+    hour_match = re.search(r"(上午|下午|晚上|中午)?\s*(\d{1,2}|[一二两三四五六七八九十十一十二])\s*点", content)
     if not hour_match:
         return ""
     prefix = hour_match.group(1) or ""
-    hour = int(hour_match.group(2))
+    hour = _hour_number(hour_match.group(2))
+    if hour is None:
+        return ""
     if prefix in {"下午", "晚上"} and hour < 12:
         hour += 12
     if prefix == "中午" and hour < 11:
         hour += 12
     return f"{hour:02d}:00"
+
+
+def _hour_number(value: str) -> int | None:
+    text = str(value or "").strip()
+    if text.isdigit():
+        return int(text)
+    mapping = {
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+        "十": 10,
+        "十一": 11,
+        "十二": 12,
+    }
+    return mapping.get(text)
