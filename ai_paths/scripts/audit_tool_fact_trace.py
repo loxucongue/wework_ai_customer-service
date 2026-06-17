@@ -173,7 +173,14 @@ def _store_names_in_text(messages: list[dict[str, Any]], real_names: set[str]) -
 def _fabricated_store_mentions(messages: list[dict[str, Any]], real_names: set[str]) -> list[str]:
     text = "\n".join(_message_text(message) for message in messages if _message_type(message) == "text")
     matches = set(match.group(0).strip() for match in STORE_NAME_PATTERN.finditer(text))
-    return sorted(name for name in matches if name not in real_names)
+    fabricated: list[str] = []
+    for name in matches:
+        if name in real_names:
+            continue
+        if any(real_name and real_name in name for real_name in real_names):
+            continue
+        fabricated.append(name)
+    return sorted(fabricated)
 
 
 def _distance_claims(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
