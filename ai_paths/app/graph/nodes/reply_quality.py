@@ -35,6 +35,11 @@ _STORE_CONCRETE_PATTERN = re.compile(
     r"|步行.{0,8}(米|分钟)|\d+\.?\d*\s*(公里|千米|米)|走.{0,8}(米|分钟)"
 )
 _STORE_EXISTENCE_PATTERN = re.compile(r"(有的|有店|有门店|有.{0,4}(门店|店))")
+_STORE_ADDRESS_PROMISE_PATTERN = re.compile(
+    r"(地址|位置|定位|门店).{0,10}(发您|发你|发给您|发给你|给您发|给你发)"
+    r"|"
+    r"(发您|发你|发给您|发给你|给您发|给你发).{0,10}(地址|位置|定位|门店)"
+)
 _LOCATION_QUESTION_PATTERN = re.compile(r"(哪个城市|在哪个城市|哪个区|在哪个区|您在哪|你在哪|所在城市|城市位置)")
 _DISTANCE_CLAIM_PATTERN = re.compile(
     r"\d+\.?\d*\s*(公里|千米|米)|[一二两三四五六七八九十百]+来?米|[一二两三四五六七八九十]+分钟|走.{0,8}(米|分钟)|步行.{0,8}(米|分钟)"
@@ -81,12 +86,12 @@ def model_reply_unsafe(
         return True
     if _has_unbacked_price_claim(state, text):
         return True
-    if _has_unbacked_store_claim(state, text):
+    if _has_unbacked_store_claim(state, text, messages):
         return True
-    if _misses_required_store_fact_use(state, text):
-        return True
-    if _asks_for_location_already_provided(state, text):
-        return True
+    # Keep the quality gate focused on hard safety and factuality. The final
+    # reply model controls sales rhythm and wording; missing an ideal store
+    # wording or asking a slightly redundant location question should not block
+    # a customer-visible reply at this stage.
     if _has_unbacked_distance_claim(state, text):
         return True
     if _has_unbacked_appointment_time_claim(state, text):
@@ -100,8 +105,6 @@ def model_reply_unsafe(
     if _mentions_old_customer_price_without_old_profile(state, text):
         return True
     if _has_unbacked_order_lookup_claim(state, text):
-        return True
-    if _has_poor_visible_format(state, messages):
         return True
     return False
 
@@ -286,11 +289,15 @@ def _mentions_old_customer_price_without_old_profile(state: AgentState, text: st
     return str(first.get("kind") or "") != "2"
 
 
-def _has_unbacked_store_claim(state: AgentState, text: str) -> bool:
+def _has_unbacked_store_claim(state: AgentState, text: str, messages: list[dict[str, object]]) -> bool:
     if not _current_turn_asks_store_or_route(state):
         return False
     has_store_facts = _has_positive_store_facts(state)
     no_store_confirmed = _has_confirmed_no_store_match(state)
+    if _STORE_ADDRESS_PROMISE_PATTERN.search(text):
+        if _has_store_address_message(messages):
+            return False
+        return not has_store_facts
     if _STORE_NEGATIVE_PATTERN.search(text):
         if has_store_facts:
             return True
@@ -299,6 +306,15 @@ def _has_unbacked_store_claim(state: AgentState, text: str) -> bool:
         return not has_store_facts
     if _STORE_EXISTENCE_PATTERN.search(text) and not has_store_facts:
         return True
+    return False
+
+
+def _has_store_address_message(messages: list[dict[str, object]]) -> bool:
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("type") or "").strip() == "store_address":
+            return True
     return False
 
 

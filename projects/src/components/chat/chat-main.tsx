@@ -471,7 +471,9 @@ export function ChatMain() {
               id: generateId(),
               role: "assistant",
               content: item.content,
-              contentType: (item.type as "text" | "image" | "human_handoff") || "text",
+              contentType:
+                (item.type as "text" | "image" | "human_handoff" | "store_address" | "book_order") ||
+                "text",
               timestamp: Date.now(),
               duration: elapsed,
               meta: i === 0 && Object.keys(meta).length > 0 ? meta : undefined,

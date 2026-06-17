@@ -43,7 +43,7 @@ type WorkflowCompatibleBody = {
 };
 
 export type AiPathsReplyMessage = {
-  type?: "text" | "image" | "human_handoff";
+  type?: "text" | "image" | "human_handoff" | "store_address" | "book_order";
   order?: number;
   content?: string | Record<string, unknown>;
 };
@@ -387,11 +387,11 @@ export async function proxyAiPathsChatForFrontend(body: ChatRequestBody) {
 
     const result = JSON.parse(text) as AiPathsResponse;
     const output = (result.reply_messages || [])
-      .filter((item) => replyMessageContent(item))
+      .filter((item) => replyMessageContent(item, preferredContentKey(item.type)))
       .map((item, index) => ({
         type: item.type || "text",
         order: item.order || index + 1,
-        content: replyMessageContent(item),
+        content: replyMessageContent(item, preferredContentKey(item.type)),
       }));
 
     return jsonResponse({
@@ -454,11 +454,11 @@ function normalizeWorkflowReplyMessages(messages: AiPathsReplyMessage[]) {
           content: { handoff_reason: reason },
         };
       }
-      const content = replyMessageContent(item, type === "image" ? "url" : "text");
+      const content = replyMessageContent(item, preferredContentKey(type));
       return {
         type,
         order: item.order || index + 1,
-        content: type === "image" ? { url: content } : { text: content },
+        content: workflowReplyContent(type, content),
       };
     });
 }
@@ -503,6 +503,22 @@ function replyMessageContent(item: AiPathsReplyMessage, preferredKey = "text") {
     );
   }
   return stringValue(content);
+}
+
+function preferredContentKey(type?: string) {
+  if (type === "image") return "url";
+  if (type === "human_handoff") return "handoff_reason";
+  if (type === "store_address") return "store_id";
+  if (type === "book_order") return "order_id";
+  return "text";
+}
+
+function workflowReplyContent(type: string, content: string) {
+  if (type === "image") return { url: content };
+  if (type === "human_handoff") return { handoff_reason: content };
+  if (type === "store_address") return { store_id: content };
+  if (type === "book_order") return { order_id: content };
+  return { text: content };
 }
 
 function numberValue(value: unknown) {

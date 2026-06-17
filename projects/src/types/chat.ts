@@ -3,8 +3,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
-  /** 消息内容类型：text、image 或 human_handoff */
-  contentType?: "text" | "image" | "human_handoff";
+  /** 消息内容类型：text、image、human_handoff、store_address 或 book_order */
+  contentType?: "text" | "image" | "human_handoff" | "store_address" | "book_order";
   /** 用户上传的图片 URL（对象存储签名链接） */
   imageUrl?: string;
   /** 回答耗时（毫秒），仅 assistant 消息有 */

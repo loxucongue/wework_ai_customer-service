@@ -2,7 +2,7 @@
 
 import type { ChatMessage } from "@/types/chat";
 import { cn } from "@/lib/utils";
-import { Bot, User, Tag, Layers, GitBranch, Timer, Bug, Database, ExternalLink } from "lucide-react";
+import { Bot, User, Tag, Layers, GitBranch, Timer, Bug, Database, ExternalLink, MapPin, CreditCard } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { translateIntent, translateScene, translateSubflow } from "@/lib/workflow-maps";
 
@@ -68,7 +68,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         )}
 
         {/* Message bubble */}
-        {message.content && message.contentType !== "image" && (
+        {message.content &&
+          !["image", "store_address", "book_order"].includes(message.contentType || "text") && (
           <div
             className={cn(
               "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
@@ -89,6 +90,43 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               alt="AI回复的图片"
               className="max-h-80 max-w-full object-contain"
             />
+          </div>
+        )}
+
+        {!isUser && message.contentType === "store_address" && message.content && (
+          <div className="w-full max-w-sm rounded-xl border bg-background p-3 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <MapPin className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium text-foreground">门店位置卡片</div>
+                <div className="mt-1 text-xs text-muted-foreground">store_id：{message.content}</div>
+                <div className="mt-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+                  前端调试模拟：正式系统会按这个门店 ID 渲染地址、导航和门店信息。
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!isUser && message.contentType === "book_order" && message.content && (
+          <div className="w-full max-w-sm rounded-xl border bg-background p-3 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-100 text-amber-700">
+                <CreditCard className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium text-foreground">10元预约金小程序</div>
+                <div className="mt-1 text-xs text-muted-foreground">order_id：{message.content}</div>
+                <button
+                  type="button"
+                  className="mt-2 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground"
+                >
+                  模拟打开收款
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
