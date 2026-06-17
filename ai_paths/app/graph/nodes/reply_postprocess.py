@@ -270,6 +270,8 @@ def _store_id_from_fact(value: dict[str, Any]) -> str:
 
 
 def _should_auto_append_store_address(state: AgentState) -> bool:
+    if _trusted_book_order_id_from_state(state) and not _explicit_store_address_request(state):
+        return False
     structured = _structured_facts_from_state(state)
     status = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
     recommended = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
@@ -283,6 +285,25 @@ def _should_auto_append_store_address(state: AgentState) -> bool:
                     if _looks_like_store_card_turn(state):
                         return True
     return False
+
+
+def _explicit_store_address_request(state: AgentState) -> bool:
+    content = str(state.get("normalized_content") or "").strip()
+    if not content:
+        return False
+    explicit_terms = (
+        "地址",
+        "定位",
+        "位置",
+        "导航",
+        "路线",
+        "怎么去",
+        "停车",
+        "找不到",
+        "再发",
+        "重新发",
+    )
+    return any(term in content for term in explicit_terms)
 
 
 def _should_send_store_address_now(state: AgentState, store_id: str) -> bool:

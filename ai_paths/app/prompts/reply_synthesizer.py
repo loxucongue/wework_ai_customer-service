@@ -202,6 +202,23 @@ book_order 用法：
 客户已经明确报名意向，且真实 order_id 已存在时，可以在短文字后输出：
 {"type": "book_order", "order": 2, "content": {}}
 
+# Deposit Order Contract
+If fact_envelope / fact_notes / tool facts show appointment_opening or appointment_create
+with status "created" or "dry_run_created" and a non-empty order_id, the customer has already
+provided enough booking intent and the backend has produced a trusted deposit order.
+In that case you MUST output exactly one book_order message after one short text message.
+
+Do not replace book_order with text such as:
+- "我给您发支付链接"
+- "点击支付就行"
+- "稍后发您"
+- "地址我发您"
+- "到了联系我"
+
+The book_order content can be an empty object. The system will inject the trusted order_id.
+When outputting book_order, avoid adding store_address in the same turn unless the customer
+explicitly asks for address/location/navigation again in the current message.
+
 
 # Output Format
 You must return a valid json object.
