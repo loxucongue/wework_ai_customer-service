@@ -311,6 +311,11 @@ def _should_send_store_address_now(state: AgentState, store_id: str) -> bool:
         "忘了",
         "再发",
         "重新发",
+        "哪家",
+        "最近",
+        "离我近",
+        "离我最近",
+        "附近",
     )
     if any(term in content for term in explicit_resend_terms):
         return True

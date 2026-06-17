@@ -48,7 +48,8 @@ def audit_run_file(path: Path) -> dict[str, Any]:
     except Exception as exc:
         return {"path": str(path), "issues": [f"read_error:{type(exc).__name__}:{exc}"]}
 
-    trace = data.get("trace") if isinstance(data.get("trace"), list) else []
+    trace_source = data.get("raw_log") if isinstance(data.get("raw_log"), dict) else data
+    trace = trace_source.get("trace") if isinstance(trace_source.get("trace"), list) else []
     execute = _find_node(trace, "execute_actions")
     synth = _find_node(trace, "synthesize_reply")
     executed_calls = _executed_tool_calls(execute)
@@ -98,7 +99,7 @@ def audit_run_file(path: Path) -> dict[str, Any]:
 
     return {
         "path": str(path),
-        "request_id": data.get("request_id") or data.get("run_id") or path.stem,
+        "request_id": data.get("request_id") or data.get("run_id") or _wrapped_request_id(data) or path.stem,
         "executed_tool_calls": [str(call.get("name") or "") for call in executed_calls],
         "store_data_authority": store_authorities,
         "store_ids": sorted(real_store_ids),
@@ -184,6 +185,18 @@ def _distance_claims(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         meters = int(num if unit == "米" else num * 1000)
         claims.append({"text": match.group(0), "meters": meters})
     return claims
+
+
+def _wrapped_request_id(data: dict[str, Any]) -> str:
+    run = data.get("run")
+    if isinstance(run, dict):
+        value = str(run.get("request_id") or "").strip()
+        if value:
+            return value
+    raw_log = data.get("raw_log")
+    if isinstance(raw_log, dict):
+        return str(raw_log.get("request_id") or "").strip()
+    return ""
 
 
 def _distance_outputs_ok(outputs: list[dict[str, Any]]) -> bool:
