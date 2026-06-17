@@ -5,6 +5,7 @@ from typing import Any
 
 from app.graph.nodes.memory_usage_policy import order_session_state
 from app.graph.nodes.store_context import (
+    current_real_store_from_state,
     known_city_from_state,
     known_store_area_from_history,
     should_use_known_store_context,
@@ -150,6 +151,104 @@ _APPOINTMENT_BOOKING_INTENT_TERMS = (
     "预约金",
     "定金",
     "订金",
+)
+
+_STORE_FACT_TERMS_UTF8 = (
+    "\u95e8\u5e97",
+    "\u54ea\u5bb6",
+    "\u54ea\u4e2a\u5e97",
+    "\u5730\u5740",
+    "\u4f4d\u7f6e",
+    "\u5bfc\u822a",
+    "\u8def\u7ebf",
+    "\u9644\u8fd1",
+    "\u6700\u8fd1",
+    "\u79bb\u6211\u8fd1",
+    "\u8425\u4e1a\u65f6\u95f4",
+    "\u505c\u8f66",
+    "\u673a\u573a",
+    "\u9ad8\u94c1",
+    "\u5730\u94c1",
+    "\u706b\u8f66\u7ad9",
+    "\u5546\u5708",
+    "\u79d1\u6280\u56ed",
+)
+
+_LOCATION_HINT_TERMS_UTF8 = (
+    "\u6211\u5728",
+    "\u6211\u4f4f",
+    "\u6211\u5230",
+    "\u9644\u8fd1",
+    "\u5468\u8fb9",
+    "\u673a\u573a",
+    "\u9ad8\u94c1",
+    "\u5730\u94c1",
+    "\u706b\u8f66\u7ad9",
+    "\u5546\u5708",
+    "\u79d1\u6280\u56ed",
+    "\u53bf\u57ce",
+    "\u5f00\u53d1\u533a",
+    "\u7ecf\u5f00\u533a",
+    "\u65b0\u533a",
+    "\u9ad8\u65b0\u533a",
+)
+
+_APPOINTMENT_TIME_TERMS_UTF8 = (
+    "\u4eca\u5929",
+    "\u660e\u5929",
+    "\u540e\u5929",
+    "\u4e0a\u5348",
+    "\u4e2d\u5348",
+    "\u4e0b\u5348",
+    "\u665a\u4e0a",
+    "\u5468\u4e00",
+    "\u5468\u4e8c",
+    "\u5468\u4e09",
+    "\u5468\u56db",
+    "\u5468\u4e94",
+    "\u5468\u516d",
+    "\u5468\u65e5",
+    "\u5468\u5929",
+    "\u5468\u672b",
+    "\u661f\u671f\u4e00",
+    "\u661f\u671f\u4e8c",
+    "\u661f\u671f\u4e09",
+    "\u661f\u671f\u56db",
+    "\u661f\u671f\u4e94",
+    "\u661f\u671f\u516d",
+    "\u661f\u671f\u65e5",
+    "\u51e0\u70b9",
+    "\u8fc7\u6765",
+    "\u8fc7\u53bb",
+    "\u5230\u5e97",
+    "\u6765\u5e97",
+)
+
+_APPOINTMENT_BOOKING_TERMS_UTF8 = (
+    "\u9884\u7ea6",
+    "\u767b\u8bb0",
+    "\u62a5\u540d",
+    "\u5e2e\u6211\u767b\u8bb0",
+    "\u5e2e\u6211\u5b89\u6392",
+    "\u5b89\u6392",
+    "\u7559\u4e2a\u540d\u989d",
+    "\u7ea6\u4e00\u4e2a",
+    "\u4ea410",
+    "\u4ed810",
+    "\u5148\u4ea410",
+    "\u5148\u4ed810",
+    "\u9884\u7ea6\u91d1",
+    "\u5b9a\u91d1",
+    "\u8ba2\u91d1",
+)
+
+_CONTACT_TERMS_UTF8 = (
+    "\u6211\u53eb",
+    "\u59d3\u540d",
+    "\u540d\u5b57",
+    "\u7535\u8bdd",
+    "\u624b\u673a",
+    "\u53f7\u7801",
 )
 
 
@@ -338,7 +437,10 @@ def enforce_required_tools(
                 }
             )
 
-    return dedupe_tools(tools)
+    tools = dedupe_tools(tools)
+    if _should_skip_store_lookup_for_confirmed_appointment(state, original_user_query, tools):
+        tools = [tool for tool in tools if str(tool.get("name") or "").strip() != "store_lookup"]
+    return tools
 
 
 def tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -444,8 +546,12 @@ def needs_store_lookup_request(state: AgentState, content: str) -> bool:
         return False
     if _looks_like_fee_or_price_only_turn(content) and not _has_specific_store_or_location_signal(content):
         return False
-    asks_store_fact = any(term in content for term in STORE_FACT_TERMS)
-    has_location_hint = any(term in content for term in STORE_LOCATION_HINT_TERMS)
+    asks_store_fact = any(term in content for term in STORE_FACT_TERMS) or any(
+        term in content for term in _STORE_FACT_TERMS_UTF8
+    )
+    has_location_hint = any(term in content for term in STORE_LOCATION_HINT_TERMS) or any(
+        term in content for term in _LOCATION_HINT_TERMS_UTF8
+    )
     has_district_or_county_store_question = bool(
         re.search(r"[\u4e00-\u9fa5A-Za-z0-9]{2,20}(区|县城|县级市|开发区|经开区|新区|高新区|县)", content)
         and any(term in content for term in ("店", "门店", "地址", "位置", "附近", "最近", "哪家"))
@@ -458,6 +564,8 @@ def needs_store_lookup_request(state: AgentState, content: str) -> bool:
 def needs_appointment_time_request(content: str) -> bool:
     if not content:
         return False
+    if any(term in content for term in _APPOINTMENT_TIME_TERMS_UTF8):
+        return True
     if any(term in content for term in _APPOINTMENT_EXPLICIT_TIME_TERMS):
         return True
     if any(term in content for term in ("什么时候去", "什么时候过来", "几点去", "几点过来", "哪天去")):
@@ -472,7 +580,9 @@ def needs_appointment_time_request(content: str) -> bool:
 def needs_appointment_create_request(state: AgentState, content: str) -> bool:
     if not content:
         return False
-    has_booking_intent = any(term in content for term in _APPOINTMENT_BOOKING_INTENT_TERMS)
+    has_booking_intent = any(term in content for term in _APPOINTMENT_BOOKING_INTENT_TERMS) or any(
+        term in content for term in _APPOINTMENT_BOOKING_TERMS_UTF8
+    )
     has_customer_details_after_booking = _has_contact_detail(content) and _recent_booking_intent(state)
     if not has_booking_intent and not has_customer_details_after_booking:
         return False
@@ -486,7 +596,9 @@ def _has_contact_detail(content: str) -> bool:
     text = str(content or "")
     if re.search(r"1[3-9]\d{9}", text):
         return True
-    return any(term in text for term in ("我叫", "姓名", "名字", "电话", "手机号", "手机"))
+    return any(term in text for term in ("我叫", "姓名", "名字", "电话", "手机号", "手机")) or any(
+        term in text for term in _CONTACT_TERMS_UTF8
+    )
 
 
 def _recent_booking_intent(state: AgentState) -> bool:
@@ -503,7 +615,9 @@ def _recent_booking_intent(state: AgentState) -> bool:
                 continue
             if text.startswith(("客户：", "客户:", "用户：", "用户:")):
                 text = text.split("：", 1)[-1] if "：" in text else text.split(":", 1)[-1]
-        if any(term in text for term in _APPOINTMENT_BOOKING_INTENT_TERMS):
+        if any(term in text for term in _APPOINTMENT_BOOKING_INTENT_TERMS) or any(
+            term in text for term in _APPOINTMENT_BOOKING_TERMS_UTF8
+        ):
             return True
     return False
 
@@ -601,6 +715,34 @@ def _has_specific_store_or_location_signal(content: str) -> bool:
             "门店在哪里",
             "哪里有店",
         )
+    ) or any(term in content for term in _STORE_FACT_TERMS_UTF8 + _LOCATION_HINT_TERMS_UTF8)
+
+
+def _should_skip_store_lookup_for_confirmed_appointment(
+    state: AgentState,
+    content: str,
+    tools: list[dict[str, Any]],
+) -> bool:
+    if not any(str(tool.get("name") or "").strip() == "store_lookup" for tool in tools):
+        return False
+    if not any(
+        str(tool.get("name") or "").strip() in {"available_time", "appointment_create"}
+        for tool in tools
+    ):
+        return False
+    current_store = current_real_store_from_state(state)
+    if not (str(current_store.get("id") or "").strip() or str(current_store.get("name") or "").strip()):
+        return False
+    text = str(content or "").strip()
+    if not text:
+        return False
+    if _has_specific_store_or_location_signal(text) and needs_store_lookup_request(state, text):
+        return False
+    return (
+        needs_appointment_time_request(text)
+        or any(term in text for term in _APPOINTMENT_BOOKING_INTENT_TERMS)
+        or any(term in text for term in _APPOINTMENT_BOOKING_TERMS_UTF8)
+        or _has_contact_detail(text)
     )
 
 

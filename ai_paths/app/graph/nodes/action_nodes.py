@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_task_results import ActionToolTask, merge_action_task_results
+from app.graph.nodes.store_context import current_real_store_from_state
 from app.graph.planner.runtime_plan import (
     planner_primary_task,
     planner_required_tools,
@@ -120,12 +121,22 @@ def create_execute_actions_node(
                     planned_store_query = _planned_tool_query(required_tools, "store_lookup")
                     planned_distance_origin = _planned_distance_origin(required_tools)
                     store_query = store_query_from_state(content, state)
-                    lookup = tool_results.get("store_lookup") or store_service.search(
-                        store_query,
-                        customer_context=state.get("customer_context") or {},
-                        planner_distance_origin=planned_distance_origin,
+                    current_store = current_real_store_from_state(state)
+                    can_use_current_store = (
+                        not _needs_store_lookup(required_tools)
+                        and (
+                            str(current_store.get("id") or "").strip()
+                            or str(current_store.get("name") or "").strip()
+                        )
                     )
-                    if "store_lookup" not in tool_results:
+                    lookup = tool_results.get("store_lookup") or {}
+                    if not lookup and not can_use_current_store:
+                        lookup = store_service.search(
+                            store_query,
+                            customer_context=state.get("customer_context") or {},
+                            planner_distance_origin=planned_distance_origin,
+                        )
+                    if lookup and "store_lookup" not in tool_results:
                         tool_results["store_lookup"] = lookup
                         tool_calls.append(
                             {

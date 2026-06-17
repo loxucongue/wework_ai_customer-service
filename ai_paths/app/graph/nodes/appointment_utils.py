@@ -16,9 +16,11 @@ def appointment_query_from_state(
 ) -> dict[str, Any]:
     stores = store_lookup.get("stores") if isinstance(store_lookup, dict) else []
     store_name_hint = appointment_slot_value(state, "store_name") or known_store_name_from_history(state)
-    store = select_store_for_appointment(stores, store_name_hint)
+    current_store = current_real_store_from_state(state)
+    store = current_store if _should_prefer_current_store(content, current_store) else {}
     if not store:
-        current_store = current_real_store_from_state(state)
+        store = select_store_for_appointment(stores, store_name_hint)
+    if not store:
         current_id = str(current_store.get("id") or "").strip()
         current_name = str(current_store.get("name") or "").strip()
         if current_id or current_name:
@@ -183,6 +185,7 @@ def extract_date_value(content: str) -> str:
         "周六": 5,
         "星期六": 5,
         "周日": 6,
+        "周天": 6,
         "星期日": 6,
         "星期天": 6,
         "周末": 5,
@@ -210,6 +213,14 @@ def extract_time_value(content: str) -> str:
         return f"{int(explicit.group(1)):02d}:{explicit.group(2)}"
     hour_match = re.search(r"(上午|下午|晚上|中午)?\s*(\d{1,2}|[一二两三四五六七八九十十一十二])\s*点", content)
     if not hour_match:
+        if "上午" in content:
+            return "10:00"
+        if "中午" in content:
+            return "12:00"
+        if "下午" in content:
+            return "14:00"
+        if "晚上" in content:
+            return "18:00"
         return ""
     prefix = hour_match.group(1) or ""
     hour = _hour_number(hour_match.group(2))
@@ -242,3 +253,32 @@ def _hour_number(value: str) -> int | None:
         "十二": 12,
     }
     return mapping.get(text)
+
+
+def _should_prefer_current_store(content: str, current_store: dict[str, Any]) -> bool:
+    if not (str(current_store.get("id") or "").strip() or str(current_store.get("name") or "").strip()):
+        return False
+    text = str(content or "").strip()
+    if not text:
+        return False
+    if re.search(r"1[3-9]\d{9}", text):
+        return True
+    if extract_date_value(text) or extract_time_value(text):
+        return True
+    return any(
+        term in text
+        for term in (
+            "预约",
+            "登记",
+            "报名",
+            "安排",
+            "交10",
+            "付10",
+            "预约金",
+            "定金",
+            "订金",
+            "到店",
+            "过来",
+            "过去",
+        )
+    )
