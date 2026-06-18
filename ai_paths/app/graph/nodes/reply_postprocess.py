@@ -565,7 +565,12 @@ def _looks_like_case_or_effect_turn(state: AgentState) -> bool:
         if not isinstance(view, dict):
             continue
         joined = " ".join(str(view.get(key) or "").lower() for key in ("type", "subtype", "policy_hint", "scene", "subflow"))
-        if "case" in joined or "effect" in joined:
+        if (
+            "case" in joined
+            or "effect" in joined
+            or "show_case" in joined
+            or any(term in joined for term in ("案例", "效果", "对比", "方法确认"))
+        ):
             return True
     return False
 
@@ -607,7 +612,23 @@ def _has_unbacked_case_image_promise(state: AgentState, text: str) -> bool:
     if _case_image_urls_from_state(state):
         return False
     content = str(text or "")
-    if not any(term in content for term in ("发你看", "发您看", "发图", "效果图", "对比图")):
+    send_terms = (
+        "发你看",
+        "发您看",
+        "发图",
+        "发个图",
+        "发案例",
+        "发个案例",
+        "案例给您",
+        "案例给你",
+        "给您参考",
+        "给你参考",
+        "参考下",
+    )
+    case_terms = ("案例", "效果", "图片", "图", "对比", "同类情况", "类似情况", "改善")
+    if not any(term in content for term in send_terms):
+        return False
+    if not any(term in content for term in case_terms):
         return False
     return True
 

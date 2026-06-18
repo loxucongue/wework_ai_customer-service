@@ -661,7 +661,22 @@ def _is_appointment_marker(markers: str) -> bool:
 
 
 def _is_case_marker(markers: str) -> bool:
-    return any(token in markers for token in ("CASE", "EFFECT_REFERENCE", "EFFECT_CASE", "效果案例", "对比"))
+    return any(
+        token in markers
+        for token in (
+            "CASE",
+            "EFFECT_REFERENCE",
+            "EFFECT_CASE",
+            "SHOW_CASE",
+            "CASE_STUDIES",
+            "效果案例",
+            "案例",
+            "案例铺垫",
+            "效果铺垫",
+            "方法确认",
+            "对比",
+        )
+    )
 
 
 def _looks_like_fee_or_price_only_turn(content: str) -> bool:

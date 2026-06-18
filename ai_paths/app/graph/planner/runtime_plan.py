@@ -79,6 +79,8 @@ def planner_task_views(state: AgentState) -> list[dict[str, Any]]:
                 "type": task_type,
                 "subtype": task_subtype,
                 "policy_hint": str(task.get("policy_hint") or "").strip(),
+                "scene": str(task.get("scene") or "").strip(),
+                "subflow": str(task.get("subflow") or "").strip(),
                 "project_name": project_name,
                 "reply_goal": reply_goal,
                 "reason": customer_need or answer_goal,
