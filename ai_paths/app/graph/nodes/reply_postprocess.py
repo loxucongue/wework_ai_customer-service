@@ -216,7 +216,7 @@ def _book_order_message_for_state(
 def _trusted_book_order_id_from_state(state: AgentState) -> str:
     tool_results = state.get("tool_results")
     opening = tool_results.get("appointment_opening") if isinstance(tool_results, dict) else {}
-    if not isinstance(opening, dict) or opening.get("status") not in {"created", "dry_run_created"}:
+    if not isinstance(opening, dict) or opening.get("status") not in {"created", "dry_run_created", "reused_open_order"}:
         return ""
     order_id = str(opening.get("order_id") or "").strip()
     if not order_id:

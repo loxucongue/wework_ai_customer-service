@@ -26,15 +26,15 @@ class AppointmentOpeningService:
         facts = _appointment_facts(state, appointment_query, available_time or {})
         missing = _missing_fields(facts)
         if missing:
-            return {"status": "missing_info", "missing": missing, "facts": facts}
+            return {"status": "missing_info", "missing": missing, "facts": _public_facts(facts)}
         if not _customer_confirmed_opening(content):
-            return {"status": "needs_customer_confirmation", "facts": facts}
+            return {"status": "needs_customer_confirmation", "facts": _public_facts(facts)}
         if facts.get("preferred_time_available") is False:
-            return {"status": "preferred_time_unavailable", "facts": facts}
+            return {"status": "preferred_time_unavailable", "facts": _public_facts(facts)}
         if not self.platform_client or not self.platform_client.available:
             return {
                 "status": "platform_unavailable",
-                "facts": facts,
+                "facts": _public_facts(facts),
                 "error": "PLATFORM_AGENT_TOKEN is not configured",
             }
 
@@ -48,7 +48,7 @@ class AppointmentOpeningService:
             if existing_appointment:
                 return {
                     "status": "already_appointed",
-                    "facts": facts,
+                    "facts": _public_facts(facts),
                     "existing_appointment": existing_appointment,
                     "reason": "客户已有明确预约记录，避免重复创建预约金订单",
                 }
@@ -76,7 +76,7 @@ class AppointmentOpeningService:
             if not order_id:
                 return {
                     "status": "create_failed",
-                    "facts": facts,
+                    "facts": _public_facts(facts),
                     "create_result": order,
                     "error": "create_work returned no order_id",
                 }
@@ -84,12 +84,21 @@ class AppointmentOpeningService:
             result["check_customer"] = check
             return result
         except Exception as exc:  # noqa: BLE001
-            return {"status": "error", "facts": facts, "error": f"{type(exc).__name__}: {exc}"}
+            reused = _try_reuse_open_order_after_create_error(
+                self.platform_client,
+                facts,
+                request_context,
+                create_error=exc,
+            )
+            if reused:
+                reused["check_customer"] = check if "check" in locals() else {}
+                return reused
+            return {"status": "error", "facts": _public_facts(facts), "error": f"{type(exc).__name__}: {exc}"}
 
 
 def appointment_push_message(tool_results: dict[str, Any]) -> dict[str, Any] | None:
     opening = tool_results.get("appointment_opening") if isinstance(tool_results, dict) else {}
-    if not isinstance(opening, dict) or opening.get("status") not in {"created", "dry_run_created"}:
+    if not isinstance(opening, dict) or opening.get("status") not in {"created", "dry_run_created", "reused_open_order"}:
         return None
     content = opening.get("appointment_push")
     if not isinstance(content, dict) or not content.get("order_id"):
@@ -104,6 +113,7 @@ def _appointment_facts(
 ) -> dict[str, Any]:
     customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
     customer = customer_context.get("customer") if isinstance(customer_context.get("customer"), dict) else {}
+    customer_orders = customer_context.get("orders") if isinstance(customer_context.get("orders"), list) else []
     request_context = _request_context(state)
     appointment_cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
     normalized_content = str(state.get("normalized_content") or "")
@@ -120,10 +130,20 @@ def _appointment_facts(
     ).strip()
     slots = available_time_values(available_time.get("slots") or {}) if isinstance(available_time, dict) else []
     customer_name = _extract_customer_name(normalized_content) or _extract_customer_name(history_text) or str(
-        request_context.get("customer_name") or request_context.get("name") or customer.get("name") or ""
+        appointment_query.get("customer_name")
+        or appointment_query.get("name")
+        or request_context.get("customer_name")
+        or request_context.get("name")
+        or customer.get("name")
+        or ""
     ).strip()
     customer_phone = _extract_phone(normalized_content) or _extract_phone(history_text) or str(
-        request_context.get("customer_phone") or request_context.get("phone") or customer.get("phone") or ""
+        appointment_query.get("customer_phone")
+        or appointment_query.get("phone")
+        or request_context.get("customer_phone")
+        or request_context.get("phone")
+        or customer.get("phone")
+        or ""
     ).strip()
     return {
         "customer_id": str(customer.get("id") or customer_context.get("customer_id") or request_context.get("customer_id") or "").strip(),
@@ -166,6 +186,7 @@ def _appointment_facts(
             or ""
         ).strip(),
         "prepay": str(request_context.get("prepay") or "10.00").strip(),
+        "_customer_orders": [order for order in customer_orders if isinstance(order, dict)],
     }
 
 
@@ -230,6 +251,99 @@ def _appointment_snapshot_is_active(appointment: dict[str, Any]) -> bool:
         and (appointment.get("has_active") or status in {"confirmed", "scheduled", "active", "pending", "已预约"})
         and (appointment_id or appointment.get("store_id") or appointment.get("store_name"))
     )
+
+
+def _try_reuse_open_order_after_create_error(
+    platform_client: PlatformAgentClient | None,
+    facts: dict[str, Any],
+    request_context: dict[str, Any],
+    *,
+    create_error: Exception,
+) -> dict[str, Any]:
+    error_text = f"{type(create_error).__name__}: {create_error}"
+    if "正在进行的订单" not in error_text:
+        return {}
+    if not platform_client or not platform_client.available:
+        return {}
+    order = _reusable_open_order(facts)
+    if not order:
+        return {}
+    order_id = str(order.get("id") or order.get("order_id") or "").strip()
+    if not order_id:
+        return {}
+    try:
+        modified = platform_client.modify_work_order(
+            order_id=order_id,
+            store_id=facts["store_id"],
+            user_id=facts["user_id"],
+            category_id=facts.get("category_id") or None,
+            amount=facts["prepay"],
+            request_context=request_context,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "status": "error",
+            "facts": _public_facts(facts),
+            "order_id": None,
+            "error": f"{type(exc).__name__}: {exc}",
+            "create_error": error_text,
+            "reuse_order_id": order_id,
+        }
+    modified_order_id = str(modified.get("order_id") or modified.get("id") or order_id).strip()
+    if not modified_order_id:
+        return {
+            "status": "modify_failed",
+            "facts": _public_facts(facts),
+            "modify_result": modified,
+            "create_error": error_text,
+            "reuse_order_id": order_id,
+            "error": "order/modify returned no order_id",
+        }
+    result = _created_result(
+        facts,
+        order_id=modified_order_id,
+        create_result={
+            "reused_existing_order": True,
+            "source_order": _compact_order_snapshot(order),
+            "modify_result": modified,
+            "create_error": error_text,
+        },
+        dry_run=False,
+    )
+    result["status"] = "reused_open_order"
+    result["reused_order_id"] = modified_order_id
+    return result
+
+
+def _reusable_open_order(facts: dict[str, Any]) -> dict[str, Any]:
+    orders = facts.get("_customer_orders")
+    if not isinstance(orders, list):
+        return {}
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        status = str(order.get("status") or order.get("status_text") or "").strip().lower()
+        if status in {"cancel", "cancelled", "canceled", "complete", "completed", "finished", "closed", "已取消", "已完成"}:
+            continue
+        appointment_time = str(
+            order.get("appointment_time")
+            or order.get("store_at")
+            or order.get("plan_at")
+            or order.get("pre_plan_at")
+            or ""
+        ).strip()
+        if appointment_time:
+            continue
+        order_id = str(order.get("id") or order.get("order_id") or "").strip()
+        if not order_id:
+            continue
+        return order
+    return {}
+
+
+def _compact_order_snapshot(order: dict[str, Any]) -> dict[str, Any]:
+    keys = ("id", "order_id", "order_no", "status", "store_id", "store_name", "appointment_time", "store_at")
+    return {key: order.get(key) for key in keys if order.get(key) not in (None, "")}
 
 
 def _missing_fields(facts: dict[str, Any]) -> list[str]:
@@ -416,11 +530,15 @@ def _created_result(
     }
     return {
         "status": "dry_run_created" if dry_run else "created",
-        "facts": facts,
+        "facts": _public_facts(facts),
         "order_id": order_id,
         "create_result": create_result,
         "appointment_push": push,
     }
+
+
+def _public_facts(facts: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in facts.items() if not str(key).startswith("_")}
 
 
 def _remark_for_order(facts: dict[str, Any]) -> str:

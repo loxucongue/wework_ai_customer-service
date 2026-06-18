@@ -210,6 +210,26 @@ class PlatformAgentClient:
         data = self._post("/platform_agent/order/create_work", self._with_common_params(payload, request_context))
         return data if isinstance(data, dict) else {"result": data}
 
+    def modify_work_order(
+        self,
+        *,
+        order_id: int | str,
+        store_id: int | str,
+        user_id: int | str,
+        amount: str | int | float,
+        category_id: int | str | None = None,
+        request_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "order_id": order_id,
+            "store_id": store_id,
+            "user_id": user_id,
+            "category_id": category_id,
+            "amount": amount,
+        }
+        data = self._post("/platform_agent/order/modify", self._with_common_params(payload, request_context))
+        return data if isinstance(data, dict) else {"result": data}
+
     def create_order_plan(
         self,
         *,

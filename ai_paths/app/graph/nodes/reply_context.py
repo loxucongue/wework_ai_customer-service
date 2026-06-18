@@ -344,7 +344,7 @@ def _fact_notes_for_model(
         for item in appointment_facts:
             if not isinstance(item, dict):
                 continue
-            if item.get("type") == "appointment_opening" and item.get("status") in {"created", "dry_run_created"} and item.get("order_id"):
+            if item.get("type") == "appointment_opening" and item.get("status") in {"created", "dry_run_created", "reused_open_order"} and item.get("order_id"):
                 notes.append("已有真实预约金订单，可直接解释10元预约金并输出 book_order。")
                 break
 
