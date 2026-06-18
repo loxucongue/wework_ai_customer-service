@@ -339,4 +339,8 @@ def _normalize_store_name(value: str) -> str:
 
 
 def _text(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "").strip())
+    text = str(value or "").strip()
+    text = re.sub(r"[\s\u3000]+", "", text)
+    text = re.sub(r"[\u200b-\u200f\ufeff]", "", text)
+    text = re.sub(r"[，,。.;；:：、/\\|｜\-—_（）()【】\[\]{}<>《》\"'“”‘’!?！？~～]+", "", text)
+    return text

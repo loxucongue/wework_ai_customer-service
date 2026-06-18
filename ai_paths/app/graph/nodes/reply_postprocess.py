@@ -507,11 +507,23 @@ def _asks_known_order_slot(session: dict[str, object], text: str) -> bool:
         for term in ("哪家门店", "哪个门店", "哪一家", "选哪家", "确认哪家店", "方便哪家")
     ):
         return True
-    if (session.get("visit_date") or session.get("visit_time")) and any(
+    if _has_precise_visit_time(session) and any(
         term in content
         for term in ("哪天", "什么时候", "几点", "上午还是下午", "什么时间", "到店时间", "方便时间")
     ):
         return True
+    return False
+
+
+def _has_precise_visit_time(session: dict[str, object]) -> bool:
+    value = re.sub(r"\s+", "", str(session.get("visit_time") or session.get("appointment_time") or ""))
+    if not value:
+        return False
+    if re.search(r"\d{1,2}[:：]\d{2}", value):
+        return True
+    if re.search(r"(上午|下午|中午|晚上)?\d{1,2}点(半|多|左右)?", value):
+        return True
+    # Coarse ranges like "明天上午" or "周六下午" still need a concrete arrival time.
     return False
 
 
