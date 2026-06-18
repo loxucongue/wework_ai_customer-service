@@ -44,18 +44,24 @@ class AppointmentOpeningService:
             return _dry_run_result(facts)
 
         try:
-            check = self.platform_client.check_customer(
-                customer_id=facts["customer_id"],
-                kind=facts.get("kind") or None,
-                request_context=request_context,
-            )
-            if str(check.get("result", "")).strip() not in {"1", "true", "True"}:
+            existing_appointment = _existing_active_appointment(state)
+            if existing_appointment:
                 return {
-                    "status": "cannot_create",
+                    "status": "already_appointed",
                     "facts": facts,
-                    "check_customer": check,
-                    "reason": "客户当前存在进行中的订单或暂不可创建预约金订单",
+                    "existing_appointment": existing_appointment,
+                    "reason": "客户已有明确预约记录，避免重复创建预约金订单",
                 }
+
+            check: dict[str, Any] = {}
+            try:
+                check = self.platform_client.check_customer(
+                    customer_id=facts["customer_id"],
+                    kind=facts.get("kind") or None,
+                    request_context=request_context,
+                )
+            except Exception as exc:  # noqa: BLE001
+                check = {"error": f"{type(exc).__name__}: {exc}"}
             order = self.platform_client.create_work_order(
                 customer_id=facts["customer_id"],
                 store_id=facts["store_id"],
@@ -74,7 +80,9 @@ class AppointmentOpeningService:
                     "create_result": order,
                     "error": "create_work returned no order_id",
                 }
-            return _created_result(facts, order_id=order_id, create_result=order, dry_run=False)
+            result = _created_result(facts, order_id=order_id, create_result=order, dry_run=False)
+            result["check_customer"] = check
+            return result
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "facts": facts, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -168,6 +176,56 @@ def _request_context(state: dict[str, Any]) -> dict[str, Any]:
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     merged.update({key: value for key, value in request_context.items() if value not in (None, "")})
     return merged
+
+
+def _existing_active_appointment(state: dict[str, Any]) -> dict[str, Any]:
+    """Return a real existing appointment if one is present.
+
+    A pending order or selected store/time is not enough to block appointment
+    deposit creation. We only block when there is a clear appointment record.
+    """
+
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    appointment = customer_context.get("appointment") if isinstance(customer_context.get("appointment"), dict) else {}
+    if _appointment_snapshot_is_active(appointment):
+        return appointment
+
+    orders = customer_context.get("orders") if isinstance(customer_context.get("orders"), list) else []
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        status = str(order.get("status") or order.get("status_text") or "").strip().lower()
+        if status in {"cancel", "cancelled", "canceled", "complete", "completed", "finished", "closed", "已取消", "已完成"}:
+            continue
+        appointment_time = str(
+            order.get("appointment_time")
+            or order.get("store_at")
+            or order.get("plan_at")
+            or order.get("pre_plan_at")
+            or ""
+        ).strip()
+        if appointment_time and (order.get("id") or order.get("order_id") or order.get("store_id") or order.get("store_name")):
+            return {
+                "has_active": True,
+                "status": order.get("status") or "active",
+                "order_id": str(order.get("id") or order.get("order_id") or ""),
+                "store_id": str(order.get("store_id") or ""),
+                "store_name": str(order.get("store_name") or ""),
+                "appointment_time": appointment_time,
+                "source": "customer_context.orders",
+            }
+    return {}
+
+
+def _appointment_snapshot_is_active(appointment: dict[str, Any]) -> bool:
+    if not isinstance(appointment, dict) or not appointment:
+        return False
+    appointment_id = str(appointment.get("appointment_id") or appointment.get("order_id") or "").strip()
+    appointment_time = str(appointment.get("appointment_time") or "").strip()
+    status = str(appointment.get("status") or "").strip().lower()
+    if status in {"cancel", "cancelled", "canceled", "complete", "completed", "finished", "closed", "none", "intent_only", "context_store_only", "已取消", "已完成"}:
+        return False
+    return bool((appointment.get("has_active") or status in {"confirmed", "scheduled", "active", "已预约"}) and (appointment_id or appointment_time))
 
 
 def _missing_fields(facts: dict[str, Any]) -> list[str]:
