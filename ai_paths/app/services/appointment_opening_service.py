@@ -46,6 +46,7 @@ class AppointmentOpeningService:
         try:
             check = self.platform_client.check_customer(
                 customer_id=facts["customer_id"],
+                kind=facts.get("kind") or None,
                 request_context=request_context,
             )
             if str(check.get("result", "")).strip() not in {"1", "true", "True"}:
@@ -147,6 +148,13 @@ def _appointment_facts(
             request_context.get("category_id")
             or customer.get("category_id")
             or state.get("category_id")
+            or ""
+        ).strip(),
+        "kind": str(
+            customer.get("kind")
+            or customer_context.get("kind")
+            or request_context.get("kind")
+            or request_context.get("customer_kind")
             or ""
         ).strip(),
         "prepay": str(request_context.get("prepay") or "10.00").strip(),

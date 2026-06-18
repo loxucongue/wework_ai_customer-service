@@ -136,12 +136,12 @@ class PlatformAgentClient:
         self,
         *,
         customer_id: int | str,
+        kind: int | str | None = None,
         request_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not customer_id:
             return {}
-        kind = None
-        if isinstance(request_context, dict):
+        if kind in (None, "") and isinstance(request_context, dict):
             kind = request_context.get("kind") or request_context.get("customer_kind")
         data = self._get(
             "/platform_agent/order/check_customer",
