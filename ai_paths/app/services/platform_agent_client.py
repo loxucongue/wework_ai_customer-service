@@ -140,9 +140,12 @@ class PlatformAgentClient:
     ) -> dict[str, Any]:
         if not customer_id:
             return {}
+        kind = None
+        if isinstance(request_context, dict):
+            kind = request_context.get("kind") or request_context.get("customer_kind")
         data = self._get(
             "/platform_agent/order/check_customer",
-            self._with_common_params({"customer_id": customer_id}, request_context),
+            self._with_common_params({"customer_id": customer_id, "kind": kind}, request_context),
         )
         return data if isinstance(data, dict) else {"result": data}
 
