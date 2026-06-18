@@ -417,9 +417,17 @@ def enforce_required_tools(
         if task_type == "appointment" or _is_appointment_marker(markers):
             ensure_available_time()
         if (
-            task_type in {"appointment_create", "signup_close", "create_deposit_order", "deposit_order"}
-            or subtype in {"direct_payment_link", "appointment_payment", "deposit_payment"}
-            or any(token in markers for token in ("BOOK_ORDER", "DIRECT_PAYMENT_LINK", "DEPOSIT_ORDER"))
+            task_type
+            in {
+                "appointment_create",
+                "signup_close",
+                "create_deposit_order",
+                "deposit_order",
+                "execute_deposit",
+                "payment_link_request",
+            }
+            or subtype in {"direct_payment_link", "appointment_payment", "deposit_payment", "payment_link_request"}
+            or any(token in markers for token in ("BOOK_ORDER", "DIRECT_PAYMENT_LINK", "DEPOSIT_ORDER", "PAYMENT_LINK_REQUEST"))
         ):
             ensure_appointment_create()
         if task_type in {"appointment_status", "appointment_change", "appointment_cancel"} or any(
