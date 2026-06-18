@@ -167,7 +167,7 @@ def location_granularity(query: str, store_refs: Iterable[Any] | None = None) ->
         return "area_or_landmark"
     if city:
         return "city_only"
-    if landmark:
+    if landmark and city_for_area_or_landmark(landmark):
         return "area_or_landmark"
     return "unknown"
 

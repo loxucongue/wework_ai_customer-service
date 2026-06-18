@@ -70,6 +70,9 @@ def postprocess_reply_messages(
             if _has_unbacked_case_image_promise(state, content):
                 reasons.append("unbacked_case_image_promise_blocked")
                 continue
+            if _has_unbacked_store_claim_text(state, content):
+                reasons.append("unbacked_store_claim_blocked")
+                continue
             fabricated_store_names = _unsupported_store_names_from_text(state, content)
             if fabricated_store_names:
                 reasons.append("fabricated_store_name_blocked")
@@ -146,7 +149,10 @@ def postprocess_reply_messages(
 
     if not cleaned:
         state["postprocess_changed"] = bool(original_messages)
-        state["postprocess_reasons"] = ["all_messages_removed"] if original_messages else []
+        if original_messages:
+            state["postprocess_reasons"] = _unique_reasons(reasons + ["all_messages_removed"])
+        else:
+            state["postprocess_reasons"] = []
         return []
 
     cleaned = renumber_messages(cleaned)
@@ -631,6 +637,53 @@ def _has_unbacked_case_image_promise(state: AgentState, text: str) -> bool:
     if not any(term in content for term in case_terms):
         return False
     return True
+
+
+def _has_unbacked_store_claim_text(state: AgentState, text: str) -> bool:
+    if _has_current_platform_store_facts(state):
+        return False
+    content = str(text or "").strip()
+    if not content:
+        return False
+    claim_terms = (
+        "有门店",
+        "有店",
+        "附近有门店",
+        "附近有店",
+        "地址发您",
+        "地址发你",
+        "位置发您",
+        "位置发你",
+        "定位发您",
+        "定位发你",
+        "门店位置发",
+        "门店地址发",
+        "发您地址",
+        "发你地址",
+        "发您位置",
+        "发你位置",
+        "发您定位",
+        "发你定位",
+        "推荐最近",
+        "最近门店",
+        "最近的门店",
+        "最近的是",
+        "离您最近",
+        "离你最近",
+        "离您更方便",
+        "离你更方便",
+        "哪家离您更方便",
+        "哪家离你更方便",
+        "哪家更方便",
+        "具体哪家",
+    )
+    if any(term in content for term in claim_terms):
+        return True
+    if re.search(r"(?:有|查到|推荐|匹配到).{0,12}(?:门店|店)", content):
+        return True
+    if re.search(r"(?:门店|店).{0,12}(?:地址|位置|定位).{0,8}(?:发|给)", content):
+        return True
+    return False
 
 
 def _recent_assistant_texts_for_dedupe(state: AgentState) -> list[str]:

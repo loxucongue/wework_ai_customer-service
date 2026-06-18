@@ -766,9 +766,22 @@ def _should_skip_store_lookup_for_confirmed_appointment(
 
 
 def _distance_origin_from_state_or_text(state: AgentState, content: str) -> str:
+    def finalize(value: str, *, fallback_city: str = "") -> str:
+        result = str(value or "").strip()
+        if not result:
+            return ""
+        if any(city_name and city_name in result for city_name in CITY_NAMES):
+            return result
+        area = store_text.extract_area_or_landmark(result)
+        area_city = store_text.city_for_area_or_landmark(area)
+        city_value = str(fallback_city or "").strip() or area_city
+        if city_value:
+            return result if city_value in result else f"{city_value}{result}"
+        return ""
+
     existing = str(state.get("distance_origin") or "").strip()
     if existing:
-        return existing
+        return finalize(existing)
     session = order_session_state(state)
     city = str(session.get("city") or "").strip() or known_city_from_state(state)
     area_or_landmark = (
@@ -781,21 +794,21 @@ def _distance_origin_from_state_or_text(state: AgentState, content: str) -> str:
     parsed_area = store_text.extract_area_or_landmark(text)
     if parsed_city and parsed_area:
         if parsed_city in parsed_area:
-            return parsed_area
-        return f"{parsed_city}{parsed_area}"
+            return finalize(parsed_area, fallback_city=parsed_city)
+        return finalize(f"{parsed_city}{parsed_area}", fallback_city=parsed_city)
     if parsed_area and not city:
         parsed_area_city = store_text.city_for_area_or_landmark(parsed_area)
         if parsed_area_city:
-            return f"{parsed_area_city}{parsed_area}"
+            return finalize(f"{parsed_area_city}{parsed_area}", fallback_city=parsed_area_city)
     concrete_landmark_terms = ("机场", "高崎", "科技园", "高铁", "火车站", "地铁", "商圈", "广场", "大厦")
     if text and any(term in text for term in concrete_landmark_terms):
         if city and city not in text:
-            return f"{city}{text}"
-        return text
+            return finalize(f"{city}{text}", fallback_city=city)
+        return finalize(text, fallback_city=parsed_city)
     if city and area_or_landmark:
         if city in area_or_landmark:
-            return area_or_landmark
-        return f"{city}{area_or_landmark}"
+            return finalize(area_or_landmark, fallback_city=city)
+        return finalize(f"{city}{area_or_landmark}", fallback_city=city)
     if city and any(term in text for term in ("附近", "最近", "离我近", "哪家近", "哪个近")):
-        return city
+        return finalize(city, fallback_city=city)
     return ""
