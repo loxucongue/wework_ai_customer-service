@@ -426,8 +426,36 @@ def enforce_required_tools(
                 "execute_deposit",
                 "payment_link_request",
             }
-            or subtype in {"direct_payment_link", "appointment_payment", "deposit_payment", "payment_link_request"}
-            or any(token in markers for token in ("BOOK_ORDER", "DIRECT_PAYMENT_LINK", "DEPOSIT_ORDER", "PAYMENT_LINK_REQUEST"))
+            or subtype
+            in {
+                "direct_payment_link",
+                "appointment_payment",
+                "deposit_payment",
+                "payment_link_request",
+                "reservation_deposit_payment",
+                "reservation_deposit",
+                "deposit_link",
+                "payment_entry",
+            }
+            or (
+                task_type == "price_close"
+                and any(token in subtype.lower() for token in ("deposit", "payment", "link", "order", "reservation"))
+            )
+            or any(
+                token in markers
+                for token in (
+                    "BOOK_ORDER",
+                    "DIRECT_PAYMENT_LINK",
+                    "DEPOSIT_ORDER",
+                    "PAYMENT_LINK_REQUEST",
+                    "RESERVATION_DEPOSIT",
+                    "PAYMENT_ENTRY",
+                    "预约金",
+                    "付款",
+                    "支付",
+                    "收单",
+                )
+            )
         ):
             ensure_appointment_create()
         if task_type in {"appointment_status", "appointment_change", "appointment_cancel"} or any(
