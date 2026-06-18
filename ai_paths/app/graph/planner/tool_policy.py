@@ -416,7 +416,11 @@ def enforce_required_tools(
             ensure_store_lookup("Need real store facts before answering store, address, route, hours, or parking")
         if task_type == "appointment" or _is_appointment_marker(markers):
             ensure_available_time()
-        if task_type in {"appointment_create", "signup_close"} or "BOOK_ORDER" in markers:
+        if (
+            task_type in {"appointment_create", "signup_close", "create_deposit_order", "deposit_order"}
+            or task_subtype in {"direct_payment_link", "appointment_payment", "deposit_payment"}
+            or any(token in markers for token in ("BOOK_ORDER", "DIRECT_PAYMENT_LINK", "DEPOSIT_ORDER"))
+        ):
             ensure_appointment_create()
         if task_type in {"appointment_status", "appointment_change", "appointment_cancel"} or any(
             token in markers for token in ("APPOINTMENT_STATUS", "APPOINTMENT_CHANGE", "APPOINTMENT_CANCEL")
