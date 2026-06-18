@@ -143,6 +143,8 @@ def order_session_state(state: AgentState) -> dict[str, object]:
         else {}
     )
     current_store = current_real_store_from_state(state)
+    customer_profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
+    customer_basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
 
     session: dict[str, object] = {}
     _put(
@@ -216,6 +218,36 @@ def order_session_state(state: AgentState) -> dict[str, object]:
             request_context.get("order_id"),
             request_context.get("appointment_id"),
             state.get("appointment_order_id"),
+        ),
+    )
+    _put(
+        session,
+        "deposit_state",
+        _pick(
+            request_context.get("deposit_state"),
+            state.get("deposit_state"),
+            customer_basic_info.get("deposit_state"),
+            customer_profile.get("deposit_state"),
+        ),
+    )
+    _put(
+        session,
+        "customer_name",
+        _pick(
+            request_context.get("customer_name"),
+            request_context.get("name"),
+            state.get("customer_name"),
+            customer_basic_info.get("customer_name"),
+        ),
+    )
+    _put(
+        session,
+        "phone",
+        _pick(
+            request_context.get("phone"),
+            request_context.get("mobile"),
+            state.get("phone"),
+            customer_basic_info.get("phone"),
         ),
     )
     offer_explained = _offer_already_explained(state)

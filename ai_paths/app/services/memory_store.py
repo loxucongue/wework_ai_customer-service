@@ -130,18 +130,30 @@ class CustomerMemoryStore:
 
     @staticmethod
     def _refresh_portrait_summary(portrait: dict[str, Any]) -> None:
+        if isinstance(portrait.get("summary"), str) and portrait.get("summary"):
+            return
         needs = portrait.get("needs") if isinstance(portrait.get("needs"), list) else []
         pain_points = portrait.get("pain_points") if isinstance(portrait.get("pain_points"), list) else []
         projects = portrait.get("projects") if isinstance(portrait.get("projects"), list) else []
         concerns = portrait.get("concerns") if isinstance(portrait.get("concerns"), list) else []
+        customer_type_tags = (
+            portrait.get("customer_type_tags")
+            if isinstance(portrait.get("customer_type_tags"), list)
+            else []
+        )
+        main_objection = str(portrait.get("main_objection") or "").strip()
         parts: list[str] = []
+        if customer_type_tags:
+            parts.append("类型：" + "、".join(str(item) for item in customer_type_tags[:3]))
         if pain_points:
-            parts.append("关注" + "、".join(str(item) for item in pain_points[:4]))
+            parts.append("关注：" + "、".join(str(item) for item in pain_points[:4]))
         if needs:
-            parts.append("希望" + "、".join(str(item) for item in needs[:4]))
+            parts.append("希望：" + "、".join(str(item) for item in needs[:4]))
         if projects:
-            parts.append("提到" + "、".join(str(item) for item in projects[:3]))
+            parts.append("提到：" + "、".join(str(item) for item in projects[:3]))
         if concerns:
-            parts.append("顾虑" + "、".join(str(item) for item in concerns[:3]))
+            parts.append("顾虑：" + "、".join(str(item) for item in concerns[:3]))
+        if main_objection:
+            parts.append("主要阻力：" + main_objection)
         if parts:
-            portrait["summary"] = "，".join(parts) + "。"
+            portrait["summary"] = "；".join(parts) + "。"

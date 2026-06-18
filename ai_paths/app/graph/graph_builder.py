@@ -97,6 +97,7 @@ def build_graph(
     profile_event_extractor = create_profile_event_extractor_node(
         trace_logger=trace_logger,
         memory_store=memory_store,
+        model_client=model_client,
         compact_memory=_compact_memory,
         extract_event_updates=lambda state, profile_update: extract_event_updates(
             state,
