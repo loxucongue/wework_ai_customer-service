@@ -225,7 +225,11 @@ def _appointment_snapshot_is_active(appointment: dict[str, Any]) -> bool:
     status = str(appointment.get("status") or "").strip().lower()
     if status in {"cancel", "cancelled", "canceled", "complete", "completed", "finished", "closed", "none", "intent_only", "context_store_only", "已取消", "已完成"}:
         return False
-    return bool((appointment.get("has_active") or status in {"confirmed", "scheduled", "active", "已预约"}) and (appointment_id or appointment_time))
+    return bool(
+        appointment_time
+        and (appointment.get("has_active") or status in {"confirmed", "scheduled", "active", "pending", "已预约"})
+        and (appointment_id or appointment.get("store_id") or appointment.get("store_name"))
+    )
 
 
 def _missing_fields(facts: dict[str, Any]) -> list[str]:
