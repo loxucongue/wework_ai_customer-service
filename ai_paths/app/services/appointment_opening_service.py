@@ -203,6 +203,14 @@ def _customer_confirmed_opening(content: str) -> bool:
         "先交",
         "登记",
         "报名",
+        "付款入口",
+        "付款链接",
+        "支付入口",
+        "支付链接",
+        "发付款",
+        "发支付",
+        "收款",
+        "收款码",
     ]
     negative_terms = ["取消", "不约", "不用", "算了", "退", "投诉", "不要"]
     if any(term in text for term in negative_terms):

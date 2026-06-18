@@ -91,6 +91,24 @@ def _confirmed_store_from_state(state: dict[str, Any]) -> dict[str, Any]:
                 "hard_state",
             )
         )
+    # Current sales intent should win over historical appointment/order facts.
+    # The profile analyzer writes the matched store here after a store_address card is sent.
+    customer_basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    candidates.append(
+        (
+            str(customer_basic_info.get("preferred_store_id") or customer_basic_info.get("confirmed_store_id") or "").strip(),
+            str(customer_basic_info.get("preferred_store_name") or customer_basic_info.get("confirmed_store_name") or "").strip(),
+            "customer_basic_info",
+        )
+    )
+    customer_profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
+    candidates.append(
+        (
+            str(customer_profile.get("preferred_store_id") or customer_profile.get("confirmed_store_id") or "").strip(),
+            str(customer_profile.get("preferred_store_name") or customer_profile.get("confirmed_store_name") or "").strip(),
+            "customer_profile",
+        )
+    )
     appointment = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
     candidates.append(
         (
