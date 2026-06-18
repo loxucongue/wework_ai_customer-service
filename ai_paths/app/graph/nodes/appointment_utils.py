@@ -16,8 +16,9 @@ def appointment_query_from_state(
 ) -> dict[str, Any]:
     stores = store_lookup.get("stores") if isinstance(store_lookup, dict) else []
     store_name_hint = appointment_slot_value(state, "store_name") or known_store_name_from_history(state)
+    hard_store = _confirmed_store_from_state(state)
     current_store = current_real_store_from_state(state)
-    store = current_store if _should_prefer_current_store(content, current_store) else {}
+    store = hard_store or (current_store if _should_prefer_current_store(content, current_store) else {})
     if not store:
         store = select_store_for_appointment(stores, store_name_hint)
     if not store:
@@ -41,11 +42,6 @@ def appointment_query_from_state(
     if not store and has_explicit_location_or_store(content, extract_city) and isinstance(stores, list) and stores:
         store = stores[0]
 
-    explicit_store_id = state.get("confirmed_store_id") or state.get("store_id")
-    explicit_store_name = state.get("confirmed_store_name") or state.get("store_name")
-    if explicit_store_id:
-        store = {"id": explicit_store_id, "name": explicit_store_name or store.get("name", "")}
-
     if not store and can_use_cached_appointment_store(content):
         appointment = state.get("appointment_cache") or {}
         if isinstance(appointment, dict) and appointment.get("store_id"):
@@ -56,14 +52,17 @@ def appointment_query_from_state(
 
     date_text = (
         extract_date_value(content)
+        or _state_slot_value(state, "visit_date", "appointment_date", "date")
         or appointment_slot_value(state, "visit_date_value")
         or _history_date_value(state)
     )
     time_text = (
         extract_time_value(content)
+        or _state_slot_value(state, "visit_time", "appointment_time", "time")
         or appointment_slot_value(state, "visit_time")
         or _history_time_value(state)
     )
+    time_preference = extract_time_preference(content) or extract_time_preference(str(time_text or ""))
     missing: list[str] = []
     if not str(store.get("id") or "").strip():
         missing.append("store_id")
@@ -75,8 +74,68 @@ def appointment_query_from_state(
         "date": date_text,
         "time": time_text,
         "time_text": time_text,
+        "time_preference": time_preference,
+        "store_source": str(store.get("source") or ""),
         "missing": missing,
     }
+
+
+def _confirmed_store_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    candidates: list[tuple[str, str, str]] = []
+    for source in (state, request_context):
+        candidates.append(
+            (
+                str(source.get("confirmed_store_id") or source.get("store_id") or "").strip(),
+                str(source.get("confirmed_store_name") or source.get("store_name") or "").strip(),
+                "hard_state",
+            )
+        )
+    appointment = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    candidates.append(
+        (
+            str(appointment.get("store_id") or "").strip(),
+            str(appointment.get("store_name") or "").strip(),
+            "appointment_cache",
+        )
+    )
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    appointment_context = customer_context.get("appointment") if isinstance(customer_context.get("appointment"), dict) else {}
+    candidates.append(
+        (
+            str(appointment_context.get("store_id") or "").strip(),
+            str(appointment_context.get("store_name") or "").strip(),
+            "customer_context",
+        )
+    )
+    for store_id, store_name, source in candidates:
+        if store_id or store_name:
+            return {"id": store_id, "name": store_name, "source": source}
+    return {}
+
+
+def _state_slot_value(state: dict[str, Any], *keys: str) -> str:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    appointment = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    for source in (state, request_context, appointment):
+        for key in keys:
+            value = str(source.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def extract_time_preference(content: str) -> str:
+    text = str(content or "")
+    if any(term in text for term in ("早上", "上午")):
+        return "morning"
+    if "中午" in text:
+        return "noon"
+    if "下午" in text:
+        return "afternoon"
+    if "晚上" in text:
+        return "evening"
+    return ""
 
 
 def _history_date_value(state: dict[str, Any]) -> str:

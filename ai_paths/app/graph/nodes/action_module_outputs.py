@@ -182,27 +182,41 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             continue
 
         if key == "available_time":
+            slots = value.get("slots") if isinstance(value.get("slots"), dict) else {}
             time_status = target_time_status(
-                value.get("slots") if isinstance(value.get("slots"), dict) else {},
+                slots,
                 str(value.get("target_time") or ""),
                 str(value.get("query") or ""),
             )
+            available_times = value.get("available_times") or time_status.get("available_times") or []
+            recommended_time = str(value.get("recommended_time") or "")
+            if not recommended_time and available_times:
+                recommended_time = str(available_times[0] or "")
             appointment_fact = {
                 "type": "available_time",
+                "status": value.get("status") or ("ok" if slots else "missing_info"),
+                "store_id": value.get("store_id") or "",
+                "store_name": value.get("store_name") or "",
                 "store": value.get("store_name") or value.get("store_id") or "",
                 "date": value.get("date") or "",
-                "slots": value.get("slots") or {},
+                "time_preference": value.get("time_preference") or "",
+                "slots": slots,
                 "missing": value.get("missing") or [],
+                "error": value.get("error") or "",
                 "target_time": time_status.get("target_time") or "",
                 "target_time_available": time_status.get("target_time_available"),
-                "available_times": time_status.get("available_times") or [],
+                "available_times": available_times,
+                "recommended_time": recommended_time,
                 "nearby_times": time_status.get("nearby_times") or [],
             }
             structured_facts["appointment_facts"].append(appointment_fact)
             facts.append(
                 f"available_time: store={appointment_fact['store']}; "
-                f"date={appointment_fact['date']}; slots={appointment_fact['slots']}"
+                f"date={appointment_fact['date']}; status={appointment_fact['status']}; "
+                f"recommended_time={appointment_fact['recommended_time']}; slots={appointment_fact['slots']}"
             )
+            if appointment_fact["status"] in {"error", "missing_info", "no_slots"} or appointment_fact["error"]:
+                unsupported_claims.append("available_time unavailable")
             missing_slots.extend(str(item) for item in appointment_fact["missing"][:4])
             continue
 

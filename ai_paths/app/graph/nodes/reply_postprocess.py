@@ -170,9 +170,32 @@ def _handoff_message_for_state(state: AgentState) -> dict[str, Any] | None:
 
     assist_reason = _professional_assist_reason(state)
     if not assist_reason:
+        assist_reason = _available_time_failure_reason(state)
+    if not assist_reason:
         return None
     reason = assist_reason or "当前问题需要专业同事继续协助核对"
     return {"handoff_reason": reason}
+
+
+def _available_time_failure_reason(state: AgentState) -> str:
+    structured = _structured_facts_from_state(state)
+    facts = structured.get("appointment_facts")
+    if not isinstance(facts, list):
+        fact_envelope = state.get("fact_envelope")
+        if isinstance(fact_envelope, dict):
+            facts = fact_envelope.get("appointment_facts")
+    if not isinstance(facts, list):
+        return ""
+    for item in facts:
+        if not isinstance(item, dict) or item.get("type") != "available_time":
+            continue
+        status = str(item.get("status") or "").strip()
+        missing = [str(value) for value in (item.get("missing") or [])]
+        if status in {"error", "no_slots"}:
+            return "档期查询暂时无法确认，需要专业同事继续核对可约时间"
+        if status == "missing_info" and "store_id" not in missing and "date" not in missing:
+            return "档期查询暂时无法确认，需要专业同事继续核对可约时间"
+    return ""
 
 
 def _book_order_message_for_state(
@@ -488,7 +511,8 @@ def _remove_known_slot_requestion(state: AgentState, text: str) -> str:
         kept.append(chunk)
     if not changed:
         return text
-    return "".join(kept).strip()
+    result = "".join(kept).strip()
+    return result or text
 
 
 def _asks_known_order_slot(session: dict[str, object], text: str) -> bool:
@@ -652,7 +676,7 @@ def _has_unbacked_case_image_promise(state: AgentState, text: str) -> bool:
 
 
 def _has_unbacked_store_claim_text(state: AgentState, text: str) -> bool:
-    if _has_current_platform_store_facts(state):
+    if _has_current_platform_store_facts(state) or _has_trusted_confirmed_store_state(state):
         return False
     content = str(text or "").strip()
     if not content:
@@ -724,10 +748,10 @@ def _too_similar_to_recent_reply(normalized: str, recent_replies: list[str]) -> 
     for recent in recent_replies:
         if len(recent) < 18:
             continue
-        if normalized == recent or normalized in recent or recent in normalized:
-            return True
-        overlap = len(set(normalized) & set(recent)) / max(1, len(set(normalized)))
-        if overlap >= 0.88 and abs(len(normalized) - len(recent)) <= max(12, int(len(normalized) * 0.25)):
+        # Only remove exact repeats here. Similar-but-not-identical wording can
+        # be intentional sales follow-up, and broad containment/overlap checks
+        # were deleting valid model replies after multi-turn context changed.
+        if normalized == recent:
             return True
     return False
 
@@ -785,11 +809,12 @@ def _current_store_facts_from_state(state: AgentState) -> list[dict[str, Any]]:
 
 def _unsupported_store_names_from_text(state: AgentState, text: str) -> list[str]:
     real_names = _real_store_names_from_state(state)
+    has_trusted_store = _has_current_platform_store_facts(state) or _has_trusted_confirmed_store_state(state)
     unsupported: list[str] = []
     for candidate in _candidate_store_names(text):
         if _is_generic_store_reference(candidate):
             continue
-        if not real_names or not _has_current_platform_store_facts(state):
+        if not real_names or not has_trusted_store:
             unsupported.append(candidate)
             continue
         if _store_name_is_supported(candidate, real_names):
@@ -814,7 +839,23 @@ def _real_store_names_from_state(state: AgentState) -> list[str]:
             name = str(item.get("name") or "").strip()
             if name:
                 names.append(name)
+    session = order_session_state(state)
+    confirmed_name = str(session.get("confirmed_store_name") or "").strip()
+    confirmed_id = str(session.get("confirmed_store_id") or "").strip()
+    if confirmed_name and confirmed_id:
+        names.append(confirmed_name)
     return list(dict.fromkeys(names))
+
+
+def _has_trusted_confirmed_store_state(state: AgentState) -> bool:
+    session = order_session_state(state)
+    if str(session.get("confirmed_store_id") or "").strip():
+        return True
+    appointment = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    if str(appointment.get("store_id") or "").strip():
+        return True
+    current_store = _first_dict(_current_store_facts_from_state(state))
+    return bool(_store_id_from_fact(current_store))
 
 
 def _candidate_store_names(text: str) -> list[str]:
@@ -856,7 +897,10 @@ def _store_name_is_supported(candidate: str, real_names: list[str]) -> bool:
     value = str(candidate or "").strip()
     if not value:
         return True
-    return value in {str(name or "").strip() for name in real_names if str(name or "").strip()}
+    for name in {str(name or "").strip() for name in real_names if str(name or "").strip()}:
+        if value == name or value.endswith(name) or name.endswith(value):
+            return True
+    return False
 
 
 def _first_dict(value: Any) -> dict[str, Any]:

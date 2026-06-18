@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_task_results import ActionToolTask, merge_action_task_results
+from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference, target_time_status
 from app.graph.nodes.store_context import current_real_store_from_state
 from app.graph.planner.runtime_plan import (
     planner_primary_task,
@@ -174,9 +175,12 @@ def create_execute_actions_node(
                                 customer_context=state.get("customer_context") or {},
                             )
                             available["store_name"] = appointment_query.get("store_name", "")
+                            available["store_id"] = str(appointment_query.get("store_id") or "")
                             available["date"] = appointment_query.get("date", "")
                             available["target_time"] = appointment_query.get("time", "") or appointment_query.get("time_text", "")
+                            available["time_preference"] = appointment_query.get("time_preference", "")
                             available["query"] = content
+                            _enrich_available_time_result(available)
                             tool_results["available_time"] = available
                             tool_calls.append(
                                 {
@@ -186,7 +190,16 @@ def create_execute_actions_node(
                                 }
                             )
                         else:
-                            tool_results["available_time"] = {"slots": {}, "missing": appointment_query.get("missing", [])}
+                            tool_results["available_time"] = {
+                                "slots": {},
+                                "missing": appointment_query.get("missing", []),
+                                "status": "missing_info",
+                                "store_id": appointment_query.get("store_id", ""),
+                                "store_name": appointment_query.get("store_name", ""),
+                                "date": appointment_query.get("date", ""),
+                                "time_preference": appointment_query.get("time_preference", ""),
+                                "query": content,
+                            }
                     if _needs_appointment_create(required_tools) and appointment_opening_service:
                         opening = appointment_opening_service.maybe_open(
                             content=content,
@@ -217,7 +230,12 @@ def create_execute_actions_node(
                             }
                         )
                 except Exception as exc:
-                    tool_results["available_time"] = {"slots": {}, "error": f"{type(exc).__name__}: {exc}"}
+                    tool_results["available_time"] = {
+                        "slots": {},
+                        "status": "error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "query": content,
+                    }
                     tool_calls.append(
                         {
                             "name": "available_time",
@@ -250,6 +268,36 @@ def create_execute_actions_node(
             return output
 
     return execute_actions
+
+
+def _enrich_available_time_result(available: dict[str, Any]) -> None:
+    slots = available.get("slots") if isinstance(available.get("slots"), dict) else {}
+    target_time = str(available.get("target_time") or "")
+    query = str(available.get("query") or "")
+    time_status = target_time_status(slots, target_time, query)
+    all_times = available_time_values(slots)
+    preferred_times = filter_times_by_preference(all_times, query)
+    available_times = preferred_times or list(time_status.get("available_times") or []) or all_times
+    recommended_time = ""
+    if time_status.get("target_time_available") and time_status.get("target_time"):
+        recommended_time = str(time_status.get("target_time") or "")
+    if not recommended_time and available_times:
+        recommended_time = str(available_times[0] or "")
+    if not recommended_time:
+        nearby = time_status.get("nearby_times") or []
+        if nearby:
+            recommended_time = str(nearby[0] or "")
+    if available.get("error"):
+        status = "error"
+    elif available_times or all_times:
+        status = "ok"
+    else:
+        status = "no_slots"
+    available["available_times"] = available_times
+    available["recommended_time"] = recommended_time
+    available["target_time_available"] = time_status.get("target_time_available")
+    available["nearby_times"] = time_status.get("nearby_times") or []
+    available["status"] = status
 
 
 def _queue_planned_tool_tasks(

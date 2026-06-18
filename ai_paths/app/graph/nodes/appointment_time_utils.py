@@ -25,6 +25,11 @@ def _append_time_values(result: list[str], value: Any) -> None:
             _append_time_values(result, item)
         return
     if isinstance(value, dict):
+        for key in value.keys():
+            if isinstance(key, str):
+                text = normalize_time_text(key)
+                if text and text not in result:
+                    result.append(text)
         for nested_key in ("time", "plan_at", "store_at", "begin", "start", "value"):
             if nested_key in value:
                 _append_time_values(result, value.get(nested_key))
