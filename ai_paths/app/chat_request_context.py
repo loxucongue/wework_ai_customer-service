@@ -2,16 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.config import get_settings
 from app.schemas import ChatRequest
-
-_DEBUG_PLATFORM_CONTEXT = {
-    "customer_id": "20615704",
-    "customer_add_wechat_id": "20615704",
-    "external_userid": "wmanzqsqaaygjwicitvmos657x39lqtg",
-    "user_id": 7294,
-    "wechat": "CS001",
-    "corp_id": "ww943af61cd5d2afe4",
-}
 
 
 def build_request_context(request: ChatRequest) -> dict[str, Any]:
@@ -44,6 +36,19 @@ def _inject_debug_platform_context_if_needed(request: ChatRequest, context: dict
     real corp/user/wechat/external ids, so this intentionally only applies when
     the request clearly looks like a local synthetic conversation.
     """
+    settings = get_settings()
+    if not settings.debug_platform_context_enabled:
+        return
+    debug_context = {
+        "customer_id": settings.debug_platform_customer_id,
+        "customer_add_wechat_id": settings.debug_platform_customer_add_wechat_id,
+        "external_userid": settings.debug_platform_external_userid,
+        "user_id": settings.debug_platform_user_id,
+        "wechat": settings.debug_platform_wechat,
+        "corp_id": settings.debug_platform_corp_id,
+    }
+    if not all(str(value or "").strip() for value in debug_context.values()):
+        return
     synthetic_id = str(request.customer_id or "").strip()
     synthetic_corp = str(request.corp_id or "").strip()
     if not synthetic_id or synthetic_id != synthetic_corp:
@@ -53,7 +58,7 @@ def _inject_debug_platform_context_if_needed(request: ChatRequest, context: dict
         for key in ("user_id", "wechat", "external_userid", "customer_add_wechat_id", "platform_customer_id")
     ):
         return
-    context.update(_DEBUG_PLATFORM_CONTEXT)
+    context.update(debug_context)
     context["debug_platform_context_injected"] = True
 
 

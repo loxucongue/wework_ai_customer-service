@@ -44,6 +44,19 @@ class Settings(BaseSettings):
     platform_agent_default_user_id: int | None = None
     platform_agent_default_corp_id: str = ""
     platform_agent_default_wechat: str = ""
+    debug_platform_context_enabled: bool = Field(default=True, alias="AI_PATHS_DEBUG_PLATFORM_CONTEXT_ENABLED")
+    debug_platform_customer_id: str = Field(default="20615704", alias="AI_PATHS_DEBUG_PLATFORM_CUSTOMER_ID")
+    debug_platform_customer_add_wechat_id: str = Field(
+        default="20615704",
+        alias="AI_PATHS_DEBUG_PLATFORM_CUSTOMER_ADD_WECHAT_ID",
+    )
+    debug_platform_external_userid: str = Field(
+        default="wmanzqsqaaygjwicitvmos657x39lqtg",
+        alias="AI_PATHS_DEBUG_PLATFORM_EXTERNAL_USERID",
+    )
+    debug_platform_user_id: int | None = Field(default=7294, alias="AI_PATHS_DEBUG_PLATFORM_USER_ID")
+    debug_platform_wechat: str = Field(default="CS001", alias="AI_PATHS_DEBUG_PLATFORM_WECHAT")
+    debug_platform_corp_id: str = Field(default="ww943af61cd5d2afe4", alias="AI_PATHS_DEBUG_PLATFORM_CORP_ID")
 
     kb_workflow_id: str = "7644575365759746083"
     pricing_sync_workflow_id: str = "7644090458134609974"
