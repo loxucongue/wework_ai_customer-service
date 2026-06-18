@@ -55,12 +55,14 @@ def appointment_query_from_state(
         or _state_slot_value(state, "visit_date", "appointment_date", "date")
         or appointment_slot_value(state, "visit_date_value")
         or _history_date_value(state)
+        or _known_info_date_value(state)
     )
     time_text = (
         extract_time_value(content)
         or _state_slot_value(state, "visit_time", "appointment_time", "time")
         or appointment_slot_value(state, "visit_time")
         or _history_time_value(state)
+        or _known_info_time_value(state)
     )
     time_preference = extract_time_preference(content) or extract_time_preference(str(time_text or ""))
     missing: list[str] = []
@@ -172,6 +174,22 @@ def _history_time_value(state: dict[str, Any]) -> str:
     return ""
 
 
+def _known_info_date_value(state: dict[str, Any]) -> str:
+    for text in _planner_known_texts(state):
+        value = extract_date_value(text)
+        if value:
+            return value
+    return ""
+
+
+def _known_info_time_value(state: dict[str, Any]) -> str:
+    for text in _planner_known_texts(state):
+        value = extract_time_value(text)
+        if value:
+            return value
+    return ""
+
+
 def _recent_customer_texts(state: dict[str, Any]) -> list[str]:
     texts: list[str] = []
     for item in reversed(state.get("conversation_history") or []):
@@ -190,6 +208,22 @@ def _recent_customer_texts(state: dict[str, Any]) -> list[str]:
         if text:
             texts.append(text)
     return texts[:10]
+
+
+def _planner_known_texts(state: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    primary = state.get("primary_task") if isinstance(state.get("primary_task"), dict) else {}
+    values = primary.get("known_info") if isinstance(primary, dict) else []
+    if isinstance(values, list):
+        texts.extend(str(item or "").strip() for item in values if str(item or "").strip())
+    secondary = state.get("secondary_tasks") if isinstance(state.get("secondary_tasks"), list) else []
+    for task in secondary:
+        if not isinstance(task, dict):
+            continue
+        values = task.get("known_info")
+        if isinstance(values, list):
+            texts.extend(str(item or "").strip() for item in values if str(item or "").strip())
+    return texts[:12]
 
 
 def select_store_for_appointment(stores: Any, store_name_hint: str) -> dict[str, Any]:

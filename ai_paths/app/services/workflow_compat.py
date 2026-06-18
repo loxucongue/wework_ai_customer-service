@@ -7,10 +7,13 @@ from app.schemas import ChatRequest, ChatResponse
 
 def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
     """Convert Coze-style workflow payloads into the native chat request."""
+    root = _record(payload)
     parameters = _record(payload.get("parameters")) or payload
     content_value = parameters.get("content")
     content_object = _record(content_value)
     content = _string(content_object.get("content")) if content_object else _string(content_value)
+    if not content:
+        content = _latest_turn_text(parameters.get("turns")) or _latest_turn_text(root.get("turns"))
     image = _string(parameters.get("image")) or _string(parameters.get("file_image"))
 
     request_context = dict(_record(parameters.get("request_context")) or {})
@@ -28,13 +31,24 @@ def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
 
     messages = parameters.get("messages")
     raw_history = parameters.get("conversation_history")
+    root_history = root.get("history")
+    root_conversation_history = root.get("conversation_history")
+    root_messages = root.get("messages")
     if isinstance(raw_history, list):
         conversation_history = [_string(item) for item in raw_history if _string(item)]
     elif isinstance(messages, list):
         conversation_history = _workflow_messages_to_history(messages)
+    elif isinstance(root_history, list):
+        conversation_history = _workflow_messages_to_history(root_history)
+    elif isinstance(root_conversation_history, list):
+        conversation_history = [_string(item) for item in root_conversation_history if _string(item)]
+    elif isinstance(root_messages, list):
+        conversation_history = _workflow_messages_to_history(root_messages)
     else:
-        message_summary = _string(messages)
+        message_summary = _string(messages) or _string(root.get("messages"))
         conversation_history = [f"对话摘要: {message_summary}"] if message_summary else []
+    conversation_history = _append_prior_turns(conversation_history, parameters.get("turns"), content)
+    conversation_history = _append_prior_turns(conversation_history, root.get("turns"), content)
 
     customer_id = (
         _string(parameters.get("customer_id"))
@@ -126,6 +140,31 @@ def _workflow_messages_to_history(messages: list[Any]) -> list[str]:
             role = "对话"
         history.append(f"{role}: {content}")
     return history[-10:]
+
+
+def _latest_turn_text(turns: Any) -> str:
+    if not isinstance(turns, list):
+        return ""
+    for item in reversed(turns):
+        text = _string(item)
+        if text:
+            return text
+    return ""
+
+
+def _append_prior_turns(history: list[str], turns: Any, current_content: str) -> list[str]:
+    if not isinstance(turns, list) or not turns:
+        return history[-10:]
+    current = _string(current_content)
+    extra: list[str] = []
+    for item in turns:
+        text = _string(item)
+        if not text or text == current:
+            continue
+        extra.append(f"用户: {text}")
+    if not extra:
+        return history[-10:]
+    return [*history, *extra][-10:]
 
 
 def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:

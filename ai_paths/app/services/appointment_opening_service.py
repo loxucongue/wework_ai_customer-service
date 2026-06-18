@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.graph.nodes.appointment_time_utils import available_time_values
+from app.graph.nodes.appointment_utils import extract_date_value
 from app.services.platform_agent_client import PlatformAgentClient
 
 
@@ -97,7 +98,7 @@ def _appointment_facts(
     request_context = _request_context(state)
     appointment_cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
     normalized_content = str(state.get("normalized_content") or "")
-    history_text = "\n".join(_recent_customer_texts(state))
+    history_text = "\n".join([*_recent_customer_texts(state), *_planner_known_texts(state)])
     preferred_time = str(
         _extract_time(normalized_content)
         or appointment_query.get("time")
@@ -133,6 +134,7 @@ def _appointment_facts(
             appointment_query.get("date")
             or appointment_cache.get("date")
             or appointment_cache.get("appointment_date")
+            or extract_date_value(history_text)
             or request_context.get("appointment_date")
             or ""
         ).strip(),
@@ -297,6 +299,23 @@ def _recent_customer_texts(state: dict[str, Any]) -> list[str]:
         if text:
             texts.append(text)
     return texts[:10]
+
+
+def _planner_known_texts(state: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for task_key in ("primary_task",):
+        task = state.get(task_key) if isinstance(state.get(task_key), dict) else {}
+        values = task.get("known_info") if isinstance(task, dict) else []
+        if isinstance(values, list):
+            texts.extend(str(item or "").strip() for item in values if str(item or "").strip())
+    secondary = state.get("secondary_tasks") if isinstance(state.get("secondary_tasks"), list) else []
+    for task in secondary:
+        if not isinstance(task, dict):
+            continue
+        values = task.get("known_info")
+        if isinstance(values, list):
+            texts.extend(str(item or "").strip() for item in values if str(item or "").strip())
+    return texts[:12]
 
 
 def _dry_run_result(facts: dict[str, Any]) -> dict[str, Any]:
