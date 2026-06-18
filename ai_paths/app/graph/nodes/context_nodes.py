@@ -90,6 +90,6 @@ def request_context_from_state(state: AgentState) -> dict[str, Any]:
         "appointment_time": state.get("appointment_time"),
     }
     for key, value in fields.items():
-        if value not in (None, ""):
+        if key not in context and value not in (None, ""):
             context[key] = value
     return context

@@ -151,6 +151,8 @@ class StoreService:
             candidates = [row for row in candidates if store_text.row_matches_city(row, city)]
         elif query_matches:
             candidates = query_matches if wants_status else [row for row in query_matches if store_format.is_public_store(row)]
+        else:
+            candidates = []
 
         if query_info.area_or_landmark and candidates:
             candidates = sorted(
@@ -174,6 +176,8 @@ class StoreService:
         source = "platform_agent.store_index" if stores else "platform_agent.store_index_no_match"
         missing = []
         if query_info.area_or_landmark and not city:
+            missing.append("city")
+        if not (city or requested_name or query_matches or query_info.area_or_landmark):
             missing.append("city")
         return {
             "query": query,
