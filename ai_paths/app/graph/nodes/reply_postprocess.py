@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 from typing import Any
@@ -11,6 +11,9 @@ from app.graph.runtime_context import contextual_price_project
 from app.graph.nodes.reply_validation import message_content_order_id, message_content_store_id, message_content_text
 from app.graph.planner.runtime_plan import planner_handoff, planner_task_views
 from app.graph.state import AgentState
+
+MAX_TEXT_MESSAGES = 2
+MAX_IMAGE_MESSAGES = 2
 
 def postprocess_reply_messages(
     state: AgentState,
@@ -57,7 +60,7 @@ def postprocess_reply_messages(
             continue
 
         if msg_type == "text":
-            if text_count >= 2:
+            if text_count >= MAX_TEXT_MESSAGES:
                 reasons.append("text_limit")
                 continue
             content = content.strip()
@@ -94,7 +97,7 @@ def postprocess_reply_messages(
                 continue
             seen_text.add(normalized)
         elif msg_type == "image":
-            if image_count >= 1:
+            if image_count >= MAX_IMAGE_MESSAGES:
                 reasons.append("image_limit")
                 continue
             if content not in _case_image_urls_from_state(state):

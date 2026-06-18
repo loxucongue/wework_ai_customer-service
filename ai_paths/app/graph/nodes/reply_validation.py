@@ -8,6 +8,8 @@ from app.graph.nodes.common import renumber_messages
 
 VISIBLE_MESSAGE_TYPES = {"text", "image"}
 ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff", "book_order", "store_address"}
+MAX_TEXT_MESSAGES = 2
+MAX_IMAGE_MESSAGES = 2
 
 
 def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -15,7 +17,8 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(messages, list) or not messages:
         raise ValueError("Model JSON missing reply_messages")
     result: list[dict[str, Any]] = []
-    visible_count = 0
+    text_count = 0
+    image_count = 0
     has_handoff = False
     for item in messages:
         if not isinstance(item, dict):
@@ -56,8 +59,6 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 }
             )
             continue
-        if visible_count >= 3:
-            continue
         content = message_content_text(item.get("content"))
         if not content:
             continue
@@ -65,14 +66,25 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
             image_url = extract_image_url_from_text(content)
             if image_url:
                 text_without_url = strip_image_url_from_text(content, image_url)
-                if text_without_url:
+                if text_without_url and text_count < MAX_TEXT_MESSAGES:
                     result.append({"type": "text", "order": len(result) + 1, "content": text_without_url})
-                    visible_count += 1
-                result.append({"type": "image", "order": len(result) + 1, "content": image_url})
-                visible_count += 1
+                    text_count += 1
+                if image_count < MAX_IMAGE_MESSAGES:
+                    result.append({"type": "image", "order": len(result) + 1, "content": image_url})
+                    image_count += 1
                 continue
+            if text_count >= MAX_TEXT_MESSAGES:
+                continue
+            result.append({"type": "text", "order": len(result) + 1, "content": content})
+            text_count += 1
+            continue
+        if msg_type == "image":
+            if image_count >= MAX_IMAGE_MESSAGES:
+                continue
+            result.append({"type": "image", "order": len(result) + 1, "content": content})
+            image_count += 1
+            continue
         result.append({"type": msg_type, "order": len(result) + 1, "content": content})
-        visible_count += 1
     if not result:
         raise ValueError("Model reply_messages are empty")
     return renumber_messages(result)
