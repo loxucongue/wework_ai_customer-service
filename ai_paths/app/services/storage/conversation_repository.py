@@ -114,3 +114,15 @@ class ConversationRepositoryMixin:
                 for row in runs
             ],
         }
+
+    def clear_customer_conversations(self, customer_id: str) -> int:
+        customer = str(customer_id or "").strip()
+        if not customer:
+            return 0
+        with self.store.connect() as conn:
+            rows = conn.execute("SELECT id FROM conversations WHERE customer_id=?", (customer,)).fetchall()
+            conversation_ids = [str(row["id"] or "") for row in rows if str(row["id"] or "")]
+            if not conversation_ids:
+                return 0
+            conn.executemany("DELETE FROM conversations WHERE id=?", [(conversation_id,) for conversation_id in conversation_ids])
+        return len(conversation_ids)

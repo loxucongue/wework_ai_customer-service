@@ -1,7 +1,7 @@
 import asyncio
 from typing import Any
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, status
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
 from app.chat_runtime import ChatRuntime
@@ -186,9 +186,15 @@ async def admin_customer_memory(customer_id: str) -> dict[str, Any]:
 
 
 @app.delete("/admin/customers/{customer_id}/memory", dependencies=[Depends(require_api_key)])
-async def admin_clear_customer_memory(customer_id: str) -> dict[str, Any]:
+async def admin_clear_customer_memory(customer_id: str, include_conversations: bool = Query(default=False)) -> dict[str, Any]:
     memory_store.clear(customer_id)
-    return {"status": "ok", "customer_id": customer_id}
+    cleared_conversations = repository.clear_customer_conversations(customer_id) if include_conversations else 0
+    return {
+        "status": "ok",
+        "customer_id": customer_id,
+        "include_conversations": include_conversations,
+        "cleared_conversations": cleared_conversations,
+    }
 
 
 @app.get("/admin/runs/{request_id}", dependencies=[Depends(require_api_key)])

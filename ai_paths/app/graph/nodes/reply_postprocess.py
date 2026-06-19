@@ -360,11 +360,6 @@ def _should_send_store_address_now(state: AgentState, store_id: str) -> bool:
         "忘了",
         "再发",
         "重新发",
-        "哪家",
-        "最近",
-        "离我近",
-        "离我最近",
-        "附近",
     )
     if any(term in content for term in explicit_resend_terms):
         return True
@@ -488,6 +483,11 @@ def _sanitize_sales_close_risk_terms(text: str) -> str:
         "无需授权": "按页面提示操作",
         "不用确认": "按页面提示操作",
         "自动扣款": "按页面提示操作",
+        "老客价": "这次给您核到的价格",
+        "老客": "您这边",
+        "新客": "您这边",
+        "订单记录": "系统信息",
+        "上次订单": "系统信息",
     }
     for source, target in replacements.items():
         content = content.replace(source, target)

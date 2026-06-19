@@ -29,8 +29,6 @@ class AppointmentOpeningService:
             return {"status": "missing_info", "missing": missing, "facts": _public_facts(facts)}
         if not _customer_confirmed_opening(content):
             return {"status": "needs_customer_confirmation", "facts": _public_facts(facts)}
-        if facts.get("preferred_time_available") is False:
-            return {"status": "preferred_time_unavailable", "facts": _public_facts(facts)}
         if not self.platform_client or not self.platform_client.available:
             return {
                 "status": "platform_unavailable",
@@ -352,16 +350,11 @@ def _missing_fields(facts: dict[str, Any]) -> list[str]:
         "customer_add_wechat_id": "加微记录",
         "user_id": "员工ID",
         "store_id": "门店",
-        "date": "到店日期",
-        "time": "到店时间",
         "customer_name": "姓名",
         "customer_phone": "电话",
         "prepay": "预约金",
     }
-    missing = [label for key, label in required.items() if not facts.get(key)]
-    if facts.get("date") and facts.get("time") and facts.get("preferred_time_available") is not True:
-        missing.append("真实档期确认")
-    return missing
+    return [label for key, label in required.items() if not facts.get(key)]
 
 
 def _customer_confirmed_opening(content: str) -> bool:
