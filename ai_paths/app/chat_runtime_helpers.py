@@ -5,11 +5,11 @@ from typing import Any
 from app.graph.state import AgentState
 
 
-def safe_repository_call(func: Any, **kwargs: Any) -> None:
+def safe_repository_call(func: Any, *args: Any, **kwargs: Any) -> Any | None:
     try:
-        func(**kwargs)
+        return func(*args, **kwargs)
     except Exception:
-        return
+        return None
 
 
 def failed_state_from_exception(initial_state: AgentState, exc: Exception) -> AgentState:

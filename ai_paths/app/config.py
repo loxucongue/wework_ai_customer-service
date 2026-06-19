@@ -64,6 +64,14 @@ class Settings(BaseSettings):
 
     log_dir: Path = Path("logs/runs")
     trace_log_dir: Path | None = Field(default=None, alias="AI_PATHS_TRACE_LOG_DIR")
+    outreach_system_base_url: str = Field(
+        default="https://test.wecom.cs.4ba.cn",
+        alias="OUTREACH_SYSTEM_BASE_URL",
+    )
+    outreach_system_token: str = Field(default="", alias="OUTREACH_SYSTEM_TOKEN", repr=False)
+    outreach_system_timeout_seconds: int = Field(default=12, alias="OUTREACH_SYSTEM_TIMEOUT_SECONDS")
+    outreach_scheduler_enabled: bool = Field(default=False, alias="OUTREACH_SCHEDULER_ENABLED")
+    outreach_scan_interval_seconds: int = Field(default=600, alias="OUTREACH_SCAN_INTERVAL_SECONDS")
 
 
 @lru_cache(maxsize=1)

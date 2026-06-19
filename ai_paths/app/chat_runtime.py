@@ -38,6 +38,28 @@ class ChatRuntime:
             content=request.content,
             file_image=request.file_image,
         )
+        safe_repository_call(
+            self._repository.touch_customer_message_time,
+            request.customer_id,
+            field="last_customer_message_at",
+        )
+        active_plan = safe_repository_call(
+            self._repository.get_active_outreach_plan_for_customer,
+            request.customer_id,
+        )
+        if isinstance(active_plan, dict) and active_plan.get("plan", {}).get("status") in {"active", "waiting"}:
+            plan_id = str(active_plan.get("plan", {}).get("id") or "")
+            if plan_id:
+                safe_repository_call(self._repository.update_outreach_plan_status, plan_id, "paused")
+                safe_repository_call(
+                    self._repository.add_outreach_event,
+                    plan_id=plan_id,
+                    task_id="",
+                    customer_id=request.customer_id,
+                    event_type="customer_replied",
+                    event_summary="Customer replied during outreach plan",
+                    payload={"request_id": request_id},
+                )
         initial_state: AgentState = {
             "request_id": request_id,
             "customer_id": request.customer_id,
@@ -104,6 +126,16 @@ class ChatRuntime:
             conversation_id=conversation_id,
             request_id=request_id,
             reply_messages=[message.model_dump() for message in reply_messages],
+        )
+        safe_repository_call(
+            self._repository.touch_customer_message_time,
+            request.customer_id,
+            field="last_ai_reply_at",
+        )
+        safe_repository_call(
+            self._repository.touch_customer_message_time,
+            request.customer_id,
+            field="last_staff_message_at",
         )
         safe_repository_call(
             self._repository.save_run,

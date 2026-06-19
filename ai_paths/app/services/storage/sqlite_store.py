@@ -18,6 +18,26 @@ class SQLiteStore:
         schema = self.schema_path.read_text(encoding="utf-8")
         with self.connect() as conn:
             conn.executescript(schema)
+            self._ensure_customer_memory_columns(conn)
+
+    @staticmethod
+    def _ensure_customer_memory_columns(conn: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(customer_memory)").fetchall()
+        }
+        columns = {
+            "last_customer_message_at": "TEXT NOT NULL DEFAULT ''",
+            "last_staff_message_at": "TEXT NOT NULL DEFAULT ''",
+            "last_ai_reply_at": "TEXT NOT NULL DEFAULT ''",
+            "last_manual_takeover_at": "TEXT NOT NULL DEFAULT ''",
+            "last_outreach_at": "TEXT NOT NULL DEFAULT ''",
+            "outreach_status": "TEXT NOT NULL DEFAULT 'none'",
+            "outreach_plan_id": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE customer_memory ADD COLUMN {name} {definition}")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

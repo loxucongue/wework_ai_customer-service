@@ -288,6 +288,44 @@ export async function getAiPathsRun(requestId: string) {
   });
 }
 
+export async function callAiPathsAdmin(path: string, init: RequestInit = {}) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type") && init.body) {
+    headers.set("Content-Type", "application/json; charset=utf-8");
+  }
+  if (process.env.AI_PATHS_API_KEY) {
+    headers.set("Authorization", `Bearer ${process.env.AI_PATHS_API_KEY}`);
+  }
+  return fetch(`${apiBase.replace(/\/$/, "")}${path}`, {
+    ...init,
+    headers,
+    cache: "no-store",
+  });
+}
+
+export async function proxyAiPathsAdmin(path: string, init: RequestInit = {}) {
+  try {
+    const response = await callAiPathsAdmin(path, init);
+    const text = await response.text();
+    if (!response.ok) {
+      return jsonResponse(
+        {
+          error: `AI Paths API returned ${response.status}`,
+          detail: text,
+        },
+        response.status
+      );
+    }
+    return new Response(text, {
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    });
+  } catch (error) {
+    console.error("AI Paths admin call failed:", error);
+    return jsonResponse({ error: "Failed to call AI Paths admin API" }, 500);
+  }
+}
+
 export async function proxyAiPathsChatRaw(body: ChatRequestBody) {
   try {
     const response = await callAiPathsBackend(body);

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Activity, Bot, Search, Sparkles, Settings, UserRoundSearch, UserRoundX, X } from "lucide-react";
+import { Activity, Bot, ListChecks, Search, Sparkles, Settings, UserRoundSearch, UserRoundX, X } from "lucide-react";
 import Link from "next/link";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatInput } from "./chat-input";
@@ -578,6 +578,15 @@ export function ChatMain() {
               >
                 <Activity className="h-3.5 w-3.5" />
                 日志
+              </button>
+            </Link>
+            <Link href="/outreach">
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              >
+                <ListChecks className="h-3.5 w-3.5" />
+                主动唤醒
               </button>
             </Link>
             <Link href="/config">
