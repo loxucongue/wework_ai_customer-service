@@ -278,6 +278,46 @@ def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
     return tools
 
 
+def _case_studies_query_from_state(state: AgentState, query: str) -> str:
+    """Enrich only case material retrieval; keep sales_talk_qa on the original wording."""
+    base = str(query or "").strip()
+    context_parts = [base]
+    for item in (state.get("conversation_history") or [])[-8:]:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
+        if text:
+            context_parts.append(text)
+    context = " ".join(context_parts)
+
+    hints: list[str] = []
+    concern_terms = (
+        "黑色素",
+        "斑点",
+        "淡斑",
+        "色沉",
+        "晒斑",
+        "老年斑",
+        "雀斑",
+        "黄褐斑",
+        "肤色不均",
+    )
+    for term in concern_terms:
+        if term in context:
+            hints.append(term)
+
+    if any(term in context for term in ("斑", "黑色素", "色沉")) and "淡斑" not in hints:
+        hints.append("淡斑")
+    if any(term in base for term in ("效果", "案例", "做完", "真实", "参考", "对比", "明显", "能看到")):
+        hints.extend(["客户做完", "效果对比", "真实案例"])
+    if not hints:
+        hints.extend(["淡斑", "斑点", "效果对比"])
+
+    values = list(dict.fromkeys([base] + hints))
+    return " ".join(part for part in values if part).strip()[:160]
+
+
 def enforce_required_tools(
     state: AgentState,
     tasks: list[dict[str, Any]],
@@ -308,7 +348,11 @@ def enforce_required_tools(
             if kb_name and str(existing.get("kb_name") or "").strip() != kb_name:
                 continue
             purpose = str(tool.get("purpose") or "").strip()
-            if query and (name == "store_lookup" or not str(existing.get("query") or "").strip()):
+            if query and (
+                name == "store_lookup"
+                or (name == "kb_search" and kb_name == "case_studies")
+                or not str(existing.get("query") or "").strip()
+            ):
                 existing["query"] = query
             if name == "store_lookup" and distance_origin:
                 existing["distance_origin"] = distance_origin
@@ -347,11 +391,12 @@ def enforce_required_tools(
         )
 
     def ensure_case_studies() -> None:
+        query = _case_studies_query_from_state(state, original_user_query or fallback_query)
         add_tool(
             {
                 "name": "kb_search",
                 "kb_name": "case_studies",
-                "query": original_user_query or fallback_query,
+                "query": query,
                 "purpose": "Need real case materials before answering effect or comparison requests",
             }
         )

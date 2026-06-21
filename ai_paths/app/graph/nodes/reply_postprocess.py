@@ -670,8 +670,19 @@ def _has_unbacked_case_image_promise(state: AgentState, text: str) -> bool:
         "给您参考",
         "给你参考",
         "参考下",
+        "参考一下",
+        "发您参考",
+        "发你参考",
+        "看一下",
+        "看下",
+        "您看",
+        "你看",
+        "同类参考",
+        "同类改善",
+        "做完的同类参考",
+        "参加活动顾客做完",
     )
-    case_terms = ("案例", "效果", "图片", "图", "对比", "同类情况", "类似情况", "改善")
+    case_terms = ("案例", "效果", "图片", "图", "对比", "同类情况", "类似情况", "改善", "参考", "做完")
     if not any(term in content for term in send_terms):
         return False
     if not any(term in content for term in case_terms):
