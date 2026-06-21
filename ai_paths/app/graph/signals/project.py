@@ -99,7 +99,29 @@ def has_case_request(content: str) -> bool:
         "有图吗",
         "有照片吗",
     )
-    return any(term in content for term in case_terms)
+    if any(term in content for term in case_terms):
+        return True
+    if "效果" in content and any(
+        term in content
+        for term in (
+            "能看到",
+            "看得到",
+            "看得到吗",
+            "看出来",
+            "明显吗",
+            "明显不",
+            "怎么样",
+            "好不好",
+            "参考",
+            "真实",
+        )
+    ):
+        return True
+    if any(term in content for term in ("我这种", "这种情况", "类似情况", "同类情况")) and any(
+        term in content for term in ("能改善", "有用", "有效", "明显", "黑色素", "斑")
+    ):
+        return True
+    return False
 
 
 def has_project_process_question(content: str) -> bool:

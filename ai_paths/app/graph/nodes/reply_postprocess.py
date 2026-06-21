@@ -938,13 +938,61 @@ def _recent_image_urls_from_state(state: AgentState) -> list[str]:
 
 
 def _professional_assist_reason(state: AgentState) -> str:
+    content = str(state.get("normalized_content") or "")
     for source in _professional_assist_sources(state):
         if not isinstance(source, dict) or str(source.get("status") or "").strip() != "requested":
             continue
         reason = str(source.get("reason") or source.get("required_internal_action") or "").strip()
-        if reason:
+        if reason and _is_real_professional_assist_reason(reason, content):
             return reason[:180]
     return ""
+
+
+def _is_real_professional_assist_reason(reason: str, content: str) -> bool:
+    text = f"{reason} {content}"
+    if any(
+        term in text
+        for term in (
+            "普通售前",
+            "售前顾虑",
+            "销售顾虑",
+            "家属反对",
+            "老公说",
+            "怕被骗",
+            "靠不靠谱",
+            "不应交给专业",
+            "不需要专业",
+        )
+    ):
+        return any(term in text for term in ("退款", "退钱", "投诉", "多收", "付款异常", "订单异常", "红肿", "疼痛", "渗液"))
+    return any(
+        term in text
+        for term in (
+            "退款",
+            "退钱",
+            "投诉",
+            "维权",
+            "骗钱",
+            "多收",
+            "乱扣",
+            "付款异常",
+            "订单异常",
+            "退款状态",
+            "订单状态",
+            "严重不适",
+            "流脓",
+            "发热",
+            "剧痛",
+            "感染",
+            "孕",
+            "哺乳",
+            "未成年",
+            "人工",
+            "真人",
+            "换人",
+            "专业同事",
+        )
+    )
 
 
 def _professional_assist_sources(state: AgentState) -> list[dict[str, Any]]:
