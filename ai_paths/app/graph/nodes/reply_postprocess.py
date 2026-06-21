@@ -7,6 +7,7 @@ from app.graph import reply_filters
 from app.graph.nodes.common import looks_garbled_text, renumber_messages
 from app.graph.nodes.memory_usage_policy import order_session_state
 from app.graph.nodes.store_context import should_use_known_store_context, should_use_recent_store_fact_context
+from app.graph.signals.project import has_effect_trust_case_trigger
 from app.graph.runtime_context import contextual_price_project
 from app.graph.nodes.reply_validation import message_content_order_id, message_content_store_id, message_content_text
 from app.graph.planner.runtime_plan import planner_handoff, planner_task_views
@@ -332,10 +333,17 @@ def _explicit_store_address_request(state: AgentState) -> bool:
         "地址",
         "定位",
         "位置",
+        "位置在哪",
+        "地址在哪",
+        "在哪",
         "导航",
         "路线",
         "怎么去",
         "停车",
+        "发我",
+        "发给我",
+        "给我发",
+        "发一下",
         "找不到",
         "再发",
         "重新发",
@@ -355,10 +363,17 @@ def _should_send_store_address_now(state: AgentState, store_id: str) -> bool:
     explicit_resend_terms = (
         "地址",
         "定位",
+        "位置在哪",
+        "地址在哪",
+        "在哪",
         "位置发",
         "发位置",
         "发定位",
         "发地址",
+        "发我",
+        "发给我",
+        "给我发",
+        "发一下",
         "导航",
         "路线",
         "怎么去",
@@ -596,6 +611,8 @@ def _case_image_message_for_state(state: AgentState, messages: list[dict[str, An
 
 def _looks_like_case_or_effect_turn(state: AgentState) -> bool:
     text = str(state.get("normalized_content") or "")
+    if has_effect_trust_case_trigger(text):
+        return True
     if any(
         term in text
         for term in (
@@ -621,7 +638,7 @@ def _looks_like_case_or_effect_turn(state: AgentState) -> bool:
             "case" in joined
             or "effect" in joined
             or "show_case" in joined
-            or any(term in joined for term in ("案例", "效果", "对比", "方法确认"))
+            or any(term in joined for term in ("案例", "效果", "前后对比", "效果对比", "案例对比"))
         ):
             return True
     return False

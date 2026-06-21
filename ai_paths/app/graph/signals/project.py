@@ -133,6 +133,62 @@ def has_case_request(content: str) -> bool:
     return False
 
 
+def has_effect_trust_case_trigger(content: str) -> bool:
+    """Detect sales situations where an effect case is useful even if the customer did not ask for a picture."""
+    if not content:
+        return False
+    text = re.sub(r"\s+", "", str(content or ""))
+    if not text:
+        return False
+
+    # Avoid turning process/payment questions into case-image requests just because they mention "done".
+    if any(term in text for term in ("做完付款", "做付", "操作多久", "流程多久", "要做多久", "大概要多久")) and not any(
+        term in text for term in ("没效果", "效果不好", "担心效果", "怕没效果")
+    ):
+        return False
+
+    prior_ineffective = any(
+        term in text
+        for term in (
+            "做过没效果",
+            "做了没效果",
+            "做了几次没效果",
+            "以前做过没效果",
+            "之前做过没效果",
+            "一点效果没有",
+            "没有效果",
+            "没啥效果",
+            "不见效果",
+            "反弹",
+        )
+    )
+    effect_worry = any(
+        term in text
+        for term in (
+            "担心效果",
+            "怕没效果",
+            "效果不好",
+            "效果好吗",
+            "有效果吗",
+            "有没有效果",
+            "真的有效",
+            "效果保障",
+            "能维持",
+            "会反弹",
+            "反弹吗",
+            "能不能看到",
+            "看得出来吗",
+        )
+    )
+    competitor_effect = any(term in text for term in ("别家", "别人家", "其他家", "他们家", "对面")) and any(
+        term in text for term in ("效果", "做得好", "更好", "明显")
+    )
+    similar_result = any(term in text for term in ("我这种", "这种斑", "这种情况", "黑色素", "斑点")) and any(
+        term in text for term in ("能不能好", "能改善", "会不会好", "明显", "效果")
+    )
+    return prior_ineffective or effect_worry or competitor_effect or similar_result
+
+
 def has_project_process_question(content: str) -> bool:
     if not content:
         return False

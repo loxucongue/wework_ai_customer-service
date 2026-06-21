@@ -82,7 +82,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "handoff": handoff,
         "appointment_context": appointment_context,
         "fact_envelope": fact_envelope,
-        "fact_notes": _fact_notes_for_model(fact_envelope),
+        "fact_notes": _fact_notes_for_model(state, fact_envelope),
     }
     return clean_model_value(payload, max_string_chars=1800)
 
@@ -386,6 +386,7 @@ def _sanitize_planner_context_for_reply(value: Any) -> Any:
 
 
 def _fact_notes_for_model(
+    state: AgentState,
     fact_envelope: dict[str, Any],
 ) -> list[str]:
     notes: list[str] = []
@@ -411,6 +412,9 @@ def _fact_notes_for_model(
         notes.append(
             f"本轮门店事实已收敛为唯一推荐门店：{store_policy.get('selected_store_name') or recommended_store.get('name') or ''}；不要提其他门店为更近或更方便。"
         )
+    recent_store_note = _recent_store_address_note_for_model(state, structured_facts)
+    if recent_store_note:
+        notes.append(recent_store_note)
     if isinstance(store_status, dict) and store_status.get("needs_area_or_landmark"):
         city = str(store_status.get("city") or "").strip()
         if city:
@@ -460,6 +464,51 @@ def _fact_notes_for_model(
         notes.append("本轮已有专业同事协助事实；客户可见回复应先承接当前诉求，再说明会协助核对。")
 
     return notes[:6]
+
+
+def _recent_store_address_note_for_model(
+    state: AgentState,
+    structured_facts: dict[str, Any],
+) -> str:
+    recommended_store = structured_facts.get("recommended_store") or {}
+    if not isinstance(recommended_store, dict):
+        recommended_store = {}
+    store_policy = structured_facts.get("store_candidate_policy") or {}
+    if not isinstance(store_policy, dict):
+        store_policy = {}
+
+    target_id = str(
+        recommended_store.get("id")
+        or recommended_store.get("store_id")
+        or store_policy.get("selected_store_id")
+        or ""
+    ).strip()
+    target_name = str(
+        recommended_store.get("name")
+        or store_policy.get("selected_store_name")
+        or ""
+    ).strip()
+    if not target_id and not target_name:
+        return ""
+
+    events = [item for item in state.get("history_events", []) if isinstance(item, dict)]
+    for event in reversed(events[-12:]):
+        if str(event.get("event_type") or "").strip() != "store_address_sent":
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        sent_id = str(facts.get("store_id") or "").strip()
+        sent_name = str(facts.get("store_name") or "").strip()
+        same_store = bool(target_id and sent_id and target_id == sent_id) or bool(
+            target_name and sent_name and target_name == sent_name
+        )
+        if not same_store:
+            continue
+        store_label = target_name or sent_name or target_id
+        return (
+            f"客户最近已收到{store_label}的门店卡片；如果本轮只是问哪家最近、哪家更方便或是不是这家，"
+            "直接说明就是刚刚发的这家，不要重复发卡片；如果客户明确说再发地址、位置、导航或发我，则可以再次输出 store_address。"
+        )
+    return ""
 
 
 def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:

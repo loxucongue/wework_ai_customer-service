@@ -13,7 +13,7 @@ from app.graph.nodes.store_context import (
     store_query_from_state,
 )
 from app.graph.planner.planner_contract import ALLOWED_KBS, ALLOWED_TOOLS
-from app.graph.signals.project import has_case_request
+from app.graph.signals.project import has_case_request, has_effect_trust_case_trigger
 from app.graph.state import AgentState
 from app.policies.constants import APPOINTMENT_KEYWORDS, CITY_NAMES, STORE_AREA_TERMS, STORE_KEYWORDS
 from app.policies.sop_rules import normalize_sop_stage
@@ -427,7 +427,7 @@ def enforce_required_tools(
         ensure_available_time()
     if needs_appointment_create_request(state, original_user_query):
         ensure_appointment_create()
-    if has_case_request(original_user_query):
+    if has_case_request(original_user_query) or has_effect_trust_case_trigger(original_user_query):
         ensure_case_studies()
 
     # Policy/SOP markers are a second safety net when the planner type drifts.
