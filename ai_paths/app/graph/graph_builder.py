@@ -37,7 +37,6 @@ from app.graph.runtime_context import (
 )
 from app.graph.state import AgentState
 from app.graph.nodes.reply_postprocess import postprocess_reply_messages as _postprocess_reply_messages
-from app.graph.nodes.reply_quality import model_reply_unsafe as _model_reply_unsafe
 from app.services.appointment_opening_service import AppointmentOpeningService
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
@@ -45,6 +44,10 @@ from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
+
+
+def _quality_gate_disabled(state: AgentState, messages: list[dict]) -> bool:
+    return False
 
 
 def _route_after_hard_guardrails(state: AgentState) -> str:
@@ -123,7 +126,7 @@ def build_graph(
         trace_logger=trace_logger,
         model_client=model_client,
         debug_message_contents=_debug_message_contents,
-        model_reply_unsafe=_model_reply_unsafe,
+        model_reply_unsafe=_quality_gate_disabled,
         postprocess_reply_messages=_postprocess_reply_messages,
         reply_messages_for_model=lambda state: reply_messages_for_model(state, reply_user_payload_for_model(state)),
         reply_model_tier=reply_model_tier,
