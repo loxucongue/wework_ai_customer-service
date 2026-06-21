@@ -88,6 +88,11 @@ def has_case_request(content: str) -> bool:
         "对比案例",
         "客户效果",
         "做完之后的效果",
+        "真实做完的效果",
+        "真实做完效果",
+        "真实效果",
+        "真实案例",
+        "真实对比",
         "恢复后的效果",
         "发我看看效果",
         "发个效果",
@@ -104,16 +109,20 @@ def has_case_request(content: str) -> bool:
     if "效果" in content and any(
         term in content
         for term in (
+            "一般",
             "能看到",
             "看得到",
             "看得到吗",
             "看出来",
+            "看出来吗",
             "明显吗",
             "明显不",
             "怎么样",
             "好不好",
             "参考",
             "真实",
+            "有吗",
+            "有没有",
         )
     ):
         return True

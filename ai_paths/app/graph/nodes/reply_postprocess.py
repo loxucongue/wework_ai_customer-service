@@ -169,7 +169,8 @@ def _handoff_message_for_state(state: AgentState) -> dict[str, Any] | None:
     handoff = planner_handoff(state)
     if handoff.get("needed"):
         reason = str(handoff.get("reason") or "").strip() or "当前问题需要专业同事继续协助核对"
-        return {"handoff_reason": reason}
+        if _is_real_professional_assist_reason(reason, str(state.get("normalized_content") or "")):
+            return {"handoff_reason": reason}
 
     assist_reason = _professional_assist_reason(state)
     if not assist_reason:
