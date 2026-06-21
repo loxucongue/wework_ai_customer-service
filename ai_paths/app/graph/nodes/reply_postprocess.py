@@ -702,6 +702,8 @@ def _has_unbacked_store_claim_text(state: AgentState, text: str) -> bool:
     content = str(text or "").strip()
     if not content:
         return False
+    if _is_safe_city_store_area_prompt(state, content):
+        return False
     claim_terms = (
         "有门店",
         "有店",
@@ -741,6 +743,39 @@ def _has_unbacked_store_claim_text(state: AgentState, text: str) -> bool:
     if re.search(r"(?:门店|店).{0,12}(?:地址|位置|定位).{0,8}(?:发|给)", content):
         return True
     return False
+
+
+def _is_safe_city_store_area_prompt(state: AgentState, text: str) -> bool:
+    structured = _structured_facts_from_state(state)
+    status = structured.get("store_lookup_status")
+    if not isinstance(status, dict):
+        return False
+    if str(status.get("data_authority") or "").strip().lower() != "platform":
+        return False
+    if not bool(status.get("has_city_store_candidates")) or not bool(status.get("needs_area_or_landmark")):
+        return False
+    content = str(text or "")
+    asks_area = any(term in content for term in ("哪个区", "哪一区", "什么区", "附近", "地标", "商圈", "机场", "高铁", "科技园"))
+    mentions_city_store = bool(re.search(r"(?:有店|有门店|有.{0,4}(?:店|门店))", content))
+    unsafe_promise = any(
+        term in content
+        for term in (
+            "地址发",
+            "位置发",
+            "定位发",
+            "发地址",
+            "发位置",
+            "发定位",
+            "推荐最近",
+            "最近门店",
+            "最近的门店",
+            "离您最近",
+            "离你最近",
+            "离您更方便",
+            "离你更方便",
+        )
+    )
+    return mentions_city_store and asks_area and not unsafe_promise
 
 
 def _recent_assistant_texts_for_dedupe(state: AgentState) -> list[str]:

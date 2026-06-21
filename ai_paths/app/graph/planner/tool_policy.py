@@ -631,6 +631,8 @@ def needs_store_lookup_request(state: AgentState, content: str) -> bool:
         return False
     if _looks_like_fee_or_price_only_turn(content) and not _has_specific_store_or_location_signal(content):
         return False
+    if _looks_like_profile_ready_for_store_match(state, content):
+        return True
     asks_store_fact = any(term in content for term in STORE_FACT_TERMS) or any(
         term in content for term in _STORE_FACT_TERMS_UTF8
     )
@@ -644,6 +646,41 @@ def needs_store_lookup_request(state: AgentState, content: str) -> bool:
     if asks_store_fact or has_location_hint or has_district_or_county_store_question:
         return True
     return should_use_known_store_context(content) or should_use_recent_store_fact_context(content, state)
+
+
+def _looks_like_profile_ready_for_store_match(state: AgentState, content: str) -> bool:
+    text = str(content or "")
+    profile_ready_terms = (
+        "画像完整",
+        "完整度达标",
+        "完整度达80",
+        "城市+困扰",
+        "城市、困扰",
+        "年龄+预算",
+        "项目偏好",
+    )
+    if any(term in text for term in profile_ready_terms):
+        return True
+    for source in (
+        state.get("decision_stage"),
+        state.get("sop_stage"),
+        state.get("sop_step"),
+        state.get("active_scene_id"),
+        state.get("policy_family_id"),
+        state.get("exact_policy_id"),
+        state.get("intent"),
+        state.get("subflow"),
+    ):
+        value = str(source or "")
+        if any(term in value for term in ("门店匹配", "门店推进", "到店推进", "预约推进")):
+            return True
+    profile = state.get("customer_profile")
+    if isinstance(profile, dict):
+        for key in ("decision_stage", "next_sales_strategy", "summary"):
+            value = str(profile.get(key) or "")
+            if any(term in value for term in ("门店匹配", "到店", "预约")):
+                return True
+    return False
 
 
 def needs_appointment_time_request(content: str) -> bool:
