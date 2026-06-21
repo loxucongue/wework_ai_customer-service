@@ -147,14 +147,105 @@ def _compact_fact_envelope_for_reply(fact_envelope: dict[str, Any]) -> dict[str,
 
     compact_structured["price_facts"] = _compact_price_facts(structured.get("price_facts"))
     compact_structured["active_offer_context"] = _compact_active_offer_context()
+    selected_store_policy = _selected_store_policy_for_reply(compact_structured)
+    usable_facts = list(envelope.get("usable_facts") or [])[:6]
+    if selected_store_policy:
+        compact_structured = _restrict_store_candidates_for_reply(compact_structured, selected_store_policy)
+        usable_facts = _restrict_store_usable_facts_for_reply(usable_facts, selected_store_policy)
 
     return {
-        "usable_facts": list(envelope.get("usable_facts") or [])[:6],
+        "usable_facts": usable_facts,
         "missing_facts": list(envelope.get("missing_facts") or [])[:4],
         "risky_facts": list(envelope.get("risky_facts") or [])[:4],
         "unsupported_claims": list(envelope.get("unsupported_claims") or [])[:4],
         "structured_facts": compact_structured,
     }
+
+
+def _selected_store_policy_for_reply(structured: dict[str, Any]) -> dict[str, str]:
+    recommended = structured.get("recommended_store")
+    status = structured.get("store_lookup_status")
+    if not isinstance(recommended, dict) or not isinstance(status, dict):
+        return {}
+    if str(status.get("data_authority") or "").strip().lower() != "platform":
+        return {}
+    if bool(status.get("needs_area_or_landmark")) or bool(status.get("no_store_match_confirmed")):
+        return {}
+    store_id = str(recommended.get("id") or recommended.get("store_id") or "").strip()
+    store_name = str(recommended.get("name") or "").strip()
+    if not store_id and not store_name:
+        return {}
+    granularity = str(status.get("location_granularity") or "").strip()
+    distance_required = bool(status.get("distance_lookup_required"))
+    distance_ok = str(status.get("distance_lookup_status") or "").strip().lower() == "ok"
+    if distance_required or distance_ok or granularity in {"area_or_landmark", "store_name"}:
+        return {"store_id": store_id, "store_name": store_name}
+    return {}
+
+
+def _restrict_store_candidates_for_reply(
+    structured: dict[str, Any],
+    selected: dict[str, str],
+) -> dict[str, Any]:
+    result = dict(structured)
+    store_id = str(selected.get("store_id") or "").strip()
+    store_name = str(selected.get("store_name") or "").strip()
+    recommended = result.get("recommended_store") if isinstance(result.get("recommended_store"), dict) else {}
+    if recommended:
+        result["store_facts"] = [recommended]
+    result["distance_facts"] = [
+        item
+        for item in (result.get("distance_facts") or [])
+        if isinstance(item, dict)
+        and (
+            (store_id and str(item.get("store_id") or item.get("id") or "").strip() == store_id)
+            or (store_name and str(item.get("name") or "").strip() == store_name)
+        )
+    ][:1]
+    scripts = result.get("sales_talk_scripts")
+    if isinstance(scripts, list):
+        conflicting_names = {
+            str(item.get("name") or "").strip()
+            for item in (structured.get("store_facts") or [])
+            if isinstance(item, dict)
+            and str(item.get("name") or "").strip()
+            and str(item.get("name") or "").strip() != store_name
+        }
+        result["sales_talk_scripts"] = [
+            item
+            for item in scripts
+            if isinstance(item, dict)
+            and not any(
+                name in " ".join(str(item.get(key) or "") for key in ("matched_question", "business_logic", "sales_script"))
+                for name in conflicting_names
+            )
+        ]
+    result["store_candidate_policy"] = {
+        "selected_store_only": True,
+        "selected_store_id": store_id,
+        "selected_store_name": store_name,
+        "reason": "distance_or_specific_store_recommendation",
+    }
+    return result
+
+
+def _restrict_store_usable_facts_for_reply(facts: list[Any], selected: dict[str, str]) -> list[Any]:
+    store_name = str(selected.get("store_name") or "").strip()
+    if not store_name:
+        return facts
+    filtered: list[Any] = []
+    for item in facts:
+        text = str(item or "")
+        if text.startswith("store_lookup: matched_stores="):
+            continue
+        if text.startswith("distance_lookup:"):
+            parts = [part.strip() for part in text.removeprefix("distance_lookup:").split(";")]
+            selected_parts = [part for part in parts if store_name in part]
+            if selected_parts:
+                filtered.append("distance_lookup: " + "; ".join(selected_parts[:1]))
+            continue
+        filtered.append(item)
+    return filtered[:6]
 
 
 def _compact_price_facts(value: Any) -> list[dict[str, Any]]:
@@ -182,6 +273,8 @@ def _compact_price_facts(value: Any) -> list[dict[str, Any]]:
 def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
     keep_by_source: dict[str, tuple[str, ...]] = {
         "store_facts": (
+            "id",
+            "store_id",
             "name",
             "address",
             "business_hours",
@@ -207,6 +300,8 @@ def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
             "status_summary",
         ),
         "recommended_store": (
+            "id",
+            "store_id",
             "name",
             "address",
             "business_hours",
@@ -244,8 +339,13 @@ def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
             "no_store_match_confirmed",
             "count",
             "error",
+            "data_authority",
+            "distance_lookup_required",
+            "distance_lookup_status",
+            "distance_origin",
+            "planned_distance_origin",
         ),
-        "distance_facts": ("name", "address", "distance_text"),
+        "distance_facts": ("store_id", "id", "name", "address", "distance_text"),
         "case_facts": ("source", "title", "content", "image_url"),
         "knowledge_facts": ("source", "title", "content"),
         "sales_talk_scripts": ("matched_question", "business_logic", "sales_script"),
@@ -295,7 +395,9 @@ def _fact_notes_for_model(
 
     recommended_store = structured_facts.get("recommended_store") or {}
     if isinstance(recommended_store, dict) and recommended_store.get("name"):
-        notes.append("已有推荐门店事实，可优先按推荐门店回答。")
+        notes.append(
+            f"已有按工具事实选定的推荐门店：{recommended_store.get('name')}；本轮只能推荐这家，不要从候选门店或话术样例里改选其他门店。"
+        )
     store_status = structured_facts.get("store_lookup_status") or {}
     if (
         isinstance(recommended_store, dict)
@@ -304,6 +406,11 @@ def _fact_notes_for_model(
         and str(store_status.get("location_granularity") or "") in {"area_or_landmark", "store_name"}
     ):
         notes.append("客户已给具体区/地标或明确门店，本轮可直接推荐这家真实门店，不要再追问方向。")
+    store_policy = structured_facts.get("store_candidate_policy") or {}
+    if isinstance(store_policy, dict) and store_policy.get("selected_store_only"):
+        notes.append(
+            f"本轮门店事实已收敛为唯一推荐门店：{store_policy.get('selected_store_name') or recommended_store.get('name') or ''}；不要提其他门店为更近或更方便。"
+        )
     if isinstance(store_status, dict) and store_status.get("needs_area_or_landmark"):
         city = str(store_status.get("city") or "").strip()
         if city:

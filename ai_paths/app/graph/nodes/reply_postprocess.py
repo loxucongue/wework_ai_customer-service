@@ -257,6 +257,9 @@ def _store_address_message_for_state(
 def _real_store_ids_from_state(state: AgentState) -> list[str]:
     if not _has_current_platform_store_facts(state):
         return []
+    selected_id = _selected_store_id_if_locked(state)
+    if selected_id:
+        return [selected_id]
     structured = _structured_facts_from_state(state)
     ids: list[str] = []
     recommended = structured.get("recommended_store")
@@ -278,6 +281,9 @@ def _real_store_ids_from_state(state: AgentState) -> list[str]:
 def _preferred_store_id_from_state(state: AgentState) -> str:
     if not _has_current_platform_store_facts(state):
         return ""
+    selected_id = _selected_store_id_if_locked(state)
+    if selected_id:
+        return selected_id
     structured = _structured_facts_from_state(state)
     recommended = structured.get("recommended_store")
     if isinstance(recommended, dict):
@@ -839,6 +845,9 @@ def _unsupported_store_names_from_text(state: AgentState, text: str) -> list[str
 
 
 def _real_store_names_from_state(state: AgentState) -> list[str]:
+    selected_name = _selected_store_name_if_locked(state)
+    if selected_name:
+        return [selected_name]
     structured = _structured_facts_from_state(state)
     names: list[str] = []
     recommended = structured.get("recommended_store")
@@ -860,6 +869,43 @@ def _real_store_names_from_state(state: AgentState) -> list[str]:
     if confirmed_name and confirmed_id:
         names.append(confirmed_name)
     return list(dict.fromkeys(names))
+
+
+def _selected_store_id_if_locked(state: AgentState) -> str:
+    structured = _structured_facts_from_state(state)
+    if not _should_lock_to_recommended_store(structured):
+        return ""
+    recommended = structured.get("recommended_store")
+    if not isinstance(recommended, dict):
+        return ""
+    return _store_id_from_fact(recommended)
+
+
+def _selected_store_name_if_locked(state: AgentState) -> str:
+    structured = _structured_facts_from_state(state)
+    if not _should_lock_to_recommended_store(structured):
+        return ""
+    recommended = structured.get("recommended_store")
+    if not isinstance(recommended, dict):
+        return ""
+    return str(recommended.get("name") or "").strip()
+
+
+def _should_lock_to_recommended_store(structured: dict[str, Any]) -> bool:
+    recommended = structured.get("recommended_store")
+    status = structured.get("store_lookup_status")
+    if not isinstance(recommended, dict) or not isinstance(status, dict):
+        return False
+    if not _store_id_from_fact(recommended) and not str(recommended.get("name") or "").strip():
+        return False
+    if str(status.get("data_authority") or "").strip().lower() != "platform":
+        return False
+    if bool(status.get("needs_area_or_landmark")) or bool(status.get("no_store_match_confirmed")):
+        return False
+    granularity = str(status.get("location_granularity") or "").strip()
+    distance_required = bool(status.get("distance_lookup_required"))
+    distance_ok = str(status.get("distance_lookup_status") or "").strip().lower() == "ok"
+    return distance_required or distance_ok or granularity in {"area_or_landmark", "store_name"}
 
 
 def _has_trusted_confirmed_store_state(state: AgentState) -> bool:
