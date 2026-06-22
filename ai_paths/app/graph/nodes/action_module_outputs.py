@@ -13,6 +13,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
     missing_slots: list[str] = []
     risk_flags = list((state.get("guardrail_result") or {}).get("terms") or [])
     structured_facts: dict[str, Any] = {
+        "store_lookup_status": {},
         "store_facts": [],
         "recommended_store": {},
         "price_facts": [],
@@ -34,6 +35,22 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
 
         if key == "store_lookup":
             stores = value.get("stores") or []
+            structured_facts["store_lookup_status"] = {
+                "query": str(value.get("query") or ""),
+                "city": str(value.get("city") or ""),
+                "requested_store": str(value.get("requested_store") or ""),
+                "location_preference": str(value.get("location_preference") or ""),
+                "distance_origin": str(value.get("distance_origin") or ""),
+                "distance_lookup_required": bool(value.get("distance_lookup_required")),
+                "recommendation_status": str(value.get("recommendation_status") or ""),
+                "source": str(value.get("source") or ""),
+                "candidate_count": len(stores) if isinstance(stores, list) else 0,
+            }
+            if value.get("distance_lookup_required"):
+                facts.append(
+                    "store_lookup: distance_lookup_required="
+                    f"{value.get('distance_origin') or value.get('location_preference') or ''}"
+                )
             if stores:
                 structured_facts["store_facts"] = [
                     {

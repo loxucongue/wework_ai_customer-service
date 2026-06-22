@@ -6,7 +6,6 @@ from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_catalog import local_store_records
 from app.services import store_format
 from app.services.store_query_info import build_store_query_info
-from app.services.store_recommendation import with_location_recommendation
 from app.services.store_result_merge import merge_local_city_stores, sanitize_platform_result
 from app.services.store_platform_context import request_context_from_customer_context, store_platform_context
 from app.services import store_text
@@ -36,6 +35,7 @@ class StoreService:
                 "location_preference": query_info.location_preference,
                 "stores": [],
                 "missing": ["city"],
+                "distance_lookup_required": False,
                 "source": "need_city_before_store_lookup",
             }
 
@@ -61,7 +61,7 @@ class StoreService:
                     limit=limit,
                 )
             if platform_result.get("stores"):
-                return with_location_recommendation(platform_result, query_info.location_preference)
+                return _with_distance_lookup_status(platform_result, query_info.location_preference)
 
         candidates = self._stores
         if query_info.requested_name:
@@ -82,7 +82,7 @@ class StoreService:
             "source": "local_store_fallback",
             "platform_error": platform_error,
         }
-        return with_location_recommendation(result, query_info.location_preference)
+        return _with_distance_lookup_status(result, query_info.location_preference)
 
     def available_time(self, *, store_id: str, date: str, customer_context: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self._platform_client or not self._platform_client.available:
@@ -153,3 +153,19 @@ class StoreService:
             "stores": stores,
             "source": source,
         }
+
+
+def _with_distance_lookup_status(result: dict[str, Any], location_preference: str) -> dict[str, Any]:
+    stores = result.get("stores") if isinstance(result, dict) else []
+    if not location_preference or not isinstance(stores, list) or not stores:
+        output = dict(result)
+        output["distance_lookup_required"] = False
+        return output
+    output = dict(result)
+    output["location_preference"] = location_preference
+    output["distance_origin"] = location_preference
+    output["distance_lookup_required"] = True
+    output["recommendation_status"] = "distance_lookup_required"
+    output.pop("recommended_store", None)
+    output.pop("recommendation_reason", None)
+    return output

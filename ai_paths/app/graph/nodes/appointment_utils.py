@@ -16,7 +16,14 @@ def appointment_query_from_state(
     stores = store_lookup.get("stores") if isinstance(store_lookup, dict) else []
     store_name_hint = appointment_slot_value(state, "store_name")
     store = select_store_for_appointment(stores, store_name_hint)
-    if not store and has_explicit_location_or_store(content, extract_city) and isinstance(stores, list) and stores:
+    needs_distance_lookup = bool(store_lookup.get("distance_lookup_required")) if isinstance(store_lookup, dict) else False
+    if (
+        not needs_distance_lookup
+        and not store
+        and has_explicit_location_or_store(content, extract_city)
+        and isinstance(stores, list)
+        and stores
+    ):
         store = stores[0]
 
     explicit_store_id = state.get("confirmed_store_id") or state.get("store_id")
@@ -53,7 +60,6 @@ def select_store_for_appointment(stores: Any, store_name_hint: str) -> dict[str,
     if not hint:
         return {}
     normalized_hint = re.sub(r"(门店|店名|店)$", "", hint)
-    area_aliases = ["百星", "思明", "徐汇", "静安", "浦东", "渝北", "南岸", "渝中", "中贸"]
     for store in stores:
         if not isinstance(store, dict):
             continue
@@ -64,9 +70,6 @@ def select_store_for_appointment(stores: Any, store_name_hint: str) -> dict[str,
             return store
         if normalized_hint and normalized_hint in haystack:
             return store
-        for alias in area_aliases:
-            if alias in normalized_hint and alias in haystack:
-                return store
     return {}
 
 

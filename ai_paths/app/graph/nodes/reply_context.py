@@ -93,6 +93,10 @@ def _fact_notes_for_model(
     if isinstance(recommended_store, dict) and recommended_store.get("name"):
         notes.append("已有推荐门店事实，可优先按推荐门店回答。")
 
+    store_lookup_status = structured_facts.get("store_lookup_status") or {}
+    if isinstance(store_lookup_status, dict) and store_lookup_status.get("distance_lookup_required"):
+        notes.append("客户在问距离或附近门店，但本轮没有真实距离结果；不要说最近、更近、几公里或几分钟，只能基于候选门店说明还需要按地图距离核对。")
+
     unsupported_claims = {
         str(item).strip().lower()
         for item in (fact_envelope.get("unsupported_claims") or [])
