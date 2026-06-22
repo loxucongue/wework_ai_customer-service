@@ -5,22 +5,20 @@ from app.services import model_selection
 
 
 class ModelSelectionTests(unittest.TestCase):
-    def test_aliyun_is_default_provider_with_legacy_model_set(self) -> None:
+    def test_deepseek_is_default_provider_without_legacy_fallbacks(self) -> None:
         settings = Settings(_env_file=None)
 
-        self.assertEqual(settings.model_provider, "aliyun")
+        self.assertEqual(settings.model_provider, "deepseek")
         self.assertEqual(settings.model_vision_provider, "aliyun")
-        self.assertEqual(settings.model_fast, "qwen-turbo")
-        self.assertEqual(settings.model_balanced, "qwen-plus")
-        self.assertEqual(settings.model_strong, "qwen-max")
+        self.assertEqual(settings.deepseek_openai_base_url, "https://api.deepseek.com")
+        self.assertEqual(settings.model_fast, "deepseek-v4-flash")
+        self.assertEqual(settings.model_balanced, "deepseek-v4-flash")
+        self.assertEqual(settings.model_strong, "deepseek-v4-pro")
         self.assertEqual(settings.model_vision, "qwen-vl-plus")
-        self.assertEqual(settings.model_fast_fallbacks, "kimi-k2.6,qwen3.6-flash")
-        self.assertEqual(settings.model_balanced_fallbacks, "kimi-k2.6,qwen3.7-max-2026-05-20,qwen3.6-flash")
-        self.assertEqual(settings.model_strong_fallbacks, "qwen3.7-max-2026-05-20,kimi-k2.6,qwen-plus")
-        self.assertEqual(
-            model_selection.model_names(settings, "balanced"),
-            ["qwen-plus", "kimi-k2.6", "qwen3.7-max-2026-05-20", "qwen3.6-flash"],
-        )
+        self.assertEqual(settings.model_fast_fallbacks, "")
+        self.assertEqual(settings.model_balanced_fallbacks, "")
+        self.assertEqual(settings.model_strong_fallbacks, "")
+        self.assertEqual(model_selection.model_names(settings, "balanced"), ["deepseek-v4-flash"])
         self.assertEqual(model_selection.model_names(settings, "vision"), ["qwen-vl-plus"])
 
     def test_deepseek_provider_uses_deepseek_key_and_base_url(self) -> None:
