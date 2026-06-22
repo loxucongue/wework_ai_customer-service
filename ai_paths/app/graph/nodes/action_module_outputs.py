@@ -71,6 +71,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "no_store_match_confirmed": bool(not stores and not missing and not platform_error),
                 "detail_lookup_required": bool(stores),
             }
+            if value.get("distance_lookup_required"):
+                facts.append(
+                    "store_lookup: distance_lookup_required="
+                    f"{value.get('distance_origin') or value.get('area_or_landmark') or value.get('location_preference') or ''}"
+                )
             if stores:
                 structured_facts["store_facts"] = [
                     {

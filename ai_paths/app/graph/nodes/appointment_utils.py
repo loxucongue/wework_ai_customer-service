@@ -39,7 +39,14 @@ def appointment_query_from_state(
                         break
             if not store and (current_id or current_name):
                 store = current_store
-    if not store and has_explicit_location_or_store(content, extract_city) and isinstance(stores, list) and stores:
+    needs_distance_lookup = bool(store_lookup.get("distance_lookup_required")) if isinstance(store_lookup, dict) else False
+    if (
+        not needs_distance_lookup
+        and not store
+        and has_explicit_location_or_store(content, extract_city)
+        and isinstance(stores, list)
+        and stores
+    ):
         store = stores[0]
 
     if not store and can_use_cached_appointment_store(content):

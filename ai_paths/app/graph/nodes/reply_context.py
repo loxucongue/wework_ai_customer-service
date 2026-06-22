@@ -432,6 +432,10 @@ def _fact_notes_for_model(
     if isinstance(sales_talk_scripts, list) and sales_talk_scripts:
         notes.append("已有销冠话术骨架；最终回复应优先贴近 sales_talk_scripts.sales_script 的短句节奏。")
 
+    store_lookup_status = structured_facts.get("store_lookup_status") or {}
+    if isinstance(store_lookup_status, dict) and store_lookup_status.get("distance_lookup_required"):
+        notes.append("客户在问距离或附近门店，但本轮没有真实距离结果；不要说最近、更近、几公里或几分钟，只能基于候选门店说明还需要按地图距离核对。")
+
     unsupported_claims = {
         str(item).strip().lower()
         for item in (fact_envelope.get("unsupported_claims") or [])
