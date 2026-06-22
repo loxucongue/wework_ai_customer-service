@@ -116,6 +116,9 @@ def known_store_name_from_history(state: AgentState) -> str:
 
 
 def known_store_area_from_history(state: AgentState) -> str:
+    basic_area = _known_area_from_basic_info(state)
+    if basic_area:
+        return basic_area
     for item in reversed(state.get("conversation_history", [])[-10:]):
         if not _is_customer_history_item(item):
             continue
@@ -176,6 +179,11 @@ def known_city_from_state(state: AgentState) -> str:
         city = str(request_context.get(key) or "").strip()
         if city:
             return city
+    basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    for key in ("city", "current_city"):
+        city = str(basic_info.get(key) or "").strip()
+        if city:
+            return city
     current_store_city = _current_store_city_from_state(state)
     if current_store_city:
         return current_store_city
@@ -183,6 +191,15 @@ def known_city_from_state(state: AgentState) -> str:
         city = extract_city(str(message))
         if city:
             return city
+    return ""
+
+
+def _known_area_from_basic_info(state: AgentState) -> str:
+    basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    for key in ("area_or_landmark", "area", "district", "landmark"):
+        value = str(basic_info.get(key) or "").strip()
+        if value:
+            return value
     return ""
 
 

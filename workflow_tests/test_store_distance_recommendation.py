@@ -11,8 +11,9 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output  # noqa: E402
+from app.graph.nodes.action_nodes import _store_query_with_planned_location  # noqa: E402
 from app.graph.nodes.appointment_utils import appointment_query_from_state  # noqa: E402
-from app.graph.nodes.store_context import extract_city  # noqa: E402
+from app.graph.nodes.store_context import extract_city, store_query_from_state  # noqa: E402
 from app.services.store_service import StoreService  # noqa: E402
 
 
@@ -100,6 +101,31 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertIn("store_id", query["missing"])
         self.assertEqual(query["store_id"], "")
         self.assertEqual(query["store_name"], "")
+
+    def test_store_followup_inherits_city_and_area_from_customer_basic_info(self) -> None:
+        query = store_query_from_state(
+            "店在哪里呢",
+            {
+                "customer_basic_info": {
+                    "city": "福州",
+                    "area_or_landmark": "仓山区",
+                },
+                "conversation_history": [],
+            },
+        )
+
+        self.assertIn("福州", query)
+        self.assertIn("仓山区", query)
+        self.assertIn("店在哪里呢", query)
+
+    def test_store_query_uses_cleaned_planner_distance_origin_when_base_lacks_location(self) -> None:
+        query = _store_query_with_planned_location(
+            "店在哪里呢",
+            planned_query="店在哪里呢",
+            planned_distance_origin="福州用户仓山区",
+        )
+
+        self.assertEqual(query, "福州仓山区 店在哪里呢")
 
 
 if __name__ == "__main__":

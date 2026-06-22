@@ -17,6 +17,7 @@ from app.graph.planner.runtime_plan import (
 from app.graph.state import AgentState
 from app.services.appointment_opening_service import AppointmentOpeningService
 from app.services.coze_client import CozeClient
+from app.services import store_text
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -62,7 +63,11 @@ def create_execute_actions_node(
                 try:
                     planned_store_query = _planned_tool_query(required_tools, "store_lookup")
                     planned_distance_origin = _planned_distance_origin(required_tools)
-                    store_query = store_query_from_state(content, state)
+                    store_query = _store_query_with_planned_location(
+                        store_query_from_state(content, state),
+                        planned_query=planned_store_query,
+                        planned_distance_origin=planned_distance_origin,
+                    )
                     result = store_service.search(
                         store_query,
                         customer_context=state.get("customer_context") or {},
@@ -121,7 +126,11 @@ def create_execute_actions_node(
                 try:
                     planned_store_query = _planned_tool_query(required_tools, "store_lookup")
                     planned_distance_origin = _planned_distance_origin(required_tools)
-                    store_query = store_query_from_state(content, state)
+                    store_query = _store_query_with_planned_location(
+                        store_query_from_state(content, state),
+                        planned_query=planned_store_query,
+                        planned_distance_origin=planned_distance_origin,
+                    )
                     current_store = current_real_store_from_state(state)
                     can_use_current_store = (
                         not _needs_store_lookup(required_tools)
@@ -480,6 +489,34 @@ def _planned_distance_origin(required_tools: list[dict[str, Any]]) -> str:
         if origin:
             return origin
     return ""
+
+
+def _store_query_with_planned_location(
+    query: str,
+    *,
+    planned_query: str = "",
+    planned_distance_origin: str = "",
+) -> str:
+    base = str(query or "").strip() or str(planned_query or "").strip()
+    origin = _clean_planned_store_location(planned_distance_origin)
+    if not base or not origin:
+        return base or origin
+    if origin in base:
+        return base
+    if store_text.extract_city(base, []) or store_text.extract_area_or_landmark(base):
+        return base
+    if not (store_text.extract_city(origin, []) or store_text.extract_area_or_landmark(origin)):
+        return base
+    return f"{origin} {base}".strip()
+
+
+def _clean_planned_store_location(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"(客户|用户|本人|我|这边|当前位置|所在位置)", "", text)
+    text = re.sub(r"\s+", "", text)
+    return text
 
 
 async def _maybe_run_distance_lookup(

@@ -137,6 +137,9 @@ STORE_CONTEXT_REFERENCE_TERMS = (
 )
 
 STORE_CONTEXT_FACT_TERMS = (
+    "哪里",
+    "在哪",
+    "门店",
     "地址",
     "位置",
     "导航",
