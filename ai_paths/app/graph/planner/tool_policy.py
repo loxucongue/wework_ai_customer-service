@@ -309,8 +309,8 @@ def _case_studies_query_from_state(state: AgentState, query: str) -> str:
 
     if any(term in context for term in ("斑", "黑色素", "色沉")) and "淡斑" not in hints:
         hints.append("淡斑")
-    if any(term in base for term in ("效果", "案例", "做完", "真实", "参考", "对比", "明显", "能看到")):
-        hints.extend(["客户做完", "效果对比", "真实案例"])
+    if any(term in base for term in ("效果", "案例", "做完", "真实", "参考", "对比", "明显", "能看到", "图", "照片")):
+        hints.extend(["客户做完", "效果对比", "真实案例", "案例图片", "图片素材"])
     if not hints:
         hints.extend(["淡斑", "斑点", "效果对比"])
 

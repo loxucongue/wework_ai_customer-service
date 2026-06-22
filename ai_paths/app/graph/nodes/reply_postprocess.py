@@ -134,6 +134,11 @@ def postprocess_reply_messages(
             if case_image:
                 cleaned.append(case_image)
                 reasons.append("case_image_appended")
+            else:
+                unavailable = _case_image_unavailable_message_for_state(state, reasons)
+                if unavailable:
+                    cleaned = _prepend_text_message(cleaned, unavailable)
+                    reasons.append("case_image_unavailable_fallback")
 
         cleaned = renumber_messages(cleaned)
 
@@ -607,6 +612,63 @@ def _case_image_message_for_state(state: AgentState, messages: list[dict[str, An
         if image_url and image_url not in recent_urls:
             return {"type": "image", "order": len(messages) + 1, "content": image_url}
     return None
+
+
+def _case_image_unavailable_message_for_state(state: AgentState, reasons: list[str]) -> str:
+    if _case_image_urls_from_state(state):
+        return ""
+    if "unbacked_case_image_promise_blocked" not in reasons:
+        return ""
+    if not _explicit_case_image_request(state):
+        return ""
+    return "这轮我先不随便拿不匹配的图糊弄您，暂时没有可直接发的同类效果图。您主要想看斑点淡化还是肤色提亮方向？我按这个方向继续给您核对同类参考。"
+
+
+def _prepend_text_message(messages: list[dict[str, Any]], text: str) -> list[dict[str, Any]]:
+    content = str(text or "").strip()
+    if not content:
+        return messages
+    output = [{"type": "text", "order": 1, "content": {"text": content}}]
+    text_count = 1
+    image_count = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        msg_type = str(message.get("type") or "").strip()
+        if msg_type == "text":
+            if text_count >= MAX_TEXT_MESSAGES:
+                continue
+            text_count += 1
+        elif msg_type == "image":
+            if image_count >= MAX_IMAGE_MESSAGES:
+                continue
+            image_count += 1
+        output.append(dict(message))
+    return output
+
+
+def _explicit_case_image_request(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "")
+    if not text:
+        return False
+    return any(
+        term in text
+        for term in (
+            "效果图",
+            "案例",
+            "前后对比",
+            "对比图",
+            "做完效果",
+            "客户做完",
+            "客户做完后的效果",
+            "有图吗",
+            "有照片吗",
+            "发图",
+            "发个效果",
+            "看看效果",
+            "看一下效果",
+        )
+    )
 
 
 def _looks_like_case_or_effect_turn(state: AgentState) -> bool:
