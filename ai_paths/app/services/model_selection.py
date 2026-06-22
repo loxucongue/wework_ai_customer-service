@@ -10,38 +10,24 @@ from app.config import Settings
 ModelTier = Literal["fast", "balanced", "strong", "vision"]
 
 
-def provider(settings: Settings, tier: ModelTier | None = None) -> str:
-    if tier == "vision":
-        return (settings.model_vision_provider or settings.model_provider).lower()
-    return settings.model_provider.lower()
-
-
-def api_key(settings: Settings, tier: ModelTier | None = None) -> str:
-    return api_key_for_provider(settings, provider(settings, tier))
-
-
-def base_url(settings: Settings, tier: ModelTier | None = None) -> str:
-    return base_url_for_provider(settings, provider(settings, tier))
-
-
-def api_key_for_provider(settings: Settings, provider_name: str) -> str:
-    provider_name = provider_name.lower()
-    if provider_name == "deepseek":
+def api_key(settings: Settings) -> str:
+    provider = settings.model_provider.lower()
+    if provider == "deepseek":
         return settings.deepseek_api_key
-    if provider_name == "volcengine":
+    if provider == "volcengine":
         return settings.volcengine_ark_api_key
-    if provider_name == "aliyun":
+    if provider == "aliyun":
         return settings.aliyun_dashscope_api_key
     return settings.deepseek_api_key
 
 
-def base_url_for_provider(settings: Settings, provider_name: str) -> str:
-    provider_name = provider_name.lower()
-    if provider_name == "deepseek":
+def base_url(settings: Settings) -> str:
+    provider = settings.model_provider.lower()
+    if provider == "deepseek":
         return settings.deepseek_openai_base_url
-    if provider_name == "volcengine":
+    if provider == "volcengine":
         return settings.volcengine_openai_base_url
-    if provider_name == "aliyun":
+    if provider == "aliyun":
         return settings.aliyun_openai_base_url
     return settings.deepseek_openai_base_url
 

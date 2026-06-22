@@ -23,9 +23,6 @@ class ModelClient:
     def available(self) -> bool:
         return bool(self._api_key())
 
-    def provider_for_tier(self, tier: ModelTier) -> str:
-        return self._provider(tier)
-
     async def chat_text(
         self,
         messages: list[dict[str, Any]],
@@ -122,10 +119,9 @@ class ModelClient:
         fallback_index: int,
         errors: list[str],
     ) -> dict[str, Any]:
-        provider = self._provider(tier)
-        url = f"{self._base_url(tier).rstrip('/')}/chat/completions"
+        url = f"{self._base_url().rstrip('/')}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {self._api_key(tier)}",
+            "Authorization": f"Bearer {self._api_key()}",
             "Content-Type": "application/json; charset=utf-8",
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -134,7 +130,7 @@ class ModelClient:
         response.raise_for_status()
         raw = response.json()
         self.last_usage = {
-            "provider": provider,
+            "provider": self.settings.model_provider,
             "model": payload.get("model"),
             "tier": tier,
             "fallback_index": fallback_index,
@@ -157,14 +153,11 @@ class ModelClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    def _provider(self, tier: ModelTier | None = None) -> str:
-        return model_selection.provider(self.settings, tier)
+    def _api_key(self) -> str:
+        return model_selection.api_key(self.settings)
 
-    def _api_key(self, tier: ModelTier | None = None) -> str:
-        return model_selection.api_key(self.settings, tier)
-
-    def _base_url(self, tier: ModelTier | None = None) -> str:
-        return model_selection.base_url(self.settings, tier)
+    def _base_url(self) -> str:
+        return model_selection.base_url(self.settings)
 
     def _model_name(self, tier: ModelTier) -> str:
         return model_selection.model_name(self.settings, tier)
