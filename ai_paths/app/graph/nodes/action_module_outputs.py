@@ -247,7 +247,10 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             facts.append(
                 f"available_time: store={appointment_fact['store']}; "
                 f"date={appointment_fact['date']}; status={appointment_fact['status']}; "
-                f"recommended_time={appointment_fact['recommended_time']}; slots={appointment_fact['slots']}"
+                f"target_time={appointment_fact['target_time']}; "
+                f"target_time_available={appointment_fact['target_time_available']}; "
+                f"recommended_time={appointment_fact['recommended_time']}; "
+                f"nearby_times={appointment_fact['nearby_times']}; slots={appointment_fact['slots']}"
             )
             if appointment_fact["status"] in {"error", "missing_info", "no_slots"} or appointment_fact["error"]:
                 unsupported_claims.append("available_time unavailable")

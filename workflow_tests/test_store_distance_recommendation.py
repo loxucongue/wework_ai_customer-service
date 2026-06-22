@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -21,6 +22,7 @@ from app.graph.nodes.action_nodes import (  # noqa: E402
 from app.graph.nodes.appointment_utils import appointment_query_from_state  # noqa: E402
 from app.graph.nodes.reply_context import reply_user_payload_for_model  # noqa: E402
 from app.graph.nodes.reply_nodes import _safe_visible_fallback_messages, _store_no_match_reply_needs_fallback  # noqa: E402
+from app.graph.nodes.reply_nodes import _drop_duplicate_store_address_messages  # noqa: E402
 from app.graph.nodes.store_context import extract_city, store_query_from_state  # noqa: E402
 from app.services.store_query_info import build_store_query_info  # noqa: E402
 from app.services.store_service import StoreService  # noqa: E402
@@ -68,6 +70,35 @@ class FakePlatformClient:
                     "tencent_map_store": "https://map.example/store",
                     "parking_info": {},
                 }
+        return {}
+
+
+class DetailAddressOnlyPlatformClient(FakePlatformClient):
+    def __init__(self) -> None:
+        self.rows = [
+            {
+                "id": "227",
+                "name": "厦门百星湖里店",
+                "city": "厦门",
+                "address": "",
+                "tencent_address": "",
+                "status": 1,
+                "shore_show": 1,
+                "is_pause": 2,
+            }
+        ]
+
+    def list_stores(self, **_: object) -> list[dict[str, object]]:
+        return []
+
+    def store_info(self, store_id: str, **_: object) -> dict[str, object]:
+        if store_id == "227":
+            return {
+                "name": "厦门百星湖里店",
+                "tencent_address": "福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
+                "tencent_map_store": "https://map.example/store",
+                "parking_info": {},
+            }
         return {}
 
 
@@ -198,6 +229,16 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertFalse(result["area_or_landmark_has_direct_store"])
         self.assertTrue(result["area_or_landmark_direct_store_missing"])
 
+    def test_area_direct_store_uses_detail_address_not_only_option_row(self) -> None:
+        service = StoreService(platform_client=DetailAddressOnlyPlatformClient())  # type: ignore[arg-type]
+        result = service.search("厦门 湖里", customer_context=_customer_context())
+
+        self.assertEqual(result["city"], "厦门")
+        self.assertEqual(result["area_or_landmark"], "湖里")
+        self.assertTrue(result["stores"])
+        self.assertTrue(result["area_or_landmark_has_direct_store"])
+        self.assertFalse(result["area_or_landmark_direct_store_missing"])
+
     def test_lng_lat_distance_origin_is_not_prefixed_with_city(self) -> None:
         result = _store_service().search(
             "厦门 海沧",
@@ -278,6 +319,70 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertEqual(query["store_id"], "12")
         self.assertEqual(query["store_name"], "厦门思明店")
         self.assertNotIn("store_id", query["missing"])
+
+    def test_short_hour_inherits_recent_afternoon_context(self) -> None:
+        state = {
+            "conversation_history": [
+                "用户: 厦门湖里百星店明天下午可以约吗",
+                "助手: 您大概下午几点方便过来？",
+            ],
+        }
+        store_lookup = {
+            "stores": [{"id": "227", "name": "厦门百星湖里店"}],
+        }
+        query = appointment_query_from_state("3点", store_lookup, state, extract_city)
+
+        self.assertEqual(query["date"], (date.today() + timedelta(days=1)).isoformat())
+        self.assertEqual(query["time"], "15:00")
+
+    def test_available_time_fact_exposes_unavailable_target_time(self) -> None:
+        fact_output = build_planner_fact_output(
+            {
+                "available_time": {
+                    "store_id": "227",
+                    "store_name": "厦门百星湖里店",
+                    "date": "2026-06-23",
+                    "target_time": "15:00",
+                    "query": "3点",
+                    "slots": {"new": ["14:00", "16:00"]},
+                    "available_times": ["14:00", "16:00"],
+                    "recommended_time": "14:00",
+                    "nearby_times": ["14:00", "16:00"],
+                    "target_time_available": False,
+                    "status": "ok",
+                }
+            },
+            {},
+        )
+
+        appointment_fact = fact_output["structured_facts"]["appointment_facts"][0]
+        self.assertEqual(appointment_fact["target_time"], "15:00")
+        self.assertFalse(appointment_fact["target_time_available"])
+        self.assertIn("target_time_available=False", "\n".join(fact_output["facts"]))
+
+    def test_recent_store_address_event_drops_duplicate_card_unless_requested(self) -> None:
+        state = {
+            "normalized_content": "有地方停车吗",
+            "history_events": [
+                {
+                    "event_type": "store_address_sent",
+                    "facts": {"store_id": "227", "store_name": "厦门百星湖里店"},
+                }
+            ],
+        }
+        messages = [
+            {"type": "text", "order": 1, "content": "有的，萤火虫大厦楼下可以停车。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "227"}},
+        ]
+
+        filtered = _drop_duplicate_store_address_messages(state, messages)
+
+        self.assertEqual([message["type"] for message in filtered], ["text"])
+        self.assertTrue(state["postprocess_changed"])
+
+        resend_state = {**state, "normalized_content": "定位再发我一下"}
+        resent = _drop_duplicate_store_address_messages(resend_state, messages)
+        self.assertEqual([message["type"] for message in resent], ["text", "store_address"])
 
     def test_store_no_match_fallback_returns_visible_no_store_text(self) -> None:
         messages, source = _safe_visible_fallback_messages(

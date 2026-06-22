@@ -161,13 +161,10 @@ class StoreService:
             candidates = []
 
         if query_info.area_or_landmark and candidates:
-            area_has_direct_store = any(_row_mentions_location(row, query_info.area_or_landmark) for row in candidates)
             candidates = sorted(
                 candidates,
                 key=lambda row: 0 if _row_mentions_location(row, query_info.area_or_landmark) else 1,
             )
-        else:
-            area_has_direct_store = False
 
         stores: list[dict[str, Any]] = []
         for row in candidates:
@@ -181,6 +178,11 @@ class StoreService:
             stores.append(store)
             if len(stores) >= limit:
                 break
+        area_has_direct_store = bool(
+            query_info.area_or_landmark
+            and stores
+            and any(_store_mentions_location(store, query_info.area_or_landmark) for store in stores)
+        )
 
         source_base = "platform_agent.store_option" if option_rows else "platform_agent.store_index"
         source = source_base if stores else f"{source_base}_no_match"
@@ -199,7 +201,7 @@ class StoreService:
             "location_preference": query_info.location_preference,
             "area_or_landmark": query_info.area_or_landmark,
             "area_or_landmark_has_direct_store": area_has_direct_store,
-            "area_or_landmark_direct_store_missing": bool(query_info.area_or_landmark and candidates and not area_has_direct_store),
+            "area_or_landmark_direct_store_missing": bool(query_info.area_or_landmark and stores and not area_has_direct_store),
             "location_granularity": query_info.location_granularity,
             "stores": stores,
             "missing": missing,
@@ -319,6 +321,26 @@ def _row_mentions_location(row: dict[str, Any], location: str) -> bool:
                 str(row.get("name") or "").strip(),
                 str(row.get("address") or "").strip(),
                 str(row.get("tencent_address") or "").strip(),
+            ],
+        )
+    )
+    return needle in haystack
+
+
+def _store_mentions_location(store: dict[str, Any], location: str) -> bool:
+    needle = str(location or "").strip()
+    if not needle:
+        return False
+    haystack = " ".join(
+        filter(
+            None,
+            [
+                str(store.get("name") or "").strip(),
+                str(store.get("city") or "").strip(),
+                str(store.get("address") or "").strip(),
+                str(store.get("tencent_address") or "").strip(),
+                str(store.get("parking_name") or "").strip(),
+                str(store.get("parking_address") or "").strip(),
             ],
         )
     )

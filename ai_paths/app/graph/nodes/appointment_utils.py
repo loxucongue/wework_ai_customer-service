@@ -74,7 +74,7 @@ def appointment_query_from_state(
         or _known_info_date_value(state)
     )
     time_text = (
-        extract_time_value(content)
+        extract_time_value(content, default_period=_recent_time_period(state))
         or _state_slot_value(state, "visit_time", "appointment_time", "time")
         or appointment_slot_value(state, "visit_time")
         or _history_time_value(state)
@@ -226,6 +226,29 @@ def _recent_customer_texts(state: dict[str, Any]) -> list[str]:
     return texts[:10]
 
 
+def _recent_dialogue_texts(state: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for item in reversed(state.get("conversation_history") or []):
+        if isinstance(item, dict):
+            content = item.get("content")
+            text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
+        else:
+            text = str(item or "").strip()
+            if text.startswith(("客户：", "客户:", "用户：", "用户:", "小贝：", "小贝:", "客服：", "客服:", "AI回复：", "AI回复:", "助手：", "助手:")):
+                text = text.split("：", 1)[-1] if "：" in text else text.split(":", 1)[-1]
+        if text:
+            texts.append(text)
+    return texts[:10]
+
+
+def _recent_time_period(state: dict[str, Any]) -> str:
+    for text in _recent_dialogue_texts(state):
+        periods = {period for period in ("上午", "中午", "下午", "晚上") if period in text}
+        if len(periods) == 1:
+            return next(iter(periods))
+    return ""
+
+
 def _planner_known_texts(state: dict[str, Any]) -> list[str]:
     texts: list[str] = []
     primary = state.get("primary_task") if isinstance(state.get("primary_task"), dict) else {}
@@ -352,7 +375,7 @@ def extract_date_value(content: str) -> str:
     return ""
 
 
-def extract_time_value(content: str) -> str:
+def extract_time_value(content: str, *, default_period: str = "") -> str:
     explicit = re.search(r"(\d{1,2})[:：](\d{2})", content)
     if explicit:
         return f"{int(explicit.group(1)):02d}:{explicit.group(2)}"
@@ -367,7 +390,7 @@ def extract_time_value(content: str) -> str:
         if "晚上" in content:
             return "18:00"
         return ""
-    prefix = hour_match.group(1) or ""
+    prefix = hour_match.group(1) or default_period
     hour = _hour_number(hour_match.group(2))
     if hour is None:
         return ""

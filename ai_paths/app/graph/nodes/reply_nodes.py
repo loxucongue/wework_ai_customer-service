@@ -61,6 +61,7 @@ def create_synthesize_reply_node(
                         model_call["draft_messages"] = debug_message_contents(messages)
                         if messages:
                             messages = postprocess_reply_messages(state, messages)
+                            messages = _drop_duplicate_store_address_messages(state, messages)
                             model_call["postprocessed_messages"] = debug_message_contents(messages)
                         if messages and _store_no_match_reply_needs_fallback(state, messages):
                             messages, reply_source = _safe_visible_fallback_messages(state)
@@ -137,6 +138,57 @@ def _has_customer_visible_text(messages: list[dict[str, Any]]) -> bool:
         if text:
             return True
     return False
+
+
+def _drop_duplicate_store_address_messages(state: AgentState, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if _current_turn_explicitly_requests_address_resend(state):
+        return messages
+    sent_store_ids = _recent_sent_store_ids(state)
+    if not sent_store_ids:
+        return messages
+    output: list[dict[str, Any]] = []
+    changed = False
+    for message in messages:
+        if not isinstance(message, dict) or message.get("type") != "store_address":
+            output.append(message)
+            continue
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        store_id = str(content.get("store_id") or content.get("id") or "").strip()
+        if store_id and store_id in sent_store_ids:
+            changed = True
+            continue
+        output.append(message)
+    if not changed:
+        return messages
+    state["postprocess_changed"] = True
+    state["postprocess_reasons"] = _unique_reasons(
+        list(state.get("postprocess_reasons", [])) + ["duplicate_store_address_dropped"]
+    )
+    for index, message in enumerate(output, start=1):
+        if isinstance(message, dict):
+            message["order"] = index
+    return output
+
+
+def _current_turn_explicitly_requests_address_resend(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if not text:
+        return False
+    explicit_terms = ("再发", "重新发", "发我", "发给我", "给我发", "发一下", "地址", "位置", "定位", "导航", "路线")
+    return any(term in text for term in explicit_terms)
+
+
+def _recent_sent_store_ids(state: AgentState) -> set[str]:
+    result: set[str] = set()
+    events = [item for item in state.get("history_events", []) if isinstance(item, dict)]
+    for event in reversed(events[-20:]):
+        if str(event.get("event_type") or "").strip() != "store_address_sent":
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        store_id = str(facts.get("store_id") or facts.get("id") or "").strip()
+        if store_id:
+            result.add(store_id)
+    return result
 
 
 def _store_no_match_reply_needs_fallback(state: AgentState, messages: list[dict[str, Any]]) -> bool:

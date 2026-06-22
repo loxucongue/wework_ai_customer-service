@@ -477,6 +477,17 @@ def _fact_notes_for_model(
         for item in appointment_facts:
             if not isinstance(item, dict):
                 continue
+            if item.get("type") == "available_time" and item.get("target_time") and item.get("target_time_available") is False:
+                target = str(item.get("target_time") or "").strip()
+                nearby = [str(value or "").strip() for value in (item.get("nearby_times") or []) if str(value or "").strip()]
+                if nearby:
+                    notes.append(f"客户指定的{target}不可约；不能说这个点有位置，只能说这个点暂时没有，并给真实可选临近时间：{', '.join(nearby[:3])}。")
+                else:
+                    notes.append(f"客户指定的{target}不可约；不能说这个点有位置，只能说明该时间暂时没有档期，再询问是否换其他时间。")
+                break
+        for item in appointment_facts:
+            if not isinstance(item, dict):
+                continue
             if item.get("type") == "available_time" and item.get("slots"):
                 notes.append("已有档期事实，可直接回答可约时间。")
                 break
