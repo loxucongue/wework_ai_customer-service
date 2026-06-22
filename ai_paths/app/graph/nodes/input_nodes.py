@@ -23,26 +23,23 @@ def create_image_understanding_node(
             has_image = bool(state.get("file_image"))
             model_call: dict[str, Any] | None = None
             if has_image and model_client and model_client.available:
-                model_call = {"name": "vision_model", "input": {"tier": "vision"}}
-                if model_client.settings.model_provider.lower() == "deepseek":
+                try:
+                    model_call = {"name": "vision_model", "input": {"tier": "vision"}}
+                    payload = await model_client.vision_json(
+                        prompt=build_vision_prompt(state),
+                        image_url=str(state.get("file_image")),
+                        tier="vision",
+                    )
+                    image_info = validated_image_info(payload, has_image=True)
+                    model_call["output"] = {
+                        "image_type": image_info.get("image_type"),
+                        "confidence": image_info.get("confidence"),
+                    }
+                    model_call["usage"] = model_usage_snapshot(model_client)
+                except Exception as exc:
                     image_info = fallback_image_info(has_image=True)
-                    model_call["skipped"] = "deepseek_provider_has_no_image_url_vision_support"
-                else:
-                    try:
-                        payload = await model_client.vision_json(
-                            prompt=build_vision_prompt(state),
-                            image_url=str(state.get("file_image")),
-                            tier="vision",
-                        )
-                        image_info = validated_image_info(payload, has_image=True)
-                        model_call["output"] = {
-                            "image_type": image_info.get("image_type"),
-                            "confidence": image_info.get("confidence"),
-                        }
-                        model_call["usage"] = model_usage_snapshot(model_client)
-                    except Exception as exc:
-                        image_info = fallback_image_info(has_image=True)
-                        model_call["error"] = f"{type(exc).__name__}: {exc}"
+                    model_call = model_call or {"name": "vision_model", "input": {"tier": "vision"}}
+                    model_call["error"] = f"{type(exc).__name__}: {exc}"
             else:
                 image_info = fallback_image_info(has_image=has_image)
             if model_call:

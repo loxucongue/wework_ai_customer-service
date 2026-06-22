@@ -12,24 +12,16 @@ ModelTier = Literal["fast", "balanced", "strong", "vision"]
 
 def api_key(settings: Settings) -> str:
     provider = settings.model_provider.lower()
-    if provider == "deepseek":
-        return settings.deepseek_api_key
     if provider == "volcengine":
         return settings.volcengine_ark_api_key
-    if provider == "aliyun":
-        return settings.aliyun_dashscope_api_key
-    return settings.deepseek_api_key
+    return settings.aliyun_dashscope_api_key
 
 
 def base_url(settings: Settings) -> str:
     provider = settings.model_provider.lower()
-    if provider == "deepseek":
-        return settings.deepseek_openai_base_url
     if provider == "volcengine":
         return settings.volcengine_openai_base_url
-    if provider == "aliyun":
-        return settings.aliyun_openai_base_url
-    return settings.deepseek_openai_base_url
+    return settings.aliyun_openai_base_url
 
 
 def model_name(settings: Settings, tier: ModelTier) -> str:
