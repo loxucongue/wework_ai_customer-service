@@ -131,7 +131,7 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
 
     def test_chongqing_banan_and_xiamen_haicang_are_area_landmarks(self) -> None:
         banan = build_store_query_info("我在重庆巴南这边")
-        haicang = build_store_query_info("海沧")
+        haicang = build_store_query_info("厦门 海沧")
 
         self.assertEqual(banan.city, "重庆")
         self.assertEqual(banan.area_or_landmark, "巴南")
@@ -139,6 +139,17 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertEqual(haicang.city, "厦门")
         self.assertEqual(haicang.area_or_landmark, "海沧")
         self.assertEqual(haicang.location_granularity, "area_or_landmark")
+
+    def test_short_area_fragment_inherits_known_city_without_area_map(self) -> None:
+        query = store_query_from_state(
+            "海沧",
+            {
+                "customer_basic_info": {"city": "厦门"},
+                "conversation_history": ["小贝: 您在厦门哪个区或附近地标"],
+            },
+        )
+
+        self.assertEqual(query, "厦门 海沧")
 
     def test_current_no_match_store_lookup_blocks_historical_store_claim(self) -> None:
         state = {
@@ -157,7 +168,7 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertTrue(_has_unbacked_store_claim_text(state, "海沧有的，我帮您查一下附近的门店位置发您哈"))
 
     def test_area_without_direct_store_is_marked_and_blocks_direct_area_claim(self) -> None:
-        result = _store_service().search("海沧", customer_context=_customer_context())
+        result = _store_service().search("厦门 海沧", customer_context=_customer_context())
         fact_output = build_planner_fact_output({"store_lookup": result}, {})
         status = fact_output["structured_facts"]["store_lookup_status"]
         state = {

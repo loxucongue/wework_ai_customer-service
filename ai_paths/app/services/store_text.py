@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from app.services.store_text_constants import AREA_CITY_MAP, CITY_NAMES, EXTERNAL_LOCATION_NAMES
+from app.services.store_text_constants import CITY_NAMES, EXTERNAL_LOCATION_NAMES
 
 
 STORE_ROUTE_TERMS = (
@@ -77,8 +77,7 @@ LANDMARK_SUFFIXES = (
 
 SPECIAL_LANDMARKS = tuple(
     sorted(
-        set(AREA_CITY_MAP.keys())
-        | {
+        {
             "高崎机场",
             "高崎国际机场",
             "厦门高崎机场",
@@ -119,9 +118,6 @@ def extract_city(query: str, store_refs: Iterable[Any] | None = None) -> str:
     direct = _infer_city_from_texts([text])
     if direct:
         return direct
-    area_city = city_for_area_or_landmark(extract_area_or_landmark(text))
-    if area_city:
-        return area_city
     requested_name = extract_store_name(text, store_refs)
     if requested_name:
         city = city_for_store_name(requested_name, store_refs)
@@ -167,8 +163,6 @@ def location_granularity(query: str, store_refs: Iterable[Any] | None = None) ->
         return "area_or_landmark"
     if city:
         return "city_only"
-    if landmark and city_for_area_or_landmark(landmark):
-        return "area_or_landmark"
     return "unknown"
 
 
@@ -188,6 +182,10 @@ def extract_area_or_landmark(query: str) -> str:
         if landmark and landmark in text:
             return landmark
 
+    after_city = _area_after_explicit_city(text)
+    if after_city:
+        return after_city
+
     match = re.search(
         r"([\u4e00-\u9fa5A-Za-z0-9]{2,20}(?:%s))" % "|".join(map(re.escape, LANDMARK_SUFFIXES)),
         text,
@@ -199,15 +197,40 @@ def extract_area_or_landmark(query: str) -> str:
 
 
 def city_for_area_or_landmark(area_or_landmark: str) -> str:
-    value = _text(area_or_landmark)
-    if not value:
-        return ""
-    if value in AREA_CITY_MAP:
-        return AREA_CITY_MAP[value]
-    stripped = re.sub(r"(县城|县级市|高新区|开发区|经开区|新区|区|县)$", "", value)
-    if stripped in AREA_CITY_MAP:
-        return AREA_CITY_MAP[stripped]
+    _ = area_or_landmark
     return ""
+
+
+def looks_like_location_fragment(query: str) -> bool:
+    value = _clean_location_phrase(query)
+    value = re.sub(r"(这边|附近|周边|这块|那里|那边|这附近)$", "", value)
+    value = value.strip()
+    if not re.fullmatch(r"[\u4e00-\u9fa5A-Za-z0-9]{2,12}", value):
+        return False
+    generic_or_business_terms = (
+        "你好",
+        "您好",
+        "在吗",
+        "好的",
+        "可以",
+        "嗯嗯",
+        "祛斑",
+        "淡斑",
+        "斑",
+        "痘",
+        "价格",
+        "收费",
+        "多少钱",
+        "预约",
+        "报名",
+        "效果",
+        "技术",
+        "怎么做",
+        "门店",
+        "地址",
+        "位置",
+    )
+    return not any(term in value for term in generic_or_business_terms)
 
 
 def asks_store_status(query: str) -> bool:
@@ -272,6 +295,29 @@ def _clean_location_phrase(value: str) -> str:
     return text.strip()
 
 
+def _area_after_explicit_city(text: str) -> str:
+    value = _text(text)
+    if not value:
+        return ""
+    for city in CITY_NAMES:
+        index = value.find(city)
+        if index < 0:
+            continue
+        tail = value[index + len(city) :]
+        tail = _clean_location_phrase(tail)
+        tail = re.sub(r"^(市|城区|这边|附近|周边|的|有|离)", "", tail)
+        tail = re.split(
+            r"(?:这边|附近|周边|哪里|在哪|地址|位置|门店|店|有店|有门店|怎么去|导航|路线|最近|近一点|多少钱|收费|价格)",
+            tail,
+            maxsplit=1,
+        )[0]
+        tail = re.sub(r"[，,。.!！?？\s]+", "", tail)
+        tail = re.sub(r"(这边|附近|周边|这块|那里|那边)$", "", tail)
+        if re.fullmatch(r"[\u4e00-\u9fa5A-Za-z0-9]{2,20}", tail):
+            return _clean_location_phrase(tail)
+    return ""
+
+
 def _row_matches_requested_name(ref: Any, requested_name: str, aliases: list[str]) -> bool:
     name = _store_name(ref)
     if not name:
@@ -298,9 +344,6 @@ def _infer_city_from_texts(texts: Iterable[str]) -> str:
         match = re.search(r"([\u4e00-\u9fa5]{2,8})市", value)
         if match:
             return match.group(1)
-    for area, city in sorted(AREA_CITY_MAP.items(), key=lambda item: len(item[0]), reverse=True):
-        if area in merged:
-            return city
     for city in EXTERNAL_LOCATION_NAMES:
         if city in merged:
             return city

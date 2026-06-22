@@ -15,6 +15,7 @@ from app.policies.constants import (
     STORE_PREFERRED_HINT_TERMS,
     TIME_REFERENCE_TERMS,
 )
+from app.services import store_text
 from app.services.store_text import extract_area_or_landmark, extract_location_preference
 
 
@@ -82,6 +83,8 @@ def should_inherit_store_location_context(content: str, state: AgentState) -> bo
     if extract_city(content):
         return True
     if extract_area_or_landmark(content) or extract_location_preference(content) or extract_store_area(content):
+        return True
+    if known_city_from_state(state) and store_text.looks_like_location_fragment(content):
         return True
     return any(term in content for term in STORE_CONTEXT_FACT_TERMS)
 
