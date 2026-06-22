@@ -272,7 +272,7 @@ def store_aliases(name: str) -> list[str]:
         return []
     values = [store_name]
     normalized_name = _normalize_store_name(store_name)
-    if normalized_name and normalized_name not in values:
+    if normalized_name and normalized_name not in values and normalized_name not in CITY_NAMES and len(normalized_name) >= 3:
         values.append(normalized_name)
     return list(dict.fromkeys(filter(None, values)))
 

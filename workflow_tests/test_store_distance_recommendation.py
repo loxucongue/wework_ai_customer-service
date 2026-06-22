@@ -14,6 +14,7 @@ from app.graph.nodes.action_module_outputs import build_planner_fact_output  # n
 from app.graph.nodes.action_nodes import (  # noqa: E402
     _distance_origin_from_geocode,
     _parse_location_geocode_output,
+    _should_geocode_store_location,
     _store_query_with_geocoded_location,
     _store_query_with_planned_location,
 )
@@ -221,6 +222,45 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertIn("湖里区", query)
         self.assertIn("福建省厦门市湖里区萤火虫大厦", query)
         self.assertEqual(origin, "118.152560,24.535127")
+
+    def test_location_geocode_skips_generic_and_named_store_queries(self) -> None:
+        self.assertFalse(_should_geocode_store_location("附近有门店吗", raw_query="附近有门店吗"))
+        self.assertFalse(_should_geocode_store_location("重庆有店吗", raw_query="重庆有店吗"))
+        self.assertFalse(_should_geocode_store_location("厦门湖里百星店地址发我", raw_query="厦门湖里百星店地址发我"))
+        self.assertTrue(_should_geocode_store_location("福建省厦门市湖里区萤火虫大厦附近有店吗"))
+
+    def test_area_appointment_does_not_use_historical_store_when_distance_is_unresolved(self) -> None:
+        store_lookup = _store_service().search("厦门 海沧 明天下午可以约吗", customer_context=_customer_context())
+        state = {
+            "appointment_cache": {
+                "store_id": "91",
+                "store_name": "上海静安店",
+            }
+        }
+        query = appointment_query_from_state("厦门海沧明天下午可以约吗", store_lookup, state, extract_city)
+
+        self.assertIn("store_id", query["missing"])
+        self.assertEqual(query["store_id"], "")
+        self.assertEqual(query["store_name"], "")
+
+    def test_appointment_uses_current_distance_recommendation_instead_of_historical_store(self) -> None:
+        store_lookup = _store_service().search("厦门 海沧 明天下午可以约吗", customer_context=_customer_context())
+        store_lookup["recommended_store"] = {
+            "id": "12",
+            "name": "厦门思明店",
+            "address": "厦门市思明区厦禾路1222号国骏大厦",
+        }
+        state = {
+            "appointment_cache": {
+                "store_id": "91",
+                "store_name": "上海静安店",
+            }
+        }
+        query = appointment_query_from_state("厦门海沧明天下午可以约吗", store_lookup, state, extract_city)
+
+        self.assertEqual(query["store_id"], "12")
+        self.assertEqual(query["store_name"], "厦门思明店")
+        self.assertNotIn("store_id", query["missing"])
 
 
 if __name__ == "__main__":

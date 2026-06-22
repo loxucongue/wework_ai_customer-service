@@ -71,6 +71,7 @@ def create_execute_actions_node(
                     location_geocode = await _maybe_run_location_geocode(
                         coze_client=coze_client,
                         address=planned_distance_origin or store_query,
+                        raw_query=content,
                     )
                     if location_geocode:
                         tool_results["location_geocode"] = location_geocode
@@ -152,6 +153,7 @@ def create_execute_actions_node(
                     location_geocode = await _maybe_run_location_geocode(
                         coze_client=coze_client,
                         address=planned_distance_origin or store_query,
+                        raw_query=content,
                     )
                     if location_geocode:
                         tool_results["location_geocode"] = location_geocode
@@ -559,10 +561,11 @@ async def _maybe_run_location_geocode(
     *,
     coze_client: CozeClient,
     address: str,
+    raw_query: str = "",
 ) -> dict[str, Any]:
     workflow_id = str(getattr(coze_client.settings, "location_geocode_workflow_id", "") or "").strip()
     query = str(address or "").strip()
-    if not workflow_id or not query:
+    if not workflow_id or not query or not _should_geocode_store_location(query, raw_query=raw_query):
         return {}
     try:
         raw = await coze_client.run_workflow(workflow_id, {"address": query})
@@ -648,8 +651,57 @@ def _store_query_with_geocoded_location(query: str, location_geocode: dict[str, 
         parts.append(district)
     if formatted and formatted not in base:
         parts.append(formatted)
-    parts.append(base)
+    if not formatted:
+        parts.append(base)
     return " ".join(part for part in parts if part).strip()
+
+
+def _should_geocode_store_location(address: str, *, raw_query: str = "") -> bool:
+    text = str(address or "").strip()
+    raw = str(raw_query or "").strip()
+    if not text:
+        return False
+    query_info_area = store_text.extract_area_or_landmark(text)
+    raw_area = store_text.extract_area_or_landmark(raw)
+    has_city = bool(store_text.extract_city(text, []) or store_text.extract_city(raw, []))
+    has_area_or_landmark = bool(query_info_area or raw_area)
+    if not has_area_or_landmark:
+        return False
+    if has_city and not has_area_or_landmark:
+        return False
+    if _looks_like_generic_store_question(raw or text):
+        return False
+    if _looks_like_store_name_only(raw or text):
+        return False
+    return True
+
+
+def _looks_like_generic_store_question(value: str) -> bool:
+    text = re.sub(r"\s+", "", str(value or ""))
+    if not text:
+        return False
+    generic_values = {
+        "你们店在哪里",
+        "你们门店在哪里",
+        "店在哪里",
+        "门店在哪里",
+        "附近有门店吗",
+        "附近有店吗",
+        "附近门店",
+        "附近哪家门店",
+    }
+    if text in generic_values:
+        return True
+    return bool(re.fullmatch(r"(你们)?(附近)?(有)?(门店|店)(在哪里|在哪|位置|地址|吗)?", text))
+
+
+def _looks_like_store_name_only(value: str) -> bool:
+    text = re.sub(r"\s+", "", str(value or ""))
+    if not text:
+        return False
+    if any(term in text for term in ("附近", "最近", "哪家近", "有店", "有没有")):
+        return False
+    return "店" in text and bool(store_text.extract_city(text, []))
 
 
 def _distance_origin_from_geocode(location_geocode: dict[str, Any], *, fallback: str = "") -> str:

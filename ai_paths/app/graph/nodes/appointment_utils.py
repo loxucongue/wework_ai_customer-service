@@ -18,10 +18,20 @@ def appointment_query_from_state(
     store_name_hint = appointment_slot_value(state, "store_name") or known_store_name_from_history(state)
     hard_store = _confirmed_store_from_state(state)
     current_store = current_real_store_from_state(state)
-    store = hard_store or (current_store if _should_prefer_current_store(content, current_store) else {})
-    if not store:
+    explicit_current_location = has_explicit_location_or_store(content, extract_city)
+    needs_distance_lookup = bool(store_lookup.get("distance_lookup_required")) if isinstance(store_lookup, dict) else False
+    current_lookup_store = _store_from_current_lookup(store_lookup, store_name_hint)
+    if needs_distance_lookup and not current_lookup_store:
+        store = {}
+    elif explicit_current_location and current_lookup_store:
+        store = current_lookup_store
+    elif explicit_current_location:
+        store = {}
+    else:
+        store = hard_store or (current_store if _should_prefer_current_store(content, current_store) else {})
+    if not store and not explicit_current_location:
         store = select_store_for_appointment(stores, store_name_hint)
-    if not store:
+    if not store and not explicit_current_location:
         current_id = str(current_store.get("id") or "").strip()
         current_name = str(current_store.get("name") or "").strip()
         if current_id or current_name:
@@ -39,7 +49,6 @@ def appointment_query_from_state(
                         break
             if not store and (current_id or current_name):
                 store = current_store
-    needs_distance_lookup = bool(store_lookup.get("distance_lookup_required")) if isinstance(store_lookup, dict) else False
     if (
         not needs_distance_lookup
         and not store
@@ -49,7 +58,7 @@ def appointment_query_from_state(
     ):
         store = stores[0]
 
-    if not store and can_use_cached_appointment_store(content):
+    if not store and not explicit_current_location and can_use_cached_appointment_store(content):
         appointment = state.get("appointment_cache") or {}
         if isinstance(appointment, dict) and appointment.get("store_id"):
             store = {
@@ -240,7 +249,6 @@ def select_store_for_appointment(stores: Any, store_name_hint: str) -> dict[str,
     if not hint:
         return {}
     normalized_hint = re.sub(r"(门店|店名|店)$", "", hint)
-    area_aliases = ["集美", "湖里", "徐汇", "静安", "浦东", "虹口", "嘉定", "罗湖", "福田", "宝安", "渝北", "南岸", "渝中", "小寨", "未央", "碑林", "高新"]
     for store in stores:
         if not isinstance(store, dict):
             continue
@@ -251,9 +259,26 @@ def select_store_for_appointment(stores: Any, store_name_hint: str) -> dict[str,
             return store
         if normalized_hint and normalized_hint in haystack:
             return store
-        for alias in area_aliases:
-            if alias in normalized_hint and alias in haystack:
-                return store
+    return {}
+
+
+def _store_from_current_lookup(store_lookup: dict[str, Any], store_name_hint: str) -> dict[str, Any]:
+    if not isinstance(store_lookup, dict):
+        return {}
+    recommended = store_lookup.get("recommended_store") if isinstance(store_lookup.get("recommended_store"), dict) else {}
+    if recommended and (recommended.get("id") or recommended.get("store_id") or recommended.get("name")):
+        return recommended
+    stores = store_lookup.get("stores") if isinstance(store_lookup.get("stores"), list) else []
+    if not stores:
+        return {}
+    requested = str(store_lookup.get("requested_store") or "").strip() or str(store_name_hint or "").strip()
+    if requested:
+        selected = select_store_for_appointment(stores, requested)
+        if selected:
+            return selected
+    if len(stores) == 1 and not store_lookup.get("distance_lookup_required"):
+        first = stores[0]
+        return first if isinstance(first, dict) else {}
     return {}
 
 
@@ -262,9 +287,11 @@ def has_explicit_location_or_store(content: str, extract_city: Callable[[str], s
         return False
     if extract_city(content):
         return True
+    if re.search(r"[\u4e00-\u9fa5A-Za-z0-9]{2,24}店", content):
+        return True
     return any(
         term in content
-        for term in ["店", "门店", "这家", "那家", "附近", "地址", "上海", "厦门", "重庆", "成都", "北京", "广州", "深圳", "西安"]
+        for term in ["门店", "这家", "那家", "附近", "地址"]
     )
 
 
