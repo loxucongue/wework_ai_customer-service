@@ -23,18 +23,18 @@ class Settings(BaseSettings):
     aliyun_dashscope_api_key: str = Field(default="", repr=False)
     volcengine_ark_api_key: str = Field(default="", repr=False)
     deepseek_api_key: str = Field(default="", repr=False)
-    model_provider: str = "deepseek"
+    model_provider: str = "aliyun"
     model_vision_provider: str = "aliyun"
     aliyun_openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     volcengine_openai_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     deepseek_openai_base_url: str = "https://api.deepseek.com"
-    model_fast: str = "deepseek-v4-flash"
-    model_balanced: str = "deepseek-v4-flash"
-    model_strong: str = "deepseek-v4-pro"
+    model_fast: str = "qwen-turbo"
+    model_balanced: str = "qwen-plus"
+    model_strong: str = "qwen-max"
     model_vision: str = "qwen-vl-plus"
-    model_fast_fallbacks: str = ""
-    model_balanced_fallbacks: str = ""
-    model_strong_fallbacks: str = ""
+    model_fast_fallbacks: str = "kimi-k2.6,qwen3.6-flash"
+    model_balanced_fallbacks: str = "kimi-k2.6,qwen3.7-max-2026-05-20,qwen3.6-flash"
+    model_strong_fallbacks: str = "qwen3.7-max-2026-05-20,kimi-k2.6,qwen-plus"
     model_vision_fallbacks: str = ""
     model_timeout_seconds: int = 45
     memory_dir: Path = Path("logs/memory")
