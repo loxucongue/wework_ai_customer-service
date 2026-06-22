@@ -151,6 +151,11 @@ def postprocess_reply_messages(
         if store_address_message:
             cleaned.append(store_address_message)
             reasons.append("store_address_appended")
+            if not _has_text_message(cleaned):
+                store_text = _store_address_context_text_for_state(state, store_address_message)
+                if store_text:
+                    cleaned = _prepend_text_message(cleaned, store_text)
+                    reasons.append("store_address_text_fallback")
         book_order_message = _book_order_message_for_state(state, special_messages)
         if book_order_message:
             cleaned.append(book_order_message)
@@ -169,6 +174,15 @@ def postprocess_reply_messages(
     state["postprocess_changed"] = changed
     state["postprocess_reasons"] = _unique_reasons(reasons) if changed else []
     return cleaned
+
+
+def _has_text_message(messages: list[dict[str, Any]]) -> bool:
+    for message in messages:
+        if not isinstance(message, dict) or message.get("type") != "text":
+            continue
+        if message_content_text(message.get("content")).strip():
+            return True
+    return False
 
 
 def _handoff_message_for_state(state: AgentState) -> dict[str, Any] | None:
@@ -258,6 +272,41 @@ def _store_address_message_for_state(
     if not _should_send_store_address_now(state, store_id):
         return None
     return {"type": "store_address", "order": 0, "content": {"store_id": store_id}}
+
+
+def _store_address_context_text_for_state(state: AgentState, store_address_message: dict[str, Any]) -> str:
+    store_id = message_content_store_id(store_address_message.get("content"))
+    if not store_id:
+        return ""
+    structured = _structured_facts_from_state(state)
+    status = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    store = _store_fact_by_id(structured, store_id)
+    store_name = str(store.get("name") or "").strip()
+    if not store_name:
+        return "位置我发您了，您看下到这家方不方便。"
+    area = str(status.get("area_or_landmark") or "").strip()
+    direct_missing = bool(status.get("area_or_landmark_direct_store_missing"))
+    distance_text = str(store.get("distance_text") or store.get("distance") or "").strip()
+    distance_status = str(status.get("distance_lookup_status") or "").strip().lower()
+    if area and direct_missing:
+        if distance_text and distance_status == "ok":
+            return f"{area}目前没查到门店，离您相对方便的是{store_name}，{distance_text}，位置我发您。"
+        return f"{area}目前没查到门店，离您相对方便的是{store_name}，位置我发您。"
+    if distance_text and distance_status == "ok":
+        return f"给您推荐{store_name}，{distance_text}，位置我发您。"
+    return f"给您发{store_name}的位置，您看下到这家方不方便。"
+
+
+def _store_fact_by_id(structured: dict[str, Any], store_id: str) -> dict[str, Any]:
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict) and _store_id_from_fact(recommended) == store_id:
+        return recommended
+    stores = structured.get("store_facts")
+    if isinstance(stores, list):
+        for item in stores:
+            if isinstance(item, dict) and _store_id_from_fact(item) == store_id:
+                return item
+    return {}
 
 
 def _real_store_ids_from_state(state: AgentState) -> list[str]:

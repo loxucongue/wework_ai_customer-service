@@ -19,7 +19,7 @@ from app.graph.nodes.action_nodes import (  # noqa: E402
     _store_query_with_planned_location,
 )
 from app.graph.nodes.appointment_utils import appointment_query_from_state  # noqa: E402
-from app.graph.nodes.reply_postprocess import _has_unbacked_store_claim_text  # noqa: E402
+from app.graph.nodes.reply_postprocess import _has_unbacked_store_claim_text, postprocess_reply_messages  # noqa: E402
 from app.graph.nodes.reply_nodes import _safe_visible_fallback_messages  # noqa: E402
 from app.graph.nodes.store_context import extract_city, store_query_from_state  # noqa: E402
 from app.services.store_query_info import build_store_query_info  # noqa: E402
@@ -288,6 +288,46 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertEqual(messages[0]["type"], "text")
         self.assertIn("暂时没查到", messages[0]["content"]["text"])
         self.assertIn("新疆", messages[0]["content"]["text"])
+
+    def test_store_address_card_keeps_companion_text_when_text_was_removed(self) -> None:
+        state = {
+            "normalized_content": "海沧",
+            "structured_facts": {
+                "store_lookup_status": {
+                    "data_authority": "platform",
+                    "area_or_landmark": "海沧区",
+                    "area_or_landmark_direct_store_missing": True,
+                    "location_granularity": "area_or_landmark",
+                    "distance_lookup_required": True,
+                    "distance_lookup_status": "ok",
+                    "has_store_facts": True,
+                    "needs_area_or_landmark": False,
+                    "no_store_match_confirmed": False,
+                },
+                "recommended_store": {
+                    "id": "12",
+                    "name": "厦门思明店",
+                    "address": "厦门市思明区厦禾路1222号国骏大厦",
+                    "has_detail": True,
+                    "distance_text": "29.6公里",
+                },
+                "store_facts": [
+                    {
+                        "id": "12",
+                        "name": "厦门思明店",
+                        "address": "厦门市思明区厦禾路1222号国骏大厦",
+                        "has_detail": True,
+                    }
+                ],
+            },
+        }
+
+        messages = postprocess_reply_messages(state, [{"type": "store_address", "order": 1, "content": {"store_id": "12"}}])
+
+        self.assertEqual(messages[0]["type"], "text")
+        self.assertIn("海沧区目前没查到门店", messages[0]["content"]["text"])
+        self.assertEqual(messages[1]["type"], "store_address")
+        self.assertEqual(messages[1]["content"]["store_id"], "12")
 
 
 if __name__ == "__main__":
