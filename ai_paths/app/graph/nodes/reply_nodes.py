@@ -133,6 +133,14 @@ def _has_customer_visible_text(messages: list[dict[str, Any]]) -> bool:
 
 
 def _safe_visible_fallback_messages(state: AgentState) -> tuple[list[dict[str, Any]], str]:
+    case_messages = _case_request_fallback_messages(state)
+    if case_messages:
+        return case_messages, "deterministic_case_fallback"
+
+    store_messages = _store_location_fallback_messages(state)
+    if store_messages:
+        return store_messages, "deterministic_store_fallback"
+
     handoff = planner_handoff(state)
     reason = str(handoff.get("reason") or "").strip() or "最终回复生成失败，转专业同事继续跟进"
     text = "这边帮您对接同事继续跟进，请您稍等一下。"
@@ -143,3 +151,134 @@ def _safe_visible_fallback_messages(state: AgentState) -> tuple[list[dict[str, A
         ],
         "model_failed_handoff",
     )
+
+
+def _case_request_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
+    if not _looks_like_case_image_request(state):
+        return []
+    text = "可以，我先按同类方向给您核对真实效果参考。您主要想看斑点淡化还是肤色提亮方向？"
+    messages: list[dict[str, Any]] = [{"type": "text", "order": 1, "content": {"text": text}}]
+    for image_url in _case_image_urls_from_state(state)[:2]:
+        messages.append({"type": "image", "order": len(messages) + 1, "content": image_url})
+    if len(messages) == 1:
+        messages[0]["content"] = {
+            "text": "这轮我先不随便拿不匹配的图糊弄您，暂时没有可直接发的同类效果图。您主要想看斑点淡化还是肤色提亮方向？"
+        }
+    return messages
+
+
+def _store_location_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
+    if not _looks_like_generic_store_location_request(state):
+        return []
+    return [
+        {
+            "type": "text",
+            "order": 1,
+            "content": {"text": "您在哪个城市或哪个区？我按您位置给您找近一点的门店。"},
+        }
+    ]
+
+
+def _looks_like_case_image_request(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "")
+    if any(
+        term in text
+        for term in (
+            "效果图",
+            "案例",
+            "前后对比",
+            "对比图",
+            "做完效果",
+            "客户做完",
+            "有图吗",
+            "有照片吗",
+            "发图",
+            "看看效果",
+            "看一下效果",
+        )
+    ):
+        return True
+    return _planner_text_contains(state, ("case", "effect", "案例", "效果", "前后对比", "效果对比"))
+
+
+def _looks_like_generic_store_location_request(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "").strip()
+    if not text:
+        return False
+    if not any(term in text for term in ("门店", "店", "地址", "位置", "在哪里", "在哪")):
+        return False
+    if any(term in text for term in ("我在", "我住", "附近", "机场", "高铁", "地铁")):
+        return False
+    if _has_current_store_facts(state):
+        return False
+    return True
+
+
+def _planner_text_contains(state: AgentState, terms: tuple[str, ...]) -> bool:
+    joined_parts: list[str] = []
+    plan = state.get("planner_plan")
+    if isinstance(plan, dict):
+        joined_parts.append(str(plan))
+    for key in ("scene", "intent", "subflow"):
+        joined_parts.append(str(state.get(key) or ""))
+    joined = " ".join(joined_parts).lower()
+    return any(term.lower() in joined for term in terms)
+
+
+def _has_current_store_facts(state: AgentState) -> bool:
+    structured = state.get("structured_facts")
+    if isinstance(structured, dict):
+        if isinstance(structured.get("recommended_store"), dict):
+            return True
+        stores = structured.get("store_facts")
+        if isinstance(stores, list) and any(isinstance(item, dict) for item in stores):
+            return True
+    tool_results = state.get("tool_results")
+    lookup = tool_results.get("store_lookup") if isinstance(tool_results, dict) else {}
+    if isinstance(lookup, dict):
+        stores = lookup.get("stores")
+        if isinstance(stores, list) and any(isinstance(item, dict) for item in stores):
+            return True
+    return False
+
+
+def _case_image_urls_from_state(state: AgentState) -> list[str]:
+    urls: list[str] = []
+    for case in _case_facts_from_state(state):
+        if not isinstance(case, dict):
+            continue
+        image_url = str(case.get("image_url") or case.get("url") or "").strip()
+        if _is_usable_case_image_url(image_url):
+            urls.append(image_url)
+    return list(dict.fromkeys(urls))
+
+
+def _case_facts_from_state(state: AgentState) -> list[dict[str, Any]]:
+    structured = state.get("structured_facts")
+    if isinstance(structured, dict):
+        for key in ("case_facts", "case_studies"):
+            value = structured.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    fact_envelope = state.get("fact_envelope")
+    if isinstance(fact_envelope, dict):
+        value = fact_envelope.get("case_facts")
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    tool_results = state.get("tool_results")
+    value = tool_results.get("case_studies") if isinstance(tool_results, dict) else []
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        items = value.get("items") or value.get("cases") or value.get("results")
+        if isinstance(items, list):
+            return [item for item in items if isinstance(item, dict)]
+    return []
+
+
+def _is_usable_case_image_url(image_url: str) -> bool:
+    if not image_url or not image_url.startswith(("http://", "https://")):
+        return False
+    lowered = image_url.lower()
+    blocked_hosts = ("example.com", "example.cn", "localhost", "127.0.0.1", "picsum.photos", "placehold.co")
+    return not any(host in lowered for host in blocked_hosts)
