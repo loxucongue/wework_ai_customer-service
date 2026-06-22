@@ -68,6 +68,24 @@ def create_execute_actions_node(
                         planned_query=planned_store_query,
                         planned_distance_origin=planned_distance_origin,
                     )
+                    location_geocode = await _maybe_run_location_geocode(
+                        coze_client=coze_client,
+                        address=planned_distance_origin or store_query,
+                    )
+                    if location_geocode:
+                        tool_results["location_geocode"] = location_geocode
+                        tool_calls.append(
+                            {
+                                "name": "location_geocode",
+                                "input": location_geocode.get("input") or {},
+                                "output": location_geocode,
+                            }
+                        )
+                        store_query = _store_query_with_geocoded_location(store_query, location_geocode)
+                        planned_distance_origin = _distance_origin_from_geocode(
+                            location_geocode,
+                            fallback=planned_distance_origin,
+                        )
                     result = store_service.search(
                         store_query,
                         customer_context=state.get("customer_context") or {},
@@ -131,6 +149,24 @@ def create_execute_actions_node(
                         planned_query=planned_store_query,
                         planned_distance_origin=planned_distance_origin,
                     )
+                    location_geocode = await _maybe_run_location_geocode(
+                        coze_client=coze_client,
+                        address=planned_distance_origin or store_query,
+                    )
+                    if location_geocode:
+                        tool_results["location_geocode"] = location_geocode
+                        tool_calls.append(
+                            {
+                                "name": "location_geocode",
+                                "input": location_geocode.get("input") or {},
+                                "output": location_geocode,
+                            }
+                        )
+                        store_query = _store_query_with_geocoded_location(store_query, location_geocode)
+                        planned_distance_origin = _distance_origin_from_geocode(
+                            location_geocode,
+                            fallback=planned_distance_origin,
+                        )
                     current_store = current_real_store_from_state(state)
                     can_use_current_store = (
                         not _needs_store_lookup(required_tools)
@@ -517,6 +553,118 @@ def _clean_planned_store_location(value: str) -> str:
     text = re.sub(r"(客户|用户|本人|我|这边|当前位置|所在位置)", "", text)
     text = re.sub(r"\s+", "", text)
     return text
+
+
+async def _maybe_run_location_geocode(
+    *,
+    coze_client: CozeClient,
+    address: str,
+) -> dict[str, Any]:
+    workflow_id = str(getattr(coze_client.settings, "location_geocode_workflow_id", "") or "").strip()
+    query = str(address or "").strip()
+    if not workflow_id or not query:
+        return {}
+    try:
+        raw = await coze_client.run_workflow(workflow_id, {"address": query})
+        results = _parse_location_geocode_output(raw)
+        return {
+            "status": "ok" if results else "no_match",
+            "source": "coze_location_geocode_workflow",
+            "workflow_id": workflow_id,
+            "input": {"address": query},
+            "results": results,
+            "best": results[0] if results else {},
+            "raw": raw,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "source": "coze_location_geocode_workflow",
+            "workflow_id": workflow_id,
+            "input": {"address": query},
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _parse_location_geocode_output(raw: Any) -> list[dict[str, Any]]:
+    payload = _location_geocode_payload(raw)
+    output = payload.get("output") if isinstance(payload, dict) else payload
+    rows = output if isinstance(output, list) else [output] if isinstance(output, dict) else []
+    results: list[dict[str, Any]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        location = str(item.get("location") or "").strip()
+        lng = lat = ""
+        if "," in location:
+            left, right = location.split(",", 1)
+            lng, lat = left.strip(), right.strip()
+        results.append(
+            {
+                "country": str(item.get("country") or ""),
+                "province": str(item.get("province") or ""),
+                "city": str(item.get("city") or ""),
+                "district": str(item.get("district") or ""),
+                "township": str(item.get("township") or ""),
+                "street": str(item.get("street") or ""),
+                "number": str(item.get("number") or ""),
+                "formatted_address": str(item.get("formatted_address") or ""),
+                "level": str(item.get("level") or ""),
+                "location": location,
+                "lng": lng,
+                "lat": lat,
+            }
+        )
+    return results
+
+
+def _location_geocode_payload(raw: Any) -> Any:
+    if not isinstance(raw, dict):
+        return {}
+    data = raw.get("data")
+    if isinstance(data, str) and data.strip():
+        try:
+            parsed = json.loads(data)
+            return parsed
+        except json.JSONDecodeError:
+            return raw
+    if isinstance(data, dict):
+        return data
+    return raw
+
+
+def _store_query_with_geocoded_location(query: str, location_geocode: dict[str, Any]) -> str:
+    base = str(query or "").strip()
+    best = location_geocode.get("best") if isinstance(location_geocode.get("best"), dict) else {}
+    if not best:
+        return base
+    city = _strip_city_suffix(str(best.get("city") or "").strip())
+    district = str(best.get("district") or "").strip()
+    formatted = str(best.get("formatted_address") or "").strip()
+    parts: list[str] = []
+    if city and city not in base:
+        parts.append(city)
+    if district and district not in base:
+        parts.append(district)
+    if formatted and formatted not in base:
+        parts.append(formatted)
+    parts.append(base)
+    return " ".join(part for part in parts if part).strip()
+
+
+def _distance_origin_from_geocode(location_geocode: dict[str, Any], *, fallback: str = "") -> str:
+    best = location_geocode.get("best") if isinstance(location_geocode.get("best"), dict) else {}
+    if not best:
+        return str(fallback or "").strip()
+    location = str(best.get("location") or "").strip()
+    formatted = str(best.get("formatted_address") or "").strip()
+    city = str(best.get("city") or "").strip()
+    district = str(best.get("district") or "").strip()
+    return location or formatted or f"{city}{district}".strip() or str(fallback or "").strip()
+
+
+def _strip_city_suffix(value: str) -> str:
+    return re.sub(r"(市|地区|自治州|盟)$", "", str(value or "").strip())
 
 
 async def _maybe_run_distance_lookup(

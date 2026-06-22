@@ -18,6 +18,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
     structured_facts: dict[str, Any] = {
         "store_facts": [],
         "store_lookup_status": {},
+        "location_geocode": {},
         "recommended_store": {},
         "distance_facts": [],
         "price_facts": [],
@@ -160,6 +161,29 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 )
             if platform_error and not stores:
                 unsupported_claims.append("store_lookup incomplete")
+
+        if key == "location_geocode":
+            best = value.get("best") if isinstance(value.get("best"), dict) else {}
+            structured_facts["location_geocode"] = {
+                "status": str(value.get("status") or ""),
+                "source": str(value.get("source") or ""),
+                "input_address": str((value.get("input") or {}).get("address") or "")[:160]
+                if isinstance(value.get("input"), dict)
+                else "",
+                "city": str(best.get("city") or ""),
+                "district": str(best.get("district") or ""),
+                "formatted_address": str(best.get("formatted_address") or ""),
+                "level": str(best.get("level") or ""),
+                "location": str(best.get("location") or ""),
+            }
+            if best:
+                facts.append(
+                    "location_geocode: "
+                    f"address={best.get('formatted_address') or ''}; city={best.get('city') or ''}; "
+                    f"district={best.get('district') or ''}; location={best.get('location') or ''}"
+                )
+            elif value.get("status"):
+                facts.append(f"location_geocode: status={value.get('status')}")
             if stores and not any(item.get("has_detail") for item in stores if isinstance(item, dict)):
                 unsupported_claims.append("store details unavailable")
             missing_slots.extend(missing)

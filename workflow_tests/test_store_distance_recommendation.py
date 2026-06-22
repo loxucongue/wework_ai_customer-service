@@ -11,7 +11,12 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output  # noqa: E402
-from app.graph.nodes.action_nodes import _store_query_with_planned_location  # noqa: E402
+from app.graph.nodes.action_nodes import (  # noqa: E402
+    _distance_origin_from_geocode,
+    _parse_location_geocode_output,
+    _store_query_with_geocoded_location,
+    _store_query_with_planned_location,
+)
 from app.graph.nodes.appointment_utils import appointment_query_from_state  # noqa: E402
 from app.graph.nodes.reply_postprocess import _has_unbacked_store_claim_text  # noqa: E402
 from app.graph.nodes.store_context import extract_city, store_query_from_state  # noqa: E402
@@ -184,6 +189,38 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertFalse(result["area_or_landmark_has_direct_store"])
         self.assertTrue(result["area_or_landmark_direct_store_missing"])
         self.assertTrue(_has_unbacked_store_claim_text(state, "海沧有的，我帮您查一下附近的门店位置发您哈"))
+
+    def test_location_geocode_output_normalizes_query_and_distance_origin(self) -> None:
+        raw = {
+            "data": {
+                "output": [
+                    {
+                        "district": "湖里区",
+                        "formatted_address": "福建省厦门市湖里区萤火虫大厦",
+                        "number": "",
+                        "street": "",
+                        "city": "厦门市",
+                        "country": "中国",
+                        "level": "兴趣点",
+                        "location": "118.152560,24.535127",
+                        "province": "福建省",
+                        "township": "",
+                    }
+                ]
+            }
+        }
+        results = _parse_location_geocode_output(raw)
+        geocode = {"best": results[0]}
+
+        query = _store_query_with_geocoded_location("萤火虫大厦附近", geocode)
+        origin = _distance_origin_from_geocode(geocode)
+
+        self.assertEqual(results[0]["lng"], "118.152560")
+        self.assertEqual(results[0]["lat"], "24.535127")
+        self.assertIn("厦门", query)
+        self.assertIn("湖里区", query)
+        self.assertIn("福建省厦门市湖里区萤火虫大厦", query)
+        self.assertEqual(origin, "118.152560,24.535127")
 
 
 if __name__ == "__main__":
