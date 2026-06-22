@@ -428,6 +428,52 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertEqual(messages[1]["type"], "store_address")
         self.assertEqual(messages[1]["content"]["store_id"], "12")
 
+    def test_parking_question_does_not_resend_recent_store_card(self) -> None:
+        state = {
+            "normalized_content": "有地方停车吗",
+            "conversation_history": [
+                {"role": "assistant", "type": "store_address", "content": {"store_id": "227"}},
+            ],
+            "structured_facts": {
+                "store_lookup_status": {
+                    "data_authority": "platform",
+                    "location_granularity": "store_name",
+                    "has_store_facts": True,
+                    "needs_area_or_landmark": False,
+                    "no_store_match_confirmed": False,
+                },
+                "recommended_store": {
+                    "id": "227",
+                    "name": "厦门百星湖里店",
+                    "address": "福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
+                    "parking_name": "萤火虫大厦-西北门",
+                    "parking_address": "福建省厦门市湖里区禾山街道岭下社区岐山北二路1000号",
+                    "has_detail": True,
+                },
+                "store_facts": [
+                    {
+                        "id": "227",
+                        "name": "厦门百星湖里店",
+                        "address": "福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
+                        "parking_name": "萤火虫大厦-西北门",
+                        "parking_address": "福建省厦门市湖里区禾山街道岭下社区岐山北二路1000号",
+                        "has_detail": True,
+                    }
+                ],
+            },
+        }
+
+        messages = postprocess_reply_messages(
+            state,
+            [
+                {"type": "text", "order": 1, "content": {"text": "有的，萤火虫大厦楼下就可以停车。"}},
+                {"type": "store_address", "order": 2, "content": {"store_id": "227"}},
+            ],
+        )
+
+        self.assertEqual([message["type"] for message in messages], ["text"])
+        self.assertNotIn("store_address_appended", state.get("postprocess_reasons", []))
+
 
 if __name__ == "__main__":
     unittest.main()

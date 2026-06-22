@@ -448,7 +448,6 @@ def _should_send_store_address_now(state: AgentState, store_id: str) -> bool:
         "导航",
         "路线",
         "怎么去",
-        "停车",
         "找不到",
         "忘了",
         "再发",
