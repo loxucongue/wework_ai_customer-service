@@ -24,13 +24,14 @@ class Settings(BaseSettings):
     volcengine_ark_api_key: str = Field(default="", repr=False)
     deepseek_api_key: str = Field(default="", repr=False)
     model_provider: str = "deepseek"
+    model_vision_provider: str = "aliyun"
     aliyun_openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     volcengine_openai_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     deepseek_openai_base_url: str = "https://api.deepseek.com"
     model_fast: str = "deepseek-v4-flash"
     model_balanced: str = "deepseek-v4-flash"
     model_strong: str = "deepseek-v4-pro"
-    model_vision: str = "deepseek-v4-flash"
+    model_vision: str = "qwen-vl-plus"
     model_fast_fallbacks: str = ""
     model_balanced_fallbacks: str = ""
     model_strong_fallbacks: str = ""

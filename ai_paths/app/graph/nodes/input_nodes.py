@@ -24,7 +24,7 @@ def create_image_understanding_node(
             model_call: dict[str, Any] | None = None
             if has_image and model_client and model_client.available:
                 model_call = {"name": "vision_model", "input": {"tier": "vision"}}
-                if model_client.settings.model_provider.lower() == "deepseek":
+                if model_client.provider_for_tier("vision") == "deepseek":
                     image_info = fallback_image_info(has_image=True)
                     model_call["skipped"] = "deepseek_provider_has_no_image_url_vision_support"
                 else:
