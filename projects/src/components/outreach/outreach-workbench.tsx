@@ -9,6 +9,7 @@ import {
   Clock,
   FileText,
   ListChecks,
+  MessageSquareText,
   Pause,
   Play,
   RefreshCw,
@@ -80,6 +81,20 @@ type OutreachEvent = {
   event_summary?: string;
   payload?: JsonObject;
   created_at?: string;
+};
+
+type ConversationMessage = {
+  content?: unknown;
+  text?: unknown;
+  msg_content?: unknown;
+  direction?: unknown;
+  from?: unknown;
+  sender_type?: unknown;
+  sender_name?: unknown;
+  msgtime?: unknown;
+  created_at?: unknown;
+  send_time?: unknown;
+  msgtype?: unknown;
 };
 
 type PlanDetail = {
@@ -166,6 +181,28 @@ function messagePreview(messages?: Array<JsonObject>) {
     .join(" / ");
 }
 
+function messageText(message: ConversationMessage) {
+  const content = message.content ?? message.text ?? message.msg_content;
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  if (typeof content === "object") {
+    const value = content as JsonObject;
+    return String(value.text || value.content || value.url || JSON.stringify(value));
+  }
+  return String(content);
+}
+
+function messageSender(message: ConversationMessage) {
+  const direction = String(message.direction || message.from || message.sender_type || "").toLowerCase();
+  if (["customer", "user", "external"].includes(direction)) return "客户";
+  if (["staff", "assistant", "service", "ai"].includes(direction)) return "员工";
+  return String(message.sender_name || direction || "消息");
+}
+
+function messageTime(message: ConversationMessage) {
+  return formatTime(String(message.msgtime || message.created_at || message.send_time || ""));
+}
+
 export function OutreachWorkbench() {
   const [filters, setFilters] = useState<Filters>(DEFAULT_FILTERS);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -176,6 +213,9 @@ export function OutreachWorkbench() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyCustomer, setHistoryCustomer] = useState<Candidate | null>(null);
+  const [historyMessages, setHistoryMessages] = useState<ConversationMessage[]>([]);
 
   const selectedPlan = planDetail?.plan || null;
   const tasks = useMemo(() => planDetail?.tasks || [], [planDetail]);
@@ -335,6 +375,39 @@ export function OutreachWorkbench() {
     [loadCandidates, loadEvents]
   );
 
+  const openConversationHistory = useCallback(
+    async (candidate: Candidate) => {
+      setHistoryOpen(true);
+      setHistoryCustomer(candidate);
+      setHistoryMessages([]);
+      setBusy(`history-${candidate.customer_id}`);
+      setError("");
+      try {
+        const response = await fetch(`/api/outreach/customers/${encodeURIComponent(candidate.customer_id)}/refresh-conversation`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            corp_id: candidate.corp_id || "",
+            user_id: candidate.user_id || "",
+            wechat: candidate.wechat || "",
+            external_userid: candidate.external_userid || candidate.customer_id,
+            limit: 30,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "加载历史聊天失败");
+        setHistoryMessages(Array.isArray(data.messages) ? data.messages : []);
+        await loadCandidates();
+        await loadEvents();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy("");
+      }
+    },
+    [loadCandidates, loadEvents]
+  );
+
   const runDue = useCallback(async () => {
     setBusy("run-due");
     setError("");
@@ -460,9 +533,14 @@ export function OutreachWorkbench() {
                 {candidates.map((item) => {
                   const active = selectedCustomer?.customer_id === item.customer_id;
                   return (
-                    <button
+                    <div
                       key={item.customer_id}
                       onClick={() => setSelectedCustomer(item)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") setSelectedCustomer(item);
+                      }}
+                      role="button"
+                      tabIndex={0}
                       className={`w-full rounded-lg border p-3 text-left transition ${
                         active ? "border-zinc-900 bg-zinc-50" : "border-zinc-200 bg-white hover:bg-zinc-50"
                       }`}
@@ -478,8 +556,22 @@ export function OutreachWorkbench() {
                         <span>沉默 {formatSilent(item.silent_minutes)}</span>
                         <span>{formatTime(item.last_customer_message_at)}</span>
                       </div>
-                      <p className="mt-2 line-clamp-2 text-xs text-zinc-600">{item.last_customer_message || item.latest_event_summary || "暂无最近消息摘要"}</p>
-                    </button>
+                      <div className="mt-2 flex items-end gap-2">
+                        <p className="min-w-0 flex-1 line-clamp-2 text-xs text-zinc-600">{item.last_customer_message || item.latest_event_summary || "暂无最近消息摘要"}</p>
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            openConversationHistory(item);
+                          }}
+                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100"
+                          title="查看历史聊天记录"
+                          disabled={busy === `history-${item.customer_id}`}
+                        >
+                          <MessageSquareText className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
@@ -637,6 +729,51 @@ export function OutreachWorkbench() {
           </section>
         </aside>
       </section>
+      {historyOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 px-4">
+          <section className="flex max-h-[82vh] w-full max-w-2xl flex-col rounded-xl border border-zinc-200 bg-white shadow-xl">
+            <div className="flex items-start justify-between gap-3 border-b border-zinc-200 p-4">
+              <div className="min-w-0">
+                <h2 className="truncate text-base font-semibold">历史聊天记录</h2>
+                <p className="truncate text-xs text-zinc-500">{historyCustomer ? `${historyCustomer.title || historyCustomer.customer_id} · ID ${historyCustomer.customer_id}` : ""}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHistoryOpen(false)}
+                className="rounded-md border border-zinc-200 p-2 text-zinc-500 hover:bg-zinc-50"
+                title="关闭"
+              >
+                <XCircle className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-[260px] flex-1 overflow-y-auto p-4">
+              {busy.startsWith("history-") ? (
+                <div className="py-10 text-center text-sm text-zinc-500">正在加载聊天记录...</div>
+              ) : historyMessages.length ? (
+                <div className="space-y-3">
+                  {historyMessages.map((message, index) => {
+                    const sender = messageSender(message);
+                    const fromCustomer = sender === "客户";
+                    return (
+                      <div key={`${String(message.msgtime || message.created_at || index)}-${index}`} className={`flex ${fromCustomer ? "justify-start" : "justify-end"}`}>
+                        <div className={`max-w-[78%] rounded-lg px-3 py-2 ${fromCustomer ? "bg-zinc-100 text-zinc-900" : "bg-zinc-900 text-white"}`}>
+                          <div className={`mb-1 flex items-center gap-2 text-[11px] ${fromCustomer ? "text-zinc-500" : "text-zinc-300"}`}>
+                            <span>{sender}</span>
+                            <span>{messageTime(message)}</span>
+                          </div>
+                          <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{messageText(message) || "[非文本消息]"}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="py-10 text-center text-sm text-zinc-500">暂无可展示的历史聊天记录</div>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
