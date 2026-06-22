@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.graph.planner.tool_policy import (
     dedupe_tools,
     enforce_required_tools,
+    needs_appointment_create_request,
     needs_appointment_time_request,
     needs_store_lookup_request,
     normalize_tools,
@@ -36,7 +38,9 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     all_tasks = [primary_task, *secondary_tasks]
     normalized_content = str(state.get("normalized_content") or "")
     _coerce_primary_task_from_text_signals(primary_task, normalized_content)
-    if needs_appointment_time_request(normalized_content):
+    if _looks_like_contact_info(normalized_content) and needs_appointment_create_request(state, normalized_content):
+        _coerce_primary_task_to_appointment_contact(primary_task, reply_strategy_raw)
+    elif needs_appointment_time_request(normalized_content):
         _coerce_primary_task_to_appointment_time(primary_task, reply_strategy_raw)
     elif needs_store_lookup_request(state, normalized_content) and _looks_like_location_or_store_question(normalized_content):
         _coerce_primary_task_to_store_lookup(primary_task, reply_strategy_raw)
@@ -155,6 +159,35 @@ def _coerce_primary_task_to_appointment_time(primary_task: dict[str, Any], reply
     ]
     if isinstance(reply_strategy_raw, dict):
         reply_strategy_raw.setdefault("can_push", "确认门店、时间或补齐预约信息")
+
+
+def _coerce_primary_task_to_appointment_contact(primary_task: dict[str, Any], reply_strategy_raw: Any) -> None:
+    primary_task["type"] = "appointment"
+    primary_task["subtype"] = "contact_info_supplied"
+    primary_task["policy_hint"] = "SF9_APPOINTMENT_CONTACT_INFO"
+    primary_task["scene"] = primary_task.get("scene") or "客户提供姓名电话，报名登记"
+    primary_task["subflow"] = "APPOINTMENT_CONTACT_INFO_SUPPLIED"
+    primary_task["sop_stage"] = "S3_PRICE_CLOSE"
+    primary_task["sop_step"] = primary_task.get("sop_step") or "收单"
+    primary_task["answer_goal"] = "承接客户已提供的姓名电话，并依据真实 appointment_opening 结果推进预约金入口或补齐缺失信息。"
+    primary_task["must_answer"] = [
+        "确认收到客户姓名电话",
+        "如果没有真实 order_id，只能补一个缺失项，不能说预约金链接已发送",
+    ]
+    primary_task["must_avoid"] = list(primary_task.get("must_avoid") or []) + [
+        "不要归入价格咨询",
+        "不要重新问城市、区域或门店",
+        "没有真实 order_id 时不要说发链接、发卡片、已锁定名额或已登记成功",
+    ]
+    if isinstance(reply_strategy_raw, dict):
+        reply_strategy_raw.setdefault("can_push", "补齐到店日期/时间或发送真实预约金入口")
+
+
+def _looks_like_contact_info(content: str) -> bool:
+    text = str(content or "")
+    return bool(re.search(r"1[3-9]\d{9}", text)) or any(
+        term in text for term in ("我叫", "姓名", "名字", "电话", "手机号", "手机")
+    )
 
 
 def _coerce_primary_task_from_text_signals(primary_task: dict[str, Any], content: str) -> None:

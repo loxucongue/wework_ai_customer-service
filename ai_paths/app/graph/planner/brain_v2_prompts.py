@@ -105,6 +105,7 @@ store_lookup 参数规则：
 - S3 价格/活动/定金/尾款/名额/费用透明：通常调用 kb_search(sales_talk_qa)，价格事实用 active_offer_context，不用价格库。
 - S3 客户明确要预约或问某天某点是否可来：store_lookup + available_time。
 - S3 客户已有预约意向且已匹配到真实意向门店，但还缺姓名或电话：不要规划 appointment_create；让最终回复只补姓名电话。
+- S3 客户发送姓名、手机号、姓名+手机号，且近期上下文是预约、报名、预约金、门店或留名额时，必须归入 appointment/contact_info_supplied，不要归入 price_inquiry；这类轮次不要规划 store_lookup/distance_lookup，除非当前没有可信门店 ID。
 - S3 客户已有真实意向门店、姓名、电话，并明确要登记/预约/支付10元预约金：可以规划 appointment_create；具体到店日期/时间不是创建预约金卡片的硬前置。
 - 如果客户同时给了到店日期/时间，或已经有确认门店后询问“明天上午/周六下午/10点能不能来”，必须同时规划 available_time；有真实档期就让最终回复给具体可选时间。
 - appointment_create 以真实客户ID、员工ID、加微记录、真实意向门店、客户姓名、客户电话、预约金事实为前提；模型不能编 order_id，book_order 只能由真实 appointment_opening / appointment_create 结果注入。

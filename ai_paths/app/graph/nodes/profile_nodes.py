@@ -107,6 +107,8 @@ def _merge_profile_updates(base: dict[str, Any], incoming: Any) -> dict[str, Any
     basic_info = _allowed_basic_update(incoming.get("basic_info"))
     if basic_info:
         current_basic = dict(merged.get("basic_info") or {})
+        if current_basic.get("deposit_state") == "可正式推定金" and basic_info.get("deposit_state") == "未适合推定金":
+            basic_info.pop("deposit_state", None)
         current_basic.update(basic_info)
         merged["basic_info"] = current_basic
     lifecycle = str(incoming.get("lifecycle_stage") or "").strip()

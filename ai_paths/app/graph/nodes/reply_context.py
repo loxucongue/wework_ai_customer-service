@@ -494,6 +494,19 @@ def _fact_notes_for_model(
         for item in appointment_facts:
             if not isinstance(item, dict):
                 continue
+            if item.get("type") == "appointment_opening":
+                status = str(item.get("status") or "").strip()
+                order_id = str(item.get("order_id") or "").strip()
+                if status in {"missing_info", "needs_customer_confirmation", "needs_contact_info", "needs_name_phone"} or not order_id:
+                    missing = [str(value or "").strip() for value in (item.get("missing") or []) if str(value or "").strip()]
+                    if missing:
+                        notes.append(f"预约金订单还没创建成功，缺少：{', '.join(missing[:3])}；不能说已发链接、已发预约金卡片、已锁定名额或已登记成功。")
+                    else:
+                        notes.append("预约金订单还没创建成功且没有真实 order_id；不能说已发链接、已发预约金卡片、已锁定名额或已登记成功，只能承接已收到信息并补一个确认项。")
+                    break
+        for item in appointment_facts:
+            if not isinstance(item, dict):
+                continue
             if item.get("type") == "appointment_opening" and item.get("status") in {"created", "dry_run_created", "reused_open_order"} and item.get("order_id"):
                 notes.append("已有真实预约金订单，可直接解释10元预约金并输出 book_order。")
                 break

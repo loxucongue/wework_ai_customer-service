@@ -27,7 +27,7 @@ class AppointmentOpeningService:
         missing = _missing_fields(facts)
         if missing:
             return {"status": "missing_info", "missing": missing, "facts": _public_facts(facts)}
-        if not _customer_confirmed_opening(content):
+        if not (_customer_confirmed_opening(content) or _contact_info_confirms_recent_booking(content, state)):
             return {"status": "needs_customer_confirmation", "facts": _public_facts(facts)}
         if not self.platform_client or not self.platform_client.available:
             return {
@@ -397,6 +397,21 @@ def _customer_confirmed_opening(content: str) -> bool:
     return any(term in text for term in positive_terms)
 
 
+def _contact_info_confirms_recent_booking(content: str, state: dict[str, Any]) -> bool:
+    if not (_extract_phone(content) and _extract_customer_name(content)):
+        return False
+    event_texts: list[str] = []
+    for event in (state.get("history_events") or [])[-12:]:
+        if not isinstance(event, dict):
+            continue
+        event_texts.append(str(event.get("summary") or ""))
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        event_texts.extend(str(value or "") for value in facts.values())
+    dialogue_texts = [str(item or "") for item in (state.get("conversation_history") or [])[-8:]]
+    history = "\n".join([*_recent_customer_texts(state)[-8:], *dialogue_texts, *event_texts])
+    return any(term in history for term in ("怎么预约", "预约", "报名", "登记", "预约金", "留名额", "锁定名额", "姓名电话"))
+
+
 def _extract_time(content: str) -> str:
     match = re.search(r"(\d{1,2})[:：](\d{2})", content)
     if match:
@@ -447,6 +462,7 @@ def _extract_customer_name(content: str) -> str:
     patterns = (
         r"(?:我叫|叫我|名字叫|姓名是|姓名|名字是)\s*([\u4e00-\u9fa5A-Za-z]{1,12})",
         r"([\u4e00-\u9fa5]{2,4})\s*(?:电话|手机|手机号)\s*1[3-9]\d{9}",
+        r"^\s*([\u4e00-\u9fa5]{2,4})\s+1[3-9]\d{9}\s*$",
     )
     for pattern in patterns:
         match = re.search(pattern, text)

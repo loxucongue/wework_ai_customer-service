@@ -150,25 +150,6 @@ def create_execute_actions_node(
                         planned_query=planned_store_query,
                         planned_distance_origin=planned_distance_origin,
                     )
-                    location_geocode = await _maybe_run_location_geocode(
-                        coze_client=coze_client,
-                        address=planned_distance_origin or store_query,
-                        raw_query=content,
-                    )
-                    if location_geocode:
-                        tool_results["location_geocode"] = location_geocode
-                        tool_calls.append(
-                            {
-                                "name": "location_geocode",
-                                "input": location_geocode.get("input") or {},
-                                "output": location_geocode,
-                            }
-                        )
-                        store_query = _store_query_with_geocoded_location(store_query, location_geocode)
-                        planned_distance_origin = _distance_origin_from_geocode(
-                            location_geocode,
-                            fallback=planned_distance_origin,
-                        )
                     current_store = current_real_store_from_state(state)
                     can_use_current_store = (
                         not _needs_store_lookup(required_tools)
@@ -177,6 +158,26 @@ def create_execute_actions_node(
                             or str(current_store.get("name") or "").strip()
                         )
                     )
+                    if not can_use_current_store:
+                        location_geocode = await _maybe_run_location_geocode(
+                            coze_client=coze_client,
+                            address=planned_distance_origin or store_query,
+                            raw_query=content,
+                        )
+                        if location_geocode:
+                            tool_results["location_geocode"] = location_geocode
+                            tool_calls.append(
+                                {
+                                    "name": "location_geocode",
+                                    "input": location_geocode.get("input") or {},
+                                    "output": location_geocode,
+                                }
+                            )
+                            store_query = _store_query_with_geocoded_location(store_query, location_geocode)
+                            planned_distance_origin = _distance_origin_from_geocode(
+                                location_geocode,
+                                fallback=planned_distance_origin,
+                            )
                     lookup = tool_results.get("store_lookup") or {}
                     if not lookup and not can_use_current_store:
                         lookup = store_service.search(

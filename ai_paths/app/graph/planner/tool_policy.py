@@ -402,7 +402,8 @@ def enforce_required_tools(
         )
 
     def ensure_available_time() -> None:
-        ensure_store_lookup("Need real store facts before checking appointment availability")
+        if not _has_current_store_fact(state):
+            ensure_store_lookup("Need real store facts before checking appointment availability")
         add_tool(
             {
                 "name": "available_time",
@@ -411,8 +412,11 @@ def enforce_required_tools(
         )
 
     def ensure_appointment_create() -> None:
-        ensure_store_lookup("Need real store facts before creating appointment deposit order")
-        ensure_available_time()
+        contact_followup = _is_contact_info_after_booking(state, original_user_query)
+        if not _has_current_store_fact(state):
+            ensure_store_lookup("Need real store facts before creating appointment deposit order")
+        if not contact_followup or needs_appointment_time_request(original_user_query):
+            ensure_available_time()
         add_tool(
             {
                 "name": "appointment_create",
@@ -525,6 +529,8 @@ def enforce_required_tools(
     tools = dedupe_tools(tools)
     if _should_skip_store_lookup_for_confirmed_appointment(state, original_user_query, tools):
         tools = [tool for tool in tools if str(tool.get("name") or "").strip() != "store_lookup"]
+    if _should_skip_available_time_for_contact_followup(state, original_user_query, tools):
+        tools = [tool for tool in tools if str(tool.get("name") or "").strip() != "available_time"]
     return tools
 
 
@@ -714,6 +720,12 @@ def needs_appointment_create_request(state: AgentState, content: str) -> bool:
     return should_use_recent_store_fact_context(content, state)
 
 
+def _is_contact_info_after_booking(state: AgentState, content: str) -> bool:
+    return _has_contact_detail(content) and _recent_booking_intent(state) and (
+        _has_current_store_fact(state) or should_use_recent_store_fact_context(content, state)
+    )
+
+
 def _has_contact_detail(content: str) -> bool:
     text = str(content or "")
     if re.search(r"1[3-9]\d{9}", text):
@@ -723,22 +735,34 @@ def _has_contact_detail(content: str) -> bool:
     )
 
 
+def _has_current_store_fact(state: AgentState) -> bool:
+    current_store = current_real_store_from_state(state)
+    return bool(str(current_store.get("id") or "").strip() or str(current_store.get("name") or "").strip())
+
+
 def _recent_booking_intent(state: AgentState) -> bool:
     for item in reversed(state.get("conversation_history") or []):
         if isinstance(item, dict):
             role = str(item.get("role") or item.get("direction") or "").lower()
-            if role and role not in {"user", "customer"}:
-                continue
             content = item.get("content")
             text = str(content.get("text") if isinstance(content, dict) else content or "")
         else:
             text = str(item or "")
-            if text.startswith(("小贝：", "小贝:", "客服：", "客服:", "AI回复：", "AI回复:", "助手：", "助手:")):
-                continue
             if text.startswith(("客户：", "客户:", "用户：", "用户:")):
                 text = text.split("：", 1)[-1] if "：" in text else text.split(":", 1)[-1]
         if any(term in text for term in _APPOINTMENT_BOOKING_INTENT_TERMS) or any(
             term in text for term in _APPOINTMENT_BOOKING_TERMS_UTF8
+        ):
+            return True
+    for event in (state.get("history_events") or [])[-12:]:
+        if not isinstance(event, dict):
+            continue
+        texts = [str(event.get("summary") or ""), str(event.get("impact") or "")]
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        texts.extend(str(value or "") for value in facts.values())
+        combined = "\n".join(texts)
+        if any(term in combined for term in _APPOINTMENT_BOOKING_INTENT_TERMS) or any(
+            term in combined for term in _APPOINTMENT_BOOKING_TERMS_UTF8
         ):
             return True
     return False
@@ -885,6 +909,20 @@ def _should_skip_store_lookup_for_confirmed_appointment(
         or any(term in text for term in _APPOINTMENT_BOOKING_TERMS_UTF8)
         or _has_contact_detail(text)
     )
+
+
+def _should_skip_available_time_for_contact_followup(
+    state: AgentState,
+    content: str,
+    tools: list[dict[str, Any]],
+) -> bool:
+    names = {str(tool.get("name") or "").strip() for tool in tools if isinstance(tool, dict)}
+    if "available_time" not in names or "appointment_create" not in names:
+        return False
+    text = str(content or "").strip()
+    if not text or needs_appointment_time_request(text):
+        return False
+    return _is_contact_info_after_booking(state, text)
 
 
 def _distance_origin_from_state_or_text(state: AgentState, content: str) -> str:

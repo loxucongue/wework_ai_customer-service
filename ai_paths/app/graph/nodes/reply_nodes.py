@@ -62,6 +62,7 @@ def create_synthesize_reply_node(
                         if messages:
                             messages = postprocess_reply_messages(state, messages)
                             messages = _drop_duplicate_store_address_messages(state, messages)
+                            messages = _ensure_book_order_for_created_appointment(state, messages)
                             model_call["postprocessed_messages"] = debug_message_contents(messages)
                         if messages and _store_no_match_reply_needs_fallback(state, messages):
                             messages, reply_source = _safe_visible_fallback_messages(state)
@@ -168,6 +169,40 @@ def _drop_duplicate_store_address_messages(state: AgentState, messages: list[dic
         if isinstance(message, dict):
             message["order"] = index
     return output
+
+
+def _ensure_book_order_for_created_appointment(state: AgentState, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    order_id = _created_appointment_order_id(state)
+    if not order_id:
+        return messages
+    if any(isinstance(message, dict) and message.get("type") == "book_order" for message in messages):
+        return messages
+    output = [message for message in messages if isinstance(message, dict)]
+    output.append({"type": "book_order", "order": len(output) + 1, "content": {"order_id": order_id}})
+    state["postprocess_changed"] = True
+    state["postprocess_reasons"] = _unique_reasons(
+        list(state.get("postprocess_reasons", [])) + ["created_appointment_book_order_added"]
+    )
+    return output
+
+
+def _created_appointment_order_id(state: AgentState) -> str:
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    opening = tool_results.get("appointment_opening") if isinstance(tool_results.get("appointment_opening"), dict) else {}
+    status = str(opening.get("status") or "").strip()
+    order_id = str(opening.get("order_id") or "").strip()
+    if status in {"created", "dry_run_created", "reused_open_order"} and order_id:
+        return order_id
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    for fact in structured.get("appointment_facts") or []:
+        if not isinstance(fact, dict) or fact.get("type") != "appointment_opening":
+            continue
+        status = str(fact.get("status") or "").strip()
+        order_id = str(fact.get("order_id") or "").strip()
+        if status in {"created", "dry_run_created", "reused_open_order"} and order_id:
+            return order_id
+    return ""
 
 
 def _current_turn_explicitly_requests_address_resend(state: AgentState) -> bool:

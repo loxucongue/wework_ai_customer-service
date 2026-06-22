@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Callable
 
 from app.graph.nodes.common import clean_model_text, dedupe_strings
@@ -76,6 +77,18 @@ def extract_profile_update(
         }
 
     basic_info = _basic_info_update(content, state)
+    contact_info = _contact_info_update(content, state)
+    if contact_info:
+        basic_info.update(contact_info)
+        portrait = dict(update.get("portrait") or {})
+        portrait.update(
+            {
+                "decision_stage": "预约推进",
+                "deposit_state": "可正式推定金",
+                "intent_level": "high",
+            }
+        )
+        update["portrait"] = portrait
     if basic_info:
         update["basic_info"] = basic_info
     return update
@@ -249,3 +262,52 @@ def _basic_info_update(content: str, state: AgentState) -> dict[str, object]:
     if appointment_preference:
         basic_info["appointment_preference"] = appointment_preference
     return basic_info
+
+
+def _contact_info_update(content: str, state: AgentState) -> dict[str, object]:
+    if not _recent_booking_or_deposit_context(state):
+        return {}
+    phone = _extract_phone(content)
+    name = _extract_customer_name(content)
+    if not (phone or name):
+        return {}
+    update: dict[str, object] = {"deposit_state": "可正式推定金"}
+    if phone:
+        update["phone"] = phone
+    if name:
+        update["customer_name"] = name
+    return update
+
+
+def _recent_booking_or_deposit_context(state: AgentState) -> bool:
+    texts = [str(item or "") for item in (state.get("conversation_history") or [])[-10:]]
+    for event in (state.get("history_events") or [])[-12:]:
+        if not isinstance(event, dict):
+            continue
+        texts.append(str(event.get("summary") or ""))
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        texts.extend(str(value or "") for value in facts.values())
+    combined = "\n".join(texts)
+    return any(term in combined for term in ("怎么预约", "预约", "报名", "登记", "预约金", "留名额", "锁定名额", "姓名电话"))
+
+
+def _extract_phone(content: str) -> str:
+    match = re.search(r"1[3-9]\d{9}", str(content or ""))
+    return match.group(0) if match else ""
+
+
+def _extract_customer_name(content: str) -> str:
+    text = str(content or "").strip()
+    patterns = (
+        r"(?:我叫|叫我|名字叫|姓名是|姓名|名字是)\s*([\u4e00-\u9fa5A-Za-z]{1,12})",
+        r"([\u4e00-\u9fa5]{2,4})\s*(?:电话|手机|手机号)\s*1[3-9]\d{9}",
+        r"^\s*([\u4e00-\u9fa5]{2,4})\s+1[3-9]\d{9}\s*$",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        name = re.sub(r"(电话|手机|手机号|是|叫)$", "", match.group(1).strip())
+        if name and name not in {"电话", "手机", "姓名", "名字"}:
+            return name
+    return ""

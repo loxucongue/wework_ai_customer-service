@@ -328,6 +328,18 @@ def _json_dumps(value: object) -> str:
 
 
 def current_real_store_from_state(state: AgentState) -> dict[str, str]:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    for source in (state, request_context):
+        store_id = str(source.get("confirmed_store_id") or source.get("store_id") or "").strip()
+        store_name = str(source.get("confirmed_store_name") or source.get("store_name") or "").strip()
+        if store_id or store_name:
+            return {"id": store_id, "name": store_name}
+    customer_basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    store_id = str(customer_basic_info.get("preferred_store_id") or customer_basic_info.get("confirmed_store_id") or "").strip()
+    store_name = str(customer_basic_info.get("preferred_store_name") or customer_basic_info.get("confirmed_store_name") or "").strip()
+    if store_id or store_name:
+        return {"id": store_id, "name": store_name}
+
     structured = state.get("structured_facts") if isinstance(state.get("structured_facts"), dict) else {}
     if not structured:
         fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
@@ -390,4 +402,7 @@ def _store_id_from_history_content(content: object) -> str:
     if match:
         return str(match.group("store_id") or "").strip()
     match = re.search(r"(?:store_address|门店卡片)\s*[:：]\s*(?P<store_id>\d+)", text, flags=re.IGNORECASE)
+    if match:
+        return str(match.group("store_id") or "").strip()
+    match = re.match(r"^(?:小贝|客服|AI回复|助手)\s*[:：]\s*(?P<store_id>\d{1,6})\s*$", text)
     return str(match.group("store_id") or "").strip() if match else ""
