@@ -52,6 +52,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "city": str(value.get("city") or ""),
                 "requested_store": str(value.get("requested_store") or ""),
                 "area_or_landmark": str(value.get("area_or_landmark") or ""),
+                "area_or_landmark_has_direct_store": bool(value.get("area_or_landmark_has_direct_store")),
+                "area_or_landmark_direct_store_missing": bool(value.get("area_or_landmark_direct_store_missing")),
                 "location_granularity": str(value.get("location_granularity") or ""),
                 "location_preference": str(value.get("location_preference") or ""),
                 "source": str(value.get("source") or ""),
@@ -76,6 +78,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "store_lookup: distance_lookup_required="
                     f"{value.get('distance_origin') or value.get('area_or_landmark') or value.get('location_preference') or ''}"
                 )
+            if value.get("area_or_landmark_direct_store_missing"):
+                facts.append(f"store_lookup: no_direct_store_in_area={value.get('area_or_landmark') or ''}")
             if stores:
                 structured_facts["store_facts"] = [
                     {

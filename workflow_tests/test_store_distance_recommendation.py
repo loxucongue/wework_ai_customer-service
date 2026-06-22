@@ -13,7 +13,9 @@ if str(APP_ROOT) not in sys.path:
 from app.graph.nodes.action_module_outputs import build_planner_fact_output  # noqa: E402
 from app.graph.nodes.action_nodes import _store_query_with_planned_location  # noqa: E402
 from app.graph.nodes.appointment_utils import appointment_query_from_state  # noqa: E402
+from app.graph.nodes.reply_postprocess import _has_unbacked_store_claim_text  # noqa: E402
 from app.graph.nodes.store_context import extract_city, store_query_from_state  # noqa: E402
+from app.services.store_query_info import build_store_query_info  # noqa: E402
 from app.services.store_service import StoreService  # noqa: E402
 
 
@@ -126,6 +128,51 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         )
 
         self.assertEqual(query, "福州仓山区 店在哪里呢")
+
+    def test_chongqing_banan_and_xiamen_haicang_are_area_landmarks(self) -> None:
+        banan = build_store_query_info("我在重庆巴南这边")
+        haicang = build_store_query_info("海沧")
+
+        self.assertEqual(banan.city, "重庆")
+        self.assertEqual(banan.area_or_landmark, "巴南")
+        self.assertEqual(banan.location_granularity, "area_or_landmark")
+        self.assertEqual(haicang.city, "厦门")
+        self.assertEqual(haicang.area_or_landmark, "海沧")
+        self.assertEqual(haicang.location_granularity, "area_or_landmark")
+
+    def test_current_no_match_store_lookup_blocks_historical_store_claim(self) -> None:
+        state = {
+            "appointment_cache": {"store_name": "厦门湖里百星店"},
+            "structured_facts": {
+                "store_lookup_status": {
+                    "source": "platform_agent.store_index_no_match",
+                    "data_authority": "platform",
+                    "has_store_facts": False,
+                    "missing": [],
+                },
+                "store_facts": [],
+            },
+        }
+
+        self.assertTrue(_has_unbacked_store_claim_text(state, "海沧有的，我帮您查一下附近的门店位置发您哈"))
+
+    def test_area_without_direct_store_is_marked_and_blocks_direct_area_claim(self) -> None:
+        result = _store_service().search("海沧", customer_context=_customer_context())
+        fact_output = build_planner_fact_output({"store_lookup": result}, {})
+        status = fact_output["structured_facts"]["store_lookup_status"]
+        state = {
+            "structured_facts": {
+                **fact_output["structured_facts"],
+                "store_lookup_status": status,
+            }
+        }
+
+        self.assertEqual(result["city"], "厦门")
+        self.assertEqual(result["area_or_landmark"], "海沧")
+        self.assertTrue(result["stores"])
+        self.assertFalse(result["area_or_landmark_has_direct_store"])
+        self.assertTrue(result["area_or_landmark_direct_store_missing"])
+        self.assertTrue(_has_unbacked_store_claim_text(state, "海沧有的，我帮您查一下附近的门店位置发您哈"))
 
 
 if __name__ == "__main__":

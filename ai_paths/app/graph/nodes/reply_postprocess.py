@@ -776,7 +776,12 @@ def _has_unbacked_case_image_promise(state: AgentState, text: str) -> bool:
 
 
 def _has_unbacked_store_claim_text(state: AgentState, text: str) -> bool:
-    if _has_current_platform_store_facts(state) or _has_trusted_confirmed_store_state(state):
+    if _has_unsupported_area_direct_store_claim(state, text):
+        return True
+    current_lookup_without_facts = _current_platform_store_lookup_without_facts(state)
+    if not current_lookup_without_facts and (
+        _has_current_platform_store_facts(state) or _has_trusted_confirmed_store_state(state)
+    ):
         return False
     content = str(text or "").strip()
     if not content:
@@ -822,6 +827,42 @@ def _has_unbacked_store_claim_text(state: AgentState, text: str) -> bool:
     if re.search(r"(?:门店|店).{0,12}(?:地址|位置|定位).{0,8}(?:发|给)", content):
         return True
     return False
+
+
+def _has_unsupported_area_direct_store_claim(state: AgentState, text: str) -> bool:
+    structured = _structured_facts_from_state(state)
+    status = structured.get("store_lookup_status")
+    if not isinstance(status, dict) or not status.get("area_or_landmark_direct_store_missing"):
+        return False
+    area = str(status.get("area_or_landmark") or "").strip()
+    content = str(text or "").strip()
+    if not area or area not in content:
+        return False
+    direct_claim_patterns = (
+        rf"{re.escape(area)}.{{0,8}}(?:有门店|有店|有的|有哈|有哦|有呢)",
+        rf"{re.escape(area)}.{{0,16}}(?:门店|店).{{0,10}}(?:地址|位置|定位).{{0,8}}(?:发|给|查)",
+    )
+    return any(re.search(pattern, content) for pattern in direct_claim_patterns)
+
+
+def _current_platform_store_lookup_without_facts(state: AgentState) -> bool:
+    structured = _structured_facts_from_state(state)
+    status = structured.get("store_lookup_status")
+    if not isinstance(status, dict):
+        return False
+    if str(status.get("data_authority") or "").strip().lower() != "platform":
+        return False
+    if _current_store_facts_from_state(state):
+        return False
+    source = str(status.get("source") or "").strip()
+    missing = status.get("missing") if isinstance(status.get("missing"), list) else []
+    return (
+        "no_match" in source
+        or bool(missing)
+        or bool(status.get("needs_area_or_landmark"))
+        or bool(status.get("no_store_match_confirmed"))
+        or not bool(status.get("has_store_facts"))
+    )
 
 
 def _is_safe_city_store_area_prompt(state: AgentState, text: str) -> bool:

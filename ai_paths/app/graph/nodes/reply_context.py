@@ -427,6 +427,10 @@ def _fact_notes_for_model(
             notes.append(f"门店工具未匹配到{city}本地门店；不要编门店，询问客户是否接受附近城市或常去城市。")
         else:
             notes.append("门店工具未匹配到本地门店；不要编门店，询问客户是否接受附近城市或常去城市。")
+    if isinstance(store_status, dict) and store_status.get("area_or_landmark_direct_store_missing"):
+        area = str(store_status.get("area_or_landmark") or "").strip()
+        if area:
+            notes.append(f"门店工具未查到{area}本区/该地标内的直营门店；可以基于真实候选门店或距离结果推荐附近门店，但不要说“{area}有门店”。")
 
     sales_talk_scripts = structured_facts.get("sales_talk_scripts") or []
     if isinstance(sales_talk_scripts, list) and sales_talk_scripts:

@@ -155,10 +155,13 @@ class StoreService:
             candidates = []
 
         if query_info.area_or_landmark and candidates:
+            area_has_direct_store = any(_row_mentions_location(row, query_info.area_or_landmark) for row in candidates)
             candidates = sorted(
                 candidates,
                 key=lambda row: 0 if _row_mentions_location(row, query_info.area_or_landmark) else 1,
             )
+        else:
+            area_has_direct_store = False
 
         stores: list[dict[str, Any]] = []
         for row in candidates:
@@ -188,6 +191,8 @@ class StoreService:
             "wants_status": wants_status,
             "location_preference": query_info.location_preference,
             "area_or_landmark": query_info.area_or_landmark,
+            "area_or_landmark_has_direct_store": area_has_direct_store,
+            "area_or_landmark_direct_store_missing": bool(query_info.area_or_landmark and candidates and not area_has_direct_store),
             "location_granularity": query_info.location_granularity,
             "stores": stores,
             "missing": missing,
