@@ -886,6 +886,8 @@ def _qualify_distance_origin(origin: str, *, store_lookup: dict[str, Any]) -> st
     value = str(origin or "").strip()
     if not value:
         return ""
+    if re.fullmatch(r"-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?", value):
+        return value
     city = str(store_lookup.get("city") or "").strip()
     if not city or city in value:
         return value

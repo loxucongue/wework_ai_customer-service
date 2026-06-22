@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services import store_format, store_text
@@ -115,11 +116,16 @@ class StoreService:
                 "unsupported_claims": ["无法获取真实门店数据，不能提供门店名称、地址或距离"],
             }
 
-        rows = self._platform_client.list_stores(
+        scoped_rows = self._platform_client.list_stores(
             customer_id=platform_context.customer_id,
             customer_add_wechat_id=platform_context.customer_add_wechat_id,
             request_context=platform_context.request_context,
         )
+        try:
+            option_rows = self._platform_client.list_store_options(request_context=platform_context.request_context)
+        except Exception:
+            option_rows = []
+        rows = _dedupe_store_rows([*option_rows, *scoped_rows]) if option_rows else scoped_rows
         query_info = build_store_query_info(query, rows)
         requested_name = query_info.requested_name
         planned_origin = str(planner_distance_origin or "").strip()
@@ -176,7 +182,8 @@ class StoreService:
             if len(stores) >= limit:
                 break
 
-        source = "platform_agent.store_index" if stores else "platform_agent.store_index_no_match"
+        source_base = "platform_agent.store_option" if option_rows else "platform_agent.store_index"
+        source = source_base if stores else f"{source_base}_no_match"
         missing = []
         if query_info.area_or_landmark and not city:
             missing.append("city")
@@ -201,6 +208,7 @@ class StoreService:
             "store_data_authority": "platform",
             "platform_customer_id": str(platform_context.customer_id or ""),
             "customer_add_wechat_id": str(platform_context.customer_add_wechat_id or ""),
+            "candidate_source": source_base,
         }
 
 
@@ -268,9 +276,36 @@ def _qualified_distance_origin(origin: str, *, city: str) -> str:
     value = str(origin or "").strip()
     if not value:
         return ""
+    if _looks_like_lng_lat(value):
+        return value
     if not city or city in value:
         return value
     return f"{city}{value}"
+
+
+def _dedupe_store_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        marker = str(row.get("id") or "").strip()
+        if not marker:
+            marker = "|".join(
+                str(row.get(key) or "").strip()
+                for key in ("name", "address", "tencent_address")
+            )
+        if marker and marker in seen:
+            continue
+        if marker:
+            seen.add(marker)
+        output.append(row)
+    return output
+
+
+def _looks_like_lng_lat(value: str) -> bool:
+    text = str(value or "").strip()
+    return bool(re.fullmatch(r"-?\d+(?:\.\d+)?\s*,\s*-?\d+(?:\.\d+)?", text))
 
 
 def _row_mentions_location(row: dict[str, Any], location: str) -> bool:

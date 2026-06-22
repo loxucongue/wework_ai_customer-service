@@ -55,6 +55,9 @@ class FakePlatformClient:
         ]
 
     def list_stores(self, **_: object) -> list[dict[str, object]]:
+        return [self.rows[0]]
+
+    def list_store_options(self, **_: object) -> list[dict[str, object]]:
         return self.rows
 
     def store_info(self, store_id: str, **_: object) -> dict[str, object]:
@@ -189,9 +192,21 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertEqual(result["city"], "厦门")
         self.assertEqual(result["area_or_landmark"], "海沧")
         self.assertTrue(result["stores"])
+        self.assertEqual({store["name"] for store in result["stores"]}, {"厦门思明店", "厦门百星"})
+        self.assertEqual(result["candidate_source"], "platform_agent.store_option")
         self.assertFalse(result["area_or_landmark_has_direct_store"])
         self.assertTrue(result["area_or_landmark_direct_store_missing"])
         self.assertTrue(_has_unbacked_store_claim_text(state, "海沧有的，我帮您查一下附近的门店位置发您哈"))
+
+    def test_lng_lat_distance_origin_is_not_prefixed_with_city(self) -> None:
+        result = _store_service().search(
+            "厦门 海沧",
+            customer_context=_customer_context(),
+            planner_distance_origin="118.032883,24.484688",
+        )
+
+        self.assertEqual(result["planned_distance_origin"], "118.032883,24.484688")
+        self.assertEqual(result["distance_origin"], "118.032883,24.484688")
 
     def test_location_geocode_output_normalizes_query_and_distance_origin(self) -> None:
         raw = {
