@@ -161,6 +161,10 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 )
             if platform_error and not stores:
                 unsupported_claims.append("store_lookup incomplete")
+            if stores and not any(item.get("has_detail") for item in stores if isinstance(item, dict)):
+                unsupported_claims.append("store details unavailable")
+            missing_slots.extend(missing)
+            continue
 
         if key == "location_geocode":
             best = value.get("best") if isinstance(value.get("best"), dict) else {}
@@ -184,9 +188,6 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 )
             elif value.get("status"):
                 facts.append(f"location_geocode: status={value.get('status')}")
-            if stores and not any(item.get("has_detail") for item in stores if isinstance(item, dict)):
-                unsupported_claims.append("store details unavailable")
-            missing_slots.extend(missing)
             continue
 
         if key == "distance_lookup":
