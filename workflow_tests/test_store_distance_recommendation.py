@@ -20,7 +20,6 @@ from app.graph.nodes.action_nodes import (  # noqa: E402
 )
 from app.graph.nodes.appointment_utils import appointment_query_from_state  # noqa: E402
 from app.graph.nodes.reply_context import reply_user_payload_for_model  # noqa: E402
-from app.graph.nodes.reply_postprocess import _has_unbacked_store_claim_text, postprocess_reply_messages  # noqa: E402
 from app.graph.nodes.reply_nodes import _safe_visible_fallback_messages, _store_no_match_reply_needs_fallback  # noqa: E402
 from app.graph.nodes.store_context import extract_city, store_query_from_state  # noqa: E402
 from app.services.store_query_info import build_store_query_info  # noqa: E402
@@ -176,7 +175,9 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
             },
         }
 
-        self.assertTrue(_has_unbacked_store_claim_text(state, "海沧有的，我帮您查一下附近的门店位置发您哈"))
+        messages, source = _safe_visible_fallback_messages(state)
+        self.assertEqual(source, "deterministic_store_fallback")
+        self.assertIn("没查到", messages[0]["content"]["text"])
 
     def test_area_without_direct_store_is_marked_and_blocks_direct_area_claim(self) -> None:
         result = _store_service().search("厦门 海沧", customer_context=_customer_context())
@@ -196,7 +197,6 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertEqual(result["candidate_source"], "platform_agent.store_option")
         self.assertFalse(result["area_or_landmark_has_direct_store"])
         self.assertTrue(result["area_or_landmark_direct_store_missing"])
-        self.assertTrue(_has_unbacked_store_claim_text(state, "海沧有的，我帮您查一下附近的门店位置发您哈"))
 
     def test_lng_lat_distance_origin_is_not_prefixed_with_city(self) -> None:
         result = _store_service().search(
@@ -306,33 +306,6 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertIn("其他常去地点", messages[0]["content"]["text"])
         self.assertIn("新疆", messages[0]["content"]["text"])
 
-    def test_wait_only_store_reply_is_removed_without_handoff(self) -> None:
-        state = {
-            "normalized_content": "我在新疆",
-            "fact_envelope": {
-                "structured_facts": {
-                    "store_lookup_status": {
-                        "city": "新疆",
-                        "source": "platform_agent.store_index_no_match",
-                        "data_authority": "platform",
-                        "has_store_facts": False,
-                        "no_store_match_confirmed": True,
-                        "missing": [],
-                    },
-                    "store_facts": [],
-                    "recommended_store": {},
-                }
-            },
-        }
-
-        messages = postprocess_reply_messages(
-            state,
-            [{"type": "text", "order": 1, "content": {"text": "我帮您查一下最近方便的门店"}}],
-        )
-
-        self.assertEqual(messages, [])
-        self.assertIn("wait_only_reply_removed", state["postprocess_reasons"])
-
     def test_store_no_match_requires_explicit_no_store_text(self) -> None:
         state = {
             "normalized_content": "我在新疆",
@@ -387,92 +360,6 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertTrue(scripts[0]["style_only"])
         self.assertNotIn("sales_script", scripts[0])
         self.assertNotIn("可以的", str(scripts))
-
-    def test_store_address_card_keeps_companion_text_when_text_was_removed(self) -> None:
-        state = {
-            "normalized_content": "海沧",
-            "structured_facts": {
-                "store_lookup_status": {
-                    "data_authority": "platform",
-                    "area_or_landmark": "海沧区",
-                    "area_or_landmark_direct_store_missing": True,
-                    "location_granularity": "area_or_landmark",
-                    "distance_lookup_required": True,
-                    "distance_lookup_status": "ok",
-                    "has_store_facts": True,
-                    "needs_area_or_landmark": False,
-                    "no_store_match_confirmed": False,
-                },
-                "recommended_store": {
-                    "id": "12",
-                    "name": "厦门思明店",
-                    "address": "厦门市思明区厦禾路1222号国骏大厦",
-                    "has_detail": True,
-                    "distance_text": "29.6公里",
-                },
-                "store_facts": [
-                    {
-                        "id": "12",
-                        "name": "厦门思明店",
-                        "address": "厦门市思明区厦禾路1222号国骏大厦",
-                        "has_detail": True,
-                    }
-                ],
-            },
-        }
-
-        messages = postprocess_reply_messages(state, [{"type": "store_address", "order": 1, "content": {"store_id": "12"}}])
-
-        self.assertEqual(messages[0]["type"], "text")
-        self.assertIn("海沧区目前没查到门店", messages[0]["content"]["text"])
-        self.assertEqual(messages[1]["type"], "store_address")
-        self.assertEqual(messages[1]["content"]["store_id"], "12")
-
-    def test_parking_question_does_not_resend_recent_store_card(self) -> None:
-        state = {
-            "normalized_content": "有地方停车吗",
-            "conversation_history": [
-                {"role": "assistant", "type": "store_address", "content": {"store_id": "227"}},
-            ],
-            "structured_facts": {
-                "store_lookup_status": {
-                    "data_authority": "platform",
-                    "location_granularity": "store_name",
-                    "has_store_facts": True,
-                    "needs_area_or_landmark": False,
-                    "no_store_match_confirmed": False,
-                },
-                "recommended_store": {
-                    "id": "227",
-                    "name": "厦门百星湖里店",
-                    "address": "福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
-                    "parking_name": "萤火虫大厦-西北门",
-                    "parking_address": "福建省厦门市湖里区禾山街道岭下社区岐山北二路1000号",
-                    "has_detail": True,
-                },
-                "store_facts": [
-                    {
-                        "id": "227",
-                        "name": "厦门百星湖里店",
-                        "address": "福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
-                        "parking_name": "萤火虫大厦-西北门",
-                        "parking_address": "福建省厦门市湖里区禾山街道岭下社区岐山北二路1000号",
-                        "has_detail": True,
-                    }
-                ],
-            },
-        }
-
-        messages = postprocess_reply_messages(
-            state,
-            [
-                {"type": "text", "order": 1, "content": {"text": "有的，萤火虫大厦楼下就可以停车。"}},
-                {"type": "store_address", "order": 2, "content": {"store_id": "227"}},
-            ],
-        )
-
-        self.assertEqual([message["type"] for message in messages], ["text"])
-        self.assertNotIn("store_address_appended", state.get("postprocess_reasons", []))
 
 
 if __name__ == "__main__":
