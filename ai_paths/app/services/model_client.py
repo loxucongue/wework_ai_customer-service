@@ -62,16 +62,11 @@ class ModelClient:
             raise RuntimeError("No model API key configured")
         errors: list[str] = []
         for index, model in enumerate(self._model_names(tier)):
-            request_messages = messages
             payload = {
                 "model": model,
-                "messages": request_messages,
+                "messages": messages,
                 "temperature": temperature,
             }
-            if self._provider(tier) == "deepseek":
-                request_messages = self._with_json_instruction(messages)
-                payload["messages"] = request_messages
-                payload["response_format"] = {"type": "json_object"}
             try:
                 raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
                 return self._parse_json(self._extract_text(raw))
@@ -136,15 +131,7 @@ class ModelClient:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         client = self._http_client()
         response = await client.post(url, headers=headers, content=body)
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            detail = response.text[:500].replace("\n", " ")
-            raise httpx.HTTPStatusError(
-                f"{exc} | response_body={detail}",
-                request=exc.request,
-                response=exc.response,
-            ) from exc
+        response.raise_for_status()
         raw = response.json()
         self.last_usage = {
             "provider": provider,
@@ -200,10 +187,3 @@ class ModelClient:
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any]:
         return model_response.parse_json(text)
-
-    @staticmethod
-    def _with_json_instruction(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        joined = " ".join(str(message.get("content") or "") for message in messages)
-        if "json" in joined.lower():
-            return messages
-        return [{"role": "system", "content": "Return valid JSON only."}, *messages]
