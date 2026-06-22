@@ -168,6 +168,10 @@ def _case_request_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
 
 
 def _store_location_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
+    no_match_text = _no_matched_store_fallback_text(state)
+    if no_match_text:
+        return [{"type": "text", "order": 1, "content": {"text": no_match_text}}]
+
     if not _looks_like_generic_store_location_request(state):
         return []
     return [
@@ -177,6 +181,50 @@ def _store_location_fallback_messages(state: AgentState) -> list[dict[str, Any]]
             "content": {"text": "您在哪个城市或哪个区？我按您位置给您找近一点的门店。"},
         }
     ]
+
+
+def _no_matched_store_fallback_text(state: AgentState) -> str:
+    status = _store_lookup_status_from_state(state)
+    if not status:
+        return ""
+    if str(status.get("data_authority") or "").strip().lower() != "platform":
+        return ""
+    if bool(status.get("has_store_facts")) or _has_current_store_facts(state):
+        return ""
+    source = str(status.get("source") or "")
+    no_match = "no_match" in source or bool(status.get("no_store_match_confirmed"))
+    if not no_match:
+        return ""
+    city = str(status.get("city") or "").strip()
+    area = str(status.get("area_or_landmark") or "").strip()
+    if area:
+        return f"{area}这边我暂时没查到可直接发您的门店。您附近还有哪个商圈或地标？我再帮您核一下。"
+    if city:
+        return f"{city}这边我暂时没查到可直接发您的门店。您具体在哪个城市或哪个区？我再按位置帮您核一下。"
+    return "这边我暂时没查到可直接发您的门店。您在哪个城市或哪个区？我再帮您核一下。"
+
+
+def _store_lookup_status_from_state(state: AgentState) -> dict[str, Any]:
+    structured = state.get("structured_facts")
+    if isinstance(structured, dict) and isinstance(structured.get("store_lookup_status"), dict):
+        return structured["store_lookup_status"]
+    fact_envelope = state.get("fact_envelope")
+    if isinstance(fact_envelope, dict):
+        structured = fact_envelope.get("structured_facts")
+        if isinstance(structured, dict) and isinstance(structured.get("store_lookup_status"), dict):
+            return structured["store_lookup_status"]
+    tool_results = state.get("tool_results")
+    lookup = tool_results.get("store_lookup") if isinstance(tool_results, dict) else {}
+    if isinstance(lookup, dict):
+        return {
+            "city": str(lookup.get("city") or ""),
+            "area_or_landmark": str(lookup.get("area_or_landmark") or ""),
+            "source": str(lookup.get("source") or ""),
+            "data_authority": str(lookup.get("data_authority") or ""),
+            "has_store_facts": bool(lookup.get("stores")),
+            "no_store_match_confirmed": bool(not lookup.get("stores") and not lookup.get("missing") and not lookup.get("platform_error")),
+        }
+    return {}
 
 
 def _looks_like_case_image_request(state: AgentState) -> bool:

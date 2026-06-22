@@ -20,6 +20,7 @@ from app.graph.nodes.action_nodes import (  # noqa: E402
 )
 from app.graph.nodes.appointment_utils import appointment_query_from_state  # noqa: E402
 from app.graph.nodes.reply_postprocess import _has_unbacked_store_claim_text  # noqa: E402
+from app.graph.nodes.reply_nodes import _safe_visible_fallback_messages  # noqa: E402
 from app.graph.nodes.store_context import extract_city, store_query_from_state  # noqa: E402
 from app.services.store_query_info import build_store_query_info  # noqa: E402
 from app.services.store_service import StoreService  # noqa: E402
@@ -261,6 +262,32 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
         self.assertEqual(query["store_id"], "12")
         self.assertEqual(query["store_name"], "厦门思明店")
         self.assertNotIn("store_id", query["missing"])
+
+    def test_store_no_match_fallback_returns_visible_no_store_text(self) -> None:
+        messages, source = _safe_visible_fallback_messages(
+            {
+                "normalized_content": "我在新疆",
+                "fact_envelope": {
+                    "structured_facts": {
+                        "store_lookup_status": {
+                            "city": "新疆",
+                            "source": "platform_agent.store_index_no_match",
+                            "data_authority": "platform",
+                            "has_store_facts": False,
+                            "no_store_match_confirmed": True,
+                            "missing": [],
+                        },
+                        "store_facts": [],
+                        "recommended_store": {},
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(source, "deterministic_store_fallback")
+        self.assertEqual(messages[0]["type"], "text")
+        self.assertIn("暂时没查到", messages[0]["content"]["text"])
+        self.assertIn("新疆", messages[0]["content"]["text"])
 
 
 if __name__ == "__main__":
