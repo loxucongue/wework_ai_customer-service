@@ -62,6 +62,13 @@ def create_synthesize_reply_node(
                         if messages:
                             messages = postprocess_reply_messages(state, messages)
                             model_call["postprocessed_messages"] = debug_message_contents(messages)
+                        if messages and _store_no_match_reply_needs_fallback(state, messages):
+                            messages, reply_source = _safe_visible_fallback_messages(state)
+                            state["postprocess_changed"] = True
+                            state["postprocess_reasons"] = _unique_reasons(
+                                list(state.get("postprocess_reasons", [])) + ["store_no_match_fallback_forced"]
+                            )
+                            model_call["postprocessed_messages"] = debug_message_contents(messages)
                         if not _has_customer_visible_text(messages):
                             raise RuntimeError("reply_messages_empty_after_postprocess")
                         model_call["output"] = {"messages": len(messages), "attempt": attempt}
@@ -130,6 +137,38 @@ def _has_customer_visible_text(messages: list[dict[str, Any]]) -> bool:
         if text:
             return True
     return False
+
+
+def _store_no_match_reply_needs_fallback(state: AgentState, messages: list[dict[str, Any]]) -> bool:
+    if not _no_matched_store_fallback_text(state):
+        return False
+    text_parts: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict) or message.get("type") != "text":
+            continue
+        content = message.get("content")
+        if isinstance(content, dict):
+            text = str(content.get("text") or "").strip()
+        else:
+            text = str(content or "").strip()
+        if text:
+            text_parts.append(text)
+    if not text_parts:
+        return True
+    combined = "\n".join(text_parts)
+    return not ("没查到" in combined and "门店" in combined)
+
+
+def _unique_reasons(reasons: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        text = str(reason or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
 
 
 def _safe_visible_fallback_messages(state: AgentState) -> tuple[list[dict[str, Any]], str]:

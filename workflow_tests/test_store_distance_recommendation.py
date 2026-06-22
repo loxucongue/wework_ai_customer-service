@@ -21,7 +21,7 @@ from app.graph.nodes.action_nodes import (  # noqa: E402
 from app.graph.nodes.appointment_utils import appointment_query_from_state  # noqa: E402
 from app.graph.nodes.reply_context import reply_user_payload_for_model  # noqa: E402
 from app.graph.nodes.reply_postprocess import _has_unbacked_store_claim_text, postprocess_reply_messages  # noqa: E402
-from app.graph.nodes.reply_nodes import _safe_visible_fallback_messages  # noqa: E402
+from app.graph.nodes.reply_nodes import _safe_visible_fallback_messages, _store_no_match_reply_needs_fallback  # noqa: E402
 from app.graph.nodes.store_context import extract_city, store_query_from_state  # noqa: E402
 from app.services.store_query_info import build_store_query_info  # noqa: E402
 from app.services.store_service import StoreService  # noqa: E402
@@ -317,6 +317,38 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
 
         self.assertEqual(messages, [])
         self.assertIn("wait_only_reply_removed", state["postprocess_reasons"])
+
+    def test_store_no_match_requires_explicit_no_store_text(self) -> None:
+        state = {
+            "normalized_content": "我在新疆",
+            "fact_envelope": {
+                "structured_facts": {
+                    "store_lookup_status": {
+                        "city": "新疆",
+                        "source": "platform_agent.store_index_no_match",
+                        "data_authority": "platform",
+                        "has_store_facts": False,
+                        "no_store_match_confirmed": True,
+                        "missing": [],
+                    },
+                    "store_facts": [],
+                    "recommended_store": {},
+                }
+            },
+        }
+
+        self.assertTrue(
+            _store_no_match_reply_needs_fallback(
+                state,
+                [{"type": "text", "order": 1, "content": {"text": "比如乌鲁木齐、喀什或其他区域，您发个大概地标就行"}}],
+            )
+        )
+        self.assertFalse(
+            _store_no_match_reply_needs_fallback(
+                state,
+                [{"type": "text", "order": 1, "content": {"text": "新疆这边目前没查到可直接发您的门店。您有其他常去地点在哪个城市或哪个区？"}}],
+            )
+        )
 
     def test_sales_talk_scripts_are_style_only_for_reply_payload(self) -> None:
         payload = reply_user_payload_for_model(
