@@ -19,6 +19,7 @@ from app.graph.nodes.action_nodes import (  # noqa: E402
     _store_query_with_planned_location,
 )
 from app.graph.nodes.appointment_utils import appointment_query_from_state  # noqa: E402
+from app.graph.nodes.reply_context import reply_user_payload_for_model  # noqa: E402
 from app.graph.nodes.reply_postprocess import _has_unbacked_store_claim_text, postprocess_reply_messages  # noqa: E402
 from app.graph.nodes.reply_nodes import _safe_visible_fallback_messages  # noqa: E402
 from app.graph.nodes.store_context import extract_city, store_query_from_state  # noqa: E402
@@ -286,8 +287,59 @@ class StoreDistanceRecommendationTests(unittest.TestCase):
 
         self.assertEqual(source, "deterministic_store_fallback")
         self.assertEqual(messages[0]["type"], "text")
-        self.assertIn("暂时没查到", messages[0]["content"]["text"])
+        self.assertIn("目前没查到可直接发您的门店", messages[0]["content"]["text"])
+        self.assertIn("其他常去地点", messages[0]["content"]["text"])
         self.assertIn("新疆", messages[0]["content"]["text"])
+
+    def test_wait_only_store_reply_is_removed_without_handoff(self) -> None:
+        state = {
+            "normalized_content": "我在新疆",
+            "fact_envelope": {
+                "structured_facts": {
+                    "store_lookup_status": {
+                        "city": "新疆",
+                        "source": "platform_agent.store_index_no_match",
+                        "data_authority": "platform",
+                        "has_store_facts": False,
+                        "no_store_match_confirmed": True,
+                        "missing": [],
+                    },
+                    "store_facts": [],
+                    "recommended_store": {},
+                }
+            },
+        }
+
+        messages = postprocess_reply_messages(
+            state,
+            [{"type": "text", "order": 1, "content": {"text": "我帮您查一下最近方便的门店"}}],
+        )
+
+        self.assertEqual(messages, [])
+        self.assertIn("wait_only_reply_removed", state["postprocess_reasons"])
+
+    def test_sales_talk_scripts_are_style_only_for_reply_payload(self) -> None:
+        payload = reply_user_payload_for_model(
+            {
+                "fact_envelope": {
+                    "structured_facts": {
+                        "sales_talk_scripts": [
+                            {
+                                "matched_question": "我在上海",
+                                "business_logic": "城市有店",
+                                "sales_script": "可以的 您在哪个区 我给您发最近的门店位置",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+
+        scripts = payload["fact_envelope"]["structured_facts"]["sales_talk_scripts"]
+        self.assertEqual(scripts[0]["source"], "sales_talk_qa")
+        self.assertTrue(scripts[0]["style_only"])
+        self.assertNotIn("sales_script", scripts[0])
+        self.assertNotIn("可以的", str(scripts))
 
     def test_store_address_card_keeps_companion_text_when_text_was_removed(self) -> None:
         state = {

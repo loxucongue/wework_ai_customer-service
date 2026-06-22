@@ -89,6 +89,9 @@ def postprocess_reply_messages(
             if without_known_slot_question != content:
                 content = without_known_slot_question
                 reasons.append("known_slot_requestion_removed")
+            if _is_non_handoff_wait_only_reply(state, content):
+                reasons.append("wait_only_reply_removed")
+                continue
             normalized = re.sub(r"\s+", "", content)
             if not normalized or normalized in seen_text:
                 reasons.append("dedupe_or_limit")
@@ -183,6 +186,20 @@ def _has_text_message(messages: list[dict[str, Any]]) -> bool:
         if message_content_text(message.get("content")).strip():
             return True
     return False
+
+
+def _is_non_handoff_wait_only_reply(state: AgentState, text: str) -> bool:
+    if _handoff_message_for_state(state):
+        return False
+    normalized = re.sub(r"[\s，,。.!！?？~～、]+", "", str(text or ""))
+    if not normalized:
+        return False
+    wait_only_patterns = (
+        r"^(我|这边)?(先|再)?帮(您|你)?(查|核|确认|看)(一下|下|一下哈|下哈)?(最近方便的门店|附近门店|门店位置|位置|地址|档期|时间)?$",
+        r"^(我|这边)?(先|再)?(查|核|确认|看)(一下|下|一下哈|下哈)?(最近方便的门店|附近门店|门店位置|位置|地址|档期|时间)?$",
+        r"^(您|你)?(稍等|等一下|稍等一下|等我一下)(哈|哦)?$",
+    )
+    return any(re.fullmatch(pattern, normalized) for pattern in wait_only_patterns)
 
 
 def _handoff_message_for_state(state: AgentState) -> dict[str, Any] | None:

@@ -197,11 +197,13 @@ def _no_matched_store_fallback_text(state: AgentState) -> str:
         return ""
     city = str(status.get("city") or "").strip()
     area = str(status.get("area_or_landmark") or "").strip()
+    fallback_location = area or city
+    prefix = f"{fallback_location}这边" if fallback_location else "这边"
     if area:
-        return f"{area}这边我暂时没查到可直接发您的门店。您附近还有哪个商圈或地标？我再帮您核一下。"
+        return f"{prefix}目前没查到可直接发您的门店。您有其他常去地点在哪个城市或哪个区？我按那个位置帮您匹配近一点的门店。"
     if city:
-        return f"{city}这边我暂时没查到可直接发您的门店。您具体在哪个城市或哪个区？我再按位置帮您核一下。"
-    return "这边我暂时没查到可直接发您的门店。您在哪个城市或哪个区？我再帮您核一下。"
+        return f"{prefix}目前没查到可直接发您的门店。您有其他常去地点在哪个城市或哪个区？我按那个位置帮您匹配近一点的门店。"
+    return "这边目前没查到可直接发您的门店。您有其他常去地点在哪个城市或哪个区？我按那个位置帮您匹配近一点的门店。"
 
 
 def _store_lookup_status_from_state(state: AgentState) -> dict[str, Any]:

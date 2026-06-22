@@ -271,6 +271,9 @@ def _compact_price_facts(value: Any) -> list[dict[str, Any]]:
 
 
 def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
+    if source_key == "sales_talk_scripts":
+        return _compact_sales_talk_style_reference(item)
+
     keep_by_source: dict[str, tuple[str, ...]] = {
         "store_facts": (
             "id",
@@ -348,7 +351,6 @@ def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
         "distance_facts": ("store_id", "id", "name", "address", "distance_text"),
         "case_facts": ("source", "title", "content", "image_url"),
         "knowledge_facts": ("source", "title", "content"),
-        "sales_talk_scripts": ("matched_question", "business_logic", "sales_script"),
         "appointment_facts": ("type", "store_name", "date", "time", "slots", "status", "summary"),
         "customer_profile_facts": ("kind", "kind_text", "is_old_customer", "source", "fallback_reason", "pricing_note"),
         "professional_assist": ("status", "task_type", "reason", "policy_hint"),
@@ -360,6 +362,24 @@ def _compact_fact_item(item: dict[str, Any], source_key: str) -> dict[str, Any]:
         if value not in (None, "", [], {}):
             compact[key] = value
     return compact
+
+
+def _compact_sales_talk_style_reference(item: dict[str, Any]) -> dict[str, Any]:
+    script = str(item.get("sales_script") or "").strip()
+    hints: list[str] = []
+    if len(script) <= 36:
+        hints.append("短句承接")
+    if any(term in script for term in ("哈", "呀", "这边", "您")):
+        hints.append("微信口语")
+    if any(term in script for term in ("哪个", "哪里", "方便", "发您", "给您")):
+        hints.append("只推进一个自然下一步")
+    if not hints:
+        hints.append("自然销售语气")
+    return {
+        "source": "sales_talk_qa",
+        "style_only": True,
+        "style_reference": "、".join(dict.fromkeys(hints)),
+    }
 
 
 def _sanitize_planner_context_for_reply(value: Any) -> Any:
@@ -434,7 +454,7 @@ def _fact_notes_for_model(
 
     sales_talk_scripts = structured_facts.get("sales_talk_scripts") or []
     if isinstance(sales_talk_scripts, list) and sales_talk_scripts:
-        notes.append("已有销冠话术骨架；最终回复应优先贴近 sales_talk_scripts.sales_script 的短句节奏。")
+        notes.append("sales_talk_scripts 只提供语气和短句节奏，不提供事实；其中的门店、价格、档期、效果判断必须以工具事实为准，不能照搬。")
 
     store_lookup_status = structured_facts.get("store_lookup_status") or {}
     if isinstance(store_lookup_status, dict) and store_lookup_status.get("distance_lookup_required"):
