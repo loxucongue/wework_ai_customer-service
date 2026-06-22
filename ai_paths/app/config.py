@@ -22,16 +22,18 @@ class Settings(BaseSettings):
     coze_oauth_token_ttl: int = 7200
     aliyun_dashscope_api_key: str = Field(default="", repr=False)
     volcengine_ark_api_key: str = Field(default="", repr=False)
-    model_provider: str = "aliyun"
+    deepseek_api_key: str = Field(default="", repr=False)
+    model_provider: str = "deepseek"
     aliyun_openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     volcengine_openai_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
-    model_fast: str = "qwen-turbo"
-    model_balanced: str = "qwen-plus"
-    model_strong: str = "qwen-max"
-    model_vision: str = "qwen-vl-plus"
-    model_fast_fallbacks: str = "kimi-k2.6,qwen3.6-flash"
-    model_balanced_fallbacks: str = "kimi-k2.6,qwen3.7-max-2026-05-20,qwen3.6-flash"
-    model_strong_fallbacks: str = "qwen3.7-max-2026-05-20,kimi-k2.6,qwen-plus"
+    deepseek_openai_base_url: str = "https://api.deepseek.com"
+    model_fast: str = "deepseek-v4-flash"
+    model_balanced: str = "deepseek-v4-flash"
+    model_strong: str = "deepseek-v4-pro"
+    model_vision: str = "deepseek-v4-flash"
+    model_fast_fallbacks: str = ""
+    model_balanced_fallbacks: str = ""
+    model_strong_fallbacks: str = ""
     model_vision_fallbacks: str = ""
     model_timeout_seconds: int = 45
     memory_dir: Path = Path("logs/memory")
