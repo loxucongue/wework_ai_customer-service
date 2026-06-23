@@ -12,7 +12,9 @@ from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
+from app.services.outreach_service import OutreachService
 from app.services.outreach_send_client import OutreachSendClient
+from app.services.outreach_system_client import OutreachSystemClient
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.store_service import StoreService
@@ -33,6 +35,7 @@ model_client = ModelClient(settings)
 memory_store = CustomerMemoryStore(settings, repository)
 platform_agent_client = PlatformAgentClient(settings)
 outreach_send_client = OutreachSendClient(settings)
+outreach_system_client = OutreachSystemClient(settings)
 customer_context_service = CustomerContextService(platform_agent_client)
 store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
 customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_client, store_snapshot_service)
@@ -56,6 +59,11 @@ chat_runtime = ChatRuntime(
     outreach_send_client=outreach_send_client,
     memory_store=memory_store,
 )
+outreach_service = OutreachService(
+    repository=repository,
+    model_client=model_client,
+    system_client=outreach_system_client,
+)
 
 app = FastAPI(title=settings.app_name)
 
@@ -70,6 +78,7 @@ async def shutdown() -> None:
     await model_client.aclose()
     await coze_client.aclose()
     await outreach_send_client.aclose()
+    await outreach_system_client.aclose()
 
 
 @app.get("/health")
@@ -222,3 +231,106 @@ async def admin_runs(
             has_error=has_error,
         )
     }
+
+
+@app.get("/admin/outreach/candidates", dependencies=[Depends(require_api_key)])
+async def admin_outreach_candidates(
+    limit: int = 50,
+    silent_minutes_min: int = 60,
+    outreach_status: str = "",
+    lifecycle_stage: str = "",
+    no_plan_only: bool = False,
+) -> dict[str, Any]:
+    return {
+        "items": outreach_service.list_candidates(
+            limit=limit,
+            silent_minutes_min=silent_minutes_min,
+            outreach_status=outreach_status,
+            lifecycle_stage=lifecycle_stage,
+            no_plan_only=no_plan_only,
+        )
+    }
+
+
+@app.post("/admin/outreach/customers/{customer_id}/refresh-conversation", dependencies=[Depends(require_api_key)])
+async def admin_outreach_refresh_conversation(
+    customer_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+) -> dict[str, Any]:
+    payload = payload or {}
+    return await outreach_service.refresh_customer_conversation(
+        customer_id=customer_id,
+        corp_id=str(payload.get("corp_id") or ""),
+        user_id=str(payload.get("user_id") or ""),
+        wechat=str(payload.get("wechat") or ""),
+        external_userid=str(payload.get("external_userid") or ""),
+        limit=int(payload.get("limit") or 10),
+    )
+
+
+@app.post("/admin/outreach/plans/generate", dependencies=[Depends(require_api_key)])
+async def admin_outreach_generate_plan(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    customer_id = str(payload.get("customer_id") or "").strip()
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="customer_id is required")
+    return await outreach_service.generate_plan(
+        customer_id=customer_id,
+        corp_id=str(payload.get("corp_id") or ""),
+        user_id=str(payload.get("user_id") or ""),
+        wechat=str(payload.get("wechat") or ""),
+        external_userid=str(payload.get("external_userid") or ""),
+        current_stage=str(payload.get("current_stage") or ""),
+        business_goal=str(payload.get("business_goal") or ""),
+    )
+
+
+@app.get("/admin/outreach/plans/{plan_id}", dependencies=[Depends(require_api_key)])
+async def admin_outreach_plan(plan_id: str) -> dict[str, Any]:
+    detail = outreach_service.get_plan(plan_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="plan not found")
+    return detail
+
+
+@app.post("/admin/outreach/plans/{plan_id}/activate", dependencies=[Depends(require_api_key)])
+async def admin_outreach_activate_plan(plan_id: str) -> dict[str, Any]:
+    return outreach_service.activate_plan(plan_id)
+
+
+@app.post("/admin/outreach/plans/{plan_id}/pause", dependencies=[Depends(require_api_key)])
+async def admin_outreach_pause_plan(plan_id: str) -> dict[str, Any]:
+    return outreach_service.pause_plan(plan_id)
+
+
+@app.post("/admin/outreach/plans/{plan_id}/resume", dependencies=[Depends(require_api_key)])
+async def admin_outreach_resume_plan(plan_id: str) -> dict[str, Any]:
+    return outreach_service.resume_plan(plan_id)
+
+
+@app.post("/admin/outreach/plans/{plan_id}/cancel", dependencies=[Depends(require_api_key)])
+async def admin_outreach_cancel_plan(plan_id: str) -> dict[str, Any]:
+    return outreach_service.cancel_plan(plan_id)
+
+
+@app.post("/admin/outreach/tasks/{task_id}/preview", dependencies=[Depends(require_api_key)])
+async def admin_outreach_preview_task(task_id: str) -> dict[str, Any]:
+    return await outreach_service.preview_task(task_id)
+
+
+@app.post("/admin/outreach/tasks/{task_id}/execute", dependencies=[Depends(require_api_key)])
+async def admin_outreach_execute_task(task_id: str) -> dict[str, Any]:
+    return await outreach_service.execute_task(task_id)
+
+
+@app.post("/admin/outreach/run-due", dependencies=[Depends(require_api_key)])
+async def admin_outreach_run_due(limit: int = 20) -> dict[str, Any]:
+    return await outreach_service.execute_due_tasks(limit=limit)
+
+
+@app.get("/admin/outreach/events", dependencies=[Depends(require_api_key)])
+async def admin_outreach_events(
+    limit: int = 100,
+    customer_id: str = "",
+    plan_id: str = "",
+) -> dict[str, Any]:
+    return {"items": outreach_service.list_events(limit=limit, customer_id=customer_id, plan_id=plan_id)}

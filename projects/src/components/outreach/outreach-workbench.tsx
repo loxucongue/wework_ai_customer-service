@@ -175,6 +175,7 @@ function messagePreview(messages?: Array<JsonObject>) {
       const content = item.content as JsonObject | undefined;
       if (item.type === "image") return "[图片]";
       if (item.type === "store_address") return `[门店卡片:${String(content?.store_id || "")}]`;
+      if (item.type === "payment_collection") return `[收款入口:${String(content?.amount || 10)}元]`;
       return String(content?.text || item.type || "");
     })
     .filter(Boolean)
@@ -336,6 +337,25 @@ export function OutreachWorkbench() {
         const response = await fetch(`/api/outreach/tasks/${encodeURIComponent(taskId)}/execute`, { method: "POST" });
         const data = await response.json();
         if (!response.ok) throw new Error(data?.error || "执行任务失败");
+        if (selectedPlanId) await loadPlan(selectedPlanId);
+        await loadEvents();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy("");
+      }
+    },
+    [loadEvents, loadPlan, selectedPlanId]
+  );
+
+  const previewTask = useCallback(
+    async (taskId: string) => {
+      setBusy(`preview-${taskId}`);
+      setError("");
+      try {
+        const response = await fetch(`/api/outreach/tasks/${encodeURIComponent(taskId)}/preview`, { method: "POST" });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error || "生成预览失败");
         if (selectedPlanId) await loadPlan(selectedPlanId);
         await loadEvents();
       } catch (err) {
@@ -661,14 +681,24 @@ export function OutreachWorkbench() {
                             <p className="mt-2 text-sm text-zinc-700">{task.message_goal || "-"}</p>
                             <p className="mt-1 text-xs text-zinc-500">计划发送：{formatTime(task.scheduled_at)} · 发送结果：{task.send_status || "-"}</p>
                           </div>
-                          <button
-                            onClick={() => executeTask(task.id)}
-                            className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50"
-                            disabled={busy === `task-${task.id}`}
-                          >
-                            <Send className="h-4 w-4" />
-                            立即执行
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => previewTask(task.id)}
+                              className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50"
+                              disabled={busy === `preview-${task.id}`}
+                            >
+                              <FileText className="h-4 w-4" />
+                              生成预览
+                            </button>
+                            <button
+                              onClick={() => executeTask(task.id)}
+                              className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50"
+                              disabled={busy === `task-${task.id}`}
+                            >
+                              <Send className="h-4 w-4" />
+                              立即执行
+                            </button>
+                          </div>
                         </div>
                         <div className="mt-3 rounded-md bg-zinc-50 p-3 text-sm text-zinc-700">{messagePreview(task.reply_messages)}</div>
                         {task.error_message ? <p className="mt-2 text-xs text-red-600">{task.error_message}</p> : null}

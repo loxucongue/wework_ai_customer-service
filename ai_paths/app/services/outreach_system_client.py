@@ -87,7 +87,12 @@ class OutreachSystemClient:
             kwargs["params"] = params
         if json_body is not None:
             kwargs["content"] = json.dumps(json_body, ensure_ascii=False).encode("utf-8")
-        response = await self._http_client().request(method, url, **kwargs)
+        try:
+            response = await self._http_client().request(method, url, **kwargs)
+        except httpx.ReadTimeout:
+            if method.upper() == "POST" and path.endswith("/ai-outreach/send"):
+                return {"code": 0, "msg": "accepted_no_response", "data": {"send_status": "accepted_no_response"}}
+            raise
         text = response.text
         try:
             payload = response.json()

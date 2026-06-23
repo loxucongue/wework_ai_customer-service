@@ -257,26 +257,36 @@ class OutreachService:
         plan = plan_detail.get("plan") or {}
         try:
             if task.get("before_send_check"):
-                refresh = await self.refresh_customer_conversation(
-                    customer_id=str(task["customer_id"]),
-                    corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
-                    user_id=str(task.get("user_id") or plan.get("user_id") or ""),
-                    wechat=str(task.get("wechat") or plan.get("wechat") or ""),
-                    external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
-                    limit=10,
-                )
-                if self._customer_replied_after_plan(plan, refresh.get("latest_customer_message_at")):
-                    self.repository.update_outreach_task(task_id, status="skipped")
-                    self.repository.update_outreach_plan_status(str(task["plan_id"]), "paused")
+                try:
+                    refresh = await self.refresh_customer_conversation(
+                        customer_id=str(task["customer_id"]),
+                        corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
+                        user_id=str(task.get("user_id") or plan.get("user_id") or ""),
+                        wechat=str(task.get("wechat") or plan.get("wechat") or ""),
+                        external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
+                        limit=10,
+                    )
+                    if self._customer_replied_after_plan(plan, refresh.get("latest_customer_message_at")):
+                        self.repository.update_outreach_task(task_id, status="skipped")
+                        self.repository.update_outreach_plan_status(str(task["plan_id"]), "paused")
+                        self.repository.add_outreach_event(
+                            plan_id=str(task["plan_id"]),
+                            task_id=task_id,
+                            customer_id=str(task["customer_id"]),
+                            event_type="task_skipped_customer_replied",
+                            event_summary="Customer replied before outreach task execution",
+                            payload=refresh,
+                        )
+                        return {"ok": True, "status": "skipped", "reason": "customer_replied"}
+                except Exception as exc:
                     self.repository.add_outreach_event(
                         plan_id=str(task["plan_id"]),
                         task_id=task_id,
                         customer_id=str(task["customer_id"]),
-                        event_type="task_skipped_customer_replied",
-                        event_summary="Customer replied before outreach task execution",
-                        payload=refresh,
+                        event_type="before_send_check_failed",
+                        event_summary="Conversation check failed before outreach send; continuing with send",
+                        payload={"error": f"{type(exc).__name__}: {exc}"},
                     )
-                    return {"ok": True, "status": "skipped", "reason": "customer_replied"}
             reply_messages = task.get("reply_messages") or []
             if not reply_messages:
                 reply_messages = await self._generate_task_messages(task=task, plan=plan)
@@ -329,6 +339,26 @@ class OutreachService:
             payload={"reply_messages": reply_messages, "send_result": send_result},
         )
         return {"ok": True, "status": "sent", "send_result": send_result}
+
+    async def preview_task(self, task_id: str) -> dict[str, Any]:
+        task = self.repository.get_outreach_task(task_id)
+        if not task:
+            return {"ok": False, "error": "task_not_found"}
+        plan_detail = self.repository.get_outreach_plan(str(task["plan_id"]))
+        plan = plan_detail.get("plan") or {}
+        reply_messages = task.get("reply_messages") or []
+        if not reply_messages:
+            reply_messages = await self._generate_task_messages(task=task, plan=plan)
+            task = self.repository.update_outreach_task(task_id, status=str(task.get("status") or "pending"), reply_messages=reply_messages)
+        self.repository.add_outreach_event(
+            plan_id=str(task["plan_id"]),
+            task_id=task_id,
+            customer_id=str(task["customer_id"]),
+            event_type="task_previewed",
+            event_summary="Generated outreach task messages for review without sending",
+            payload={"reply_messages": reply_messages},
+        )
+        return {"ok": True, "status": "previewed", "reply_messages": reply_messages, "task": task}
 
     async def _generate_task_messages(self, *, task: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, Any]]:
         context = self.repository.recent_customer_context(str(task["customer_id"]))

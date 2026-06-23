@@ -43,6 +43,8 @@ OUTREACH_MESSAGE_SYSTEM_PROMPT = """
 - 每条不写长段落，不重复，不说“AI”“机器人”。
 - 不编价格、门店、预约、案例效果；没有事实就不要说具体事实。
 - 不说根治、100%见效、保证效果、包接送、车费报销。
+- 客户已明确要报名、付款入口、交 10 元预约金或锁名额时，可以追加 1 条 payment_collection。
+- 预约金支付入口只能使用 payment_collection，不能使用 book_order。
 - 如果任务素材里有图片 URL 且目标是效果信任，可以输出 1 条 image。
 - 输出必须是 reply_messages 数组，结构与正式回复一致。
 
@@ -53,6 +55,11 @@ OUTREACH_MESSAGE_SYSTEM_PROMPT = """
       "type": "text",
       "order": 1,
       "content": {"text": "客户可见内容"}
+    },
+    {
+      "type": "payment_collection",
+      "order": 2,
+      "content": {"amount": 10, "remark": ""}
     }
   ]
 }

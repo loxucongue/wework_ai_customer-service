@@ -214,12 +214,19 @@ export async function callAiPathsHealth() {
   });
 }
 
+export async function getAiPathsCustomerMemory(customerId: string) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers = aiPathsAuthHeaders();
+  return fetch(`${apiBase.replace(/\/$/, "")}/admin/customers/${encodeURIComponent(customerId)}/memory`, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+  });
+}
+
 export async function clearAiPathsCustomerMemory(customerId: string) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
-  const headers: Record<string, string> = {};
-  if (process.env.AI_PATHS_API_KEY) {
-    headers.Authorization = `Bearer ${process.env.AI_PATHS_API_KEY}`;
-  }
+  const headers = aiPathsAuthHeaders();
 
   return fetch(
     `${apiBase.replace(/\/$/, "")}/admin/customers/${encodeURIComponent(customerId)}/memory`,
@@ -240,10 +247,7 @@ export type AiPathsRunsQuery = {
 
 export async function listAiPathsRuns(query: AiPathsRunsQuery) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
-  const headers: Record<string, string> = {};
-  if (process.env.AI_PATHS_API_KEY) {
-    headers.Authorization = `Bearer ${process.env.AI_PATHS_API_KEY}`;
-  }
+  const headers = aiPathsAuthHeaders();
 
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
@@ -261,16 +265,41 @@ export async function listAiPathsRuns(query: AiPathsRunsQuery) {
 
 export async function getAiPathsRun(requestId: string) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
-  const headers: Record<string, string> = {};
-  if (process.env.AI_PATHS_API_KEY) {
-    headers.Authorization = `Bearer ${process.env.AI_PATHS_API_KEY}`;
-  }
+  const headers = aiPathsAuthHeaders();
 
   return fetch(`${apiBase.replace(/\/$/, "")}/admin/runs/${encodeURIComponent(requestId)}`, {
     method: "GET",
     headers,
     cache: "no-store",
   });
+}
+
+export async function proxyAiPathsAdmin(path: string, init: RequestInit = {}) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const targetPath = path.startsWith("/") ? path : `/${path}`;
+  const headers = aiPathsAuthHeaders();
+  if (init.body !== undefined && init.body !== null) {
+    headers["Content-Type"] = "application/json; charset=utf-8";
+  }
+
+  try {
+    const response = await fetch(`${apiBase.replace(/\/$/, "")}${targetPath}`, {
+      method: init.method || "GET",
+      headers,
+      body: init.body,
+      cache: "no-store",
+    });
+    const text = await response.text();
+    return new Response(text, {
+      status: response.status,
+      headers: {
+        "Content-Type": response.headers.get("content-type") || "application/json; charset=utf-8",
+      },
+    });
+  } catch (error) {
+    console.error("AI Paths admin proxy failed:", error);
+    return jsonResponse({ error: "Failed to call AI Paths admin API" }, 500);
+  }
 }
 
 export async function proxyAiPathsChatRaw(body: ChatRequestBody) {
@@ -507,6 +536,14 @@ function replyMessagePayload(item: AiPathsReplyMessage, preferredKey = "text") {
 function paymentCollectionContent(content: unknown) {
   const remark = isRecord(content) ? stringValue(content.remark) : "";
   return { amount: 10, remark };
+}
+
+function aiPathsAuthHeaders() {
+  const headers: Record<string, string> = {};
+  if (process.env.AI_PATHS_API_KEY) {
+    headers.Authorization = `Bearer ${process.env.AI_PATHS_API_KEY}`;
+  }
+  return headers;
 }
 
 function numberValue(value: unknown) {

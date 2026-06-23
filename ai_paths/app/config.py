@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     outreach_send_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SEND_BASE_URL")
     outreach_send_agent_token: str = Field(default="", alias="OUTREACH_SEND_AGENT_TOKEN", repr=False)
     outreach_send_timeout_seconds: int = Field(default=12, alias="OUTREACH_SEND_TIMEOUT_SECONDS")
-    outreach_system_base_url: str = Field(default="", alias="OUTREACH_SYSTEM_BASE_URL")
+    outreach_system_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SYSTEM_BASE_URL")
     outreach_system_token: str = Field(default="", alias="OUTREACH_SYSTEM_TOKEN", repr=False)
     outreach_system_timeout_seconds: int = Field(default=12, alias="OUTREACH_SYSTEM_TIMEOUT_SECONDS")
     debug_platform_context_enabled: bool = Field(default=False, alias="DEBUG_PLATFORM_CONTEXT_ENABLED")
