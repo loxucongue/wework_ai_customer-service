@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from app.graph.nodes.common import model_usage_snapshot
+from app.graph.signals.general import has_current_after_sales_signal, is_low_information_content
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
 from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, safety_fallback_plan
@@ -77,6 +78,10 @@ async def run_planner_brain_v2(
                 plan = _transport_policy_safe_plan(state, plan)
             elif _needs_distance_tool_safe_fallback(state, plan, post_repair_violations):
                 plan = _distance_tool_safe_plan(state, plan)
+            elif _needs_after_sales_safe_fallback(state, post_repair_violations):
+                plan = _after_sales_safe_plan(state, plan)
+            elif _needs_store_detail_safe_fallback(state, post_repair_violations):
+                plan = _store_detail_safe_plan(state, plan)
             repair_call["output"] = {
                 "decision": plan.get("planner_decision", ""),
                 "stage": plan.get("planner_stage", ""),
@@ -108,19 +113,27 @@ async def run_planner_brain_v2(
 
 
 def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
+    suppress_memory = _should_suppress_planner_memory(state)
     payload = {
         "current_message": state.get("normalized_content") or "",
-        "conversation_history": (state.get("conversation_history") or [])[-10:],
+        "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-10:],
         "image_info": state.get("image_info") or {},
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
-        "customer_profile": state.get("customer_profile") or {},
-        "history_events": (state.get("history_events") or [])[-8:],
-        "customer_context": _compact_customer_context(state.get("customer_context") or {}),
+        "customer_profile": {} if suppress_memory else state.get("customer_profile") or {},
+        "history_events": [] if suppress_memory else (state.get("history_events") or [])[-8:],
+        "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
         "customer_store_knowledge": _compact_store_knowledge(state.get("customer_store_knowledge") or {}),
         "sales_talk_reference": _compact_sales_talk_reference(state.get("sales_talk_reference") or {}),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
     return _drop_empty(payload)
+
+
+def _should_suppress_planner_memory(state: AgentState) -> bool:
+    content = str(state.get("normalized_content") or "").strip()
+    if not is_low_information_content(content):
+        return False
+    return not any(term in content for term in ("刚刚", "刚才", "之前", "上次", "那个", "这家", "继续"))
 
 
 def _compact_plan_for_repair(plan: dict[str, Any]) -> dict[str, Any]:
@@ -202,6 +215,24 @@ def _planner_message_contract_violations(state: AgentState, plan: dict[str, Any]
                 "note": "Do not claim closest/nearer/distance/travel convenience without distance_calculate results. Ask whether to check routes or nearby stores instead.",
             }
         )
+    if _is_after_sales_effect_turn(state) and str(plan.get("planner_stage") or "") != "S4":
+        violations.append(
+            {
+                "task_type": str((plan.get("primary_task") or {}).get("type") or ""),
+                "subtype": str((plan.get("primary_task") or {}).get("subtype") or ""),
+                "missing": "after_sales_stage_required",
+                "note": "Current turn describes after-sales/effect feedback after service. Planner must use S4 and professional_assist instead of treating it as new project consultation.",
+            }
+        )
+    if _is_store_detail_turn(state) and _has_case_studies_tool(tool_calls):
+        violations.append(
+            {
+                "task_type": "store_inquiry",
+                "subtype": "store_detail",
+                "missing": "store_detail_fact_tool_required",
+                "note": "Parking/address/business-hours questions must use store facts, not kb_search(case_studies).",
+            }
+        )
     return violations
 
 
@@ -255,6 +286,14 @@ def _needs_distance_tool_safe_fallback(
     if not _is_distance_request_turn(state):
         return False
     return any(item.get("missing") == "distance_calculate_required" for item in violations)
+
+
+def _needs_after_sales_safe_fallback(state: AgentState, violations: list[dict[str, str]]) -> bool:
+    return _is_after_sales_effect_turn(state) and any(item.get("missing") == "after_sales_stage_required" for item in violations)
+
+
+def _needs_store_detail_safe_fallback(state: AgentState, violations: list[dict[str, str]]) -> bool:
+    return _is_store_detail_turn(state) and any(item.get("missing") == "store_detail_fact_tool_required" for item in violations)
 
 
 def _transport_policy_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
@@ -347,6 +386,84 @@ def _distance_tool_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[st
     return safe_plan
 
 
+def _after_sales_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
+    content = str(state.get("normalized_content") or "").strip()
+    tool = {"name": "professional_assist", "purpose": "After-sales effect feedback needs professional follow-up"}
+    safe_plan = dict(plan)
+    safe_plan["planner_decision"] = "need_tools"
+    safe_plan["planner_stage"] = "S4"
+    safe_plan["planner_sub_rule_id"] = "S4_AFTER_SALES_EFFECT_FEEDBACK"
+    safe_plan["planner_reply_messages"] = [
+        {"type": "text", "order": 1, "content": {"text": "这个我先帮您记录清楚，让专业同事接着核对。"}}
+    ]
+    safe_plan["planner_tool_calls"] = [tool]
+    safe_plan["required_tools"] = [tool]
+    safe_plan["tool_policy_violations"] = []
+    safe_plan["handoff"] = {"needed": True, "reason": content[:180]}
+    primary = dict(safe_plan.get("primary_task") if isinstance(safe_plan.get("primary_task"), dict) else {})
+    primary.update(
+        {
+            "type": "after_sales",
+            "subtype": "effect_feedback",
+            "policy_hint": "S4_AFTER_SALES_EFFECT_FEEDBACK",
+            "customer_need": content[:120],
+            "answer_goal": "Acknowledge after-sales effect feedback and involve professional colleague without promising result.",
+            "must_answer": ["先记录售后效果反馈", "专业同事协助核对"],
+            "must_avoid": ["当作新客咨询", "承诺退款或效果结果"],
+            "tools": [tool],
+        }
+    )
+    safe_plan["primary_task"] = primary
+    safe_plan["reply_strategy"] = {
+        "tone": "稳住情绪，短句承接",
+        "must_answer": ["先记录售后效果反馈", "专业同事协助核对"],
+        "can_push": "",
+        "must_avoid": ["承诺退款或效果结果", "重新销售式介绍"],
+        "max_questions": 1,
+    }
+    return safe_plan
+
+
+def _store_detail_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
+    content = str(state.get("normalized_content") or "").strip()
+    city = _distance_request_city(state) or _city_from_known_store(state)
+    candidate_ids = _store_ids_for_detail_turn(state, city)
+    tool: dict[str, Any] = {
+        "name": "distance_calculate",
+        "purpose": "Need store detail facts before answering parking/address/business hours",
+        "origin": _store_detail_origin(state) or content,
+        "candidate_store_ids": candidate_ids,
+    }
+    if city:
+        tool["candidate_city"] = city
+        tool["candidate_scope"] = "customer_store_knowledge.city"
+    safe_plan = dict(plan)
+    safe_plan["planner_decision"] = "need_tools"
+    safe_plan["planner_stage"] = "S2"
+    safe_plan["planner_sub_rule_id"] = "S2_PARKING_OR_HOURS"
+    safe_plan["planner_reply_messages"] = [
+        {"type": "text", "order": 1, "content": {"text": "我帮您核对一下这家门店的具体信息。"}}
+    ]
+    safe_plan["planner_tool_calls"] = [tool]
+    safe_plan["required_tools"] = [tool]
+    safe_plan["tool_policy_violations"] = []
+    primary = dict(safe_plan.get("primary_task") if isinstance(safe_plan.get("primary_task"), dict) else {})
+    primary.update(
+        {
+            "type": "store_inquiry",
+            "subtype": "parking_or_hours",
+            "policy_hint": "S2_PARKING_OR_HOURS",
+            "customer_need": content[:120],
+            "answer_goal": "Use store facts to answer parking/address/business-hours question.",
+            "must_answer": ["基于门店事实回答停车、地址或营业时间"],
+            "must_avoid": ["调用案例知识库", "编造停车或营业时间"],
+            "tools": [tool],
+        }
+    )
+    safe_plan["primary_task"] = primary
+    return safe_plan
+
+
 def _is_distance_request_turn(state: AgentState) -> bool:
     text = str(state.get("normalized_content") or "").strip()
     if not text:
@@ -354,6 +471,29 @@ def _is_distance_request_turn(state: AgentState) -> bool:
     has_store_target = any(term in text for term in ("门店", "店", "地址", "哪里", "哪家"))
     has_distance_need = any(term in text for term in ("最近", "附近", "更近", "离", "距离", "几公里", "几分钟", "机场", "地铁站", "商圈"))
     return has_store_target and has_distance_need
+
+
+def _is_after_sales_effect_turn(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "").strip()
+    if not has_current_after_sales_signal(text):
+        return False
+    pre_sales_worry = any(term in text for term in ("怕没效果", "担心没效果", "会不会没效果", "有没有效果"))
+    happened = any(term in text for term in ("做完", "做了", "术后", "恢复", "反黑", "红肿", "流脓", "出血", "疼", "痛"))
+    return happened or ("没效果" in text and not pre_sales_worry)
+
+
+def _is_store_detail_turn(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "").strip()
+    return bool(text) and any(term in text for term in ("停车", "停车场", "营业时间", "几点开", "几点关", "详细地址", "导航", "路线"))
+
+
+def _has_case_studies_tool(tool_calls: list[dict[str, Any]]) -> bool:
+    for tool in tool_calls:
+        if not isinstance(tool, dict):
+            continue
+        if str(tool.get("name") or "") == "kb_search" and str(tool.get("kb_name") or "") == "case_studies":
+            return True
+    return False
 
 
 def _distance_request_city(state: AgentState) -> str:
@@ -373,6 +513,37 @@ def _distance_request_city(state: AgentState) -> str:
         short_district = district[:-1] if district.endswith(("区", "县", "镇")) else district
         if district in text or (short_district and short_district in text):
             return city
+    return ""
+
+
+def _city_from_known_store(state: AgentState) -> str:
+    text = str(state.get("normalized_content") or "").strip()
+    for store in _customer_scope_stores(state):
+        name = str(store.get("store_name") or "").strip()
+        if name and name in text:
+            return str(store.get("city") or "").strip()
+    return ""
+
+
+def _store_ids_for_detail_turn(state: AgentState, city: str) -> list[str]:
+    text = str(state.get("normalized_content") or "").strip()
+    exact_ids: list[str] = []
+    for store in _customer_scope_stores(state):
+        name = str(store.get("store_name") or "").strip()
+        store_id = str(store.get("store_id") or "").strip()
+        if name and store_id and name in text:
+            exact_ids.append(store_id)
+    if exact_ids:
+        return exact_ids
+    return _store_ids_for_city(state, city)
+
+
+def _store_detail_origin(state: AgentState) -> str:
+    text = str(state.get("normalized_content") or "").strip()
+    for store in _customer_scope_stores(state):
+        name = str(store.get("store_name") or "").strip()
+        if name and name in text:
+            return str(store.get("store_address") or name).strip()
     return ""
 
 

@@ -126,6 +126,8 @@ def _fact_notes_for_model(
     recommended_store = structured_facts.get("recommended_store") or {}
     if isinstance(recommended_store, dict) and recommended_store.get("name"):
         notes.append("已有推荐门店事实，可优先按推荐门店回答。")
+        if recommended_store.get("reason") == "distance_calculate_rank_1":
+            notes.append("客户问附近或最近门店时，必须优先回答 distance_calculate 排序第一的推荐门店，不要泛泛列多家门店或反问客户选哪家。")
 
     store_lookup_status = structured_facts.get("store_lookup_status") or {}
     if isinstance(store_lookup_status, dict) and store_lookup_status.get("distance_lookup_required"):

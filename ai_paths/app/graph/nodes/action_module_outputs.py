@@ -106,6 +106,15 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 for item in candidate_stores[:5]
                 if isinstance(item, dict)
             ]
+            if structured_facts["store_facts"]:
+                top_store = structured_facts["store_facts"][0]
+                structured_facts["recommended_store"] = {
+                    "id": top_store.get("id", ""),
+                    "name": top_store.get("name", ""),
+                    "address": top_store.get("address", ""),
+                    "reason": "distance_calculate_rank_1",
+                    "distance_km": top_store.get("distance_km"),
+                }
             facts.append(
                 "distance_calculate: "
                 f"origin={value.get('origin') or ''}; status={value.get('status') or ''}; candidates={len(candidate_stores)}"

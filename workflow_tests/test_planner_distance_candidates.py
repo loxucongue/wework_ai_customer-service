@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.graph.planner.brain_v2 import _is_distance_request_turn
+from app.graph.planner.brain_v2 import _planner_message_contract_violations, _planner_payload_for_model
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 
 
@@ -36,8 +36,63 @@ class PlannerDistanceCandidateTests(unittest.TestCase):
         self.assertEqual(tool["candidate_store_ids"], ["189", "467", "488"])
         self.assertEqual(tool["candidate_expanded_from"], ["189"])
 
-    def test_distance_request_turn_detects_nearest_store_question(self) -> None:
-        self.assertTrue(_is_distance_request_turn({"normalized_content": "重庆巴南附近哪家店最近"}))
+    def test_payment_collection_is_added_for_signup_direct_reply(self) -> None:
+        plan = build_planner_plan_v2(
+            {"normalized_content": "我想报名"},
+            {
+                "decision": "direct_reply",
+                "stage": "S3",
+                "sub_rule_id": "S3_PAYMENT_COLLECTION",
+                "reply_messages": [{"type": "text", "content": {"text": "我先把10元预约金入口发您。"}}],
+                "tool_calls": [],
+            },
+        )
+
+        self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text", "payment_collection"])
+
+    def test_low_information_opening_suppresses_old_profile_for_planner(self) -> None:
+        payload = _planner_payload_for_model(
+            {
+                "normalized_content": "你好",
+                "customer_profile": {"summary": "旧画像"},
+                "history_events": [{"event_type": "old"}],
+                "conversation_history": ["用户: 之前的历史"],
+            }
+        )
+
+        self.assertNotIn("customer_profile", payload)
+        self.assertNotIn("history_events", payload)
+        self.assertNotIn("conversation_history", payload)
+
+    def test_after_sales_effect_feedback_requires_s4(self) -> None:
+        violations = _planner_message_contract_violations(
+            {"normalized_content": "做完没效果怎么办"},
+            {
+                "planner_decision": "direct_reply",
+                "planner_stage": "S1",
+                "planner_sub_rule_id": "S1_PROJECT_DIRECTION",
+                "planner_reply_messages": [{"type": "text", "content": {"text": "到店先检测。"}}],
+                "planner_tool_calls": [],
+                "primary_task": {"type": "project_consult", "subtype": "s1_project_direction"},
+            },
+        )
+
+        self.assertIn("after_sales_stage_required", {item["missing"] for item in violations})
+
+    def test_parking_question_rejects_case_studies_tool(self) -> None:
+        violations = _planner_message_contract_violations(
+            {"normalized_content": "重庆巴南店有停车吗"},
+            {
+                "planner_decision": "need_tools",
+                "planner_stage": "S2",
+                "planner_sub_rule_id": "S2_PARKING_OR_HOURS",
+                "planner_reply_messages": [{"type": "text", "content": {"text": "我帮您核对。"}}],
+                "planner_tool_calls": [{"name": "kb_search", "kb_name": "case_studies", "query": "重庆巴南店 停车"}],
+                "primary_task": {"type": "store_inquiry", "subtype": "s2_parking_or_hours"},
+            },
+        )
+
+        self.assertIn("store_detail_fact_tool_required", {item["missing"] for item in violations})
 
 
 if __name__ == "__main__":

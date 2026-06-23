@@ -82,6 +82,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - appointment_extra_stores 只能用于已有预约/订单上下文，不能当作客户范围门店推荐。
 - 客户问某城市/区域但 customer_store_knowledge.regions 没有匹配门店时，应说明“这边目前没查到可直接发您的门店”，再问客户其他常去城市/区域/地标。
 - “最近、几公里、几分钟、更近”必须有真实 distance_calculate 结果，不能根据门店名或地址关键词推断。
+- 如果 fact_envelope.structured_facts.recommended_store.reason=distance_calculate_rank_1，客户问最近/附近/哪家方便时，必须优先回答 recommended_store.name、地址和 distance_km；不要泛泛列多家门店或反问客户自己选。
 - 档期和预约只能基于 appointment_facts。
 - 案例图片只能基于 case_facts 里的真实 image_url。
 - case_facts 里的 document_id 是案例图片唯一去重标识；如果 case_facts 标记 no_new_case_image，不要输出 image。

@@ -18,6 +18,13 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
 
     primary_task = _task_from_new_contract(state, decision=decision, stage=stage, sub_rule_id=sub_rule_id)
     secondary_tasks: list[dict[str, Any]] = []
+    planner_reply_messages = _ensure_payment_collection_message(
+        planner_reply_messages,
+        state,
+        decision=decision,
+        stage=stage,
+        sub_rule_id=sub_rule_id,
+    )
 
     if not primary_task:
         raise ValueError("Planner Brain missing valid primary_task")
@@ -99,6 +106,46 @@ def _message_text(content: Any) -> str:
                 return str(content.get(key) or "").strip()
         return ""
     return str(content or "").strip()
+
+
+def _ensure_payment_collection_message(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+    *,
+    decision: str,
+    stage: str,
+    sub_rule_id: str,
+) -> list[dict[str, Any]]:
+    if decision != "direct_reply" or stage != "S3":
+        return messages
+    marker = " ".join(
+        str(value or "")
+        for value in (
+            state.get("normalized_content"),
+            sub_rule_id,
+            _planner_message_text(messages),
+        )
+    )
+    if not any(term in marker for term in ("报名", "预约金", "付款入口", "收款入口", "锁名额", "交10", "10元")):
+        return messages
+    if any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict)):
+        return messages
+    output = list(messages)
+    output.append({"type": "payment_collection", "order": len(output) + 1, "content": {"amount": 10, "remark": ""}})
+    return output
+
+
+def _planner_message_text(messages: list[dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if isinstance(content, dict):
+            chunks.extend(str(content.get(key) or "") for key in ("text", "url", "handoff_reason"))
+        else:
+            chunks.append(str(content or ""))
+    return " ".join(chunk for chunk in chunks if chunk)
 
 
 def _task_from_new_contract(state: AgentState, *, decision: str, stage: str, sub_rule_id: str) -> dict[str, Any]:
