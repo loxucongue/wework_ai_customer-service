@@ -125,6 +125,22 @@ class OutreachService:
             "latest_staff_message_at": latest_staff,
         }
 
+    def cached_customer_conversation(self, customer_id: str, *, limit: int = 10, error: str = "") -> dict[str, Any]:
+        context = self.repository.recent_customer_context(customer_id)
+        messages = self._local_context_messages(context.get("recent_messages") or [], limit=limit)
+        if not messages:
+            return {}
+        return {
+            "ok": True,
+            "source": "local_cache",
+            "warning": "平台历史聊天查询超时，已显示本地缓存记录",
+            "error": error,
+            "raw": {},
+            "messages": messages,
+            "latest_customer_message_at": self._latest_message_time(messages, sender="customer"),
+            "latest_staff_message_at": self._latest_message_time(messages, sender="staff"),
+        }
+
     async def generate_plan(
         self,
         *,
@@ -391,6 +407,56 @@ class OutreachService:
         data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
         messages = data.get("messages") if isinstance(data, dict) else []
         return [item for item in messages if isinstance(item, dict)] if isinstance(messages, list) else []
+
+    @staticmethod
+    def _local_context_messages(recent_messages: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+        output: list[dict[str, Any]] = []
+        for item in recent_messages[-max(1, min(limit, 50)):]:
+            role = _string(item.get("role"))
+            created_at = _string(item.get("created_at"))
+            if role == "user":
+                content = _string(item.get("content"))
+                if content:
+                    output.append(
+                        {
+                            "direction": "customer",
+                            "sender_type": "customer",
+                            "sender_name": "客户",
+                            "content": content,
+                            "msgtype": "text",
+                            "created_at": created_at,
+                        }
+                    )
+                continue
+            reply_messages = item.get("reply_messages") if isinstance(item.get("reply_messages"), list) else []
+            if reply_messages:
+                for reply in reply_messages:
+                    if not isinstance(reply, dict):
+                        continue
+                    output.append(
+                        {
+                            "direction": "staff",
+                            "sender_type": "staff",
+                            "sender_name": "员工",
+                            "content": reply.get("content"),
+                            "msgtype": _string(reply.get("type")) or "text",
+                            "created_at": created_at,
+                        }
+                    )
+                continue
+            content = _string(item.get("content"))
+            if content:
+                output.append(
+                    {
+                        "direction": "staff",
+                        "sender_type": "staff",
+                        "sender_name": "员工",
+                        "content": content,
+                        "msgtype": "text",
+                        "created_at": created_at,
+                    }
+                )
+        return output
 
     @staticmethod
     def _latest_message_time(messages: list[dict[str, Any]], *, sender: str) -> str:

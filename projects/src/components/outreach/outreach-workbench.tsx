@@ -401,6 +401,7 @@ export function OutreachWorkbench() {
         });
         const data = await readJsonResponse(response);
         if (!response.ok) throw new Error(outreachErrorMessage(data, "刷新历史失败"));
+        if (data.warning) setError(String(data.warning));
         await loadCandidates();
         await loadEvents();
       } catch (err) {
@@ -434,6 +435,7 @@ export function OutreachWorkbench() {
         const data = await readJsonResponse(response);
         if (!response.ok) throw new Error(outreachErrorMessage(data, "加载历史聊天失败"));
         setHistoryMessages(Array.isArray(data.messages) ? data.messages : []);
+        if (data.warning) setError(String(data.warning));
         await loadCandidates();
         await loadEvents();
       } catch (err) {

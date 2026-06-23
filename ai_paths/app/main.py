@@ -268,12 +268,20 @@ async def admin_outreach_refresh_conversation(
             limit=int(payload.get("limit") or 10),
         )
     except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        cached = outreach_service.cached_customer_conversation(
+            customer_id,
+            limit=int(payload.get("limit") or 10),
+            error=detail,
+        )
+        if cached:
+            return cached
         return JSONResponse(
             status_code=502,
             content={
                 "ok": False,
                 "error": "conversation_refresh_failed",
-                "detail": f"{type(exc).__name__}: {exc}",
+                "detail": detail,
             },
         )
 
