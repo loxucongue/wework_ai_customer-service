@@ -233,6 +233,19 @@ def _planner_message_contract_violations(state: AgentState, plan: dict[str, Any]
                 "note": "Parking/address/business-hours questions must use store facts, not kb_search(case_studies).",
             }
         )
+    if _is_store_detail_turn(state) and (
+        str(plan.get("planner_stage") or "") == "S4"
+        or _has_professional_assist_tool(tool_calls)
+        or bool((plan.get("handoff") or {}).get("needed") if isinstance(plan.get("handoff"), dict) else False)
+    ):
+        violations.append(
+            {
+                "task_type": "store_inquiry",
+                "subtype": "store_detail",
+                "missing": "store_detail_stage_required",
+                "note": "Parking/address/business-hours questions are store detail questions. Do not route them to S4, handoff, or professional_assist unless the customer explicitly complains or asks for human handling.",
+            }
+        )
     return violations
 
 
@@ -293,7 +306,9 @@ def _needs_after_sales_safe_fallback(state: AgentState, violations: list[dict[st
 
 
 def _needs_store_detail_safe_fallback(state: AgentState, violations: list[dict[str, str]]) -> bool:
-    return _is_store_detail_turn(state) and any(item.get("missing") == "store_detail_fact_tool_required" for item in violations)
+    return _is_store_detail_turn(state) and any(
+        item.get("missing") in {"store_detail_fact_tool_required", "store_detail_stage_required"} for item in violations
+    )
 
 
 def _transport_policy_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
@@ -494,6 +509,13 @@ def _has_case_studies_tool(tool_calls: list[dict[str, Any]]) -> bool:
         if str(tool.get("name") or "") == "kb_search" and str(tool.get("kb_name") or "") == "case_studies":
             return True
     return False
+
+
+def _has_professional_assist_tool(tool_calls: list[dict[str, Any]]) -> bool:
+    return any(
+        isinstance(tool, dict) and str(tool.get("name") or "") == "professional_assist"
+        for tool in tool_calls
+    )
 
 
 def _distance_request_city(state: AgentState) -> str:
