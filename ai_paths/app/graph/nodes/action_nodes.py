@@ -3,6 +3,7 @@
 import asyncio
 import json
 import math
+import re
 from typing import Any, Callable
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
@@ -334,7 +335,13 @@ async def _distance_calculate(tool: dict[str, Any], state: AgentState, coze_clie
             "error": "geocode_workflow_id_not_configured",
         }
     try:
+        admin_candidate = _administrative_area_origin_candidate(origin, state)
         origin_geo = await _geocode_address(coze_client, workflow_id, geocode_origin)
+        if admin_candidate and not _geocode_matches_area(origin_geo, admin_candidate["area"]):
+            admin_geo = await _geocode_address(coze_client, workflow_id, admin_candidate["origin"])
+            if _geocode_matches_area(admin_geo, admin_candidate["area"]):
+                origin_geo = admin_geo
+                geocode_origin = admin_candidate["origin"]
         if not origin_geo.get("location"):
             return {"origin": origin, "candidate_stores": candidates, "status": "origin_geocode_failed", "error": "origin_geocode_failed"}
         origin_point = _parse_lng_lat(str(origin_geo.get("location") or ""))
@@ -427,6 +434,47 @@ def _normalize_distance_origin_from_store_regions(origin: str, state: AgentState
     top_score = matches[0][0]
     top_regions = sorted({region for score, region in matches if score == top_score})
     return top_regions[0] if len(top_regions) == 1 else text
+
+
+def _administrative_area_origin_candidate(origin: str, state: AgentState) -> dict[str, str]:
+    text = str(origin or "").strip()
+    if not text:
+        return {}
+    stores = _customer_scope_stores(state)
+    city_names = sorted({str(store.get("city") or "").strip() for store in stores if store.get("city")}, key=len, reverse=True)
+    for city in city_names:
+        for city_token in _region_tokens(city):
+            if not city_token or city_token not in text:
+                continue
+            area = text.split(city_token, 1)[1]
+            area = _clean_area_candidate(area)
+            if not _looks_like_admin_area_candidate(area):
+                continue
+            return {"origin": f"{city}{area}区", "area": area}
+    return {}
+
+
+def _clean_area_candidate(value: str) -> str:
+    text = re.sub(r"[，,。？?！!\s]", "", str(value or "").strip())
+    text = re.sub(r"(附近|周边|哪家|哪个|最近|更近|比较近|近点|近一点|近|门店|店|地址|路线|导航|停车|营业时间|有|吗|呢|呀|的|在|离)", "", text)
+    return text.strip()
+
+
+def _looks_like_admin_area_candidate(value: str) -> bool:
+    text = str(value or "").strip()
+    if len(text) < 2 or len(text) > 5:
+        return False
+    if text.endswith(("区", "县", "市", "镇", "街道", "机场", "车站", "火车站", "高铁站", "商场", "广场", "大厦", "医院", "学校")):
+        return False
+    return bool(re.fullmatch(r"[\u4e00-\u9fff]+", text))
+
+
+def _geocode_matches_area(geo: dict[str, Any], area: str) -> bool:
+    text = str(area or "").strip()
+    if not text or not isinstance(geo, dict):
+        return False
+    district = str(geo.get("district") or "").strip()
+    return bool(district and text in district)
 
 
 def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:
