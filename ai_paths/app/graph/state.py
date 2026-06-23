@@ -78,6 +78,8 @@ class AgentState(TypedDict, total=False):
     policy_match_level: str
     policy_version: str
     reply_source: str
+    reply_control: dict[str, Any]
+    async_final_reply: dict[str, Any]
     postprocess_changed: bool
     postprocess_reasons: list[str]
     warnings: list[dict[str, Any]]

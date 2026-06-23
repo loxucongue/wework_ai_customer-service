@@ -68,4 +68,14 @@ def tags_from_state(state: dict[str, Any]) -> list[str]:
         tags.append(str(route["subflow"]))
     if state.get("image_info", {}).get("has_image"):
         tags.append("has_image")
+    reply_control = state.get("reply_control") if isinstance(state.get("reply_control"), dict) else {}
+    mode = str(reply_control.get("mode") or "").strip()
+    if mode in {"filtered", "superseded", "merged_latest"}:
+        tags.append("merged" if mode == "merged_latest" else mode)
+    async_final = reply_control.get("async_final") if isinstance(reply_control.get("async_final"), dict) else {}
+    async_status = str(async_final.get("status") or "").strip()
+    if async_status == "sent":
+        tags.append("async_sent")
+    elif async_status in {"skipped", "superseded", "error"}:
+        tags.append("async_skipped" if async_status in {"skipped", "superseded"} else "async_error")
     return list(dict.fromkeys(tags))

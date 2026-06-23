@@ -50,6 +50,8 @@ class RunRepositoryMixin:
             "policy_match_level": final_state.get("policy_match_level", ""),
             "policy_version": final_state.get("policy_version", ""),
             "reply_source": final_state.get("reply_source", ""),
+            "reply_control": final_state.get("reply_control", {}),
+            "async_final_reply": final_state.get("async_final_reply", {}),
             "postprocess_changed": bool(final_state.get("postprocess_changed")),
             "postprocess_reasons": final_state.get("postprocess_reasons", []),
             "warnings": final_state.get("warnings", []),
@@ -60,6 +62,12 @@ class RunRepositoryMixin:
             "event_updates": final_state.get("event_updates", []),
         }
         with self.store.connect() as conn:
+            existing = conn.execute("SELECT output_snapshot FROM runs WHERE request_id=?", (request_id,)).fetchone()
+            if existing:
+                existing_output = loads_dict(existing["output_snapshot"])
+                for key in ("http_response_body", "http_response_reply_messages"):
+                    if key in existing_output and key not in output_snapshot:
+                        output_snapshot[key] = existing_output[key]
             conn.execute(
                 """
                 INSERT OR REPLACE INTO runs

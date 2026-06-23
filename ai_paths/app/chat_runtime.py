@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import html
 import time
+from contextlib import suppress
 from typing import Any
 from uuid import uuid4
 
@@ -16,6 +17,7 @@ from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
+from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
 from app.services.storage import AppRepository
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
 
@@ -31,6 +33,7 @@ class ChatRuntime:
         finalize_graph: Any | None = None,
         outreach_send_client: OutreachSendClient | None = None,
         memory_store: CustomerMemoryStore | None = None,
+        platform_reply_coordinator: PlatformReplyCoordinator | None = None,
     ) -> None:
         self._full_graph = full_graph
         self._planner_graph = planner_graph or full_graph
@@ -39,6 +42,7 @@ class ChatRuntime:
         self._repository = repository
         self._outreach_send_client = outreach_send_client
         self._memory_store = memory_store
+        self._platform_reply_coordinator = platform_reply_coordinator
 
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
         request_id = str(uuid4())
@@ -63,12 +67,57 @@ class ChatRuntime:
         request_id = str(uuid4())
         request_context = build_request_context(request)
         conversation_id = self._prepare_conversation(request, request_id, request_context)
-        initial_state = self._initial_state(request, request_id, request_context)
+        decision = (
+            await self._platform_reply_coordinator.begin(request, request_id=request_id, request_context=request_context)
+            if self._platform_reply_coordinator
+            else None
+        )
+        if decision and not decision.should_run_graph:
+            state = self._initial_state(request, request_id, request_context)
+            state["reply_messages"] = []
+            state["reply_source"] = "platform_filtered"
+            state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
+            _set_sync_return(state, "empty", [])
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=state,
+                allow_empty_reply=True,
+            )
+
+        effective_request = request
+        effective_context = request_context
+        control_record: PlatformReplyRecord | None = None
+        if decision:
+            control_record = decision.record
+            effective_context = decision.effective_request_context
+            effective_request = request.model_copy(
+                update={
+                    "content": decision.effective_content,
+                    "request_context": effective_context,
+                }
+            )
+        initial_state = self._initial_state(effective_request, request_id, effective_context)
+        if decision and self._platform_reply_coordinator:
+            initial_state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
 
         try:
-            planner_state: AgentState = await self._planner_graph.ainvoke(initial_state)
+            planner_state = await self._run_planner_graph_with_preemption(initial_state, control_record)
         except Exception as exc:
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
             self._handle_graph_exception(initial_state, conversation_id, exc)
+        _preserve_reply_control(planner_state, initial_state)
+        if control_record and self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+            planner_state = self._superseded_state(initial_state, control_record)
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=planner_state,
+                allow_empty_reply=True,
+            )
 
         sync_messages = _planner_sync_reply_messages(planner_state)
         planner_state["reply_messages"] = sync_messages
@@ -79,6 +128,7 @@ class ChatRuntime:
             "scheduled": should_finalize,
             "status": "scheduled" if should_finalize else "not_required",
         }
+        _set_sync_return(planner_state, _sync_return_type(planner_state), sync_messages)
 
         response = self._persist_and_build_response(
             request=request,
@@ -92,9 +142,43 @@ class ChatRuntime:
                 request=request,
                 conversation_id=conversation_id,
                 planner_state=planner_state,
+                control_record=control_record,
                 background_tasks=background_tasks,
             )
+        elif self._platform_reply_coordinator:
+            await self._platform_reply_coordinator.complete(control_record)
         return response
+
+    async def _run_planner_graph_with_preemption(
+        self,
+        initial_state: AgentState,
+        control_record: PlatformReplyRecord | None,
+    ) -> AgentState:
+        if not control_record:
+            return await self._planner_graph.ainvoke(initial_state)
+        graph_task = asyncio.create_task(self._planner_graph.ainvoke(initial_state))
+        cancel_task = asyncio.create_task(control_record.cancel_event.wait())
+        done, pending = await asyncio.wait({graph_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
+        if cancel_task in done and control_record.cancel_event.is_set():
+            graph_task.cancel()
+            graph_task.add_done_callback(_consume_task_result)
+            return self._superseded_state(initial_state, control_record)
+        cancel_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cancel_task
+        for task in pending:
+            task.cancel()
+        return await graph_task
+
+    def _superseded_state(self, initial_state: AgentState, control_record: PlatformReplyRecord) -> AgentState:
+        state: AgentState = dict(initial_state)
+        state["reply_messages"] = []
+        state["reply_source"] = "platform_superseded"
+        state["async_final_reply"] = {"scheduled": False, "status": "superseded"}
+        if self._platform_reply_coordinator:
+            state["reply_control"] = self._platform_reply_coordinator.control_for_superseded(control_record)
+        _set_sync_return(state, "empty", [])
+        return state
 
     def _schedule_async_finalize_and_send(
         self,
@@ -102,6 +186,7 @@ class ChatRuntime:
         request: ChatRequest,
         conversation_id: str,
         planner_state: AgentState,
+        control_record: PlatformReplyRecord | None = None,
         background_tasks: Any | None = None,
     ) -> None:
         if not self._finalize_graph:
@@ -114,19 +199,37 @@ class ChatRuntime:
             final_state["trace"] = list(planner_state.get("trace") or [])
             final_state["errors"] = list(planner_state.get("errors") or [])
             try:
+                if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                    skipped = _async_superseded_result()
+                    final_state["async_final_reply"] = skipped
+                    _set_async_final_control(final_state, skipped)
+                    _append_async_send_trace(final_state, skipped)
+                    self._save_state(conversation_id, final_state)
+                    return
                 final_state = await self._finalize_graph.ainvoke(final_state)
+                _preserve_reply_control(final_state, planner_state)
                 messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
+                if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                    skipped = {**_async_superseded_result(), "reply_messages": messages}
+                    final_state["async_final_reply"] = skipped
+                    _set_async_final_control(final_state, skipped)
+                    _append_async_send_trace(final_state, skipped)
+                    self._save_state(conversation_id, final_state)
+                    return
                 if not messages:
                     final_state["async_final_reply"] = {
                         "scheduled": True,
                         "status": "skipped",
                         "reason": "empty_final_reply_messages",
                     }
+                    _set_async_final_control(final_state, final_state["async_final_reply"])
                     _append_async_send_trace(final_state, final_state["async_final_reply"])
                     self._save_state(conversation_id, final_state)
                     return
                 send_result = await self._send_async_reply(request, final_state, messages)
+                send_result["reply_messages"] = messages
                 final_state["async_final_reply"] = send_result
+                _set_async_final_control(final_state, send_result)
                 _append_async_send_trace(final_state, send_result)
                 if send_result.get("status") == "sent":
                     safe_repository_call(
@@ -145,9 +248,13 @@ class ChatRuntime:
             except Exception as exc:
                 error = {"scheduled": True, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
                 final_state["async_final_reply"] = error
+                _set_async_final_control(final_state, error)
                 final_state.setdefault("errors", []).append({"node": "async_final_reply", "message": "async_final_reply_failed", "detail": error["error"]})
                 _append_async_send_trace(final_state, error)
                 self._save_state(conversation_id, final_state)
+            finally:
+                if self._platform_reply_coordinator:
+                    await self._platform_reply_coordinator.complete(control_record)
 
         if background_tasks is not None:
             background_tasks.add_task(runner)
@@ -312,6 +419,7 @@ class ChatRuntime:
                 "postprocess_changed": bool(final_state.get("postprocess_changed")),
                 "postprocess_reasons": final_state.get("postprocess_reasons", []),
                 "async_final_reply": final_state.get("async_final_reply", {}),
+                "reply_control": final_state.get("reply_control", {}),
                 "conversation_id": conversation_id,
             },
         )
@@ -342,6 +450,58 @@ def _platform_reply_source(state: AgentState) -> str:
     if decision == "need_tools":
         return "planner_transition_reply"
     return "planner_direct_reply"
+
+
+def _sync_return_type(state: AgentState) -> str:
+    source = str(state.get("reply_source") or "")
+    if source == "planner_transition_reply":
+        return "transition_reply"
+    if source == "planner_direct_reply":
+        return "direct_reply"
+    return "empty" if not state.get("reply_messages") else "direct_reply"
+
+
+def _preserve_reply_control(state: AgentState, fallback_state: AgentState) -> None:
+    if not isinstance(state.get("reply_control"), dict) and isinstance(fallback_state.get("reply_control"), dict):
+        state["reply_control"] = dict(fallback_state["reply_control"])
+
+
+def _set_sync_return(state: AgentState, return_type: str, reply_messages: list[dict[str, Any]]) -> None:
+    control = state.get("reply_control") if isinstance(state.get("reply_control"), dict) else {}
+    control["sync_return"] = {
+        "type": return_type,
+        "reply_messages": reply_messages,
+    }
+    state["reply_control"] = control
+
+
+def _set_async_final_control(state: AgentState, result: dict[str, Any]) -> None:
+    control = state.get("reply_control") if isinstance(state.get("reply_control"), dict) else {}
+    control["async_final"] = {
+        "scheduled": bool(result.get("scheduled")),
+        "status": str(result.get("status") or ""),
+        "reason": result.get("reason", ""),
+        "error": result.get("error", ""),
+        "reply_messages": result.get("reply_messages", []),
+        "send_payload": result.get("send_payload", {}),
+        "send_response": result.get("response", {}),
+        "payload_message_count": result.get("payload_message_count", 0),
+    }
+    state["reply_control"] = control
+
+
+def _async_superseded_result() -> dict[str, Any]:
+    return {
+        "scheduled": True,
+        "status": "superseded",
+        "reason": "newer_customer_message_preempted_async_final_reply",
+        "reply_messages": [],
+    }
+
+
+def _consume_task_result(task: asyncio.Task[Any]) -> None:
+    with suppress(asyncio.CancelledError, Exception):
+        task.result()
 
 
 def _should_run_async_finalize(state: AgentState) -> bool:

@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     platform_agent_default_wechat: str = ""
     store_snapshot_path: Path = Path("data/store_snapshot.json")
     store_snapshot_ttl_hours: int = 24
+    platform_filter_words_path: Path = Path("config/platform_filter_words.json")
     outreach_send_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SEND_BASE_URL")
     outreach_send_agent_token: str = Field(default="", alias="OUTREACH_SEND_AGENT_TOKEN", repr=False)
     outreach_send_timeout_seconds: int = Field(default=12, alias="OUTREACH_SEND_TIMEOUT_SECONDS")

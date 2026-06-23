@@ -68,6 +68,7 @@ class OutreachSendClient:
                 "status": "sent",
                 "send_status": "accepted_no_response",
                 "payload_message_count": len(reply_messages),
+                "send_payload": payload,
             }
         response.raise_for_status()
         try:
@@ -77,6 +78,7 @@ class OutreachSendClient:
         return {
             "status": "sent",
             "payload_message_count": len(reply_messages),
+            "send_payload": payload,
             "response": data,
         }
 

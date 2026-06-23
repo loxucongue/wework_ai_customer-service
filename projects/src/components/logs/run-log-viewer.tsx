@@ -289,7 +289,11 @@ function RunDetailPanel({
         ) : null}
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <Snapshot title="客户输入（含历史）" value={inputSnapshotForDisplay(run, rawLog)} />
-          <Snapshot title="最终输出" value={run.output_snapshot} />
+          <Snapshot title="最终输出（HTTP 响应体）" value={httpResponseForDisplay(run)} />
+        </div>
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+          <Snapshot title="回复控制" value={replyControlForDisplay(run)} />
+          <Snapshot title="异步主动发送" value={asyncFinalForDisplay(run)} />
         </div>
       </section>
 
@@ -349,7 +353,7 @@ function contentSnippet(run: RunItem) {
 }
 
 function replySnippet(run: RunItem) {
-  const messages = run.output_snapshot?.reply_messages;
+  const messages = run.output_snapshot?.http_response_reply_messages || run.output_snapshot?.reply_messages;
   if (!Array.isArray(messages)) return "";
   return messages.map((item) => stringField((item as Record<string, JsonValue>).content)).filter(Boolean).join(" / ");
 }
@@ -397,6 +401,22 @@ function inputSnapshotForDisplay(run: RunItem, rawLog?: JsonValue) {
     snapshot.conversation_history_count = snapshot.conversation_history.length;
   }
   return snapshot;
+}
+
+function httpResponseForDisplay(run: RunItem) {
+  return run.output_snapshot?.http_response_body || run.output_snapshot || {};
+}
+
+function replyControlForDisplay(run: RunItem) {
+  return run.output_snapshot?.reply_control || {};
+}
+
+function asyncFinalForDisplay(run: RunItem) {
+  const control = run.output_snapshot?.reply_control;
+  if (isRecord(control) && isRecord(control.async_final)) {
+    return control.async_final;
+  }
+  return run.output_snapshot?.async_final_reply || {};
 }
 
 function prettyError(value: string) {

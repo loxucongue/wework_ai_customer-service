@@ -15,6 +15,7 @@ from app.services.model_client import ModelClient
 from app.services.outreach_service import OutreachService
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.outreach_system_client import OutreachSystemClient
+from app.services.platform_reply_coordinator import PlatformReplyCoordinator
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.store_service import StoreService
@@ -36,6 +37,7 @@ memory_store = CustomerMemoryStore(settings, repository)
 platform_agent_client = PlatformAgentClient(settings)
 outreach_send_client = OutreachSendClient(settings)
 outreach_system_client = OutreachSystemClient(settings)
+platform_reply_coordinator = PlatformReplyCoordinator(settings)
 customer_context_service = CustomerContextService(platform_agent_client)
 store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
 customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_client, store_snapshot_service)
@@ -58,6 +60,7 @@ chat_runtime = ChatRuntime(
     repository=repository,
     outreach_send_client=outreach_send_client,
     memory_store=memory_store,
+    platform_reply_coordinator=platform_reply_coordinator,
 )
 outreach_service = OutreachService(
     repository=repository,
