@@ -115,6 +115,8 @@ async def run_planner_brain_v2(
 
 
 def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
+    from app.graph.message_send_policy import action_message_policy_for_model
+
     suppress_memory = _should_suppress_planner_memory(state)
     payload = {
         "current_message": state.get("normalized_content") or "",
@@ -126,6 +128,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
         "customer_store_knowledge": _compact_store_knowledge(state.get("customer_store_knowledge") or {}),
         "sales_talk_reference": _compact_sales_talk_reference(state.get("sales_talk_reference") or {}),
+        "action_message_policy": action_message_policy_for_model(state),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
     return _drop_empty(payload)

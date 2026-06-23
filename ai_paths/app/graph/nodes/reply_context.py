@@ -8,6 +8,7 @@ from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
     should_suppress_profile_memory_for_reply,
 )
+from app.graph.message_send_policy import action_message_policy_for_model
 from app.graph.planner.runtime_plan import (
     planner_handoff,
     planner_primary_task,
@@ -60,6 +61,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "customer_store_knowledge": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
         "sales_talk_reference": _sanitize_planner_context_for_reply(_compact_sales_talk_reference(state.get("sales_talk_reference") or {})),
+        "action_message_policy": action_message_policy_for_model(state),
         "business_rules": load_business_rules(),
         "fact_envelope": fact_envelope,
         "fact_notes": _fact_notes_for_model(fact_envelope, content=str(state.get("normalized_content") or state.get("content") or "")),

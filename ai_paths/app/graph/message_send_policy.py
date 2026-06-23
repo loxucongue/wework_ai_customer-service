@@ -19,6 +19,18 @@ def suppress_repeated_action_messages(messages: list[dict[str, Any]], state: Age
     return _renumber(output)
 
 
+def action_message_policy_for_model(state: AgentState) -> dict[str, Any]:
+    sent_store_ids = sorted(_sent_store_address_ids(state))
+    payment_sent = _payment_collection_already_sent(state)
+    return {
+        "payment_collection_already_sent": payment_sent,
+        "payment_collection_resend_allowed": (not payment_sent) or _explicit_payment_resend_request(_current_text(state)),
+        "sent_store_address_ids": sent_store_ids,
+        "store_address_resend_allowed": (not sent_store_ids) or _explicit_store_address_resend_request(_current_text(state)),
+        "rule": "payment_collection/store_address are customer-visible action cards. Do not repeat them unless the current customer message explicitly asks to resend or did not receive them.",
+    }
+
+
 def can_send_payment_collection(state: AgentState) -> bool:
     if not _payment_collection_already_sent(state):
         return True
@@ -39,7 +51,7 @@ def _payment_collection_already_sent(state: AgentState) -> bool:
         if str(event.get("event_type") or "").strip() == "payment_collection_sent":
             return True
     text = _assistant_history_text(state)
-    return any(term in text for term in ("payment_collection", "收款入口", "付款入口", "预约金入口", "对外收款", "付款给："))
+    return any(term in text for term in ("payment_collection", "收款入口", "付款入口", "预约金入口", "对外收款", "付款给：", "付款给:"))
 
 
 def _sent_store_address_ids(state: AgentState) -> set[str]:
@@ -52,7 +64,7 @@ def _sent_store_address_ids(state: AgentState) -> set[str]:
         if store_id:
             store_ids.add(store_id)
     text = _assistant_history_text(state)
-    for marker in ("store_address:", "门店卡片:"):
+    for marker in ("store_address:", "门店卡片:", "门店卡片："):
         if marker in text:
             tail = text.split(marker, 1)[-1].strip()
             digits = "".join(ch for ch in tail[:24] if ch.isdigit())

@@ -43,6 +43,7 @@ PLANNER_SYSTEM_PROMPT = """
     "appointment_extra_stores": []
   },
   "sales_talk_reference": {"items": [{"document_id": "", "content": "只作为话术风格参考"}]},
+  "action_message_policy": {"payment_collection_already_sent": false, "payment_collection_resend_allowed": true, "sent_store_address_ids": [], "store_address_resend_allowed": true},
   "available_tools": []
 }
 
@@ -268,6 +269,7 @@ S2_CITY_ONLY, S2_LOCATION_DETAIL, S2_ADDRESS_DETAIL, S2_PARKING_OR_HOURS, S2_TRA
 - 客户明确报名、预约金、付款入口、锁名额时，可以直接输出 payment_collection，不要求 order_id、门店、姓名、电话前置。
 - 客户明确报名、要付款入口、交预约金、锁名额时，reply_messages 必须包含 1 条 text + 1 条 payment_collection；不能只用文字说“开通入口/发入口”。
 - 如果 history_events 已有 payment_collection_sent，默认不要再次输出 payment_collection；只有客户明确说没收到、再发、重新发、发付款/收款/支付/预约金入口时才可以重发。
+- 如果 action_message_policy.payment_collection_resend_allowed=false，不要输出 payment_collection，也不要说“马上发入口/开通入口/再发入口”；应承接客户已到报名阶段，推进时间、姓名电话或提醒点刚才入口。
 - 客户问具体日期/时间能不能约，必须调用 available_time。
 - 没有真实档期不能说预约成功。
 
@@ -509,6 +511,7 @@ PLANNER_REPAIR_PROMPT = """
 - 案例诉求使用 kb_search(case_studies)。
 - 门店事实使用 customer_store_knowledge.regions；需要最近排序时使用 distance_calculate。
 - 如果 history_events 已有同门店 store_address_sent，默认不要再次输出 store_address；只有客户明确索要“再发地址/导航/路线/位置/没收到门店卡片”时才可以重发。
+- 如果 action_message_policy.store_address_resend_allowed=false，不要输出 store_address，也不要说“我再发地址/马上发卡片”；直接回答客户当前问题。
 - 档期事实使用 available_time。
 - 预约记录/改约/取消使用 appointment_record_query。
 - 客户问车费、接送、路费、交通费时，direct_reply，文案只能说“没有接送服务，交通费用需自理，我可以帮您看近门店、路线、停车或导航”；不要原样输出“车费报销、包接送、打车报销”；没有 distance_calculate 结果时不能说最近、更近、距离较近、交通便利、几公里或几分钟。
