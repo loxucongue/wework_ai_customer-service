@@ -110,6 +110,52 @@ class PlannerDistanceCandidateTests(unittest.TestCase):
 
         self.assertIn("store_detail_stage_required", {item["missing"] for item in violations})
 
+    def test_address_request_without_store_anchor_rejects_distance_tool(self) -> None:
+        violations = _planner_message_contract_violations(
+            {
+                "normalized_content": "发一下地址",
+                "customer_store_knowledge": {
+                    "stores": [
+                        {"store_id": "467", "store_name": "重庆百星渝中店", "city": "重庆市", "district": "渝中区"},
+                        {"store_id": "488", "store_name": "重庆百星南坪店", "city": "重庆市", "district": "南岸区"},
+                    ]
+                },
+            },
+            {
+                "planner_decision": "need_tools",
+                "planner_stage": "S2",
+                "planner_sub_rule_id": "S2_LOCATION_DETAIL",
+                "planner_reply_messages": [{"type": "text", "content": {"text": "我帮您核对。"}}],
+                "planner_tool_calls": [{"name": "distance_calculate", "origin": "重庆", "candidate_store_ids": ["467", "488"]}],
+                "primary_task": {"type": "store_inquiry", "subtype": "s2_location_detail"},
+            },
+        )
+
+        self.assertIn("store_detail_anchor_required", {item["missing"] for item in violations})
+
+    def test_address_request_with_unique_region_allows_distance_tool(self) -> None:
+        violations = _planner_message_contract_violations(
+            {
+                "normalized_content": "渝中地址发我",
+                "customer_store_knowledge": {
+                    "stores": [
+                        {"store_id": "467", "store_name": "重庆百星渝中店", "city": "重庆市", "district": "渝中区"},
+                        {"store_id": "488", "store_name": "重庆百星南坪店", "city": "重庆市", "district": "南岸区"},
+                    ]
+                },
+            },
+            {
+                "planner_decision": "need_tools",
+                "planner_stage": "S2",
+                "planner_sub_rule_id": "S2_LOCATION_DETAIL",
+                "planner_reply_messages": [{"type": "text", "content": {"text": "我帮您核对。"}}],
+                "planner_tool_calls": [{"name": "distance_calculate", "origin": "重庆渝中", "candidate_store_ids": ["467"]}],
+                "primary_task": {"type": "store_inquiry", "subtype": "s2_location_detail"},
+            },
+        )
+
+        self.assertNotIn("store_detail_anchor_required", {item["missing"] for item in violations})
+
     def test_case_effect_request_rejects_after_sales_handoff(self) -> None:
         violations = _planner_message_contract_violations(
             {"normalized_content": "想看做完效果"},

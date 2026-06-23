@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from app.graph.nodes.common import model_usage_snapshot
@@ -253,6 +254,15 @@ def _planner_message_contract_violations(state: AgentState, plan: dict[str, Any]
                 "note": "Parking/address/business-hours questions are store detail questions. Do not route them to S4, handoff, or professional_assist unless the customer explicitly complains or asks for human handling.",
             }
         )
+    if _is_store_detail_turn(state) and has_distance_tool and not _store_detail_has_anchor(state):
+        violations.append(
+            {
+                "task_type": "store_inquiry",
+                "subtype": "store_detail",
+                "missing": "store_detail_anchor_required",
+                "note": "Address/parking/business-hours questions need a selected store, exact store name, unique district/landmark match, or recent store card before calling distance_calculate. If the customer only asks to send an address without a selected store, ask which store or area first.",
+            }
+        )
     if _is_case_effect_request_turn(state) and (
         str(plan.get("planner_stage") or "") == "S4"
         or _has_professional_assist_tool(tool_calls)
@@ -345,7 +355,8 @@ def _needs_after_sales_safe_fallback(state: AgentState, violations: list[dict[st
 
 def _needs_store_detail_safe_fallback(state: AgentState, violations: list[dict[str, str]]) -> bool:
     return _is_store_detail_turn(state) and any(
-        item.get("missing") in {"store_detail_fact_tool_required", "store_detail_stage_required"} for item in violations
+        item.get("missing") in {"store_detail_fact_tool_required", "store_detail_stage_required", "store_detail_anchor_required"}
+        for item in violations
     )
 
 
@@ -490,6 +501,36 @@ def _after_sales_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str,
 
 def _store_detail_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
     content = str(state.get("normalized_content") or "").strip()
+    if not _store_detail_has_anchor(state):
+        safe_plan = dict(plan)
+        safe_plan["planner_decision"] = "direct_reply"
+        safe_plan["planner_stage"] = "S2"
+        safe_plan["planner_sub_rule_id"] = "S2_STORE_DETAIL_NEEDS_ANCHOR"
+        safe_plan["planner_reply_messages"] = [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "您想查哪家门店？也可以告诉我所在区或附近地标，我确认具体门店后再发地址、停车和路线。"},
+            }
+        ]
+        safe_plan["planner_tool_calls"] = []
+        safe_plan["required_tools"] = [{"name": "no_tool", "purpose": "Store detail needs a selected store or area anchor first"}]
+        safe_plan["tool_policy_violations"] = []
+        primary = dict(safe_plan.get("primary_task") if isinstance(safe_plan.get("primary_task"), dict) else {})
+        primary.update(
+            {
+                "type": "store_inquiry",
+                "subtype": "store_detail_needs_anchor",
+                "policy_hint": "S2_STORE_DETAIL_NEEDS_ANCHOR",
+                "customer_need": content[:120],
+                "answer_goal": "Ask customer to confirm selected store, district, or landmark before sending store detail.",
+                "must_answer": ["先确认具体门店、区或地标"],
+                "must_avoid": ["默认推荐一家门店", "无锚点发送门店卡片", "无锚点调用距离工具"],
+                "tools": [{"name": "no_tool", "purpose": "Missing store anchor"}],
+            }
+        )
+        safe_plan["primary_task"] = primary
+        return safe_plan
     city = _distance_request_city(state) or _city_from_known_store(state)
     candidate_ids = _store_ids_for_detail_turn(state, city)
     tool: dict[str, Any] = {
@@ -652,7 +693,7 @@ def _is_after_sales_effect_turn(state: AgentState) -> bool:
             "投诉",
             "维权",
         )
-    )
+    ) or "做完没效果" in text
     symptom_after_service = actual_after_service and any(
         term in text for term in ("没效果", "反黑", "红肿", "流脓", "出血", "疼", "痛", "不满意")
     )
@@ -665,7 +706,55 @@ def _is_after_sales_effect_turn(state: AgentState) -> bool:
 
 def _is_store_detail_turn(state: AgentState) -> bool:
     text = str(state.get("normalized_content") or "").strip()
-    return bool(text) and any(term in text for term in ("停车", "停车场", "营业时间", "几点开", "几点关", "详细地址", "导航", "路线"))
+    return bool(text) and any(term in text for term in ("停车", "停车场", "营业时间", "几点开", "几点关", "地址", "位置", "定位", "导航", "路线"))
+
+
+def _store_detail_has_anchor(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "").strip()
+    if any(str(state.get(key) or "").strip() for key in ("confirmed_store_id", "store_id")):
+        return True
+    for store in _customer_scope_stores(state):
+        name = str(store.get("store_name") or "").strip()
+        if name and name in text:
+            return True
+    if len(_stores_matching_text_region(state, text)) == 1:
+        return True
+    return bool(_history_store_detail_anchor_id(state))
+
+
+def _history_store_detail_anchor_id(state: AgentState) -> str:
+    events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
+    for event in reversed(events[-20:]):
+        if not isinstance(event, dict) or str(event.get("event_type") or "") != "store_address_sent":
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        value = str(facts.get("store_id") or facts.get("id") or "").strip()
+        if value:
+            return value
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in reversed(history[-8:]):
+        raw = str(item or "")
+        parsed = _store_id_from_text(raw)
+        if parsed:
+            return parsed
+        if any(term in raw for term in ("地址", "门店卡片", "停车", "营业时间")):
+            for store in _customer_scope_stores(state):
+                name = str(store.get("store_name") or "").strip()
+                store_id = str(store.get("store_id") or "").strip()
+                if name and store_id and name in raw:
+                    return store_id
+    return ""
+
+
+def _store_id_from_text(text: str) -> str:
+    match = re.search(r'"store_id"\s*:\s*"([^"]+)"', text)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"store_address[:：]\s*(\d+)", text)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"门店卡片[^0-9]*(\d{2,})", text)
+    return match.group(1).strip() if match else ""
 
 
 def _is_case_effect_request_turn(state: AgentState) -> bool:
