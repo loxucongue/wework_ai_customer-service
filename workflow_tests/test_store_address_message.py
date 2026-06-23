@@ -201,6 +201,38 @@ class StoreAddressMessageTests(unittest.TestCase):
 
         self.assertEqual(output[1]["content"], {"store_id": "467"})
 
+    def test_store_detail_card_id_can_follow_recent_history_card(self) -> None:
+        messages = [
+            {"type": "text", "order": 1, "content": {"text": "重庆百星渝中店有嘉陵中心地下停车场，您可以停车。"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "147"}},
+        ]
+        state = {
+            "normalized_content": "有停车吗",
+            "conversation_history": [
+                "小贝: 重庆百星渝中店地址：重庆市渝中区瑞天路10号嘉陵中心A馆。",
+                '小贝: [门店卡片]{"store_id": "467"}',
+            ],
+            "fact_envelope": {
+                "structured_facts": {
+                    "recommended_store": {
+                        "id": "147",
+                        "name": "重庆南岸店",
+                        "reason": "distance_calculate_rank_1",
+                    }
+                }
+            },
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "467", "store_name": "重庆百星渝中店"},
+                    {"store_id": "147", "store_name": "重庆南岸店"},
+                ]
+            },
+        }
+
+        output = normalize_store_address_card_ids(messages, state)
+
+        self.assertEqual(output[1]["content"], {"store_id": "467"})
+
     def test_planner_direct_reply_appends_store_address_card(self) -> None:
         plan = build_planner_plan_v2(
             {

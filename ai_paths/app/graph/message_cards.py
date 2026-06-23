@@ -61,7 +61,7 @@ def _store_address_card_store_id(state: AgentState, signal_text: str) -> str:
         _request_store_id(state),
         _matched_exact_customer_store_id(state, current_text),
         _matched_unique_region_store_id(state, current_text),
-        _history_store_id_for_explicit_request(state),
+        _history_store_id_for_detail_turn(state),
         _selected_fact_store_id(state),
     ):
         if candidate:
@@ -94,8 +94,9 @@ def _request_store_id(state: AgentState) -> str:
     return str(value).strip() if value not in (None, "") else ""
 
 
-def _history_store_id_for_explicit_request(state: AgentState) -> str:
-    if not _explicit_store_address_resend_request(str(state.get("normalized_content") or state.get("content") or "")):
+def _history_store_id_for_detail_turn(state: AgentState) -> str:
+    current_text = str(state.get("normalized_content") or state.get("content") or "")
+    if not (_explicit_store_address_resend_request(current_text) or _store_detail_request(current_text)):
         return ""
     events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
     for event in reversed(events[-20:]):
@@ -111,6 +112,10 @@ def _history_store_id_for_explicit_request(state: AgentState) -> str:
         if value:
             return value
     return ""
+
+
+def _store_detail_request(text: str) -> bool:
+    return any(term in str(text or "") for term in ("地址", "位置", "定位", "导航", "路线", "停车", "营业时间", "几点开", "几点关"))
 
 
 def _matched_exact_customer_store_id(state: AgentState, signal_text: str) -> str:

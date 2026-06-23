@@ -131,7 +131,7 @@ def _generic_store_card_text(messages: list[dict[str, Any]]) -> str:
 
 def _desired_store_id_for_card(messages: list[dict[str, Any]], state: AgentState) -> str:
     current_store_id = _current_message_store_id(state)
-    history_store_id = _history_store_id_for_explicit_request(state)
+    history_store_id = _history_store_id_for_detail_turn(state)
     current_region_store_id = _current_region_store_id(state)
     fact_store_id = _selected_fact_store_id(state)
     if _explicit_store_address_request(str(state.get("normalized_content") or state.get("content") or "")):
@@ -224,9 +224,9 @@ def _unanchored_store_address_fallback_messages(messages: list[dict[str, Any]], 
     return output
 
 
-def _history_store_id_for_explicit_request(state: AgentState) -> str:
+def _history_store_id_for_detail_turn(state: AgentState) -> str:
     text = str(state.get("normalized_content") or state.get("content") or "")
-    if not _explicit_store_address_request(text):
+    if not (_explicit_store_address_request(text) or _store_detail_request(text)):
         return ""
     events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
     for event in reversed(events[-20:]):
@@ -248,6 +248,10 @@ def _history_store_id_for_explicit_request(state: AgentState) -> str:
             if name and store_id and name in raw:
                 return store_id
     return ""
+
+
+def _store_detail_request(text: str) -> bool:
+    return any(term in str(text or "") for term in ("地址", "位置", "定位", "导航", "路线", "停车", "营业时间", "几点开", "几点关"))
 
 
 def _explicit_store_address_request(text: str) -> bool:
