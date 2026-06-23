@@ -156,6 +156,52 @@ class PlannerDistanceCandidateTests(unittest.TestCase):
 
         self.assertNotIn("store_detail_anchor_required", {item["missing"] for item in violations})
 
+    def test_available_time_without_store_anchor_is_rejected(self) -> None:
+        violations = _planner_message_contract_violations(
+            {
+                "normalized_content": "我在重庆，明天能去",
+                "customer_store_knowledge": {
+                    "stores": [
+                        {"store_id": "467", "store_name": "重庆百星渝中店", "city": "重庆市", "district": "渝中区"},
+                        {"store_id": "488", "store_name": "重庆百星南坪店", "city": "重庆市", "district": "南岸区"},
+                    ]
+                },
+            },
+            {
+                "planner_decision": "need_tools",
+                "planner_stage": "S3",
+                "planner_sub_rule_id": "S3_APPOINTMENT_TIME",
+                "planner_reply_messages": [{"type": "text", "content": {"text": "我帮您查明天档期。"}}],
+                "planner_tool_calls": [{"name": "available_time", "store_id": "467", "date": "2026-06-24"}],
+                "primary_task": {"type": "appointment", "subtype": "s3_appointment_time"},
+            },
+        )
+
+        self.assertIn("appointment_store_anchor_required", {item["missing"] for item in violations})
+
+    def test_available_time_with_unique_region_is_allowed(self) -> None:
+        violations = _planner_message_contract_violations(
+            {
+                "normalized_content": "我在重庆渝中，明天能去",
+                "customer_store_knowledge": {
+                    "stores": [
+                        {"store_id": "467", "store_name": "重庆百星渝中店", "city": "重庆市", "district": "渝中区"},
+                        {"store_id": "488", "store_name": "重庆百星南坪店", "city": "重庆市", "district": "南岸区"},
+                    ]
+                },
+            },
+            {
+                "planner_decision": "need_tools",
+                "planner_stage": "S3",
+                "planner_sub_rule_id": "S3_APPOINTMENT_TIME",
+                "planner_reply_messages": [{"type": "text", "content": {"text": "我帮您查明天档期。"}}],
+                "planner_tool_calls": [{"name": "available_time", "store_id": "467", "date": "2026-06-24"}],
+                "primary_task": {"type": "appointment", "subtype": "s3_appointment_time"},
+            },
+        )
+
+        self.assertNotIn("appointment_store_anchor_required", {item["missing"] for item in violations})
+
     def test_case_effect_request_rejects_after_sales_handoff(self) -> None:
         violations = _planner_message_contract_violations(
             {"normalized_content": "想看做完效果"},

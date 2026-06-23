@@ -81,6 +81,8 @@ async def run_planner_brain_v2(
                 plan = _distance_tool_safe_plan(state, plan)
             elif _needs_after_sales_safe_fallback(state, post_repair_violations):
                 plan = _after_sales_safe_plan(state, plan)
+            elif _needs_appointment_anchor_safe_fallback(post_repair_violations):
+                plan = _appointment_anchor_safe_plan(state, plan)
             elif _needs_store_detail_safe_fallback(state, post_repair_violations):
                 plan = _store_detail_safe_plan(state, plan)
             elif _needs_location_context_safe_fallback(state, post_repair_violations):
@@ -205,6 +207,7 @@ def _planner_message_contract_violations(state: AgentState, plan: dict[str, Any]
             }
         )
     has_distance_tool = any(str(item.get("name") or "") == "distance_calculate" for item in tool_calls if isinstance(item, dict))
+    has_available_time_tool = any(str(item.get("name") or "") == "available_time" for item in tool_calls if isinstance(item, dict))
     if _is_distance_request_turn(state) and not has_distance_tool:
         violations.append(
             {
@@ -261,6 +264,15 @@ def _planner_message_contract_violations(state: AgentState, plan: dict[str, Any]
                 "subtype": "store_detail",
                 "missing": "store_detail_anchor_required",
                 "note": "Address/parking/business-hours questions need a selected store, exact store name, unique district/landmark match, or recent store card before calling distance_calculate. If the customer only asks to send an address without a selected store, ask which store or area first.",
+            }
+        )
+    if has_available_time_tool and not _appointment_has_store_anchor(state):
+        violations.append(
+            {
+                "task_type": "appointment",
+                "subtype": "available_time",
+                "missing": "appointment_store_anchor_required",
+                "note": "Do not call available_time or send payment_collection when the customer has not selected a concrete store, unique district/landmark, or recent store card. Ask which store/area first.",
             }
         )
     if _is_case_effect_request_turn(state) and (
@@ -358,6 +370,10 @@ def _needs_store_detail_safe_fallback(state: AgentState, violations: list[dict[s
         item.get("missing") in {"store_detail_fact_tool_required", "store_detail_stage_required", "store_detail_anchor_required"}
         for item in violations
     )
+
+
+def _needs_appointment_anchor_safe_fallback(violations: list[dict[str, str]]) -> bool:
+    return any(item.get("missing") == "appointment_store_anchor_required" for item in violations)
 
 
 def _needs_case_effect_safe_fallback(state: AgentState, violations: list[dict[str, str]]) -> bool:
@@ -569,6 +585,38 @@ def _store_detail_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str
     return safe_plan
 
 
+def _appointment_anchor_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
+    content = str(state.get("normalized_content") or "").strip()
+    city = _distance_request_city(state)
+    if city:
+        text = f"{city}有多家门店，您在哪个区或想约哪家店？我确认门店后帮您查可约时间。"
+    else:
+        text = "您想约哪个城市或哪家门店？我确认门店后帮您查可约时间。"
+    safe_plan = dict(plan)
+    safe_plan["planner_decision"] = "direct_reply"
+    safe_plan["planner_stage"] = "S3"
+    safe_plan["planner_sub_rule_id"] = "S3_APPOINTMENT_NEEDS_STORE"
+    safe_plan["planner_reply_messages"] = [{"type": "text", "order": 1, "content": {"text": text}}]
+    safe_plan["planner_tool_calls"] = []
+    safe_plan["required_tools"] = [{"name": "no_tool", "purpose": "Appointment time lookup needs selected store first"}]
+    safe_plan["tool_policy_violations"] = []
+    primary = dict(safe_plan.get("primary_task") if isinstance(safe_plan.get("primary_task"), dict) else {})
+    primary.update(
+        {
+            "type": "appointment",
+            "subtype": "appointment_needs_store",
+            "policy_hint": "S3_APPOINTMENT_NEEDS_STORE",
+            "customer_need": content[:120],
+            "answer_goal": "Confirm selected store or area before checking available time.",
+            "must_answer": ["先确认城市/区域/门店", "确认后再查档期"],
+            "must_avoid": ["默认选择门店", "无门店锚点查档期", "无门店锚点发送预约金"],
+            "tools": [{"name": "no_tool", "purpose": "Missing appointment store anchor"}],
+        }
+    )
+    safe_plan["primary_task"] = primary
+    return safe_plan
+
+
 def _case_effect_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
     content = str(state.get("normalized_content") or "").strip()
     tool = {"name": "kb_search", "kb_name": "case_studies", "query": f"{content} 淡斑 效果 对比"}
@@ -720,6 +768,10 @@ def _store_detail_has_anchor(state: AgentState) -> bool:
     if len(_stores_matching_text_region(state, text)) == 1:
         return True
     return bool(_history_store_detail_anchor_id(state))
+
+
+def _appointment_has_store_anchor(state: AgentState) -> bool:
+    return _store_detail_has_anchor(state)
 
 
 def _history_store_detail_anchor_id(state: AgentState) -> str:
