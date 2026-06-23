@@ -339,7 +339,7 @@ async def _distance_calculate(tool: dict[str, Any], state: AgentState, coze_clie
         origin_geo = await _geocode_address(coze_client, workflow_id, geocode_origin)
         if admin_candidate and not _geocode_matches_area(origin_geo, admin_candidate["area"]):
             admin_geo = await _geocode_address(coze_client, workflow_id, admin_candidate["origin"])
-            if _geocode_matches_area(admin_geo, admin_candidate["area"]):
+            if _geocode_matches_area(admin_geo, admin_candidate["area"]) or _geocode_has_unconflicted_location(admin_geo):
                 origin_geo = admin_geo
                 geocode_origin = admin_candidate["origin"]
         if not origin_geo.get("location"):
@@ -475,6 +475,14 @@ def _geocode_matches_area(geo: dict[str, Any], area: str) -> bool:
         return False
     district = str(geo.get("district") or "").strip()
     return bool(district and text in district)
+
+
+def _geocode_has_unconflicted_location(geo: dict[str, Any]) -> bool:
+    if not isinstance(geo, dict):
+        return False
+    if not str(geo.get("location") or "").strip():
+        return False
+    return not str(geo.get("district") or "").strip()
 
 
 def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:

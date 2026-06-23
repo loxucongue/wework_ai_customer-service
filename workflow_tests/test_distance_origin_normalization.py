@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import unittest
 
-from app.graph.nodes.action_nodes import _administrative_area_origin_candidate, _normalize_distance_origin_from_store_regions
+from app.graph.nodes.action_nodes import (
+    _administrative_area_origin_candidate,
+    _geocode_has_unconflicted_location,
+    _normalize_distance_origin_from_store_regions,
+)
 
 
 class DistanceOriginNormalizationTests(unittest.TestCase):
@@ -78,6 +82,10 @@ class DistanceOriginNormalizationTests(unittest.TestCase):
         }
 
         self.assertEqual(_administrative_area_origin_candidate("厦门机场附近哪家近", state), {})
+
+    def test_geocode_with_location_and_empty_district_is_unconflicted(self) -> None:
+        self.assertTrue(_geocode_has_unconflicted_location({"location": "106.551787,29.562680", "district": ""}))
+        self.assertFalse(_geocode_has_unconflicted_location({"location": "107.371860,29.739957", "district": "涪陵区"}))
 
 
 if __name__ == "__main__":
