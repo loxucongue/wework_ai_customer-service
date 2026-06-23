@@ -82,7 +82,29 @@ def _explicit_store_address_resend_request(text: str) -> bool:
     compact = _compact(text)
     if any(term in compact for term in ("再发", "重新发", "没收到")) and any(term in compact for term in ("地址", "位置", "定位", "导航", "路线", "门店")):
         return True
-    return any(term in compact for term in ("发地址", "地址发", "发位置", "位置发", "发定位", "发导航", "发路线", "导航给我", "路线给我", "门店卡片"))
+    return any(
+        term in compact
+        for term in (
+            "发地址",
+            "地址发",
+            "地址给我",
+            "给我地址",
+            "门店地址",
+            "发位置",
+            "位置发",
+            "位置给我",
+            "给我位置",
+            "发定位",
+            "定位发",
+            "定位给我",
+            "给我定位",
+            "发导航",
+            "导航给我",
+            "发路线",
+            "路线给我",
+            "门店卡片",
+        )
+    )
 
 
 def _history_events(state: AgentState) -> list[dict[str, Any]]:

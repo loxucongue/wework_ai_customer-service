@@ -85,6 +85,20 @@ class ActionMessageDedupeTests(unittest.TestCase):
 
         self.assertEqual([item["type"] for item in output], ["text", "store_address"])
 
+    def test_store_address_card_can_be_resent_for_address_give_me_wording(self) -> None:
+        output = append_store_address_card(
+            [{"type": "text", "order": 1, "content": {"text": "地址我发您。"}}],
+            {
+                "planner_stage": "S2",
+                "planner_sub_rule_id": "S2_ADDRESS_DETAIL",
+                "normalized_content": "门店地址给我一下",
+                "history_events": [{"event_type": "store_address_sent", "facts": {"store_id": "12"}}],
+                "fact_envelope": {"structured_facts": {"recommended_store": {"id": "12"}}},
+            },
+        )
+
+        self.assertEqual([item["type"] for item in output], ["text", "store_address"])
+
 
 if __name__ == "__main__":
     unittest.main()
