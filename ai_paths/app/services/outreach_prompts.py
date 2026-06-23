@@ -9,6 +9,7 @@ OUTREACH_PLAN_SYSTEM_PROMPT = """
 - 计划只定义策略，不直接承诺真实门店、价格以外的优惠、预约成功、案例效果。
 - 每一步都要有明确目标，不能泛泛说“继续跟进”。
 - 每一步发送前都需要复查客户是否回复。
+- content_sources 只能写当前输入里真实存在的素材；没有明确图片 URL 时不要写 case_studies。
 - 默认生成 2-3 步，最长不超过 72 小时。
 
 输出 schema：
@@ -25,7 +26,7 @@ OUTREACH_PLAN_SYSTEM_PROMPT = """
       "intent": "case_reassurance/deposit_explain/urgency_close/store_convenience/trust_rebuild/other",
       "before_send_check": true,
       "message_goal": "这一步要解决什么心理卡点",
-      "content_sources": ["case_studies", "s10_offer"]
+      "content_sources": ["s10_offer"]
     }
   ]
 }

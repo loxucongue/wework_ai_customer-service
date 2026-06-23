@@ -128,6 +128,7 @@ const STATUS_LABELS: Record<string, string> = {
   completed: "已完成",
   cancelled: "已取消",
   failed: "失败",
+  check_failed: "复查失败",
   handoff: "专业协助",
   pending: "待执行",
   checking: "检查中",
@@ -185,7 +186,24 @@ function outreachErrorMessage(data: JsonObject, fallback: string) {
   if (data.error === "outreach_plan_generation_failed") {
     return "生成计划失败，请稍后重试";
   }
+  if (data.error === "preview_required") {
+    return "请先生成预览，人工确认后再执行";
+  }
+  if (data.status === "check_failed") {
+    return "发送前复查历史失败，已阻止发送。请刷新历史后重试";
+  }
   return String(data.detail || data.error || fallback);
+}
+
+function taskHasPreview(task: OutreachTask) {
+  return Array.isArray(task.reply_messages) && task.reply_messages.length > 0;
+}
+
+function sendStatusLabel(value?: string) {
+  if (!value) return "-";
+  if (value === "accepted_no_response") return "平台已接收请求/待回查";
+  if (value === "accepted") return "平台请求已发出/待回查";
+  return value;
 }
 
 function messagePreview(messages?: Array<JsonObject>) {
@@ -234,6 +252,7 @@ export function OutreachWorkbench() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyCustomer, setHistoryCustomer] = useState<Candidate | null>(null);
   const [historyMessages, setHistoryMessages] = useState<ConversationMessage[]>([]);
@@ -292,7 +311,26 @@ export function OutreachWorkbench() {
     async (candidate: Candidate, activate = false) => {
       setBusy(activate ? "generate-activate" : "generate");
       setError("");
+      setNotice("");
       try {
+        const refreshResponse = await fetch(`/api/outreach/customers/${encodeURIComponent(candidate.customer_id)}/refresh-conversation`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            corp_id: candidate.corp_id || "",
+            user_id: candidate.user_id || "",
+            wechat: candidate.wechat || "",
+            external_userid: candidate.external_userid || candidate.customer_id,
+            limit: 30,
+          }),
+        });
+        const refreshData = await readJsonResponse(refreshResponse);
+        if (!refreshResponse.ok) throw new Error(outreachErrorMessage(refreshData, "生成计划前刷新历史失败"));
+        const messages = Array.isArray(refreshData.messages) ? refreshData.messages : [];
+        if (messages.length === 0) {
+          throw new Error("生成计划前未获取到历史聊天，请先确认客户信息或稍后重试");
+        }
+        if (refreshData.warning) setNotice(String(refreshData.warning));
         const response = await fetch("/api/outreach/plans/generate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -331,6 +369,7 @@ export function OutreachWorkbench() {
       if (!selectedPlan?.id) return;
       setBusy(action);
       setError("");
+      setNotice("");
       try {
         const response = await fetch(`/api/outreach/plans/${encodeURIComponent(selectedPlan.id)}/${action}`, {
           method: "POST",
@@ -353,10 +392,15 @@ export function OutreachWorkbench() {
     async (taskId: string) => {
       setBusy(`task-${taskId}`);
       setError("");
+      setNotice("");
       try {
         const response = await fetch(`/api/outreach/tasks/${encodeURIComponent(taskId)}/execute`, { method: "POST" });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.error || "执行任务失败");
+        const data = await readJsonResponse(response);
+        if (!response.ok || data.ok === false) {
+          if (selectedPlanId) await loadPlan(selectedPlanId);
+          await loadEvents();
+          throw new Error(outreachErrorMessage(data, "执行任务失败"));
+        }
         if (selectedPlanId) await loadPlan(selectedPlanId);
         await loadEvents();
       } catch (err) {
@@ -372,10 +416,11 @@ export function OutreachWorkbench() {
     async (taskId: string) => {
       setBusy(`preview-${taskId}`);
       setError("");
+      setNotice("");
       try {
         const response = await fetch(`/api/outreach/tasks/${encodeURIComponent(taskId)}/preview`, { method: "POST" });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.error || "生成预览失败");
+        const data = await readJsonResponse(response);
+        if (!response.ok || data.ok === false) throw new Error(outreachErrorMessage(data, "生成预览失败"));
         if (selectedPlanId) await loadPlan(selectedPlanId);
         await loadEvents();
       } catch (err) {
@@ -391,6 +436,7 @@ export function OutreachWorkbench() {
     async (candidate: Candidate) => {
       setBusy("refresh-conversation");
       setError("");
+      setNotice("");
       try {
         const response = await fetch(`/api/outreach/customers/${encodeURIComponent(candidate.customer_id)}/refresh-conversation`, {
           method: "POST",
@@ -404,7 +450,7 @@ export function OutreachWorkbench() {
         });
         const data = await readJsonResponse(response);
         if (!response.ok) throw new Error(outreachErrorMessage(data, "刷新历史失败"));
-        if (data.warning) setError(String(data.warning));
+        if (data.warning) setNotice(String(data.warning));
         await loadCandidates();
         await loadEvents();
       } catch (err) {
@@ -423,6 +469,7 @@ export function OutreachWorkbench() {
       setHistoryMessages([]);
       setBusy(`history-${candidate.customer_id}`);
       setError("");
+      setNotice("");
       try {
         const response = await fetch(`/api/outreach/customers/${encodeURIComponent(candidate.customer_id)}/refresh-conversation`, {
           method: "POST",
@@ -438,7 +485,7 @@ export function OutreachWorkbench() {
         const data = await readJsonResponse(response);
         if (!response.ok) throw new Error(outreachErrorMessage(data, "加载历史聊天失败"));
         setHistoryMessages(Array.isArray(data.messages) ? data.messages : []);
-        if (data.warning) setError(String(data.warning));
+        if (data.warning) setNotice(String(data.warning));
         await loadCandidates();
         await loadEvents();
       } catch (err) {
@@ -453,6 +500,7 @@ export function OutreachWorkbench() {
   const runDue = useCallback(async () => {
     setBusy("run-due");
     setError("");
+    setNotice("");
     try {
       const response = await fetch("/api/outreach/run-due?limit=20", { method: "POST" });
       const data = await response.json();
@@ -488,6 +536,7 @@ export function OutreachWorkbench() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {notice ? <span className="max-w-xl truncate text-xs text-amber-600">{notice}</span> : null}
           {error ? <span className="max-w-xl truncate text-xs text-red-600">{error}</span> : null}
           <button onClick={runDue} className="inline-flex items-center gap-2 rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800">
             <Activity className="h-4 w-4" />
@@ -701,7 +750,7 @@ export function OutreachWorkbench() {
                               <span className="rounded-full bg-zinc-100 px-2 py-1 text-xs text-zinc-600">{statusLabel(task.status)}</span>
                             </div>
                             <p className="mt-2 text-sm text-zinc-700">{task.message_goal || "-"}</p>
-                            <p className="mt-1 text-xs text-zinc-500">计划发送：{formatTime(task.scheduled_at)} · 发送结果：{task.send_status || "-"}</p>
+                            <p className="mt-1 text-xs text-zinc-500">计划发送：{formatTime(task.scheduled_at)} · 发送结果：{sendStatusLabel(task.send_status)}</p>
                           </div>
                           <div className="flex items-center gap-2">
                             <button
@@ -714,8 +763,9 @@ export function OutreachWorkbench() {
                             </button>
                             <button
                               onClick={() => executeTask(task.id)}
-                              className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50"
-                              disabled={busy === `task-${task.id}`}
+                              className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:bg-zinc-50 disabled:text-zinc-400"
+                              disabled={busy === `task-${task.id}` || !taskHasPreview(task)}
+                              title={taskHasPreview(task) ? "发送前会复查客户是否已回复" : "请先生成预览，人工确认后再执行"}
                             >
                               <Send className="h-4 w-4" />
                               立即执行
@@ -723,6 +773,7 @@ export function OutreachWorkbench() {
                           </div>
                         </div>
                         <div className="mt-3 rounded-md bg-zinc-50 p-3 text-sm text-zinc-700">{messagePreview(task.reply_messages)}</div>
+                        {!taskHasPreview(task) ? <p className="mt-2 text-xs text-amber-600">请先生成预览，人工确认后再执行。</p> : null}
                         {task.error_message ? <p className="mt-2 text-xs text-red-600">{task.error_message}</p> : null}
                       </div>
                     ))

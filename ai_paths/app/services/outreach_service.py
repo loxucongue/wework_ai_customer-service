@@ -267,6 +267,9 @@ class OutreachService:
         task = self.repository.get_outreach_task(task_id)
         if not task:
             return {"ok": False, "error": "task_not_found"}
+        reply_messages = task.get("reply_messages") or []
+        if not reply_messages:
+            return {"ok": False, "status": "blocked", "error": "preview_required", "retryable": True}
         self.repository.update_outreach_task(task_id, status="checking")
         plan_detail = self.repository.get_outreach_plan(str(task["plan_id"]))
         plan = plan_detail.get("plan") or {}
@@ -294,17 +297,17 @@ class OutreachService:
                         )
                         return {"ok": True, "status": "skipped", "reason": "customer_replied"}
                 except Exception as exc:
+                    message = f"{type(exc).__name__}: {exc}"
+                    self.repository.update_outreach_task(task_id, status="check_failed", error_message=message)
                     self.repository.add_outreach_event(
                         plan_id=str(task["plan_id"]),
                         task_id=task_id,
                         customer_id=str(task["customer_id"]),
                         event_type="before_send_check_failed",
-                        event_summary="Conversation check failed before outreach send; continuing with send",
-                        payload={"error": f"{type(exc).__name__}: {exc}"},
+                        event_summary="Conversation check failed before outreach send; send blocked",
+                        payload={"error": message},
                     )
-            reply_messages = task.get("reply_messages") or []
-            if not reply_messages:
-                reply_messages = await self._generate_task_messages(task=task, plan=plan)
+                    return {"ok": False, "status": "check_failed", "error": message, "retryable": True}
             send_result = await self.system_client.send(
                 corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
                 customer_id=str(task["customer_id"]),
