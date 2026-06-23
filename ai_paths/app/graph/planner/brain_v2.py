@@ -82,6 +82,8 @@ async def run_planner_brain_v2(
                 plan = _after_sales_safe_plan(state, plan)
             elif _needs_store_detail_safe_fallback(state, post_repair_violations):
                 plan = _store_detail_safe_plan(state, plan)
+            elif _needs_case_effect_safe_fallback(state, post_repair_violations):
+                plan = _case_effect_safe_plan(state, plan)
             repair_call["output"] = {
                 "decision": plan.get("planner_decision", ""),
                 "stage": plan.get("planner_stage", ""),
@@ -246,6 +248,19 @@ def _planner_message_contract_violations(state: AgentState, plan: dict[str, Any]
                 "note": "Parking/address/business-hours questions are store detail questions. Do not route them to S4, handoff, or professional_assist unless the customer explicitly complains or asks for human handling.",
             }
         )
+    if _is_case_effect_request_turn(state) and (
+        str(plan.get("planner_stage") or "") == "S4"
+        or _has_professional_assist_tool(tool_calls)
+        or not _has_case_studies_tool(tool_calls)
+    ):
+        violations.append(
+            {
+                "task_type": "project_consult",
+                "subtype": "case_effect_request",
+                "missing": "case_studies_required",
+                "note": "Customer asks to see effect/case reference. This is S1 case request and must call kb_search(case_studies), not S4 or professional_assist.",
+            }
+        )
     return violations
 
 
@@ -309,6 +324,10 @@ def _needs_store_detail_safe_fallback(state: AgentState, violations: list[dict[s
     return _is_store_detail_turn(state) and any(
         item.get("missing") in {"store_detail_fact_tool_required", "store_detail_stage_required"} for item in violations
     )
+
+
+def _needs_case_effect_safe_fallback(state: AgentState, violations: list[dict[str, str]]) -> bool:
+    return _is_case_effect_request_turn(state) and any(item.get("missing") == "case_studies_required" for item in violations)
 
 
 def _transport_policy_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
@@ -479,6 +498,37 @@ def _store_detail_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str
     return safe_plan
 
 
+def _case_effect_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
+    content = str(state.get("normalized_content") or "").strip()
+    tool = {"name": "kb_search", "kb_name": "case_studies", "query": f"{content} 淡斑 效果 对比"}
+    safe_plan = dict(plan)
+    safe_plan["planner_decision"] = "need_tools"
+    safe_plan["planner_stage"] = "S1"
+    safe_plan["planner_sub_rule_id"] = "S1_CASE_REQUEST"
+    safe_plan["planner_reply_messages"] = [
+        {"type": "text", "order": 1, "content": {"text": "可以，我帮您找下同类型的改善参考。"}}
+    ]
+    safe_plan["planner_tool_calls"] = [tool]
+    safe_plan["required_tools"] = [tool]
+    safe_plan["tool_policy_violations"] = []
+    safe_plan["handoff"] = {"needed": False, "reason": ""}
+    primary = dict(safe_plan.get("primary_task") if isinstance(safe_plan.get("primary_task"), dict) else {})
+    primary.update(
+        {
+            "type": "project_consult",
+            "subtype": "case_request",
+            "policy_hint": "S1_CASE_REQUEST",
+            "customer_need": content[:120],
+            "answer_goal": "Fetch case image facts and reply with real case reference only.",
+            "must_answer": ["查找真实案例参考"],
+            "must_avoid": ["转人工", "编造图片链接", "承诺每个人效果一致"],
+            "tools": [tool],
+        }
+    )
+    safe_plan["primary_task"] = primary
+    return safe_plan
+
+
 def _is_distance_request_turn(state: AgentState) -> bool:
     text = str(state.get("normalized_content") or "").strip()
     if not text:
@@ -490,6 +540,8 @@ def _is_distance_request_turn(state: AgentState) -> bool:
 
 def _is_after_sales_effect_turn(state: AgentState) -> bool:
     text = str(state.get("normalized_content") or "").strip()
+    if _is_case_effect_request_turn(state):
+        return False
     if not has_current_after_sales_signal(text):
         return False
     pre_sales_worry = any(term in text for term in ("怕没效果", "担心没效果", "会不会没效果", "有没有效果"))
@@ -500,6 +552,15 @@ def _is_after_sales_effect_turn(state: AgentState) -> bool:
 def _is_store_detail_turn(state: AgentState) -> bool:
     text = str(state.get("normalized_content") or "").strip()
     return bool(text) and any(term in text for term in ("停车", "停车场", "营业时间", "几点开", "几点关", "详细地址", "导航", "路线"))
+
+
+def _is_case_effect_request_turn(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "").strip()
+    if not text:
+        return False
+    if any(term in text for term in ("没效果", "不满意", "退款", "投诉", "维权")):
+        return False
+    return any(term in text for term in ("效果图", "案例", "对比", "参考", "做完效果", "做完后的效果", "看效果", "看看效果"))
 
 
 def _has_case_studies_tool(tool_calls: list[dict[str, Any]]) -> bool:

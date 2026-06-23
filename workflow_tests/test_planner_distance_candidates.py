@@ -110,6 +110,38 @@ class PlannerDistanceCandidateTests(unittest.TestCase):
 
         self.assertIn("store_detail_stage_required", {item["missing"] for item in violations})
 
+    def test_case_effect_request_rejects_after_sales_handoff(self) -> None:
+        violations = _planner_message_contract_violations(
+            {"normalized_content": "想看做完效果"},
+            {
+                "planner_decision": "need_tools",
+                "planner_stage": "S4",
+                "planner_sub_rule_id": "S4_COMPLAINT_REFUND",
+                "planner_reply_messages": [{"type": "text", "content": {"text": "我让专业同事核对。"}}],
+                "planner_tool_calls": [{"name": "professional_assist", "purpose": "misrouted"}],
+                "handoff": {"needed": True, "reason": "misrouted"},
+                "primary_task": {"type": "after_sales", "subtype": "s4_complaint_refund"},
+            },
+        )
+
+        self.assertIn("case_studies_required", {item["missing"] for item in violations})
+
+    def test_case_effect_request_requires_case_studies_tool(self) -> None:
+        violations = _planner_message_contract_violations(
+            {"normalized_content": "想看做完效果"},
+            {
+                "planner_decision": "direct_reply",
+                "planner_stage": "S1",
+                "planner_sub_rule_id": "S1_CASE_REQUEST",
+                "planner_reply_messages": [{"type": "text", "content": {"text": "可以。"}}],
+                "planner_tool_calls": [],
+                "handoff": {"needed": False, "reason": ""},
+                "primary_task": {"type": "project_consult", "subtype": "case_request"},
+            },
+        )
+
+        self.assertIn("case_studies_required", {item["missing"] for item in violations})
+
 
 if __name__ == "__main__":
     unittest.main()
