@@ -25,6 +25,7 @@ def create_synthesize_reply_node(
             {"fact_envelope": state.get("fact_envelope"), "required_tools": state.get("required_tools")},
         ) as span:
             errors = list(state.get("errors", []))
+            warnings = list(state.get("warnings", []))
             messages: list[dict[str, Any]] = []
             reply_source = "main_model"
             model_call: dict[str, Any] | None = None
@@ -54,7 +55,7 @@ def create_synthesize_reply_node(
                     payload = await model_client.chat_json(reply_messages_for_model(state), tier="reply")
                     model_call["usage"] = model_usage_snapshot(model_client)
                     messages = validated_model_messages(payload)
-                    messages = _filter_unsupported_images(messages, state, errors)
+                    messages = _filter_unsupported_images(messages, state, warnings)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
             except Exception as exc:
@@ -78,6 +79,7 @@ def create_synthesize_reply_node(
                 "postprocess_changed": False,
                 "postprocess_reasons": [],
                 "errors": errors,
+                "warnings": warnings,
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output
@@ -90,7 +92,7 @@ def create_synthesize_reply_node(
 def _filter_unsupported_images(
     messages: list[dict[str, Any]],
     state: AgentState,
-    errors: list[Any],
+    warnings: list[Any],
 ) -> list[dict[str, Any]]:
     allowed_urls = _case_image_urls(state)
     filtered: list[dict[str, Any]] = []
@@ -107,7 +109,7 @@ def _filter_unsupported_images(
         else:
             removed_urls.append(url or "")
     if removed_urls:
-        errors.append(
+        warnings.append(
             {
                 "node": "synthesize_reply",
                 "message": "unsupported_image_removed",

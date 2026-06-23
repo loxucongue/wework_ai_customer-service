@@ -80,6 +80,7 @@ class AgentState(TypedDict, total=False):
     reply_source: str
     postprocess_changed: bool
     postprocess_reasons: list[str]
+    warnings: list[dict[str, Any]]
     profile_update: dict[str, Any]
     event_updates: list[dict[str, Any]]
     saved_memory: dict[str, Any]

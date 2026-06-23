@@ -51,6 +51,7 @@ class RunRepositoryMixin:
             "reply_source": final_state.get("reply_source", ""),
             "postprocess_changed": bool(final_state.get("postprocess_changed")),
             "postprocess_reasons": final_state.get("postprocess_reasons", []),
+            "warnings": final_state.get("warnings", []),
             "primary_task": final_state.get("primary_task", {}),
             "secondary_tasks": final_state.get("secondary_tasks", []),
             "handoff": final_state.get("handoff", {}),
