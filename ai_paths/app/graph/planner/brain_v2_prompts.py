@@ -424,8 +424,9 @@ sales_talk_reference 只作为话术风格参考。
 - decision 只能是 direct_reply、need_tools、no_reply。
 - stage 只能是 S1、S2、S3、S4。
 - sub_rule_id 从当前阶段可用规则中选择；decision=no_reply 时可以为空字符串。
-- reply_messages 是客户可见消息数组，支持 text、image、payment_collection、human_handoff。
-- Planner 阶段通常只直接输出 text、payment_collection；案例图片通常等案例工具返回后由最终回复层输出。
+- reply_messages 是客户可见消息数组，支持 text、image、payment_collection、store_address、human_handoff。
+- 客户需要门店地址、位置、导航、路线或停车信息，且当前已经确定门店 ID 时，可以在 text 后追加 store_address，格式为 {"type":"store_address","order":2,"content":{"store_id":"门店ID"}}。
+- Planner 阶段通常只直接输出 text、payment_collection、store_address；案例图片通常等案例工具返回后由最终回复层输出。
 - tool_calls 不需要工具时必须是 []。
 - handoff 需要专业协助时 needed=true，不需要时 needed=false。
 

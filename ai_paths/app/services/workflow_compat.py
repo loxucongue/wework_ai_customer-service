@@ -133,6 +133,8 @@ def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
         return {"type": "image", "order": order, "content": {"url": content}}
     if message_type == "payment_collection":
         return {"type": "payment_collection", "order": order, "content": _payment_collection_content(raw_content)}
+    if message_type == "store_address":
+        return {"type": "store_address", "order": order, "content": _store_address_content(raw_content)}
     content = _message_content_value(raw_content, "text")
     return {"type": "text", "order": order, "content": {"text": content}}
 
@@ -161,6 +163,15 @@ def _payment_collection_content(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         remark = _string(value.get("remark"))
     return {"amount": 10, "remark": remark}
+
+
+def _store_address_content(value: Any) -> dict[str, Any]:
+    store_id = ""
+    if isinstance(value, dict):
+        store_id = _string(value.get("store_id") or value.get("id"))
+    else:
+        store_id = _string(value)
+    return {"store_id": store_id}
 
 
 def _string(value: Any) -> str:

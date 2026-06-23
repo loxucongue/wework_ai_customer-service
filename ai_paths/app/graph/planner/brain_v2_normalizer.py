@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.graph.message_cards import append_store_address_card
 from app.graph.planner.planner_contract import ALLOWED_KBS, ALLOWED_TOOLS
 from app.graph.state import AgentState
 
@@ -25,6 +26,16 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         stage=stage,
         sub_rule_id=sub_rule_id,
     )
+    if decision == "direct_reply":
+        planner_reply_messages = append_store_address_card(
+            planner_reply_messages,
+            {
+                **state,
+                "planner_stage": stage,
+                "planner_sub_rule_id": sub_rule_id,
+                "planner_decision": decision,
+            },
+        )
 
     if not primary_task:
         raise ValueError("Planner Brain missing valid primary_task")
@@ -86,11 +97,16 @@ def _normalize_reply_messages(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         msg_type = str(item.get("type") or "text").strip()
-        if msg_type not in {"text", "image", "payment_collection", "human_handoff"}:
+        if msg_type not in {"text", "image", "payment_collection", "human_handoff", "store_address"}:
             msg_type = "text"
         content = item.get("content")
         if msg_type == "payment_collection":
             output.append({"type": "payment_collection", "order": len(output) + 1, "content": {"amount": 10, "remark": ""}})
+            continue
+        if msg_type == "store_address":
+            store_id = _store_address_id(content)
+            if store_id:
+                output.append({"type": "store_address", "order": len(output) + 1, "content": {"store_id": store_id}})
             continue
         text = _message_text(content)
         if text:
@@ -105,6 +121,12 @@ def _message_text(content: Any) -> str:
             if content.get(key):
                 return str(content.get(key) or "").strip()
         return ""
+    return str(content or "").strip()
+
+
+def _store_address_id(content: Any) -> str:
+    if isinstance(content, dict):
+        return str(content.get("store_id") or content.get("id") or "").strip()
     return str(content or "").strip()
 
 

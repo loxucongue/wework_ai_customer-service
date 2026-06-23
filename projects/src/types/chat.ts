@@ -3,11 +3,14 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
-  /** 消息内容类型：text、image、human_handoff 或 payment_collection */
-  contentType?: "text" | "image" | "human_handoff" | "payment_collection";
+  /** 消息内容类型：text、image、human_handoff、payment_collection 或 store_address */
+  contentType?: "text" | "image" | "human_handoff" | "payment_collection" | "store_address";
   paymentCollection?: {
     amount: number;
     remark: string;
+  };
+  storeAddress?: {
+    store_id: string;
   };
   /** 用户上传的图片 URL（对象存储签名链接） */
   imageUrl?: string;

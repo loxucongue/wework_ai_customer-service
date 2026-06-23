@@ -53,6 +53,15 @@ function paymentCollectionFromContent(content: unknown) {
   };
 }
 
+function storeAddressFromContent(content: unknown) {
+  if (!content || typeof content !== "object" || Array.isArray(content)) {
+    return undefined;
+  }
+  const record = content as Record<string, unknown>;
+  const storeId = typeof record.store_id === "string" ? record.store_id : String(record.store_id || "");
+  return storeId ? { store_id: storeId } : undefined;
+}
+
 function loadConversations(): Conversation[] {
   if (typeof window === "undefined") return [];
   try {
@@ -455,15 +464,23 @@ export function ChatMain() {
           for (let i = 0; i < sorted.length; i++) {
             const item = sorted[i];
             if (!item.content) continue;
-            const contentType = (item.type as "text" | "image" | "human_handoff" | "payment_collection") || "text";
+            const contentType =
+              (item.type as "text" | "image" | "human_handoff" | "payment_collection" | "store_address") || "text";
             const paymentCollection =
               contentType === "payment_collection" ? paymentCollectionFromContent(item.content) : undefined;
+            const storeAddress = contentType === "store_address" ? storeAddressFromContent(item.content) : undefined;
             assistantMessages.push({
               id: generateId(),
               role: "assistant",
-              content: typeof item.content === "string" ? item.content : "",
+              content:
+                typeof item.content === "string"
+                  ? item.content
+                  : contentType === "store_address"
+                    ? storeAddress?.store_id || ""
+                    : "",
               contentType,
               paymentCollection,
+              storeAddress,
               timestamp: Date.now(),
               duration: elapsed,
               meta: i === 0 && Object.keys(meta).length > 0 ? meta : undefined,

@@ -6,8 +6,8 @@ from typing import Any
 
 from app.graph.nodes.common import renumber_messages
 
-VISIBLE_MESSAGE_TYPES = {"text", "image", "payment_collection"}
-ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff", "payment_collection"}
+VISIBLE_MESSAGE_TYPES = {"text", "image", "payment_collection", "store_address"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff", "payment_collection", "store_address"}
 
 
 def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -46,6 +46,15 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     "content": message_content_payment_collection(item.get("content")),
                 }
             )
+            visible_count += 1
+            continue
+        if msg_type == "store_address":
+            if visible_count >= 3:
+                continue
+            store_id = message_content_store_id(item.get("content"))
+            if not store_id:
+                continue
+            result.append({"type": "store_address", "order": len(result) + 1, "content": {"store_id": store_id}})
             visible_count += 1
             continue
         if visible_count >= 3:
@@ -94,6 +103,12 @@ def message_content_payment_collection(content: Any) -> dict[str, Any]:
     if isinstance(content, dict):
         remark = str(content.get("remark") or "").strip()
     return {"amount": 10, "remark": remark}
+
+
+def message_content_store_id(content: Any) -> str:
+    if isinstance(content, dict):
+        return str(content.get("store_id") or content.get("id") or "").strip()
+    return str(content or "").strip()
 
 
 def looks_like_image_url(content: str) -> bool:

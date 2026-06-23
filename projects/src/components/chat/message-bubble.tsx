@@ -2,7 +2,7 @@
 
 import type { ChatMessage } from "@/types/chat";
 import { cn } from "@/lib/utils";
-import { Bot, User, Tag, Layers, GitBranch, Timer, Bug, Database, ExternalLink, CreditCard } from "lucide-react";
+import { Bot, User, Tag, Layers, GitBranch, Timer, Bug, Database, ExternalLink, CreditCard, MapPin } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { translateIntent, translateScene, translateSubflow } from "@/lib/workflow-maps";
 
@@ -68,7 +68,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         )}
 
         {/* Message bubble */}
-        {message.content && !["image", "payment_collection"].includes(message.contentType || "") && (
+        {message.content && !["image", "payment_collection", "store_address"].includes(message.contentType || "") && (
           <div
             className={cn(
               "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
@@ -78,6 +78,23 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             )}
           >
             {message.content}
+          </div>
+        )}
+
+        {!isUser && message.contentType === "store_address" && message.storeAddress && (
+          <div className="w-full max-w-[360px] rounded-xl border bg-background p-4 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <MapPin className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-foreground">门店位置卡片</div>
+                <div className="mt-1 text-xs text-muted-foreground">store_id: {message.storeAddress.store_id}</div>
+                <div className="mt-3 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                  前端调试模拟：正式系统会按这个门店 ID 渲染地址、导航和门店信息。
+                </div>
+              </div>
+            </div>
           </div>
         )}
 

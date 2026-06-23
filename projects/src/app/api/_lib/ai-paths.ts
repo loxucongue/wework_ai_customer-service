@@ -44,7 +44,7 @@ type WorkflowCompatibleBody = {
 };
 
 export type AiPathsReplyMessage = {
-  type?: "text" | "image" | "human_handoff" | "payment_collection";
+  type?: "text" | "image" | "human_handoff" | "payment_collection" | "store_address";
   order?: number;
   content?: string | Record<string, unknown>;
 };
@@ -485,6 +485,13 @@ function normalizeWorkflowReplyMessages(messages: AiPathsReplyMessage[]) {
           content: paymentCollectionContent(item.content),
         };
       }
+      if (type === "store_address") {
+        return {
+          type,
+          order: item.order || index + 1,
+          content: storeAddressContent(item.content),
+        };
+      }
       const content = replyMessageContent(item, type === "image" ? "url" : "text");
       return {
         type,
@@ -530,7 +537,8 @@ function replyMessageContent(item: AiPathsReplyMessage, preferredKey = "text") {
     return (
       stringValue(content.text) ||
       stringValue(content.url) ||
-      stringValue(content.handoff_reason)
+      stringValue(content.handoff_reason) ||
+      stringValue(content.store_id)
     );
   }
   return stringValue(content);
@@ -540,12 +548,22 @@ function replyMessagePayload(item: AiPathsReplyMessage, preferredKey = "text") {
   if (item.type === "payment_collection") {
     return paymentCollectionContent(item.content);
   }
+  if (item.type === "store_address") {
+    return storeAddressContent(item.content);
+  }
   return replyMessageContent(item, preferredKey);
 }
 
 function paymentCollectionContent(content: unknown) {
   const remark = isRecord(content) ? stringValue(content.remark) : "";
   return { amount: 10, remark };
+}
+
+function storeAddressContent(content: unknown) {
+  if (isRecord(content)) {
+    return { store_id: stringValue(content.store_id || content.id) };
+  }
+  return { store_id: stringValue(content) };
 }
 
 function aiPathsAuthHeaders() {

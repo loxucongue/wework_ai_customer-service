@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from app.graph.message_cards import append_store_address_card
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
@@ -58,6 +59,7 @@ def create_synthesize_reply_node(
                     messages = _filter_unsupported_images(messages, state, warnings)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
+                messages = append_store_address_card(messages, state)
             except Exception as exc:
                 model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
                 primary_error = f"{type(exc).__name__}: {exc}"
