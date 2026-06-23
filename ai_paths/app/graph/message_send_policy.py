@@ -22,7 +22,7 @@ def suppress_repeated_action_messages(messages: list[dict[str, Any]], state: Age
 def can_send_payment_collection(state: AgentState) -> bool:
     if not _payment_collection_already_sent(state):
         return True
-    return _explicit_payment_resend_request(_signal_text(state))
+    return _explicit_payment_resend_request(_current_text(state))
 
 
 def can_send_store_address(state: AgentState, store_id: str = "") -> bool:
@@ -31,7 +31,7 @@ def can_send_store_address(state: AgentState, store_id: str = "") -> bool:
         return True
     if store_id and store_id not in sent_store_ids:
         return True
-    return _explicit_store_address_resend_request(_signal_text(state))
+    return _explicit_store_address_resend_request(_current_text(state))
 
 
 def _payment_collection_already_sent(state: AgentState) -> bool:
@@ -95,11 +95,8 @@ def _assistant_history_text(state: AgentState) -> str:
     return "\n".join(chunks)
 
 
-def _signal_text(state: AgentState) -> str:
-    chunks = [str(state.get("normalized_content") or state.get("content") or "")]
-    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
-    chunks.extend(str(item or "") for item in history[-3:])
-    return "\n".join(chunks)
+def _current_text(state: AgentState) -> str:
+    return str(state.get("normalized_content") or state.get("content") or "")
 
 
 def _compact(text: str) -> str:

@@ -25,6 +25,23 @@ class ActionMessageDedupeTests(unittest.TestCase):
 
         self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text"])
 
+    def test_payment_collection_not_repeated_from_assistant_history_marker(self) -> None:
+        output = suppress_repeated_action_messages(
+            [
+                {"type": "text", "order": 1, "content": {"text": "我继续帮您确认名额。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            {
+                "normalized_content": "我想报名",
+                "conversation_history": [
+                    "小贝: 我先把10元预约金入口发您，到店抵扣。",
+                    "小贝: 付款给：黛伊科技",
+                ],
+            },
+        )
+
+        self.assertEqual([item["type"] for item in output], ["text"])
+
     def test_payment_collection_can_be_resent_when_customer_explicitly_asks(self) -> None:
         messages = [
             {"type": "text", "order": 1, "content": {"text": "可以，我再发您一次。"}},
