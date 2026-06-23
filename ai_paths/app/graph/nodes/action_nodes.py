@@ -319,6 +319,7 @@ def _appointment_query_from_planner(required_tools: list[dict[str, Any]], state:
 
 async def _distance_calculate(tool: dict[str, Any], state: AgentState, coze_client: CozeClient) -> dict[str, Any]:
     origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or state.get("normalized_content") or "").strip()
+    geocode_origin = _normalize_distance_origin_from_store_regions(origin, state)
     candidates = _distance_candidate_stores(tool, state)
     if not origin:
         return {"status": "missing_origin", "candidate_stores": candidates, "error": "missing_origin"}
@@ -333,7 +334,7 @@ async def _distance_calculate(tool: dict[str, Any], state: AgentState, coze_clie
             "error": "geocode_workflow_id_not_configured",
         }
     try:
-        origin_geo = await _geocode_address(coze_client, workflow_id, origin)
+        origin_geo = await _geocode_address(coze_client, workflow_id, geocode_origin)
         if not origin_geo.get("location"):
             return {"origin": origin, "candidate_stores": candidates, "status": "origin_geocode_failed", "error": "origin_geocode_failed"}
         origin_point = _parse_lng_lat(str(origin_geo.get("location") or ""))
@@ -370,6 +371,7 @@ async def _distance_calculate(tool: dict[str, Any], state: AgentState, coze_clie
         ranked_stores.sort(key=lambda item: float(item.get("distance_km") if item.get("distance_km") is not None else 999999))
         return {
             "origin": origin,
+            "geocode_origin": geocode_origin,
             "origin_geocode": {key: origin_geo.get(key) for key in ("formatted_address", "province", "city", "district", "location")},
             "status": "ok",
             "ranked_stores": ranked_stores,
@@ -396,6 +398,61 @@ def _distance_candidate_stores(tool: dict[str, Any], state: AgentState) -> list[
             continue
         stores.append(store)
     return stores[:12]
+
+
+def _normalize_distance_origin_from_store_regions(origin: str, state: AgentState) -> str:
+    text = str(origin or "").strip()
+    if not text:
+        return ""
+    stores = _customer_scope_stores(state)
+    matches: list[tuple[int, str]] = []
+    for store in stores:
+        province = str(store.get("province") or "").strip()
+        city = str(store.get("city") or "").strip()
+        district = str(store.get("district") or "").strip()
+        if not city or not district:
+            continue
+        city_tokens = _region_tokens(city)
+        district_tokens = _region_tokens(district)
+        has_city = any(token and token in text for token in city_tokens)
+        has_district = any(token and token in text for token in district_tokens)
+        if not has_district:
+            continue
+        score = 2 if has_city else 1
+        full_region = _join_region(province=province, city=city, district=district)
+        matches.append((score, full_region))
+    if not matches:
+        return text
+    matches.sort(key=lambda item: (-item[0], len(item[1])))
+    top_score = matches[0][0]
+    top_regions = sorted({region for score, region in matches if score == top_score})
+    return top_regions[0] if len(top_regions) == 1 else text
+
+
+def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    return [store for store in stores if isinstance(store, dict)]
+
+
+def _region_tokens(value: str) -> list[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+    tokens = {text}
+    for suffix in ("省", "市", "区", "县", "旗", "自治州", "自治县", "新区"):
+        if text.endswith(suffix) and len(text) > len(suffix):
+            tokens.add(text[: -len(suffix)])
+    return sorted(tokens, key=len, reverse=True)
+
+
+def _join_region(*, province: str, city: str, district: str) -> str:
+    parts: list[str] = []
+    for value in (province, city, district):
+        text = str(value or "").strip()
+        if text and text not in parts:
+            parts.append(text)
+    return "".join(parts)
 
 
 async def _geocode_address(coze_client: CozeClient, workflow_id: str, address: str) -> dict[str, Any]:
