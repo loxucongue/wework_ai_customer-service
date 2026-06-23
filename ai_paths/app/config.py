@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     outreach_send_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SEND_BASE_URL")
     outreach_send_agent_token: str = Field(default="", alias="OUTREACH_SEND_AGENT_TOKEN", repr=False)
     outreach_send_timeout_seconds: int = Field(default=12, alias="OUTREACH_SEND_TIMEOUT_SECONDS")
+    outreach_system_base_url: str = Field(default="", alias="OUTREACH_SYSTEM_BASE_URL")
+    outreach_system_token: str = Field(default="", alias="OUTREACH_SYSTEM_TOKEN", repr=False)
+    outreach_system_timeout_seconds: int = Field(default=12, alias="OUTREACH_SYSTEM_TIMEOUT_SECONDS")
+    debug_platform_context_enabled: bool = Field(default=False, alias="DEBUG_PLATFORM_CONTEXT_ENABLED")
+    debug_platform_customer_id: str = Field(default="", alias="DEBUG_PLATFORM_CUSTOMER_ID")
+    debug_platform_customer_add_wechat_id: str = Field(default="", alias="DEBUG_PLATFORM_CUSTOMER_ADD_WECHAT_ID")
+    debug_platform_external_userid: str = Field(default="", alias="DEBUG_PLATFORM_EXTERNAL_USERID")
+    debug_platform_user_id: str = Field(default="", alias="DEBUG_PLATFORM_USER_ID")
+    debug_platform_wechat: str = Field(default="", alias="DEBUG_PLATFORM_WECHAT")
+    debug_platform_corp_id: str = Field(default="", alias="DEBUG_PLATFORM_CORP_ID")
 
     kb_workflow_id: str = "7644575365759746083"
     geocode_workflow_id: str = "7654109352189689891"
