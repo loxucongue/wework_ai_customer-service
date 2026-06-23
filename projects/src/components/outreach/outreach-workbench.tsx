@@ -178,6 +178,13 @@ async function readJsonResponse(response: Response) {
   }
 }
 
+function outreachErrorMessage(data: JsonObject, fallback: string) {
+  if (data.error === "conversation_refresh_failed") {
+    return "历史聊天查询超时，请稍后重试或降低条数";
+  }
+  return String(data.detail || data.error || fallback);
+}
+
 function messagePreview(messages?: Array<JsonObject>) {
   if (!messages?.length) return "发送前由模型生成";
   return messages
@@ -393,7 +400,7 @@ export function OutreachWorkbench() {
           }),
         });
         const data = await readJsonResponse(response);
-        if (!response.ok) throw new Error(data?.error || data?.detail || "刷新历史失败");
+        if (!response.ok) throw new Error(outreachErrorMessage(data, "刷新历史失败"));
         await loadCandidates();
         await loadEvents();
       } catch (err) {
@@ -425,7 +432,7 @@ export function OutreachWorkbench() {
           }),
         });
         const data = await readJsonResponse(response);
-        if (!response.ok) throw new Error(data?.error || data?.detail || "加载历史聊天失败");
+        if (!response.ok) throw new Error(outreachErrorMessage(data, "加载历史聊天失败"));
         setHistoryMessages(Array.isArray(data.messages) ? data.messages : []);
         await loadCandidates();
         await loadEvents();
