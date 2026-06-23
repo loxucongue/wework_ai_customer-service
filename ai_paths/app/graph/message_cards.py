@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.graph.message_send_policy import can_send_store_address
 from app.graph.state import AgentState
 
 
@@ -12,6 +13,8 @@ def append_store_address_card(messages: list[dict[str, Any]], state: AgentState)
         return messages
     store_id = _store_address_card_store_id(state)
     if not store_id:
+        return messages
+    if not can_send_store_address(state, store_id):
         return messages
     output = list(messages)
     output.append({"type": "store_address", "order": len(output) + 1, "content": {"store_id": store_id}})
