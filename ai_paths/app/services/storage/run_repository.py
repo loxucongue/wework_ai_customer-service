@@ -8,6 +8,7 @@ from app.services.storage.serialization import (
     decode_run,
     decode_trace,
     dumps,
+    loads_dict,
     tags_from_state,
     utc_now_iso,
 )
@@ -102,6 +103,19 @@ class RunRepositoryMixin:
                     ),
                 )
 
+    def update_run_http_response(self, *, request_id: str, response_body: dict[str, Any]) -> None:
+        with self.store.connect() as conn:
+            row = conn.execute("SELECT output_snapshot FROM runs WHERE request_id=?", (request_id,)).fetchone()
+            if not row:
+                return
+            output_snapshot = loads_dict(row["output_snapshot"])
+            output_snapshot["http_response_body"] = response_body
+            output_snapshot["http_response_reply_messages"] = _reply_messages_from_http_response(response_body)
+            conn.execute(
+                "UPDATE runs SET output_snapshot=? WHERE request_id=?",
+                (dumps(compact(output_snapshot)), request_id),
+            )
+
     def list_runs(
         self,
         *,
@@ -149,3 +163,12 @@ class RunRepositoryMixin:
             "run": decode_run(dict(run)) if run else {},
             "node_traces": [decode_trace(dict(row)) for row in traces],
         }
+
+
+def _reply_messages_from_http_response(response_body: dict[str, Any]) -> list[Any]:
+    data = response_body.get("data") if isinstance(response_body.get("data"), dict) else {}
+    messages = data.get("reply_messages") if isinstance(data.get("reply_messages"), list) else None
+    if messages is not None:
+        return messages
+    messages = response_body.get("reply_messages") if isinstance(response_body.get("reply_messages"), list) else []
+    return messages

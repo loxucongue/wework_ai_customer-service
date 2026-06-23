@@ -137,7 +137,9 @@ async def admin_refresh_store_snapshot() -> dict[str, Any]:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, _: None = Depends(require_api_key)) -> ChatResponse:
-    return await run_chat(request)
+    response = await run_chat(request)
+    _record_http_response_body(response.request_id, response.model_dump())
+    return response
 
 
 @app.post("/reply", response_model=ChatResponse)
@@ -146,7 +148,9 @@ async def reply(
     background_tasks: BackgroundTasks,
     _: None = Depends(require_external_api_key),
 ) -> ChatResponse:
-    return await chat_runtime.run_platform_reply(request, background_tasks=background_tasks)
+    response = await chat_runtime.run_platform_reply(request, background_tasks=background_tasks)
+    _record_http_response_body(response.request_id, response.model_dump())
+    return response
 
 
 @app.post("/chat/workflow-compatible")
@@ -181,11 +185,20 @@ async def workflow_compatible_reply(
         if platform_async
         else await chat_runtime.run_chat(request)
     )
-    return JSONResponse(content=workflow_response_from_chat(response))
+    response_body = workflow_response_from_chat(response)
+    _record_http_response_body(response.request_id, response_body)
+    return JSONResponse(content=response_body)
 
 
 async def run_chat(request: ChatRequest) -> ChatResponse:
     return await chat_runtime.run_chat(request)
+
+
+def _record_http_response_body(request_id: str, response_body: dict[str, Any]) -> None:
+    try:
+        repository.update_run_http_response(request_id=request_id, response_body=response_body)
+    except Exception:
+        return
 
 
 @app.get("/admin/conversations", dependencies=[Depends(require_api_key)])
