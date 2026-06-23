@@ -275,6 +275,15 @@ def _planner_message_contract_violations(state: AgentState, plan: dict[str, Any]
                 "note": "Current turn only provides a city/area/landmark. Treat it as S2 store context, not a case/effect request.",
             }
         )
+    if _is_location_context_turn(state) and has_distance_tool and not _is_distance_request_turn(state):
+        violations.append(
+            {
+                "task_type": "store_inquiry",
+                "subtype": "location_context",
+                "missing": "location_context_direct_reply_required",
+                "note": "Current turn only provides location context and does not ask nearest/distance. Do not call distance_calculate; answer from customer_store_knowledge region.",
+            }
+        )
     return violations
 
 
@@ -345,7 +354,10 @@ def _needs_case_effect_safe_fallback(state: AgentState, violations: list[dict[st
 
 
 def _needs_location_context_safe_fallback(state: AgentState, violations: list[dict[str, str]]) -> bool:
-    return _is_location_context_turn(state) and any(item.get("missing") == "location_context_not_case_request" for item in violations)
+    return _is_location_context_turn(state) and any(
+        item.get("missing") in {"location_context_not_case_request", "location_context_direct_reply_required"}
+        for item in violations
+    )
 
 
 def _transport_policy_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
@@ -763,21 +775,24 @@ def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:
 
 
 def _stores_matching_text_region(state: AgentState, text: str) -> list[dict[str, Any]]:
-    matches: list[dict[str, Any]] = []
-    for store in _customer_scope_stores(state):
-        city = str(store.get("city") or "").strip()
-        district = str(store.get("district") or "").strip()
-        name = str(store.get("store_name") or "").strip()
-        tokens = [name, city, district]
-        tokens.extend(token[:-1] for token in (city, district) if token.endswith(("市", "区", "县")) and len(token) > 1)
-        if any(token and token in text for token in tokens):
-            matches.append(store)
-    unique: dict[str, dict[str, Any]] = {}
-    for store in matches:
-        store_id = str(store.get("store_id") or "").strip()
-        if store_id:
-            unique[store_id] = store
-    return list(unique.values())
+    stores = _customer_scope_stores(state)
+    for key in ("store_name", "district", "city"):
+        matches: list[dict[str, Any]] = []
+        for store in stores:
+            value = str(store.get(key) or "").strip()
+            tokens = [value]
+            if key in {"city", "district"} and value.endswith(("市", "区", "县")) and len(value) > 1:
+                tokens.append(value[:-1])
+            if any(token and token in text for token in tokens):
+                matches.append(store)
+        if matches:
+            unique: dict[str, dict[str, Any]] = {}
+            for store in matches:
+                store_id = str(store.get("store_id") or "").strip()
+                if store_id:
+                    unique[store_id] = store
+            return list(unique.values())
+    return []
 
 
 def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
