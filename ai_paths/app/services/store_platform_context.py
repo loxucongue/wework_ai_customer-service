@@ -16,13 +16,22 @@ def store_platform_context(customer_context: dict[str, Any]) -> StorePlatformCon
     customer = customer_context.get("customer") if isinstance(customer_context, dict) else {}
     if not isinstance(customer, dict):
         customer = {}
+    platform_customer_id = (
+        customer_context.get("platform_customer_id")
+        or request_context.get("platform_customer_id")
+        or
+        customer.get("id")
+        or (customer_context.get("customer_id") if customer_context.get("source") == "platform_agent" else "")
+    )
+    customer_add_wechat_id = (
+        customer.get("customer_add_wechat_id")
+        or customer_context.get("customer_add_wechat_id")
+        or request_context.get("customer_add_wechat_id")
+    )
     return StorePlatformContext(
         request_context=request_context,
-        customer_id=customer.get("id") or customer_context.get("customer_id") or request_context.get("customer_id"),
-        customer_add_wechat_id=(
-            customer.get("customer_add_wechat_id")
-            or request_context.get("customer_add_wechat_id")
-        ),
+        customer_id=platform_customer_id,
+        customer_add_wechat_id=customer_add_wechat_id,
     )
 
 

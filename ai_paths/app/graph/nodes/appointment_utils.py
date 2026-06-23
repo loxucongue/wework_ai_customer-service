@@ -137,3 +137,15 @@ def extract_date_value(content: str) -> str:
             candidate = date(year + 1, month, day)
         return candidate.isoformat()
     return ""
+
+
+def extract_time_value(content: str) -> str:
+    text = str(content or "")
+    explicit = re.search(r"([01]?\d|2[0-3])[:：点时]([0-5]\d)?", text)
+    if explicit:
+        hour = int(explicit.group(1))
+        minute = int(explicit.group(2) or 0)
+        if ("下午" in text or "晚上" in text) and hour < 12:
+            hour += 12
+        return f"{hour:02d}:{minute:02d}"
+    return ""

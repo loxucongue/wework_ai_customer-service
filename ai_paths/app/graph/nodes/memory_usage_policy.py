@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+from app.graph.nodes.appointment_utils import extract_date_value, extract_time_value
+from app.graph.nodes.store_context import (
+    current_real_store_from_state,
+    known_city_from_state,
+    known_store_area_from_history,
+    known_store_name_from_history,
+)
 from app.graph.planner.runtime_plan import planner_task_views
 from app.graph.signals.general import is_low_information_content
 from app.graph.state import AgentState
@@ -37,6 +44,7 @@ GENERIC_OPENING_TERMS = [
 SPECIFIC_NEED_TERMS = [
     "斑",
     "痘",
+    "痣",
     "毛孔",
     "暗沉",
     "色沉",
@@ -114,3 +122,257 @@ def memory_usage_policy_for_reply(state: AgentState) -> dict[str, object]:
             else "可以在不盖过当前问题的前提下，少量引用相关历史信息。"
         ),
     }
+
+
+def order_session_state(state: AgentState) -> dict[str, object]:
+    """提取本轮成交/到店链路的硬状态。
+
+    这类信息不是软画像；即使低信息开场或清空画像测试，也应该给最终回复模型使用，
+    避免客户已经给过城市、地标、门店或预约时间后又被重复追问。
+    """
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    structured = _structured_facts(state)
+    store_lookup_status = (
+        structured.get("store_lookup_status")
+        if isinstance(structured.get("store_lookup_status"), dict)
+        else {}
+    )
+    recommended_store = (
+        structured.get("recommended_store")
+        if isinstance(structured.get("recommended_store"), dict)
+        else {}
+    )
+    current_store = current_real_store_from_state(state)
+    customer_profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
+    customer_basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+
+    session: dict[str, object] = {}
+    _put(
+        session,
+        "city",
+        _pick(
+            store_lookup_status.get("city"),
+            request_context.get("city"),
+            state.get("city"),
+            known_city_from_state(state),
+        ),
+    )
+    _put(
+        session,
+        "area_or_landmark",
+        _pick(
+            store_lookup_status.get("area_or_landmark"),
+            store_lookup_status.get("location_preference"),
+            request_context.get("area_or_landmark"),
+            request_context.get("location_preference"),
+            state.get("area_or_landmark"),
+            known_store_area_from_history(state),
+        ),
+    )
+    _put(
+        session,
+        "confirmed_store_name",
+        _pick(
+            request_context.get("confirmed_store_name"),
+            state.get("confirmed_store_name"),
+            recommended_store.get("name"),
+            current_store.get("name"),
+            known_store_name_from_history(state),
+        ),
+    )
+    _put(
+        session,
+        "confirmed_store_id",
+        _pick(
+            request_context.get("confirmed_store_id"),
+            state.get("confirmed_store_id"),
+            recommended_store.get("store_id"),
+            recommended_store.get("id"),
+            current_store.get("id"),
+        ),
+    )
+    _put(
+        session,
+        "visit_date",
+        _pick(
+            request_context.get("visit_date"),
+            request_context.get("appointment_date"),
+            state.get("visit_date"),
+            _history_visit_date(state),
+        ),
+    )
+    _put(
+        session,
+        "visit_time",
+        _pick(
+            request_context.get("visit_time"),
+            request_context.get("appointment_time"),
+            state.get("visit_time"),
+            _history_visit_time(state),
+        ),
+    )
+    _put(
+        session,
+        "appointment_order_id",
+        _pick(
+            request_context.get("order_id"),
+            request_context.get("appointment_id"),
+            state.get("appointment_order_id"),
+        ),
+    )
+    _put(
+        session,
+        "deposit_state",
+        _pick(
+            request_context.get("deposit_state"),
+            state.get("deposit_state"),
+            customer_basic_info.get("deposit_state"),
+            customer_profile.get("deposit_state"),
+        ),
+    )
+    _put(
+        session,
+        "customer_name",
+        _pick(
+            request_context.get("customer_name"),
+            request_context.get("name"),
+            state.get("customer_name"),
+            customer_basic_info.get("customer_name"),
+        ),
+    )
+    _put(
+        session,
+        "phone",
+        _pick(
+            request_context.get("phone"),
+            request_context.get("mobile"),
+            state.get("phone"),
+            customer_basic_info.get("phone"),
+        ),
+    )
+    offer_explained = _offer_already_explained(state)
+    if offer_explained:
+        session["offer_explained"] = True
+
+    if session.get("appointment_order_id"):
+        session["signup_state"] = "created_order"
+    elif session.get("visit_date") or session.get("visit_time"):
+        session["signup_state"] = "time_intent_known"
+    elif session.get("confirmed_store_name") or session.get("confirmed_store_id"):
+        session["signup_state"] = "store_matched"
+    elif session.get("area_or_landmark"):
+        session["signup_state"] = "area_known"
+    elif session.get("city"):
+        session["signup_state"] = "city_known"
+
+    if session:
+        session["next_slot"] = _next_order_slot(session)
+        session["deposit_ready_candidate"] = bool(
+            session.get("confirmed_store_name")
+            or session.get("confirmed_store_id")
+        ) and bool(offer_explained)
+        session["usage_note"] = "这是本轮成交/到店链路硬状态，不属于软画像；不要重复追问已存在字段。"
+    return session
+
+
+def _structured_facts(state: AgentState) -> dict[str, object]:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts")
+    return structured if isinstance(structured, dict) else {}
+
+
+def _offer_already_explained(state: AgentState) -> bool:
+    for event in state.get("history_events") or []:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or "").strip()
+        if event_type in {"offer_explained", "deposit_explained", "payment_collection_sent"}:
+            return True
+
+    texts: list[str] = []
+    for item in state.get("conversation_history") or []:
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role not in {"assistant", "staff", "bot"}:
+                continue
+            content = item.get("content")
+            texts.append(str(content.get("text") if isinstance(content, dict) else content or ""))
+        else:
+            raw = str(item or "")
+            if raw.startswith(("小贝：", "客服：", "AI回复：")):
+                texts.append(raw.split("：", 1)[-1])
+    combined = "\n".join(texts[-8:])
+    return any(term in combined for term in ("268", "预约金", "做付258", "周年庆", "活动价", "报名10"))
+
+
+def _history_visit_date(state: AgentState) -> str:
+    for text in _recent_customer_texts(state):
+        value = extract_date_value(text)
+        if value:
+            return value
+    return ""
+
+
+def _history_visit_time(state: AgentState) -> str:
+    for text in _recent_customer_texts(state):
+        value = extract_time_value(text)
+        if value:
+            return value
+    return ""
+
+
+def _recent_customer_texts(state: AgentState) -> list[str]:
+    texts: list[str] = []
+    for item in reversed(state.get("conversation_history") or []):
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role and role not in {"user", "customer"}:
+                continue
+            content = item.get("content")
+            texts.append(str(content.get("text") if isinstance(content, dict) else content or ""))
+            continue
+        raw = str(item or "").strip()
+        if raw.startswith(("小贝：", "客服：", "AI回复：", "助手：")):
+            continue
+        if raw.startswith(("客户：", "用户：")):
+            raw = raw.split("：", 1)[-1]
+        texts.append(raw)
+    return [text for text in texts if text][:10]
+
+
+def _next_order_slot(session: dict[str, object]) -> str:
+    if session.get("confirmed_store_name") or session.get("confirmed_store_id"):
+        if not session.get("offer_explained"):
+            return "offer_explained"
+        if not (session.get("visit_date") or session.get("visit_time")):
+            return "visit_time"
+        if not session.get("appointment_order_id"):
+            return "signup_state"
+        return "confirmed"
+    if not session.get("city"):
+        return "city"
+    if not session.get("area_or_landmark"):
+        return "area_or_landmark"
+    if not (session.get("confirmed_store_name") or session.get("confirmed_store_id")):
+        return "confirmed_store"
+    if not session.get("offer_explained"):
+        return "offer_explained"
+    if not (session.get("visit_date") or session.get("visit_time")):
+        return "visit_time"
+    if not session.get("appointment_order_id"):
+        return "signup_state"
+    return "confirmed"
+
+
+def _pick(*values: object) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _put(target: dict[str, object], key: str, value: object) -> None:
+    text = str(value or "").strip()
+    if text:
+        target[key] = text

@@ -10,7 +10,14 @@ class MemoryRepositoryMixin:
     def load_memory(self, customer_id: str) -> dict[str, Any] | None:
         with self.store.connect() as conn:
             row = conn.execute(
-                "SELECT customer_id, portrait, basic_info, lifecycle_stage, updated_at FROM customer_memory WHERE customer_id=?",
+                """
+                SELECT customer_id, portrait, basic_info, lifecycle_stage,
+                       last_customer_message_at, last_staff_message_at, last_ai_reply_at,
+                       last_manual_takeover_at, last_outreach_at, outreach_status,
+                       outreach_plan_id, updated_at
+                FROM customer_memory
+                WHERE customer_id=?
+                """,
                 (customer_id,),
             ).fetchone()
             if not row:
@@ -30,6 +37,13 @@ class MemoryRepositoryMixin:
             "portrait": loads_dict(row["portrait"]),
             "basic_info": loads_dict(row["basic_info"]),
             "lifecycle_stage": row["lifecycle_stage"] or "",
+            "last_customer_message_at": row["last_customer_message_at"] or "",
+            "last_staff_message_at": row["last_staff_message_at"] or "",
+            "last_ai_reply_at": row["last_ai_reply_at"] or "",
+            "last_manual_takeover_at": row["last_manual_takeover_at"] or "",
+            "last_outreach_at": row["last_outreach_at"] or "",
+            "outreach_status": row["outreach_status"] or "none",
+            "outreach_plan_id": row["outreach_plan_id"] or "",
             "updated_at": row["updated_at"],
             "history_events": [
                 {
