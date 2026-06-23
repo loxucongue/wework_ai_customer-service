@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from app.graph.message_cards import append_store_address_card
 from app.graph.message_send_policy import suppress_repeated_action_messages
-from app.graph.message_sanitizer import sanitize_unsupported_placeholder_text
+from app.graph.message_sanitizer import normalize_store_address_card_ids, sanitize_unsupported_placeholder_text
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
@@ -63,6 +63,7 @@ def create_synthesize_reply_node(
                     model_call["output"] = {"messages": len(messages)}
                 messages = sanitize_unsupported_placeholder_text(messages, state, warnings)
                 messages = append_store_address_card(messages, state)
+                messages = normalize_store_address_card_ids(messages, state, warnings)
                 messages = suppress_repeated_action_messages(messages, state)
             except Exception as exc:
                 model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
@@ -182,6 +183,11 @@ def _normalize_planner_reply_messages(value: Any) -> list[dict[str, Any]]:
             reason = str(content.get("handoff_reason") if isinstance(content, dict) else content or "").strip()
             if reason:
                 messages.append({"type": "human_handoff", "order": int(item.get("order") or index), "content": {"handoff_reason": reason}})
+            continue
+        if message_type == "store_address":
+            store_id = str(content.get("store_id") if isinstance(content, dict) else content or "").strip()
+            if store_id:
+                messages.append({"type": "store_address", "order": int(item.get("order") or index), "content": {"store_id": store_id}})
     return messages
 
 

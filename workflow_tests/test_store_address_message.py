@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.graph.message_cards import append_store_address_card
-from app.graph.message_sanitizer import sanitize_unsupported_placeholder_text
+from app.graph.message_sanitizer import normalize_store_address_card_ids, sanitize_unsupported_placeholder_text
 from app.graph.nodes.reply_validation import validated_model_messages
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.schemas import ChatResponse, ReplyMessage
@@ -117,6 +117,48 @@ class StoreAddressMessageTests(unittest.TestCase):
         self.assertIn("时代广场A座5楼", text)
         self.assertNotIn("XX号", text)
         self.assertEqual(output[1]["type"], "store_address")
+
+    def test_store_address_card_id_follows_current_text_store_name(self) -> None:
+        messages = [
+            {"type": "text", "order": 1, "content": {"text": "重庆百星渝中店有嘉陵中心地下停车场。"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "147"}},
+        ]
+        state = {
+            "normalized_content": "能停车吗",
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "467", "store_name": "重庆百星渝中店"},
+                    {"store_id": "147", "store_name": "重庆南岸店"},
+                ]
+            },
+        }
+
+        output = normalize_store_address_card_ids(messages, state)
+
+        self.assertEqual(output[1]["content"], {"store_id": "467"})
+
+    def test_store_address_card_id_can_follow_recent_history_for_resend(self) -> None:
+        messages = [
+            {"type": "text", "order": 1, "content": {"text": "门店位置卡片我发您，点开可以查看地址和导航。"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "369"}},
+        ]
+        state = {
+            "normalized_content": "发一下地址",
+            "conversation_history": [
+                "小贝: 重庆百星渝中店有嘉陵中心地下停车场。",
+                '小贝: [门店卡片]{"store_id": "467"}',
+            ],
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "467", "store_name": "重庆百星渝中店"},
+                    {"store_id": "369", "store_name": "重庆星星中店"},
+                ]
+            },
+        }
+
+        output = normalize_store_address_card_ids(messages, state)
+
+        self.assertEqual(output[1]["content"], {"store_id": "467"})
 
     def test_planner_direct_reply_appends_store_address_card(self) -> None:
         plan = build_planner_plan_v2(

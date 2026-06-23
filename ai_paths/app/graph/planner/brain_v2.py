@@ -82,6 +82,8 @@ async def run_planner_brain_v2(
                 plan = _after_sales_safe_plan(state, plan)
             elif _needs_store_detail_safe_fallback(state, post_repair_violations):
                 plan = _store_detail_safe_plan(state, plan)
+            elif _needs_location_context_safe_fallback(state, post_repair_violations):
+                plan = _location_context_safe_plan(state, plan)
             elif _needs_case_effect_safe_fallback(state, post_repair_violations):
                 plan = _case_effect_safe_plan(state, plan)
             repair_call["output"] = {
@@ -264,6 +266,15 @@ def _planner_message_contract_violations(state: AgentState, plan: dict[str, Any]
                 "note": "Customer asks to see effect/case reference. This is S1 case request and must call kb_search(case_studies), not S4 or professional_assist.",
             }
         )
+    if _is_location_context_turn(state) and _has_case_studies_tool(tool_calls):
+        violations.append(
+            {
+                "task_type": "store_inquiry",
+                "subtype": "location_context",
+                "missing": "location_context_not_case_request",
+                "note": "Current turn only provides a city/area/landmark. Treat it as S2 store context, not a case/effect request.",
+            }
+        )
     return violations
 
 
@@ -331,6 +342,10 @@ def _needs_store_detail_safe_fallback(state: AgentState, violations: list[dict[s
 
 def _needs_case_effect_safe_fallback(state: AgentState, violations: list[dict[str, str]]) -> bool:
     return _is_case_effect_request_turn(state) and any(item.get("missing") == "case_studies_required" for item in violations)
+
+
+def _needs_location_context_safe_fallback(state: AgentState, violations: list[dict[str, str]]) -> bool:
+    return _is_location_context_turn(state) and any(item.get("missing") == "location_context_not_case_request" for item in violations)
 
 
 def _transport_policy_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
@@ -532,6 +547,64 @@ def _case_effect_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str,
     return safe_plan
 
 
+def _location_context_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
+    content = str(state.get("normalized_content") or "").strip()
+    stores = _stores_matching_text_region(state, content)
+    safe_plan = dict(plan)
+    safe_plan["planner_decision"] = "direct_reply"
+    safe_plan["planner_stage"] = "S2"
+    safe_plan["planner_sub_rule_id"] = "S2_LOCATION_DETAIL" if stores else "S2_CITY_ONLY"
+    if len(stores) == 1:
+        store = stores[0]
+        store_id = str(store.get("store_id") or "").strip()
+        store_name = str(store.get("store_name") or "").strip()
+        safe_plan["planner_reply_messages"] = [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": f"{store_name}可以安排，我把门店卡片发您。您看今天还是明天方便到店检测？"},
+            },
+            {"type": "store_address", "order": 2, "content": {"store_id": store_id}},
+        ]
+    else:
+        city = _distance_request_city(state)
+        if city:
+            safe_plan["planner_reply_messages"] = [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": f"{city}有门店，您在哪个区或附近哪个地标？我帮您看更方便的门店。"},
+                }
+            ]
+        else:
+            safe_plan["planner_reply_messages"] = [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "您在哪个城市或哪个区？我帮您看更方便的门店。"},
+                }
+            ]
+    safe_plan["planner_tool_calls"] = []
+    safe_plan["required_tools"] = [{"name": "no_tool", "purpose": "Location context can be answered from customer_store_knowledge"}]
+    safe_plan["tool_policy_violations"] = []
+    safe_plan["handoff"] = {"needed": False, "reason": ""}
+    primary = dict(safe_plan.get("primary_task") if isinstance(safe_plan.get("primary_task"), dict) else {})
+    primary.update(
+        {
+            "type": "store_inquiry",
+            "subtype": "location_context",
+            "policy_hint": safe_plan["planner_sub_rule_id"],
+            "customer_need": content[:120],
+            "answer_goal": "Use customer-scope store regions to continue store/appointment cadence.",
+            "must_answer": ["承接客户位置", "推进到门店或到店时间"],
+            "must_avoid": ["误查案例库", "编造门店详情"],
+            "tools": [{"name": "no_tool", "purpose": "Store region is already in context"}],
+        }
+    )
+    safe_plan["primary_task"] = primary
+    return safe_plan
+
+
 def _is_distance_request_turn(state: AgentState) -> bool:
     text = str(state.get("normalized_content") or "").strip()
     if not text:
@@ -590,6 +663,17 @@ def _is_case_effect_request_turn(state: AgentState) -> bool:
     if any(term in text for term in ("没效果", "不满意", "退款", "投诉", "维权")):
         return False
     return any(term in text for term in ("效果图", "案例", "对比", "参考", "做完效果", "做完后的效果", "看效果", "看看效果"))
+
+
+def _is_location_context_turn(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "").strip()
+    if not text:
+        return False
+    if any(term in text for term in ("效果", "案例", "对比", "参考", "多少钱", "价格", "预约金", "退款", "投诉")):
+        return False
+    if any(term in text for term in ("我在", "这边", "附近", "常去", "区", "市", "机场", "地铁", "商圈")):
+        return bool(_distance_request_city(state) or _stores_matching_text_region(state, text))
+    return False
 
 
 def _has_case_studies_tool(tool_calls: list[dict[str, Any]]) -> bool:
@@ -676,6 +760,24 @@ def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
     return [store for store in stores if isinstance(store, dict)]
+
+
+def _stores_matching_text_region(state: AgentState, text: str) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for store in _customer_scope_stores(state):
+        city = str(store.get("city") or "").strip()
+        district = str(store.get("district") or "").strip()
+        name = str(store.get("store_name") or "").strip()
+        tokens = [name, city, district]
+        tokens.extend(token[:-1] for token in (city, district) if token.endswith(("市", "区", "县")) and len(token) > 1)
+        if any(token and token in text for token in tokens):
+            matches.append(store)
+    unique: dict[str, dict[str, Any]] = {}
+    for store in matches:
+        store_id = str(store.get("store_id") or "").strip()
+        if store_id:
+            unique[store_id] = store
+    return list(unique.values())
 
 
 def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
