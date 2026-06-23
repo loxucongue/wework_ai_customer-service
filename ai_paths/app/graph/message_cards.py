@@ -58,6 +58,7 @@ def _store_address_card_store_id(state: AgentState) -> str:
         _recommended_store_id(state),
         _first_store_fact_id(state),
         _request_store_id(state),
+        _customer_basic_store_id(state),
         _matched_customer_store_id(state),
     ):
         if candidate:
@@ -88,6 +89,33 @@ def _request_store_id(state: AgentState) -> str:
     appointment = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
     value = appointment.get("store_id")
     return str(value).strip() if value not in (None, "") else ""
+
+
+def _customer_basic_store_id(state: AgentState) -> str:
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    for key in ("preferred_store_id", "confirmed_store_id", "store_id"):
+        value = basic.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+
+    appointment_preference = (
+        basic.get("appointment_preference") if isinstance(basic.get("appointment_preference"), dict) else {}
+    )
+    for key in ("store_id", "preferred_store_id", "confirmed_store_id"):
+        value = appointment_preference.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+
+    preferred_name = str(
+        basic.get("preferred_store_name") or appointment_preference.get("store_name") or appointment_preference.get("store")
+        or ""
+    ).strip()
+    if not preferred_name:
+        return ""
+    for store in _customer_scope_stores(state):
+        if str(store.get("store_name") or "").strip() == preferred_name:
+            return str(store.get("store_id") or "").strip()
+    return ""
 
 
 def _matched_customer_store_id(state: AgentState) -> str:
