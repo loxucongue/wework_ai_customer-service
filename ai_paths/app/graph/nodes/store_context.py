@@ -15,8 +15,6 @@ from app.policies.constants import (
     STORE_PREFERRED_HINT_TERMS,
     TIME_REFERENCE_TERMS,
 )
-from app.services import store_text
-from app.services.store_text import extract_area_or_landmark, extract_location_preference
 
 
 BOOKING_FOLLOWUP_TERMS = (
@@ -84,7 +82,7 @@ def should_inherit_store_location_context(content: str, state: AgentState) -> bo
         return True
     if extract_area_or_landmark(content) or extract_location_preference(content) or extract_store_area(content):
         return True
-    if known_city_from_state(state) and store_text.looks_like_location_fragment(content):
+    if known_city_from_state(state) and looks_like_location_fragment(content):
         return True
     return any(term in content for term in STORE_CONTEXT_FACT_TERMS)
 
@@ -314,6 +312,28 @@ def extract_store_area(content: str) -> str:
         if area in content:
             return area
     return ""
+
+
+def extract_area_or_landmark(content: str) -> str:
+    return extract_store_area(content) or extract_location_preference(content)
+
+
+def extract_location_preference(content: str) -> str:
+    text = str(content or "").strip()
+    for suffix in ("附近", "旁边", "周边", "这边"):
+        if suffix in text:
+            prefix = text.split(suffix, 1)[0].strip()
+            token = re.split(r"[，,。！？\s]", prefix)[-1].strip()
+            if token:
+                return token[-12:]
+    return ""
+
+
+def looks_like_location_fragment(content: str) -> bool:
+    text = str(content or "").strip()
+    if not text or len(text) > 18:
+        return False
+    return bool(re.search(r"(区|县|镇|街道|机场|车站|商场|广场|大厦|路|店)$", text))
 
 
 def extract_time_text(content: str) -> str:
