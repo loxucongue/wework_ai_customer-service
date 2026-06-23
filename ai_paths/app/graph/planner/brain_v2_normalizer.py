@@ -4,6 +4,7 @@ from typing import Any
 
 from app.graph.message_cards import append_store_address_card
 from app.graph.message_send_policy import can_send_payment_collection, suppress_repeated_action_messages
+from app.graph.message_sanitizer import sanitize_unsupported_placeholder_text
 from app.graph.planner.planner_contract import ALLOWED_KBS, ALLOWED_TOOLS
 from app.graph.state import AgentState
 
@@ -27,6 +28,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         stage=stage,
         sub_rule_id=sub_rule_id,
     )
+    planner_reply_messages = sanitize_unsupported_placeholder_text(planner_reply_messages, state)
     if decision == "direct_reply":
         planner_reply_messages = append_store_address_card(
             planner_reply_messages,

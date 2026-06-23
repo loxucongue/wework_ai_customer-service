@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.graph.message_cards import append_store_address_card
+from app.graph.message_sanitizer import sanitize_unsupported_placeholder_text
 from app.graph.nodes.reply_validation import validated_model_messages
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.schemas import ChatResponse, ReplyMessage
@@ -89,6 +90,33 @@ class StoreAddressMessageTests(unittest.TestCase):
         output = append_store_address_card(messages, state)
 
         self.assertEqual([item["type"] for item in output], ["text"])
+
+    def test_placeholder_store_address_text_replaced_with_fact_address(self) -> None:
+        messages = [
+            {"type": "text", "order": 1, "content": {"text": "重庆百星渝中店地址：重庆市渝中区解放碑步行街XX号。"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "467"}},
+        ]
+        state = {
+            "fact_envelope": {
+                "structured_facts": {
+                    "store_facts": [
+                        {
+                            "id": "467",
+                            "name": "重庆百星渝中店",
+                            "address": "重庆市渝中区解放碑步行街时代广场A座5楼",
+                            "business_hours": "09:00-19:00",
+                        }
+                    ]
+                }
+            }
+        }
+
+        output = sanitize_unsupported_placeholder_text(messages, state)
+
+        text = output[0]["content"]["text"]
+        self.assertIn("时代广场A座5楼", text)
+        self.assertNotIn("XX号", text)
+        self.assertEqual(output[1]["type"], "store_address")
 
     def test_planner_direct_reply_appends_store_address_card(self) -> None:
         plan = build_planner_plan_v2(
