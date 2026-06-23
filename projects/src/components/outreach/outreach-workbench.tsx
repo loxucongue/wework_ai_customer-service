@@ -168,6 +168,16 @@ function jsonPreview(value: unknown) {
   }
 }
 
+async function readJsonResponse(response: Response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text };
+  }
+}
+
 function messagePreview(messages?: Array<JsonObject>) {
   if (!messages?.length) return "发送前由模型生成";
   return messages
@@ -382,8 +392,8 @@ export function OutreachWorkbench() {
             external_userid: candidate.external_userid || candidate.customer_id,
           }),
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.error || "刷新历史失败");
+        const data = await readJsonResponse(response);
+        if (!response.ok) throw new Error(data?.error || data?.detail || "刷新历史失败");
         await loadCandidates();
         await loadEvents();
       } catch (err) {
@@ -414,8 +424,8 @@ export function OutreachWorkbench() {
             limit: 30,
           }),
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.error || "加载历史聊天失败");
+        const data = await readJsonResponse(response);
+        if (!response.ok) throw new Error(data?.error || data?.detail || "加载历史聊天失败");
         setHistoryMessages(Array.isArray(data.messages) ? data.messages : []);
         await loadCandidates();
         await loadEvents();

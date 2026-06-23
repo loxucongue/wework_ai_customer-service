@@ -290,10 +290,20 @@ export async function proxyAiPathsAdmin(path: string, init: RequestInit = {}) {
       cache: "no-store",
     });
     const text = await response.text();
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      return jsonResponse(
+        {
+          error: response.ok ? "AI Paths admin API returned non-json response" : `AI Paths admin API returned ${response.status}`,
+          detail: text,
+        },
+        response.status
+      );
+    }
     return new Response(text, {
       status: response.status,
       headers: {
-        "Content-Type": response.headers.get("content-type") || "application/json; charset=utf-8",
+        "Content-Type": contentType || "application/json; charset=utf-8",
       },
     });
   } catch (error) {

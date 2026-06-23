@@ -258,14 +258,24 @@ async def admin_outreach_refresh_conversation(
     payload: dict[str, Any] | None = Body(default=None),
 ) -> dict[str, Any]:
     payload = payload or {}
-    return await outreach_service.refresh_customer_conversation(
-        customer_id=customer_id,
-        corp_id=str(payload.get("corp_id") or ""),
-        user_id=str(payload.get("user_id") or ""),
-        wechat=str(payload.get("wechat") or ""),
-        external_userid=str(payload.get("external_userid") or ""),
-        limit=int(payload.get("limit") or 10),
-    )
+    try:
+        return await outreach_service.refresh_customer_conversation(
+            customer_id=customer_id,
+            corp_id=str(payload.get("corp_id") or ""),
+            user_id=str(payload.get("user_id") or ""),
+            wechat=str(payload.get("wechat") or ""),
+            external_userid=str(payload.get("external_userid") or ""),
+            limit=int(payload.get("limit") or 10),
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok": False,
+                "error": "conversation_refresh_failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+            },
+        )
 
 
 @app.post("/admin/outreach/plans/generate", dependencies=[Depends(require_api_key)])
