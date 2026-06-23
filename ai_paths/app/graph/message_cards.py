@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.graph.message_send_policy import can_send_store_address
@@ -55,32 +56,32 @@ def _should_send_store_address_card(state: AgentState, signal_text: str) -> bool
 
 
 def _store_address_card_store_id(state: AgentState, signal_text: str) -> str:
+    current_text = str(state.get("normalized_content") or state.get("content") or "")
     for candidate in (
-        _recommended_store_id(state),
-        _first_store_fact_id(state),
         _request_store_id(state),
-        _matched_exact_customer_store_id(state, signal_text),
-        _matched_unique_region_store_id(state, signal_text),
-        _customer_basic_store_id(state) if _explicit_store_address_resend_request(signal_text) else "",
+        _matched_exact_customer_store_id(state, current_text),
+        _matched_unique_region_store_id(state, current_text),
+        _history_store_id_for_explicit_request(state),
+        _selected_fact_store_id(state),
     ):
         if candidate:
             return candidate
     return ""
 
 
-def _recommended_store_id(state: AgentState) -> str:
+def _selected_fact_store_id(state: AgentState) -> str:
     structured = _structured_facts(state)
     recommended = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
-    return str(recommended.get("id") or recommended.get("store_id") or "").strip()
-
-
-def _first_store_fact_id(state: AgentState) -> str:
-    structured = _structured_facts(state)
+    if str(recommended.get("reason") or "").strip() == "distance_calculate_rank_1":
+        value = str(recommended.get("id") or recommended.get("store_id") or "").strip()
+        if value:
+            return value
+    status = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
     store_facts = structured.get("store_facts") if isinstance(structured.get("store_facts"), list) else []
-    if not store_facts:
-        return ""
-    first = store_facts[0] if isinstance(store_facts[0], dict) else {}
-    return str(first.get("id") or first.get("store_id") or "").strip()
+    if int(status.get("candidate_count") or 0) == 1 and len(store_facts) == 1:
+        first = store_facts[0] if isinstance(store_facts[0], dict) else {}
+        return str(first.get("id") or first.get("store_id") or "").strip()
+    return ""
 
 
 def _request_store_id(state: AgentState) -> str:
@@ -93,30 +94,22 @@ def _request_store_id(state: AgentState) -> str:
     return str(value).strip() if value not in (None, "") else ""
 
 
-def _customer_basic_store_id(state: AgentState) -> str:
-    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    for key in ("preferred_store_id", "confirmed_store_id", "store_id"):
-        value = basic.get(key)
-        if value not in (None, ""):
-            return str(value).strip()
-
-    appointment_preference = (
-        basic.get("appointment_preference") if isinstance(basic.get("appointment_preference"), dict) else {}
-    )
-    for key in ("store_id", "preferred_store_id", "confirmed_store_id"):
-        value = appointment_preference.get(key)
-        if value not in (None, ""):
-            return str(value).strip()
-
-    preferred_name = str(
-        basic.get("preferred_store_name") or appointment_preference.get("store_name") or appointment_preference.get("store")
-        or ""
-    ).strip()
-    if not preferred_name:
+def _history_store_id_for_explicit_request(state: AgentState) -> str:
+    if not _explicit_store_address_resend_request(str(state.get("normalized_content") or state.get("content") or "")):
         return ""
-    for store in _customer_scope_stores(state):
-        if str(store.get("store_name") or "").strip() == preferred_name:
-            return str(store.get("store_id") or "").strip()
+    events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
+    for event in reversed(events[-20:]):
+        if not isinstance(event, dict) or str(event.get("event_type") or "") != "store_address_sent":
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        value = str(facts.get("store_id") or facts.get("id") or "").strip()
+        if value:
+            return value
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in reversed(history[-10:]):
+        value = _store_id_from_text(str(item or ""))
+        if value:
+            return value
     return ""
 
 
@@ -135,8 +128,6 @@ def _matched_exact_customer_store_id(state: AgentState, signal_text: str) -> str
 
 
 def _matched_unique_region_store_id(state: AgentState, signal_text: str) -> str:
-    if not _explicit_store_address_resend_request(signal_text):
-        return ""
     stores = _customer_scope_stores(state)
     if not stores:
         return ""
@@ -179,6 +170,17 @@ def _message_text(message: dict[str, Any]) -> str:
     if isinstance(content, dict):
         return str(content.get("text") or content.get("store_id") or "")
     return str(content or "")
+
+
+def _store_id_from_text(text: str) -> str:
+    match = re.search(r'"store_id"\s*:\s*"([^"]+)"', text)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"store_address[:：]\s*(\d+)", text)
+    if match:
+        return match.group(1).strip()
+    match = re.search(r"门店卡片[^0-9]*(\d{2,})", text)
+    return match.group(1).strip() if match else ""
 
 
 def _explicit_store_address_resend_request(text: str) -> bool:

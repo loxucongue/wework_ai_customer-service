@@ -43,9 +43,19 @@ def normalize_store_address_card_ids(
     state: AgentState,
     warnings: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
-    desired_store_id = _current_text_store_id(messages, state) or _history_store_id_for_explicit_request(state)
+    desired_store_id = _desired_store_id_for_card(messages, state)
     if not desired_store_id:
-        return messages
+        if not any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
+            return messages
+        if warnings is not None:
+            warnings.append(
+                {
+                    "node": "message_sanitizer",
+                    "message": "unsupported_store_address_card_removed",
+                    "detail": {"reason": "no_current_history_or_fact_store_anchor"},
+                }
+            )
+        return _renumber(_unanchored_store_address_fallback_messages(messages, state))
     changed = False
     output: list[dict[str, Any]] = []
     for message in messages:
@@ -119,8 +129,21 @@ def _generic_store_card_text(messages: list[dict[str, Any]]) -> str:
     return "这家门店的详细地址我还需要核对一下，您发下具体区域我帮您确认。"
 
 
-def _current_text_store_id(messages: list[dict[str, Any]], state: AgentState) -> str:
-    text = "\n".join([str(state.get("normalized_content") or state.get("content") or ""), *[_text_content(item.get("content")) for item in messages if isinstance(item, dict)]])
+def _desired_store_id_for_card(messages: list[dict[str, Any]], state: AgentState) -> str:
+    current_store_id = _current_message_store_id(state)
+    history_store_id = _history_store_id_for_explicit_request(state)
+    current_region_store_id = _current_region_store_id(state)
+    fact_store_id = _selected_fact_store_id(state)
+    if _explicit_store_address_request(str(state.get("normalized_content") or state.get("content") or "")):
+        return current_store_id or current_region_store_id or history_store_id or fact_store_id
+    reply_text_store_id = _reply_text_store_id(messages, state)
+    if reply_text_store_id and reply_text_store_id in {current_store_id, current_region_store_id, fact_store_id, history_store_id}:
+        return reply_text_store_id
+    return current_store_id or current_region_store_id or fact_store_id or history_store_id
+
+
+def _current_message_store_id(state: AgentState) -> str:
+    text = str(state.get("normalized_content") or state.get("content") or "")
     for store in _customer_scope_stores(state):
         name = str(store.get("store_name") or "").strip()
         store_id = str(store.get("store_id") or "").strip()
@@ -129,10 +152,90 @@ def _current_text_store_id(messages: list[dict[str, Any]], state: AgentState) ->
     return ""
 
 
+def _reply_text_store_id(messages: list[dict[str, Any]], state: AgentState) -> str:
+    text = "\n".join(_text_content(item.get("content")) for item in messages if isinstance(item, dict))
+    for store in _customer_scope_stores(state):
+        name = str(store.get("store_name") or "").strip()
+        store_id = str(store.get("store_id") or "").strip()
+        if name and store_id and name in text:
+            return store_id
+    return ""
+
+
+def _current_region_store_id(state: AgentState) -> str:
+    text = str(state.get("normalized_content") or state.get("content") or "")
+    if not text:
+        return ""
+    matches: list[str] = []
+    for store in _customer_scope_stores(state):
+        store_id = str(store.get("store_id") or "").strip()
+        if not store_id:
+            continue
+        if any(token and token in text for token in _store_region_tokens(store)):
+            matches.append(store_id)
+    unique = list(dict.fromkeys(matches))
+    return unique[0] if len(unique) == 1 else ""
+
+
+def _store_region_tokens(store: dict[str, Any]) -> list[str]:
+    tokens: set[str] = set()
+    for key in ("district", "store_name"):
+        value = str(store.get(key) or "").strip()
+        if not value:
+            continue
+        tokens.add(value)
+        for suffix in ("区", "县", "店"):
+            if value.endswith(suffix) and len(value) > len(suffix):
+                tokens.add(value[: -len(suffix)])
+    return sorted({token for token in tokens if len(token) >= 2}, key=len, reverse=True)
+
+
+def _selected_fact_store_id(state: AgentState) -> str:
+    structured = _structured_facts(state)
+    recommended = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
+    if str(recommended.get("reason") or "").strip() == "distance_calculate_rank_1":
+        for key in ("id", "store_id"):
+            value = str(recommended.get(key) or "").strip()
+            if value:
+                return value
+    status = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    store_facts = _fact_stores(structured)
+    if int(status.get("candidate_count") or 0) == 1 and len(store_facts) == 1:
+        value = str(store_facts[0].get("id") or store_facts[0].get("store_id") or "").strip()
+        if value:
+            return value
+    for store in _fact_stores(structured):
+        value = str(store.get("id") or store.get("store_id") or "").strip()
+        name = str(store.get("name") or "").strip()
+        if value and name and name in str(state.get("normalized_content") or state.get("content") or ""):
+            return value
+    for key in ("confirmed_store_id", "store_id"):
+        value = str(state.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _unanchored_store_address_fallback_messages(messages: list[dict[str, Any]], state: AgentState) -> list[dict[str, Any]]:
+    text = str(state.get("normalized_content") or state.get("content") or "")
+    output = [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") != "store_address"]
+    if _explicit_store_address_request(text):
+        return [{"type": "text", "order": 1, "content": {"text": "您想发哪家门店地址？我先帮您确认具体门店后再发位置。"}}]
+    return output
+
+
 def _history_store_id_for_explicit_request(state: AgentState) -> str:
     text = str(state.get("normalized_content") or state.get("content") or "")
     if not _explicit_store_address_request(text):
         return ""
+    events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
+    for event in reversed(events[-20:]):
+        if not isinstance(event, dict) or str(event.get("event_type") or "") != "store_address_sent":
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        value = str(facts.get("store_id") or facts.get("id") or "").strip()
+        if value:
+            return value
     history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
     for item in reversed(history[-10:]):
         raw = str(item or "")

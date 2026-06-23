@@ -124,11 +124,11 @@ class StoreAddressMessageTests(unittest.TestCase):
             {"type": "store_address", "order": 2, "content": {"store_id": "147"}},
         ]
         state = {
-            "normalized_content": "能停车吗",
+            "normalized_content": "渝中这边能停车吗",
             "customer_store_knowledge": {
                 "stores": [
-                    {"store_id": "467", "store_name": "重庆百星渝中店"},
-                    {"store_id": "147", "store_name": "重庆南岸店"},
+                    {"store_id": "467", "store_name": "重庆百星渝中店", "district": "渝中区"},
+                    {"store_id": "147", "store_name": "重庆南岸店", "district": "南岸区"},
                 ]
             },
         }
@@ -136,6 +136,47 @@ class StoreAddressMessageTests(unittest.TestCase):
         output = normalize_store_address_card_ids(messages, state)
 
         self.assertEqual(output[1]["content"], {"store_id": "467"})
+
+    def test_unanchored_parking_question_removes_store_address_card(self) -> None:
+        messages = [
+            {"type": "text", "order": 1, "content": {"text": "停车信息需要结合具体门店确认，您在重庆哪个区？"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "369"}},
+        ]
+        state = {
+            "normalized_content": "能停车吗",
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "467", "store_name": "重庆百星渝中店", "district": "渝中区"},
+                    {"store_id": "369", "store_name": "银川兴庆店", "district": "兴庆区"},
+                ]
+            },
+        }
+
+        output = normalize_store_address_card_ids(messages, state)
+
+        self.assertEqual([item["type"] for item in output], ["text"])
+        self.assertIn("具体门店", output[0]["content"]["text"])
+
+    def test_explicit_address_request_without_selected_store_asks_to_confirm_store(self) -> None:
+        messages = [
+            {"type": "text", "order": 1, "content": {"text": "好的，这是银川兴庆店的详细地址。"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "369"}},
+        ]
+        state = {
+            "normalized_content": "发一下地址",
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "467", "store_name": "重庆百星渝中店", "district": "渝中区"},
+                    {"store_id": "369", "store_name": "银川兴庆店", "district": "兴庆区"},
+                ]
+            },
+        }
+
+        output = normalize_store_address_card_ids(messages, state)
+
+        self.assertEqual([item["type"] for item in output], ["text"])
+        self.assertIn("哪家门店", output[0]["content"]["text"])
+        self.assertNotIn("银川", output[0]["content"]["text"])
 
     def test_store_address_card_id_can_follow_recent_history_for_resend(self) -> None:
         messages = [
