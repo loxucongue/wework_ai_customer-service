@@ -182,6 +182,9 @@ function outreachErrorMessage(data: JsonObject, fallback: string) {
   if (data.error === "conversation_refresh_failed") {
     return "历史聊天查询超时，请稍后重试或降低条数";
   }
+  if (data.error === "outreach_plan_generation_failed") {
+    return "生成计划失败，请稍后重试";
+  }
   return String(data.detail || data.error || fallback);
 }
 
@@ -303,8 +306,8 @@ export function OutreachWorkbench() {
             business_goal: "推进客户支付10元预约金并到店",
           }),
         });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data?.error || "生成计划失败");
+        const data = await readJsonResponse(response);
+        if (!response.ok) throw new Error(outreachErrorMessage(data, "生成计划失败"));
         const planId = data?.plan?.id || data?.id;
         if (planId) {
           if (activate) {

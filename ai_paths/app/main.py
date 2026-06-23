@@ -291,15 +291,25 @@ async def admin_outreach_generate_plan(payload: dict[str, Any] = Body(...)) -> d
     customer_id = str(payload.get("customer_id") or "").strip()
     if not customer_id:
         raise HTTPException(status_code=400, detail="customer_id is required")
-    return await outreach_service.generate_plan(
-        customer_id=customer_id,
-        corp_id=str(payload.get("corp_id") or ""),
-        user_id=str(payload.get("user_id") or ""),
-        wechat=str(payload.get("wechat") or ""),
-        external_userid=str(payload.get("external_userid") or ""),
-        current_stage=str(payload.get("current_stage") or ""),
-        business_goal=str(payload.get("business_goal") or ""),
-    )
+    try:
+        return await outreach_service.generate_plan(
+            customer_id=customer_id,
+            corp_id=str(payload.get("corp_id") or ""),
+            user_id=str(payload.get("user_id") or ""),
+            wechat=str(payload.get("wechat") or ""),
+            external_userid=str(payload.get("external_userid") or ""),
+            current_stage=str(payload.get("current_stage") or ""),
+            business_goal=str(payload.get("business_goal") or ""),
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok": False,
+                "error": "outreach_plan_generation_failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+            },
+        )
 
 
 @app.get("/admin/outreach/plans/{plan_id}", dependencies=[Depends(require_api_key)])

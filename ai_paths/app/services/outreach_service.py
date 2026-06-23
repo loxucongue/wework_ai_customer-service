@@ -175,7 +175,6 @@ class OutreachService:
             ],
             tier="balanced",
             temperature=0.25,
-            response_format={"type": "json_object"},
         )
         if not bool(response.get("should_create_plan", True)):
             self.repository.add_outreach_event(
@@ -391,7 +390,6 @@ class OutreachService:
             ],
             tier="balanced",
             temperature=0.35,
-            response_format={"type": "json_object"},
         )
         messages = response.get("reply_messages")
         if not isinstance(messages, list) or not messages:
