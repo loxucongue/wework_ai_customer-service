@@ -3,6 +3,7 @@
 from typing import Any
 
 from app.graph.nodes.common import recent_assistant_replies
+from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
     should_suppress_profile_memory_for_reply,
@@ -61,7 +62,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "sales_talk_reference": _sanitize_planner_context_for_reply(_compact_sales_talk_reference(state.get("sales_talk_reference") or {})),
         "business_rules": load_business_rules(),
         "fact_envelope": fact_envelope,
-        "fact_notes": _fact_notes_for_model(fact_envelope),
+        "fact_notes": _fact_notes_for_model(fact_envelope, content=str(state.get("normalized_content") or state.get("content") or "")),
     }
 
 
@@ -117,6 +118,8 @@ def _sanitize_internal_project_context_text(value: str) -> str:
 
 def _fact_notes_for_model(
     fact_envelope: dict[str, Any],
+    *,
+    content: str = "",
 ) -> list[str]:
     notes: list[str] = []
     structured_facts = fact_envelope.get("structured_facts") or {}
@@ -151,7 +154,8 @@ def _fact_notes_for_model(
             if not isinstance(item, dict):
                 continue
             if item.get("type") == "available_time" and item.get("slots"):
-                notes.append("已有档期事实，可直接回答可约时间。")
+                summary = _available_time_fact_note(item, content)
+                notes.append(summary or "已有档期事实，可直接回答可约时间。")
                 break
 
     professional_assist = structured_facts.get("professional_assist") or {}
@@ -159,6 +163,29 @@ def _fact_notes_for_model(
         notes.append("本轮已有专业同事协助事实；客户可见回复应先承接当前诉求，再说明会协助核对。")
 
     return notes[:6]
+
+
+def _available_time_fact_note(item: dict[str, Any], content: str) -> str:
+    slots = item.get("slots") if isinstance(item.get("slots"), dict) else {}
+    if not slots:
+        return ""
+    preferred_times = available_time_values({"new": slots.get("new")})
+    if not preferred_times:
+        preferred_times = available_time_values(slots)
+    preferred_times = filter_times_by_preference(preferred_times, content) or preferred_times
+    times = preferred_times[:6]
+    date = str(item.get("date") or "").strip()
+    store = str(item.get("store") or item.get("store_id") or "").strip()
+    if not times:
+        return f"已有档期事实：{date or '该日期'}暂未看到可直接引用的可约时间，不能说已约成功。"
+    prefix = "已有档期事实："
+    parts = []
+    if store:
+        parts.append(f"门店ID {store}")
+    if date:
+        parts.append(date)
+    parts.append(f"可约时间包括{'、'.join(times)}")
+    return prefix + "，".join(parts) + "。客户问有没有时间时，第一句必须先回答这些可约时间；可以结合上下文顺带推进10元预约金，但不能只发收款入口或只说继续查询。"
 
 
 def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:
