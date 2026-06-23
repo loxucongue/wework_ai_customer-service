@@ -54,6 +54,7 @@ def create_synthesize_reply_node(
                     payload = await model_client.chat_json(reply_messages_for_model(state), tier="reply")
                     model_call["usage"] = model_usage_snapshot(model_client)
                     messages = validated_model_messages(payload)
+                    messages = _filter_unsupported_images(messages, state, errors)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
             except Exception as exc:
@@ -84,6 +85,62 @@ def create_synthesize_reply_node(
             return output
 
     return synthesize_reply
+
+
+def _filter_unsupported_images(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+    errors: list[Any],
+) -> list[dict[str, Any]]:
+    allowed_urls = _case_image_urls(state)
+    filtered: list[dict[str, Any]] = []
+    removed_urls: list[str] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") != "image":
+            filtered.append(item)
+            continue
+        url = _message_url(item.get("content"))
+        if url and url in allowed_urls:
+            filtered.append(item)
+        else:
+            removed_urls.append(url or "")
+    if removed_urls:
+        errors.append(
+            {
+                "node": "synthesize_reply",
+                "message": "unsupported_image_removed",
+                "detail": {"removed_urls": removed_urls},
+            }
+        )
+    return _renumber(filtered)
+
+
+def _case_image_urls(state: AgentState) -> set[str]:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    urls: set[str] = set()
+    for item in structured.get("case_facts") or []:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("image_url") or "").strip()
+        if url:
+            urls.add(url)
+    return urls
+
+
+def _message_url(content: Any) -> str:
+    if isinstance(content, dict):
+        return str(content.get("url") or content.get("image_url") or "").strip()
+    return str(content or "").strip()
+
+
+def _renumber(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(messages, start=1):
+        result.append({**item, "order": index})
+    return result
 
 
 def _normalize_planner_reply_messages(value: Any) -> list[dict[str, Any]]:
