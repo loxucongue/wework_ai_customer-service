@@ -3,7 +3,7 @@
 from typing import Any
 
 from app.graph.nodes.common import recent_assistant_replies
-from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference
+from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference, target_time_status
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
     should_suppress_profile_memory_for_reply,
@@ -171,6 +171,11 @@ def _available_time_fact_note(item: dict[str, Any], content: str) -> str:
     slots = item.get("slots") if isinstance(item.get("slots"), dict) else {}
     if not slots:
         return ""
+    target_status = target_time_status(slots, str(item.get("target_time") or ""), content)
+    target_time = str(item.get("target_time") or target_status.get("target_time") or "").strip()
+    target_available = item.get("target_time_available")
+    if target_available is None:
+        target_available = target_status.get("target_time_available")
     preferred_times = available_time_values({"new": slots.get("new")})
     if not preferred_times:
         preferred_times = available_time_values(slots)
@@ -187,6 +192,15 @@ def _available_time_fact_note(item: dict[str, Any], content: str) -> str:
     if date:
         parts.append(date)
     parts.append(f"可约时间包括{'、'.join(times)}")
+    if target_time and target_available is False:
+        parts.append(f"客户问的{target_time}不在可约时间内")
+        nearby = item.get("nearby_times") if isinstance(item.get("nearby_times"), list) else target_status.get("nearby_times") or []
+        if nearby:
+            parts.append(f"临近可选时间为{'、'.join(str(time) for time in nearby[:4])}")
+        return prefix + "，".join(parts) + "。第一句必须说明客户问的具体时间暂未看到可约，不能说该时间可以约；再给可选时间让客户选。"
+    if target_time and target_available is True:
+        parts.append(f"客户问的{target_time}可约")
+        return prefix + "，".join(parts) + "。第一句可以直接确认该时间可约，再推进预约金或确认信息。"
     return prefix + "，".join(parts) + "。客户问有没有时间时，第一句必须先回答这些可约时间；可以结合上下文顺带推进10元预约金，但不能只发收款入口或只说继续查询。"
 
 

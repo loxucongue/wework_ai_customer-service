@@ -155,6 +155,15 @@ def _sales_talk_query_from_state(state: AgentState) -> str:
 
 
 def _load_memory(memory_store: CustomerMemoryStore | None, state: AgentState) -> dict[str, Any]:
+    if state.get("test_isolated"):
+        return {
+            "customer_profile": {},
+            "customer_basic_info": {},
+            "history_events": [],
+            "lifecycle_stage": "",
+            "saved_memory": {},
+            "memory_isolated": True,
+        }
     memory = memory_store.load(str(state.get("customer_id") or "unknown")) if memory_store else {}
     return {
         "customer_profile": memory.get("portrait", {}) if isinstance(memory, dict) else {},

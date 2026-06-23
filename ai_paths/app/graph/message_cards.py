@@ -7,11 +7,12 @@ from app.graph.state import AgentState
 
 
 def append_store_address_card(messages: list[dict[str, Any]], state: AgentState) -> list[dict[str, Any]]:
-    if not _should_send_store_address_card(state):
+    signal_text = _store_card_signal_text(state, messages)
+    if not _should_send_store_address_card(state, signal_text):
         return messages
     if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
         return messages
-    store_id = _store_address_card_store_id(state)
+    store_id = _store_address_card_store_id(state, signal_text)
     if not store_id:
         return messages
     if not can_send_store_address(state, store_id):
@@ -21,18 +22,18 @@ def append_store_address_card(messages: list[dict[str, Any]], state: AgentState)
     return _renumber(output)
 
 
-def _should_send_store_address_card(state: AgentState) -> bool:
+def _should_send_store_address_card(state: AgentState, signal_text: str) -> bool:
     stage = str(state.get("planner_stage") or "").strip()
     sub_rule_id = str(state.get("planner_sub_rule_id") or "").strip().lower()
     if stage != "S2" and "store" not in sub_rule_id and "address" not in sub_rule_id and "parking" not in sub_rule_id:
         return False
-    text = _store_card_signal_text(state)
-    if not text:
+    if not signal_text:
         return False
+    if "city_only" in sub_rule_id and not _explicit_store_address_resend_request(signal_text):
+        return bool(_matched_exact_customer_store_id(state, signal_text))
     if any(
-        term in text
+        term in signal_text
         for term in (
-            "门店",
             "地址",
             "位置",
             "导航",
@@ -50,16 +51,17 @@ def _should_send_store_address_card(state: AgentState) -> bool:
         )
     ):
         return True
-    return bool(_matched_customer_store_id(state))
+    return bool(_matched_exact_customer_store_id(state, signal_text))
 
 
-def _store_address_card_store_id(state: AgentState) -> str:
+def _store_address_card_store_id(state: AgentState, signal_text: str) -> str:
     for candidate in (
         _recommended_store_id(state),
         _first_store_fact_id(state),
         _request_store_id(state),
-        _customer_basic_store_id(state),
-        _matched_customer_store_id(state),
+        _matched_exact_customer_store_id(state, signal_text),
+        _matched_unique_region_store_id(state, signal_text),
+        _customer_basic_store_id(state) if _explicit_store_address_resend_request(signal_text) else "",
     ):
         if candidate:
             return candidate
@@ -118,24 +120,31 @@ def _customer_basic_store_id(state: AgentState) -> str:
     return ""
 
 
-def _matched_customer_store_id(state: AgentState) -> str:
+def _matched_exact_customer_store_id(state: AgentState, signal_text: str) -> str:
     stores = _customer_scope_stores(state)
     if not stores:
         return ""
-    text = _store_card_signal_text(state)
     exact_matches = [
         store
         for store in stores
-        if str(store.get("store_name") or "").strip() and str(store.get("store_name") or "").strip() in text
+        if str(store.get("store_name") or "").strip() and str(store.get("store_name") or "").strip() in signal_text
     ]
     if exact_matches:
         return str(exact_matches[-1].get("store_id") or "").strip()
+    return ""
 
+
+def _matched_unique_region_store_id(state: AgentState, signal_text: str) -> str:
+    if not _explicit_store_address_resend_request(signal_text):
+        return ""
+    stores = _customer_scope_stores(state)
+    if not stores:
+        return ""
     region_matches = []
     for store in stores:
         if not isinstance(store, dict):
             continue
-        if any(token and token in text for token in _store_match_tokens(store)):
+        if any(token and token in signal_text for token in _store_match_tokens(store)):
             region_matches.append(store)
     if len(region_matches) == 1:
         return str(region_matches[0].get("store_id") or "").strip()
@@ -159,11 +168,46 @@ def _store_match_tokens(store: dict[str, Any]) -> list[str]:
     return sorted({token for token in tokens if len(token) >= 2}, key=len, reverse=True)
 
 
-def _store_card_signal_text(state: AgentState) -> str:
+def _store_card_signal_text(state: AgentState, messages: list[dict[str, Any]]) -> str:
     chunks = [str(state.get("normalized_content") or state.get("content") or "")]
-    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
-    chunks.extend(str(item or "") for item in history[-6:])
+    chunks.extend(_message_text(item) for item in messages if isinstance(item, dict))
     return "\n".join(chunks)
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("store_id") or "")
+    return str(content or "")
+
+
+def _explicit_store_address_resend_request(text: str) -> bool:
+    compact = "".join(str(text or "").split())
+    if any(term in compact for term in ("再发", "重新发", "没收到")) and any(term in compact for term in ("地址", "位置", "定位", "导航", "路线", "门店")):
+        return True
+    return any(
+        term in compact
+        for term in (
+            "发地址",
+            "地址发",
+            "地址给我",
+            "给我地址",
+            "门店地址",
+            "发位置",
+            "位置发",
+            "位置给我",
+            "给我位置",
+            "发定位",
+            "定位发",
+            "定位给我",
+            "给我定位",
+            "发导航",
+            "导航给我",
+            "发路线",
+            "路线给我",
+            "门店卡片",
+        )
+    )
 
 
 def _structured_facts(state: AgentState) -> dict[str, Any]:

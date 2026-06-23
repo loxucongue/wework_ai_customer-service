@@ -4,6 +4,7 @@ import html
 import re
 from typing import Any
 
+from app.graph.nodes.appointment_time_utils import target_time_status
 from app.graph.state import AgentState
 
 
@@ -124,12 +125,20 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             continue
 
         if key == "available_time":
+            status = target_time_status(
+                value.get("slots") if isinstance(value.get("slots"), dict) else {},
+                str(value.get("target_time") or ""),
+                str(state.get("normalized_content") or state.get("content") or ""),
+            )
             appointment_fact = {
                 "type": "available_time",
                 "store": value.get("store_name") or value.get("store_id") or "",
                 "date": value.get("date") or "",
                 "slots": value.get("slots") or {},
                 "missing": value.get("missing") or [],
+                "target_time": status.get("target_time") or "",
+                "target_time_available": status.get("target_time_available"),
+                "nearby_times": status.get("nearby_times") or [],
             }
             structured_facts["appointment_facts"].append(appointment_fact)
             facts.append(

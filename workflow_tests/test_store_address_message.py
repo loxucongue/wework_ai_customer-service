@@ -67,6 +67,29 @@ class StoreAddressMessageTests(unittest.TestCase):
         self.assertEqual([item["type"] for item in output], ["text", "store_address"])
         self.assertEqual(output[1]["content"], {"store_id": "467"})
 
+    def test_city_only_missing_store_does_not_append_preferred_store_card(self) -> None:
+        messages = [{"type": "text", "order": 1, "content": {"text": "新疆这边目前没查到可直接发您的门店。您有其他常去地点在哪个城市或哪个区？"}}]
+        state = {
+            "planner_stage": "S2",
+            "planner_sub_rule_id": "S2_CITY_ONLY",
+            "normalized_content": "我在新疆，你们这边有门店吗",
+            "customer_basic_info": {"preferred_store_id": "467", "preferred_store_name": "重庆百星渝中店"},
+            "customer_store_knowledge": {
+                "stores": [
+                    {
+                        "store_id": "467",
+                        "store_name": "重庆百星渝中店",
+                        "city": "重庆市",
+                        "district": "渝中区",
+                    }
+                ]
+            },
+        }
+
+        output = append_store_address_card(messages, state)
+
+        self.assertEqual([item["type"] for item in output], ["text"])
+
     def test_planner_direct_reply_appends_store_address_card(self) -> None:
         plan = build_planner_plan_v2(
             {

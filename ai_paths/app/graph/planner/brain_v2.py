@@ -547,9 +547,35 @@ def _is_after_sales_effect_turn(state: AgentState) -> bool:
         return False
     if not has_current_after_sales_signal(text):
         return False
-    pre_sales_worry = any(term in text for term in ("怕没效果", "担心没效果", "会不会没效果", "有没有效果"))
-    happened = any(term in text for term in ("做完", "做了", "术后", "恢复", "反黑", "红肿", "流脓", "出血", "疼", "痛"))
-    return happened or ("没效果" in text and not pre_sales_worry)
+    hypothetical = any(term in text for term in ("会不会", "怕", "担心", "如果", "万一", "有没有风险", "怎么办"))
+    actual_after_service = any(
+        term in text
+        for term in (
+            "已经做",
+            "做过",
+            "做完了",
+            "做了之后",
+            "术后",
+            "恢复期",
+            "昨天做",
+            "前天做",
+            "刚做",
+            "现在不舒服",
+            "一直不舒服",
+            "退款",
+            "退钱",
+            "投诉",
+            "维权",
+        )
+    )
+    symptom_after_service = actual_after_service and any(
+        term in text for term in ("没效果", "反黑", "红肿", "流脓", "出血", "疼", "痛", "不满意")
+    )
+    if hypothetical and not symptom_after_service:
+        return False
+    if symptom_after_service:
+        return True
+    return "没效果" in text and not any(term in text for term in ("怕没效果", "担心没效果", "会不会没效果", "如果没效果"))
 
 
 def _is_store_detail_turn(state: AgentState) -> bool:

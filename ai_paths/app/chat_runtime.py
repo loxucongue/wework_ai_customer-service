@@ -231,7 +231,7 @@ class ChatRuntime:
                 final_state["async_final_reply"] = send_result
                 _set_async_final_control(final_state, send_result)
                 _append_async_send_trace(final_state, send_result)
-                if send_result.get("status") == "sent":
+                if send_result.get("status") == "sent" and not bool(final_state.get("test_isolated")):
                     safe_repository_call(
                         self._repository.add_assistant_message,
                         conversation_id=conversation_id,
@@ -296,6 +296,7 @@ class ChatRuntime:
 
     @staticmethod
     def _initial_state(request: ChatRequest, request_id: str, request_context: dict[str, Any]) -> AgentState:
+        test_isolated = bool(request_context.get("test_isolated"))
         return {
             "request_id": request_id,
             "customer_id": request.customer_id,
@@ -314,6 +315,7 @@ class ChatRuntime:
             "appointment_id": request.appointment_id,
             "appointment_time": request.appointment_time,
             "request_context": request_context,
+            "test_isolated": test_isolated,
             "trace": [],
             "errors": [],
         }
@@ -364,7 +366,7 @@ class ChatRuntime:
                 detail="Final reply model failed or produced no customer-facing reply.",
             )
         reply_messages = [ReplyMessage(**message) for message in raw_reply_messages]
-        if reply_messages:
+        if reply_messages and not bool(final_state.get("test_isolated")):
             safe_repository_call(
                 self._repository.add_assistant_message,
                 conversation_id=conversation_id,
@@ -377,6 +379,14 @@ class ChatRuntime:
                 customer_id=str(request.customer_id or ""),
                 reply_messages=[message.model_dump() for message in reply_messages],
             )
+        elif reply_messages:
+            final_state["case_image_send_record"] = {
+                "status": "skipped",
+                "reason": "test_isolated",
+                "image_message_count": len(
+                    [message for message in reply_messages if message.type == "image"]
+                ),
+            }
         log_path = self._trace_logger.write_run(final_state)
         safe_repository_call(
             self._repository.save_run,

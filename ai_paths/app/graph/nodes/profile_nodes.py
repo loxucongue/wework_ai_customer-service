@@ -32,6 +32,17 @@ def create_profile_event_extractor_node(
                 "planner_tasks": planner_task_views(state),
             },
         ) as span:
+            if state.get("test_isolated"):
+                output = {
+                    "profile_update": {},
+                    "event_updates": [],
+                    "saved_memory": {},
+                    "memory_error": None,
+                    "profile_extraction_skipped": "test_isolated",
+                    "trace": state.get("trace", []),
+                }
+                span["output_snapshot"] = output
+                return output
             profile_update = extract_profile_update(state)
             event_updates = extract_event_updates(state, profile_update)
             llm_profile_call: dict[str, Any] | None = None
