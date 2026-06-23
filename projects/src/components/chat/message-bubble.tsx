@@ -2,7 +2,7 @@
 
 import type { ChatMessage } from "@/types/chat";
 import { cn } from "@/lib/utils";
-import { Bot, User, Tag, Layers, GitBranch, Timer, Bug, Database, ExternalLink } from "lucide-react";
+import { Bot, User, Tag, Layers, GitBranch, Timer, Bug, Database, ExternalLink, CreditCard } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { translateIntent, translateScene, translateSubflow } from "@/lib/workflow-maps";
 
@@ -68,7 +68,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         )}
 
         {/* Message bubble */}
-        {message.content && message.contentType !== "image" && (
+        {message.content && !["image", "payment_collection"].includes(message.contentType || "") && (
           <div
             className={cn(
               "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
@@ -78,6 +78,30 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             )}
           >
             {message.content}
+          </div>
+        )}
+
+        {!isUser && message.contentType === "payment_collection" && message.paymentCollection && (
+          <div className="w-full max-w-[360px] rounded-xl border bg-background p-4 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <CreditCard className="h-5 w-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-foreground">预约金收款</div>
+                <div className="mt-1 text-2xl font-semibold tracking-normal">
+                  ¥{message.paymentCollection.amount}
+                </div>
+                {message.paymentCollection.remark && (
+                  <div className="mt-2 rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                    {message.paymentCollection.remark}
+                  </div>
+                )}
+                <div className="mt-3 text-xs text-muted-foreground">
+                  正式系统会按该消息类型生成收款入口。
+                </div>
+              </div>
+            </div>
           </div>
         )}
 

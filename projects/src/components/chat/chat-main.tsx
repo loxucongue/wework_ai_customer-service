@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Activity, Bot, Sparkles, Settings, UserRoundX } from "lucide-react";
+import { Activity, Bot, Sparkles, UserRoundX } from "lucide-react";
 import Link from "next/link";
 import { ChatSidebar } from "./chat-sidebar";
 import { ChatInput } from "./chat-input";
@@ -14,6 +14,13 @@ const TEST_CONVERSATION_PREFIX = "codex_test_";
 const TEST_CONVERSATION_TITLE = "Codex测试-";
 const LEGACY_TEST_CONVERSATION_PREFIX = "frontend_visible_test_";
 const LEGACY_TEST_CONVERSATION_TITLE = "Codex可视化回归测试";
+const FRONTEND_TEST_WECHAT_CONTEXT = {
+  customer_id: "21325693",
+  corp_id: "ww943af61cd5d2afe4",
+  user_id: 7294,
+  wechat: "CS001",
+  external_userid: "wmanzqsqaazhreyfc0b31nfxj0xdoskq",
+};
 
 function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -32,6 +39,18 @@ function fileToDataUrl(file: File): Promise<string> {
     reader.onerror = () => reject(reader.error || new Error("Failed to read image file"));
     reader.readAsDataURL(file);
   });
+}
+
+function paymentCollectionFromContent(content: unknown) {
+  if (!content || typeof content !== "object" || Array.isArray(content)) {
+    return undefined;
+  }
+  const record = content as Record<string, unknown>;
+  const amount = Number(record.amount);
+  return {
+    amount: Number.isFinite(amount) ? amount : 10,
+    remark: typeof record.remark === "string" ? record.remark : "",
+  };
 }
 
 function loadConversations(): Conversation[] {
@@ -336,8 +355,20 @@ export function ChatMain() {
 
         const requestBody: Record<string, unknown> = {
           content,
-          customer_id: currentId,
+          customer_id: FRONTEND_TEST_WECHAT_CONTEXT.customer_id,
+          corp_id: FRONTEND_TEST_WECHAT_CONTEXT.corp_id,
           conversation_history: historyMessages,
+          user_id: FRONTEND_TEST_WECHAT_CONTEXT.user_id,
+          wechat: FRONTEND_TEST_WECHAT_CONTEXT.wechat,
+          external_userid: FRONTEND_TEST_WECHAT_CONTEXT.external_userid,
+          customer_add_wechat_id: null,
+          request_context: {
+            source_protocol: "frontend-test",
+            conversation_id: currentId,
+            raw_message_count: String(historyMessages.length + 1),
+            ...FRONTEND_TEST_WECHAT_CONTEXT,
+          },
+          conversation_history_count: historyMessages.length,
         };
         if (imageUrl) {
           requestBody.file_image = imageUrl;
@@ -424,11 +455,15 @@ export function ChatMain() {
           for (let i = 0; i < sorted.length; i++) {
             const item = sorted[i];
             if (!item.content) continue;
+            const contentType = (item.type as "text" | "image" | "human_handoff" | "payment_collection") || "text";
+            const paymentCollection =
+              contentType === "payment_collection" ? paymentCollectionFromContent(item.content) : undefined;
             assistantMessages.push({
               id: generateId(),
               role: "assistant",
-              content: item.content,
-              contentType: (item.type as "text" | "image" | "human_handoff") || "text",
+              content: typeof item.content === "string" ? item.content : "",
+              contentType,
+              paymentCollection,
               timestamp: Date.now(),
               duration: elapsed,
               meta: i === 0 && Object.keys(meta).length > 0 ? meta : undefined,
@@ -525,15 +560,6 @@ export function ChatMain() {
               >
                 <Activity className="h-3.5 w-3.5" />
                 日志
-              </button>
-            </Link>
-            <Link href="/config">
-              <button
-                type="button"
-                className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-              >
-                <Settings className="h-3.5 w-3.5" />
-                配置
               </button>
             </Link>
           </div>

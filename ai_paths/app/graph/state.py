@@ -48,7 +48,15 @@ class AgentState(TypedDict, total=False):
     appointment_cache: dict[str, Any]
     customer_context: dict[str, Any]
     customer_context_error: str | None
+    customer_store_knowledge: dict[str, Any]
+    sales_talk_reference: dict[str, Any]
 
+    planner_decision: str
+    planner_stage: str
+    planner_sub_rule_id: str
+    planner_reply_messages: list[dict[str, Any]]
+    planner_tool_calls: list[dict[str, Any]]
+    reply_constraints: list[str]
     primary_task: dict[str, Any]
     secondary_tasks: list[dict[str, Any]]
     required_tools: list[dict[str, Any]]
@@ -59,18 +67,13 @@ class AgentState(TypedDict, total=False):
     tool_results: dict[str, Any]
     fact_envelope: dict[str, Any]
     reply_messages: list[dict[str, Any]]
+    case_image_send_record: dict[str, Any]
     planner_source: str
     policy_id: str
     policy_family_id: str
     exact_policy_id: str
     policy_match_level: str
     policy_version: str
-    scene_guidance_candidates: list[dict[str, Any]]
-    scene_guidance_injected: bool
-    scene_guidance_context: list[dict[str, Any]]
-    active_scene_id: str
-    active_scene_match_level: str
-    active_scene_score: float
     reply_source: str
     postprocess_changed: bool
     postprocess_reasons: list[str]

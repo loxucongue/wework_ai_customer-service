@@ -3,8 +3,12 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
-  /** 消息内容类型：text、image 或 human_handoff */
-  contentType?: "text" | "image" | "human_handoff";
+  /** 消息内容类型：text、image、human_handoff 或 payment_collection */
+  contentType?: "text" | "image" | "human_handoff" | "payment_collection";
+  paymentCollection?: {
+    amount: number;
+    remark: string;
+  };
   /** 用户上传的图片 URL（对象存储签名链接） */
   imageUrl?: string;
   /** 回答耗时（毫秒），仅 assistant 消息有 */
@@ -35,7 +39,7 @@ export interface Conversation {
 }
 
 export interface WorkflowOutputItem {
-  content: string;
+  content: string | Record<string, unknown>;
   order: number;
   type: string;
 }

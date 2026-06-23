@@ -7,6 +7,13 @@ import {
 } from "../_lib/ai-paths";
 
 const COZE_MAIN_WORKFLOW_ID = "7639623828015988742";
+const FRONTEND_TEST_WECHAT_CONTEXT = {
+  customer_id: "21325693",
+  corp_id: "ww943af61cd5d2afe4",
+  user_id: 7294,
+  wechat: "CS001",
+  external_userid: "wmanzqsqaazhreyfc0b31nfxj0xdoskq",
+};
 
 export async function POST(request: NextRequest) {
   const { body, error } = await parseChatRequest(request);
@@ -22,7 +29,25 @@ export async function POST(request: NextRequest) {
     return callCozeMainWorkflow(body);
   }
 
-  return proxyAiPathsChatForFrontend(body);
+  return proxyAiPathsChatForFrontend(withFrontendTestContext(body));
+}
+
+function withFrontendTestContext(body: ChatRequestBody): ChatRequestBody {
+  const requestContext = {
+    ...(body.request_context || {}),
+    source_protocol: body.request_context?.source_protocol || "frontend-test",
+    conversation_id: body.request_context?.conversation_id || body.customer_id,
+    raw_message_count:
+      body.request_context?.raw_message_count ||
+      String((body.conversation_history || []).length + 1),
+    ...FRONTEND_TEST_WECHAT_CONTEXT,
+  };
+  return {
+    ...body,
+    ...FRONTEND_TEST_WECHAT_CONTEXT,
+    conversation_history_count: body.conversation_history_count ?? body.conversation_history?.length ?? 0,
+    request_context: requestContext,
+  };
 }
 
 async function callCozeMainWorkflow(body: ChatRequestBody) {

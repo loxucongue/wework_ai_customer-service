@@ -59,15 +59,6 @@ def tags_from_state(state: dict[str, Any]) -> list[str]:
     exact_policy_id = str(state.get("exact_policy_id") or "").strip()
     if exact_policy_id:
         tags.append(exact_policy_id)
-    active_scene_id = str(state.get("active_scene_id") or "").strip()
-    if active_scene_id:
-        tags.append(active_scene_id)
-    for item in state.get("scene_guidance_candidates") or []:
-        if not isinstance(item, dict):
-            continue
-        scene_id = str(item.get("scene_id") or "").strip()
-        if scene_id:
-            tags.append(scene_id)
     for item in planner_task_views(state):
         intent = str(item.get("intent") or "").strip()
         if intent:

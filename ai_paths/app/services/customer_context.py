@@ -67,13 +67,24 @@ class CustomerContextService:
         if not info.get("id"):
             return {}
         platform_customer_id = str(info.get("id") or customer_id or "")
-        orders = self._platform_client.list_orders(customer_id=platform_customer_id, page=1, limit=10, request_context=request_context)
+        scoped_context = dict(request_context)
+        scoped_context["input_customer_id"] = request_context.get("customer_id") or customer_id
+        scoped_context["platform_customer_id"] = platform_customer_id
+        if info.get("customer_add_wechat_id") not in (None, ""):
+            scoped_context["customer_add_wechat_id"] = info.get("customer_add_wechat_id")
+        orders = self._platform_client.list_orders(customer_id=platform_customer_id, page=1, limit=10, request_context=scoped_context)
         appointment = appointment_from_request_context(request_context) or appointment_from_orders(orders)
         return {
             "customer_id": platform_customer_id,
             "source": "platform_agent",
+            "identity": {
+                "input_customer_id": request_context.get("customer_id") or customer_id,
+                "platform_customer_id": platform_customer_id,
+                "customer_add_wechat_id": info.get("customer_add_wechat_id"),
+                "external_userid": request_context.get("external_userid"),
+            },
             "customer": compact_customer(info),
             "appointment": appointment,
             "orders": [compact_order(order) for order in orders[:5]],
-            "request_context": compact_request_context(request_context),
+            "request_context": compact_request_context(scoped_context),
         }

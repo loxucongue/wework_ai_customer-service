@@ -85,7 +85,7 @@ foreach ($r in @($results)) {
 
   if (Has-Any $text @("预约", "到店", "什么时候方便", "周几.*来", "帮你登记", "保留.*名额")) {
     $summary.likely_appointment += 1
-    $issues.Add("likely_appointment_push")
+    $issues.Add("likely_payment_collection")
   }
 
   if (Has-Any $text @("门店", "地址", "位置", "你在哪个城市", "附近门店", "路线")) {

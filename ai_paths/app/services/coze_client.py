@@ -14,6 +14,7 @@ class CozeClient:
         self.settings = settings
         self.oauth_provider = CozeOAuthTokenProvider(settings)
         self._client: httpx.AsyncClient | None = None
+        self._client_loop_id: int | None = None
 
     async def run_workflow(
         self,
@@ -50,11 +51,13 @@ class CozeClient:
         raise RuntimeError("Coze workflow request failed without response")
 
     def _http_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
+        loop_id = id(asyncio.get_running_loop())
+        if self._client is None or self._client.is_closed or self._client_loop_id != loop_id:
             self._client = httpx.AsyncClient(
                 timeout=60,
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
             )
+            self._client_loop_id = loop_id
         return self._client
 
     async def aclose(self) -> None:

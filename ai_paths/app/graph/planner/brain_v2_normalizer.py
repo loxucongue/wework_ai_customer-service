@@ -7,32 +7,41 @@ from app.graph.state import AgentState
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
-    primary_raw = model_payload.get("primary_task") if isinstance(model_payload, dict) else {}
-    secondary_raw = model_payload.get("secondary_tasks") if isinstance(model_payload, dict) else []
-    reply_strategy_raw = model_payload.get("reply_strategy") if isinstance(model_payload, dict) else {}
+    decision = _normalize_decision(model_payload.get("decision") if isinstance(model_payload, dict) else "")
+    stage = str(model_payload.get("stage") or "").strip() if isinstance(model_payload, dict) else ""
+    sub_rule_id = str(model_payload.get("sub_rule_id") or "").strip() if isinstance(model_payload, dict) else ""
+    planner_reply_messages = _normalize_reply_messages(model_payload.get("reply_messages") if isinstance(model_payload, dict) else [])
+    planner_tool_calls = _normalize_tools(model_payload.get("tool_calls") if isinstance(model_payload, dict) else [])
+    reply_constraints = _clean_str_list(model_payload.get("reply_constraints") if isinstance(model_payload, dict) else [])
     handoff_raw = model_payload.get("handoff") if isinstance(model_payload, dict) else {}
     memory_update_raw = model_payload.get("memory_update_hint") if isinstance(model_payload, dict) else {}
 
-    primary_task = _normalize_task(primary_raw, default_priority=1)
-    secondary_tasks = [
-        _normalize_task(item, default_priority=index + 2)
-        for index, item in enumerate(secondary_raw if isinstance(secondary_raw, list) else [])
-        if isinstance(item, dict)
-    ]
-    secondary_tasks = [item for item in secondary_tasks if item][:2]
+    primary_task = _task_from_new_contract(state, decision=decision, stage=stage, sub_rule_id=sub_rule_id)
+    secondary_tasks: list[dict[str, Any]] = []
 
     if not primary_task:
         raise ValueError("Planner Brain missing valid primary_task")
 
     all_tasks = [primary_task, *secondary_tasks]
-    reply_strategy = _normalize_reply_strategy(reply_strategy_raw, all_tasks)
-    handoff = _normalize_handoff(handoff_raw, primary_task, secondary_tasks)
-    required_tools = _dedupe_tools([tool for task in all_tasks for tool in task.get("tools", [])])
+    reply_strategy = _normalize_reply_strategy({}, all_tasks)
+    task_tools = [tool for task in all_tasks for tool in task.get("tools", [])]
+    required_tools = _dedupe_tools([*planner_tool_calls, *task_tools])
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
-    tool_policy_violations = _tool_policy_violations(all_tasks, required_tools)
+    required_tools = _expand_distance_candidate_tools(required_tools, state)
+    handoff = _normalize_handoff(handoff_raw, primary_task, secondary_tasks, required_tools)
+    tool_policy_violations = [
+        *_rejected_tool_violations(model_payload.get("tool_calls") if isinstance(model_payload, dict) else []),
+        *_tool_policy_violations(all_tasks, required_tools),
+    ]
     memory_update_hint = _normalize_memory_hint(memory_update_raw)
 
     return {
+        "planner_decision": decision,
+        "planner_stage": stage,
+        "planner_sub_rule_id": sub_rule_id,
+        "planner_reply_messages": planner_reply_messages,
+        "planner_tool_calls": [tool for tool in required_tools if tool.get("name") != "no_tool"],
+        "reply_constraints": reply_constraints,
         "primary_task": primary_task,
         "secondary_tasks": secondary_tasks,
         "required_tools": required_tools,
@@ -44,64 +53,83 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
 
 
 def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
-    content = str(state.get("normalized_content") or "").strip()
-    primary_task = {
-        "type": "human_request",
-        "subtype": "planner_unavailable_or_guardrail",
-        "policy_hint": "HUMAN_HANDOFF_PROFESSIONAL_ASSIST",
-        "scene": "S7_dealed_active",
-        "subflow": "HUMAN_HANDOFF",
-        "customer_need": content[:120] or "Needs a professional colleague to continue handling",
-        "answer_goal": "Acknowledge the customer's current message and arrange professional assistance without making up facts",
-        "priority": 1,
-        "known_info": [],
-        "missing_info": [],
-        "must_answer": ["Current user question"],
-        "must_avoid": ["Made-up facts", "Guaranteed results", "Code-side business judgment"],
-        "should_ask": False,
-        "tools": [{"name": "professional_assist", "purpose": "Planner was unavailable or guardrail required professional follow-up"}],
-    }
     return build_planner_plan_v2(
         state,
         {
-            "primary_task": primary_task,
-            "secondary_tasks": [],
-            "reply_strategy": {
-                "tone": "Natural, concise, like a real customer-service rep named \u5c0f\u8d1d",
-                "must_answer": ["Current user question"],
-                "can_push": "",
-                "must_avoid": ["Made-up facts", "Guaranteed results", "Internal process exposure"],
-                "max_questions": 0,
-            },
+            "decision": "need_tools",
+            "stage": "S4",
+            "sub_rule_id": "S4_COMPLAINT_REFUND",
+            "reply_messages": [{"type": "text", "order": 1, "content": {"text": "这个情况我先帮您记录清楚，让专业同事继续核对。"}}],
+            "tool_calls": [{"name": "professional_assist", "purpose": "Planner was unavailable or guardrail required professional follow-up"}],
             "handoff": {"needed": True, "reason": "Planner unavailable or hard guardrail requires professional assistance"},
-            "memory_update_hint": {},
         },
     )
 
 
-def _normalize_task(raw: Any, *, default_priority: int) -> dict[str, Any]:
-    if not isinstance(raw, dict):
-        return {}
-    try:
-        priority = int(raw.get("priority", default_priority))
-    except (TypeError, ValueError):
-        priority = default_priority
-    tools = _dedupe_tools(_normalize_tools(raw.get("tools") or []))
+def _normalize_decision(value: Any) -> str:
+    decision = str(value or "").strip()
+    return decision if decision in {"direct_reply", "need_tools", "no_reply"} else "need_tools"
+
+
+def _normalize_reply_messages(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for item in value[:4]:
+        if not isinstance(item, dict):
+            continue
+        msg_type = str(item.get("type") or "text").strip()
+        if msg_type not in {"text", "image", "payment_collection", "human_handoff"}:
+            msg_type = "text"
+        content = item.get("content")
+        if msg_type == "payment_collection":
+            output.append({"type": "payment_collection", "order": len(output) + 1, "content": {"amount": 10, "remark": ""}})
+            continue
+        text = _message_text(content)
+        if text:
+            key = "handoff_reason" if msg_type == "human_handoff" else ("url" if msg_type == "image" else "text")
+            output.append({"type": msg_type, "order": len(output) + 1, "content": {key: text}})
+    return output
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, dict):
+        for key in ("text", "url", "handoff_reason"):
+            if content.get(key):
+                return str(content.get(key) or "").strip()
+        return ""
+    return str(content or "").strip()
+
+
+def _task_from_new_contract(state: AgentState, *, decision: str, stage: str, sub_rule_id: str) -> dict[str, Any]:
+    content = str(state.get("normalized_content") or "").strip()
+    stage_scene = {
+        "S1": "S1_opening_consult",
+        "S2": "S2_store_address",
+        "S3": "S3_price_payment",
+        "S4": "S4_followup_after_sales",
+    }.get(stage, "S1_opening_consult")
+    task_type = {
+        "S1": "project_consult",
+        "S2": "store_inquiry",
+        "S3": "price_inquiry",
+        "S4": "after_sales",
+    }.get(stage, "general_consult")
     return {
-        "type": str(raw.get("type") or "").strip(),
-        "subtype": str(raw.get("subtype") or "").strip(),
-        "policy_hint": str(raw.get("policy_hint") or "").strip(),
-        "scene": str(raw.get("scene") or "").strip(),
-        "subflow": str(raw.get("subflow") or "").strip(),
-        "customer_need": str(raw.get("customer_need") or "").strip(),
-        "answer_goal": str(raw.get("answer_goal") or "").strip(),
-        "priority": priority,
-        "known_info": _clean_str_list(raw.get("known_info") or []),
-        "missing_info": _clean_str_list(raw.get("missing_info") or []),
-        "must_answer": _clean_str_list(raw.get("must_answer") or []),
-        "must_avoid": _clean_str_list(raw.get("must_avoid") or []),
-        "should_ask": bool(raw.get("should_ask")),
-        "tools": tools or [{"name": "no_tool", "purpose": "This turn can be acknowledged directly"}],
+        "type": task_type,
+        "subtype": sub_rule_id.lower(),
+        "policy_hint": sub_rule_id,
+        "scene": stage_scene,
+        "subflow": decision,
+        "customer_need": content[:120],
+        "answer_goal": "Follow the four-stage business rules and answer with known facts only",
+        "priority": 1,
+        "known_info": [],
+        "missing_info": [],
+        "must_answer": [content[:120]] if content else [],
+        "must_avoid": ["内部项目代号", "编造事实"],
+        "should_ask": False,
+        "tools": [{"name": "no_tool", "purpose": "Planner new contract did not request tools"}],
     }
 
 
@@ -124,8 +152,85 @@ def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
         query = str(item.get("query") or "").strip()
         if query:
             tool["query"] = query
+        for key in ("origin", "candidate_store_ids", "store_id", "date"):
+            if key in item:
+                tool[key] = item[key]
         tools.append(tool)
     return tools
+
+
+def _expand_distance_candidate_tools(tools: list[dict[str, Any]], state: AgentState) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict) or str(tool.get("name") or "").strip() != "distance_calculate":
+            expanded.append(tool)
+            continue
+        normalized = dict(tool)
+        candidate_ids = _string_list(normalized.get("candidate_store_ids"))
+        city = _distance_origin_city(normalized, state, candidate_ids)
+        city_ids = _store_ids_for_city(state, city)
+        if city_ids and len(candidate_ids) < len(city_ids):
+            normalized["candidate_store_ids"] = city_ids
+            normalized["candidate_scope"] = "customer_store_knowledge.city"
+            normalized["candidate_city"] = city
+            normalized["candidate_expanded_from"] = candidate_ids
+        elif candidate_ids:
+            normalized["candidate_store_ids"] = candidate_ids
+        expanded.append(normalized)
+    return expanded
+
+
+def _distance_origin_city(tool: dict[str, Any], state: AgentState, candidate_ids: list[str]) -> str:
+    text = " ".join(
+        str(value or "")
+        for value in (
+            tool.get("origin"),
+            tool.get("address"),
+            tool.get("query"),
+            state.get("normalized_content"),
+        )
+    )
+    stores = _customer_scope_stores(state)
+    city_names = sorted({str(store.get("city") or "").strip() for store in stores if store.get("city")}, key=len, reverse=True)
+    for city in city_names:
+        short_city = city[:-1] if city.endswith("市") else city
+        if city and (city in text or (short_city and short_city in text)):
+            return city
+    if candidate_ids:
+        candidate_set = set(candidate_ids)
+        candidate_cities = [
+            str(store.get("city") or "").strip()
+            for store in stores
+            if str(store.get("store_id") or "") in candidate_set and store.get("city")
+        ]
+        if candidate_cities:
+            return candidate_cities[0]
+    return ""
+
+
+def _store_ids_for_city(state: AgentState, city: str) -> list[str]:
+    if not city:
+        return []
+    ids: list[str] = []
+    for store in _customer_scope_stores(state):
+        if str(store.get("city") or "").strip() != city:
+            continue
+        store_id = str(store.get("store_id") or "").strip()
+        if store_id:
+            ids.append(store_id)
+    return list(dict.fromkeys(ids))
+
+
+def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    return [store for store in stores if isinstance(store, dict)]
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := str(item or "").strip())]
 
 
 def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -135,16 +240,6 @@ def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[di
     for tool in concrete_tools:
         name = str(tool.get("name") or "").strip()
         query = str(tool.get("query") or "").strip()
-        if name == "pricing_rules" and not query:
-            violations.append(
-                {
-                    "task_type": "tool_argument",
-                    "subtype": name,
-                    "missing": f"{name}_missing_query",
-                    "note": f"Every {name} tool must include a concrete query; code will not infer missing search terms.",
-                }
-            )
-            continue
         if name != "kb_search":
             continue
         kb_name = str(tool.get("kb_name") or "").strip()
@@ -175,23 +270,16 @@ def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[di
     for task in tasks:
         task_type = str(task.get("type") or "").strip()
         missing: list[str] = []
-        if task_type == "price_inquiry":
-            if not has_tool("pricing_rules"):
-                missing.append("pricing_rules")
-        elif task_type == "store_inquiry":
-            if not has_tool("store_lookup"):
-                missing.append("store_lookup")
-        elif task_type == "case_request":
+        if task_type == "case_request":
             if not has_tool("kb_search", kb_name="case_studies"):
                 missing.append("kb_search(case_studies)")
-        elif task_type == "competitor_compare":
-            if not has_tool("kb_search", kb_name="sales_talk_qa"):
-                missing.append("kb_search(sales_talk_qa)")
         elif task_type in {"appointment_status", "appointment_change", "appointment_cancel"}:
             if not has_tool("appointment_record_query"):
                 missing.append("appointment_record_query")
         elif task_type == "appointment":
-            if not (has_tool("available_time") or has_tool("appointment_create") or has_tool("appointment_record_query")):
+            if not _appointment_can_send_payment_collection(task) and not (
+                has_tool("available_time") or has_tool("appointment_record_query")
+            ):
                 missing.append("appointment_fact_tool")
 
         if missing:
@@ -206,11 +294,32 @@ def _tool_policy_violations(tasks: list[dict[str, Any]], required_tools: list[di
     return violations
 
 
+def _rejected_tool_violations(raw_tools: Any) -> list[dict[str, str]]:
+    if not isinstance(raw_tools, list):
+        return []
+    violations: list[dict[str, str]] = []
+    for item in raw_tools:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        kb_name = str(item.get("kb_name") or "").strip()
+        if name == "kb_search" and kb_name and kb_name not in ALLOWED_KBS:
+            violations.append(
+                {
+                    "task_type": "planner_tool_rejected",
+                    "subtype": "kb_search",
+                    "missing": f"unsupported_kb:{kb_name}",
+                    "note": "Planner may only call kb_search(case_studies). sales_talk_qa is preloaded as sales_talk_reference before model input.",
+                }
+            )
+    return violations
+
+
 def _normalize_reply_strategy(raw: Any, tasks: list[dict[str, Any]]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
     primary = tasks[0] if tasks else {}
-    tone = str(raw.get("tone") or "").strip() or "Natural, concise, like a real customer-service rep named \u5c0f\u8d1d"
+    tone = str(raw.get("tone") or "").strip() or "Natural, concise, like a real customer-service rep"
     must_answer = _clean_str_list(raw.get("must_answer") or []) or list(primary.get("must_answer") or [])
     can_push = str(raw.get("can_push") or "").strip()
     must_avoid = _clean_str_list(raw.get("must_avoid") or []) or list(primary.get("must_avoid") or [])
@@ -227,13 +336,28 @@ def _normalize_reply_strategy(raw: Any, tasks: list[dict[str, Any]]) -> dict[str
     }
 
 
-def _normalize_handoff(raw: Any, primary_task: dict[str, Any], secondary_tasks: list[dict[str, Any]]) -> dict[str, Any]:
+def _appointment_can_send_payment_collection(task: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(task.get(key) or "")
+        for key in ("subtype", "policy_hint", "customer_need", "answer_goal", "must_answer")
+    )
+    return any(term in text for term in ("预约金", "报名", "付款入口", "收款入口", "锁名额", "交10", "10元"))
+
+
+def _normalize_handoff(
+    raw: Any,
+    primary_task: dict[str, Any],
+    secondary_tasks: list[dict[str, Any]],
+    required_tools: list[dict[str, Any]],
+) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
     needed = bool(raw.get("needed"))
     if str(primary_task.get("type") or "").strip() in {"human_request", "complaint_refund"}:
         needed = True
     if any(str(item.get("type") or "").strip() in {"human_request", "complaint_refund"} for item in secondary_tasks):
+        needed = True
+    if any(str(tool.get("name") or "").strip() == "professional_assist" for tool in required_tools if isinstance(tool, dict)):
         needed = True
     return {
         "needed": needed,
@@ -271,6 +395,19 @@ def _dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             normalized["kb_name"] = kb_name
         if query:
             normalized["query"] = query
+        for extra_key in (
+            "origin",
+            "destination",
+            "candidate_store_ids",
+            "store_id",
+            "store_name",
+            "date",
+            "time",
+            "address",
+            "reason",
+        ):
+            if extra_key in item:
+                normalized[extra_key] = item.get(extra_key)
         unique.append(normalized)
     return unique
 

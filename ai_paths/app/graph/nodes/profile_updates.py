@@ -6,7 +6,6 @@ from app.graph.nodes.common import dedupe_strings
 from app.graph.nodes.image_info import has_image_concern
 from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.profile_update_summary import decision_stage, intent_level, profile_summary
-from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.store_context import extract_city
 from app.graph.planner.runtime_plan import planner_task_views
 from app.graph.state import AgentState
@@ -17,7 +16,6 @@ def extract_profile_update(
     state: AgentState,
     *,
     contextual_price_project: Callable[[AgentState], str],
-    extract_project: Callable[[str], str],
     known_visible_concerns: Callable[[AgentState], list[str]],
     project_direction_names: Callable[[AgentState], list[str]],
 ) -> dict[str, object]:
@@ -41,7 +39,6 @@ def extract_profile_update(
         content,
         state,
         contextual_price_project,
-        extract_project,
         project_direction_names,
         projects,
     )
@@ -142,18 +139,15 @@ def _collect_project_signals(
     content: str,
     state: AgentState,
     contextual_price_project: Callable[[AgentState], str],
-    extract_project: Callable[[str], str],
     project_direction_names: Callable[[AgentState], list[str]],
     projects: list[str],
 ) -> None:
     for project in PROJECT_KEYWORDS:
         if project in content and project not in projects:
             projects.append(project)
-    direct_project = contextual_price_project(state) or extract_project(content)
+    direct_project = contextual_price_project(state)
     if direct_project and direct_project not in projects:
         projects.append(direct_project)
-    if case_request_lacks_specific_context(state):
-        return
     for direction in project_direction_names(state):
         if direction and direction not in projects:
             projects.append(direction)

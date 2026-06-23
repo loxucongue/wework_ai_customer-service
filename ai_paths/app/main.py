@@ -1,21 +1,22 @@
 ﻿from typing import Any
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, status
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from app.chat_runtime import ChatRuntime
 from app.config import get_settings
-from app.graph.graph_builder import build_graph
+from app.graph.graph_builder import build_reply_graphs
 from app.schemas import ChatRequest, ChatResponse
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
+from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
-from app.services.appointment_opening_service import AppointmentOpeningService
+from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_agent_client import PlatformAgentClient
-from app.services.pricing_rules_repository import PricingRulesRepository
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.store_service import StoreService
+from app.services.store_snapshot_service import StoreSnapshotService
 from app.services.trace_logger import TraceLogger
 from app.services.workflow_compat import (
     normalize_workflow_request,
@@ -30,22 +31,31 @@ repository = AppRepository(sqlite_store)
 coze_client = CozeClient(settings)
 model_client = ModelClient(settings)
 memory_store = CustomerMemoryStore(settings, repository)
-pricing_rules_repository = PricingRulesRepository(sqlite_store)
 platform_agent_client = PlatformAgentClient(settings)
+outreach_send_client = OutreachSendClient(settings)
 customer_context_service = CustomerContextService(platform_agent_client)
+store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
+customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_client, store_snapshot_service)
 store_service = StoreService(platform_agent_client)
-appointment_opening_service = AppointmentOpeningService(platform_agent_client)
-compiled_graph = build_graph(
+reply_graphs = build_reply_graphs(
     coze_client,
     trace_logger,
     model_client,
     memory_store,
-    pricing_rules_repository,
     customer_context_service,
+    customer_store_knowledge_service,
     store_service,
-    appointment_opening_service,
 )
-chat_runtime = ChatRuntime(compiled_graph, trace_logger, repository)
+compiled_graph = reply_graphs.full_graph
+chat_runtime = ChatRuntime(
+    full_graph=reply_graphs.full_graph,
+    planner_graph=reply_graphs.planner_graph,
+    finalize_graph=reply_graphs.finalize_graph,
+    trace_logger=trace_logger,
+    repository=repository,
+    outreach_send_client=outreach_send_client,
+    memory_store=memory_store,
+)
 
 app = FastAPI(title=settings.app_name)
 
@@ -59,6 +69,7 @@ async def startup() -> None:
 async def shutdown() -> None:
     await model_client.aclose()
     await coze_client.aclose()
+    await outreach_send_client.aclose()
 
 
 @app.get("/health")
@@ -104,14 +115,29 @@ async def require_external_api_key(authorization: str | None = Header(default=No
         )
 
 
+@app.post("/admin/store-snapshot/refresh", dependencies=[Depends(require_api_key)])
+async def admin_refresh_store_snapshot() -> dict[str, Any]:
+    snapshot = store_snapshot_service.refresh_snapshot(allow_existing_on_error=False)
+    return {
+        "status": "ok" if not snapshot.get("refresh_error") else "error",
+        "generated_at": snapshot.get("generated_at", ""),
+        "store_count": snapshot.get("store_count", 0),
+        "refresh_error": snapshot.get("refresh_error", ""),
+    }
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, _: None = Depends(require_api_key)) -> ChatResponse:
     return await run_chat(request)
 
 
 @app.post("/reply", response_model=ChatResponse)
-async def reply(request: ChatRequest, _: None = Depends(require_external_api_key)) -> ChatResponse:
-    return await run_chat(request)
+async def reply(
+    request: ChatRequest,
+    background_tasks: BackgroundTasks,
+    _: None = Depends(require_external_api_key),
+) -> ChatResponse:
+    return await chat_runtime.run_platform_reply(request, background_tasks=background_tasks)
 
 
 @app.post("/chat/workflow-compatible")
@@ -125,17 +151,27 @@ async def chat_workflow_compatible(
 @app.post("/reply/workflow-compatible")
 async def reply_workflow_compatible(
     payload: dict[str, Any] = Body(...),
+    background_tasks: BackgroundTasks = None,
     _: None = Depends(require_external_api_key),
 ) -> JSONResponse:
-    return await workflow_compatible_reply(payload)
+    return await workflow_compatible_reply(payload, platform_async=True, background_tasks=background_tasks)
 
 
-async def workflow_compatible_reply(payload: dict[str, Any]) -> JSONResponse:
+async def workflow_compatible_reply(
+    payload: dict[str, Any],
+    *,
+    platform_async: bool = False,
+    background_tasks: BackgroundTasks | None = None,
+) -> JSONResponse:
     try:
         request = normalize_workflow_request(payload)
     except ValueError as exc:
         return JSONResponse(status_code=400, content=workflow_error_response(str(exc)))
-    response = await chat_runtime.run_chat(request)
+    response = (
+        await chat_runtime.run_platform_reply(request, background_tasks=background_tasks)
+        if platform_async
+        else await chat_runtime.run_chat(request)
+    )
     return JSONResponse(content=workflow_response_from_chat(response))
 
 

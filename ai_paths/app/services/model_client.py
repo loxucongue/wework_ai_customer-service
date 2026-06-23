@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from typing import Any, Literal
 
 import httpx
@@ -9,7 +10,7 @@ from app.config import Settings
 from app.services import model_response, model_selection
 
 
-ModelTier = Literal["fast", "balanced", "strong", "vision"]
+ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision"]
 
 
 class ModelClient:
@@ -18,6 +19,7 @@ class ModelClient:
         self.last_usage: dict[str, Any] | None = None
         self._client: httpx.AsyncClient | None = None
         self._client_timeout: int | None = None
+        self._client_loop_id: int | None = None
 
     @property
     def available(self) -> bool:
@@ -61,9 +63,12 @@ class ModelClient:
         for index, model in enumerate(self._model_names(tier)):
             payload = {
                 "model": model,
-                "messages": messages,
+                "messages": self._ensure_json_marker(messages),
                 "temperature": temperature,
+                "response_format": {"type": "json_object"},
             }
+            if self.settings.model_provider.lower() == "aliyun":
+                payload["enable_thinking"] = False
             try:
                 raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
                 return self._parse_json(self._extract_text(raw))
@@ -127,7 +132,11 @@ class ModelClient:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         client = self._http_client()
         response = await client.post(url, headers=headers, content=body)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = response.text[:800]
+            raise RuntimeError(f"Model HTTP {response.status_code}: {detail}") from exc
         raw = response.json()
         self.last_usage = {
             "provider": self.settings.model_provider,
@@ -141,12 +150,19 @@ class ModelClient:
 
     def _http_client(self) -> httpx.AsyncClient:
         timeout = int(self.settings.model_timeout_seconds)
-        if self._client is None or self._client.is_closed or self._client_timeout != timeout:
+        loop_id = id(asyncio.get_running_loop())
+        if (
+            self._client is None
+            or self._client.is_closed
+            or self._client_timeout != timeout
+            or self._client_loop_id != loop_id
+        ):
             self._client = httpx.AsyncClient(
                 timeout=timeout,
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
             )
             self._client_timeout = timeout
+            self._client_loop_id = loop_id
         return self._client
 
     async def aclose(self) -> None:
@@ -180,3 +196,11 @@ class ModelClient:
     @staticmethod
     def _parse_json(text: str) -> dict[str, Any]:
         return model_response.parse_json(text)
+
+    @staticmethod
+    def _ensure_json_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        combined = json.dumps(messages, ensure_ascii=False).lower()
+        if "json" in combined:
+            return messages
+        marker = {"role": "system", "content": "Return valid json only."}
+        return [marker, *messages]

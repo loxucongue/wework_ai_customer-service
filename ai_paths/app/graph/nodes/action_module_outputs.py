@@ -81,32 +81,37 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             missing_slots.extend(str(item) for item in (value.get("missing") or [])[:4])
             continue
 
-        if key == "pricing_rules":
-            rows = value.get("rows") or []
-            if rows:
-                structured_facts["price_facts"].extend(
-                    {
-                        "rule_id": str(item.get("rule_id") or ""),
-                        "project_name": str(item.get("project_name") or item.get("name") or ""),
-                        "project_code": str(item.get("project_code") or ""),
-                        "category": str(item.get("category") or ""),
-                        "quote_type": str(item.get("quote_type") or ""),
-                        "body_scope": str(item.get("body_scope") or ""),
-                        "customer_segment": str(item.get("customer_segment") or ""),
-                        "prepay_amount": str(item.get("prepay_amount") or ""),
-                        "tail_amount": str(item.get("tail_amount") or ""),
-                        "total_price": str(item.get("total_price") or ""),
-                        "display_price": str(item.get("display_price") or ""),
-                        "original_price": str(item.get("original_price") or ""),
-                        "min_quote": str(item.get("min_quote") or ""),
-                        "conditions": str(item.get("conditions") or ""),
-                        "rule_note": str(item.get("rule_note") or item.get("description") or ""),
-                    }
-                    for item in rows[:5]
-                    if isinstance(item, dict)
-                )
-                names = [item["project_name"] for item in structured_facts["price_facts"][:3] if item.get("project_name")]
-                facts.append(f"{key}: rows={len(rows)}; projects={', '.join(names)}")
+        if key == "distance_calculate":
+            structured_facts["store_lookup_status"] = {
+                "query": str(value.get("origin") or ""),
+                "location_preference": str(value.get("origin") or ""),
+                "distance_origin": str(value.get("origin") or ""),
+                "distance_lookup_required": bool(value.get("status") == "distance_tool_unavailable"),
+                "recommendation_status": str(value.get("status") or ""),
+                "source": "distance_calculate",
+                "candidate_count": int(value.get("candidate_store_count") or len(value.get("ranked_stores") or value.get("candidate_stores") or [])),
+            }
+            candidate_stores = value.get("ranked_stores") if isinstance(value.get("ranked_stores"), list) else []
+            if not candidate_stores:
+                candidate_stores = value.get("candidate_stores") if isinstance(value.get("candidate_stores"), list) else []
+            structured_facts["store_facts"] = [
+                {
+                    "id": str(item.get("store_id") or ""),
+                    "name": str(item.get("store_name") or ""),
+                    "address": str(item.get("store_address") or ""),
+                    "business_hours": str(item.get("business_hours") or ""),
+                    "parking": str(item.get("parking_name") or item.get("parking_address") or ""),
+                    "distance_km": item.get("distance_km"),
+                }
+                for item in candidate_stores[:5]
+                if isinstance(item, dict)
+            ]
+            facts.append(
+                "distance_calculate: "
+                f"origin={value.get('origin') or ''}; status={value.get('status') or ''}; candidates={len(candidate_stores)}"
+            )
+            if value.get("error"):
+                unsupported_claims.append("distance calculate unavailable")
             continue
 
         if key == "available_time":
@@ -144,21 +149,6 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             missing_slots.extend(str(item) for item in appointment_fact["missing"][:4])
             continue
 
-        if key == "appointment_opening":
-            appointment_fact = {
-                "type": "appointment_opening",
-                "status": value.get("status") or "",
-                "order_id": value.get("order_id") or "",
-                "missing": value.get("missing") or [],
-                "error": value.get("error") or "",
-            }
-            structured_facts["appointment_facts"].append(appointment_fact)
-            facts.append(
-                f"appointment_opening: status={appointment_fact['status']}; "
-                f"order_id={appointment_fact['order_id']}; missing={appointment_fact['missing']}"
-            )
-            continue
-
         if key == "professional_assist":
             assist_fact = {
                 "status": str(value.get("status") or ""),
@@ -177,21 +167,36 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             continue
 
         items = value.get("items") or []
+        if key == "case_studies" and not items and isinstance(value.get("case_studies_filter"), dict):
+            structured_facts["case_facts"].append(
+                {
+                    "source": key,
+                    "status": "no_new_case_image",
+                    "filtered_document_ids": value["case_studies_filter"].get("filtered_document_ids", []),
+                }
+            )
+            facts.append("case_studies: no_new_case_image")
+            continue
         if items:
             target = "case_facts" if key == "case_studies" else "knowledge_facts"
-            normalized_items: list[dict[str, str]] = []
+            normalized_items: list[dict[str, Any]] = []
             for item in items[:5]:
                 if not isinstance(item, dict):
                     continue
                 content = str(item.get("content") or item.get("output") or item)[:500]
+                document_id = str(item.get("document_id") or item.get("documentId") or "").strip()
                 fact = {
                     "source": key,
-                    "title": str(item.get("title") or item.get("documentId") or "")[:120],
+                    "document_id": document_id,
+                    "title": str(item.get("title") or document_id or "")[:120],
                     "content": content,
+                    "raw_content": content,
                 }
                 image_url = _image_url_from_content(content)
                 if image_url:
                     fact["image_url"] = image_url
+                if key == "case_studies":
+                    fact["description"] = _description_from_case_content(content)
                 normalized_items.append(fact)
             structured_facts[target].extend(normalized_items)
             facts.append(f"{key}: kb_items={len(items)}")
@@ -230,3 +235,13 @@ def _image_url_from_content(content: str) -> str:
     if match:
         return html.unescape(match.group(0)).strip()
     return ""
+
+
+def _description_from_case_content(content: str) -> str:
+    if not content:
+        return ""
+    text = re.sub(r"<img\s+[^>]*>", "", content, flags=re.IGNORECASE).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    if text.lower().startswith("description:"):
+        return text.split(":", 1)[1].strip()
+    return text[:300]

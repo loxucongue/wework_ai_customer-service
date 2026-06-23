@@ -131,9 +131,8 @@ def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
     if message_type == "image":
         content = _message_content_value(raw_content, "url")
         return {"type": "image", "order": order, "content": {"url": content}}
-    if message_type == "appointment_push":
-        content = raw_content if isinstance(raw_content, dict) else {"text": _message_content_value(raw_content, "text")}
-        return {"type": "appointment_push", "order": order, "content": content}
+    if message_type == "payment_collection":
+        return {"type": "payment_collection", "order": order, "content": _payment_collection_content(raw_content)}
     content = _message_content_value(raw_content, "text")
     return {"type": "text", "order": order, "content": {"text": content}}
 
@@ -155,6 +154,13 @@ def _message_content_value(value: Any, preferred_key: str) -> str:
                 return text
         return ""
     return _string(value)
+
+
+def _payment_collection_content(value: Any) -> dict[str, Any]:
+    remark = ""
+    if isinstance(value, dict):
+        remark = _string(value.get("remark"))
+    return {"amount": 10, "remark": remark}
 
 
 def _string(value: Any) -> str:

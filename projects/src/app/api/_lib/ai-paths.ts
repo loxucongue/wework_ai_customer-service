@@ -5,6 +5,7 @@ export type ChatRequestBody = {
   customer_id: string;
   corp_id?: string;
   conversation_history?: string[];
+  conversation_history_count?: number;
   file_image?: string;
   user_id?: number;
   wechat?: string;
@@ -43,7 +44,7 @@ type WorkflowCompatibleBody = {
 };
 
 export type AiPathsReplyMessage = {
-  type?: "text" | "image" | "human_handoff";
+  type?: "text" | "image" | "human_handoff" | "payment_collection";
   order?: number;
   content?: string | Record<string, unknown>;
 };
@@ -178,6 +179,7 @@ export async function callAiPathsBackend(body: ChatRequestBody) {
     customer_id: body.customer_id,
     corp_id: body.corp_id || process.env.DEFAULT_CORP_ID || body.customer_id || "",
     conversation_history: body.conversation_history || [],
+    conversation_history_count: body.conversation_history_count ?? body.conversation_history?.length ?? 0,
     file_image: body.file_image || null,
     user_id: body.user_id ?? (process.env.DEFAULT_USER_ID ? Number(process.env.DEFAULT_USER_ID) : null),
     wechat: body.wechat || process.env.DEFAULT_WECHAT || "",
@@ -370,11 +372,11 @@ export async function proxyAiPathsChatForFrontend(body: ChatRequestBody) {
 
     const result = JSON.parse(text) as AiPathsResponse;
     const output = (result.reply_messages || [])
-      .filter((item) => replyMessageContent(item))
+      .filter((item) => replyMessagePayload(item) !== "")
       .map((item, index) => ({
         type: item.type || "text",
         order: item.order || index + 1,
-        content: replyMessageContent(item),
+        content: replyMessagePayload(item),
       }));
 
     return jsonResponse({
@@ -426,7 +428,7 @@ function workflowDirectionLabel(direction: string) {
 
 function normalizeWorkflowReplyMessages(messages: AiPathsReplyMessage[]) {
   return messages
-    .filter((item) => replyMessageContent(item, item.type === "human_handoff" ? "handoff_reason" : "text"))
+    .filter((item) => replyMessagePayload(item, item.type === "human_handoff" ? "handoff_reason" : "text") !== "")
     .map((item, index) => {
       const type = item.type || "text";
       if (type === "human_handoff") {
@@ -435,6 +437,13 @@ function normalizeWorkflowReplyMessages(messages: AiPathsReplyMessage[]) {
           type,
           order: item.order || index + 1,
           content: { handoff_reason: reason },
+        };
+      }
+      if (type === "payment_collection") {
+        return {
+          type,
+          order: item.order || index + 1,
+          content: paymentCollectionContent(item.content),
         };
       }
       const content = replyMessageContent(item, type === "image" ? "url" : "text");
@@ -486,6 +495,18 @@ function replyMessageContent(item: AiPathsReplyMessage, preferredKey = "text") {
     );
   }
   return stringValue(content);
+}
+
+function replyMessagePayload(item: AiPathsReplyMessage, preferredKey = "text") {
+  if (item.type === "payment_collection") {
+    return paymentCollectionContent(item.content);
+  }
+  return replyMessageContent(item, preferredKey);
+}
+
+function paymentCollectionContent(content: unknown) {
+  const remark = isRecord(content) ? stringValue(content.remark) : "";
+  return { amount: 10, remark };
 }
 
 function numberValue(value: unknown) {

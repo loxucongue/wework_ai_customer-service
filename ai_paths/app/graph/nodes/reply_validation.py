@@ -6,8 +6,8 @@ from typing import Any
 
 from app.graph.nodes.common import renumber_messages
 
-VISIBLE_MESSAGE_TYPES = {"text", "image"}
-ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff"}
+VISIBLE_MESSAGE_TYPES = {"text", "image", "payment_collection"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff", "payment_collection"}
 
 
 def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -35,6 +35,18 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 }
             )
             has_handoff = True
+            continue
+        if msg_type == "payment_collection":
+            if visible_count >= 3:
+                continue
+            result.append(
+                {
+                    "type": "payment_collection",
+                    "order": len(result) + 1,
+                    "content": message_content_payment_collection(item.get("content")),
+                }
+            )
+            visible_count += 1
             continue
         if visible_count >= 3:
             continue
@@ -64,6 +76,10 @@ def debug_message_contents(messages: list[dict[str, Any]]) -> list[str]:
 
 def message_content_text(content: Any) -> str:
     if isinstance(content, dict):
+        if "amount" in content and set(content).issubset({"amount", "remark"}):
+            amount = str(content.get("amount") or "10").strip() or "10"
+            remark = str(content.get("remark") or "").strip()
+            return f"payment_collection:{amount}{':' + remark if remark else ''}"
         for key in ("handoff_reason", "text", "url"):
             value = content.get(key)
             text = message_content_text(value)
@@ -71,6 +87,13 @@ def message_content_text(content: Any) -> str:
                 return text
         return ""
     return str(content or "").strip()
+
+
+def message_content_payment_collection(content: Any) -> dict[str, Any]:
+    remark = ""
+    if isinstance(content, dict):
+        remark = str(content.get("remark") or "").strip()
+    return {"amount": 10, "remark": remark}
 
 
 def looks_like_image_url(content: str) -> bool:

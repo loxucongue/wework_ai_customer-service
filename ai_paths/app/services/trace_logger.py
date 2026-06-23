@@ -13,11 +13,6 @@ RUN_OBSERVABILITY_KEYS = (
     "policy_family_id",
     "policy_match_level",
     "policy_version",
-    "scene_guidance_injected",
-    "active_scene_id",
-    "active_scene_match_level",
-    "active_scene_score",
-    "scene_guidance_context",
 )
 
 

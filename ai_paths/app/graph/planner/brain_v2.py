@@ -4,39 +4,23 @@ import json
 from typing import Any
 
 from app.graph.nodes.common import model_usage_snapshot
-from app.graph.planner.planner_contract import SHORT_GREETING_TOKENS
+from app.graph.planner.planner_contract import ALLOWED_TOOLS
 from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, safety_fallback_plan
 from app.graph.state import AgentState
-from app.prompts.business_strategy import BUSINESS_STRATEGY_PROMPT
+from app.policies.business_rules import business_rules_prompt_section
 from app.services.model_client import ModelClient
 
 def planner_v2_model_tier(state: AgentState) -> str:
-    content = str(state.get("normalized_content") or "").strip()
-    has_image = bool((state.get("image_info") or {}).get("has_image"))
-    if not has_image and content in SHORT_GREETING_TOKENS:
-        return "fast"
-    return "balanced"
+    return "planner"
 
 
 def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
-    payload = {
-        "current_message": state.get("normalized_content") or "",
-        "message_type": _message_type(state),
-        "conversation_history": (state.get("conversation_history") or [])[-10:],
-        "image_info": state.get("image_info") or {},
-        "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
-        "request_context": _compact_request_context(state.get("request_context") or {}),
-        "customer_profile": state.get("customer_profile") or {},
-        "customer_basic_info": state.get("customer_basic_info") or {},
-        "history_events": (state.get("history_events") or [])[-8:],
-        "appointment_cache": state.get("appointment_cache") or {},
-        "customer_context": _compact_customer_context(state.get("customer_context") or {}),
-    }
+    payload = _planner_payload_for_model(state)
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": BUSINESS_STRATEGY_PROMPT},
+        {"role": "system", "content": "# Four Stage Business Rules JSON\n" + business_rules_prompt_section()},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
 
@@ -48,24 +32,14 @@ def planner_v2_repair_messages_for_model(
     violations: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     payload = {
-        "current_message": state.get("normalized_content") or "",
-        "message_type": _message_type(state),
-        "conversation_history": (state.get("conversation_history") or [])[-10:],
-        "image_info": state.get("image_info") or {},
-        "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
-        "request_context": _compact_request_context(state.get("request_context") or {}),
-        "customer_profile": state.get("customer_profile") or {},
-        "customer_basic_info": state.get("customer_basic_info") or {},
-        "history_events": (state.get("history_events") or [])[-8:],
-        "appointment_cache": state.get("appointment_cache") or {},
-        "customer_context": _compact_customer_context(state.get("customer_context") or {}),
-        "original_plan": original_plan,
-        "tool_policy_violations": violations,
+        **_planner_payload_for_model(state),
+        "original_plan": _compact_plan_for_repair(original_plan),
+        "tool_policy_violations": _compact_violations_for_repair(violations),
     }
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": BUSINESS_STRATEGY_PROMPT},
+        {"role": "system", "content": "# Four Stage Business Rules JSON\n" + business_rules_prompt_section()},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
@@ -80,7 +54,7 @@ async def run_planner_brain_v2(
     plan = build_planner_plan_v2(state, payload)
     initial_usage = model_usage_snapshot(model_client)
     nested_calls: list[dict[str, Any]] = []
-    violations = plan.get("tool_policy_violations", [])
+    violations = [*plan.get("tool_policy_violations", []), *_planner_message_contract_violations(state, plan)]
     if violations:
         repair_call: dict[str, Any] = {
             "name": "planner_brain_repair",
@@ -98,9 +72,16 @@ async def run_planner_brain_v2(
             )
             repaired_plan = build_planner_plan_v2(state, repaired_payload)
             plan = repaired_plan
+            post_repair_violations = _planner_message_contract_violations(state, plan)
+            if _needs_transport_policy_safe_fallback(state, plan, post_repair_violations):
+                plan = _transport_policy_safe_plan(state, plan)
+            elif _needs_distance_tool_safe_fallback(state, plan, post_repair_violations):
+                plan = _distance_tool_safe_plan(state, plan)
             repair_call["output"] = {
-                "primary_task": plan.get("primary_task", {}).get("type", ""),
-                "required_tools": len(plan.get("required_tools", [])),
+                "decision": plan.get("planner_decision", ""),
+                "stage": plan.get("planner_stage", ""),
+                "sub_rule_id": plan.get("planner_sub_rule_id", ""),
+                "tool_calls": len(plan.get("planner_tool_calls", [])),
                 "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
             }
             repair_call["usage"] = model_usage_snapshot(model_client)
@@ -112,9 +93,11 @@ async def run_planner_brain_v2(
         "name": "planner_brain_v2",
         "input": {"tier": tier},
         "output": {
-            "primary_task": plan.get("primary_task", {}).get("type", ""),
-            "secondary_tasks": len(plan.get("secondary_tasks", [])),
-            "required_tools": len(plan.get("required_tools", [])),
+            "decision": plan.get("planner_decision", ""),
+            "stage": plan.get("planner_stage", ""),
+            "sub_rule_id": plan.get("planner_sub_rule_id", ""),
+            "reply_messages": len(plan.get("planner_reply_messages", [])),
+            "tool_calls": len(plan.get("planner_tool_calls", [])),
             "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
         },
         "usage": initial_usage,
@@ -124,11 +107,292 @@ async def run_planner_brain_v2(
     return plan, model_call
 
 
-def _message_type(state: AgentState) -> str:
-    image_info = state.get("image_info") or {}
-    if image_info.get("has_image"):
-        return str(image_info.get("image_type") or "image")
-    return "text"
+def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
+    payload = {
+        "current_message": state.get("normalized_content") or "",
+        "conversation_history": (state.get("conversation_history") or [])[-10:],
+        "image_info": state.get("image_info") or {},
+        "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
+        "customer_profile": state.get("customer_profile") or {},
+        "history_events": (state.get("history_events") or [])[-8:],
+        "customer_context": _compact_customer_context(state.get("customer_context") or {}),
+        "customer_store_knowledge": _compact_store_knowledge(state.get("customer_store_knowledge") or {}),
+        "sales_talk_reference": _compact_sales_talk_reference(state.get("sales_talk_reference") or {}),
+        "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
+    }
+    return _drop_empty(payload)
+
+
+def _compact_plan_for_repair(plan: dict[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "decision": plan.get("planner_decision", ""),
+            "stage": plan.get("planner_stage", ""),
+            "sub_rule_id": plan.get("planner_sub_rule_id", ""),
+            "reply_messages": plan.get("planner_reply_messages", []),
+            "tool_calls": plan.get("planner_tool_calls", []),
+            "handoff": plan.get("handoff", {}),
+        }
+    )
+
+
+def _compact_violations_for_repair(violations: list[dict[str, Any]]) -> list[dict[str, str]]:
+    compact: list[dict[str, str]] = []
+    for item in violations[:8]:
+        if not isinstance(item, dict):
+            continue
+        compact.append(
+            {
+                "missing": str(item.get("missing") or ""),
+                "note": str(item.get("note") or "")[:240],
+            }
+        )
+    return [item for item in compact if item.get("missing") or item.get("note")]
+
+
+def _planner_message_contract_violations(state: AgentState, plan: dict[str, Any]) -> list[dict[str, str]]:
+    decision = str(plan.get("planner_decision") or "").strip()
+    messages = plan.get("planner_reply_messages") if isinstance(plan.get("planner_reply_messages"), list) else []
+    tool_calls = plan.get("planner_tool_calls") if isinstance(plan.get("planner_tool_calls"), list) else []
+    message_text = _planner_reply_text(messages)
+    violations: list[dict[str, str]] = []
+    if decision == "direct_reply" and not messages:
+        violations.append(
+            {
+                "task_type": str((plan.get("primary_task") or {}).get("type") or "direct_reply"),
+                "subtype": str((plan.get("primary_task") or {}).get("subtype") or ""),
+                "missing": "direct_reply_reply_messages",
+                "note": "decision=direct_reply must include at least one customer-visible reply_messages item.",
+            }
+        )
+    if decision == "need_tools" and tool_calls and not messages:
+        violations.append(
+            {
+                "task_type": str((plan.get("primary_task") or {}).get("type") or "need_tools"),
+                "subtype": str((plan.get("primary_task") or {}).get("subtype") or ""),
+                "missing": "need_tools_transition_reply",
+                "note": "decision=need_tools with tool_calls must include one short transition reply_messages item for the synchronous platform response.",
+            }
+        )
+    if _is_transport_policy_turn(state, plan) and any(term in message_text for term in ("车费报销", "包接送", "打车报销")):
+        violations.append(
+            {
+                "task_type": "store_inquiry",
+                "subtype": "pre_visit_transport_policy",
+                "missing": "transport_policy_safe_wording",
+                "note": "For S2_PRE_VISIT_TRANSPORT_POLICY, customer-visible text must say '交通费用需自理/没有接送服务' and must not repeat risky commitment terms such as 车费报销、包接送、打车报销.",
+            }
+        )
+    has_distance_tool = any(str(item.get("name") or "") == "distance_calculate" for item in tool_calls if isinstance(item, dict))
+    if _is_distance_request_turn(state) and not has_distance_tool:
+        violations.append(
+            {
+                "task_type": str((plan.get("primary_task") or {}).get("type") or ""),
+                "subtype": str((plan.get("primary_task") or {}).get("subtype") or ""),
+                "missing": "distance_calculate_required",
+                "note": "Current turn asks for nearest/nearby store. Planner must call distance_calculate with customer-scope candidate store ids instead of answering directly.",
+            }
+        )
+    if not has_distance_tool and any(term in message_text for term in ("最近", "更近", "距离", "几公里", "几分钟", "交通便利")):
+        violations.append(
+            {
+                "task_type": str((plan.get("primary_task") or {}).get("type") or ""),
+                "subtype": str((plan.get("primary_task") or {}).get("subtype") or ""),
+                "missing": "distance_fact_required",
+                "note": "Do not claim closest/nearer/distance/travel convenience without distance_calculate results. Ask whether to check routes or nearby stores instead.",
+            }
+        )
+    return violations
+
+
+def _planner_reply_text(messages: list[dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if isinstance(content, dict):
+            chunks.extend(str(content.get(key) or "") for key in ("text", "handoff_reason", "url"))
+        else:
+            chunks.append(str(content or ""))
+    return " ".join(chunk for chunk in chunks if chunk)
+
+
+def _is_transport_policy_turn(state: AgentState, plan: dict[str, Any]) -> bool:
+    primary = plan.get("primary_task") if isinstance(plan.get("primary_task"), dict) else {}
+    marker = " ".join(
+        str(value or "")
+        for value in (
+            state.get("normalized_content"),
+            plan.get("planner_sub_rule_id"),
+            primary.get("subtype"),
+            primary.get("policy_hint"),
+            primary.get("customer_need"),
+            primary.get("answer_goal"),
+        )
+    )
+    return any(term in marker for term in ("S2_PRE_VISIT_TRANSPORT_POLICY", "车费", "报销", "接送", "路费", "交通费"))
+
+
+def _needs_transport_policy_safe_fallback(
+    state: AgentState,
+    plan: dict[str, Any],
+    violations: list[dict[str, str]],
+) -> bool:
+    if not _is_transport_policy_turn(state, plan):
+        return False
+    return any(
+        item.get("missing") in {"transport_policy_safe_wording", "distance_fact_required"}
+        for item in violations
+    )
+
+
+def _needs_distance_tool_safe_fallback(
+    state: AgentState,
+    plan: dict[str, Any],
+    violations: list[dict[str, str]],
+) -> bool:
+    if not _is_distance_request_turn(state):
+        return False
+    return any(item.get("missing") == "distance_calculate_required" for item in violations)
+
+
+def _transport_policy_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
+    safe_plan = dict(plan)
+    safe_plan["planner_decision"] = "direct_reply"
+    safe_plan["planner_stage"] = "S2"
+    safe_plan["planner_sub_rule_id"] = "S2_PRE_VISIT_TRANSPORT_POLICY"
+    safe_plan["planner_reply_messages"] = [
+        {
+            "type": "text",
+            "order": 1,
+            "content": {"text": "目前没有接送服务，交通费用需自理。我可以帮您看更方便的门店路线、停车或导航。"},
+        }
+    ]
+    safe_plan["planner_tool_calls"] = []
+    safe_plan["required_tools"] = [{"name": "no_tool", "purpose": "Transport policy can be answered directly"}]
+    primary = dict(safe_plan.get("primary_task") if isinstance(safe_plan.get("primary_task"), dict) else {})
+    primary.update(
+        {
+            "type": "store_inquiry",
+            "subtype": "pre_visit_transport_policy",
+            "policy_hint": "S2_PRE_VISIT_TRANSPORT_POLICY",
+            "customer_need": str(state.get("normalized_content") or "")[:120],
+            "answer_goal": "Explain transport cost boundary and offer route/store support.",
+            "must_answer": ["没有接送服务", "交通费用需自理", "可帮看门店路线、停车或导航"],
+            "must_avoid": ["费用报销承诺", "接送承诺", "无距离事实的近距表达"],
+            "tools": [{"name": "no_tool", "purpose": "Transport policy can be answered directly"}],
+        }
+    )
+    safe_plan["primary_task"] = primary
+    safe_plan["reply_strategy"] = {
+        "tone": "自然、简短、像真人客服",
+        "must_answer": ["没有接送服务", "交通费用需自理"],
+        "can_push": "帮客户看门店路线、停车或导航",
+        "must_avoid": ["费用报销承诺", "接送承诺", "无距离事实的近距表达"],
+        "max_questions": 0,
+    }
+    return safe_plan
+
+
+def _distance_tool_safe_plan(state: AgentState, plan: dict[str, Any]) -> dict[str, Any]:
+    origin = str(state.get("normalized_content") or "").strip()
+    city = _distance_request_city(state)
+    candidate_ids = _store_ids_for_city(state, city)
+    tool: dict[str, Any] = {
+        "name": "distance_calculate",
+        "purpose": "Need real distance before ranking customer-scope stores",
+        "origin": origin,
+        "candidate_store_ids": candidate_ids,
+    }
+    if city:
+        tool["candidate_city"] = city
+        tool["candidate_scope"] = "customer_store_knowledge.city"
+
+    safe_plan = dict(plan)
+    safe_plan["planner_decision"] = "need_tools"
+    safe_plan["planner_stage"] = "S2"
+    safe_plan["planner_sub_rule_id"] = "S2_LOCATION_DETAIL"
+    safe_plan["planner_reply_messages"] = [
+        {
+            "type": "text",
+            "order": 1,
+            "content": {"text": "我帮您按这个位置核对一下更方便的门店。"},
+        }
+    ]
+    safe_plan["planner_tool_calls"] = [tool]
+    safe_plan["required_tools"] = [tool]
+    safe_plan["tool_policy_violations"] = []
+    primary = dict(safe_plan.get("primary_task") if isinstance(safe_plan.get("primary_task"), dict) else {})
+    primary.update(
+        {
+            "type": "store_inquiry",
+            "subtype": "location_detail",
+            "policy_hint": "S2_LOCATION_DETAIL",
+            "customer_need": origin[:120],
+            "answer_goal": "Use distance_calculate to rank customer-scope stores by real distance.",
+            "must_answer": ["先核对真实距离，再推荐门店"],
+            "must_avoid": ["无距离事实直接说最近", "编造距离或通勤时间"],
+            "tools": [tool],
+        }
+    )
+    safe_plan["primary_task"] = primary
+    safe_plan["reply_strategy"] = {
+        "tone": "自然、简短、像真人客服",
+        "must_answer": ["先核对真实距离"],
+        "can_push": "",
+        "must_avoid": ["无距离事实直接说最近", "编造距离或通勤时间"],
+        "max_questions": 0,
+    }
+    return safe_plan
+
+
+def _is_distance_request_turn(state: AgentState) -> bool:
+    text = str(state.get("normalized_content") or "").strip()
+    if not text:
+        return False
+    has_store_target = any(term in text for term in ("门店", "店", "地址", "哪里", "哪家"))
+    has_distance_need = any(term in text for term in ("最近", "附近", "更近", "离", "距离", "几公里", "几分钟", "机场", "地铁站", "商圈"))
+    return has_store_target and has_distance_need
+
+
+def _distance_request_city(state: AgentState) -> str:
+    text = str(state.get("normalized_content") or "").strip()
+    stores = _customer_scope_stores(state)
+    city_names = sorted({str(store.get("city") or "").strip() for store in stores if store.get("city")}, key=len, reverse=True)
+    for city in city_names:
+        short_city = city[:-1] if city.endswith("市") else city
+        if city and (city in text or (short_city and short_city in text)):
+            return city
+    district_to_city = {
+        str(store.get("district") or "").strip(): str(store.get("city") or "").strip()
+        for store in stores
+        if store.get("district") and store.get("city")
+    }
+    for district, city in sorted(district_to_city.items(), key=lambda item: len(item[0]), reverse=True):
+        short_district = district[:-1] if district.endswith(("区", "县", "镇")) else district
+        if district in text or (short_district and short_district in text):
+            return city
+    return ""
+
+
+def _store_ids_for_city(state: AgentState, city: str) -> list[str]:
+    if not city:
+        return []
+    ids: list[str] = []
+    for store in _customer_scope_stores(state):
+        if str(store.get("city") or "").strip() != city:
+            continue
+        store_id = str(store.get("store_id") or "").strip()
+        if store_id:
+            ids.append(store_id)
+    return list(dict.fromkeys(ids))
+
+
+def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    return [store for store in stores if isinstance(store, dict)]
 
 
 def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
@@ -146,20 +410,77 @@ def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
     return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
 
 
-def _compact_request_context(raw: dict[str, Any]) -> dict[str, Any]:
+def _compact_store_knowledge(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
-    keys = (
-        "category_id",
-        "customer_stage",
-        "scene_type",
-        "business_logic",
-        "expected_policy_family_id",
-        "confirmed_store_id",
-        "confirmed_store_name",
-        "store_id",
-        "store_name",
-        "appointment_id",
-        "appointment_time",
-    )
-    return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
+    stores = raw.get("stores") if isinstance(raw.get("stores"), list) else []
+    extras = raw.get("appointment_extra_stores") if isinstance(raw.get("appointment_extra_stores"), list) else []
+    compact_stores = [_compact_store_brief_for_model(store) for store in stores[:260] if isinstance(store, dict)]
+    compact_extras = [_compact_store_brief_for_model(store) for store in extras[:12] if isinstance(store, dict)]
+    return {
+        "source": raw.get("source"),
+        "store_count": raw.get("store_count", len(stores)),
+        "snapshot_generated_at": raw.get("snapshot_generated_at"),
+        "missing_snapshot_store_ids": raw.get("missing_snapshot_store_ids", []),
+        "regions": _group_store_briefs_by_region(compact_stores),
+        "appointment_extra_stores": compact_extras,
+    }
+
+
+def _compact_store_brief_for_model(store: dict[str, Any]) -> dict[str, Any]:
+    brief = {
+        "id": str(store.get("store_id") or "").strip(),
+        "name": str(store.get("store_name") or "").strip(),
+        "province": str(store.get("province") or "").strip(),
+        "city": str(store.get("city") or "").strip(),
+        "district": str(store.get("district") or "").strip(),
+    }
+    return {key: value for key, value in brief.items() if value}
+
+
+def _group_store_briefs_by_region(stores: list[dict[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, Any] = {}
+    for store in stores:
+        city = str(store.get("city") or "未识别城市").strip()
+        district = str(store.get("district") or "未识别区域").strip()
+        grouped.setdefault(city, {}).setdefault(district, []).append(
+            {
+                "id": store.get("id"),
+                "name": store.get("name"),
+            }
+        )
+    return grouped
+
+
+def _compact_sales_talk_reference(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    items = raw.get("items") if isinstance(raw.get("items"), list) else []
+    return {
+        "source": raw.get("source", ""),
+        "query": raw.get("query", ""),
+        "items": [
+            {
+                "document_id": str(item.get("document_id") or item.get("documentId") or ""),
+                "content": str(item.get("content") or "")[:360],
+            }
+            for item in items[:3]
+            if isinstance(item, dict)
+        ],
+        "error": raw.get("error", ""),
+    }
+
+
+def _drop_empty(value: Any) -> Any:
+    if isinstance(value, dict):
+        output: dict[str, Any] = {}
+        for key, item in value.items():
+            compact_item = _drop_empty(item)
+            if compact_item in (None, "", [], {}):
+                continue
+            output[key] = compact_item
+        return output
+    if isinstance(value, list):
+        output_list = [_drop_empty(item) for item in value]
+        return [item for item in output_list if item not in (None, "", [], {})]
+    return value

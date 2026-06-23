@@ -8,6 +8,7 @@ class ChatRequest(BaseModel):
     customer_id: str
     corp_id: str
     conversation_history: list[str] = Field(default_factory=list)
+    conversation_history_count: int | None = None
     file_image: str | None = None
     user_id: int | None = None
     wechat: str | None = None
@@ -23,7 +24,7 @@ class ChatRequest(BaseModel):
 
 
 class ReplyMessage(BaseModel):
-    type: Literal["text", "image", "human_handoff", "appointment_push"] = "text"
+    type: Literal["text", "image", "human_handoff", "payment_collection"] = "text"
     order: int
     content: str | dict[str, Any]
 

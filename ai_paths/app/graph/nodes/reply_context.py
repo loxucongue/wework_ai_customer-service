@@ -17,6 +17,7 @@ from app.graph.planner.runtime_plan import (
 )
 from app.graph.state import AgentState
 from app.graph.runtime_turn_policy import should_suspend_appointment_context_for_current_turn
+from app.policies.business_rules import load_business_rules
 from app.policies.compliance_terms import (
     QUALIFICATION_CONTEXT_SAFE_NOTE,
     SERVICE_COMMITMENT_CONTEXT_SAFE_NOTE,
@@ -50,9 +51,15 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "secondary_tasks": [] if suppress_profile_memory else secondary_tasks,
         "required_tools": [] if suppress_profile_memory else required_tools,
         "reply_strategy": {} if suppress_profile_memory else reply_strategy,
-        "scene_guidance_context": _sanitize_planner_context_for_reply(state.get("scene_guidance_context", [])),
+        "planner_decision": state.get("planner_decision", ""),
+        "planner_stage": state.get("planner_stage", ""),
+        "planner_sub_rule_id": state.get("planner_sub_rule_id", ""),
+        "reply_constraints": state.get("reply_constraints", []),
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
+        "customer_store_knowledge": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
+        "sales_talk_reference": _sanitize_planner_context_for_reply(_compact_sales_talk_reference(state.get("sales_talk_reference") or {})),
+        "business_rules": load_business_rules(),
         "fact_envelope": fact_envelope,
         "fact_notes": _fact_notes_for_model(fact_envelope),
     }
@@ -77,8 +84,35 @@ def _sanitize_planner_context_for_reply(value: Any) -> Any:
             return QUALIFICATION_CONTEXT_SAFE_NOTE
         if any(term in value for term in UNSUPPORTED_SERVICE_COMMITMENT_CONTEXT_TERMS):
             return SERVICE_COMMITMENT_CONTEXT_SAFE_NOTE
-        return value
+        return _sanitize_internal_project_context_text(value)
     return value
+
+
+def _sanitize_internal_project_context_text(value: str) -> str:
+    text = str(value or "")
+    replacements = (
+        ("S10色素管理项目", "淡斑活动"),
+        ("S10 色素管理项目", "淡斑活动"),
+        ("S10色素管理", "淡斑活动"),
+        ("S10 色素管理", "淡斑活动"),
+        ("S10色素管理(色素体验)", "淡斑活动"),
+        ("S10 色素管理(色素体验)", "淡斑活动"),
+        ("色素管理项目", "淡斑活动"),
+        ("色素管理", "淡斑"),
+        ("S10项目", "淡斑活动"),
+        ("S10 项目", "淡斑活动"),
+        ("S10活动", "淡斑活动"),
+        ("S10 活动", "淡斑活动"),
+        ("S10N", "淡斑活动"),
+        ("K10", "淡斑活动"),
+        ("M10", "淡斑活动"),
+        ("S10", "淡斑活动"),
+        ("项目代号", "活动"),
+        ("品项名称", "活动名称"),
+    )
+    for old, new in replacements:
+        text = text.replace(old, new)
+    return text.replace("淡斑活动淡斑活动", "淡斑活动").replace("淡斑活动淡斑", "淡斑活动")
 
 
 def _fact_notes_for_model(
@@ -142,3 +176,65 @@ def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:
         if text and target_key not in context:
             context[target_key] = text
     return context
+
+
+def _compact_store_knowledge(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    stores = raw.get("stores") if isinstance(raw.get("stores"), list) else []
+    extras = raw.get("appointment_extra_stores") if isinstance(raw.get("appointment_extra_stores"), list) else []
+    compact_stores = [_compact_store_brief_for_model(store) for store in stores[:260] if isinstance(store, dict)]
+    compact_extras = [_compact_store_brief_for_model(store) for store in extras[:12] if isinstance(store, dict)]
+    return {
+        "source": raw.get("source"),
+        "store_count": raw.get("store_count", len(stores)),
+        "snapshot_generated_at": raw.get("snapshot_generated_at"),
+        "missing_snapshot_store_ids": raw.get("missing_snapshot_store_ids", []),
+        "regions": _group_store_briefs_by_region(compact_stores),
+        "appointment_extra_stores": compact_extras,
+    }
+
+
+def _compact_store_brief_for_model(store: dict[str, Any]) -> dict[str, Any]:
+    brief = {
+        "id": str(store.get("store_id") or "").strip(),
+        "name": str(store.get("store_name") or "").strip(),
+        "province": str(store.get("province") or "").strip(),
+        "city": str(store.get("city") or "").strip(),
+        "district": str(store.get("district") or "").strip(),
+    }
+    return {key: value for key, value in brief.items() if value}
+
+
+def _group_store_briefs_by_region(stores: list[dict[str, Any]]) -> dict[str, Any]:
+    grouped: dict[str, Any] = {}
+    for store in stores:
+        city = str(store.get("city") or "未识别城市").strip()
+        district = str(store.get("district") or "未识别区域").strip()
+        grouped.setdefault(city, {}).setdefault(district, []).append(
+            {
+                "id": store.get("id"),
+                "name": store.get("name"),
+            }
+        )
+    return grouped
+
+
+def _compact_sales_talk_reference(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    items = raw.get("items") if isinstance(raw.get("items"), list) else []
+    return {
+        "source": raw.get("source", ""),
+        "query": raw.get("query", ""),
+        "usage": "style_reference_only_not_business_fact",
+        "items": [
+            {
+                "document_id": str(item.get("document_id") or item.get("documentId") or ""),
+                "content": str(item.get("content") or "")[:360],
+            }
+            for item in items[:3]
+            if isinstance(item, dict)
+        ],
+        "error": raw.get("error", ""),
+    }

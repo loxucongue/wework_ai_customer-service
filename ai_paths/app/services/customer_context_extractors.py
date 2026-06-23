@@ -30,6 +30,9 @@ def compact_customer(info: dict[str, Any]) -> dict[str, Any]:
 
 def compact_request_context(request_context: dict[str, Any]) -> dict[str, Any]:
     return {
+        "input_customer_id": request_context.get("input_customer_id"),
+        "platform_customer_id": request_context.get("platform_customer_id"),
+        "customer_id": request_context.get("customer_id"),
         "user_id": request_context.get("user_id"),
         "corp_id": request_context.get("corp_id"),
         "wechat": request_context.get("wechat"),

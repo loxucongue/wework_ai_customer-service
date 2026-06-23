@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import json
+import math
 from typing import Any, Callable
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
@@ -11,9 +13,7 @@ from app.graph.planner.runtime_plan import (
     planner_secondary_tasks,
 )
 from app.graph.state import AgentState
-from app.services.appointment_opening_service import AppointmentOpeningService
 from app.services.coze_client import CozeClient
-from app.services.pricing_rules_repository import PricingRulesRepository
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -22,11 +22,8 @@ def create_execute_actions_node(
     *,
     coze_client: CozeClient,
     trace_logger: TraceLogger,
-    pricing_rules_repository: PricingRulesRepository | None,
     store_service: StoreService | None,
-    appointment_opening_service: AppointmentOpeningService | None,
     appointment_query_from_state: Callable[[str, dict[str, Any], AgentState], dict[str, Any]],
-    store_query_from_state: Callable[[str, AgentState], str],
 ) -> Callable[[AgentState], Any]:
     async def execute_actions(state: AgentState) -> dict[str, Any]:
         required_tools = planner_required_tools(state)
@@ -43,6 +40,9 @@ def create_execute_actions_node(
             tool_results: dict[str, Any] = {}
             tool_calls: list[dict[str, Any]] = []
             tool_tasks: list[ActionToolTask] = []
+            planned_tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
+            if planned_tools:
+                required_tools = [tool for tool in planned_tools if isinstance(tool, dict)]
 
             for tool in required_tools:
                 _queue_planned_tool_tasks(
@@ -54,55 +54,26 @@ def create_execute_actions_node(
                     tool_tasks=tool_tasks,
                 )
 
-            if _needs_store_lookup(required_tools) and store_service:
-                try:
-                    store_query = store_query_from_state(content, state)
-                    result = store_service.search(store_query, customer_context=state.get("customer_context") or {})
-                    tool_results["store_lookup"] = result
-                    tool_calls.append(
-                        {
-                            "name": "store_lookup",
-                            "input": {"query": store_query, "raw_query": content},
-                            "output": result,
-                        }
-                    )
-                except Exception as exc:
-                    tool_results["store_lookup"] = {"stores": [], "error": f"{type(exc).__name__}: {exc}"}
-                    tool_calls.append(
-                        {
-                            "name": "store_lookup",
-                            "input": {"query": content},
-                            "error": f"{type(exc).__name__}: {exc}",
-                        }
-                    )
+            if _needs_distance_calculate(required_tools):
+                distance_tool = _planned_tool(required_tools, "distance_calculate")
+                result = await _distance_calculate(distance_tool, state, coze_client)
+                tool_results["distance_calculate"] = result
+                tool_calls.append({"name": "distance_calculate", "input": distance_tool, "output": result})
 
             if _needs_appointment_record_query(required_tools):
-                tool_results["appointment_record_query"] = {"handled_by_cache": True}
+                appointment = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+                tool_results["appointment_record_query"] = {"handled_by_cache": True, **appointment}
                 tool_calls.append(
                     {
                         "name": "appointment_record_query",
                         "input": {"query": content, "planned": True},
-                        "output": {"handled_by_cache": True},
+                        "output": tool_results["appointment_record_query"],
                     }
                 )
 
             if _needs_appointment_lookup(required_tools) and store_service:
                 try:
-                    store_query = store_query_from_state(content, state)
-                    lookup = tool_results.get("store_lookup") or store_service.search(
-                        store_query,
-                        customer_context=state.get("customer_context") or {},
-                    )
-                    if "store_lookup" not in tool_results:
-                        tool_results["store_lookup"] = lookup
-                        tool_calls.append(
-                            {
-                                "name": "store_lookup",
-                                "input": {"query": store_query, "raw_query": content},
-                                "output": lookup,
-                            }
-                        )
-                    appointment_query = appointment_query_from_state(content, lookup, state)
+                    appointment_query = _appointment_query_from_planner(required_tools, state)
                     if _needs_available_time(required_tools):
                         if appointment_query.get("store_id") and appointment_query.get("date"):
                             available = store_service.available_time(
@@ -122,35 +93,6 @@ def create_execute_actions_node(
                             )
                         else:
                             tool_results["available_time"] = {"slots": {}, "missing": appointment_query.get("missing", [])}
-                    if _needs_appointment_create(required_tools) and appointment_opening_service:
-                        opening = appointment_opening_service.maybe_open(
-                            content=content,
-                            state=state,
-                            appointment_query=appointment_query,
-                            available_time=tool_results.get("available_time")
-                            if isinstance(tool_results.get("available_time"), dict)
-                            else {},
-                        )
-                        if opening.get("status") != "missing_info":
-                            tool_results["appointment_opening"] = opening
-                            tool_calls.append(
-                                {
-                                    "name": "appointment_create",
-                                    "input": {
-                                        "store_id": appointment_query.get("store_id"),
-                                        "store_name": appointment_query.get("store_name"),
-                                        "date": appointment_query.get("date"),
-                                        "confirmed_by_customer": opening.get("status")
-                                        not in {"needs_customer_confirmation", "missing_info"},
-                                    },
-                                    "output": {
-                                        "status": opening.get("status"),
-                                        "order_id": opening.get("order_id"),
-                                        "missing": opening.get("missing"),
-                                        "error": opening.get("error"),
-                                    },
-                                }
-                            )
                 except Exception as exc:
                     tool_results["available_time"] = {"slots": {}, "error": f"{type(exc).__name__}: {exc}"}
                     tool_calls.append(
@@ -161,6 +103,11 @@ def create_execute_actions_node(
                         }
                     )
 
+            if _needs_professional_assist(required_tools):
+                assist = _professional_assist_result(state)
+                tool_results["professional_assist"] = assist
+                tool_calls.append({"name": "professional_assist", "input": _planned_tool(required_tools, "professional_assist"), "output": assist})
+
             if tool_tasks:
                 results = await asyncio.gather(*(task for _, _, task in tool_tasks), return_exceptions=True)
                 merge_action_task_results(
@@ -169,27 +116,7 @@ def create_execute_actions_node(
                     tool_results=tool_results,
                     tool_calls=tool_calls,
                 )
-
-            if _needs_pricing_rules(required_tools) and pricing_rules_repository:
-                pricing_query = _planned_tool_query(required_tools, "pricing_rules")
-                if pricing_query:
-                    local_call = {"name": "pricing_rules", "input": {"query": pricing_query, "planned": True}}
-                    try:
-                        local_rows = pricing_rules_repository.search(pricing_query)
-                        tool_results["pricing_rules"] = {"rows": local_rows}
-                        local_call["output"] = {"rows": len(local_rows)}
-                    except Exception as exc:
-                        local_call["error"] = f"{type(exc).__name__}: {exc}"
-                        tool_results["pricing_rules"] = {"rows": [], "error": local_call["error"]}
-                    tool_calls.append(local_call)
-                else:
-                    _record_tool_argument_error(
-                        tool_results=tool_results,
-                        tool_calls=tool_calls,
-                        key="pricing_rules",
-                        error="missing_planner_query",
-                        tool_input={"name": "pricing_rules", "query": "", "planned": True},
-                    )
+                _filter_case_studies_by_sent_documents(tool_results, state, tool_calls)
 
             planner_fact_output = build_planner_fact_output(tool_results, state)
             fact_envelope = dict(planner_fact_output.get("fact_envelope") or {})
@@ -220,6 +147,21 @@ def _queue_planned_tool_tasks(
         return
     if name == "kb_search":
         kb_name = str(tool.get("kb_name") or "").strip()
+        if kb_name and kb_name != "case_studies":
+            tool_results[kb_name] = {
+                "kb_name": kb_name,
+                "items": [],
+                "error": "planner_tool_rejected",
+                "rejected_reason": "Only kb_search(case_studies) is selectable. sales_talk_qa is preloaded as sales_talk_reference.",
+            }
+            tool_calls.append(
+                {
+                    "name": "planner_tool_rejected",
+                    "input": {"name": "kb_search", "kb_name": kb_name, "planned": True},
+                    "error": "unsupported_kb",
+                }
+            )
+            return
         if not kb_name:
             _record_tool_argument_error(
                 tool_results=tool_results,
@@ -255,8 +197,51 @@ def _queue_planned_tool_tasks(
         }
         tool_tasks.append((kb_name, call, coze_client.search_kb(kb_name, query)))
         return
-    if name == "pricing_rules":
+
+
+def _filter_case_studies_by_sent_documents(
+    tool_results: dict[str, Any],
+    state: AgentState,
+    tool_calls: list[dict[str, Any]],
+) -> None:
+    result = tool_results.get("case_studies")
+    if not isinstance(result, dict):
         return
+    items = result.get("items") if isinstance(result.get("items"), list) else []
+    sent_ids = _sent_case_document_ids(state)
+    raw_ids = [_document_id(item) for item in items if isinstance(item, dict)]
+    visible_items = [
+        item
+        for item in items
+        if not isinstance(item, dict) or _document_id(item) not in sent_ids
+    ]
+    filtered_ids = [doc_id for doc_id in raw_ids if doc_id and doc_id in sent_ids]
+    result["items"] = visible_items
+    result["case_studies_filter"] = {
+        "raw_count": len(items),
+        "filtered_count": len(filtered_ids),
+        "filtered_document_ids": filtered_ids,
+        "visible_document_ids": [_document_id(item) for item in visible_items if isinstance(item, dict) and _document_id(item)],
+    }
+    if items and not visible_items:
+        result["no_visible_items_reason"] = "all_case_studies_already_sent_to_customer"
+    tool_calls.append(
+        {
+            "name": "case_studies_document_filter",
+            "input": {"sent_document_ids": sorted(sent_ids)},
+            "output": result["case_studies_filter"],
+        }
+    )
+
+
+def _sent_case_document_ids(state: AgentState) -> set[str]:
+    profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
+    raw = profile.get("sent_case_document_ids") if isinstance(profile.get("sent_case_document_ids"), list) else []
+    return {str(item).strip() for item in raw if str(item).strip()}
+
+
+def _document_id(item: dict[str, Any]) -> str:
+    return str(item.get("document_id") or item.get("documentId") or "").strip()
 
 
 def _record_tool_argument_error(
@@ -289,8 +274,8 @@ def _missing_fields_for_error(error: str) -> list[str]:
     return []
 
 
-def _needs_store_lookup(required_tools: list[dict[str, Any]]) -> bool:
-    return any(str(item.get("name") or "") == "store_lookup" for item in required_tools if isinstance(item, dict))
+def _needs_distance_calculate(required_tools: list[dict[str, Any]]) -> bool:
+    return any(str(item.get("name") or "") == "distance_calculate" for item in required_tools if isinstance(item, dict))
 
 
 def _needs_appointment_record_query(required_tools: list[dict[str, Any]]) -> bool:
@@ -301,26 +286,177 @@ def _needs_appointment_record_query(required_tools: list[dict[str, Any]]) -> boo
 
 def _needs_appointment_lookup(required_tools: list[dict[str, Any]]) -> bool:
     names = {str(item.get("name") or "") for item in required_tools if isinstance(item, dict)}
-    return bool(names & {"available_time", "appointment_create"})
+    return bool(names & {"available_time"})
 
 
 def _needs_available_time(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "available_time" for item in required_tools if isinstance(item, dict))
 
 
-def _needs_appointment_create(required_tools: list[dict[str, Any]]) -> bool:
-    return any(str(item.get("name") or "") == "appointment_create" for item in required_tools if isinstance(item, dict))
+def _needs_professional_assist(required_tools: list[dict[str, Any]]) -> bool:
+    return any(str(item.get("name") or "") == "professional_assist" for item in required_tools if isinstance(item, dict))
 
 
-def _needs_pricing_rules(required_tools: list[dict[str, Any]]) -> bool:
-    return any(str(item.get("name") or "") == "pricing_rules" for item in required_tools if isinstance(item, dict))
-
-
-def _planned_tool_query(required_tools: list[dict[str, Any]], tool_name: str) -> str:
+def _planned_tool(required_tools: list[dict[str, Any]], tool_name: str) -> dict[str, Any]:
     for item in required_tools:
-        if not isinstance(item, dict) or str(item.get("name") or "").strip() != tool_name:
+        if isinstance(item, dict) and str(item.get("name") or "").strip() == tool_name:
+            return item
+    return {"name": tool_name}
+
+
+def _appointment_query_from_planner(required_tools: list[dict[str, Any]], state: AgentState) -> dict[str, Any]:
+    tool = _planned_tool(required_tools, "available_time")
+    store_id = str(tool.get("store_id") or state.get("confirmed_store_id") or state.get("store_id") or "").strip()
+    date = str(tool.get("date") or "").strip()
+    store_name = str(tool.get("store_name") or state.get("confirmed_store_name") or state.get("store_name") or "").strip()
+    missing = []
+    if not store_id:
+        missing.append("store_id")
+    if not date:
+        missing.append("date")
+    return {"store_id": store_id, "store_name": store_name, "date": date, "missing": missing}
+
+
+async def _distance_calculate(tool: dict[str, Any], state: AgentState, coze_client: CozeClient) -> dict[str, Any]:
+    origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or state.get("normalized_content") or "").strip()
+    candidates = _distance_candidate_stores(tool, state)
+    if not origin:
+        return {"status": "missing_origin", "candidate_stores": candidates, "error": "missing_origin"}
+    if not candidates:
+        return {"origin": origin, "status": "no_candidate_stores", "candidate_stores": [], "error": "no_candidate_stores"}
+    workflow_id = str(getattr(coze_client.settings, "geocode_workflow_id", "") or "").strip()
+    if not workflow_id:
+        return {
+            "origin": origin,
+            "candidate_stores": candidates,
+            "status": "distance_tool_unavailable",
+            "error": "geocode_workflow_id_not_configured",
+        }
+    try:
+        origin_geo = await _geocode_address(coze_client, workflow_id, origin)
+        if not origin_geo.get("location"):
+            return {"origin": origin, "candidate_stores": candidates, "status": "origin_geocode_failed", "error": "origin_geocode_failed"}
+        origin_point = _parse_lng_lat(str(origin_geo.get("location") or ""))
+        if not origin_point:
+            return {"origin": origin, "candidate_stores": candidates, "status": "origin_geocode_failed", "error": "invalid_origin_location"}
+
+        async def rank_store(store: dict[str, Any]) -> dict[str, Any]:
+            address = str(store.get("store_address") or "").strip()
+            cached_location = str(store.get("location") or "").strip()
+            geo: dict[str, Any] = {}
+            point = _parse_lng_lat(cached_location) if cached_location else None
+            if point:
+                geo = {
+                    key: store.get(key)
+                    for key in ("geocode_formatted_address", "province", "city", "district", "location")
+                    if store.get(key)
+                }
+                if store.get("geocode_formatted_address"):
+                    geo["formatted_address"] = store.get("geocode_formatted_address")
+                geo["location"] = cached_location
+            else:
+                geo = await _geocode_address(coze_client, workflow_id, address)
+                point = _parse_lng_lat(str(geo.get("location") or ""))
+            ranked = dict(store)
+            ranked["geocode"] = {key: geo.get(key) for key in ("formatted_address", "province", "city", "district", "location")}
+            if point:
+                ranked["distance_km"] = round(_haversine_km(origin_point, point), 2)
+            else:
+                ranked["distance_error"] = "store_geocode_failed"
+            return ranked
+
+        ranked = await asyncio.gather(*(rank_store(store) for store in candidates[:12]), return_exceptions=True)
+        ranked_stores = [item for item in ranked if isinstance(item, dict)]
+        ranked_stores.sort(key=lambda item: float(item.get("distance_km") if item.get("distance_km") is not None else 999999))
+        return {
+            "origin": origin,
+            "origin_geocode": {key: origin_geo.get(key) for key in ("formatted_address", "province", "city", "district", "location")},
+            "status": "ok",
+            "ranked_stores": ranked_stores,
+            "candidate_store_count": len(candidates),
+        }
+    except Exception as exc:
+        return {
+            "origin": origin,
+            "candidate_stores": candidates[:12],
+            "status": "distance_tool_error",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _distance_candidate_stores(tool: dict[str, Any], state: AgentState) -> list[dict[str, Any]]:
+    candidate_ids = tool.get("candidate_store_ids") if isinstance(tool.get("candidate_store_ids"), list) else []
+    stores = []
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    allowed_ids = {str(item) for item in candidate_ids}
+    for store in knowledge.get("stores", []) if isinstance(knowledge.get("stores"), list) else []:
+        if not isinstance(store, dict):
             continue
-        query = str(item.get("query") or "").strip()
-        if query:
-            return query
-    return ""
+        if allowed_ids and str(store.get("store_id") or "") not in allowed_ids:
+            continue
+        stores.append(store)
+    return stores[:12]
+
+
+async def _geocode_address(coze_client: CozeClient, workflow_id: str, address: str) -> dict[str, Any]:
+    if not address:
+        return {}
+    raw = await coze_client.run_workflow(workflow_id, {"address": address})
+    data = raw.get("data")
+    if isinstance(data, str) and data:
+        try:
+            parsed = json.loads(data)
+        except json.JSONDecodeError:
+            parsed = {}
+    elif isinstance(data, dict):
+        parsed = data
+    else:
+        parsed = raw
+    output = parsed.get("output") if isinstance(parsed, dict) else None
+    if isinstance(output, list) and output and isinstance(output[0], dict):
+        return output[0]
+    if isinstance(output, dict):
+        return output
+    if isinstance(parsed, dict) and isinstance(parsed.get("output"), str):
+        try:
+            nested = json.loads(str(parsed.get("output") or ""))
+            if isinstance(nested, list) and nested and isinstance(nested[0], dict):
+                return nested[0]
+        except json.JSONDecodeError:
+            return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _parse_lng_lat(value: str) -> tuple[float, float] | None:
+    parts = [part.strip() for part in value.split(",")]
+    if len(parts) != 2:
+        return None
+    try:
+        return float(parts[0]), float(parts[1])
+    except ValueError:
+        return None
+
+
+def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    lng1, lat1 = a
+    lng2, lat2 = b
+    radius = 6371.0088
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lng2 - lng1)
+    h = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    return 2 * radius * math.asin(math.sqrt(h))
+
+
+def _professional_assist_result(state: AgentState) -> dict[str, Any]:
+    handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
+    primary = state.get("primary_task") if isinstance(state.get("primary_task"), dict) else {}
+    return {
+        "status": "requested",
+        "reason": str(handoff.get("reason") or primary.get("customer_need") or "").strip(),
+        "task_type": str(primary.get("type") or "").strip(),
+        "subtype": str(primary.get("subtype") or "").strip(),
+        "policy_hint": str(primary.get("policy_hint") or "").strip(),
+        "required_internal_action": "professional_colleague_follow_up",
+    }

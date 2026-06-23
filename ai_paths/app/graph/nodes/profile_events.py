@@ -4,7 +4,6 @@ from typing import Callable
 
 from app.graph.nodes.memory_usage_policy import should_suppress_profile_memory_for_reply
 from app.graph.nodes.profile_event_text import event_impact, event_summary, event_type_for_intent
-from app.graph.nodes.project_kb_context import case_request_lacks_specific_context
 from app.graph.nodes.store_context import extract_city, extract_time_text
 from app.graph.planner.runtime_plan import planner_scene, planner_task_views
 from app.graph.state import AgentState
@@ -14,10 +13,8 @@ def extract_event_updates(
     state: AgentState,
     profile_update: dict[str, object],
     *,
-    canonical_price_project: Callable[[str], str],
     contextual_price_project: Callable[[AgentState], str],
     extract_price_digits: Callable[[str], list[str]],
-    extract_project: Callable[[str], str],
     known_visible_concerns: Callable[[AgentState], list[str]],
     project_direction_names: Callable[[AgentState], list[str]],
 ) -> list[dict[str, object]]:
@@ -42,10 +39,8 @@ def extract_event_updates(
             event_type,
             content,
             state,
-            canonical_price_project=canonical_price_project,
             contextual_price_project=contextual_price_project,
             extract_price_digits=extract_price_digits,
-            extract_project=extract_project,
             known_visible_concerns=known_visible_concerns,
             project_direction_names=project_direction_names,
         )
@@ -86,21 +81,18 @@ def _event_facts(
     content: str,
     state: AgentState,
     *,
-    canonical_price_project: Callable[[str], str],
     contextual_price_project: Callable[[AgentState], str],
     extract_price_digits: Callable[[str], list[str]],
-    extract_project: Callable[[str], str],
     known_visible_concerns: Callable[[AgentState], list[str]],
     project_direction_names: Callable[[AgentState], list[str]],
 ) -> dict[str, object]:
     image_info = state.get("image_info", {}) or {}
-    project = extract_project(content)
     common = _event_common_facts(content, state, known_visible_concerns, project_direction_names)
 
     if event_type == "price_inquiry":
         return {
             **common,
-            "project": canonical_price_project(contextual_price_project(state) or project),
+            "project": contextual_price_project(state),
             "price_focus": "价格咨询",
             "budget_sens": (
                 "high"
@@ -112,11 +104,11 @@ def _event_facts(
     if event_type == "project_inquiry":
         return {
             **common,
-            "project": project,
+            "project": contextual_price_project(state),
             "question_focus": "项目方向",
             "visible_concerns": image_info.get("visible_concerns", []),
             "image_desc": image_info.get("image_desc", ""),
-            "project_directions": [] if case_request_lacks_specific_context(state) else project_direction_names(state),
+            "project_directions": project_direction_names(state),
         }
     if event_type == "image_inquiry":
         return {

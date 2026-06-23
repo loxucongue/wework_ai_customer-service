@@ -7,7 +7,7 @@ import httpx
 from app.config import Settings
 
 
-ModelTier = Literal["fast", "balanced", "strong", "vision"]
+ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision"]
 
 
 def api_key(settings: Settings) -> str:
@@ -27,8 +27,12 @@ def base_url(settings: Settings) -> str:
 def model_name(settings: Settings, tier: ModelTier) -> str:
     if tier == "fast":
         return settings.model_fast
+    if tier == "planner":
+        return settings.model_planner
     if tier == "strong":
         return settings.model_strong
+    if tier == "reply":
+        return settings.model_reply or settings.model_fast
     if tier == "vision":
         return settings.model_vision
     return settings.model_balanced
@@ -38,8 +42,12 @@ def model_names(settings: Settings, tier: ModelTier) -> list[str]:
     primary = model_name(settings, tier)
     if tier == "fast":
         fallback_text = settings.model_fast_fallbacks
+    elif tier == "planner":
+        fallback_text = settings.model_planner_fallbacks
     elif tier == "strong":
         fallback_text = settings.model_strong_fallbacks
+    elif tier == "reply":
+        fallback_text = settings.model_reply_fallbacks
     elif tier == "vision":
         fallback_text = settings.model_vision_fallbacks
     else:

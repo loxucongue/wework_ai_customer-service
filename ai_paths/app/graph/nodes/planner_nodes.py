@@ -62,6 +62,12 @@ def create_planner_brain_node(
 
             policy = policy_selection_from_task(plan.get("primary_task", {}), plan.get("handoff", {}))
             output = {
+                "planner_decision": plan.get("planner_decision", "need_tools"),
+                "planner_stage": plan.get("planner_stage", ""),
+                "planner_sub_rule_id": plan.get("planner_sub_rule_id", ""),
+                "planner_reply_messages": plan.get("planner_reply_messages", []),
+                "planner_tool_calls": plan.get("planner_tool_calls", []),
+                "reply_constraints": plan.get("reply_constraints", []),
                 "primary_task": plan.get("primary_task", {}),
                 "secondary_tasks": plan.get("secondary_tasks", []),
                 "required_tools": plan.get("required_tools", []),

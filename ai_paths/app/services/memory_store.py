@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.config import Settings
 from app.services.storage.repositories import AppRepository
@@ -67,6 +68,56 @@ class CustomerMemoryStore:
             path.unlink()
         except FileNotFoundError:
             return
+
+    def record_case_images_sent(
+        self,
+        customer_id: str,
+        *,
+        document_ids: list[str],
+        request_id: str = "",
+        image_urls: list[str] | None = None,
+    ) -> dict[str, Any]:
+        clean_ids = [str(item).strip() for item in document_ids if str(item).strip()]
+        if not clean_ids:
+            return {"status": "skipped", "reason": "empty_document_ids", "document_ids": []}
+        data = self.load(customer_id)
+        portrait = data.setdefault("portrait", {})
+        if not isinstance(portrait, dict):
+            portrait = {}
+            data["portrait"] = portrait
+        existing = [str(item).strip() for item in portrait.get("sent_case_document_ids", []) if str(item).strip()] if isinstance(portrait.get("sent_case_document_ids"), list) else []
+        merged: list[str] = []
+        for doc_id in [*existing, *clean_ids]:
+            if doc_id not in merged:
+                merged.append(doc_id)
+        portrait["sent_case_document_ids"] = merged[-200:]
+        now = self._now()
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        events = data.setdefault("history_events", [])
+        if isinstance(events, list):
+            events.append(
+                {
+                    "event_id": f"case_image_sent_{request_id or uuid4()}",
+                    "event_type": "case_image_sent",
+                    "created_at": now,
+                    "summary": "已向客户发送效果案例图片",
+                    "facts": {
+                        "document_ids": clean_ids,
+                        "image_urls": image_urls or [],
+                        "request_id": request_id,
+                    },
+                }
+            )
+            data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "document_ids": clean_ids, "total_sent_case_document_ids": len(portrait["sent_case_document_ids"])}
 
     def _path(self, customer_id: str) -> Path:
         safe = re.sub(r"[^a-zA-Z0-9_.-]+", "_", customer_id or "unknown")
