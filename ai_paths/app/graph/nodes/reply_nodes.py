@@ -52,9 +52,19 @@ def create_synthesize_reply_node(
                     if not (model_client and model_client.available and should_use_model_reply(state)):
                         raise RuntimeError("reply_synthesizer_model_required")
                     model_call = {"name": "reply_synthesizer_model", "input": {"tier": "reply", "required": True}}
-                    payload = await model_client.chat_json(reply_messages_for_model(state), tier="reply")
+                    model_messages = reply_messages_for_model(state)
+                    payload = await model_client.chat_json(model_messages, tier="reply")
                     model_call["usage"] = model_usage_snapshot(model_client)
-                    messages = validated_model_messages(payload)
+                    try:
+                        messages = validated_model_messages(payload)
+                    except Exception as validation_exc:
+                        retry_messages = _reply_retry_messages(model_messages, validation_exc)
+                        retry_payload = await model_client.chat_json(retry_messages, tier="reply")
+                        model_call["retry"] = {
+                            "reason": f"{type(validation_exc).__name__}: {validation_exc}",
+                            "usage": model_usage_snapshot(model_client),
+                        }
+                        messages = validated_model_messages(retry_payload)
                     messages = _filter_unsupported_images(messages, state, warnings)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
@@ -87,6 +97,16 @@ def create_synthesize_reply_node(
             return output
 
     return synthesize_reply
+
+
+def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> list[dict[str, Any]]:
+    retry_instruction = (
+        "上一次输出没有通过 JSON schema 校验。"
+        f"错误：{type(exc).__name__}: {exc}。"
+        "请只重新输出严格 JSON 对象，顶层必须包含非空 reply_messages 数组；"
+        "不要解释错误，不要输出 markdown，不要输出内部分析。"
+    )
+    return [*messages, {"role": "user", "content": retry_instruction}]
 
 
 def _filter_unsupported_images(
