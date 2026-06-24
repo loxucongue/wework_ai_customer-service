@@ -173,6 +173,14 @@ export function requireExternalApiKey(request: NextRequest) {
 }
 
 export async function callAiPathsBackend(body: ChatRequestBody) {
+  return callAiPathsBackendPath(body, "/chat", process.env.AI_PATHS_API_KEY || "");
+}
+
+export async function callAiPathsReplyBackend(body: ChatRequestBody) {
+  return callAiPathsBackendPath(body, "/reply", process.env.AI_EXTERNAL_API_KEY || "");
+}
+
+async function callAiPathsBackendPath(body: ChatRequestBody, path: "/chat" | "/reply", token: string) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const payload = {
     content: body.content || "",
@@ -195,11 +203,11 @@ export async function callAiPathsBackend(body: ChatRequestBody) {
   };
 
   const headers: Record<string, string> = { "Content-Type": "application/json; charset=utf-8" };
-  if (process.env.AI_PATHS_API_KEY) {
-    headers.Authorization = `Bearer ${process.env.AI_PATHS_API_KEY}`;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
 
-  return fetch(`${apiBase.replace(/\/$/, "")}/chat`, {
+  return fetch(`${apiBase.replace(/\/$/, "")}${path}`, {
     method: "POST",
     headers,
     body: Buffer.from(JSON.stringify(payload), "utf8"),
@@ -336,7 +344,7 @@ export async function proxyAiPathsChatRaw(body: ChatRequestBody) {
 
 export async function proxyAiPathsChatWorkflowCompatible(body: ChatRequestBody) {
   try {
-    const response = await callAiPathsBackend(body);
+    const response = await callAiPathsReplyBackend(body);
     const text = await response.text();
     if (!response.ok) {
       return jsonResponse(
