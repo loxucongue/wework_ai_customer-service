@@ -8,10 +8,8 @@ from langgraph.graph import END, StateGraph
 
 from app.graph.nodes.action_nodes import create_execute_actions_node
 from app.graph.nodes.appointment_utils import appointment_query_from_state
-from app.graph.nodes.image_info import known_visible_concerns_from_state as _known_visible_concerns_from_state
 from app.graph.nodes.layer_nodes import create_background_context_layer, create_input_normalization_layer
 from app.graph.nodes.planner_nodes import create_planner_brain_node
-from app.graph.nodes.profile_extraction import extract_event_updates, extract_profile_update
 from app.graph.nodes.profile_nodes import create_profile_event_extractor_node
 from app.graph.nodes.reply_context import reply_user_payload_for_model
 from app.graph.nodes.reply_input import reply_messages_for_model, should_use_model_reply
@@ -21,12 +19,7 @@ from app.graph.nodes.reply_validation import (
     validated_model_messages as _validated_model_messages,
 )
 from app.graph.nodes.store_context import extract_city as _extract_city
-from app.graph.nodes.system_action_events import extract_system_action_events
-from app.graph.runtime_common import compact_memory as _compact_memory, extract_price_digits as _extract_price_digits
-from app.graph.runtime_context import (
-    contextual_price_project as _contextual_price_project,
-    project_direction_names_from_state as _project_direction_names_from_state,
-)
+from app.graph.runtime_common import compact_memory as _compact_memory
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
@@ -142,21 +135,6 @@ def _build_nodes(
         trace_logger=trace_logger,
         memory_store=memory_store,
         compact_memory=_compact_memory,
-        extract_event_updates=lambda state, profile_update: extract_event_updates(
-            state,
-            profile_update,
-            contextual_price_project=_contextual_price_project,
-            extract_price_digits=_extract_price_digits,
-            known_visible_concerns=_known_visible_concerns_from_state,
-            project_direction_names=_project_direction_names_from_state,
-        ),
-        extract_profile_update=lambda state: extract_profile_update(
-            state,
-            contextual_price_project=_contextual_price_project,
-            known_visible_concerns=_known_visible_concerns_from_state,
-            project_direction_names=_project_direction_names_from_state,
-        ),
-        extract_system_action_events=extract_system_action_events,
     )
 
     synthesize_reply = create_synthesize_reply_node(

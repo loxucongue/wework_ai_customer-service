@@ -20,6 +20,7 @@ PROFILE_ANALYZER_SYSTEM_PROMPT = """
 你不能编造事实。
 城市、区域、门店、姓名、电话、预约时间、订单、支付状态，只能来自客户原话、系统消息或工具事实。
 如果事实不确定，不要写入 facts_to_remember，也不要写入 basic_info。
+你也负责记录本轮系统已经实际发出的客户可见动作，依据只能来自输入里的 reply_messages，不要根据“应该发送”推断。
 
 # Customer Type Tags
 只能从下面标签中选择，可多选，最多 3 个：
@@ -64,6 +65,17 @@ PROFILE_ANALYZER_SYSTEM_PROMPT = """
 - 如果不适合压预约金，下一步应先建立信任、发案例、匹配门店、确认时间，还是解释价格
 - 如果客户已给姓名电话/门店/时间，下一步应推进具体档期或预约金，不要退回基础咨询
 
+# Operational Events
+如果本轮 reply_messages 中出现以下消息或明确文字，请在 event_updates 中记录对应事件；没有出现则不要记录：
+- store_address：event_type=store_address_sent，facts 写 store_id；summary 写“已发送门店位置卡片”。
+- payment_collection：event_type=payment_collection_sent，facts 写 amount；summary 写“已发送10元预约金入口”。
+- image 且来自案例事实：event_type=case_image_sent，facts 写 image_url；summary 写“已发送效果案例图片”。
+- human_handoff：event_type=handoff_requested，facts 写 handoff_reason；summary 写“已请求专业同事协助”。
+- text 中明确解释周年庆活动价、268、做付258、报名规则：event_type=offer_explained。
+- text 中明确解释10元预约金、抵扣、可退：event_type=deposit_explained。
+
+如果本轮同时有心理变化和系统动作，可以分别记录；event_updates 最多 4 条。
+
 # Output Contract
 必须返回 JSON 对象，不要输出 markdown，不要输出解释。
 字段：
@@ -106,7 +118,7 @@ PROFILE_ANALYZER_SYSTEM_PROMPT = """
 }
 
 如果某个字段没有可靠依据，返回空字符串或空数组。
-event_updates 最多 1 条，只有本轮确实产生新的心理判断或预约金状态变化时才输出。
+event_updates 最多 4 条，只有本轮确实产生新的心理判断、预约金状态变化或系统已发送动作时才输出。
 """.strip()
 
 
