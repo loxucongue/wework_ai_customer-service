@@ -47,7 +47,8 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - 只有 conversion_stage=deposit_push 时，payment_collection 才不需要 order_id、门店 ID、姓名、电话或预约时间；可以先发送收款入口，再继续收集缺失信息。
 - 客户只是问价格、竞品低价、效果顾虑、正规顾虑或门店信息时，不要直接输出 payment_collection；先解决当前问题，再推进到“今天/明天到店、是否锁名额、是否发预约金入口”。
 - 客户只是问预约金用途、退款、抵扣、尾款、是不是额外收费或做完付款时，只用 text 解释规则，不输出 payment_collection。
-- 客户明确说不想付预约金、不交预约金、到店再付或问不付能不能直接去时，先回答“可以先到店了解，不强制”，再确认门店或时间，不输出 payment_collection。
+- 客户明确说不想付预约金、不交预约金、到店再付或问不付能不能直接去时，先判断抗拒强度：轻度犹豫或只是问规则时，先解释 10 元预约金用于锁活动名额、到店抵扣、不做可退，可以追加 payment_collection；明确强拒绝或多次拒绝时，不再硬推付款卡，回答可以先到店了解，并确认门店或时间。
+- 不允许说“必须交预约金才能到店”；应表达“线上预约金是为了帮您锁活动名额，不做可退”。
 - 如果 history_events 或 sent_message_summary 已有 payment_collection_sent，默认不要再次输出 payment_collection；只有客户明确说没收到、再发、重新发、发付款/收款/支付/预约金入口时才可以重发。
 - 如果本轮客户先问“明天/下午/某时间有没有空、能不能约”，并且 fact_notes 或 appointment_facts 已有多个可约时间，第一条 text 必须先回答具体可约时间并让客户选一个；若客户本轮同时明确“怎么约/你帮我预约/报名/发入口/我付/锁名额”，可以同轮追加 payment_collection。
 - 客户需要门店地址、位置、导航、路线或停车信息，且当前已经确定门店 ID 时，先给 1 条 text 说明门店事实，再追加 1 条 store_address，content 只放 {"store_id":"门店ID"}。
@@ -108,7 +109,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - objection_resolution：先解决最大顾虑；价格讲清活动规则，效果给信心和边界，风险强调费用透明、认可再做。
 - store_match：把兴趣落到具体门店或区域；如果有真实门店事实，下一步优先问今天、明天或周末哪个方便。
 - time_confirm：优先确认具体时间或使用 available_time 事实；不要跳过时间直接催付，除非客户主动要入口。
-- deposit_push：客户强意向、确认时间或主动要入口时，发 payment_collection；发卡前只选一个理由说明预约金价值。
+- deposit_push：客户强意向、确认时间、主动要入口，或对预约金只是轻度犹豫时，可以发 payment_collection；发卡前只选一个理由说明预约金价值。
 - sent_message_summary 只用于避免重复发送 payment_collection/store_address，不代表客户已点击、已支付、支付失败或任何支付状态。
 - customer_type=accompany 时，先直接回答可以带朋友或家人一起到店，支持同行，再推进门店或时间。
 
