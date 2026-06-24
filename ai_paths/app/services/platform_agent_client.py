@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from threading import Lock
 from typing import Any
 from urllib.parse import urljoin
 
@@ -20,6 +21,8 @@ class PlatformAgentClient:
         self._default_user_id = settings.platform_agent_default_user_id
         self._default_corp_id = settings.platform_agent_default_corp_id
         self._default_wechat = settings.platform_agent_default_wechat
+        self._client: httpx.Client | None = None
+        self._client_lock = Lock()
 
     @property
     def available(self) -> bool:
@@ -312,12 +315,7 @@ class PlatformAgentClient:
         if not self.available:
             raise RuntimeError("Platform agent token is not configured")
         clean_params = {key: value for key, value in params.items() if value not in (None, "")}
-        response = httpx.get(
-            urljoin(self._base_url, path.lstrip("/")),
-            params=clean_params,
-            headers=self._headers(),
-            timeout=self._timeout,
-        )
+        response = self._http_client().get(urljoin(self._base_url, path.lstrip("/")), params=clean_params, headers=self._headers())
         response.raise_for_status()
         payload = response.json()
         code = payload.get("code")
@@ -339,12 +337,7 @@ class PlatformAgentClient:
         if not self.available:
             raise RuntimeError("Platform agent token is not configured")
         clean_payload = {key: value for key, value in payload.items() if value not in (None, "")}
-        response = httpx.post(
-            urljoin(self._base_url, path.lstrip("/")),
-            json=clean_payload,
-            headers=self._headers(),
-            timeout=self._timeout,
-        )
+        response = self._http_client().post(urljoin(self._base_url, path.lstrip("/")), json=clean_payload, headers=self._headers())
         response.raise_for_status()
         payload = response.json()
         code = payload.get("code")
@@ -367,6 +360,22 @@ class PlatformAgentClient:
             "token": self._token,
             "Request-From": self._request_from,
         }
+
+    def _http_client(self) -> httpx.Client:
+        if self._client is None:
+            with self._client_lock:
+                if self._client is None:
+                    connect_timeout = min(3.0, self._timeout)
+                    self._client = httpx.Client(
+                        timeout=httpx.Timeout(self._timeout, connect=connect_timeout),
+                        limits=httpx.Limits(max_connections=50, max_keepalive_connections=20),
+                    )
+        return self._client
+
+    def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
 
 
 def _normalize_platform_base_url(value: str) -> str:

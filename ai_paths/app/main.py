@@ -82,6 +82,7 @@ async def shutdown() -> None:
     await coze_client.aclose()
     await outreach_send_client.aclose()
     await outreach_system_client.aclose()
+    platform_agent_client.close()
 
 
 @app.get("/health")

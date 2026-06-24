@@ -82,12 +82,22 @@ def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
     return build_planner_plan_v2(
         state,
         {
-            "decision": "no_reply",
+            "decision": "direct_reply",
             "stage": "S4",
-            "sub_rule_id": "",
-            "reply_messages": [],
+            "sub_rule_id": "HUMAN_HANDOFF_SYSTEM_UNAVAILABLE",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "unknown",
+            "main_blocker": "trust",
+            "next_step": "solve_blocker",
+            "reply_messages": [
+                {
+                    "type": "human_handoff",
+                    "order": 1,
+                    "content": {"handoff_reason": "当前系统响应异常，需要专业同事协助核对。"},
+                }
+            ],
             "tool_calls": [],
-            "handoff": {"needed": False, "reason": "Planner unavailable"},
+            "handoff": {"needed": True, "reason": "Planner unavailable"},
         },
     )
 
