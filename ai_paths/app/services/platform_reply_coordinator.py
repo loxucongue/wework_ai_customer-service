@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -145,7 +146,8 @@ class PlatformReplyCoordinator:
         if not config.get("enabled", True):
             return {"matched": False}
         words = [str(word).strip() for word in config.get("words", []) if str(word or "").strip()]
-        if not words:
+        regex_patterns = [str(pattern).strip() for pattern in config.get("regex_patterns", []) if str(pattern or "").strip()]
+        if not words and not regex_patterns:
             return {"matched": False}
         mode = str(config.get("match_mode") or "contains").strip() or "contains"
         text = str(content or "")
@@ -153,6 +155,12 @@ class PlatformReplyCoordinator:
         for word in words:
             if (mode == "exact" and text.strip() == word) or (mode != "exact" and word.lower() in text_lower):
                 return {"matched": True, "word": word, "match_mode": mode}
+        for pattern in regex_patterns:
+            try:
+                if re.search(pattern, text):
+                    return {"matched": True, "word": pattern, "match_mode": "regex"}
+            except re.error:
+                continue
         return {"matched": False}
 
     def _load_filter_config(self) -> dict[str, Any]:

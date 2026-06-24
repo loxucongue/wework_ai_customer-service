@@ -1,5 +1,6 @@
 {
   "enabled": true,
   "match_mode": "contains",
-  "words": []
+  "words": ["[emotion消息]"],
+  "regex_patterns": ["^\\[[^\\[\\]\\r\\n]{2}\\]$"]
 }
