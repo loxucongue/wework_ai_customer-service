@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 
 from app.graph.nodes.action_nodes import (
     _administrative_area_origin_candidate,
     _distance_candidate_stores,
+    _distance_between_points,
     _geocode_has_unconflicted_location,
     _normalize_distance_origin_from_store_regions,
     _store_lookup_item,
@@ -13,6 +15,23 @@ from app.graph.nodes.action_nodes import (
 
 
 class DistanceOriginNormalizationTests(unittest.TestCase):
+    def test_distance_workflow_result_is_parsed_as_km(self) -> None:
+        class FakeCozeClient:
+            async def run_workflow(self, workflow_id: str, payload: dict) -> dict:
+                self.workflow_id = workflow_id
+                self.payload = payload
+                return {"data": '{"output":{"distance":5241,"duration":1711}}'}
+
+        client = FakeCozeClient()
+        result = asyncio.run(_distance_between_points(client, "distance-workflow", "106.540603,29.402348", "106.545937,29.392449"))
+
+        self.assertEqual(client.workflow_id, "distance-workflow")
+        self.assertEqual(client.payload, {"origin": "106.540603,29.402348", "destination": "106.545937,29.392449"})
+        self.assertEqual(result["source"], "distance_workflow")
+        self.assertEqual(result["distance_meters"], 5241)
+        self.assertEqual(result["distance_km"], 5.24)
+        self.assertEqual(result["duration_seconds"], 1711)
+
     def test_city_and_district_short_name_use_customer_store_region(self) -> None:
         state = {
             "customer_store_knowledge": {

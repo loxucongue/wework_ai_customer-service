@@ -382,8 +382,9 @@ async def _distance_calculate(
         return {"status": "missing_origin", "candidate_stores": candidates, "error": "missing_origin"}
     if not candidates:
         return {"origin": origin, "status": "no_candidate_stores", "candidate_stores": [], "error": "no_candidate_stores"}
-    workflow_id = str(getattr(coze_client.settings, "geocode_workflow_id", "") or "").strip()
-    if not workflow_id:
+    geocode_workflow_id = str(getattr(coze_client.settings, "geocode_workflow_id", "") or "").strip()
+    distance_workflow_id = str(getattr(coze_client.settings, "distance_workflow_id", "") or "").strip()
+    if not geocode_workflow_id:
         return {
             "origin": origin,
             "candidate_stores": candidates,
@@ -392,9 +393,9 @@ async def _distance_calculate(
         }
     try:
         admin_candidate = _administrative_area_origin_candidate(origin, state)
-        origin_geo = await _geocode_address(coze_client, workflow_id, geocode_origin)
+        origin_geo = await _geocode_address(coze_client, geocode_workflow_id, geocode_origin)
         if admin_candidate and not _geocode_matches_area(origin_geo, admin_candidate["area"]):
-            admin_geo = await _geocode_address(coze_client, workflow_id, admin_candidate["origin"])
+            admin_geo = await _geocode_address(coze_client, geocode_workflow_id, admin_candidate["origin"])
             if _geocode_matches_area(admin_geo, admin_candidate["area"]) or _geocode_has_unconflicted_location(admin_geo):
                 origin_geo = admin_geo
                 geocode_origin = admin_candidate["origin"]
@@ -419,12 +420,22 @@ async def _distance_calculate(
                     geo["formatted_address"] = store.get("geocode_formatted_address")
                 geo["location"] = cached_location
             else:
-                geo = await _geocode_address(coze_client, workflow_id, address)
+                geo = await _geocode_address(coze_client, geocode_workflow_id, address)
                 point = _parse_lng_lat(str(geo.get("location") or ""))
             ranked = dict(store)
             ranked["geocode"] = {key: geo.get(key) for key in ("formatted_address", "province", "city", "district", "location")}
             if point:
-                ranked["distance_km"] = round(_haversine_km(origin_point, point), 2)
+                destination = str(geo.get("location") or cached_location or "").strip()
+                distance = await _distance_between_points(coze_client, distance_workflow_id, str(origin_geo.get("location") or ""), destination)
+                if distance.get("distance_km") is not None:
+                    ranked["distance_km"] = distance["distance_km"]
+                    ranked["distance_meters"] = distance.get("distance_meters")
+                    ranked["duration_seconds"] = distance.get("duration_seconds")
+                    ranked["distance_source"] = distance.get("source")
+                else:
+                    ranked["distance_km"] = round(_haversine_km(origin_point, point), 2)
+                    ranked["distance_source"] = "haversine_fallback"
+                    ranked["distance_error"] = distance.get("error") or "distance_workflow_failed"
             else:
                 ranked["distance_error"] = "store_geocode_failed"
             return ranked
@@ -436,6 +447,7 @@ async def _distance_calculate(
             "origin": origin,
             "geocode_origin": geocode_origin,
             "origin_geocode": {key: origin_geo.get(key) for key in ("formatted_address", "province", "city", "district", "location")},
+            "distance_workflow_id": distance_workflow_id,
             "status": "ok",
             "ranked_stores": ranked_stores,
             "candidate_store_count": len(candidates),
@@ -725,6 +737,60 @@ async def _geocode_address(coze_client: CozeClient, workflow_id: str, address: s
         except json.JSONDecodeError:
             return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+async def _distance_between_points(coze_client: CozeClient, workflow_id: str, origin: str, destination: str) -> dict[str, Any]:
+    if not workflow_id:
+        return {"source": "distance_workflow", "error": "distance_workflow_id_not_configured"}
+    if not origin or not destination:
+        return {"source": "distance_workflow", "error": "missing_origin_or_destination"}
+    try:
+        raw = await coze_client.run_workflow(workflow_id, {"origin": origin, "destination": destination})
+    except Exception as exc:
+        return {"source": "distance_workflow", "error": f"{type(exc).__name__}: {exc}"}
+    parsed = _parse_workflow_data(raw)
+    output = parsed.get("output") if isinstance(parsed, dict) else None
+    if isinstance(output, str) and output:
+        try:
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            output = {}
+    if not isinstance(output, dict):
+        output = parsed if isinstance(parsed, dict) else {}
+    meters = _to_float(output.get("distance"))
+    duration = _to_float(output.get("duration"))
+    if meters is None:
+        return {"source": "distance_workflow", "raw": output, "error": "distance_missing"}
+    result: dict[str, Any] = {
+        "source": "distance_workflow",
+        "distance_meters": int(meters),
+        "distance_km": round(meters / 1000, 2),
+    }
+    if duration is not None:
+        result["duration_seconds"] = int(duration)
+    return result
+
+
+def _parse_workflow_data(raw: dict[str, Any]) -> dict[str, Any]:
+    data = raw.get("data") if isinstance(raw, dict) else None
+    if isinstance(data, str) and data:
+        try:
+            parsed = json.loads(data)
+            return parsed if isinstance(parsed, dict) else {"output": parsed}
+        except json.JSONDecodeError:
+            return {"output": data}
+    if isinstance(data, dict):
+        return data
+    return raw if isinstance(raw, dict) else {}
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_lng_lat(value: str) -> tuple[float, float] | None:

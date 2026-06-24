@@ -105,6 +105,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "business_hours": str(item.get("business_hours") or ""),
                     "parking": str(item.get("parking_name") or item.get("parking_address") or ""),
                     "distance_km": item.get("distance_km"),
+                    "distance_source": str(item.get("distance_source") or ""),
                 }
                 for item in candidate_stores[:5]
                 if isinstance(item, dict)
@@ -120,7 +121,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 }
             facts.append(
                 "distance_calculate: "
-                f"origin={value.get('origin') or ''}; status={value.get('status') or ''}; candidates={len(candidate_stores)}"
+                f"origin={value.get('origin') or ''}; status={value.get('status') or ''}; candidates={len(candidate_stores)}; "
+                f"source={candidate_stores[0].get('distance_source') if candidate_stores and isinstance(candidate_stores[0], dict) else ''}"
             )
             if value.get("error"):
                 unsupported_claims.append("distance calculate unavailable")
