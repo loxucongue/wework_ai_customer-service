@@ -48,6 +48,37 @@ def _string(value: Any) -> str:
     return str(value).strip()
 
 
+def _bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _list_strings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [_string(item) for item in value if _string(item)]
+
+
+def _task_content_sources(raw_sources: Any, *, should_send_payment_collection: bool) -> list[Any]:
+    sources = _list_strings(raw_sources) or ["s10_offer"]
+    sources.append({"should_send_payment_collection": bool(should_send_payment_collection)})
+    return sources
+
+
+def _sanitize_reply_messages(messages: list[dict[str, Any]], *, allow_payment_collection: bool) -> list[dict[str, Any]]:
+    output = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") == "payment_collection" and not allow_payment_collection:
+            continue
+        output.append(item)
+    return output[:3]
+
+
 class OutreachService:
     def __init__(
         self,
@@ -192,13 +223,18 @@ class OutreachService:
             if not isinstance(step, dict):
                 continue
             delay = int(step.get("delay_minutes") or (60 * index))
+            should_send_payment_collection = _bool(step.get("should_send_payment_collection"))
             tasks.append(
                 {
                     "step_index": int(step.get("step") or index),
                     "scheduled_at": _add_minutes(now, delay),
                     "intent": str(step.get("intent") or "outreach"),
                     "message_goal": str(step.get("message_goal") or ""),
-                    "content_sources": step.get("content_sources") or [],
+                    "content_sources": _task_content_sources(
+                        step.get("content_sources"),
+                        should_send_payment_collection=should_send_payment_collection,
+                    ),
+                    "should_send_payment_collection": should_send_payment_collection,
                     "before_send_check": bool(step.get("before_send_check", True)),
                 }
             )
@@ -209,7 +245,8 @@ class OutreachService:
                     "scheduled_at": _add_minutes(now, 60),
                     "intent": "trust_rebuild",
                     "message_goal": "重新承接客户顾虑，邀请继续沟通",
-                    "content_sources": ["s10_offer"],
+                    "content_sources": _task_content_sources(["s10_offer"], should_send_payment_collection=False),
+                    "should_send_payment_collection": False,
                     "before_send_check": True,
                 }
             ]
@@ -222,7 +259,7 @@ class OutreachService:
                 user_id=user_id,
                 wechat=wechat,
                 external_userid=external_userid,
-                customer_stage=str(response.get("customer_stage") or ""),
+                customer_stage=str(response.get("conversion_stage") or response.get("customer_stage") or ""),
                 stall_reason=str(response.get("stall_reason") or ""),
                 customer_psychology=str(response.get("customer_psychology") or ""),
                 plan_goal=str(response.get("plan_goal") or ""),
@@ -397,7 +434,13 @@ class OutreachService:
         messages = response.get("reply_messages")
         if not isinstance(messages, list) or not messages:
             raise RuntimeError("outreach_message_model_empty")
-        return [item for item in messages if isinstance(item, dict)][:3]
+        filtered = _sanitize_reply_messages(
+            [item for item in messages if isinstance(item, dict)],
+            allow_payment_collection=bool(task.get("should_send_payment_collection")),
+        )
+        if not filtered:
+            raise RuntimeError("outreach_message_model_empty")
+        return filtered
 
     def _plan_customer_id(self, plan_id: str) -> str:
         detail = self.repository.get_outreach_plan(plan_id)

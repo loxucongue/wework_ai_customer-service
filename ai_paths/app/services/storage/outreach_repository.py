@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -23,6 +23,83 @@ def _silent_minutes(value: str | None) -> int:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds() // 60))
+
+
+def _string(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _outreach_sent_count_72h_blocked(value: Any) -> bool:
+    try:
+        return int(value or 0) >= 3
+    except (TypeError, ValueError):
+        return False
+
+
+def _recent_outreach_24h_blocked(value: str | None) -> bool:
+    parsed = _parse_iso(value)
+    if not parsed:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - parsed < timedelta(hours=24)
+
+
+def _candidate_has_effective_intent(item: dict[str, Any]) -> bool:
+    portrait = item.get("portrait") if isinstance(item.get("portrait"), dict) else {}
+    basic_info = item.get("basic_info") if isinstance(item.get("basic_info"), dict) else {}
+    projects = portrait.get("projects") if isinstance(portrait.get("projects"), list) else []
+    signals = [
+        item.get("last_customer_message"),
+        item.get("latest_event_summary"),
+        item.get("lifecycle_stage"),
+        portrait.get("summary"),
+        portrait.get("main_objection"),
+        portrait.get("next_sales_strategy"),
+        basic_info.get("preferred_store_name"),
+        basic_info.get("city"),
+        *projects,
+    ]
+    return any(_string(value) for value in signals)
+
+
+def _candidate_suppressed_by_risk(item: dict[str, Any]) -> bool:
+    if _string(item.get("last_manual_takeover_at")):
+        return True
+    portrait = item.get("portrait") if isinstance(item.get("portrait"), dict) else {}
+    basic_info = item.get("basic_info") if isinstance(item.get("basic_info"), dict) else {}
+    combined = " ".join(
+        _string(value)
+        for value in (
+            item.get("lifecycle_stage"),
+            item.get("last_customer_message"),
+            item.get("latest_event_summary"),
+            portrait.get("summary"),
+            portrait.get("main_objection"),
+            portrait.get("decision_stage"),
+            basic_info.get("deposit_state"),
+            basic_info.get("appointment_status"),
+        )
+    )
+    blocked_keywords = (
+        "投诉",
+        "退款",
+        "售后纠纷",
+        "严重不满",
+        "人工接管",
+        "拉黑",
+        "别联系",
+        "不要联系",
+        "不需要了",
+        "不考虑了",
+        "已付款",
+        "已支付",
+        "预约成功",
+        "已到店",
+    )
+    return any(keyword in combined for keyword in blocked_keywords)
 
 
 class OutreachRepositoryMixin:
@@ -98,6 +175,7 @@ class OutreachRepositoryMixin:
             params.append(lifecycle_stage)
         if no_plan_only:
             clauses.append("(cm.outreach_plan_id='' OR cm.outreach_plan_id IS NULL)")
+        cutoff_72h = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
         params.append(max(1, min(limit, 200)))
         with self.store.connect() as conn:
             rows = conn.execute(
@@ -121,7 +199,8 @@ class OutreachRepositoryMixin:
                     c.wechat,
                     c.title,
                     (SELECT content FROM messages m WHERE m.conversation_id=c.id AND m.role='user' ORDER BY created_at DESC LIMIT 1) AS last_customer_message,
-                    (SELECT summary FROM history_events e WHERE e.customer_id=cm.customer_id ORDER BY created_at DESC LIMIT 1) AS latest_event_summary
+                    (SELECT summary FROM history_events e WHERE e.customer_id=cm.customer_id ORDER BY created_at DESC LIMIT 1) AS latest_event_summary,
+                    (SELECT COUNT(*) FROM outreach_tasks t WHERE t.customer_id=cm.customer_id AND t.status='sent' AND t.sent_at>=?) AS outreach_sent_count_72h
                 FROM customer_memory cm
                 LEFT JOIN conversations c ON c.customer_id=cm.customer_id
                     AND c.updated_at=(SELECT MAX(c2.updated_at) FROM conversations c2 WHERE c2.customer_id=cm.customer_id)
@@ -129,7 +208,7 @@ class OutreachRepositoryMixin:
                 ORDER BY cm.last_customer_message_at DESC, cm.updated_at DESC
                 LIMIT ?
                 """,
-                params,
+                [cutoff_72h, *params],
             ).fetchall()
         items: list[dict[str, Any]] = []
         for row in rows:
@@ -137,6 +216,14 @@ class OutreachRepositoryMixin:
             item["portrait"] = loads_dict(item.get("portrait"))
             item["basic_info"] = loads_dict(item.get("basic_info"))
             item["silent_minutes"] = _silent_minutes(item.get("last_customer_message_at"))
+            if _recent_outreach_24h_blocked(item.get("last_outreach_at")):
+                continue
+            if _outreach_sent_count_72h_blocked(item.get("outreach_sent_count_72h")):
+                continue
+            if _candidate_suppressed_by_risk(item):
+                continue
+            if not _candidate_has_effective_intent(item):
+                continue
             if item["silent_minutes"] >= silent_minutes_min:
                 items.append(item)
         return items
@@ -434,11 +521,28 @@ class OutreachRepositoryMixin:
     @staticmethod
     def _decode_outreach_plan(row: dict[str, Any]) -> dict[str, Any]:
         row["source_snapshot"] = loads_dict(row.get("source_snapshot"))
+        ai_result = row["source_snapshot"].get("ai_result") if isinstance(row["source_snapshot"], dict) else {}
+        if isinstance(ai_result, dict):
+            for key in (
+                "conversion_stage",
+                "customer_type",
+                "last_explicit_intent",
+                "last_interaction_summary",
+                "next_best_action",
+                "suppress_reason",
+            ):
+                row[key] = _string(ai_result.get(key))
+            row["customer_stage"] = row.get("customer_stage") or _string(ai_result.get("conversion_stage"))
         return row
 
     @staticmethod
     def _decode_outreach_task(row: dict[str, Any]) -> dict[str, Any]:
-        row["content_sources"] = loads_list(row.get("content_sources"))
+        raw_sources = loads_list(row.get("content_sources"))
+        policy_items = [item for item in raw_sources if isinstance(item, dict)]
+        row["content_sources"] = [_string(item) for item in raw_sources if not isinstance(item, dict) and _string(item)]
+        row["should_send_payment_collection"] = any(
+            bool(item.get("should_send_payment_collection")) for item in policy_items
+        )
         row["reply_messages"] = loads_list(row.get("reply_messages_json"))
         row.pop("reply_messages_json", None)
         row["before_send_check"] = bool(row.get("before_send_check"))

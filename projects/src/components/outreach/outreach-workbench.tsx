@@ -47,7 +47,13 @@ type OutreachPlan = {
   customer_id: string;
   status: string;
   customer_stage?: string;
+  conversion_stage?: string;
+  customer_type?: string;
   stall_reason?: string;
+  last_explicit_intent?: string;
+  last_interaction_summary?: string;
+  next_best_action?: string;
+  suppress_reason?: string;
   customer_psychology?: string;
   plan_goal?: string;
   source_snapshot?: JsonObject;
@@ -64,6 +70,8 @@ type OutreachTask = {
   status: string;
   intent?: string;
   message_goal?: string;
+  content_sources?: Array<unknown>;
+  should_send_payment_collection?: boolean;
   reply_messages?: Array<JsonObject>;
   before_send_check?: number | boolean;
   sent_at?: string;
@@ -204,6 +212,10 @@ function sendStatusLabel(value?: string) {
   if (value === "accepted_no_response") return "平台已接收请求/待回查";
   if (value === "accepted") return "平台请求已发出/待回查";
   return value;
+}
+
+function boolLabel(value?: boolean) {
+  return value ? "允许收款卡" : "仅文本推进";
 }
 
 function messagePreview(messages?: Array<JsonObject>) {
@@ -712,9 +724,15 @@ export function OutreachWorkbench() {
             {selectedPlan ? (
               <div className="p-4">
                 <div className="grid grid-cols-3 gap-3">
-                  <InfoBlock label="沉默原因" value={selectedPlan.stall_reason || "-"} />
-                  <InfoBlock label="客户心理" value={selectedPlan.customer_psychology || "-"} />
+                  <InfoBlock label="成交阶段" value={selectedPlan.conversion_stage || selectedPlan.customer_stage || "-"} />
+                  <InfoBlock label="客户类型" value={selectedPlan.customer_type || "-"} />
+                  <InfoBlock label="卡点原因" value={selectedPlan.stall_reason || "-"} />
+                  <InfoBlock label="最后意向" value={selectedPlan.last_explicit_intent || "-"} />
+                  <InfoBlock label="下一步动作" value={selectedPlan.next_best_action || "-"} />
                   <InfoBlock label="计划目标" value={selectedPlan.plan_goal || "-"} />
+                  <InfoBlock label="最近互动" value={selectedPlan.last_interaction_summary || "-"} />
+                  <InfoBlock label="客户心理" value={selectedPlan.customer_psychology || "-"} />
+                  <InfoBlock label="抑制原因" value={selectedPlan.suppress_reason || "-"} />
                 </div>
                 <div className="mt-4 flex items-center gap-2">
                   <button onClick={() => planAction("activate")} className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50">
@@ -750,7 +768,9 @@ export function OutreachWorkbench() {
                               <span className="rounded-full bg-zinc-100 px-2 py-1 text-xs text-zinc-600">{statusLabel(task.status)}</span>
                             </div>
                             <p className="mt-2 text-sm text-zinc-700">{task.message_goal || "-"}</p>
-                            <p className="mt-1 text-xs text-zinc-500">计划发送：{formatTime(task.scheduled_at)} · 发送结果：{sendStatusLabel(task.send_status)}</p>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              计划发送：{formatTime(task.scheduled_at)} · {boolLabel(task.should_send_payment_collection)} · 发送结果：{sendStatusLabel(task.send_status)}
+                            </p>
                           </div>
                           <div className="flex items-center gap-2">
                             <button
