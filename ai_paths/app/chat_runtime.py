@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from app.chat_request_context import build_request_context, conversation_id_from_request, conversation_title
 from app.chat_runtime_helpers import failed_state_from_exception, safe_repository_call
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
+from app.graph.nodes.activity_intro_image import append_activity_intro_image
 from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
@@ -450,7 +451,17 @@ class ChatRuntime:
 def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
     messages = state.get("planner_reply_messages") if isinstance(state.get("planner_reply_messages"), list) else []
     if str(state.get("planner_decision") or "") in {"direct_reply", "need_tools"}:
-        return [item for item in messages if isinstance(item, dict)]
+        warnings: list[Any] = []
+        output = append_activity_intro_image([item for item in messages if isinstance(item, dict)], state, warnings)
+        if warnings:
+            state.setdefault("errors", []).append(
+                {
+                    "node": "platform_sync_reply",
+                    "message": "activity_intro_image_appended",
+                    "detail": warnings[0].get("detail", {}) if isinstance(warnings[0], dict) else {},
+                }
+            )
+        return output
     return []
 
 
@@ -665,4 +676,3 @@ def _customer_store_knowledge_meta(value: Any) -> dict[str, Any]:
         "source": value.get("source", ""),
         "error": value.get("error", ""),
     }
-

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.state import AgentState
-from app.policies.business_rules import load_business_rules
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
 
@@ -69,7 +69,10 @@ def create_synthesize_reply_node(
                     messages = _filter_unsupported_images(messages, state, warnings)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
-                messages = _append_activity_intro_image(messages, state, warnings)
+                messages = append_activity_intro_image(messages, state, warnings)
+                for warning in warnings:
+                    if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
+                        warning.setdefault("node", "synthesize_reply")
             except Exception as exc:
                 model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
                 primary_error = f"{type(exc).__name__}: {exc}"
@@ -141,58 +144,6 @@ def _filter_unsupported_images(
     return _renumber(filtered)
 
 
-def _append_activity_intro_image(
-    messages: list[dict[str, Any]],
-    state: AgentState,
-    warnings: list[Any],
-) -> list[dict[str, Any]]:
-    rules = state.get("business_rules") if isinstance(state.get("business_rules"), dict) else load_business_rules()
-    offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
-    url = str(offer.get("activity_intro_image_url") or "").strip()
-    if not url or _messages_contain_image(messages, url):
-        return messages
-    policy = offer.get("activity_intro_image_policy") if isinstance(offer.get("activity_intro_image_policy"), dict) else {}
-    send_once = bool(policy.get("send_once", True))
-    if send_once and _activity_intro_image_sent(state, url):
-        return messages
-    sub_rule_ids = {str(item).strip() for item in policy.get("sub_rule_ids", []) if str(item).strip()}
-    resend_terms = [str(item).strip() for item in policy.get("resend_terms", []) if str(item).strip()]
-    sub_rule_id = str(state.get("planner_sub_rule_id") or "").strip()
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    should_send = (sub_rule_id in sub_rule_ids) or any(term and term in content for term in resend_terms)
-    if not should_send:
-        return messages
-    output = _renumber([*messages, {"type": "image", "order": len(messages) + 1, "content": {"url": url}}])
-    warnings.append(
-        {
-            "node": "synthesize_reply",
-            "message": "activity_intro_image_appended",
-            "detail": {"url": url, "sub_rule_id": sub_rule_id},
-        }
-    )
-    return output
-
-
-def _messages_contain_image(messages: list[dict[str, Any]], url: str) -> bool:
-    target = url.strip()
-    if not target:
-        return False
-    return any(str(item.get("type") or "") == "image" and _message_url(item.get("content")) == target for item in messages if isinstance(item, dict))
-
-
-def _activity_intro_image_sent(state: AgentState, url: str) -> bool:
-    for event in state.get("history_events") or []:
-        if not isinstance(event, dict):
-            continue
-        if str(event.get("event_type") or "") == "activity_intro_image_sent":
-            return True
-    for item in state.get("conversation_history") or []:
-        text = str(item or "")
-        if url in text or "anniversary-268.jpg" in text:
-            return True
-    return False
-
-
 def _case_image_urls(state: AgentState) -> set[str]:
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
@@ -203,9 +154,7 @@ def _case_image_urls(state: AgentState) -> set[str]:
         url = str(item.get("image_url") or "").strip()
         if url:
             urls.add(url)
-    rules = state.get("business_rules") if isinstance(state.get("business_rules"), dict) else load_business_rules()
-    offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
-    activity_url = str(offer.get("activity_intro_image_url") or "").strip()
+    activity_url = activity_intro_image_url(state)
     if activity_url:
         urls.add(activity_url)
     return urls
