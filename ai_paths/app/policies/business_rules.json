@@ -14,7 +14,13 @@
     "refund_rule": "不做退还10元",
     "includes": ["淡斑", "检测皮肤", "基础清洁", "肌肤补水"],
     "quota": "限30名，名额满恢复原价1980",
-    "payment_message_type": "payment_collection"
+    "payment_message_type": "payment_collection",
+    "activity_intro_image_url": "http://47.252.81.104/assets/activity/anniversary-268.jpg",
+    "activity_intro_image_policy": {
+      "send_once": true,
+      "sub_rule_ids": ["S1_PROJECT_DIRECTION", "S3_PRICE", "S3_AD_PRICE"],
+      "resend_terms": ["活动图", "宣传图", "图片没收到", "再发一下活动图"]
+    }
   },
   "forbidden": [
     "不透露自己是AI",

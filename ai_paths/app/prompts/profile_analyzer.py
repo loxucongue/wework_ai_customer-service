@@ -70,6 +70,7 @@ PROFILE_ANALYZER_SYSTEM_PROMPT = """
 - store_address：event_type=store_address_sent，facts 写 store_id；summary 写“已发送门店位置卡片”。
 - payment_collection：event_type=payment_collection_sent，facts 写 amount；summary 写“已发送10元预约金入口”。
 - image 且来自案例事实：event_type=case_image_sent，facts 写 image_url；summary 写“已发送效果案例图片”。
+- image 且 URL 包含 anniversary-268.jpg：event_type=activity_intro_image_sent，facts 写 image_url；summary 写“已发送活动宣传图”。
 - human_handoff：event_type=handoff_requested，facts 写 handoff_reason；summary 写“已请求专业同事协助”。
 - text 中明确解释周年庆活动价、268、做付258、报名规则：event_type=offer_explained。
 - text 中明确解释10元预约金、抵扣、可退：event_type=deposit_explained。
