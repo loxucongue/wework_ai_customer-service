@@ -576,6 +576,7 @@ export function OutreachWorkbench() {
                   value={filters.silentMinutesMin}
                   onChange={(event) => setFilters((prev) => ({ ...prev, silentMinutesMin: event.target.value }))}
                 >
+                  <option value="0">不限</option>
                   <option value="60">1小时</option>
                   <option value="180">3小时</option>
                   <option value="720">12小时</option>
