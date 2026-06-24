@@ -50,6 +50,9 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     reply_strategy: dict[str, Any] = {}
     required_tools = _dedupe_tools(planner_tool_calls)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
+    executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
+    if executable_tools and decision == "direct_reply":
+        decision = "need_tools"
     handoff = _normalize_handoff(handoff_raw)
     tool_policy_violations = [
         *_rejected_tool_violations(model_payload.get("tool_calls") if isinstance(model_payload, dict) else []),
@@ -66,7 +69,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "main_blocker": main_blocker,
         "next_step": next_step,
         "planner_reply_messages": planner_reply_messages,
-        "planner_tool_calls": [tool for tool in required_tools if tool.get("name") != "no_tool"],
+        "planner_tool_calls": executable_tools,
         "reply_constraints": reply_constraints,
         "primary_task": primary_task,
         "secondary_tasks": secondary_tasks,
