@@ -9,6 +9,7 @@ import {
   Clock,
   FileText,
   ListChecks,
+  LoaderCircle,
   MessageSquareText,
   Pause,
   Play,
@@ -215,7 +216,7 @@ function sendStatusLabel(value?: string) {
 }
 
 function boolLabel(value?: boolean) {
-  return value ? "允许收款卡" : "仅文本推进";
+  return value ? "收款卡暂不支持" : "仅文本推进";
 }
 
 function messagePreview(messages?: Array<JsonObject>) {
@@ -225,7 +226,7 @@ function messagePreview(messages?: Array<JsonObject>) {
       const content = item.content as JsonObject | undefined;
       if (item.type === "image") return "[图片]";
       if (item.type === "store_address") return `[门店卡片:${String(content?.store_id || "")}]`;
-      if (item.type === "payment_collection") return `[收款入口:${String(content?.amount || 10)}元]`;
+      if (item.type === "payment_collection") return `[收款入口暂不支持:${String(content?.amount || 10)}元]`;
       return String(content?.text || item.type || "");
     })
     .filter(Boolean)
@@ -707,15 +708,19 @@ export function OutreachWorkbench() {
                     </button>
                     <button
                       onClick={() => generatePlan(selectedCustomer)}
-                      className="rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50"
+                      className="inline-flex min-w-[88px] items-center justify-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50 disabled:cursor-wait disabled:bg-zinc-50 disabled:text-zinc-500"
+                      disabled={busy === "generate"}
                     >
-                      生成计划
+                      {busy === "generate" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+                      {busy === "generate" ? "生成中" : "生成计划"}
                     </button>
                     <button
                       onClick={() => generatePlan(selectedCustomer, true)}
-                      className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800"
+                      className="inline-flex min-w-[104px] items-center justify-center gap-2 rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:cursor-wait disabled:bg-zinc-700"
+                      disabled={busy === "generate-activate"}
                     >
-                      生成并启用
+                      {busy === "generate-activate" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : null}
+                      {busy === "generate-activate" ? "生成中" : "生成并启用"}
                     </button>
                   </>
                 ) : null}
@@ -776,11 +781,11 @@ export function OutreachWorkbench() {
                           <div className="flex items-center gap-2">
                             <button
                               onClick={() => previewTask(task.id)}
-                              className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50"
+                              className="inline-flex min-w-[96px] items-center justify-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50 disabled:cursor-wait disabled:bg-zinc-50 disabled:text-zinc-500"
                               disabled={busy === `preview-${task.id}`}
                             >
-                              <FileText className="h-4 w-4" />
-                              生成预览
+                              {busy === `preview-${task.id}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                              {busy === `preview-${task.id}` ? "生成中" : "生成预览"}
                             </button>
                             <button
                               onClick={() => executeTask(task.id)}

@@ -12,7 +12,7 @@ OUTREACH_PLAN_SYSTEM_PROMPT = """
 - 每一步都要有明确目标，不能泛泛说“继续跟进”。
 - 每一步发送前都需要复查客户是否回复。
 - content_sources 只能写当前输入里真实存在的素材；没有明确图片 URL 时不要写 case_studies。
-- 主动唤醒默认不直接发 payment_collection；只有最近对话明确要入口/交10元/锁名额，或已确认门店时间且客户明确同意锁名额时，step.should_send_payment_collection 才能为 true。
+- 主动触达平台暂不支持 payment_collection，step.should_send_payment_collection 必须为 false；需要预约金时只能用文字引导客户继续沟通，不能输出收款卡。
 - 默认生成 2-3 步，最长不超过 72 小时。
 
 输出 schema：
@@ -57,8 +57,7 @@ OUTREACH_MESSAGE_SYSTEM_PROMPT = """
 - 每条只能围绕 task.message_goal 解决一个卡点；如果上次卡点是价格，就解释低门槛/抵扣，不发案例；如果是效果，就补检测评估/案例，不催名额；如果是门店，就补门店便利，不长篇讲技术；如果只是沉默，就轻问一句。
 - 不要假装刚刚人工查看过客户页面，例如“我刚看了一下”，除非输入里有明确事实。
 - 不判断客户是否点击、是否已支付、是否支付失败；不得说“你刚才已经进页面了”“你还没支付”“支付失败了”。
-- 默认不发送 payment_collection；只有 task.should_send_payment_collection=true 时才可以追加 1 条 payment_collection。
-- 预约金支付入口只能使用 payment_collection。
+- 主动触达平台暂不支持 payment_collection，不能输出收款卡；需要预约金时只能用文字说明预约金口径并邀请客户回复。
 - 如果任务素材里有图片 URL 且目标是效果信任，可以输出 1 条 image。
 - 输出必须是 reply_messages 数组，结构与正式回复一致。
 
@@ -69,11 +68,6 @@ OUTREACH_MESSAGE_SYSTEM_PROMPT = """
       "type": "text",
       "order": 1,
       "content": {"text": "客户可见内容"}
-    },
-    {
-      "type": "payment_collection",
-      "order": 2,
-      "content": {"amount": 10, "remark": ""}
     }
   ]
 }
