@@ -23,14 +23,22 @@ def append_activity_intro_image(
     if not url or _messages_contain_image(messages, url):
         return messages
     policy = offer.get("activity_intro_image_policy") if isinstance(offer.get("activity_intro_image_policy"), dict) else {}
-    send_once = bool(policy.get("send_once", True))
-    if send_once and _activity_intro_image_sent(state, url):
-        return messages
     sub_rule_ids = {str(item).strip() for item in policy.get("sub_rule_ids", []) if str(item).strip()}
+    trigger_terms = [str(item).strip() for item in policy.get("trigger_terms", []) if str(item).strip()]
     resend_terms = [str(item).strip() for item in policy.get("resend_terms", []) if str(item).strip()]
     sub_rule_id = str(state.get("planner_sub_rule_id") or "").strip()
+    customer_type = str(state.get("customer_type") or "").strip()
+    main_blocker = str(state.get("main_blocker") or "").strip()
     content = str(state.get("normalized_content") or state.get("content") or "")
-    should_send = (sub_rule_id in sub_rule_ids) or any(term and term in content for term in resend_terms)
+    explicit_resend = any(term and term in content for term in resend_terms)
+    send_once = bool(policy.get("send_once", True))
+    if send_once and _activity_intro_image_sent(state, url) and not explicit_resend:
+        return messages
+    blocked_customer_types = {str(item).strip() for item in policy.get("blocked_customer_types", []) if str(item).strip()}
+    blocked_main_blockers = {str(item).strip() for item in policy.get("blocked_main_blockers", []) if str(item).strip()}
+    if not explicit_resend and (customer_type in blocked_customer_types or main_blocker in blocked_main_blockers):
+        return messages
+    should_send = explicit_resend or (sub_rule_id in sub_rule_ids) or any(term and term in content for term in trigger_terms)
     if not should_send:
         return messages
     output = _renumber([*messages, {"type": "image", "order": len(messages) + 1, "content": {"url": url}}])

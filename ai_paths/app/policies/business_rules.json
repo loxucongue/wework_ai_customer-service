@@ -18,7 +18,10 @@
     "activity_intro_image_url": "http://47.252.81.104/assets/activity/anniversary-268.jpg",
     "activity_intro_image_policy": {
       "send_once": true,
-      "sub_rule_ids": ["S1_PROJECT_DIRECTION", "S3_PRICE", "S3_AD_PRICE"],
+      "sub_rule_ids": ["S3_PRICE", "S3_AD_PRICE"],
+      "trigger_terms": ["淡斑活动", "祛斑活动", "周年庆", "活动价", "这个活动", "价格", "多少钱", "费用", "268", "199"],
+      "blocked_customer_types": ["effect", "risk", "distance", "time", "accompany"],
+      "blocked_main_blockers": ["effect", "risk", "trust", "distance", "time", "logistics"],
       "resend_terms": ["活动图", "宣传图", "图片没收到", "再发一下活动图"]
     }
   },
