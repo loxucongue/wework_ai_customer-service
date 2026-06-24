@@ -39,7 +39,7 @@ def create_planner_brain_node(
                 elif model_client and model_client.available:
                     plan, planner_call = await run_planner_brain_v2(state, model_client)
                 else:
-                    plan = safety_fallback_plan(state)
+                    plan = safety_fallback_plan(state, reason="No model API key configured")
                     planner_call = {
                         "name": "planner_brain_model_unavailable_fallback",
                         "input": {},
@@ -50,9 +50,10 @@ def create_planner_brain_node(
                         },
                     }
             except Exception as exc:
-                plan = safety_fallback_plan(state)
+                error_detail = f"{type(exc).__name__}: {exc}"
+                plan = safety_fallback_plan(state, reason=error_detail)
                 planner_call = planner_call or {"name": "planner_brain_v2", "input": {}}
-                planner_call["error"] = f"{type(exc).__name__}: {exc}"
+                planner_call["error"] = error_detail
                 if model_client and model_client.available:
                     planner_call["usage"] = model_usage_snapshot(model_client)
 

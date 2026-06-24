@@ -78,7 +78,8 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     }
 
 
-def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
+def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailable") -> dict[str, Any]:
+    handoff_reason = _fallback_handoff_reason(reason)
     return build_planner_plan_v2(
         state,
         {
@@ -93,13 +94,22 @@ def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
                 {
                     "type": "human_handoff",
                     "order": 1,
-                    "content": {"handoff_reason": "当前系统响应异常，需要专业同事协助核对。"},
+                    "content": {"handoff_reason": handoff_reason},
                 }
             ],
             "tool_calls": [],
-            "handoff": {"needed": True, "reason": "Planner unavailable"},
+            "handoff": {"needed": True, "reason": reason or "Planner unavailable"},
         },
     )
+
+
+def _fallback_handoff_reason(reason: str) -> str:
+    text = " ".join(str(reason or "Planner unavailable").split())
+    if text in {"Planner unavailable", ""}:
+        return "模型调用失败，需要专业同事协助核对。"
+    if len(text) > 180:
+        text = text[:177] + "..."
+    return f"模型调用失败：{text}"
 
 
 def _normalize_decision(value: Any) -> str:

@@ -43,7 +43,7 @@ def model_names(settings: Settings, tier: ModelTier) -> list[str]:
     if tier == "fast":
         fallback_text = settings.model_fast_fallbacks
     elif tier == "planner":
-        fallback_text = settings.model_planner_fallbacks
+        fallback_text = settings.model_planner_fallbacks or "qwen-turbo"
     elif tier == "strong":
         fallback_text = settings.model_strong_fallbacks
     elif tier == "reply":
@@ -52,7 +52,7 @@ def model_names(settings: Settings, tier: ModelTier) -> list[str]:
         fallback_text = settings.model_vision_fallbacks
     else:
         fallback_text = settings.model_balanced_fallbacks
-    models = [primary]
+    models = [primary, primary] if tier == "planner" else [primary]
     for name in split_models(fallback_text):
         if name and name not in models:
             models.append(name)
