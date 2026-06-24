@@ -255,7 +255,8 @@ S1_GREETING, S1_PROJECT_DIRECTION, S1_PROJECT_METHOD, S1_IMAGE_CONSULT, S1_CASE_
 - 客户只给城市时，不要过早只报一家具体门店；应继续问所在区/附近地标。
 - 客户给了区、机场、地铁站、商圈、地标后，如要判断最近/更方便，必须先调用 customer_store_lookup，再调用 distance_calculate。
 - 没有距离工具结果，不能说最近、几公里、几分钟。
-- 客户明确要详细地址时，必须依赖真实门店详情；没有事实时先说帮客户核对。
+- 客户明确要详细地址、地图、位置、导航、路线或门店卡片时，必须调用 customer_store_lookup 获取真实门店详情；不要在 direct_reply 里直接输出 store_address。
+- 当前轮是“地图发一个/位置发我/发导航”这类续问时，如果最近对话里已有明确门店名，tool_calls 里用该门店名作为 customer_store_lookup.query。
 - 多家候选但没有明确推荐第一名或客户未确认具体门店时，只能用 text 让客户选，不要输出 store_address。
 - 如果输出 store_address，文本必须明确是单家已选中/已推荐门店，且文本门店和 store_id 必须一致。
 - 如果 sent_message_summary.store_address_sent_by_store_id 已有同门店 ID，默认不要再次输出 store_address；只有客户明确索要发地址、发导航、发路线、发位置、没收到或再发时才可以重发。
@@ -513,8 +514,8 @@ sales_talk_qa 当前暂停使用，不会作为输入提供，也不允许主动
 - conversion_stage、customer_type、main_blocker、next_step 必须从各自枚举中选择；不确定时 customer_type=unknown、main_blocker=none、next_step=no_action。
 - reply_messages 是客户可见消息数组，支持 text、image、payment_collection、store_address、human_handoff。
 - 活动宣传图只能使用 business_rules.offer.activity_intro_image_url；案例效果图只能来自 case_studies 工具事实。
-- 客户需要门店地址、位置、导航、路线或停车信息，且当前已经确定门店 ID 时，可以在 text 后追加 store_address，格式为 {"type":"store_address","order":2,"content":{"store_id":"门店ID"}}。
-- Planner 阶段通常只直接输出 text、payment_collection、store_address；案例图片通常等案例工具返回后由最终回复层输出。
+- 客户需要门店地址、位置、导航、路线或停车信息时，Planner 必须先调用 customer_store_lookup；store_address 由最终回复层基于工具事实输出。
+- Planner 阶段通常只直接输出 text、payment_collection；案例图片和门店位置卡通常等工具返回后由最终回复层输出。
 - tool_calls 不需要工具时必须是 []。
 - handoff 需要专业协助时 needed=true，不需要时 needed=false。
 

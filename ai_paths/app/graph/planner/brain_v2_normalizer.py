@@ -43,7 +43,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     handoff_raw = model_payload.get("handoff") if isinstance(model_payload, dict) else {}
     memory_update_raw = model_payload.get("memory_update_hint") if isinstance(model_payload, dict) else {}
 
-    del state
     primary_task: dict[str, Any] = {}
     secondary_tasks: list[dict[str, Any]] = []
 
@@ -51,6 +50,18 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = _dedupe_tools(planner_tool_calls)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
+    if _has_store_address_message(planner_reply_messages) and not executable_tools:
+        lookup_query = _store_lookup_query_from_state(state)
+        planner_reply_messages = [{"type": "text", "order": 1, "content": {"text": "好，我帮您看一下"}}]
+        required_tools = [
+            {
+                "name": "customer_store_lookup",
+                "purpose": "detail",
+                "query": lookup_query,
+            }
+        ]
+        executable_tools = required_tools
+        decision = "need_tools"
     if executable_tools and decision == "direct_reply":
         decision = "need_tools"
     handoff = _normalize_handoff(handoff_raw)
@@ -164,6 +175,50 @@ def _store_address_id(content: Any) -> str:
     if isinstance(content, dict):
         return str(content.get("store_id") or content.get("id") or "").strip()
     return str(content or "").strip()
+
+
+def _has_store_address_message(messages: list[dict[str, Any]]) -> bool:
+    return any(str(item.get("type") or "") == "store_address" for item in messages if isinstance(item, dict))
+
+
+def _store_lookup_query_from_state(state: AgentState) -> str:
+    recent_store_name = _recent_store_name_from_context(state)
+    if recent_store_name:
+        return recent_store_name
+    return str(state.get("normalized_content") or state.get("content") or "").strip()
+
+
+def _recent_store_name_from_context(state: AgentState) -> str:
+    text = _state_text_context(state)
+    if not text:
+        return ""
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    best_name = ""
+    best_pos = -1
+    for store in stores:
+        if not isinstance(store, dict):
+            continue
+        name = str(store.get("store_name") or store.get("name") or "").strip()
+        if not name:
+            continue
+        pos = text.rfind(name)
+        if pos > best_pos:
+            best_name = name
+            best_pos = pos
+    return best_name
+
+
+def _state_text_context(state: AgentState) -> str:
+    chunks: list[str] = [str(state.get("normalized_content") or state.get("content") or "")]
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in history[-8:]:
+        if isinstance(item, dict):
+            content = item.get("content")
+            chunks.append(str(content.get("text") if isinstance(content, dict) else content or ""))
+        else:
+            chunks.append(str(item or ""))
+    return "\n".join(chunks)
 
 
 def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:

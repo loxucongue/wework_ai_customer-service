@@ -36,6 +36,37 @@ class PlannerModelOwnershipTests(unittest.TestCase):
         self.assertEqual([tool["name"] for tool in plan["planner_tool_calls"]], ["customer_store_lookup", "distance_calculate"])
         self.assertEqual(plan["planner_tool_calls"][1]["candidate_source"], "customer_store_lookup")
 
+    def test_planner_store_address_without_tool_is_grounded_by_lookup(self) -> None:
+        plan = build_planner_plan_v2(
+            {
+                "normalized_content": "地图发一个给我",
+                "conversation_history": [
+                    "用户: 我在南昌市",
+                    "小贝: 南昌市有3家门店，分别是东湖店、红谷滩店和高新店。",
+                    "用户: 高新店具体位置呢",
+                    "小贝: 南昌高新店地址是江西省南昌市青山湖区解放东路 2226号。",
+                ],
+                "customer_store_knowledge": {
+                    "stores": [
+                        {"store_id": "189", "store_name": "重庆巴南店", "city": "重庆市", "district": "巴南区"},
+                        {"store_id": "221", "store_name": "南昌高新店", "city": "南昌市", "district": "青山湖区"},
+                    ]
+                },
+            },
+            {
+                "decision": "direct_reply",
+                "stage": "S2",
+                "sub_rule_id": "S2_ADDRESS_DETAIL",
+                "reply_messages": [{"type": "store_address", "content": {"store_id": "189"}}],
+                "tool_calls": [],
+                "handoff": {"needed": False, "reason": ""},
+            },
+        )
+
+        self.assertEqual(plan["planner_decision"], "need_tools")
+        self.assertEqual(plan["planner_reply_messages"], [{"type": "text", "order": 1, "content": {"text": "好，我帮您看一下"}}])
+        self.assertEqual(plan["planner_tool_calls"], [{"name": "customer_store_lookup", "purpose": "detail", "query": "南昌高新店"}])
+
     def test_planner_preserves_conversion_psychology_fields(self) -> None:
         plan = build_planner_plan_v2(
             {"normalized_content": "多少钱"},
