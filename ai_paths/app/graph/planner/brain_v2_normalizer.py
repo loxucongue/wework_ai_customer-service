@@ -19,6 +19,13 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     handoff_raw = model_payload.get("handoff") if isinstance(model_payload, dict) else {}
     memory_update_raw = model_payload.get("memory_update_hint") if isinstance(model_payload, dict) else {}
 
+    decision, stage, sub_rule_id, planner_reply_messages = _repair_store_acceptance_backtracking(
+        state,
+        decision=decision,
+        stage=stage,
+        sub_rule_id=sub_rule_id,
+        messages=planner_reply_messages,
+    )
     primary_task = _task_from_new_contract(state, decision=decision, stage=stage, sub_rule_id=sub_rule_id)
     secondary_tasks: list[dict[str, Any]] = []
     planner_reply_messages = _ensure_payment_collection_message(
@@ -173,6 +180,72 @@ def _planner_message_text(messages: list[dict[str, Any]]) -> str:
         else:
             chunks.append(str(content or ""))
     return " ".join(chunk for chunk in chunks if chunk)
+
+
+def _repair_store_acceptance_backtracking(
+    state: AgentState,
+    *,
+    decision: str,
+    stage: str,
+    sub_rule_id: str,
+    messages: list[dict[str, Any]],
+) -> tuple[str, str, str, list[dict[str, Any]]]:
+    if decision != "direct_reply":
+        return decision, stage, sub_rule_id, messages
+    if not _short_store_acceptance(state):
+        return decision, stage, sub_rule_id, messages
+    store = _recent_recommended_store_from_history(state)
+    if not store:
+        return decision, stage, sub_rule_id, messages
+    reply_text = _planner_message_text(messages)
+    if not (_asks_area_again(reply_text) or (stage == "S2" and "city" in sub_rule_id.lower())):
+        return decision, stage, sub_rule_id, messages
+    store_name = str(store.get("store_name") or "").strip()
+    text = f"可以，那我先按{store_name}给您安排。您今天还是明天方便过来？" if store_name else "可以，那我先按这家门店给您安排。您今天还是明天方便过来？"
+    return (
+        "direct_reply",
+        "S3",
+        "S3_APPOINTMENT_TIME",
+        [{"type": "text", "order": 1, "content": {"text": text}}],
+    )
+
+
+def _short_store_acceptance(state: AgentState) -> bool:
+    text = "".join(str(state.get("normalized_content") or state.get("content") or "").split())
+    return text in {"可以", "行", "好", "好的", "方便", "可以的", "能到", "能去", "能过来", "没问题"}
+
+
+def _asks_area_again(text: str) -> bool:
+    compact = "".join(str(text or "").split())
+    return any(term in compact for term in ("哪个区", "在哪个区", "什么区", "附近哪个地标", "哪个地标"))
+
+
+def _recent_recommended_store_from_history(state: AgentState) -> dict[str, Any]:
+    history_text = _recent_assistant_history_text(state)
+    if not history_text or not any(term in history_text for term in ("方便到店", "方便过来", "方便来", "到店吗", "过来吗")):
+        return {}
+    for store in _customer_scope_stores(state):
+        name = str(store.get("store_name") or "").strip()
+        if name and name in history_text:
+            return store
+    return {}
+
+
+def _recent_assistant_history_text(state: AgentState) -> str:
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    chunks: list[str] = []
+    for item in history[-4:]:
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role and role not in {"assistant", "staff", "service", "bot"}:
+                continue
+            content = item.get("content")
+            chunks.append(str(content.get("text") if isinstance(content, dict) else content or ""))
+            continue
+        raw = str(item or "")
+        if raw.startswith(("助手:", "助手：", "小贝:", "小贝：", "客服:", "客服：", "AI回复:", "AI回复：")):
+            chunks.append(raw)
+    return "\n".join(chunks)
 
 
 def _task_from_new_contract(state: AgentState, *, decision: str, stage: str, sub_rule_id: str) -> dict[str, Any]:

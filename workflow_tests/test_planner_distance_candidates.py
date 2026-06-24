@@ -50,6 +50,38 @@ class PlannerDistanceCandidateTests(unittest.TestCase):
 
         self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text", "payment_collection"])
 
+    def test_short_acceptance_after_store_recommendation_does_not_ask_area_again(self) -> None:
+        plan = build_planner_plan_v2(
+            {
+                "normalized_content": "可以",
+                "conversation_history": [
+                    "用户: 我在重庆",
+                    "助手: 重庆有门店哦～您在哪个区？比如渝中、南岸、沙坪坝，我帮您安排就近的～",
+                    "用户: 渝中",
+                    "助手: 渝中区有门店哦～重庆百星渝中店，您方便到店吗？",
+                ],
+                "customer_store_knowledge": {
+                    "stores": [
+                        {"store_id": "467", "store_name": "重庆百星渝中店", "city": "重庆市", "district": "渝中区"}
+                    ]
+                },
+            },
+            {
+                "decision": "direct_reply",
+                "stage": "S2",
+                "sub_rule_id": "S2_CITY_ONLY",
+                "reply_messages": [{"type": "text", "content": {"text": "好的～您在哪个区？比如渝中、南岸、沙坪坝，我帮您安排就近的门店。"}}],
+                "tool_calls": [],
+            },
+        )
+
+        self.assertEqual(plan["planner_stage"], "S3")
+        self.assertEqual(plan["planner_sub_rule_id"], "S3_APPOINTMENT_TIME")
+        text = plan["planner_reply_messages"][0]["content"]["text"]
+        self.assertIn("重庆百星渝中店", text)
+        self.assertIn("今天还是明天", text)
+        self.assertNotIn("哪个区", text)
+
     def test_low_information_opening_suppresses_old_profile_for_planner(self) -> None:
         payload = _planner_payload_for_model(
             {
