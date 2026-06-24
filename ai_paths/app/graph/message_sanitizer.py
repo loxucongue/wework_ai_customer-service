@@ -15,19 +15,29 @@ def sanitize_unsupported_placeholder_text(
     warnings: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    changed = False
+    placeholder_changed = False
     for message in messages:
         if not isinstance(message, dict) or str(message.get("type") or "") != "text":
             output.append(message)
             continue
         text = _text_content(message.get("content"))
-        if not _has_placeholder(text):
-            output.append(message)
+        sanitized_text, appointment_changed = _sanitize_unsupported_appointment_completion(text, state)
+        if not _has_placeholder(sanitized_text):
+            output.append({**message, "content": {"text": sanitized_text}} if appointment_changed else message)
+            if appointment_changed:
+                if warnings is not None:
+                    warnings.append(
+                        {
+                            "node": "message_sanitizer",
+                            "message": "unsupported_appointment_completion_rewritten",
+                            "detail": {"reason": "no_confirmed_appointment_action_success_fact"},
+                        }
+                    )
             continue
         replacement = _fact_store_address_text(state) or _generic_store_card_text(messages)
         output.append({**message, "content": {"text": replacement}})
-        changed = True
-    if changed and warnings is not None:
+        placeholder_changed = True
+    if placeholder_changed and warnings is not None:
         warnings.append(
             {
                 "node": "message_sanitizer",
@@ -82,6 +92,36 @@ def normalize_store_address_card_ids(
 
 def _has_placeholder(text: str) -> bool:
     return any(term in text for term in PLACEHOLDER_TERMS)
+
+
+def _sanitize_unsupported_appointment_completion(text: str, state: AgentState) -> tuple[str, bool]:
+    current = str(state.get("normalized_content") or state.get("content") or "")
+    if not _appointment_change_or_cancel_request(current):
+        return text, False
+    if _has_appointment_action_success_fact(state):
+        return text, False
+    if any(term in text for term in ("已经取消", "已取消", "取消成功", "帮您取消预约", "给您取消预约")):
+        return "可以，我先帮您核对当前预约，再同步取消处理。", True
+    if any(term in text for term in ("已经改好", "已改好", "改约成功", "帮您改约", "给您改约")):
+        return "可以，我先帮您核对当前预约和可改时间，再同步改约处理。", True
+    return text, False
+
+
+def _appointment_change_or_cancel_request(text: str) -> bool:
+    compact = "".join(str(text or "").split())
+    return any(term in compact for term in ("取消预约", "取消", "不去了", "不去", "改约", "改时间", "换时间", "改到", "换到"))
+
+
+def _has_appointment_action_success_fact(state: AgentState) -> bool:
+    structured = _structured_facts(state)
+    facts: list[Any] = []
+    raw = structured.get("appointment_facts")
+    if isinstance(raw, list):
+        facts.extend(raw)
+    elif isinstance(raw, dict):
+        facts.append(raw)
+    text = repr(facts)
+    return any(term in text for term in ("cancel_success", "change_success", "reschedule_success", "取消成功", "改约成功", "已取消", "已改约"))
 
 
 def _text_content(content: Any) -> str:

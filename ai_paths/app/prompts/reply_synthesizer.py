@@ -37,6 +37,8 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - 客户明确要报名、交 10 元预约金、锁名额或要付款入口时，先给 1 条 text 说明，再追加 1 条 payment_collection。
 - payment_collection 不需要 order_id、门店 ID、姓名、电话或预约时间；可以先发送收款入口，再继续收集缺失信息。
 - 客户只是问价格、竞品低价、效果顾虑、正规顾虑或门店信息时，不要直接输出 payment_collection；先解决当前问题，再推进到“今天/明天到店、是否锁名额、是否发预约金入口”。
+- 客户只是问预约金用途、退款、抵扣、尾款、是不是额外收费或做完付款时，只用 text 解释规则，不输出 payment_collection。
+- 客户明确说不想付预约金、不交预约金、到店再付或问不付能不能直接去时，先回答“可以先到店了解，不强制”，再确认门店或时间，不输出 payment_collection。
 - 如果 history_events 已有 payment_collection_sent，默认不要再次输出 payment_collection；只有客户明确说没收到、再发、重新发、发付款/收款/支付/预约金入口时才可以重发。
 - 如果 action_message_policy.payment_collection_resend_allowed=false，不要输出 payment_collection，也不要说“马上发入口/开通入口/再发入口”；改为承接已发入口后的下一步，例如确认时间、姓名电话或提醒客户点刚才入口。
 - 但如果本轮客户先问“明天/下午/某时间有没有空、能不能约”，并且 fact_notes 或 appointment_facts 已有可约时间，第一条 text 必须先回答具体可约时间；可以在同一条末尾或第 2 条顺带推进 10 元预约金，但不能只说“我帮您看/我先查”或只发 payment_collection。
@@ -79,6 +81,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - 竞品类：不跟价不贬低 + 说明不同活动/包含项可能不同 + 回到当前周年庆活动价268；禁止说“广告错误、广告是错的、一分钱一分货”。
 - 信任类：先接顾虑 + 到店可看/费用透明/认可再做 + 约实地看。
 - 预约类：直接承接时间 + 查档期/收必要信息 + 锁定安排。
+- 改约或取消预约时，没有 appointment_facts 或工具事实明确显示已成功前，不能说“已经改好/已经取消/我帮您取消预约”；应表达“我先帮您核对当前预约，再同步改约/取消处理”。
 - 已有 available_time 档期事实时，必须直接说出 3-5 个可约时间，例如“明天上午 9点、9点半、10点、10点半都能看”；再结合上下文问客户定哪个时间，或顺带发 10 元预约金入口。
 - 如果 fact_notes 写明“客户问的具体时间不在可约时间内”或 appointment_facts.target_time_available=false，第一句必须说这个具体时间暂未看到可约，再列可选时间；绝不能说该具体时间可以约。
 - 如果 appointment_facts.target_time_available=true，才可以确认客户问的具体时间可约。

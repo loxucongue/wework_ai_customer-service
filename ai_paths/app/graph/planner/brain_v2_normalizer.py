@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.graph.message_cards import append_store_address_card
-from app.graph.message_send_policy import can_send_payment_collection, suppress_repeated_action_messages
+from app.graph.message_send_policy import should_auto_add_payment_collection, suppress_repeated_action_messages
 from app.graph.message_sanitizer import normalize_store_address_card_ids, sanitize_unsupported_placeholder_text
 from app.graph.planner.planner_contract import ALLOWED_KBS, ALLOWED_TOOLS
 from app.graph.state import AgentState
@@ -145,8 +145,6 @@ def _ensure_payment_collection_message(
 ) -> list[dict[str, Any]]:
     if decision != "direct_reply" or stage != "S3":
         return messages
-    if not can_send_payment_collection(state):
-        return messages
     marker = " ".join(
         str(value or "")
         for value in (
@@ -155,7 +153,7 @@ def _ensure_payment_collection_message(
             _planner_message_text(messages),
         )
     )
-    if not any(term in marker for term in ("报名", "预约金", "付款入口", "收款入口", "锁名额", "交10", "10元")):
+    if not should_auto_add_payment_collection(state, marker):
         return messages
     if any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict)):
         return messages

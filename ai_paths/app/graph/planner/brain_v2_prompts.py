@@ -270,6 +270,8 @@ S2_CITY_ONLY, S2_LOCATION_DETAIL, S2_ADDRESS_DETAIL, S2_PARKING_OR_HOURS, S2_TRA
 - 客户明确报名、预约金、付款入口、锁名额时，可以直接输出 payment_collection，不要求 order_id、门店、姓名、电话前置。
 - 客户明确报名、要付款入口、交预约金、锁名额时，reply_messages 必须包含 1 条 text + 1 条 payment_collection；不能只用文字说“开通入口/发入口”。
 - 客户只是问价格、58/199/竞品价、效果顾虑、正规顾虑或门店信息时，不要直接输出 payment_collection；先回答当前问题，再引导客户确认到店时间或是否锁名额。
+- 客户只是问“预约金为什么收、怎么抵扣、能不能退、是不是额外收费、做完付款吗”这类解释问题时，只用 text 解释，不输出 payment_collection。
+- 客户明确表示“不想付/不交预约金/到店再付/可以直接去吗”这类预约金犹豫时，先回答“可以先到店了解，不强制”，再推进确认门店或时间，不输出 payment_collection。
 - 如果 history_events 已有 payment_collection_sent，默认不要再次输出 payment_collection；只有客户明确说没收到、再发、重新发、发付款/收款/支付/预约金入口时才可以重发。
 - 如果 action_message_policy.payment_collection_resend_allowed=false，不要输出 payment_collection，也不要说“马上发入口/开通入口/再发入口”；应承接客户已到报名阶段，推进时间、姓名电话或提醒点刚才入口。
 - 客户问具体日期/时间能不能约，必须调用 available_time。
@@ -288,6 +290,7 @@ S3_PRICE, S3_DEPOSIT, S3_AD_PRICE, S3_HIDDEN_FEE_WORRY, S3_PAYMENT_COLLECTION, S
 - 已预约客户不重新当新客介绍，围绕预约事实承接。
 - 查询已预约时间/门店必须来自 appointment_record_query 或请求上下文。
 - 改约、取消、确认预约，必须调用 appointment_record_query。
+- 改约或取消没有真实成功事实前，不能说“已经改好/已经取消/我帮您取消预约”。应说“我先帮您核对当前预约，再同步改约/取消处理”。
 - 普通犹豫继续销售承接：理解顾虑，给轻量解决方案，再推进一个动作。
 - 做后反馈先问项目、时间、门店、照片，不直接说正常/没事。
 - 客户明确表示已经做过后“做完没效果/做了没效果/术后没效果/做完不满意”属于 S4 售后效果反馈，不是 S1 项目咨询；需要承接并让专业同事协助核对。
@@ -400,6 +403,9 @@ S4_APPOINTMENT_RECORD, S4_APPOINTMENT_CHANGE, S4_APPOINTMENT_CANCEL, S4_HESITATI
 - 不要求姓名前置。
 - 不要求电话前置。
 - 可以先发 10 元预约金入口，再继续补一个缺失信息。
+- 客户只是咨询预约金用途、退款、抵扣、尾款或是否额外收费时，只解释规则，不发 payment_collection。
+- 客户表达不想付预约金、想到店再付或问不付能否直接到店时，先降低顾虑并继续确认门店/时间，不发 payment_collection。
+- 已经发送过 payment_collection 后，只有客户明确说没收到、再发或要付款/收款/支付入口时才重发。
 - 如果客户同时问具体时间能不能约，则先查 available_time。
 - 没有真实档期不能说预约成功。
 

@@ -4,6 +4,7 @@ import unittest
 
 from app.graph.message_cards import append_store_address_card
 from app.graph.message_send_policy import suppress_repeated_action_messages
+from app.graph.message_sanitizer import sanitize_unsupported_placeholder_text
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 
 
@@ -56,6 +57,75 @@ class ActionMessageDedupeTests(unittest.TestCase):
         )
 
         self.assertEqual([item["type"] for item in output], ["text", "payment_collection"])
+
+    def test_payment_collection_not_auto_added_for_deposit_explanation(self) -> None:
+        plan = build_planner_plan_v2(
+            {"normalized_content": "预约金能退吗"},
+            {
+                "decision": "direct_reply",
+                "stage": "S3",
+                "sub_rule_id": "S3_DEPOSIT",
+                "reply_messages": [{"type": "text", "content": {"text": "10元预约金到店抵扣，不做可以退。"}}],
+                "tool_calls": [],
+            },
+        )
+
+        self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text"])
+
+    def test_payment_collection_removed_for_deposit_refusal_turn(self) -> None:
+        output = suppress_repeated_action_messages(
+            [
+                {"type": "text", "order": 1, "content": {"text": "可以先到店了解，不强制。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            {"normalized_content": "不想付预约金可以直接去吗"},
+        )
+
+        self.assertEqual([item["type"] for item in output], ["text"])
+
+    def test_payment_collection_removed_for_do_not_send_deposit_wording(self) -> None:
+        output = suppress_repeated_action_messages(
+            [
+                {"type": "text", "order": 1, "content": {"text": "可以，先不发入口。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            {"normalized_content": "先不要发预约金，我到店再看"},
+        )
+
+        self.assertEqual([item["type"] for item in output], ["text"])
+
+    def test_payment_collection_can_be_sent_when_customer_asks_for_entry(self) -> None:
+        output = suppress_repeated_action_messages(
+            [
+                {"type": "text", "order": 1, "content": {"text": "可以，我把入口发您。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            {"normalized_content": "发一下预约金入口"},
+        )
+
+        self.assertEqual([item["type"] for item in output], ["text", "payment_collection"])
+
+    def test_payment_collection_auto_added_for_direct_send_deposit_wording(self) -> None:
+        plan = build_planner_plan_v2(
+            {"normalized_content": "直接发预约金吧"},
+            {
+                "decision": "direct_reply",
+                "stage": "S3",
+                "sub_rule_id": "S3_PAYMENT_COLLECTION",
+                "reply_messages": [{"type": "text", "content": {"text": "可以，我把入口发您。"}}],
+                "tool_calls": [],
+            },
+        )
+
+        self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text", "payment_collection"])
+
+    def test_appointment_cancel_completion_claim_is_rewritten_without_success_fact(self) -> None:
+        output = sanitize_unsupported_placeholder_text(
+            [{"type": "text", "order": 1, "content": {"text": "可以，我帮您取消预约。"}}],
+            {"normalized_content": "不行的话先取消可以吗"},
+        )
+
+        self.assertEqual(output[0]["content"]["text"], "可以，我先帮您核对当前预约，再同步取消处理。")
 
     def test_store_address_card_not_repeated_for_same_store_without_explicit_request(self) -> None:
         output = append_store_address_card(
