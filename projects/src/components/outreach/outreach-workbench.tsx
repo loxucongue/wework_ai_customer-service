@@ -216,7 +216,7 @@ function sendStatusLabel(value?: string) {
 }
 
 function boolLabel(value?: boolean) {
-  return value ? "收款卡暂不支持" : "仅文本推进";
+  return value ? "允许收款卡" : "仅文本推进";
 }
 
 function messagePreview(messages?: Array<JsonObject>) {
@@ -226,7 +226,7 @@ function messagePreview(messages?: Array<JsonObject>) {
       const content = item.content as JsonObject | undefined;
       if (item.type === "image") return "[图片]";
       if (item.type === "store_address") return `[门店卡片:${String(content?.store_id || "")}]`;
-      if (item.type === "payment_collection") return `[收款入口暂不支持:${String(content?.amount || 10)}元]`;
+      if (item.type === "payment_collection") return `[收款入口:${String(content?.amount || 10)}元]`;
       return String(content?.text || item.type || "");
     })
     .filter(Boolean)

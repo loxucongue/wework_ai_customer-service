@@ -48,6 +48,14 @@ def _string(value: Any) -> str:
     return str(value).strip()
 
 
+def _bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y"}
+
+
 def _list_strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -65,8 +73,7 @@ def _sanitize_reply_messages(messages: list[dict[str, Any]], *, allow_payment_co
     for item in messages:
         if not isinstance(item, dict):
             continue
-        # The platform ai-outreach/send endpoint currently rejects payment_collection.
-        if str(item.get("type") or "") == "payment_collection":
+        if str(item.get("type") or "") == "payment_collection" and not allow_payment_collection:
             continue
         output.append(item)
     return output[:3]
@@ -216,7 +223,7 @@ class OutreachService:
             if not isinstance(step, dict):
                 continue
             delay = int(step.get("delay_minutes") or (60 * index))
-            should_send_payment_collection = False
+            should_send_payment_collection = _bool(step.get("should_send_payment_collection"))
             tasks.append(
                 {
                     "step_index": int(step.get("step") or index),
@@ -300,34 +307,6 @@ class OutreachService:
         reply_messages = task.get("reply_messages") or []
         if not reply_messages:
             return {"ok": False, "status": "blocked", "error": "preview_required", "retryable": True}
-        send_messages = _sanitize_reply_messages(reply_messages, allow_payment_collection=False)
-        if not send_messages:
-            message = "platform_send_unsupported_reply_messages"
-            self.repository.update_outreach_task(task_id, status="failed", error_message=message)
-            self.repository.add_outreach_event(
-                plan_id=str(task["plan_id"]),
-                task_id=task_id,
-                customer_id=str(task["customer_id"]),
-                event_type="task_failed",
-                event_summary="No platform-supported reply messages after filtering unsupported types",
-                payload={"reply_messages": reply_messages, "unsupported_types": ["payment_collection"]},
-            )
-            return {"ok": False, "status": "failed", "error": message, "retryable": True}
-        if len(send_messages) != len(reply_messages):
-            reply_messages = send_messages
-            task = self.repository.update_outreach_task(
-                task_id,
-                status=str(task.get("status") or "pending"),
-                reply_messages=reply_messages,
-            )
-            self.repository.add_outreach_event(
-                plan_id=str(task["plan_id"]),
-                task_id=task_id,
-                customer_id=str(task["customer_id"]),
-                event_type="unsupported_reply_type_filtered",
-                event_summary="Filtered payment_collection before platform outreach send",
-                payload={"unsupported_types": ["payment_collection"]},
-            )
         self.repository.update_outreach_task(task_id, status="checking")
         plan_detail = self.repository.get_outreach_plan(str(task["plan_id"]))
         plan = plan_detail.get("plan") or {}
