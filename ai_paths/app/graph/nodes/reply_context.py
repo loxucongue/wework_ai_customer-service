@@ -8,13 +8,9 @@ from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
     should_suppress_profile_memory_for_reply,
 )
-from app.graph.message_send_policy import action_message_policy_for_model
 from app.graph.planner.runtime_plan import (
     planner_handoff,
-    planner_primary_task,
-    planner_reply_strategy,
     planner_required_tools,
-    planner_secondary_tasks,
     planner_task_views,
 )
 from app.graph.state import AgentState
@@ -33,10 +29,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     should_show_appointment_context = not should_suspend_appointment_context_for_current_turn(state, planner_views)
     suppress_profile_memory = should_suppress_profile_memory_for_reply(state)
     fact_envelope = {} if suppress_profile_memory else (state.get("fact_envelope") or {})
-    primary_task = _sanitize_planner_context_for_reply(planner_primary_task(state))
-    secondary_tasks = _sanitize_planner_context_for_reply(planner_secondary_tasks(state))
     required_tools = planner_required_tools(state)
-    reply_strategy = _sanitize_planner_context_for_reply(planner_reply_strategy(state))
     handoff = planner_handoff(state)
     appointment_context = _appointment_context_for_model(state) if should_show_appointment_context else {}
     return {
@@ -49,10 +42,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "memory_usage_policy": memory_usage_policy_for_reply(state),
         "recent_assistant_replies": [] if suppress_profile_memory else recent_assistant_replies(state, 4),
         "guardrail_result": state.get("guardrail_result", {}),
-        "primary_task": {} if suppress_profile_memory else primary_task,
-        "secondary_tasks": [] if suppress_profile_memory else secondary_tasks,
         "required_tools": [] if suppress_profile_memory else required_tools,
-        "reply_strategy": {} if suppress_profile_memory else reply_strategy,
         "planner_decision": state.get("planner_decision", ""),
         "planner_stage": state.get("planner_stage", ""),
         "planner_sub_rule_id": state.get("planner_sub_rule_id", ""),
@@ -61,7 +51,6 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "customer_store_knowledge": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
         "sales_talk_reference": _sanitize_planner_context_for_reply(_compact_sales_talk_reference(state.get("sales_talk_reference") or {})),
-        "action_message_policy": action_message_policy_for_model(state),
         "business_rules": load_business_rules(),
         "fact_envelope": fact_envelope,
         "fact_notes": _fact_notes_for_model(fact_envelope, content=str(state.get("normalized_content") or state.get("content") or "")),

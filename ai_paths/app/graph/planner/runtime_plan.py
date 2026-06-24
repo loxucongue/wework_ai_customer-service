@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from app.graph.state import AgentState
-from app.policies.sop_rules import DEFAULT_SOP_STAGE, compact_sop_stage_rules_for_reply, normalize_sop_stage, normalize_sop_step
 
 
 def planner_primary_task(state: AgentState) -> dict[str, Any]:
@@ -21,9 +20,7 @@ def planner_secondary_tasks(state: AgentState) -> list[dict[str, Any]]:
 def planner_tasks(state: AgentState) -> list[dict[str, Any]]:
     primary = planner_primary_task(state)
     secondary = planner_secondary_tasks(state)
-    if primary:
-        return [primary, *secondary]
-    return []
+    return [primary, *secondary] if primary else []
 
 
 def planner_required_tools(state: AgentState) -> list[dict[str, Any]]:
@@ -44,86 +41,61 @@ def planner_handoff(state: AgentState) -> dict[str, Any]:
 
 
 def planner_sop_stage(state: AgentState) -> str:
-    primary = planner_primary_task(state)
-    return normalize_sop_stage(state.get("sop_stage") or primary.get("sop_stage") or DEFAULT_SOP_STAGE)
+    return str(state.get("planner_stage") or "").strip()
 
 
 def planner_sop_step(state: AgentState) -> str:
-    primary = planner_primary_task(state)
-    stage = planner_sop_stage(state)
-    return normalize_sop_step(stage, state.get("sop_step") or primary.get("sop_step"))
+    return str(state.get("planner_sub_rule_id") or "").strip()
 
 
 def planner_sop_stage_rules(state: AgentState) -> dict[str, Any]:
-    value = state.get("sop_stage_rules")
-    if isinstance(value, dict) and value:
-        return value
-    return compact_sop_stage_rules_for_reply(planner_sop_stage(state), planner_sop_step(state))
+    del state
+    return {}
 
 
 def planner_task_views(state: AgentState) -> list[dict[str, Any]]:
-    views: list[dict[str, Any]] = []
-    for task in planner_tasks(state)[:3]:
-        task_type = str(task.get("type") or "").strip()
-        task_subtype = str(task.get("subtype") or "").strip()
-        project_name = str(task.get("project_name") or task.get("project") or "").strip()
-        answer_goal = str(task.get("answer_goal") or "").strip()
-        customer_need = str(task.get("customer_need") or "").strip()
-        reply_goal = answer_goal or customer_need
-        intent = str(task.get("intent") or task_subtype or task_type or "").strip()
-        if not (task_type or intent):
-            continue
-        views.append(
-            {
-                "intent": intent,
-                "type": task_type,
-                "subtype": task_subtype,
-                "policy_hint": str(task.get("policy_hint") or "").strip(),
-                "scene": str(task.get("scene") or "").strip(),
-                "subflow": str(task.get("subflow") or "").strip(),
-                "project_name": project_name,
-                "reply_goal": reply_goal,
-                "reason": customer_need or answer_goal,
-            }
-        )
-    return views
+    decision = str(state.get("planner_decision") or "").strip()
+    stage = str(state.get("planner_stage") or "").strip()
+    sub_rule_id = str(state.get("planner_sub_rule_id") or "").strip()
+    if not (decision or stage or sub_rule_id):
+        return []
+    return [
+        {
+            "intent": sub_rule_id,
+            "type": stage,
+            "subtype": sub_rule_id,
+            "scene": stage,
+            "subflow": decision,
+            "reason": "",
+        }
+    ]
 
 
 def planner_project_hints(state: AgentState) -> list[str]:
-    hints: list[str] = []
-    for item in planner_task_views(state):
-        for key in ("project_name", "reply_goal", "reason"):
-            value = str(item.get(key) or "").strip()
-            if value and value not in hints:
-                hints.append(value)
-    return hints
+    del state
+    return []
 
 
 def planner_scene(state: AgentState) -> str:
-    primary = planner_primary_task(state)
-    scene = str(primary.get("scene") or "").strip()
-    return scene or "S3_deep_consult"
+    return str(state.get("planner_stage") or "").strip()
 
 
 def planner_public_route(state: AgentState) -> dict[str, Any]:
-    primary = planner_primary_task(state)
     handoff = planner_handoff(state)
-    task_type = str(primary.get("type") or "").strip()
-    subtype = str(primary.get("subtype") or "").strip()
-    intent = str(primary.get("intent") or subtype or task_type or "").strip()
-    confidence = float(primary.get("confidence") or 0.9) if primary else 0.0
-    handoff_needed = bool(handoff.get("needed")) or task_type in {"human_request", "complaint_refund"}
+    decision = str(state.get("planner_decision") or "").strip()
+    stage = str(state.get("planner_stage") or "").strip()
+    sub_rule_id = str(state.get("planner_sub_rule_id") or "").strip()
     return {
-        "scene": str(primary.get("scene") or "").strip() or "S3_deep_consult",
-        "intent": intent,
-        "subflow": str(primary.get("subflow") or "").strip() or ("HUMAN_HANDOFF" if handoff_needed else "DIRECT_REPLY"),
-        "reason": str(primary.get("answer_goal") or primary.get("customer_need") or "").strip(),
-        "confidence": confidence,
-        "need_human": handoff_needed,
-        "policy_id": str(state.get("policy_id") or "").strip(),
-        "policy_family_id": str(state.get("policy_family_id") or "").strip(),
-        "exact_policy_id": str(state.get("exact_policy_id") or "").strip(),
-        "policy_match_level": str(state.get("policy_match_level") or "").strip(),
-        "sop_stage": planner_sop_stage(state),
-        "sop_step": planner_sop_step(state),
+        "scene": stage,
+        "intent": sub_rule_id,
+        "subflow": decision,
+        "reason": "",
+        "confidence": 0.0,
+        "need_human": bool(handoff.get("needed")),
+        "policy_id": "",
+        "policy_family_id": "",
+        "exact_policy_id": "",
+        "policy_match_level": "",
+        "sop_stage": stage,
+        "sop_step": sub_rule_id,
     }

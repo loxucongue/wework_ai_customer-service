@@ -1,1 +1,1 @@
-"""Business policy catalog and safety boundaries for AI Paths."""
+"""Prompt policy helpers and safety boundaries for AI Paths."""
