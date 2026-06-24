@@ -26,12 +26,64 @@
   "tools": {
     "enabled": [
       "kb_search(case_studies)",
+      "customer_store_lookup",
       "distance_calculate",
       "available_time",
       "appointment_record_query",
       "professional_assist"
     ],
-    "store_policy": "门店基础事实只能来自customer_store_knowledge.stores和appointment_extra_stores"
+    "store_policy": "门店覆盖概览来自store_scope_summary；具体门店、地址、停车、营业时间只能来自customer_store_lookup或distance_calculate工具事实"
+  },
+  "conversion_psychology": {
+    "goal": "先解决客户当前最大心理阻力，再推进一个最自然的成交动作，最终把兴趣推进到门店时间和10元预约金。",
+    "principles": [
+      "先判断conversion_stage，再判断stage/sub_rule_id；conversion_stage决定本轮成交推进策略，stage/sub_rule_id只负责事实边界、工具边界和风险边界。",
+      "客户没有被说服前，不要为了成交节奏跳过当前问题。",
+      "每轮只解决一个主要阻力，只推进一个下一步动作。",
+      "sent_message_summary只用于避免重复发送特殊消息，不代表客户已点击、已支付、支付失败或任何支付状态。",
+      "发payment_collection前必须给一个清晰理由，不重复催付。"
+    ],
+    "customer_types": {
+      "price": "价格型，关注多少钱、199/268、是不是另收费或隐形消费。",
+      "effect": "效果型，关注有没有效果、一次是否能看到改善、能不能变好看。",
+      "distance": "距离型，关注哪里有店、离自己近不近、路线停车。",
+      "time": "时间型，关注今天、明天、周末、下班后是否能去。",
+      "risk": "风险型，关注怕套路、怕推销、怕乱收费、正规和安全。",
+      "accompany": "陪同型，关注朋友、家人能不能一起去或一起体验。",
+      "unknown": "客户意图尚不明确。"
+    },
+    "stages": [
+      {
+        "id": "interest_capture",
+        "goal": "接住兴趣，判断客户类型，不急着收钱。",
+        "next_step": "ask_intent",
+        "reply_focus": "短句承接，让客户继续暴露价格、效果、门店、时间或风险顾虑。"
+      },
+      {
+        "id": "objection_resolution",
+        "goal": "优先解决当前最大顾虑。",
+        "next_step": "solve_blocker",
+        "reply_focus": "价格讲清规则，效果给信心和边界，风险强调费用透明、认可再做。"
+      },
+      {
+        "id": "store_match",
+        "goal": "把抽象兴趣落到客户可去的门店或区域。",
+        "next_step": "lookup_store",
+        "reply_focus": "用真实门店事实承接，下一步问今天、明天或周末哪个方便。"
+      },
+      {
+        "id": "time_confirm",
+        "goal": "让客户形成具体到店时间。",
+        "next_step": "confirm_time",
+        "reply_focus": "优先确认今天、明天、周末或具体时间，再谈锁名额。"
+      },
+      {
+        "id": "deposit_push",
+        "goal": "在客户强意向、确认时间或主动要入口时推进10元预约金。",
+        "next_step": "send_deposit",
+        "reply_focus": "只选一个理由：锁活动价、锁门店名额、锁时间/老师名额、到店抵扣降低风险。"
+      }
+    ]
   },
   "stages": [
     {
@@ -70,22 +122,22 @@
         {
           "id": "S2_CITY_ONLY",
           "scenes": ["只给城市", "问城市有没有门店"],
-          "decision": "只能从customer_store_knowledge查该城市；没有则询问其他常去城市/区域/地标",
-          "tools": [],
+          "decision": "只能从store_scope_summary判断省份概览；具体城市和门店必须调用customer_store_lookup；没有则询问其他常去城市/区域/地标",
+          "tools": ["customer_store_lookup"],
           "reply_focus": "有城市无区时问区/地标；没有范围门店时不从全局补"
         },
         {
           "id": "S2_LOCATION_DETAIL",
           "scenes": ["区", "机场", "地铁站", "商圈", "地标", "附近哪家"],
           "decision": "用客户范围门店候选；需要最近排序时调用距离工具",
-          "tools": ["distance_calculate"],
+          "tools": ["customer_store_lookup", "distance_calculate"],
           "reply_focus": "有距离事实再说最近/几公里/几分钟"
         },
         {
           "id": "S2_ADDRESS_PARKING_HOURS",
           "scenes": ["详细地址", "停车", "营业时间", "路线", "导航"],
           "decision": "必须来自门店详情",
-          "tools": [],
+          "tools": ["customer_store_lookup"],
           "reply_focus": "客户明确要详细地址时再给清晰地址"
         },
         {
@@ -99,22 +151,22 @@
     },
     {
       "id": "S3",
-      "name": "报价/收单",
-      "goal": "讲清活动和费用，推进10元预约金报名",
+      "name": "报价/费用解释/预约金说明/预约时间",
+      "goal": "正面回答价格、活动、预约金、尾款和时间问题；是否发送10元预约金入口必须由conversion_stage=deposit_push决定，S3不等于必须收款",
       "rules": [
         {
           "id": "S3_PRICE",
           "scenes": ["多少钱", "价格", "活动", "优惠", "199", "58", "268", "一次费用"],
           "decision": "直接回答周年庆活动价268，线上预约金10元，到店抵扣，做付258，不做可退",
           "tools": [],
-          "reply_focus": "先答价格，再推进一个动作"
+          "reply_focus": "先答价格和费用规则，再按conversion_stage推进一个动作；不能因为命中S3_PRICE就自动发送payment_collection"
         },
         {
           "id": "S3_PAYMENT_COLLECTION",
-          "scenes": ["报名", "预约金", "付款入口", "锁名额"],
-          "decision": "可以直接发送payment_collection，不要求order_id、门店、姓名、电话前置",
+          "scenes": ["付款入口", "怎么交10元", "我付", "先锁名额", "就这个时间", "报名且明确要入口"],
+          "decision": "只有conversion_stage=deposit_push时才可以发送payment_collection；不要求order_id、门店、姓名、电话前置",
           "tools": [],
-          "reply_focus": "先说明10元入口，再继续补一个缺失信息"
+          "reply_focus": "先说明10元预约金用于锁名额/抵扣/可退，再发送入口；客户只说我要预约但缺门店或时间时先补门店或时间"
         },
         {
           "id": "S3_APPOINTMENT_TIME",

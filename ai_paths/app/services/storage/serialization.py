@@ -63,6 +63,10 @@ def tags_from_state(state: dict[str, Any]) -> list[str]:
         intent = str(item.get("intent") or "").strip()
         if intent:
             tags.append(intent)
+    for key in ("conversion_stage", "customer_type", "main_blocker", "next_step"):
+        value = str(state.get(key) or "").strip()
+        if value:
+            tags.append(value)
     route = planner_public_route(state)
     if route.get("subflow"):
         tags.append(str(route["subflow"]))

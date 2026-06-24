@@ -411,7 +411,6 @@ class ChatRuntime:
                 "customer_context": final_state.get("customer_context", {}),
                 "customer_context_error": final_state.get("customer_context_error"),
                 "customer_store_knowledge": _customer_store_knowledge_meta(final_state.get("customer_store_knowledge")),
-                "sales_talk_reference": _sales_talk_reference_meta(final_state.get("sales_talk_reference")),
                 "case_image_send_record": final_state.get("case_image_send_record", {}),
                 "model_usage": model_usage["calls"],
                 "token_usage": model_usage["summary"],
@@ -420,6 +419,10 @@ class ChatRuntime:
                 "planner_decision": final_state.get("planner_decision", ""),
                 "planner_stage": final_state.get("planner_stage", ""),
                 "planner_sub_rule_id": final_state.get("planner_sub_rule_id", ""),
+                "conversion_stage": final_state.get("conversion_stage", ""),
+                "customer_type": final_state.get("customer_type", ""),
+                "main_blocker": final_state.get("main_blocker", ""),
+                "next_step": final_state.get("next_step", ""),
                 "policy_id": final_state.get("policy_id", ""),
                 "policy_family_id": final_state.get("policy_family_id", ""),
                 "exact_policy_id": final_state.get("exact_policy_id", ""),
@@ -663,14 +666,3 @@ def _customer_store_knowledge_meta(value: Any) -> dict[str, Any]:
         "error": value.get("error", ""),
     }
 
-
-def _sales_talk_reference_meta(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    items = value.get("items") if isinstance(value.get("items"), list) else []
-    return {
-        "source": value.get("source", ""),
-        "query": value.get("query", ""),
-        "item_count": len(items),
-        "error": value.get("error", ""),
-    }

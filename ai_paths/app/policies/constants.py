@@ -306,7 +306,4 @@ HUMAN_KEYWORDS = [
 
 KB_BY_SKILL = {
     "project_consult": "project_qa",
-    "trust_build": "sales_talk_qa",
-    "competitor": "sales_talk_qa",
-    "after_sales": "sales_talk_qa",
 }

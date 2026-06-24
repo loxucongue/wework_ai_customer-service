@@ -50,11 +50,16 @@ class AgentState(TypedDict, total=False):
     customer_context: dict[str, Any]
     customer_context_error: str | None
     customer_store_knowledge: dict[str, Any]
-    sales_talk_reference: dict[str, Any]
+    sent_message_summary: dict[str, Any]
+    background_substeps: list[dict[str, Any]]
 
     planner_decision: str
     planner_stage: str
     planner_sub_rule_id: str
+    conversion_stage: str
+    customer_type: str
+    main_blocker: str
+    next_step: str
     planner_reply_messages: list[dict[str, Any]]
     planner_tool_calls: list[dict[str, Any]]
     reply_constraints: list[str]

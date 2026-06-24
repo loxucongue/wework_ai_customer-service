@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from threading import Lock
 from typing import Any
 
 from app.services.customer_context_extractors import compact_request_context
@@ -15,25 +17,42 @@ class CustomerStoreKnowledgeService:
     ) -> None:
         self._platform_client = platform_client
         self._store_snapshot_service = store_snapshot_service
+        self._scope_ids_cache: dict[str, tuple[float, list[str]]] = {}
+        self._cache_lock = Lock()
+        self._scope_ttl_seconds = 5 * 60
 
-    def load(self, *, request_context: dict[str, Any], customer_context: dict[str, Any] | None = None) -> dict[str, Any]:
+    def load(
+        self,
+        *,
+        request_context: dict[str, Any],
+        customer_context: dict[str, Any] | None = None,
+        identity: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if not self._platform_client or not self._platform_client.available:
             return {"source": "platform_agent_unavailable", "stores": [], "appointment_extra_stores": []}
 
         ctx = dict(request_context or {})
         customer = (customer_context or {}).get("customer") if isinstance(customer_context, dict) else {}
         customer = customer if isinstance(customer, dict) else {}
-        identity = (customer_context or {}).get("identity") if isinstance(customer_context, dict) else {}
-        identity = identity if isinstance(identity, dict) else {}
+        provided_identity = identity if isinstance(identity, dict) else {}
+        context_identity = (customer_context or {}).get("identity") if isinstance(customer_context, dict) else {}
+        context_identity = context_identity if isinstance(context_identity, dict) else {}
 
         platform_customer_id = str(
-            customer.get("id")
-            or identity.get("platform_customer_id")
+            provided_identity.get("platform_customer_id")
+            or customer.get("id")
+            or context_identity.get("platform_customer_id")
             or (customer_context or {}).get("customer_id")
             or ctx.get("platform_customer_id")
             or ""
         ).strip()
-        customer_add_wechat_id = str(customer.get("customer_add_wechat_id") or ctx.get("customer_add_wechat_id") or "").strip()
+        customer_add_wechat_id = str(
+            provided_identity.get("customer_add_wechat_id")
+            or context_identity.get("customer_add_wechat_id")
+            or customer.get("customer_add_wechat_id")
+            or ctx.get("customer_add_wechat_id")
+            or ""
+        ).strip()
 
         customer_info_error = ""
         if not (platform_customer_id and customer_add_wechat_id) and ctx.get("external_userid"):
@@ -64,21 +83,21 @@ class CustomerStoreKnowledgeService:
         scoped_context["platform_customer_id"] = platform_customer_id
         scoped_context["customer_id"] = platform_customer_id
         scoped_context["customer_add_wechat_id"] = customer_add_wechat_id
-        try:
-            rows = self._platform_client.list_stores(
-                customer_id=platform_customer_id,
-                customer_add_wechat_id=customer_add_wechat_id,
-                request_context=scoped_context,
-            )
-        except Exception as exc:
+        rows, scope_cache_hit, scope_error = self._load_scope_rows(
+            platform_customer_id=platform_customer_id,
+            customer_add_wechat_id=customer_add_wechat_id,
+            request_context=scoped_context,
+        )
+        if scope_error:
             return {
                 "source": "platform_agent.store_index_error",
                 "customer_id": platform_customer_id,
                 "customer_add_wechat_id": customer_add_wechat_id,
                 "stores": [],
                 "appointment_extra_stores": [],
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": scope_error,
                 "request_context": compact_request_context(scoped_context),
+                "cache": {"store_scope_hit": scope_cache_hit},
             }
         if self._store_snapshot_service:
             scoped = self._store_snapshot_service.stores_for_scope(rows, request_context=scoped_context)
@@ -119,7 +138,99 @@ class CustomerStoreKnowledgeService:
             **snapshot_meta,
             "appointment_extra_stores": [item for item in appointment_extra_stores if item.get("store_name")],
             "request_context": compact_request_context(scoped_context),
+            "cache": {"store_scope_hit": scope_cache_hit},
         }
+
+    def with_appointment_extra_stores(
+        self,
+        *,
+        customer_store_knowledge: dict[str, Any],
+        request_context: dict[str, Any],
+        customer_context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not isinstance(customer_store_knowledge, dict):
+            return {}
+        stores = customer_store_knowledge.get("stores") if isinstance(customer_store_knowledge.get("stores"), list) else []
+        scoped_ids = {str(item.get("store_id") or "") for item in stores if isinstance(item, dict)}
+        existing_extra = (
+            customer_store_knowledge.get("appointment_extra_stores")
+            if isinstance(customer_store_knowledge.get("appointment_extra_stores"), list)
+            else []
+        )
+        extra_by_id = {
+            str(item.get("store_id") or ""): item
+            for item in existing_extra
+            if isinstance(item, dict) and str(item.get("store_id") or "")
+        }
+        extra_ids = self._appointment_store_ids(customer_context or {}, request_context)
+        for store_id in extra_ids:
+            if not store_id or store_id in scoped_ids or store_id in extra_by_id:
+                continue
+            store = self._appointment_extra_store(store_id, request_context)
+            if store.get("store_name"):
+                extra_by_id[store_id] = store
+        return {
+            **customer_store_knowledge,
+            "appointment_extra_stores": list(extra_by_id.values()),
+        }
+
+    def _load_scope_rows(
+        self,
+        *,
+        platform_customer_id: str,
+        customer_add_wechat_id: str,
+        request_context: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], bool, str]:
+        key = self._scope_cache_key(platform_customer_id, customer_add_wechat_id, request_context)
+        cached_ids = self._get_cached_scope_ids(key)
+        if cached_ids is not None:
+            return [{"id": store_id, "store_id": store_id} for store_id in cached_ids], True, ""
+        try:
+            rows = self._platform_client.list_stores(
+                customer_id=platform_customer_id,
+                customer_add_wechat_id=customer_add_wechat_id,
+                request_context=request_context,
+            )
+        except Exception as exc:
+            return [], False, f"{type(exc).__name__}: {exc}"
+        ids = [
+            str(row.get("id") or row.get("store_id") or "").strip()
+            for row in rows
+            if isinstance(row, dict) and str(row.get("id") or row.get("store_id") or "").strip()
+        ]
+        self._set_cached_scope_ids(key, list(dict.fromkeys(ids)))
+        return rows, False, ""
+
+    def _get_cached_scope_ids(self, key: str) -> list[str] | None:
+        if not key:
+            return None
+        now = time.monotonic()
+        with self._cache_lock:
+            item = self._scope_ids_cache.get(key)
+            if not item:
+                return None
+            expires_at, ids = item
+            if expires_at <= now:
+                self._scope_ids_cache.pop(key, None)
+                return None
+            return list(ids)
+
+    def _set_cached_scope_ids(self, key: str, ids: list[str]) -> None:
+        if not key:
+            return
+        with self._cache_lock:
+            self._scope_ids_cache[key] = (time.monotonic() + self._scope_ttl_seconds, list(ids))
+
+    @staticmethod
+    def _scope_cache_key(platform_customer_id: str, customer_add_wechat_id: str, request_context: dict[str, Any]) -> str:
+        parts = [
+            platform_customer_id,
+            customer_add_wechat_id,
+            request_context.get("corp_id"),
+            request_context.get("user_id"),
+            request_context.get("wechat"),
+        ]
+        return "|".join(str(part or "") for part in parts)
 
     def _appointment_extra_store(self, store_id: str, request_context: dict[str, Any]) -> dict[str, Any]:
         if self._store_snapshot_service:

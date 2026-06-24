@@ -4,8 +4,11 @@ import unittest
 
 from app.graph.nodes.action_nodes import (
     _administrative_area_origin_candidate,
+    _distance_candidate_stores,
     _geocode_has_unconflicted_location,
     _normalize_distance_origin_from_store_regions,
+    _store_lookup_item,
+    _stores_for_text_query,
 )
 
 
@@ -86,6 +89,42 @@ class DistanceOriginNormalizationTests(unittest.TestCase):
     def test_geocode_with_location_and_empty_district_is_unconflicted(self) -> None:
         self.assertTrue(_geocode_has_unconflicted_location({"location": "106.551787,29.562680", "district": ""}))
         self.assertFalse(_geocode_has_unconflicted_location({"location": "107.371860,29.739957", "district": "涪陵区"}))
+
+    def test_store_lookup_city_candidates_feed_distance_source(self) -> None:
+        stores = [
+            {
+                "store_id": "227",
+                "store_name": "厦门湖里店",
+                "province": "福建省",
+                "city": "厦门市",
+                "district": "湖里区",
+                "store_address": "厦门市湖里区",
+            },
+            {
+                "store_id": "386",
+                "store_name": "厦门思明店",
+                "province": "福建省",
+                "city": "厦门市",
+                "district": "思明区",
+                "store_address": "厦门市思明区",
+            },
+            {
+                "store_id": "467",
+                "store_name": "重庆渝中店",
+                "province": "重庆市",
+                "city": "重庆市",
+                "district": "渝中区",
+                "store_address": "重庆市渝中区",
+            },
+        ]
+        lookup_candidates = [_store_lookup_item(store) for store in _stores_for_text_query("厦门机场", stores, "nearby_candidates")]
+        candidates = _distance_candidate_stores(
+            {"name": "distance_calculate", "candidate_source": "customer_store_lookup"},
+            {"customer_store_knowledge": {"stores": stores}},
+            {"customer_store_lookup": {"candidate_stores": lookup_candidates}},
+        )
+
+        self.assertEqual([item["store_id"] for item in candidates], ["227", "386"])
 
 
 if __name__ == "__main__":

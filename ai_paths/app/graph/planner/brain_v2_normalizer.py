@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.graph.planner.planner_contract import ALLOWED_KBS, ALLOWED_TOOLS
+from app.graph.planner.planner_contract import (
+    ALLOWED_CONVERSION_STAGES,
+    ALLOWED_CUSTOMER_TYPES,
+    ALLOWED_KBS,
+    ALLOWED_MAIN_BLOCKERS,
+    ALLOWED_NEXT_STEPS,
+    ALLOWED_TOOLS,
+)
 from app.graph.state import AgentState
 
 
@@ -10,6 +17,26 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     decision = _normalize_decision(model_payload.get("decision") if isinstance(model_payload, dict) else "")
     stage = str(model_payload.get("stage") or "").strip() if isinstance(model_payload, dict) else ""
     sub_rule_id = str(model_payload.get("sub_rule_id") or "").strip() if isinstance(model_payload, dict) else ""
+    conversion_stage = _normalize_enum(
+        model_payload.get("conversion_stage") if isinstance(model_payload, dict) else "",
+        ALLOWED_CONVERSION_STAGES,
+        "",
+    )
+    customer_type = _normalize_enum(
+        model_payload.get("customer_type") if isinstance(model_payload, dict) else "",
+        ALLOWED_CUSTOMER_TYPES,
+        "unknown",
+    )
+    main_blocker = _normalize_enum(
+        model_payload.get("main_blocker") if isinstance(model_payload, dict) else "",
+        ALLOWED_MAIN_BLOCKERS,
+        "none",
+    )
+    next_step = _normalize_enum(
+        model_payload.get("next_step") if isinstance(model_payload, dict) else "",
+        ALLOWED_NEXT_STEPS,
+        "no_action",
+    )
     planner_reply_messages = _normalize_reply_messages(model_payload.get("reply_messages") if isinstance(model_payload, dict) else [])
     planner_tool_calls = _normalize_tools(model_payload.get("tool_calls") if isinstance(model_payload, dict) else [])
     reply_constraints = _clean_str_list(model_payload.get("reply_constraints") if isinstance(model_payload, dict) else [])
@@ -34,6 +61,10 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "planner_decision": decision,
         "planner_stage": stage,
         "planner_sub_rule_id": sub_rule_id,
+        "conversion_stage": conversion_stage,
+        "customer_type": customer_type,
+        "main_blocker": main_blocker,
+        "next_step": next_step,
         "planner_reply_messages": planner_reply_messages,
         "planner_tool_calls": [tool for tool in required_tools if tool.get("name") != "no_tool"],
         "reply_constraints": reply_constraints,
@@ -64,6 +95,11 @@ def safety_fallback_plan(state: AgentState) -> dict[str, Any]:
 def _normalize_decision(value: Any) -> str:
     decision = str(value or "").strip()
     return decision if decision in {"direct_reply", "need_tools", "no_reply"} else "need_tools"
+
+
+def _normalize_enum(value: Any, allowed: tuple[str, ...], default: str) -> str:
+    text = str(value or "").strip()
+    return text if text in allowed else default
 
 
 def _normalize_reply_messages(value: Any) -> list[dict[str, Any]]:
@@ -126,7 +162,16 @@ def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
         query = str(item.get("query") or "").strip()
         if query:
             tool["query"] = query
-        for key in ("origin", "candidate_store_ids", "store_id", "date"):
+        for key in (
+            "origin",
+            "candidate_store_ids",
+            "candidate_source",
+            "store_id",
+            "date",
+            "scope",
+            "need_fields",
+            "for_distance",
+        ):
             if key in item:
                 tool[key] = item[key]
         tools.append(tool)
@@ -176,7 +221,7 @@ def _rejected_tool_violations(raw_tools: Any) -> list[dict[str, str]]:
                     "task_type": "planner_tool_rejected",
                     "subtype": "kb_search",
                     "missing": f"unsupported_kb:{kb_name}",
-                    "note": "Planner may only call kb_search(case_studies). sales_talk_qa is preloaded as sales_talk_reference before model input.",
+                    "note": "Planner may only call kb_search(case_studies). sales_talk_qa is currently disabled.",
                 }
             )
     return violations
@@ -226,12 +271,16 @@ def _dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "origin",
             "destination",
             "candidate_store_ids",
+            "candidate_source",
             "store_id",
             "store_name",
             "date",
             "time",
             "address",
             "reason",
+            "scope",
+            "need_fields",
+            "for_distance",
         ):
             if extra_key in item:
                 normalized[extra_key] = item.get(extra_key)

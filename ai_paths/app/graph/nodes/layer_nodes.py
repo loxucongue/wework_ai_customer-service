@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, Callable
 
 from app.graph.nodes.common import looks_bad_text, model_usage_snapshot
@@ -79,79 +80,120 @@ def create_background_context_layer(
             "layer_2_background_context",
             {"customer_id": state.get("customer_id"), "user_id": state.get("user_id"), "wechat": state.get("wechat")},
         ) as span:
-            memory_task = asyncio.to_thread(_load_memory, memory_store, state)
-            customer_task = asyncio.to_thread(_load_customer_context, customer_context_service, state, request_context)
-            sales_talk_task = asyncio.create_task(_load_sales_talk_reference(coze_client, state))
-            memory, customer_result, sales_talk_reference = await asyncio.gather(memory_task, customer_task, sales_talk_task)
-            customer_context = customer_result.get("customer_context", {})
+            substeps: list[dict[str, Any]] = []
+            memory_task = asyncio.to_thread(_timed_call, "memory_load", _load_memory, memory_store, state)
+            identity_task = asyncio.to_thread(_timed_call, "get_customer_info", _load_customer_identity, customer_context_service, state, request_context)
+            memory_result, identity_result = await asyncio.gather(memory_task, identity_task)
+            memory = memory_result["result"]
+            identity = identity_result["result"]
+            substeps.extend([_without_result(memory_result), _without_result(identity_result)])
+
+            identity_context = identity.get("request_context") if isinstance(identity, dict) else {}
+            scoped_request_context = {**request_context, **identity_context} if isinstance(identity_context, dict) else request_context
+            saved_memory = memory.get("saved_memory") if isinstance(memory, dict) else {}
+            customer_task = asyncio.to_thread(
+                _timed_call,
+                "order_index",
+                _load_customer_context_with_identity,
+                customer_context_service,
+                state,
+                saved_memory,
+                request_context,
+                identity,
+            )
             store_task = asyncio.to_thread(
+                _timed_call,
+                "store_index",
                 _load_customer_stores,
                 customer_store_knowledge_service,
-                request_context,
+                scoped_request_context,
+                {},
+                identity,
+            )
+            customer_result_timed, store_result_timed = await asyncio.gather(customer_task, store_task)
+            customer_result = customer_result_timed["result"]
+            customer_store_knowledge = store_result_timed["result"]
+            substeps.extend([_without_result(customer_result_timed), _without_result(store_result_timed)])
+            customer_context = customer_result.get("customer_context", {})
+            extra_result = _timed_call(
+                "store_snapshot_hydrate",
+                _enrich_customer_stores,
+                customer_store_knowledge_service,
+                customer_store_knowledge,
+                scoped_request_context,
                 customer_context,
             )
-            customer_store_knowledge = await store_task
+            customer_store_knowledge = extra_result["result"]
+            substeps.append(_without_result(extra_result))
             span["entry"]["tool_calls"] = [
-                {
-                    "name": "coze_kb_search",
-                    "input": {"kb_name": "sales_talk_qa", "query": sales_talk_reference.get("query", "")},
-                    "output": {"items": len(sales_talk_reference.get("items") or [])},
-                    "error": sales_talk_reference.get("error"),
-                }
+                *[
+                    {
+                        "name": f"background_{item.get('name')}",
+                        "input": {"cache_hit": item.get("cache_hit", False)},
+                        "output": {"duration_ms": item.get("duration_ms", 0)},
+                        "error": item.get("error"),
+                    }
+                    for item in substeps
+                ],
             ]
             output = {
                 **memory,
                 **customer_result,
                 "customer_store_knowledge": customer_store_knowledge,
-                "sales_talk_reference": sales_talk_reference,
+                "background_substeps": substeps,
                 "trace": state.get("trace", []),
             }
-            span["output_snapshot"] = output
+            span["output_snapshot"] = _background_output_snapshot(output)
             return output
 
     return background_context_layer
 
 
-async def _load_sales_talk_reference(coze_client: CozeClient | None, state: AgentState) -> dict[str, Any]:
-    query = _sales_talk_query_from_state(state)
-    if not coze_client:
-        return {"source": "service_unavailable", "query": query, "items": []}
+def _timed_call(name: str, func: Callable[..., Any], *args: Any, **kwargs: Any) -> dict[str, Any]:
+    started = time.perf_counter()
     try:
-        result = await coze_client.search_kb("sales_talk_qa", query)
-        items = [
-            {
-                "document_id": item.document_id,
-                "content": item.content[:500],
-            }
-            for item in result.items[:3]
-        ]
+        result = func(*args, **kwargs)
         return {
-            "source": "sales_talk_qa",
-            "query": query,
-            "items": items,
-            "item_count": len(items),
+            "name": name,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "result": result,
+            "cache_hit": _cache_hit_from_result(result),
+            "error": _error_from_result(result),
         }
     except Exception as exc:
         return {
-            "source": "sales_talk_qa",
-            "query": query,
-            "items": [],
+            "name": name,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "result": {},
+            "cache_hit": False,
             "error": f"{type(exc).__name__}: {exc}",
         }
 
 
-def _sales_talk_query_from_state(state: AgentState) -> str:
-    parts: list[str] = []
-    content = str(state.get("normalized_content") or state.get("content") or "").strip()
-    if content:
-        parts.append(content[:120])
-    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
-    for item in history[-3:]:
-        text = str(item or "").strip()
-        if text:
-            parts.append(text[:120])
-    query = " ".join(parts).strip()
-    return query or "当前客户咨询承接话术"
+def _without_result(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": item.get("name", ""),
+        "duration_ms": item.get("duration_ms", 0),
+        "cache_hit": item.get("cache_hit", False),
+        "error": item.get("error"),
+    }
+
+
+def _cache_hit_from_result(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    if "cache_hit" in result:
+        return bool(result.get("cache_hit"))
+    cache = result.get("cache")
+    if isinstance(cache, dict):
+        return any(bool(value) for value in cache.values())
+    return False
+
+
+def _error_from_result(result: Any) -> str:
+    if not isinstance(result, dict):
+        return ""
+    return str(result.get("error") or result.get("customer_context_error") or result.get("orders_error") or "")
 
 
 def _load_memory(memory_store: CustomerMemoryStore | None, state: AgentState) -> dict[str, Any]:
@@ -197,17 +239,110 @@ def _load_customer_context(
     }
 
 
+def _load_customer_identity(
+    customer_context_service: CustomerContextService | None,
+    state: AgentState,
+    request_context: dict[str, Any],
+) -> dict[str, Any]:
+    if not customer_context_service:
+        return {"platform_customer_id": str(state.get("customer_id") or "unknown"), "request_context": request_context}
+    return customer_context_service.load_identity(
+        customer_id=str(state.get("customer_id") or "unknown"),
+        request_context=request_context,
+    )
+
+
+def _load_customer_context_with_identity(
+    customer_context_service: CustomerContextService | None,
+    state: AgentState,
+    saved_memory: dict[str, Any],
+    request_context: dict[str, Any],
+    identity: dict[str, Any],
+) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+    error = None
+    if customer_context_service:
+        try:
+            context = customer_context_service.load_with_identity(
+                customer_id=str(state.get("customer_id") or "unknown"),
+                memory=saved_memory if isinstance(saved_memory, dict) else {},
+                request_context=request_context,
+                identity=identity,
+            )
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+    return {
+        "customer_context": context,
+        "appointment_cache": context.get("appointment", {}) if isinstance(context, dict) else {},
+        "customer_context_error": error,
+    }
+
+
 def _load_customer_stores(
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None,
     request_context: dict[str, Any],
     customer_context: dict[str, Any],
+    identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not customer_store_knowledge_service:
         return {"source": "service_unavailable", "stores": [], "appointment_extra_stores": []}
     try:
-        return customer_store_knowledge_service.load(request_context=request_context, customer_context=customer_context)
+        return customer_store_knowledge_service.load(request_context=request_context, customer_context=customer_context, identity=identity)
     except Exception as exc:
         return {"source": "customer_store_knowledge_error", "stores": [], "appointment_extra_stores": [], "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _enrich_customer_stores(
+    customer_store_knowledge_service: CustomerStoreKnowledgeService | None,
+    customer_store_knowledge: dict[str, Any],
+    request_context: dict[str, Any],
+    customer_context: dict[str, Any],
+) -> dict[str, Any]:
+    if not customer_store_knowledge_service or not hasattr(customer_store_knowledge_service, "with_appointment_extra_stores"):
+        return customer_store_knowledge
+    return customer_store_knowledge_service.with_appointment_extra_stores(
+        customer_store_knowledge=customer_store_knowledge,
+        request_context=request_context,
+        customer_context=customer_context,
+    )
+
+
+def _background_output_snapshot(output: dict[str, Any]) -> dict[str, Any]:
+    customer_context = output.get("customer_context") if isinstance(output.get("customer_context"), dict) else {}
+    store_knowledge = output.get("customer_store_knowledge") if isinstance(output.get("customer_store_knowledge"), dict) else {}
+    return {
+        "customer_profile": output.get("customer_profile", {}),
+        "customer_basic_info": output.get("customer_basic_info", {}),
+        "history_events_count": len(output.get("history_events") or []),
+        "lifecycle_stage": output.get("lifecycle_stage", ""),
+        "customer_context": {
+            "customer_id": customer_context.get("customer_id"),
+            "platform_customer_id": customer_context.get("platform_customer_id"),
+            "customer_add_wechat_id": customer_context.get("customer_add_wechat_id"),
+            "source": customer_context.get("source"),
+            "appointment": customer_context.get("appointment"),
+            "orders_count": len(customer_context.get("orders") or []),
+            "cache": customer_context.get("cache", {}),
+            "orders_error": customer_context.get("orders_error", ""),
+            "customer_info_error": customer_context.get("customer_info_error", ""),
+        },
+        "appointment_cache": output.get("appointment_cache", {}),
+        "customer_context_error": output.get("customer_context_error"),
+        "customer_store_knowledge": {
+            "source": store_knowledge.get("source"),
+            "customer_id": store_knowledge.get("customer_id"),
+            "customer_add_wechat_id": store_knowledge.get("customer_add_wechat_id"),
+            "store_count": store_knowledge.get("store_count", 0),
+            "missing_snapshot_store_ids": store_knowledge.get("missing_snapshot_store_ids", []),
+            "snapshot_generated_at": store_knowledge.get("snapshot_generated_at"),
+            "snapshot_source": store_knowledge.get("snapshot_source"),
+            "snapshot_refresh_error": store_knowledge.get("snapshot_refresh_error", ""),
+            "appointment_extra_store_count": len(store_knowledge.get("appointment_extra_stores") or []),
+            "cache": store_knowledge.get("cache", {}),
+            "error": store_knowledge.get("error", ""),
+        },
+        "background_substeps": output.get("background_substeps", []),
+    }
 
 
 def request_context_from_state(state: AgentState) -> dict[str, Any]:

@@ -57,6 +57,10 @@ def planner_task_views(state: AgentState) -> list[dict[str, Any]]:
     decision = str(state.get("planner_decision") or "").strip()
     stage = str(state.get("planner_stage") or "").strip()
     sub_rule_id = str(state.get("planner_sub_rule_id") or "").strip()
+    conversion_stage = str(state.get("conversion_stage") or "").strip()
+    customer_type = str(state.get("customer_type") or "").strip()
+    main_blocker = str(state.get("main_blocker") or "").strip()
+    next_step = str(state.get("next_step") or "").strip()
     if not (decision or stage or sub_rule_id):
         return []
     return [
@@ -67,6 +71,10 @@ def planner_task_views(state: AgentState) -> list[dict[str, Any]]:
             "scene": stage,
             "subflow": decision,
             "reason": "",
+            "conversion_stage": conversion_stage,
+            "customer_type": customer_type,
+            "main_blocker": main_blocker,
+            "next_step": next_step,
         }
     ]
 
@@ -85,11 +93,19 @@ def planner_public_route(state: AgentState) -> dict[str, Any]:
     decision = str(state.get("planner_decision") or "").strip()
     stage = str(state.get("planner_stage") or "").strip()
     sub_rule_id = str(state.get("planner_sub_rule_id") or "").strip()
+    conversion_stage = str(state.get("conversion_stage") or "").strip()
+    customer_type = str(state.get("customer_type") or "").strip()
+    main_blocker = str(state.get("main_blocker") or "").strip()
+    next_step = str(state.get("next_step") or "").strip()
     return {
         "scene": stage,
         "intent": sub_rule_id,
         "subflow": decision,
         "reason": "",
+        "conversion_stage": conversion_stage,
+        "customer_type": customer_type,
+        "main_blocker": main_blocker,
+        "next_step": next_step,
         "confidence": 0.0,
         "need_human": bool(handoff.get("needed")),
         "policy_id": "",

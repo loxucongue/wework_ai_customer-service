@@ -4,6 +4,7 @@ from typing import Any
 
 from app.graph.nodes.common import recent_assistant_replies
 from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference, target_time_status
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
     should_suppress_profile_memory_for_reply,
@@ -32,6 +33,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     required_tools = planner_required_tools(state)
     handoff = planner_handoff(state)
     appointment_context = _appointment_context_for_model(state) if should_show_appointment_context else {}
+    sent_message_summary = {} if suppress_profile_memory else sent_message_summary_for_model(state)
     return {
         "content": state.get("normalized_content"),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-6:],
@@ -46,14 +48,22 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "planner_decision": state.get("planner_decision", ""),
         "planner_stage": state.get("planner_stage", ""),
         "planner_sub_rule_id": state.get("planner_sub_rule_id", ""),
+        "conversion_stage": state.get("conversion_stage", ""),
+        "customer_type": state.get("customer_type", ""),
+        "main_blocker": state.get("main_blocker", ""),
+        "next_step": state.get("next_step", ""),
         "reply_constraints": state.get("reply_constraints", []),
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
-        "customer_store_knowledge": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
-        "sales_talk_reference": _sanitize_planner_context_for_reply(_compact_sales_talk_reference(state.get("sales_talk_reference") or {})),
+        "store_scope_summary": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
+        "sent_message_summary": sent_message_summary,
         "business_rules": load_business_rules(),
         "fact_envelope": fact_envelope,
-        "fact_notes": _fact_notes_for_model(fact_envelope, content=str(state.get("normalized_content") or state.get("content") or "")),
+        "fact_notes": _fact_notes_for_model(
+            fact_envelope,
+            content=str(state.get("normalized_content") or state.get("content") or ""),
+            sent_message_summary=sent_message_summary,
+        ),
     }
 
 
@@ -111,6 +121,7 @@ def _fact_notes_for_model(
     fact_envelope: dict[str, Any],
     *,
     content: str = "",
+    sent_message_summary: dict[str, Any] | None = None,
 ) -> list[str]:
     notes: list[str] = []
     structured_facts = fact_envelope.get("structured_facts") or {}
@@ -126,6 +137,25 @@ def _fact_notes_for_model(
     store_lookup_status = structured_facts.get("store_lookup_status") or {}
     if isinstance(store_lookup_status, dict) and store_lookup_status.get("distance_lookup_required"):
         notes.append("客户在问距离或附近门店，但本轮没有真实距离结果；不要说最近、更近、几公里或几分钟，只能基于候选门店说明还需要按地图距离核对。")
+
+    sent_store_ids = {
+        str(item).strip()
+        for item in ((sent_message_summary or {}).get("store_address_sent_by_store_id") or [])
+        if str(item).strip()
+    }
+    if sent_store_ids:
+        store_facts = structured_facts.get("store_facts") or []
+        current_store_ids = {
+            str(item.get("store_id") or item.get("id") or "").strip()
+            for item in store_facts
+            if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
+        }
+        recommended = structured_facts.get("recommended_store") or {}
+        if isinstance(recommended, dict) and str(recommended.get("store_id") or recommended.get("id") or "").strip():
+            current_store_ids.add(str(recommended.get("store_id") or recommended.get("id") or "").strip())
+        repeated = sorted(sent_store_ids & current_store_ids)
+        if repeated:
+            notes.append(f"同一门店位置卡已发过：{', '.join(repeated[:4])}。本轮默认只用text回答，不要再次输出store_address；只有客户明确索要发地址、发导航、发路线、发位置、没收到或再发时才可以重发。")
 
     unsupported_claims = {
         str(item).strip().lower()
@@ -190,7 +220,7 @@ def _available_time_fact_note(item: dict[str, Any], content: str) -> str:
     if target_time and target_available is True:
         parts.append(f"客户问的{target_time}可约")
         return prefix + "，".join(parts) + "。第一句可以直接确认该时间可约，再推进预约金或确认信息。"
-    return prefix + "，".join(parts) + "。客户问有没有时间时，第一句必须先回答这些可约时间；可以结合上下文顺带推进10元预约金，但不能只发收款入口或只说继续查询。"
+    return prefix + "，".join(parts) + "。客户问有没有时间时，第一句必须先回答这些可约时间，并让客户选一个；不要同轮追加payment_collection，除非客户本轮已经明确选定时间或要付款入口。"
 
 
 def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:
@@ -216,59 +246,24 @@ def _compact_store_knowledge(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     stores = raw.get("stores") if isinstance(raw.get("stores"), list) else []
-    extras = raw.get("appointment_extra_stores") if isinstance(raw.get("appointment_extra_stores"), list) else []
-    compact_stores = [_compact_store_brief_for_model(store) for store in stores[:260] if isinstance(store, dict)]
-    compact_extras = [_compact_store_brief_for_model(store) for store in extras[:12] if isinstance(store, dict)]
     return {
         "source": raw.get("source"),
         "store_count": raw.get("store_count", len(stores)),
         "snapshot_generated_at": raw.get("snapshot_generated_at"),
         "missing_snapshot_store_ids": raw.get("missing_snapshot_store_ids", []),
-        "regions": _group_store_briefs_by_region(compact_stores),
-        "appointment_extra_stores": compact_extras,
+        "province_counts": _province_counts(stores),
     }
 
 
-def _compact_store_brief_for_model(store: dict[str, Any]) -> dict[str, Any]:
-    brief = {
-        "id": str(store.get("store_id") or "").strip(),
-        "name": str(store.get("store_name") or "").strip(),
-        "province": str(store.get("province") or "").strip(),
-        "city": str(store.get("city") or "").strip(),
-        "district": str(store.get("district") or "").strip(),
-    }
-    return {key: value for key, value in brief.items() if value}
-
-
-def _group_store_briefs_by_region(stores: list[dict[str, Any]]) -> dict[str, Any]:
-    grouped: dict[str, Any] = {}
+def _province_counts(stores: list[Any]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
     for store in stores:
-        city = str(store.get("city") or "未识别城市").strip()
-        district = str(store.get("district") or "未识别区域").strip()
-        grouped.setdefault(city, {}).setdefault(district, []).append(
-            {
-                "id": store.get("id"),
-                "name": store.get("name"),
-            }
-        )
-    return grouped
+        if not isinstance(store, dict):
+            continue
+        province = str(store.get("province") or "").strip() or "未识别省份"
+        counts[province] = counts.get(province, 0) + 1
+    return [
+        {"province": province, "store_count": count}
+        for province, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
 
-
-def _compact_sales_talk_reference(raw: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(raw, dict):
-        return {}
-    items = raw.get("items") if isinstance(raw.get("items"), list) else []
-    return {
-        "source": raw.get("source", ""),
-        "query": raw.get("query", ""),
-        "usage": "style_reference_only_not_business_fact",
-        "items": [
-            {
-                "document_id": str(item.get("document_id") or item.get("documentId") or ""),
-                "content": str(item.get("content") or "")[:360],
-            }
-            for item in items[:3]
-            if isinstance(item, dict)
-        ],
-        "error": raw.get("error", ""),
-    }

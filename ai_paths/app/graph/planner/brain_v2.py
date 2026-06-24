@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from app.graph.nodes.common import model_usage_snapshot
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.signals.general import is_low_information_content
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
 from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
@@ -77,6 +78,10 @@ async def run_planner_brain_v2(
                 "decision": plan.get("planner_decision", ""),
                 "stage": plan.get("planner_stage", ""),
                 "sub_rule_id": plan.get("planner_sub_rule_id", ""),
+                "conversion_stage": plan.get("conversion_stage", ""),
+                "customer_type": plan.get("customer_type", ""),
+                "main_blocker": plan.get("main_blocker", ""),
+                "next_step": plan.get("next_step", ""),
                 "tool_calls": len(plan.get("planner_tool_calls", [])),
                 "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
             }
@@ -92,6 +97,10 @@ async def run_planner_brain_v2(
             "decision": plan.get("planner_decision", ""),
             "stage": plan.get("planner_stage", ""),
             "sub_rule_id": plan.get("planner_sub_rule_id", ""),
+            "conversion_stage": plan.get("conversion_stage", ""),
+            "customer_type": plan.get("customer_type", ""),
+            "main_blocker": plan.get("main_blocker", ""),
+            "next_step": plan.get("next_step", ""),
             "reply_messages": len(plan.get("planner_reply_messages", [])),
             "tool_calls": len(plan.get("planner_tool_calls", [])),
             "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
@@ -113,8 +122,8 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_profile": {} if suppress_memory else state.get("customer_profile") or {},
         "history_events": [] if suppress_memory else (state.get("history_events") or [])[-8:],
         "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
-        "customer_store_knowledge": _compact_store_knowledge(state.get("customer_store_knowledge") or {}),
-        "sales_talk_reference": _compact_sales_talk_reference(state.get("sales_talk_reference") or {}),
+        "store_scope_summary": _store_scope_summary(state.get("customer_store_knowledge") or {}),
+        "sent_message_summary": {} if suppress_memory else sent_message_summary_for_model(state),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
     return _drop_empty(payload)
@@ -133,6 +142,10 @@ def _compact_plan_for_repair(plan: dict[str, Any]) -> dict[str, Any]:
             "decision": plan.get("planner_decision", ""),
             "stage": plan.get("planner_stage", ""),
             "sub_rule_id": plan.get("planner_sub_rule_id", ""),
+            "conversion_stage": plan.get("conversion_stage", ""),
+            "customer_type": plan.get("customer_type", ""),
+            "main_blocker": plan.get("main_blocker", ""),
+            "next_step": plan.get("next_step", ""),
             "reply_messages": plan.get("planner_reply_messages", []),
             "tool_calls": plan.get("planner_tool_calls", []),
             "handoff": plan.get("handoff", {}),
@@ -154,12 +167,6 @@ def _compact_violations_for_repair(violations: list[dict[str, Any]]) -> list[dic
     return [item for item in compact if item.get("missing") or item.get("note")]
 
 
-def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:
-    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
-    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
-    return [store for store in stores if isinstance(store, dict)]
-
-
 def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
@@ -175,65 +182,30 @@ def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
     return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
 
 
-def _compact_store_knowledge(raw: dict[str, Any]) -> dict[str, Any]:
+def _store_scope_summary(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     stores = raw.get("stores") if isinstance(raw.get("stores"), list) else []
-    extras = raw.get("appointment_extra_stores") if isinstance(raw.get("appointment_extra_stores"), list) else []
-    compact_stores = [_compact_store_brief_for_model(store) for store in stores[:260] if isinstance(store, dict)]
-    compact_extras = [_compact_store_brief_for_model(store) for store in extras[:12] if isinstance(store, dict)]
     return {
         "source": raw.get("source"),
         "store_count": raw.get("store_count", len(stores)),
         "snapshot_generated_at": raw.get("snapshot_generated_at"),
         "missing_snapshot_store_ids": raw.get("missing_snapshot_store_ids", []),
-        "regions": _group_store_briefs_by_region(compact_stores),
-        "appointment_extra_stores": compact_extras,
+        "province_counts": _province_counts(stores),
     }
 
 
-def _compact_store_brief_for_model(store: dict[str, Any]) -> dict[str, Any]:
-    brief = {
-        "id": str(store.get("store_id") or "").strip(),
-        "name": str(store.get("store_name") or "").strip(),
-        "province": str(store.get("province") or "").strip(),
-        "city": str(store.get("city") or "").strip(),
-        "district": str(store.get("district") or "").strip(),
-    }
-    return {key: value for key, value in brief.items() if value}
-
-
-def _group_store_briefs_by_region(stores: list[dict[str, Any]]) -> dict[str, Any]:
-    grouped: dict[str, Any] = {}
+def _province_counts(stores: list[Any]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
     for store in stores:
-        city = str(store.get("city") or "未识别城市").strip()
-        district = str(store.get("district") or "未识别区域").strip()
-        grouped.setdefault(city, {}).setdefault(district, []).append(
-            {
-                "id": store.get("id"),
-                "name": store.get("name"),
-            }
-        )
-    return grouped
-
-
-def _compact_sales_talk_reference(raw: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(raw, dict):
-        return {}
-    items = raw.get("items") if isinstance(raw.get("items"), list) else []
-    return {
-        "source": raw.get("source", ""),
-        "query": raw.get("query", ""),
-        "items": [
-            {
-                "document_id": str(item.get("document_id") or item.get("documentId") or ""),
-                "content": str(item.get("content") or "")[:360],
-            }
-            for item in items[:3]
-            if isinstance(item, dict)
-        ],
-        "error": raw.get("error", ""),
-    }
+        if not isinstance(store, dict):
+            continue
+        province = str(store.get("province") or "").strip() or "未识别省份"
+        counts[province] = counts.get(province, 0) + 1
+    return [
+        {"province": province, "store_count": count}
+        for province, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
 
 
 def _drop_empty(value: Any) -> Any:

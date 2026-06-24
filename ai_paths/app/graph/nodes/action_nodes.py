@@ -55,9 +55,15 @@ def create_execute_actions_node(
                     tool_tasks=tool_tasks,
                 )
 
+            if _needs_customer_store_lookup(required_tools):
+                lookup_tool = _planned_tool(required_tools, "customer_store_lookup")
+                result = await _customer_store_lookup(lookup_tool, state, coze_client)
+                tool_results["customer_store_lookup"] = result
+                tool_calls.append({"name": "customer_store_lookup", "input": lookup_tool, "output": result})
+
             if _needs_distance_calculate(required_tools):
                 distance_tool = _planned_tool(required_tools, "distance_calculate")
-                result = await _distance_calculate(distance_tool, state, coze_client)
+                result = await _distance_calculate(distance_tool, state, coze_client, tool_results)
                 tool_results["distance_calculate"] = result
                 tool_calls.append({"name": "distance_calculate", "input": distance_tool, "output": result})
 
@@ -153,7 +159,7 @@ def _queue_planned_tool_tasks(
                 "kb_name": kb_name,
                 "items": [],
                 "error": "planner_tool_rejected",
-                "rejected_reason": "Only kb_search(case_studies) is selectable. sales_talk_qa is preloaded as sales_talk_reference.",
+                "rejected_reason": "Only kb_search(case_studies) is selectable. sales_talk_qa is currently disabled.",
             }
             tool_calls.append(
                 {
@@ -279,6 +285,10 @@ def _needs_distance_calculate(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "distance_calculate" for item in required_tools if isinstance(item, dict))
 
 
+def _needs_customer_store_lookup(required_tools: list[dict[str, Any]]) -> bool:
+    return any(str(item.get("name") or "") == "customer_store_lookup" for item in required_tools if isinstance(item, dict))
+
+
 def _needs_appointment_record_query(required_tools: list[dict[str, Any]]) -> bool:
     return any(
         str(item.get("name") or "") == "appointment_record_query" for item in required_tools if isinstance(item, dict)
@@ -318,10 +328,56 @@ def _appointment_query_from_planner(required_tools: list[dict[str, Any]], state:
     return {"store_id": store_id, "store_name": store_name, "date": date, "missing": missing}
 
 
-async def _distance_calculate(tool: dict[str, Any], state: AgentState, coze_client: CozeClient) -> dict[str, Any]:
+async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_client: CozeClient) -> dict[str, Any]:
+    query = str(tool.get("query") or tool.get("origin") or tool.get("address") or state.get("normalized_content") or "").strip()
+    purpose = str(tool.get("purpose") or "").strip()
+    stores = _customer_scope_stores(state)
+    if not query:
+        return {
+            "status": "missing_query",
+            "query": "",
+            "purpose": purpose,
+            "stores": [],
+            "candidate_stores": [],
+            "candidate_store_count": 0,
+            "error": "missing_query",
+        }
+
+    workflow_id = str(getattr(coze_client.settings, "geocode_workflow_id", "") or "").strip()
+    geocode: dict[str, Any] = {}
+    if workflow_id:
+        geocode = await _geocode_address(coze_client, workflow_id, query)
+
+    candidates = _stores_for_geocode(geocode, stores, purpose)
+    source = "customer_scope_geocode"
+    if not candidates:
+        candidates = _stores_for_text_query(query, stores, purpose)
+        source = "customer_scope_text_match"
+
+    normalized = [_store_lookup_item(store) for store in candidates[:60]]
+    status = "ok" if normalized else "no_match"
+    return {
+        "status": status,
+        "query": query,
+        "purpose": purpose,
+        "source": source,
+        "geocode": {key: geocode.get(key) for key in ("formatted_address", "province", "city", "district", "location") if geocode.get(key)},
+        "stores": normalized[:12],
+        "candidate_stores": normalized,
+        "candidate_store_count": len(normalized),
+        "missing": [] if normalized else ["matched_customer_scope_store"],
+    }
+
+
+async def _distance_calculate(
+    tool: dict[str, Any],
+    state: AgentState,
+    coze_client: CozeClient,
+    tool_results: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or state.get("normalized_content") or "").strip()
     geocode_origin = _normalize_distance_origin_from_store_regions(origin, state)
-    candidates = _distance_candidate_stores(tool, state)
+    candidates = _distance_candidate_stores(tool, state, tool_results or {})
     if not origin:
         return {"status": "missing_origin", "candidate_stores": candidates, "error": "missing_origin"}
     if not candidates:
@@ -393,7 +449,11 @@ async def _distance_calculate(tool: dict[str, Any], state: AgentState, coze_clie
         }
 
 
-def _distance_candidate_stores(tool: dict[str, Any], state: AgentState) -> list[dict[str, Any]]:
+def _distance_candidate_stores(tool: dict[str, Any], state: AgentState, tool_results: dict[str, Any]) -> list[dict[str, Any]]:
+    if str(tool.get("candidate_source") or "").strip() == "customer_store_lookup":
+        lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results, dict) else {}
+        lookup_candidates = lookup.get("candidate_stores") if isinstance(lookup, dict) and isinstance(lookup.get("candidate_stores"), list) else []
+        return [_store_lookup_candidate_for_distance(item) for item in lookup_candidates[:12] if isinstance(item, dict)]
     candidate_ids = tool.get("candidate_store_ids") if isinstance(tool.get("candidate_store_ids"), list) else []
     stores = []
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
@@ -405,6 +465,133 @@ def _distance_candidate_stores(tool: dict[str, Any], state: AgentState) -> list[
             continue
         stores.append(store)
     return stores[:12]
+
+
+def _stores_for_geocode(geocode: dict[str, Any], stores: list[dict[str, Any]], purpose: str) -> list[dict[str, Any]]:
+    if not isinstance(geocode, dict):
+        return []
+    province = str(geocode.get("province") or "").strip()
+    city = str(geocode.get("city") or "").strip()
+    district = str(geocode.get("district") or "").strip()
+    if not any((province, city, district)):
+        return []
+    if purpose == "nearby_candidates" and city:
+        city_matches = [store for store in stores if _region_equal(store.get("city"), city)]
+        if city_matches:
+            return city_matches
+    district_matches = [
+        store
+        for store in stores
+        if (not province or _region_equal(store.get("province"), province))
+        and (not city or _region_equal(store.get("city"), city))
+        and district
+        and _region_equal(store.get("district"), district)
+    ]
+    if district_matches:
+        return district_matches
+    city_matches = [
+        store
+        for store in stores
+        if (not province or _region_equal(store.get("province"), province))
+        and city
+        and _region_equal(store.get("city"), city)
+    ]
+    if city_matches:
+        return city_matches
+    if province:
+        return [store for store in stores if _region_equal(store.get("province"), province)]
+    return []
+
+
+def _stores_for_text_query(query: str, stores: list[dict[str, Any]], purpose: str) -> list[dict[str, Any]]:
+    text = _compact_text(query)
+    if not text:
+        return []
+    scored: list[tuple[int, dict[str, Any]]] = []
+    for store in stores:
+        score = _store_text_match_score(text, store)
+        if score > 0:
+            scored.append((score, store))
+    if not scored:
+        return []
+    scored.sort(key=lambda item: (-item[0], str(item[1].get("store_id") or "")))
+    if purpose == "nearby_candidates":
+        top_city = str(scored[0][1].get("city") or "").strip()
+        if top_city:
+            city_stores = [store for store in stores if _region_equal(store.get("city"), top_city)]
+            if city_stores:
+                return city_stores
+    return [store for _, store in scored]
+
+
+def _store_text_match_score(text: str, store: dict[str, Any]) -> int:
+    score = 0
+    for key, weight in (
+        ("store_name", 8),
+        ("city", 6),
+        ("district", 5),
+        ("province", 4),
+        ("store_address", 3),
+        ("parking_name", 2),
+        ("parking_address", 2),
+    ):
+        value = _compact_text(store.get(key))
+        if value and (value in text or text in value):
+            score += weight
+            continue
+        for token in _region_tokens(str(store.get(key) or "")):
+            compact_token = _compact_text(token)
+            if compact_token and compact_token in text:
+                score += weight
+                break
+    return score
+
+
+def _store_lookup_item(store: dict[str, Any]) -> dict[str, Any]:
+    parking = str(store.get("parking_name") or store.get("parking_address") or "").strip()
+    return {
+        "id": str(store.get("store_id") or "").strip(),
+        "store_id": str(store.get("store_id") or "").strip(),
+        "name": str(store.get("store_name") or "").strip(),
+        "store_name": str(store.get("store_name") or "").strip(),
+        "province": str(store.get("province") or "").strip(),
+        "city": str(store.get("city") or "").strip(),
+        "district": str(store.get("district") or "").strip(),
+        "address": str(store.get("store_address") or "").strip(),
+        "store_address": str(store.get("store_address") or "").strip(),
+        "business_hours": str(store.get("business_hours") or "").strip(),
+        "parking": parking,
+        "parking_name": str(store.get("parking_name") or "").strip(),
+        "parking_address": str(store.get("parking_address") or "").strip(),
+        "map_url": str(store.get("map_url") or "").strip(),
+        "location": str(store.get("location") or "").strip(),
+    }
+
+
+def _store_lookup_candidate_for_distance(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "store_id": str(item.get("store_id") or item.get("id") or "").strip(),
+        "store_name": str(item.get("store_name") or item.get("name") or "").strip(),
+        "province": str(item.get("province") or "").strip(),
+        "city": str(item.get("city") or "").strip(),
+        "district": str(item.get("district") or "").strip(),
+        "store_address": str(item.get("store_address") or item.get("address") or "").strip(),
+        "business_hours": str(item.get("business_hours") or "").strip(),
+        "parking_name": str(item.get("parking_name") or item.get("parking") or "").strip(),
+        "parking_address": str(item.get("parking_address") or "").strip(),
+        "map_url": str(item.get("map_url") or "").strip(),
+        "location": str(item.get("location") or "").strip(),
+    }
+
+
+def _region_equal(left: Any, right: Any) -> bool:
+    left_tokens = {_compact_text(token) for token in _region_tokens(str(left or "")) if _compact_text(token)}
+    right_tokens = {_compact_text(token) for token in _region_tokens(str(right or "")) if _compact_text(token)}
+    return bool(left_tokens & right_tokens)
+
+
+def _compact_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip()).lower()
 
 
 def _normalize_distance_origin_from_store_regions(origin: str, state: AgentState) -> str:

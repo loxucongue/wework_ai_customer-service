@@ -34,17 +34,19 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             structured_facts["tool_errors"].append({"tool": key, "error": str(value.get("error"))[:240]})
             unsupported_claims.append(f"{key} unavailable")
 
-        if key == "store_lookup":
+        if key in {"store_lookup", "customer_store_lookup"}:
             stores = value.get("stores") or []
             structured_facts["store_lookup_status"] = {
                 "query": str(value.get("query") or ""),
                 "city": str(value.get("city") or ""),
+                "purpose": str(value.get("purpose") or ""),
                 "requested_store": str(value.get("requested_store") or ""),
                 "location_preference": str(value.get("location_preference") or ""),
                 "distance_origin": str(value.get("distance_origin") or ""),
                 "distance_lookup_required": bool(value.get("distance_lookup_required")),
                 "recommendation_status": str(value.get("recommendation_status") or ""),
                 "source": str(value.get("source") or ""),
+                "status": str(value.get("status") or ""),
                 "candidate_count": len(stores) if isinstance(stores, list) else 0,
             }
             if value.get("distance_lookup_required"):
@@ -66,7 +68,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 ]
                 names = [item["name"] for item in structured_facts["store_facts"][:3] if item.get("name")]
                 if names:
-                    facts.append(f"store_lookup: matched_stores={', '.join(names)}")
+                    facts.append(f"{key}: matched_stores={', '.join(names)}")
             recommended = value.get("recommended_store") or {}
             if isinstance(recommended, dict) and recommended:
                 structured_facts["recommended_store"] = {
