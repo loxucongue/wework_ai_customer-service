@@ -454,20 +454,14 @@ def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
         warnings: list[Any] = []
         output = append_activity_intro_image([item for item in messages if isinstance(item, dict)], state, warnings)
         if warnings:
-            state.setdefault("errors", []).append(
-                {
-                    "node": "platform_sync_reply",
-                    "message": "activity_intro_image_appended",
-                    "detail": warnings[0].get("detail", {}) if isinstance(warnings[0], dict) else {},
-                }
-            )
+            _append_platform_sync_trace(state, warnings[0] if isinstance(warnings[0], dict) else {})
         return output
     return []
 
 
 def _platform_reply_source(state: AgentState) -> str:
     decision = str(state.get("planner_decision") or "").strip()
-    if not _planner_sync_reply_messages(state):
+    if not state.get("reply_messages"):
         return "planner_no_reply" if decision == "no_reply" else "planner_empty_reply"
     if decision == "no_reply":
         return "planner_no_reply"
@@ -483,6 +477,31 @@ def _sync_return_type(state: AgentState) -> str:
     if source == "planner_direct_reply":
         return "direct_reply"
     return "empty" if not state.get("reply_messages") else "direct_reply"
+
+
+def _append_platform_sync_trace(state: AgentState, warning: dict[str, Any]) -> None:
+    started = time.perf_counter()
+    entry = {
+        "node": "platform_sync_reply",
+        "started_at": utc_now_iso(),
+        "input_snapshot": compact(
+            {
+                "planner_decision": state.get("planner_decision", ""),
+                "planner_sub_rule_id": state.get("planner_sub_rule_id", ""),
+            }
+        ),
+        "tool_calls": [],
+        "error": "",
+        "output_snapshot": compact(
+            {
+                "message": warning.get("message", ""),
+                "detail": warning.get("detail", {}),
+            }
+        ),
+    }
+    entry["finished_at"] = utc_now_iso()
+    entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
+    state.setdefault("trace", []).append(entry)
 
 
 def _preserve_reply_control(state: AgentState, fallback_state: AgentState) -> None:
