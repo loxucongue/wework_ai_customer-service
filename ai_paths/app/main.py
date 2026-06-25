@@ -257,6 +257,7 @@ async def admin_outreach_candidates(
     outreach_status: str = "",
     lifecycle_stage: str = "",
     no_plan_only: bool = False,
+    keyword: str = "",
 ) -> dict[str, Any]:
     return {
         "items": outreach_service.list_candidates(
@@ -265,8 +266,53 @@ async def admin_outreach_candidates(
             outreach_status=outreach_status,
             lifecycle_stage=lifecycle_stage,
             no_plan_only=no_plan_only,
+            keyword=keyword,
         )
     }
+
+
+@app.get("/admin/outreach/sops", dependencies=[Depends(require_api_key)])
+async def admin_outreach_sop_plans(limit: int = 100) -> dict[str, Any]:
+    return {"items": outreach_service.list_sop_plans(limit=limit)}
+
+
+@app.post("/admin/outreach/sops", dependencies=[Depends(require_api_key)])
+async def admin_outreach_create_sop_plan(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        return outreach_service.create_sop_plan(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/admin/outreach/sops/{sop_plan_id}", dependencies=[Depends(require_api_key)])
+async def admin_outreach_update_sop_plan(sop_plan_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        return outreach_service.update_sop_plan(sop_plan_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="SOP plan not found") from exc
+
+
+@app.delete("/admin/outreach/sops/{sop_plan_id}", dependencies=[Depends(require_api_key)])
+async def admin_outreach_delete_sop_plan(sop_plan_id: str) -> dict[str, Any]:
+    if not outreach_service.delete_sop_plan(sop_plan_id):
+        raise HTTPException(status_code=404, detail="SOP plan not found")
+    return {"ok": True, "id": sop_plan_id}
+
+
+@app.post("/admin/outreach/sops/{sop_plan_id}/run", dependencies=[Depends(require_api_key)])
+async def admin_outreach_run_sop_plan(
+    sop_plan_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+) -> dict[str, Any]:
+    payload = payload or {}
+    try:
+        return await outreach_service.run_sop_plan(
+            sop_plan_id,
+            limit=int(payload.get("limit") or 20),
+            activate=bool(payload.get("activate")),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="SOP plan not found") from exc
 
 
 @app.post("/admin/outreach/customers/{customer_id}/refresh-conversation", dependencies=[Depends(require_api_key)])

@@ -13,9 +13,12 @@ import {
   MessageSquareText,
   Pause,
   Play,
+  Plus,
   RefreshCw,
+  Save,
   Search,
   Send,
+  Trash2,
   UserRound,
   XCircle,
 } from "lucide-react";
@@ -120,12 +123,52 @@ type Filters = {
   limit: string;
 };
 
+type SopFilters = {
+  silent_minutes_min: number;
+  lifecycle_stage: string;
+  outreach_status: string;
+  no_plan_only: boolean;
+  keyword: string;
+  business_goal: string;
+  limit: number;
+};
+
+type SopPlan = {
+  id: string;
+  name: string;
+  description?: string;
+  status: string;
+  filters?: Partial<SopFilters>;
+  created_at?: string;
+  updated_at?: string;
+  last_run_at?: string;
+  last_run_summary?: JsonObject;
+  stats?: {
+    total_plans?: number;
+    total_tasks?: number;
+    sent_tasks?: number;
+    pending_tasks?: number;
+    plans?: Record<string, number>;
+    tasks?: Record<string, number>;
+  };
+};
+
 const DEFAULT_FILTERS: Filters = {
   silentMinutesMin: "60",
   lifecycleStage: "",
   outreachStatus: "",
   noPlanOnly: true,
   limit: "50",
+};
+
+const DEFAULT_SOP_FILTERS: SopFilters = {
+  silent_minutes_min: 0,
+  lifecycle_stage: "",
+  outreach_status: "",
+  no_plan_only: true,
+  keyword: "",
+  business_goal: "推进客户支付10元预约金并到店",
+  limit: 20,
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -219,6 +262,35 @@ function boolLabel(value?: boolean) {
   return value ? "允许收款卡" : "仅文本推进";
 }
 
+function sopFilterSummary(filters?: Partial<SopFilters>) {
+  if (!filters) return "不限客群";
+  const parts = [];
+  const silent = Number(filters.silent_minutes_min || 0);
+  parts.push(silent > 0 ? `沉默>${formatSilent(silent)}` : "沉默不限");
+  if (filters.keyword) parts.push(`品项/关键词:${filters.keyword}`);
+  if (filters.lifecycle_stage) parts.push(`阶段:${filters.lifecycle_stage}`);
+  if (filters.outreach_status) parts.push(`计划状态:${statusLabel(filters.outreach_status)}`);
+  if (filters.no_plan_only) parts.push("仅无计划");
+  parts.push(`上限:${filters.limit || 20}`);
+  return parts.join(" · ");
+}
+
+function normalizeSopDraft(plan?: SopPlan) {
+  return {
+    id: plan?.id || "",
+    name: plan?.name || "",
+    description: plan?.description || "",
+    status: plan?.status || "draft",
+    filters: {
+      ...DEFAULT_SOP_FILTERS,
+      ...(plan?.filters || {}),
+      silent_minutes_min: Number(plan?.filters?.silent_minutes_min ?? DEFAULT_SOP_FILTERS.silent_minutes_min),
+      limit: Number(plan?.filters?.limit ?? DEFAULT_SOP_FILTERS.limit),
+      no_plan_only: Boolean(plan?.filters?.no_plan_only ?? DEFAULT_SOP_FILTERS.no_plan_only),
+    },
+  };
+}
+
 function messagePreview(messages?: Array<JsonObject>) {
   if (!messages?.length) return "发送前由模型生成";
   return messages
@@ -269,10 +341,100 @@ export function OutreachWorkbench() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyCustomer, setHistoryCustomer] = useState<Candidate | null>(null);
   const [historyMessages, setHistoryMessages] = useState<ConversationMessage[]>([]);
+  const [sopPlans, setSopPlans] = useState<SopPlan[]>([]);
+  const [sopDraft, setSopDraft] = useState(() => normalizeSopDraft());
+  const [sopPreviewCandidates, setSopPreviewCandidates] = useState<Candidate[]>([]);
 
   const selectedPlan = planDetail?.plan || null;
   const tasks = useMemo(() => planDetail?.tasks || [], [planDetail]);
   const planEvents = useMemo(() => planDetail?.events || [], [planDetail]);
+
+  const loadSopPlans = useCallback(async () => {
+    try {
+      const response = await fetch("/api/outreach/sops?limit=100", { cache: "no-store" });
+      const data = await readJsonResponse(response);
+      if (!response.ok) throw new Error(outreachErrorMessage(data, "加载SOP计划失败"));
+      setSopPlans(Array.isArray(data.items) ? data.items : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const previewSopAudience = useCallback(async () => {
+    setBusy("sop-preview");
+    setError("");
+    setNotice("");
+    const search = new URLSearchParams();
+    search.set("silent_minutes_min", String(sopDraft.filters.silent_minutes_min || 0));
+    search.set("limit", String(sopDraft.filters.limit || 20));
+    if (sopDraft.filters.lifecycle_stage) search.set("lifecycle_stage", sopDraft.filters.lifecycle_stage);
+    if (sopDraft.filters.outreach_status) search.set("outreach_status", sopDraft.filters.outreach_status);
+    if (sopDraft.filters.no_plan_only) search.set("no_plan_only", "true");
+    if (sopDraft.filters.keyword) search.set("keyword", sopDraft.filters.keyword);
+    try {
+      const response = await fetch(`/api/outreach/candidates?${search.toString()}`, { cache: "no-store" });
+      const data = await readJsonResponse(response);
+      if (!response.ok) throw new Error(outreachErrorMessage(data, "预估客群失败"));
+      setSopPreviewCandidates(Array.isArray(data.items) ? data.items : []);
+      setNotice(`已预估 ${Array.isArray(data.items) ? data.items.length : 0} 个候选客户`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy("");
+    }
+  }, [sopDraft.filters]);
+
+  const saveSopPlan = useCallback(async () => {
+    if (!sopDraft.name.trim()) {
+      setError("请先填写SOP计划名称");
+      return;
+    }
+    setBusy("sop-save");
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(sopDraft.id ? `/api/outreach/sops/${encodeURIComponent(sopDraft.id)}` : "/api/outreach/sops", {
+        method: sopDraft.id ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: sopDraft.name,
+          description: sopDraft.description,
+          status: sopDraft.status,
+          filters: sopDraft.filters,
+        }),
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok) throw new Error(outreachErrorMessage(data, "保存SOP计划失败"));
+      setSopDraft(normalizeSopDraft(data as SopPlan));
+      await loadSopPlans();
+      setNotice("SOP计划已保存");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy("");
+    }
+  }, [loadSopPlans, sopDraft]);
+
+  const deleteSopPlan = useCallback(async (plan: SopPlan) => {
+    setBusy(`sop-delete-${plan.id}`);
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch(`/api/outreach/sops/${encodeURIComponent(plan.id)}`, { method: "DELETE" });
+      const data = await readJsonResponse(response);
+      if (!response.ok) throw new Error(outreachErrorMessage(data, "删除SOP计划失败"));
+      if (sopDraft.id === plan.id) {
+        setSopDraft(normalizeSopDraft());
+        setSopPreviewCandidates([]);
+      }
+      await loadSopPlans();
+      setNotice("SOP计划已删除");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy("");
+    }
+  }, [loadSopPlans, sopDraft.id]);
 
   const loadCandidates = useCallback(async () => {
     setLoading(true);
@@ -302,6 +464,31 @@ export function OutreachWorkbench() {
     const data = await response.json();
     if (response.ok) setEvents(Array.isArray(data.items) ? data.items : []);
   }, []);
+
+  const runSopPlan = useCallback(async (plan: SopPlan, activate = false) => {
+    setBusy(activate ? `sop-run-activate-${plan.id}` : `sop-run-${plan.id}`);
+    setError("");
+    setNotice("");
+    try {
+      const limit = Number(plan.filters?.limit || sopDraft.filters.limit || 20);
+      const response = await fetch(`/api/outreach/sops/${encodeURIComponent(plan.id)}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ limit, activate }),
+      });
+      const data = await readJsonResponse(response);
+      if (!response.ok || data.ok === false) throw new Error(outreachErrorMessage(data, "运行SOP计划失败"));
+      await loadSopPlans();
+      await loadCandidates();
+      await loadEvents();
+      const summary = data.summary as JsonObject | undefined;
+      setNotice(`批量生成完成：成功 ${String(summary?.success_count ?? 0)}，失败 ${String(summary?.failed_count ?? 0)}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy("");
+    }
+  }, [loadCandidates, loadEvents, loadSopPlans, sopDraft.filters.limit]);
 
   const loadPlan = useCallback(async (planId: string) => {
     if (!planId) return;
@@ -530,6 +717,7 @@ export function OutreachWorkbench() {
   useEffect(() => {
     loadCandidates();
     loadEvents();
+    loadSopPlans();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -537,7 +725,7 @@ export function OutreachWorkbench() {
   }, [loadPlan, selectedCustomer?.outreach_plan_id]);
 
   return (
-    <main className="h-screen overflow-hidden bg-[#f7f8fb] text-[#171717]">
+    <main className="flex h-screen flex-col overflow-hidden bg-[#f7f8fb] text-[#171717]">
       <header className="flex h-14 items-center justify-between border-b border-zinc-200 bg-white px-5">
         <div className="flex items-center gap-3">
           <Link href="/" className="rounded-md border border-zinc-200 p-2 text-zinc-600 hover:bg-zinc-50" title="返回对话">
@@ -562,7 +750,229 @@ export function OutreachWorkbench() {
         </div>
       </header>
 
-      <section className="grid h-[calc(100vh-56px)] grid-cols-[340px_minmax(520px,1fr)_360px]">
+      <section className="shrink-0 border-b border-zinc-200 bg-white px-5 py-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">客群SOP计划管理</h2>
+            <p className="text-xs text-zinc-500">按客群筛选批量生成主动唤醒计划，并监控计划与任务进度</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setSopDraft(normalizeSopDraft());
+              setSopPreviewCandidates([]);
+            }}
+            className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50"
+          >
+            <Plus className="h-4 w-4" />
+            新增计划
+          </button>
+        </div>
+
+        <div className="grid grid-cols-[minmax(360px,420px)_minmax(0,1fr)] gap-4">
+          <div className="rounded-lg border border-zinc-200 p-3">
+            <div className="grid grid-cols-2 gap-2">
+              <label className="col-span-2 text-xs text-zinc-500">
+                计划名称
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm text-zinc-900"
+                  placeholder="例如 S10沉默客户再激活"
+                  value={sopDraft.name}
+                  onChange={(event) => setSopDraft((prev) => ({ ...prev, name: event.target.value }))}
+                />
+              </label>
+              <label className="text-xs text-zinc-500">
+                沉默时间
+                <select
+                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
+                  value={String(sopDraft.filters.silent_minutes_min)}
+                  onChange={(event) =>
+                    setSopDraft((prev) => ({
+                      ...prev,
+                      filters: { ...prev.filters, silent_minutes_min: Number(event.target.value) },
+                    }))
+                  }
+                >
+                  <option value="0">不限</option>
+                  <option value="60">1小时</option>
+                  <option value="180">3小时</option>
+                  <option value="720">12小时</option>
+                  <option value="1440">24小时</option>
+                  <option value="4320">3天</option>
+                </select>
+              </label>
+              <label className="text-xs text-zinc-500">
+                SOP状态
+                <select
+                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
+                  value={sopDraft.status}
+                  onChange={(event) => setSopDraft((prev) => ({ ...prev, status: event.target.value }))}
+                >
+                  <option value="draft">草稿</option>
+                  <option value="active">启用</option>
+                  <option value="paused">暂停</option>
+                </select>
+              </label>
+              <label className="text-xs text-zinc-500">
+                加微品项/关键词
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  placeholder="例如 S10 / 祛斑 / 地址"
+                  value={sopDraft.filters.keyword}
+                  onChange={(event) =>
+                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, keyword: event.target.value } }))
+                  }
+                />
+              </label>
+              <label className="text-xs text-zinc-500">
+                批量数量
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  value={String(sopDraft.filters.limit)}
+                  onChange={(event) =>
+                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, limit: Number(event.target.value) || 1 } }))
+                  }
+                />
+              </label>
+              <label className="text-xs text-zinc-500">
+                客户阶段
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  placeholder="可为空"
+                  value={sopDraft.filters.lifecycle_stage}
+                  onChange={(event) =>
+                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, lifecycle_stage: event.target.value } }))
+                  }
+                />
+              </label>
+              <label className="text-xs text-zinc-500">
+                单客计划状态
+                <select
+                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
+                  value={sopDraft.filters.outreach_status}
+                  onChange={(event) =>
+                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, outreach_status: event.target.value } }))
+                  }
+                >
+                  <option value="">全部</option>
+                  <option value="none">无计划</option>
+                  <option value="draft">草稿</option>
+                  <option value="active">执行中</option>
+                  <option value="waiting">等待</option>
+                  <option value="paused">暂停</option>
+                </select>
+              </label>
+              <label className="col-span-2 text-xs text-zinc-500">
+                任务目标
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  value={sopDraft.filters.business_goal}
+                  onChange={(event) =>
+                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, business_goal: event.target.value } }))
+                  }
+                />
+              </label>
+              <label className="col-span-2 flex items-center gap-2 text-xs text-zinc-600">
+                <input
+                  type="checkbox"
+                  checked={sopDraft.filters.no_plan_only}
+                  onChange={(event) =>
+                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, no_plan_only: event.target.checked } }))
+                  }
+                />
+                只选择当前无主动唤醒计划的客户
+              </label>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={saveSopPlan}
+                disabled={busy === "sop-save"}
+                className="inline-flex min-w-[92px] items-center justify-center gap-2 rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:cursor-wait disabled:bg-zinc-700"
+              >
+                {busy === "sop-save" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                {busy === "sop-save" ? "保存中" : "保存计划"}
+              </button>
+              <button
+                type="button"
+                onClick={previewSopAudience}
+                disabled={busy === "sop-preview"}
+                className="inline-flex min-w-[92px] items-center justify-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50 disabled:cursor-wait disabled:bg-zinc-50 disabled:text-zinc-500"
+              >
+                {busy === "sop-preview" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                {busy === "sop-preview" ? "预估中" : "预估客群"}
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-zinc-500">当前预估：{sopPreviewCandidates.length} 个客户</p>
+          </div>
+
+          <div className="min-w-0 rounded-lg border border-zinc-200">
+            <div className="grid grid-cols-[1.2fr_1.4fr_0.7fr_0.8fr_220px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium text-zinc-500">
+              <span>计划</span>
+              <span>客群筛选</span>
+              <span>进度</span>
+              <span>最近运行</span>
+              <span className="text-right">操作</span>
+            </div>
+            <div className="max-h-[245px] overflow-y-auto">
+              {sopPlans.length === 0 ? (
+                <div className="p-6 text-center text-sm text-zinc-500">暂无SOP计划</div>
+              ) : (
+                sopPlans.map((plan) => (
+                  <div key={plan.id} className="grid grid-cols-[1.2fr_1.4fr_0.7fr_0.8fr_220px] items-center gap-2 border-b border-zinc-100 px-3 py-3 text-sm last:border-b-0">
+                    <button
+                      type="button"
+                      onClick={() => setSopDraft(normalizeSopDraft(plan))}
+                      className="min-w-0 text-left hover:text-zinc-600"
+                    >
+                      <div className="truncate font-medium">{plan.name}</div>
+                      <div className="truncate text-xs text-zinc-500">{statusLabel(plan.status)} · {plan.description || "无说明"}</div>
+                    </button>
+                    <div className="min-w-0 truncate text-xs text-zinc-600">{sopFilterSummary(plan.filters)}</div>
+                    <div className="text-xs text-zinc-600">
+                      计划 {plan.stats?.total_plans || 0}
+                      <br />
+                      已发 {plan.stats?.sent_tasks || 0}
+                    </div>
+                    <div className="text-xs text-zinc-500">{formatTime(plan.last_run_at)}</div>
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => runSopPlan(plan)}
+                        disabled={busy === `sop-run-${plan.id}`}
+                        className="inline-flex min-w-[76px] items-center justify-center gap-1 rounded-md border border-zinc-200 px-2 py-1.5 text-xs hover:bg-zinc-50 disabled:cursor-wait disabled:bg-zinc-50"
+                      >
+                        {busy === `sop-run-${plan.id}` ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                        生成
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => runSopPlan(plan, true)}
+                        disabled={busy === `sop-run-activate-${plan.id}`}
+                        className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-md bg-zinc-900 px-2 py-1.5 text-xs text-white hover:bg-zinc-800 disabled:cursor-wait disabled:bg-zinc-700"
+                      >
+                        {busy === `sop-run-activate-${plan.id}` ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
+                        生成启用
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteSopPlan(plan)}
+                        disabled={busy === `sop-delete-${plan.id}`}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-200 text-red-600 hover:bg-red-50 disabled:cursor-wait disabled:bg-red-50"
+                        title="删除SOP计划"
+                      >
+                        {busy === `sop-delete-${plan.id}` ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid min-h-0 flex-1 grid-cols-[340px_minmax(520px,1fr)_360px]">
         <aside className="flex min-h-0 flex-col border-r border-zinc-200 bg-white">
           <div className="border-b border-zinc-200 p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-medium">

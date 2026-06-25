@@ -62,6 +62,13 @@ def _list_strings(value: Any) -> list[str]:
     return [_string(item) for item in value if _string(item)]
 
 
+def _int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _task_content_sources(raw_sources: Any, *, should_send_payment_collection: bool) -> list[Any]:
     sources = _list_strings(raw_sources) or ["s10_offer"]
     sources.append({"should_send_payment_collection": bool(should_send_payment_collection)})
@@ -99,14 +106,93 @@ class OutreachService:
         outreach_status: str = "",
         lifecycle_stage: str = "",
         no_plan_only: bool = False,
+        keyword: str = "",
     ) -> list[dict[str, Any]]:
-        return self.repository.list_outreach_candidates(
+        candidates = self.repository.list_outreach_candidates(
             limit=limit,
             silent_minutes_min=silent_minutes_min,
             outreach_status=outreach_status,
             lifecycle_stage=lifecycle_stage,
             no_plan_only=no_plan_only,
         )
+        if not keyword:
+            return candidates
+        return [item for item in candidates if self._candidate_matches_keyword(item, keyword)]
+
+    def list_sop_plans(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        return self.repository.list_outreach_sop_plans(limit=limit)
+
+    def create_sop_plan(self, payload: dict[str, Any]) -> dict[str, Any]:
+        name = _string(payload.get("name"))
+        if not name:
+            raise ValueError("name is required")
+        return self.repository.create_outreach_sop_plan(
+            name=name,
+            description=_string(payload.get("description")),
+            filters=self._normalize_sop_filters(payload.get("filters")),
+            status=_string(payload.get("status")) or "draft",
+        )
+
+    def update_sop_plan(self, sop_plan_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        updated = self.repository.update_outreach_sop_plan(
+            sop_plan_id,
+            name=_string(payload.get("name")) if "name" in payload else None,
+            description=_string(payload.get("description")) if "description" in payload else None,
+            filters=self._normalize_sop_filters(payload.get("filters")) if "filters" in payload else None,
+            status=_string(payload.get("status")) if "status" in payload else None,
+        )
+        if not updated:
+            raise KeyError("sop_plan_not_found")
+        return updated
+
+    def delete_sop_plan(self, sop_plan_id: str) -> bool:
+        return self.repository.delete_outreach_sop_plan(sop_plan_id)
+
+    async def run_sop_plan(self, sop_plan_id: str, *, limit: int = 20, activate: bool = False) -> dict[str, Any]:
+        sop_plan = self.repository.get_outreach_sop_plan(sop_plan_id)
+        if not sop_plan:
+            raise KeyError("sop_plan_not_found")
+        filters = self._normalize_sop_filters(sop_plan.get("filters"))
+        candidates = self._sop_candidates(filters, limit=limit)
+        results: list[dict[str, Any]] = []
+        for candidate in candidates:
+            try:
+                result = await self.generate_plan(
+                    customer_id=str(candidate.get("customer_id") or ""),
+                    corp_id=str(candidate.get("corp_id") or ""),
+                    user_id=str(candidate.get("user_id") or ""),
+                    wechat=str(candidate.get("wechat") or ""),
+                    external_userid=str(candidate.get("external_userid") or candidate.get("customer_id") or ""),
+                    current_stage=str(candidate.get("lifecycle_stage") or ""),
+                    business_goal=str(filters.get("business_goal") or "推进客户支付10元预约金并到店"),
+                    sop_plan_id=sop_plan_id,
+                )
+                plan_id = str((result.get("plan") or {}).get("id") or result.get("id") or "")
+                if activate and plan_id:
+                    self.activate_plan(plan_id)
+                results.append({"customer_id": candidate.get("customer_id"), "ok": True, "plan_id": plan_id})
+            except Exception as exc:
+                results.append(
+                    {
+                        "customer_id": candidate.get("customer_id"),
+                        "ok": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+        summary = {
+            "candidate_count": len(candidates),
+            "success_count": len([item for item in results if item.get("ok")]),
+            "failed_count": len([item for item in results if not item.get("ok")]),
+            "activate": activate,
+            "limit": limit,
+            "results": results,
+        }
+        updated = self.repository.update_outreach_sop_plan(
+            sop_plan_id,
+            last_run_summary=summary,
+            touch_last_run=True,
+        )
+        return {"ok": True, "sop_plan": updated, "summary": summary}
 
     async def refresh_customer_conversation(
         self,
@@ -182,6 +268,7 @@ class OutreachService:
         external_userid: str = "",
         current_stage: str = "",
         business_goal: str = "",
+        sop_plan_id: str = "",
     ) -> dict[str, Any]:
         context = self.repository.recent_customer_context(customer_id)
         memory = context.get("memory") or {}
@@ -197,6 +284,7 @@ class OutreachService:
             "recent_messages": recent_messages,
             "current_stage": current_stage,
             "business_goal": goal,
+            "sop_plan_id": sop_plan_id,
             "offer_context": S10_OUTREACH_CONTEXT,
         }
         response = await self.model_client.chat_json(
@@ -265,6 +353,7 @@ class OutreachService:
                 plan_goal=str(response.get("plan_goal") or ""),
                 source_snapshot=source_snapshot,
                 tasks=tasks[:3],
+                sop_plan_id=sop_plan_id,
             ),
         }
 
@@ -445,6 +534,48 @@ class OutreachService:
     def _plan_customer_id(self, plan_id: str) -> str:
         detail = self.repository.get_outreach_plan(plan_id)
         return str(detail.get("plan", {}).get("customer_id") or "")
+
+    def _sop_candidates(self, filters: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+        query_limit = max(1, min(limit, 100))
+        keyword = _string(filters.get("keyword") or filters.get("project_keyword") or filters.get("add_wechat_item"))
+        return self.list_candidates(
+            limit=query_limit,
+            silent_minutes_min=_int(filters.get("silent_minutes_min"), 0),
+            outreach_status=_string(filters.get("outreach_status")),
+            lifecycle_stage=_string(filters.get("lifecycle_stage")),
+            no_plan_only=_bool(filters.get("no_plan_only")),
+            keyword=keyword,
+        )
+
+    @staticmethod
+    def _normalize_sop_filters(value: Any) -> dict[str, Any]:
+        filters = value if isinstance(value, dict) else {}
+        return {
+            "silent_minutes_min": max(0, _int(filters.get("silent_minutes_min"), 0)),
+            "outreach_status": _string(filters.get("outreach_status")),
+            "lifecycle_stage": _string(filters.get("lifecycle_stage")),
+            "no_plan_only": _bool(filters.get("no_plan_only")),
+            "keyword": _string(filters.get("keyword") or filters.get("project_keyword") or filters.get("add_wechat_item")),
+            "business_goal": _string(filters.get("business_goal")),
+            "limit": max(1, min(_int(filters.get("limit"), 20), 100)),
+        }
+
+    @staticmethod
+    def _candidate_matches_keyword(candidate: dict[str, Any], keyword: str) -> bool:
+        needle = keyword.strip().lower()
+        if not needle:
+            return True
+        parts = [
+            candidate.get("title"),
+            candidate.get("last_customer_message"),
+            candidate.get("latest_event_summary"),
+            candidate.get("lifecycle_stage"),
+        ]
+        for field in ("portrait", "basic_info"):
+            value = candidate.get(field)
+            if isinstance(value, dict):
+                parts.extend(str(item) for item in value.values())
+        return needle in " ".join(_string(part).lower() for part in parts if part is not None)
 
     @staticmethod
     def _conversation_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:

@@ -91,6 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_history_events_type ON history_events(event_type)
 
 CREATE TABLE IF NOT EXISTS outreach_plans (
     id TEXT PRIMARY KEY,
+    sop_plan_id TEXT NOT NULL DEFAULT '',
     customer_id TEXT NOT NULL,
     corp_id TEXT NOT NULL DEFAULT '',
     user_id TEXT NOT NULL DEFAULT '',
@@ -111,6 +112,21 @@ CREATE TABLE IF NOT EXISTS outreach_plans (
 
 CREATE INDEX IF NOT EXISTS idx_outreach_plans_customer_id ON outreach_plans(customer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_outreach_plans_status ON outreach_plans(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_outreach_plans_sop_plan_id ON outreach_plans(sop_plan_id, created_at);
+
+CREATE TABLE IF NOT EXISTS outreach_sop_plans (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft',
+    filters_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_run_at TEXT NOT NULL DEFAULT '',
+    last_run_summary_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_sop_plans_status ON outreach_sop_plans(status, updated_at);
 
 CREATE TABLE IF NOT EXISTS outreach_tasks (
     id TEXT PRIMARY KEY,
