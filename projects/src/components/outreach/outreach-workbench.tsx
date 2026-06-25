@@ -972,8 +972,8 @@ export function OutreachWorkbench() {
         </div>
       </section>
 
-      <section className="grid min-h-[760px] grid-cols-[340px_minmax(520px,1fr)_360px]">
-        <aside className="flex min-h-[760px] flex-col border-r border-zinc-200 bg-white">
+      <section className="grid h-[calc(100vh-96px)] min-h-[620px] max-h-[760px] grid-cols-[340px_minmax(520px,1fr)_360px]">
+        <aside className="flex h-full min-h-0 flex-col border-r border-zinc-200 bg-white">
           <div className="border-b border-zinc-200 p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-medium">
               <Search className="h-4 w-4" />
@@ -1224,7 +1224,7 @@ export function OutreachWorkbench() {
           </div>
         </section>
 
-        <aside className="min-h-0 overflow-y-auto border-l border-zinc-200 bg-white p-4">
+        <aside className="h-full min-h-0 overflow-y-auto border-l border-zinc-200 bg-white p-4">
           <section className="rounded-xl border border-zinc-200 p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <FileText className="h-4 w-4" />
