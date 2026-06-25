@@ -5,9 +5,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from typing import Any
 
-from app.chat_runtime import ChatRuntime
+from app.chat_runtime import ChatRuntime, _planner_sync_reply_messages
 from app.config import Settings
 from app.schemas import ChatRequest
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
@@ -35,6 +36,20 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         second_response = await asyncio.wait_for(second_task, timeout=2)
         self.assertEqual([message.type for message in second_response.reply_messages], ["text"])
         self.assertTrue(any("1. question A" in state["content"] and "2. question B" in state["content"] for state in graph.states))
+
+    async def test_need_tools_sync_reply_is_empty_for_two_thirds_probability(self) -> None:
+        with patch("app.chat_runtime.random.random", return_value=0.2):
+            messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
+
+        self.assertEqual(messages, [])
+
+    async def test_need_tools_sync_reply_can_use_short_random_transition(self) -> None:
+        with patch("app.chat_runtime.random.random", return_value=0.9), patch(
+            "app.chat_runtime.random.choice", return_value="稍等哈"
+        ):
+            messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
+
+        self.assertEqual(messages, [{"type": "text", "order": 1, "content": {"text": "稍等哈"}}])
 
 
 class _SlowPlannerGraph:

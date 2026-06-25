@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import random
 import time
 from contextlib import suppress
 from typing import Any
@@ -482,13 +483,23 @@ class ChatRuntime:
 
 def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
     messages = state.get("planner_reply_messages") if isinstance(state.get("planner_reply_messages"), list) else []
-    if str(state.get("planner_decision") or "") in {"direct_reply", "need_tools"}:
+    decision = str(state.get("planner_decision") or "")
+    if decision == "need_tools":
+        return _random_transition_messages()
+    if decision == "direct_reply":
         warnings: list[Any] = []
         output = append_activity_intro_image([item for item in messages if isinstance(item, dict)], state, warnings)
         if warnings:
             _append_platform_sync_trace(state, warnings[0] if isinstance(warnings[0], dict) else {})
         return output
     return []
+
+
+def _random_transition_messages() -> list[dict[str, Any]]:
+    if random.random() < (2 / 3):
+        return []
+    text = random.choice(("稍等一下哈", "稍等哈", "我先帮您看一下"))
+    return [{"type": "text", "order": 1, "content": {"text": text}}]
 
 
 def _platform_reply_source(state: AgentState) -> str:
