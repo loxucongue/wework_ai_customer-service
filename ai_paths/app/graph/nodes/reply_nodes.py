@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_usage_snapshot
+from app.graph.nodes.reply_validation import validate_reply_consistency
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
@@ -58,6 +59,7 @@ def create_synthesize_reply_node(
                     model_call["usage"] = model_usage_snapshot(model_client)
                     try:
                         messages = validated_model_messages(payload)
+                        validate_reply_consistency(messages, state)
                     except Exception as validation_exc:
                         retry_messages = _reply_retry_messages(model_messages, validation_exc)
                         retry_payload = await model_client.chat_json(retry_messages, tier="reply")
@@ -66,6 +68,7 @@ def create_synthesize_reply_node(
                             "usage": model_usage_snapshot(model_client),
                         }
                         messages = validated_model_messages(retry_payload)
+                        validate_reply_consistency(messages, state)
                     messages = _filter_unsupported_images(messages, state, warnings)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
@@ -105,13 +108,33 @@ def create_synthesize_reply_node(
 
 
 def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> list[dict[str, Any]]:
+    repair_hint = _reply_repair_hint(str(exc))
     retry_instruction = (
         "上一次输出没有通过 JSON schema 校验。"
         f"错误：{type(exc).__name__}: {exc}。"
+        f"{repair_hint}"
         "请只重新输出严格 JSON 对象，顶层必须包含非空 reply_messages 数组；"
         "不要解释错误，不要输出 markdown，不要输出内部分析。"
     )
     return [*messages, {"role": "user", "content": retry_instruction}]
+
+
+def _reply_repair_hint(error: str) -> str:
+    if "payment_collection_required" in error:
+        return "如果文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
+    if "reply_too_similar" in error:
+        return "客户在重复追问同类问题，请换一个角度回答，不要复用上一轮核心话术。"
+    if "two_text_required" in error:
+        return "这条回复同时包含回答和下一步推进，请改成两条短 text：第一条只回答问题，第二条只轻推一个动作。"
+    if "parking_fact_required" in error:
+        return "没有停车工具事实时，不要说有停车场或可以停车，只能说需要核对或询问门店/区域。"
+    if "business_hours_fact_required" in error:
+        return "没有营业时间工具事实时，不要输出具体营业时间。"
+    if "store_address_fact_required" in error:
+        return "没有门店详情事实时，不要输出具体地址。"
+    if "distance_fact_required" in error:
+        return "没有距离工具事实时，不要输出最近、几公里或几分钟。"
+    return ""
 
 
 def _filter_unsupported_images(

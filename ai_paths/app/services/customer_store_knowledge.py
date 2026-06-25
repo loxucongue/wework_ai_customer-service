@@ -20,6 +20,7 @@ class CustomerStoreKnowledgeService:
         self._scope_ids_cache: dict[str, tuple[float, list[str]]] = {}
         self._cache_lock = Lock()
         self._scope_ttl_seconds = 5 * 60
+        self._scope_stale_ttl_seconds = 24 * 60 * 60
 
     def load(
         self,
@@ -83,12 +84,12 @@ class CustomerStoreKnowledgeService:
         scoped_context["platform_customer_id"] = platform_customer_id
         scoped_context["customer_id"] = platform_customer_id
         scoped_context["customer_add_wechat_id"] = customer_add_wechat_id
-        rows, scope_cache_hit, scope_error = self._load_scope_rows(
+        rows, scope_cache_hit, scope_error, scope_cache_status = self._load_scope_rows(
             platform_customer_id=platform_customer_id,
             customer_add_wechat_id=customer_add_wechat_id,
             request_context=scoped_context,
         )
-        if scope_error:
+        if scope_error and not rows:
             return {
                 "source": "platform_agent.store_index_error",
                 "customer_id": platform_customer_id,
@@ -97,7 +98,7 @@ class CustomerStoreKnowledgeService:
                 "appointment_extra_stores": [],
                 "error": scope_error,
                 "request_context": compact_request_context(scoped_context),
-                "cache": {"store_scope_hit": scope_cache_hit},
+                "cache": {"store_scope_hit": scope_cache_hit, "store_scope_status": scope_cache_status},
             }
         if self._store_snapshot_service:
             scoped = self._store_snapshot_service.stores_for_scope(rows, request_context=scoped_context)
@@ -122,7 +123,7 @@ class CustomerStoreKnowledgeService:
         appointment_extra_stores = [self._appointment_extra_store(store_id, scoped_context) for store_id in extra_ids]
 
         return {
-            "source": "platform_agent.store_index+store_snapshot",
+            "source": "platform_agent.store_index_stale_cache+store_snapshot" if scope_error else "platform_agent.store_index+store_snapshot",
             "identity": {
                 "input_customer_id": ctx.get("customer_id"),
                 "platform_customer_id": platform_customer_id,
@@ -136,9 +137,10 @@ class CustomerStoreKnowledgeService:
             "grouped_by_region": grouped_by_region,
             "missing_snapshot_store_ids": missing_snapshot_store_ids,
             **snapshot_meta,
+            "store_scope_error": scope_error,
             "appointment_extra_stores": [item for item in appointment_extra_stores if item.get("store_name")],
             "request_context": compact_request_context(scoped_context),
-            "cache": {"store_scope_hit": scope_cache_hit},
+            "cache": {"store_scope_hit": scope_cache_hit, "store_scope_status": scope_cache_status},
         }
 
     def with_appointment_extra_stores(
@@ -180,11 +182,11 @@ class CustomerStoreKnowledgeService:
         platform_customer_id: str,
         customer_add_wechat_id: str,
         request_context: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], bool, str]:
+    ) -> tuple[list[dict[str, Any]], bool, str, str]:
         key = self._scope_cache_key(platform_customer_id, customer_add_wechat_id, request_context)
         cached_ids = self._get_cached_scope_ids(key)
         if cached_ids is not None:
-            return [{"id": store_id, "store_id": store_id} for store_id in cached_ids], True, ""
+            return [{"id": store_id, "store_id": store_id} for store_id in cached_ids], True, "", "fresh"
         try:
             rows = self._platform_client.list_stores(
                 customer_id=platform_customer_id,
@@ -192,14 +194,22 @@ class CustomerStoreKnowledgeService:
                 request_context=request_context,
             )
         except Exception as exc:
-            return [], False, f"{type(exc).__name__}: {exc}"
+            stale_ids = self._get_stale_cached_scope_ids(key)
+            if stale_ids is not None:
+                return (
+                    [{"id": store_id, "store_id": store_id} for store_id in stale_ids],
+                    True,
+                    f"{type(exc).__name__}: {exc}",
+                    "stale_on_error",
+                )
+            return [], False, f"{type(exc).__name__}: {exc}", "miss"
         ids = [
             str(row.get("id") or row.get("store_id") or "").strip()
             for row in rows
             if isinstance(row, dict) and str(row.get("id") or row.get("store_id") or "").strip()
         ]
         self._set_cached_scope_ids(key, list(dict.fromkeys(ids)))
-        return rows, False, ""
+        return rows, False, "", "refreshed"
 
     def _get_cached_scope_ids(self, key: str) -> list[str] | None:
         if not key:
@@ -211,9 +221,24 @@ class CustomerStoreKnowledgeService:
                 return None
             expires_at, ids = item
             if expires_at <= now:
-                self._scope_ids_cache.pop(key, None)
+                if now > expires_at + self._scope_stale_ttl_seconds:
+                    self._scope_ids_cache.pop(key, None)
                 return None
             return list(ids)
+
+    def _get_stale_cached_scope_ids(self, key: str) -> list[str] | None:
+        if not key:
+            return None
+        now = time.monotonic()
+        with self._cache_lock:
+            item = self._scope_ids_cache.get(key)
+            if not item:
+                return None
+            expires_at, ids = item
+            if now <= expires_at + self._scope_stale_ttl_seconds:
+                return list(ids)
+            self._scope_ids_cache.pop(key, None)
+            return None
 
     def _set_cached_scope_ids(self, key: str, ids: list[str]) -> None:
         if not key:

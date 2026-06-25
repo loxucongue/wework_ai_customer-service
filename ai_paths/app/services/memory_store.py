@@ -11,6 +11,22 @@ from app.config import Settings
 from app.services.storage.repositories import AppRepository
 
 
+def _store_event_facts(store: dict[str, Any], *, request_id: str = "") -> dict[str, Any]:
+    parking = str(store.get("parking") or store.get("parking_name") or store.get("parking_address") or "").strip()
+    return {
+        "store_id": str(store.get("store_id") or store.get("id") or "").strip(),
+        "store_name": str(store.get("store_name") or store.get("name") or "").strip(),
+        "province": str(store.get("province") or "").strip(),
+        "city": str(store.get("city") or "").strip(),
+        "district": str(store.get("district") or "").strip(),
+        "address": str(store.get("store_address") or store.get("address") or "").strip(),
+        "business_hours": str(store.get("business_hours") or "").strip(),
+        "parking": parking,
+        "map_url": str(store.get("map_url") or "").strip(),
+        "request_id": str(request_id or "").strip(),
+    }
+
+
 class CustomerMemoryStore:
     def __init__(self, settings: Settings, repository: AppRepository | None = None):
         self.memory_dir: Path = settings.memory_dir
@@ -118,6 +134,70 @@ class CustomerMemoryStore:
             except Exception:
                 pass
         return {"status": "recorded", "document_ids": clean_ids, "total_sent_case_document_ids": len(portrait["sent_case_document_ids"])}
+
+    def record_store_fact(
+        self,
+        customer_id: str,
+        *,
+        store: dict[str, Any],
+        event_type: str,
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        store_id = str(store.get("store_id") or store.get("id") or "").strip()
+        store_name = str(store.get("store_name") or store.get("name") or "").strip()
+        if not (store_id or store_name):
+            return {"status": "skipped", "reason": "missing_store_identity"}
+        if event_type not in {"store_matched", "store_address_sent"}:
+            event_type = "store_matched"
+
+        facts = _store_event_facts(store, request_id=request_id)
+        data = self.load(customer_id)
+        basic_info = data.setdefault("basic_info", {})
+        if not isinstance(basic_info, dict):
+            basic_info = {}
+            data["basic_info"] = basic_info
+        if facts.get("city"):
+            basic_info["city"] = facts["city"]
+        area_or_landmark = facts.get("district") or facts.get("address")
+        if area_or_landmark:
+            basic_info["area_or_landmark"] = area_or_landmark
+        if facts.get("store_id"):
+            basic_info["preferred_store_id"] = facts["store_id"]
+        if facts.get("store_name"):
+            basic_info["preferred_store_name"] = facts["store_name"]
+
+        now = self._now()
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        events = data.setdefault("history_events", [])
+        if isinstance(events, list):
+            events.append(
+                {
+                    "event_id": f"{event_type}_{facts.get('store_id') or store_name}_{request_id or uuid4()}",
+                    "event_type": event_type,
+                    "created_at": now,
+                    "summary": "已记录客户当前匹配门店" if event_type == "store_matched" else "已发送门店位置卡片",
+                    "facts": facts,
+                    "impact": "后续客户追问位置、地图、导航或刚刚那家时优先继承该门店。",
+                    "confidence": 0.98,
+                }
+            )
+            data["history_events"] = events[-100:]
+
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {
+            "status": "recorded",
+            "event_type": event_type,
+            "store_id": facts.get("store_id", ""),
+            "store_name": facts.get("store_name", ""),
+            "city": facts.get("city", ""),
+        }
 
     def _path(self, customer_id: str) -> Path:
         safe = re.sub(r"[^a-zA-Z0-9_.-]+", "_", customer_id or "unknown")

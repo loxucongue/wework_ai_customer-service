@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.graph.nodes.appointment_utils import extract_date_value, extract_time_value
+from app.graph.nodes.contextual_short_message import is_contextual_short_message
 from app.graph.nodes.store_context import (
     current_real_store_from_state,
     known_city_from_state,
@@ -89,6 +90,8 @@ def is_generic_opening_without_specific_need(content: str) -> bool:
 def should_suppress_profile_memory_for_reply(state: AgentState) -> bool:
     """低信息量开场轮次，不主动带出旧画像、旧项目和旧痛点。"""
     content = str(state.get("normalized_content") or "").strip()
+    if is_contextual_short_message(content):
+        return False
     if has_continuation_reference(content):
         return False
     if is_low_information_content(content):

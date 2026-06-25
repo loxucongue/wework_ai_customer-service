@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import html
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 from app.graph.nodes.common import renumber_messages
+from app.graph.nodes.contextual_short_message import is_contextual_short_message
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "payment_collection", "store_address"}
 ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff", "payment_collection", "store_address"}
@@ -79,8 +81,173 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return renumber_messages(result)
 
 
+def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    _validate_payment_collection_consistency(messages, state)
+    _validate_two_text_rhythm(messages, state)
+    _validate_repeat_similarity(messages, state)
+    _validate_fact_boundaries(messages, state)
+
+
 def debug_message_contents(messages: list[dict[str, Any]]) -> list[str]:
     return [message_content_text(message.get("content"))[:240] for message in messages[:4] if isinstance(message, dict)]
+
+
+def _validate_payment_collection_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if str(state.get("planner_decision") or "") == "no_reply":
+        return
+    has_payment = any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict))
+    text = _combined_text(messages)
+    needs_payment = False
+    if not _explains_previous_payment_entry(text):
+        needs_payment = (
+            str(state.get("conversion_stage") or "") == "deposit_push"
+            or str(state.get("next_step") or "") == "send_deposit"
+            or _promises_payment_entry(text)
+        )
+    if needs_payment and not has_payment:
+        raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
+
+
+def _validate_repeat_similarity(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if any(str(item.get("type") or "") != "text" for item in messages if isinstance(item, dict)):
+        return
+    current_text = _combined_text(messages)
+    if not current_text or _is_price_confirmation_turn(str(state.get("normalized_content") or state.get("content") or "")):
+        return
+    previous = _last_assistant_text(state)
+    if not previous:
+        return
+    ratio = SequenceMatcher(None, previous, current_text).ratio()
+    if ratio > 0.85:
+        raise ValueError("reply_too_similar_to_previous_assistant_message")
+
+
+def _validate_two_text_rhythm(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if str(state.get("planner_decision") or "") != "direct_reply":
+        return
+    if str(state.get("conversion_stage") or "") == "deposit_push" or str(state.get("next_step") or "") == "send_deposit":
+        return
+    if is_contextual_short_message(str(state.get("normalized_content") or state.get("content") or "")):
+        return
+    if any(str(item.get("type") or "") != "text" for item in messages if isinstance(item, dict)):
+        return
+    text_messages = [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") == "text"]
+    if len(text_messages) != 1:
+        return
+    if _looks_like_answer_with_next_step(message_content_text(text_messages[0].get("content"))):
+        raise ValueError("two_text_required_for_answer_with_next_step")
+
+
+def _validate_fact_boundaries(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    text = _combined_text(messages)
+    if not text:
+        return
+    structured = _structured_facts(state)
+    store_facts = structured.get("store_facts") if isinstance(structured.get("store_facts"), list) else []
+    recommended_store = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
+    has_store_detail = bool(store_facts or recommended_store)
+    has_parking = any(
+        isinstance(item, dict) and any(str(item.get(key) or "").strip() for key in ("parking_name", "parking_address", "parking_url", "parking"))
+        for item in store_facts
+    )
+    has_hours = any(
+        isinstance(item, dict) and str(item.get("business_hours") or item.get("hours") or "").strip()
+        for item in store_facts
+    )
+    has_distance = bool(recommended_store.get("distance_km") or recommended_store.get("distance_text")) or recommended_store.get("reason") == "distance_calculate_rank_1"
+    if _asserts_parking(text) and not has_parking:
+        raise ValueError("parking_fact_required")
+    if _asserts_business_hours(text) and not has_hours:
+        raise ValueError("business_hours_fact_required")
+    if _asserts_address(text) and not has_store_detail:
+        raise ValueError("store_address_fact_required")
+    if _asserts_distance(text) and not has_distance:
+        raise ValueError("distance_fact_required")
+
+
+def _combined_text(messages: list[dict[str, Any]]) -> str:
+    return " ".join(
+        message_content_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+
+
+def _last_assistant_text(state: dict[str, Any]) -> str:
+    for item in reversed(state.get("conversation_history") or []):
+        if isinstance(item, dict):
+            role = str(item.get("role") or item.get("direction") or "").lower()
+            if role and role not in {"assistant", "staff", "service", "bot"}:
+                continue
+            content = item.get("content")
+            text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
+            if text:
+                return text
+            continue
+        raw = str(item or "").strip()
+        for prefix in ("小贝:", "小贝：", "客服:", "客服：", "助手:", "助手：", "AI回复:", "AI回复："):
+            if raw.startswith(prefix):
+                return raw[len(prefix) :].strip()
+    return ""
+
+
+def _is_price_confirmation_turn(content: str) -> bool:
+    return any(term in str(content or "") for term in ("多少钱", "价格", "到底", "是不是199", "268", "199"))
+
+
+def _structured_facts(state: dict[str, Any]) -> dict[str, Any]:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts")
+    return structured if isinstance(structured, dict) else {}
+
+
+def _asserts_parking(text: str) -> bool:
+    return any(term in text for term in ("有停车", "可以停车", "能停车", "楼下可停", "停车场"))
+
+
+def _asserts_business_hours(text: str) -> bool:
+    return any(term in text for term in ("营业时间是", "营业时间为", "营业到")) or bool(
+        re.search(r"\d{1,2}[:：]\d{2}\s*[-~到至]\s*\d{1,2}[:：]\d{2}", text)
+    )
+
+
+def _asserts_address(text: str) -> bool:
+    return any(term in text for term in ("地址是", "地址在", "位于", "路", "号")) and any(term in text for term in ("门店", "店", "导航", "地址"))
+
+
+def _asserts_distance(text: str) -> bool:
+    return bool(re.search(r"\d+(?:\.\d+)?\s*(?:公里|km|KM|分钟)", text)) or any(term in text for term in ("最近的是", "离您最近", "距离最近"))
+
+
+def _promises_payment_entry(text: str) -> bool:
+    return any(term in text for term in ("发入口", "重新发", "付款入口", "收款入口", "支付入口", "现在为您发", "马上发您"))
+
+
+def _explains_previous_payment_entry(text: str) -> bool:
+    return any(term in text for term in ("刚刚发的是", "刚才发的是", "前面发的是", "之前发的是"))
+
+
+def _looks_like_answer_with_next_step(text: str) -> bool:
+    value = str(text or "").strip()
+    if len(value) < 18:
+        return False
+    return any(
+        term in value
+        for term in (
+            "您方便",
+            "哪个区",
+            "哪天",
+            "今天还是明天",
+            "上午还是下午",
+            "周六还是周日",
+            "到店看看",
+            "到店看",
+            "帮您看名额",
+            "帮您查",
+            "帮您看看",
+            "我帮您看",
+        )
+    )
 
 
 def message_content_text(content: Any) -> str:

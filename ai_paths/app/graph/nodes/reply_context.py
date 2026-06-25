@@ -4,6 +4,7 @@ from typing import Any
 
 from app.graph.nodes.common import recent_assistant_replies
 from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference, target_time_status
+from app.graph.nodes.contextual_short_message import short_message_context_for_model
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
@@ -37,6 +38,11 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     return {
         "content": state.get("normalized_content"),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-6:],
+        "short_message_context": {} if suppress_profile_memory else short_message_context_for_model(
+            content=str(state.get("normalized_content") or state.get("content") or ""),
+            conversation_history=state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else [],
+            sent_message_summary=sent_message_summary,
+        ),
         "image_info": state.get("image_info", {}),
         "customer_profile": {} if suppress_profile_memory else state.get("customer_profile", {}),
         "customer_basic_info": {} if suppress_profile_memory else state.get("customer_basic_info", {}),
@@ -250,6 +256,8 @@ def _compact_store_knowledge(raw: dict[str, Any]) -> dict[str, Any]:
         "source": raw.get("source"),
         "store_count": raw.get("store_count", len(stores)),
         "snapshot_generated_at": raw.get("snapshot_generated_at"),
+        "store_scope_error": raw.get("store_scope_error") or raw.get("error") or "",
+        "cache": raw.get("cache") if isinstance(raw.get("cache"), dict) else {},
         "missing_snapshot_store_ids": raw.get("missing_snapshot_store_ids", []),
         "province_counts": _province_counts(stores),
     }
@@ -266,4 +274,3 @@ def _province_counts(stores: list[Any]) -> list[dict[str, Any]]:
         {"province": province, "store_count": count}
         for province, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     ]
-

@@ -41,7 +41,7 @@ class StoreAddressMessageTests(unittest.TestCase):
         self.assertEqual([item["type"] for item in reply_messages], ["text", "store_address"])
         self.assertEqual(reply_messages[1]["content"], {"store_id": "467"})
 
-    def test_planner_keeps_model_emitted_store_address_card(self) -> None:
+    def test_planner_requires_lookup_for_model_emitted_store_address_card(self) -> None:
         plan = build_planner_plan_v2(
             {"normalized_content": "渝中这边"},
             {
@@ -56,8 +56,11 @@ class StoreAddressMessageTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text", "store_address"])
-        self.assertEqual(plan["planner_reply_messages"][1]["content"], {"store_id": "467"})
+        self.assertEqual(plan["planner_decision"], "need_tools")
+        self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text"])
+        self.assertEqual(plan["planner_tool_calls"][0]["name"], "customer_store_lookup")
+        self.assertEqual(plan["planner_tool_calls"][0]["purpose"], "detail")
+        self.assertTrue(plan["planner_tool_calls"][0]["query"])
 
 
 if __name__ == "__main__":

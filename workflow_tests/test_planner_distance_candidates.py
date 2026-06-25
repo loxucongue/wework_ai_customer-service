@@ -36,6 +36,35 @@ class PlannerModelOwnershipTests(unittest.TestCase):
         self.assertEqual([tool["name"] for tool in plan["planner_tool_calls"]], ["customer_store_lookup", "distance_calculate"])
         self.assertEqual(plan["planner_tool_calls"][1]["candidate_source"], "customer_store_lookup")
 
+    def test_planner_rejects_nearby_distance_without_city_or_region_query(self) -> None:
+        plan = build_planner_plan_v2(
+            {
+                "normalized_content": "机场附近哪家近",
+                "customer_store_knowledge": {
+                    "stores": [
+                        {"store_id": "227", "store_name": "厦门思明店", "province": "福建省", "city": "厦门市", "district": "思明区"},
+                        {"store_id": "467", "store_name": "重庆渝中店", "province": "重庆市", "city": "重庆市", "district": "渝中区"},
+                    ]
+                },
+            },
+            {
+                "decision": "need_tools",
+                "stage": "S2",
+                "sub_rule_id": "S2_LOCATION_DETAIL",
+                "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+                "tool_calls": [
+                    {"name": "customer_store_lookup", "query": "机场附近", "purpose": "nearby_candidates"},
+                    {"name": "distance_calculate", "origin": "机场附近", "candidate_source": "customer_store_lookup"},
+                ],
+                "handoff": {"needed": False, "reason": ""},
+            },
+        )
+
+        self.assertEqual(
+            [item["missing"] for item in plan["tool_policy_violations"]],
+            ["location_query_missing_city_or_region", "location_query_missing_city_or_region"],
+        )
+
     def test_planner_store_address_without_tool_is_grounded_by_lookup(self) -> None:
         plan = build_planner_plan_v2(
             {
@@ -64,7 +93,7 @@ class PlannerModelOwnershipTests(unittest.TestCase):
         )
 
         self.assertEqual(plan["planner_decision"], "need_tools")
-        self.assertEqual(plan["planner_reply_messages"], [{"type": "text", "order": 1, "content": {"text": "好，我帮您看一下"}}])
+        self.assertEqual(plan["planner_reply_messages"], [{"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}])
         self.assertEqual(plan["planner_tool_calls"], [{"name": "customer_store_lookup", "purpose": "detail", "query": "南昌高新店"}])
 
     def test_planner_preserves_conversion_psychology_fields(self) -> None:

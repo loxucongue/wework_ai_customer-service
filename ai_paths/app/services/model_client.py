@@ -157,7 +157,7 @@ class ModelClient:
             or self._client_timeout != timeout
             or self._client_loop_id != loop_id
         ):
-            connect_timeout = min(3.0, float(timeout))
+            connect_timeout = min(5.0, float(timeout))
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout, connect=connect_timeout),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),

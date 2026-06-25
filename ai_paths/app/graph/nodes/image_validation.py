@@ -12,6 +12,7 @@ def validated_image_info(payload: dict[str, Any], *, has_image: bool) -> dict[st
         "eye_area",
         "face_shape",
         "body_skin",
+        "case_reference",
         "post_treatment",
         "competitor_quote",
         "chat_screenshot",
@@ -26,6 +27,7 @@ def validated_image_info(payload: dict[str, Any], *, has_image: bool) -> dict[st
     }
     allowed_intents = {
         "face_consult",
+        "case_reference",
         "after_sales",
         "competitor_compare",
         "price_inquiry",

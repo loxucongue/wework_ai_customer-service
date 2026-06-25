@@ -55,26 +55,14 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     f"{value.get('distance_origin') or value.get('location_preference') or ''}"
                 )
             if stores:
-                structured_facts["store_facts"] = [
-                    {
-                        "id": str(item.get("id") or item.get("store_id") or ""),
-                        "name": str(item.get("name") or ""),
-                        "address": str(item.get("address") or ""),
-                        "business_hours": str(item.get("business_hours") or item.get("business_hours_text") or ""),
-                        "parking": str(item.get("parking") or item.get("parking_info") or ""),
-                    }
-                    for item in stores[:5]
-                    if isinstance(item, dict)
-                ]
+                structured_facts["store_facts"] = [_store_fact_from_lookup_item(item) for item in stores[:5] if isinstance(item, dict)]
                 names = [item["name"] for item in structured_facts["store_facts"][:3] if item.get("name")]
                 if names:
                     facts.append(f"{key}: matched_stores={', '.join(names)}")
             recommended = value.get("recommended_store") or {}
             if isinstance(recommended, dict) and recommended:
                 structured_facts["recommended_store"] = {
-                    "id": str(recommended.get("id") or recommended.get("store_id") or ""),
-                    "name": str(recommended.get("name") or ""),
-                    "address": str(recommended.get("address") or ""),
+                    **_store_fact_from_lookup_item(recommended),
                     "reason": str(recommended.get("reason") or value.get("recommend_reason") or ""),
                 }
                 facts.append(
@@ -99,13 +87,12 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 candidate_stores = value.get("candidate_stores") if isinstance(value.get("candidate_stores"), list) else []
             structured_facts["store_facts"] = [
                 {
-                    "id": str(item.get("store_id") or ""),
-                    "name": str(item.get("store_name") or ""),
-                    "address": str(item.get("store_address") or ""),
-                    "business_hours": str(item.get("business_hours") or ""),
-                    "parking": str(item.get("parking_name") or item.get("parking_address") or ""),
+                    **_store_fact_from_lookup_item(item),
                     "distance_km": item.get("distance_km"),
+                    "distance_meters": item.get("distance_meters"),
+                    "duration_seconds": item.get("duration_seconds"),
                     "distance_source": str(item.get("distance_source") or ""),
+                    "distance_error": str(item.get("distance_error") or ""),
                 }
                 for item in candidate_stores[:5]
                 if isinstance(item, dict)
@@ -113,9 +100,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             if structured_facts["store_facts"]:
                 top_store = structured_facts["store_facts"][0]
                 structured_facts["recommended_store"] = {
-                    "id": top_store.get("id", ""),
-                    "name": top_store.get("name", ""),
-                    "address": top_store.get("address", ""),
+                    **top_store,
                     "reason": "distance_calculate_rank_1",
                     "distance_km": top_store.get("distance_km"),
                 }
@@ -239,6 +224,31 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "risk_flags": risk_flags[:6],
         "suggested_next_step": "",
         "confidence": 0.9,
+    }
+
+
+def _store_fact_from_lookup_item(item: dict[str, Any]) -> dict[str, Any]:
+    parking_name = str(item.get("parking_name") or "").strip()
+    parking_address = str(item.get("parking_address") or "").strip()
+    parking = str(item.get("parking") or item.get("parking_info") or parking_name or parking_address or "").strip()
+    return {
+        "id": str(item.get("id") or item.get("store_id") or "").strip(),
+        "store_id": str(item.get("store_id") or item.get("id") or "").strip(),
+        "name": str(item.get("name") or item.get("store_name") or "").strip(),
+        "store_name": str(item.get("store_name") or item.get("name") or "").strip(),
+        "province": str(item.get("province") or "").strip(),
+        "city": str(item.get("city") or "").strip(),
+        "district": str(item.get("district") or "").strip(),
+        "address": str(item.get("address") or item.get("store_address") or "").strip(),
+        "store_address": str(item.get("store_address") or item.get("address") or "").strip(),
+        "business_hours": str(item.get("business_hours") or item.get("business_hours_text") or "").strip(),
+        "parking": parking,
+        "parking_name": parking_name,
+        "parking_address": parking_address,
+        "parking_url": str(item.get("parking_url") or "").strip(),
+        "map_url": str(item.get("map_url") or "").strip(),
+        "location": str(item.get("location") or "").strip(),
+        "geocode_formatted_address": str(item.get("geocode_formatted_address") or "").strip(),
     }
 
 

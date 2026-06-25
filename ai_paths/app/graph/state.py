@@ -77,6 +77,7 @@ class AgentState(TypedDict, total=False):
     fact_envelope: dict[str, Any]
     reply_messages: list[dict[str, Any]]
     case_image_send_record: dict[str, Any]
+    store_fact_memory_record: dict[str, Any]
     planner_source: str
     policy_id: str
     policy_family_id: str

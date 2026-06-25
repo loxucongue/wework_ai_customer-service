@@ -245,6 +245,12 @@ class ChatRuntime:
                         customer_id=str(request.customer_id or ""),
                         reply_messages=messages,
                     )
+                    _record_visible_store_facts(
+                        self._memory_store,
+                        final_state,
+                        customer_id=str(request.customer_id or ""),
+                        reply_messages=messages,
+                    )
                 self._save_state(conversation_id, final_state)
             except Exception as exc:
                 error = {"scheduled": True, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
@@ -380,6 +386,12 @@ class ChatRuntime:
                 customer_id=str(request.customer_id or ""),
                 reply_messages=[message.model_dump() for message in reply_messages],
             )
+            _record_visible_store_facts(
+                self._memory_store,
+                final_state,
+                customer_id=str(request.customer_id or ""),
+                reply_messages=[message.model_dump() for message in reply_messages],
+            )
         elif reply_messages:
             final_state["case_image_send_record"] = {
                 "status": "skipped",
@@ -413,6 +425,7 @@ class ChatRuntime:
                 "customer_context_error": final_state.get("customer_context_error"),
                 "customer_store_knowledge": _customer_store_knowledge_meta(final_state.get("customer_store_knowledge")),
                 "case_image_send_record": final_state.get("case_image_send_record", {}),
+                "store_fact_memory_record": final_state.get("store_fact_memory_record", {}),
                 "model_usage": model_usage["calls"],
                 "token_usage": model_usage["summary"],
                 "tool_calls": collect_tool_calls(final_state.get("trace", [])),
@@ -676,6 +689,191 @@ def _append_case_image_trace(state: AgentState, result: dict[str, Any]) -> None:
             }
         ),
         "tool_calls": [{"name": "record_case_images_sent", "output": compact(result)}],
+        "error": result.get("error"),
+        "output_snapshot": compact(result),
+    }
+    entry["finished_at"] = utc_now_iso()
+    entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
+    state.setdefault("trace", []).append(entry)
+
+
+def _record_visible_store_facts(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+    reply_messages: list[dict[str, Any]],
+) -> None:
+    record = _store_fact_record_plan(state, reply_messages)
+    if not memory_store:
+        record["status"] = "skipped"
+        record["reason"] = "memory_store_unavailable"
+        state["store_fact_memory_record"] = record
+        _append_store_fact_trace(state, record)
+        return
+    if not record.get("records"):
+        record["status"] = "skipped"
+        record["reason"] = record.get("reason") or "no_clear_store_fact"
+        state["store_fact_memory_record"] = record
+        _append_store_fact_trace(state, record)
+        return
+    saved_records: list[dict[str, Any]] = []
+    try:
+        for item in record["records"]:
+            if not isinstance(item, dict):
+                continue
+            saved = memory_store.record_store_fact(
+                customer_id,
+                store=item.get("store") if isinstance(item.get("store"), dict) else {},
+                event_type=str(item.get("event_type") or ""),
+                request_id=str(state.get("request_id") or ""),
+            )
+            saved_records.append(saved)
+        record["status"] = "recorded" if any(item.get("status") == "recorded" for item in saved_records) else "skipped"
+        record["saved_records"] = saved_records
+    except Exception as exc:
+        record["status"] = "error"
+        record["error"] = f"{type(exc).__name__}: {exc}"
+    state["store_fact_memory_record"] = record
+    _append_store_fact_trace(state, record)
+
+
+def _store_fact_record_plan(state: AgentState, reply_messages: list[dict[str, Any]]) -> dict[str, Any]:
+    store_address_ids = _store_address_message_ids(reply_messages)
+    records: list[dict[str, Any]] = []
+    missing_store_ids: list[str] = []
+    for store_id in store_address_ids:
+        store = _store_by_id(state, store_id)
+        if store:
+            records.append({"event_type": "store_address_sent", "store": store})
+        else:
+            missing_store_ids.append(store_id)
+    if records:
+        return {
+            "records": records,
+            "store_address_message_ids": store_address_ids,
+            "missing_store_ids": missing_store_ids,
+        }
+
+    matched_store = _clear_matched_store_from_tool_facts(state)
+    if matched_store:
+        return {
+            "records": [{"event_type": "store_matched", "store": matched_store}],
+            "store_address_message_ids": store_address_ids,
+            "missing_store_ids": missing_store_ids,
+        }
+    return {
+        "records": [],
+        "store_address_message_ids": store_address_ids,
+        "missing_store_ids": missing_store_ids,
+    }
+
+
+def _store_address_message_ids(reply_messages: list[dict[str, Any]]) -> list[str]:
+    store_ids: list[str] = []
+    for message in reply_messages:
+        if not isinstance(message, dict) or str(message.get("type") or "") != "store_address":
+            continue
+        content = message.get("content")
+        store_id = str(content.get("store_id") if isinstance(content, dict) else content or "").strip()
+        if store_id and store_id not in store_ids:
+            store_ids.append(store_id)
+    return store_ids
+
+
+def _clear_matched_store_from_tool_facts(state: AgentState) -> dict[str, Any]:
+    structured = _structured_facts_from_state(state)
+    recommended = structured.get("recommended_store") if isinstance(structured, dict) else {}
+    recommended_id = str(recommended.get("id") or recommended.get("store_id") or "").strip() if isinstance(recommended, dict) else ""
+    if recommended_id:
+        hydrated = _store_by_id(state, recommended_id)
+        return hydrated or _normalize_store_record(recommended)
+
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results.get("customer_store_lookup"), dict) else {}
+    if not lookup:
+        return {}
+    candidates = lookup.get("candidate_stores") if isinstance(lookup.get("candidate_stores"), list) else []
+    stores = lookup.get("stores") if isinstance(lookup.get("stores"), list) else []
+    source = candidates or stores
+    if len(source) != 1 or not isinstance(source[0], dict):
+        return {}
+    return _normalize_store_record(source[0])
+
+
+def _store_by_id(state: AgentState, store_id: str) -> dict[str, Any]:
+    target = str(store_id or "").strip()
+    if not target:
+        return {}
+    for store in _iter_store_records(state):
+        normalized = _normalize_store_record(store)
+        if str(normalized.get("store_id") or "") == target:
+            return normalized
+    return {}
+
+
+def _iter_store_records(state: AgentState) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    for key in ("customer_store_lookup", "distance_calculate"):
+        value = tool_results.get(key)
+        if not isinstance(value, dict):
+            continue
+        for list_key in ("stores", "candidate_stores", "ranked_stores"):
+            items = value.get(list_key) if isinstance(value.get(list_key), list) else []
+            records.extend(item for item in items if isinstance(item, dict))
+
+    structured = _structured_facts_from_state(state)
+    if isinstance(structured, dict):
+        recommended = structured.get("recommended_store")
+        if isinstance(recommended, dict):
+            records.append(recommended)
+        store_facts = structured.get("store_facts") if isinstance(structured.get("store_facts"), list) else []
+        records.extend(item for item in store_facts if isinstance(item, dict))
+
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    for list_key in ("stores", "appointment_extra_stores"):
+        items = knowledge.get(list_key) if isinstance(knowledge.get(list_key), list) else []
+        records.extend(item for item in items if isinstance(item, dict))
+    return records
+
+
+def _structured_facts_from_state(state: AgentState) -> dict[str, Any]:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    return structured
+
+
+def _normalize_store_record(store: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(store, dict):
+        return {}
+    return {
+        "store_id": str(store.get("store_id") or store.get("id") or "").strip(),
+        "store_name": str(store.get("store_name") or store.get("name") or "").strip(),
+        "province": str(store.get("province") or "").strip(),
+        "city": str(store.get("city") or "").strip(),
+        "district": str(store.get("district") or "").strip(),
+        "store_address": str(store.get("store_address") or store.get("address") or "").strip(),
+        "business_hours": str(store.get("business_hours") or "").strip(),
+        "parking": str(store.get("parking") or store.get("parking_name") or store.get("parking_address") or "").strip(),
+        "parking_name": str(store.get("parking_name") or "").strip(),
+        "parking_address": str(store.get("parking_address") or "").strip(),
+        "map_url": str(store.get("map_url") or "").strip(),
+    }
+
+
+def _append_store_fact_trace(state: AgentState, result: dict[str, Any]) -> None:
+    started = time.perf_counter()
+    entry = {
+        "node": "store_fact_memory_record",
+        "started_at": utc_now_iso(),
+        "input_snapshot": compact(
+            {
+                "store_address_message_ids": result.get("store_address_message_ids", []),
+                "record_count": len(result.get("records") or []),
+            }
+        ),
+        "tool_calls": [{"name": "record_store_fact", "output": compact(result)}],
         "error": result.get("error"),
         "output_snapshot": compact(result),
     }

@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from app.graph.nodes.common import model_usage_snapshot
+from app.graph.nodes.contextual_short_message import is_contextual_short_message, short_message_context_for_model
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.signals.general import is_low_information_content
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
@@ -56,11 +57,13 @@ async def run_planner_brain_v2(
     plan = build_planner_plan_v2(state, payload)
     initial_usage = model_usage_snapshot(model_client)
     nested_calls: list[dict[str, Any]] = []
-    violations = list(plan.get("tool_policy_violations", []))
-    if violations:
+    for repair_attempt in range(1, 3):
+        violations = list(plan.get("tool_policy_violations", []))
+        if not violations:
+            break
         repair_call: dict[str, Any] = {
             "name": "planner_brain_repair",
-            "input": {"tier": tier, "violations": violations},
+            "input": {"tier": tier, "attempt": repair_attempt, "violations": violations},
         }
         try:
             repaired_payload = await model_client.chat_json(
@@ -89,6 +92,8 @@ async def run_planner_brain_v2(
         except Exception as exc:
             repair_call["error"] = f"{type(exc).__name__}: {exc}"
             repair_call["usage"] = model_usage_snapshot(model_client)
+            nested_calls.append(repair_call)
+            break
         nested_calls.append(repair_call)
     model_call = {
         "name": "planner_brain_v2",
@@ -114,16 +119,22 @@ async def run_planner_brain_v2(
 
 def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
     suppress_memory = _should_suppress_planner_memory(state)
+    sent_message_summary = {} if suppress_memory else sent_message_summary_for_model(state)
     payload = {
         "current_message": state.get("normalized_content") or "",
         "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-10:],
-        "image_info": state.get("image_info") or {},
+        "short_message_context": {} if suppress_memory else short_message_context_for_model(
+            content=str(state.get("normalized_content") or state.get("content") or ""),
+            conversation_history=state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else [],
+            sent_message_summary=sent_message_summary,
+        ),
+        "image_info": _compact_image_info(state.get("image_info") or {}),
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
         "customer_profile": {} if suppress_memory else state.get("customer_profile") or {},
         "history_events": [] if suppress_memory else (state.get("history_events") or [])[-8:],
         "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
         "store_scope_summary": _store_scope_summary(state.get("customer_store_knowledge") or {}),
-        "sent_message_summary": {} if suppress_memory else sent_message_summary_for_model(state),
+        "sent_message_summary": sent_message_summary,
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
     return _drop_empty(payload)
@@ -131,6 +142,8 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
 
 def _should_suppress_planner_memory(state: AgentState) -> bool:
     content = str(state.get("normalized_content") or "").strip()
+    if is_contextual_short_message(content):
+        return False
     if not is_low_information_content(content):
         return False
     return not any(term in content for term in ("刚刚", "刚才", "之前", "上次", "那个", "这家", "继续"))
@@ -182,14 +195,41 @@ def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
     return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
 
 
-def _store_scope_summary(raw: dict[str, Any]) -> dict[str, Any]:
+def _compact_image_info(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
+        return {}
+    has_image = bool(raw.get("has_image"))
+    has_signal = any(
+        raw.get(key) not in (None, "", [], {})
+        for key in ("image_desc", "visible_concerns", "risk_signals", "extracted_text", "text_clues")
+    )
+    if not has_image and not has_signal:
+        return {}
+    keys = (
+        "has_image",
+        "image_type",
+        "image_intent",
+        "body_part",
+        "visible_concerns",
+        "risk_signals",
+        "extracted_text",
+        "text_clues",
+        "image_desc",
+        "confidence",
+    )
+    return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
+
+
+def _store_scope_summary(raw: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(raw, dict) or not raw:
         return {}
     stores = raw.get("stores") if isinstance(raw.get("stores"), list) else []
     return {
         "source": raw.get("source"),
         "store_count": raw.get("store_count", len(stores)),
         "snapshot_generated_at": raw.get("snapshot_generated_at"),
+        "store_scope_error": raw.get("store_scope_error") or raw.get("error") or "",
+        "cache": raw.get("cache") if isinstance(raw.get("cache"), dict) else {},
         "missing_snapshot_store_ids": raw.get("missing_snapshot_store_ids", []),
         "province_counts": _province_counts(stores),
     }
