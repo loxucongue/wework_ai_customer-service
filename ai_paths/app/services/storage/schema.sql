@@ -112,7 +112,6 @@ CREATE TABLE IF NOT EXISTS outreach_plans (
 
 CREATE INDEX IF NOT EXISTS idx_outreach_plans_customer_id ON outreach_plans(customer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_outreach_plans_status ON outreach_plans(status, updated_at);
-CREATE INDEX IF NOT EXISTS idx_outreach_plans_sop_plan_id ON outreach_plans(sop_plan_id, created_at);
 
 CREATE TABLE IF NOT EXISTS outreach_sop_plans (
     id TEXT PRIMARY KEY,
