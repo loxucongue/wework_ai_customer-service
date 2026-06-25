@@ -29,6 +29,11 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(model_names(settings, "planner"), ["qwen-plus", "qwen-plus", "custom-model", "qwen-turbo"])
 
+    def test_reply_uses_qwen_plus_multiple_times_without_turbo(self) -> None:
+        settings = Settings(model_reply="qwen-plus", model_reply_fallbacks="qwen-plus,qwen-plus")
+
+        self.assertEqual(model_names(settings, "reply"), ["qwen-plus", "qwen-plus", "qwen-plus"])
+
     def test_planner_payload_drops_empty_optional_sections(self) -> None:
         payload = _planner_payload_for_model(
             {

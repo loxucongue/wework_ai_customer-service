@@ -123,3 +123,39 @@ def test_reply_validation_allows_available_time_claim_with_slots() -> None:
             }
         },
     )
+
+
+def test_reply_validation_rejects_activity_image_when_case_fact_available() -> None:
+    state = {
+        "planner_sub_rule_id": "S1_CASE_REQUEST",
+        "customer_type": "effect",
+        "main_blocker": "effect",
+        "business_rules": {"offer": {"activity_intro_image_url": "https://example.com/activity.jpg"}},
+        "fact_envelope": {
+            "structured_facts": {
+                "case_facts": [{"document_id": "doc-1", "image_url": "https://example.com/case.jpg"}]
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="case_context_must_not_use_activity_intro_image"):
+        validate_reply_consistency(
+            [{"type": "image", "order": 1, "content": {"url": "https://example.com/activity.jpg"}}],
+            state,
+        )
+
+
+def test_reply_validation_allows_case_image_when_case_fact_available() -> None:
+    validate_reply_consistency(
+        [{"type": "image", "order": 1, "content": {"url": "https://example.com/case.jpg"}}],
+        {
+            "planner_sub_rule_id": "S1_CASE_REQUEST",
+            "customer_type": "effect",
+            "main_blocker": "effect",
+            "business_rules": {"offer": {"activity_intro_image_url": "https://example.com/activity.jpg"}},
+            "fact_envelope": {
+                "structured_facts": {
+                    "case_facts": [{"document_id": "doc-1", "image_url": "https://example.com/case.jpg"}]
+                }
+            },
+        },
+    )

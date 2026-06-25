@@ -54,7 +54,7 @@ def model_names(settings: Settings, tier: ModelTier) -> list[str]:
         fallback_text = settings.model_balanced_fallbacks
     models = [primary, primary] if tier == "planner" else [primary]
     for name in split_models(fallback_text):
-        if name and name not in models:
+        if name:
             models.append(name)
     if tier == "planner" and "qwen-turbo" not in models:
         models.append("qwen-turbo")

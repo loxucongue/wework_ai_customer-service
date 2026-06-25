@@ -137,6 +137,48 @@ class CustomerMemoryStore:
                 pass
         return {"status": "recorded", "document_ids": clean_ids, "total_sent_case_document_ids": len(portrait["sent_case_document_ids"])}
 
+    def record_activity_intro_image_sent(
+        self,
+        customer_id: str,
+        *,
+        image_url: str,
+        request_id: str = "",
+        send_mode: str = "",
+    ) -> dict[str, Any]:
+        clean_url = str(image_url or "").strip()
+        if not clean_url:
+            return {"status": "skipped", "reason": "empty_image_url"}
+        data = self.load(customer_id)
+        now = self._now()
+        data["customer_id"] = customer_id
+        data["updated_at"] = now
+        events = data.setdefault("history_events", [])
+        if isinstance(events, list):
+            event_id = f"activity_intro_image_sent_{request_id or uuid4()}"
+            if not any(isinstance(item, dict) and item.get("event_id") == event_id for item in events):
+                events.append(
+                    {
+                        "event_id": event_id,
+                        "event_type": "activity_intro_image_sent",
+                        "created_at": now,
+                        "summary": "已发送活动宣传图",
+                        "facts": {
+                            "image_url": clean_url,
+                            "request_id": request_id,
+                            "send_mode": send_mode,
+                        },
+                    }
+                )
+            data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "image_url": clean_url}
+
     def record_store_fact(
         self,
         customer_id: str,

@@ -12,7 +12,7 @@ from fastapi import HTTPException, status
 from app.chat_request_context import build_request_context, conversation_id_from_request, conversation_title
 from app.chat_runtime_helpers import failed_state_from_exception, safe_repository_call
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
-from app.graph.nodes.activity_intro_image import append_activity_intro_image
+from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
@@ -248,6 +248,13 @@ class ChatRuntime:
                             customer_id=str(request.customer_id or ""),
                             reply_messages=messages,
                         )
+                        _record_activity_intro_image(
+                            self._memory_store,
+                            final_state,
+                            customer_id=str(request.customer_id or ""),
+                            reply_messages=messages,
+                            send_mode="async",
+                        )
                         _record_visible_store_facts(
                             self._memory_store,
                             final_state,
@@ -390,6 +397,13 @@ class ChatRuntime:
                     final_state,
                     customer_id=str(request.customer_id or ""),
                     reply_messages=[message.model_dump() for message in reply_messages],
+                )
+                _record_activity_intro_image(
+                    self._memory_store,
+                    final_state,
+                    customer_id=str(request.customer_id or ""),
+                    reply_messages=[message.model_dump() for message in reply_messages],
+                    send_mode="sync",
                 )
                 _record_visible_store_facts(
                     self._memory_store,
@@ -699,6 +713,86 @@ def _append_case_image_trace(state: AgentState, result: dict[str, Any]) -> None:
             }
         ),
         "tool_calls": [{"name": "record_case_images_sent", "output": compact(result)}],
+        "error": result.get("error"),
+        "output_snapshot": compact(result),
+    }
+    entry["finished_at"] = utc_now_iso()
+    entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
+    state.setdefault("trace", []).append(entry)
+
+
+def _record_activity_intro_image(
+    memory_store: CustomerMemoryStore | None,
+    state: AgentState,
+    *,
+    customer_id: str,
+    reply_messages: list[dict[str, Any]],
+    send_mode: str,
+) -> None:
+    record = _activity_intro_image_record_plan(state, reply_messages, send_mode=send_mode)
+    if not memory_store:
+        record["status"] = "skipped"
+        record["reason"] = "memory_store_unavailable"
+        state["activity_intro_image_send_record"] = record
+        _append_activity_intro_image_trace(state, record)
+        return
+    if not record.get("image_url"):
+        record["status"] = "skipped"
+        record["reason"] = record.get("reason") or "no_activity_intro_image"
+        state["activity_intro_image_send_record"] = record
+        _append_activity_intro_image_trace(state, record)
+        return
+    try:
+        saved = memory_store.record_activity_intro_image_sent(
+            customer_id,
+            image_url=str(record["image_url"]),
+            request_id=str(state.get("request_id") or ""),
+            send_mode=send_mode,
+        )
+        record.update(saved)
+    except Exception as exc:
+        record["status"] = "error"
+        record["error"] = f"{type(exc).__name__}: {exc}"
+    state["activity_intro_image_send_record"] = record
+    _append_activity_intro_image_trace(state, record)
+
+
+def _activity_intro_image_record_plan(
+    state: AgentState,
+    reply_messages: list[dict[str, Any]],
+    *,
+    send_mode: str,
+) -> dict[str, Any]:
+    target_url = activity_intro_image_url(state)
+    image_urls = [_message_image_url(message) for message in reply_messages if isinstance(message, dict)]
+    image_urls = [url for url in image_urls if url]
+    matched = ""
+    target = _normalize_url(target_url)
+    if target:
+        for image_url in image_urls:
+            if _normalize_url(image_url) == target:
+                matched = image_url
+                break
+    return {
+        "image_url": matched,
+        "activity_intro_image_url": target_url,
+        "image_message_count": len(image_urls),
+        "send_mode": send_mode,
+    }
+
+
+def _append_activity_intro_image_trace(state: AgentState, result: dict[str, Any]) -> None:
+    started = time.perf_counter()
+    entry = {
+        "node": "activity_intro_image_send_record",
+        "started_at": utc_now_iso(),
+        "input_snapshot": compact(
+            {
+                "image_url": result.get("image_url", ""),
+                "send_mode": result.get("send_mode", ""),
+            }
+        ),
+        "tool_calls": [{"name": "record_activity_intro_image_sent", "output": compact(result)}],
         "error": result.get("error"),
         "output_snapshot": compact(result),
     }

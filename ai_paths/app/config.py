@@ -29,13 +29,13 @@ class Settings(BaseSettings):
     model_planner: str = "qwen-plus"
     model_balanced: str = "qwen-plus"
     model_strong: str = "qwen-max"
-    model_reply: str = ""
+    model_reply: str = "qwen-plus"
     model_vision: str = "qwen-vl-plus"
     model_fast_fallbacks: str = "kimi-k2.6,qwen3.6-flash"
     model_planner_fallbacks: str = ""
     model_balanced_fallbacks: str = "kimi-k2.6,qwen3.7-max-2026-05-20,qwen3.6-flash"
     model_strong_fallbacks: str = "qwen3.7-max-2026-05-20,kimi-k2.6,qwen-plus"
-    model_reply_fallbacks: str = ""
+    model_reply_fallbacks: str = "qwen-plus,qwen-plus"
     model_vision_fallbacks: str = ""
     model_timeout_seconds: int = 45
     memory_dir: Path = Path("logs/memory")

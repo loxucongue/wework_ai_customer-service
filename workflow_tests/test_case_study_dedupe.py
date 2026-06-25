@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import unittest
+from tempfile import TemporaryDirectory
 
-from app.chat_runtime import _case_image_send_record
+from app.chat_runtime import _activity_intro_image_record_plan, _case_image_send_record
+from app.config import Settings
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_nodes import _filter_case_studies_by_sent_documents
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
+from app.services.memory_store import CustomerMemoryStore
 
 
 class CaseStudyDedupeTests(unittest.TestCase):
@@ -55,6 +58,32 @@ class CaseStudyDedupeTests(unittest.TestCase):
 
         self.assertEqual(record["document_ids"], ["doc-b"])
         self.assertEqual(record["unmatched_image_urls"], [])
+
+    def test_activity_intro_image_message_maps_to_activity_record(self) -> None:
+        state = {"business_rules": {"offer": {"activity_intro_image_url": "https://example.com/activity.jpg"}}}
+        messages = [{"type": "image", "order": 1, "content": {"url": "https://example.com/activity.jpg"}}]
+
+        record = _activity_intro_image_record_plan(state, messages, send_mode="async")
+
+        self.assertEqual(record["image_url"], "https://example.com/activity.jpg")
+        self.assertEqual(record["send_mode"], "async")
+
+    def test_memory_store_records_activity_intro_image_sent_event(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            store = CustomerMemoryStore(Settings(memory_dir=temp_dir))
+
+            result = store.record_activity_intro_image_sent(
+                "customer-a",
+                image_url="https://example.com/activity.jpg",
+                request_id="request-a",
+                send_mode="async",
+            )
+            memory = store.load("customer-a")
+
+        self.assertEqual(result["status"], "recorded")
+        self.assertEqual(memory["history_events"][0]["event_type"], "activity_intro_image_sent")
+        self.assertEqual(memory["history_events"][0]["facts"]["image_url"], "https://example.com/activity.jpg")
+        self.assertEqual(memory["history_events"][0]["facts"]["send_mode"], "async")
 
     def test_planner_rejects_sales_talk_as_selectable_kb(self) -> None:
         plan = build_planner_plan_v2(

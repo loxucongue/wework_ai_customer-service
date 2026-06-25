@@ -83,6 +83,7 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_payment_collection_consistency(messages, state)
+    _validate_case_image_priority(messages, state)
     _validate_store_address_message_facts(messages, state)
     _validate_appointment_time_facts(messages, state)
     _validate_two_text_rhythm(messages, state)
@@ -108,6 +109,20 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         )
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
+
+
+def _validate_case_image_priority(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if not _is_case_or_effect_turn(state) or not _has_visible_case_image_fact(state):
+        return
+    activity_url = _activity_intro_image_url(state)
+    if not activity_url:
+        return
+    activity_marker = _normalized_image_url(activity_url)
+    for item in messages:
+        if not isinstance(item, dict) or str(item.get("type") or "") != "image":
+            continue
+        if _normalized_image_url(message_content_text(item.get("content"))) == activity_marker:
+            raise ValueError("case_context_must_not_use_activity_intro_image")
 
 
 def _validate_store_address_message_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -204,6 +219,30 @@ def _combined_text(messages: list[dict[str, Any]]) -> str:
         for item in messages
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     )
+
+
+def _is_case_or_effect_turn(state: dict[str, Any]) -> bool:
+    values = " ".join(
+        str(state.get(key) or "")
+        for key in ("planner_sub_rule_id", "customer_type", "main_blocker", "next_step")
+    ).lower()
+    return any(marker in values for marker in ("case", "effect"))
+
+
+def _has_visible_case_image_fact(state: dict[str, Any]) -> bool:
+    structured = _structured_facts(state)
+    case_facts = structured.get("case_facts") if isinstance(structured.get("case_facts"), list) else []
+    return any(isinstance(item, dict) and str(item.get("image_url") or "").strip() for item in case_facts)
+
+
+def _activity_intro_image_url(state: dict[str, Any]) -> str:
+    rules = state.get("business_rules") if isinstance(state.get("business_rules"), dict) else {}
+    offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
+    return str(offer.get("activity_intro_image_url") or "").strip()
+
+
+def _normalized_image_url(value: str) -> str:
+    return html.unescape(str(value or "").strip())
 
 
 def _last_assistant_text(state: dict[str, Any]) -> str:

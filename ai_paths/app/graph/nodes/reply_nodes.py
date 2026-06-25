@@ -122,6 +122,8 @@ def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> lis
 def _reply_repair_hint(error: str) -> str:
     if "payment_collection_required" in error:
         return "如果文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
+    if "case_context_must_not_use_activity_intro_image" in error:
+        return "本轮客户在问效果或案例，且已有 case_facts 案例图片事实。必须回答效果顾虑，并且如输出 image，只能使用 case_facts 里的 image_url；不要输出活动宣传图。"
     if "reply_too_similar" in error:
         return "客户在重复追问同类问题，请换一个角度回答，不要复用上一轮核心话术。"
     if "two_text_required" in error:
