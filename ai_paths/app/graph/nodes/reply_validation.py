@@ -83,6 +83,7 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_payment_collection_consistency(messages, state)
+    _validate_store_address_message_facts(messages, state)
     _validate_two_text_rhythm(messages, state)
     _validate_repeat_similarity(messages, state)
     _validate_fact_boundaries(messages, state)
@@ -106,6 +107,21 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         )
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
+
+
+def _validate_store_address_message_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    store_ids = [
+        message_content_store_id(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
+    ]
+    store_ids = [item for item in store_ids if item]
+    if not store_ids:
+        return
+    allowed_ids = _allowed_store_address_ids(state)
+    missing_ids = [store_id for store_id in store_ids if store_id not in allowed_ids]
+    if missing_ids:
+        raise ValueError("unsupported_store_address_message")
 
 
 def _validate_repeat_similarity(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -199,6 +215,32 @@ def _structured_facts(state: dict[str, Any]) -> dict[str, Any]:
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = fact_envelope.get("structured_facts")
     return structured if isinstance(structured, dict) else {}
+
+
+def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
+    structured = _structured_facts(state)
+    allowed: set[str] = set()
+    for item in structured.get("store_facts") or []:
+        if isinstance(item, dict):
+            _add_store_id(allowed, item)
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        _add_store_id(allowed, recommended)
+    for item in structured.get("appointment_facts") or []:
+        if isinstance(item, dict):
+            _add_store_id(allowed, item)
+    for key in ("confirmed_store_id", "store_id"):
+        value = str(state.get(key) or "").strip()
+        if value and value != "0":
+            allowed.add(value)
+    return allowed
+
+
+def _add_store_id(target: set[str], item: dict[str, Any]) -> None:
+    for key in ("store_id", "id"):
+        value = str(item.get(key) or "").strip()
+        if value and value != "0":
+            target.add(value)
 
 
 def _asserts_parking(text: str) -> bool:

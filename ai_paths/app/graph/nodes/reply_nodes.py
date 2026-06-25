@@ -132,6 +132,8 @@ def _reply_repair_hint(error: str) -> str:
         return "没有营业时间工具事实时，不要输出具体营业时间。"
     if "store_address_fact_required" in error:
         return "没有门店详情事实时，不要输出具体地址。"
+    if "unsupported_store_address_message" in error:
+        return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时，不要输出 store_address，只能用文字说明暂时没查到并继续确认城市、区域或门店。"
     if "distance_fact_required" in error:
         return "没有距离工具事实时，不要输出最近、几公里或几分钟。"
     return ""

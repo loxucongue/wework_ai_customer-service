@@ -79,3 +79,18 @@ def test_reply_validation_rejects_parking_without_fact() -> None:
             [{"type": "text", "order": 1, "content": {"text": "这家楼下可以停车，您直接导航过去。"}}],
             {"fact_envelope": {"structured_facts": {}}},
         )
+
+
+def test_reply_validation_rejects_store_address_without_fact() -> None:
+    with pytest.raises(ValueError, match="unsupported_store_address_message"):
+        validate_reply_consistency(
+            [{"type": "store_address", "order": 1, "content": {"store_id": "467"}}],
+            {"fact_envelope": {"structured_facts": {"store_facts": []}}},
+        )
+
+
+def test_reply_validation_allows_store_address_from_store_fact() -> None:
+    validate_reply_consistency(
+        [{"type": "store_address", "order": 1, "content": {"store_id": "227"}}],
+        {"fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "227", "store_name": "厦门思明店"}]}}},
+    )
