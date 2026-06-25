@@ -94,3 +94,32 @@ def test_reply_validation_allows_store_address_from_store_fact() -> None:
         [{"type": "store_address", "order": 1, "content": {"store_id": "227"}}],
         {"fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "227", "store_name": "厦门思明店"}]}}},
     )
+
+
+def test_reply_validation_rejects_available_time_claim_without_slots() -> None:
+    with pytest.raises(ValueError, match="available_time_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "厦门思明店明天下午有空，您看几点方便？"}}],
+            {
+                "fact_envelope": {
+                    "structured_facts": {
+                        "appointment_facts": [{"type": "available_time", "store": "12", "date": "2026-06-26", "slots": {}}]
+                    }
+                }
+            },
+        )
+
+
+def test_reply_validation_allows_available_time_claim_with_slots() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "厦门思明店明天下午有空，15:30或16:00都可以。"}}],
+        {
+            "fact_envelope": {
+                "structured_facts": {
+                    "appointment_facts": [
+                        {"type": "available_time", "store": "12", "date": "2026-06-26", "slots": {"afternoon": ["15:30", "16:00"]}}
+                    ]
+                }
+            }
+        },
+    )

@@ -136,6 +136,8 @@ def _reply_repair_hint(error: str) -> str:
         return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时，不要输出 store_address，只能用文字说明暂时没查到并继续确认城市、区域或门店。"
     if "distance_fact_required" in error:
         return "没有距离工具事实时，不要输出最近、几公里或几分钟。"
+    if "available_time_fact_required" in error:
+        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。"
     return ""
 
 

@@ -84,6 +84,7 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_payment_collection_consistency(messages, state)
     _validate_store_address_message_facts(messages, state)
+    _validate_appointment_time_facts(messages, state)
     _validate_two_text_rhythm(messages, state)
     _validate_repeat_similarity(messages, state)
     _validate_fact_boundaries(messages, state)
@@ -122,6 +123,22 @@ def _validate_store_address_message_facts(messages: list[dict[str, Any]], state:
     missing_ids = [store_id for store_id in store_ids if store_id not in allowed_ids]
     if missing_ids:
         raise ValueError("unsupported_store_address_message")
+
+
+def _validate_appointment_time_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    text = _combined_text(messages)
+    if not text or not _asserts_time_available(text):
+        return
+    appointment_facts = _structured_facts(state).get("appointment_facts")
+    if not isinstance(appointment_facts, list):
+        return
+    available_time_facts = [
+        item for item in appointment_facts if isinstance(item, dict) and str(item.get("type") or "") == "available_time"
+    ]
+    if not available_time_facts:
+        return
+    if not any(_available_time_fact_supports_availability(item) for item in available_time_facts):
+        raise ValueError("available_time_fact_required")
 
 
 def _validate_repeat_similarity(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -259,6 +276,24 @@ def _asserts_address(text: str) -> bool:
 
 def _asserts_distance(text: str) -> bool:
     return bool(re.search(r"\d+(?:\.\d+)?\s*(?:公里|km|KM|分钟)", text)) or any(term in text for term in ("最近的是", "离您最近", "距离最近"))
+
+
+def _asserts_time_available(text: str) -> bool:
+    return any(term in text for term in ("有空", "有时间", "可以约", "能约", "可以预约", "能预约", "有名额", "有位置"))
+
+
+def _available_time_fact_supports_availability(item: dict[str, Any]) -> bool:
+    if item.get("target_time_available") is True:
+        return True
+    nearby = item.get("nearby_times")
+    if isinstance(nearby, list) and nearby:
+        return True
+    slots = item.get("slots")
+    if isinstance(slots, dict):
+        return any(bool(value) for value in slots.values())
+    if isinstance(slots, list):
+        return bool(slots)
+    return False
 
 
 def _promises_payment_entry(text: str) -> bool:
