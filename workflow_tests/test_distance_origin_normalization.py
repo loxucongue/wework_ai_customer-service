@@ -10,6 +10,7 @@ from app.graph.nodes.action_nodes import (
     _geocode_has_unconflicted_location,
     _normalize_distance_origin_from_store_regions,
     _store_lookup_item,
+    _stores_for_geocode,
     _stores_for_text_query,
 )
 
@@ -144,6 +145,43 @@ class DistanceOriginNormalizationTests(unittest.TestCase):
         )
 
         self.assertEqual([item["store_id"] for item in candidates], ["227", "386"])
+
+    def test_nearby_geocode_prefers_district_matches_before_city_scope(self) -> None:
+        stores = [
+            {
+                "store_id": "528",
+                "store_name": "\u91cd\u5e86\u4e07\u5dde\u4e8c\u5e97",
+                "province": "\u91cd\u5e86\u5e02",
+                "city": "\u91cd\u5e86\u5e02",
+                "district": "\u4e07\u5dde\u533a",
+            },
+            {
+                "store_id": "467",
+                "store_name": "\u91cd\u5e86\u767e\u661f\u6e1d\u4e2d\u5e97",
+                "province": "\u91cd\u5e86\u5e02",
+                "city": "\u91cd\u5e86\u5e02",
+                "district": "\u6e1d\u4e2d\u533a",
+            },
+            {
+                "store_id": "205",
+                "store_name": "\u91cd\u5e86\u4e5d\u9f99\u5761\u5e97",
+                "province": "\u91cd\u5e86\u5e02",
+                "city": "\u91cd\u5e86\u5e02",
+                "district": "\u4e5d\u9f99\u5761\u533a",
+            },
+        ]
+
+        matches = _stores_for_geocode(
+            {
+                "province": "\u91cd\u5e86\u5e02",
+                "city": "\u91cd\u5e86\u5e02",
+                "district": "\u6e1d\u4e2d\u533a",
+            },
+            stores,
+            "nearby_candidates",
+        )
+
+        self.assertEqual([item["store_id"] for item in matches], ["467"])
 
 
 if __name__ == "__main__":

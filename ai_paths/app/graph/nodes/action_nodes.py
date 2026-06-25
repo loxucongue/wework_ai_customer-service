@@ -487,10 +487,6 @@ def _stores_for_geocode(geocode: dict[str, Any], stores: list[dict[str, Any]], p
     district = str(geocode.get("district") or "").strip()
     if not any((province, city, district)):
         return []
-    if purpose == "nearby_candidates" and city:
-        city_matches = [store for store in stores if _region_equal(store.get("city"), city)]
-        if city_matches:
-            return city_matches
     district_matches = [
         store
         for store in stores
