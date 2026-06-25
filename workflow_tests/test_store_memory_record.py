@@ -81,6 +81,15 @@ class StoreMemoryRecordTests(unittest.TestCase):
             self.assertEqual(memory["basic_info"]["preferred_store_id"], "221")
             self.assertEqual(memory["history_events"][-1]["event_type"], "store_matched")
 
+    def test_empty_memory_update_does_not_create_memory_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            memory_store = CustomerMemoryStore(Settings(memory_dir=Path(directory)))
+
+            memory = memory_store.save_update("debug-customer", profile_update={}, event_updates=[])
+
+            self.assertEqual(memory["customer_id"], "debug-customer")
+            self.assertFalse((Path(directory) / "debug-customer.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

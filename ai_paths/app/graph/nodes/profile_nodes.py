@@ -30,13 +30,13 @@ def create_profile_event_extractor_node(
                 "planner_sub_rule_id": state.get("planner_sub_rule_id"),
             },
         ) as span:
-            if state.get("test_isolated"):
+            if state.get("test_isolated") or not _memory_persistence_allowed(state):
                 output = {
                     "profile_update": {},
                     "event_updates": [],
                     "saved_memory": {},
                     "memory_error": None,
-                    "profile_extraction_skipped": "test_isolated",
+                    "profile_extraction_skipped": "test_isolated" if state.get("test_isolated") else "memory_persist_not_allowed",
                     "trace": state.get("trace", []),
                 }
                 span["output_snapshot"] = output
@@ -78,6 +78,11 @@ def create_profile_event_extractor_node(
             return output
 
     return profile_event_extractor
+
+
+def _memory_persistence_allowed(state: AgentState) -> bool:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    return bool(request_context.get("memory_persist_allowed"))
 
 
 async def _profile_update_from_model(state: AgentState, model_client: ModelClient) -> dict[str, Any]:

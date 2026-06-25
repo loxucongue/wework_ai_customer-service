@@ -48,6 +48,7 @@ class ChatRuntime:
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
         request_id = str(uuid4())
         request_context = build_request_context(request)
+        request_context["memory_persist_allowed"] = False
         conversation_id = self._prepare_conversation(request, request_id, request_context)
         initial_state = self._initial_state(request, request_id, request_context)
 
@@ -67,6 +68,7 @@ class ChatRuntime:
     async def run_platform_reply(self, request: ChatRequest, background_tasks: Any | None = None) -> ChatResponse:
         request_id = str(uuid4())
         request_context = build_request_context(request)
+        request_context["memory_persist_allowed"] = True
         conversation_id = self._prepare_conversation(request, request_id, request_context)
         decision = (
             await self._platform_reply_coordinator.begin(request, request_id=request_id, request_context=request_context)
@@ -239,18 +241,19 @@ class ChatRuntime:
                         request_id=f"{final_state.get('request_id')}:async",
                         reply_messages=messages,
                     )
-                    _record_sent_case_images(
-                        self._memory_store,
-                        final_state,
-                        customer_id=str(request.customer_id or ""),
-                        reply_messages=messages,
-                    )
-                    _record_visible_store_facts(
-                        self._memory_store,
-                        final_state,
-                        customer_id=str(request.customer_id or ""),
-                        reply_messages=messages,
-                    )
+                    if _memory_persistence_allowed(final_state):
+                        _record_sent_case_images(
+                            self._memory_store,
+                            final_state,
+                            customer_id=str(request.customer_id or ""),
+                            reply_messages=messages,
+                        )
+                        _record_visible_store_facts(
+                            self._memory_store,
+                            final_state,
+                            customer_id=str(request.customer_id or ""),
+                            reply_messages=messages,
+                        )
                 self._save_state(conversation_id, final_state)
             except Exception as exc:
                 error = {"scheduled": True, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
@@ -323,6 +326,7 @@ class ChatRuntime:
             "appointment_time": request.appointment_time,
             "request_context": request_context,
             "test_isolated": test_isolated,
+            "memory_persist_allowed": bool(request_context.get("memory_persist_allowed")),
             "trace": [],
             "errors": [],
         }
@@ -380,18 +384,19 @@ class ChatRuntime:
                 request_id=request_id,
                 reply_messages=[message.model_dump() for message in reply_messages],
             )
-            _record_sent_case_images(
-                self._memory_store,
-                final_state,
-                customer_id=str(request.customer_id or ""),
-                reply_messages=[message.model_dump() for message in reply_messages],
-            )
-            _record_visible_store_facts(
-                self._memory_store,
-                final_state,
-                customer_id=str(request.customer_id or ""),
-                reply_messages=[message.model_dump() for message in reply_messages],
-            )
+            if _memory_persistence_allowed(final_state):
+                _record_sent_case_images(
+                    self._memory_store,
+                    final_state,
+                    customer_id=str(request.customer_id or ""),
+                    reply_messages=[message.model_dump() for message in reply_messages],
+                )
+                _record_visible_store_facts(
+                    self._memory_store,
+                    final_state,
+                    customer_id=str(request.customer_id or ""),
+                    reply_messages=[message.model_dump() for message in reply_messages],
+                )
         elif reply_messages:
             final_state["case_image_send_record"] = {
                 "status": "skipped",
@@ -544,6 +549,11 @@ def _set_async_final_control(state: AgentState, result: dict[str, Any]) -> None:
         "payload_message_count": result.get("payload_message_count", 0),
     }
     state["reply_control"] = control
+
+
+def _memory_persistence_allowed(state: AgentState) -> bool:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    return bool(request_context.get("memory_persist_allowed"))
 
 
 def _async_superseded_result() -> dict[str, Any]:

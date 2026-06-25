@@ -38,6 +38,7 @@ class AgentState(TypedDict, total=False):
     appointment_time: str | None
     request_context: dict[str, Any]
     test_isolated: bool
+    memory_persist_allowed: bool
 
     normalized_content: str
     image_info: dict[str, Any]

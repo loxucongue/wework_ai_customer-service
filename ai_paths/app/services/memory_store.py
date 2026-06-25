@@ -53,6 +53,8 @@ class CustomerMemoryStore:
         profile_update: dict[str, Any],
         event_updates: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        if not profile_update and not event_updates:
+            return self.load(customer_id)
         data = self.load(customer_id)
         data["customer_id"] = customer_id
         data["updated_at"] = self._now()
