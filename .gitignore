@@ -24,3 +24,11 @@ venv/
 *.zip
 deploy_packages/
 workflow_tests/results/
+.tmp_deploy/
+.tmp_runtime/
+.tmp_*.py
+docs/test-reports/
+docs/planner*.json
+docs/full-flow-debug-*.json
+projects/public/uploads/
+workflow_tests/reports/
