@@ -3,8 +3,8 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   timestamp: number;
-  /** 消息内容类型：text、image、human_handoff、payment_collection 或 store_address */
-  contentType?: "text" | "image" | "human_handoff" | "payment_collection" | "store_address";
+  /** 消息内容类型：text、image、video、human_handoff、payment_collection 或 store_address */
+  contentType?: "text" | "image" | "video" | "human_handoff" | "payment_collection" | "store_address";
   paymentCollection?: {
     amount: number;
     remark: string;

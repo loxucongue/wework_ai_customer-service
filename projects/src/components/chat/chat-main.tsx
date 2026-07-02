@@ -465,7 +465,7 @@ export function ChatMain() {
             const item = sorted[i];
             if (!item.content) continue;
             const contentType =
-              (item.type as "text" | "image" | "human_handoff" | "payment_collection" | "store_address") || "text";
+              (item.type as "text" | "image" | "video" | "human_handoff" | "payment_collection" | "store_address") || "text";
             const paymentCollection =
               contentType === "payment_collection" ? paymentCollectionFromContent(item.content) : undefined;
             const storeAddress = contentType === "store_address" ? storeAddressFromContent(item.content) : undefined;

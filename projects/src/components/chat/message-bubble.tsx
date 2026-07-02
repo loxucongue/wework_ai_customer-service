@@ -68,7 +68,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
         )}
 
         {/* Message bubble */}
-        {message.content && !["image", "payment_collection", "store_address"].includes(message.contentType || "") && (
+        {message.content && !["image", "video", "payment_collection", "store_address"].includes(message.contentType || "") && (
           <div
             className={cn(
               "rounded-2xl px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap",
@@ -129,6 +129,16 @@ export function MessageBubble({ message }: MessageBubbleProps) {
               src={message.content}
               alt="AI回复的图片"
               className="max-h-80 max-w-full object-contain"
+            />
+          </div>
+        )}
+
+        {!isUser && message.contentType === "video" && message.content && (
+          <div className="overflow-hidden rounded-2xl bg-muted p-2">
+            <video
+              src={message.content}
+              controls
+              className="max-h-80 max-w-full rounded object-contain"
             />
           </div>
         )}

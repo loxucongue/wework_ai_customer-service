@@ -131,6 +131,9 @@ def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
     if message_type == "image":
         content = _message_content_value(raw_content, "url")
         return {"type": "image", "order": order, "content": {"url": content}}
+    if message_type == "video":
+        content = _message_content_value(raw_content, "url")
+        return {"type": "video", "order": order, "content": {"url": content}}
     if message_type == "payment_collection":
         return {"type": "payment_collection", "order": order, "content": _payment_collection_content(raw_content)}
     if message_type == "store_address":
