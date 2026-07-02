@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, ArrowLeft, Clock, Database, RefreshCw, Search } from "lucide-react";
+import { AlertCircle, ArrowLeft, Clock, Database, RefreshCw, Search, Send } from "lucide-react";
 
 type JsonValue = unknown;
 
@@ -130,6 +130,13 @@ export function RunLogViewer() {
             >
               <ArrowLeft className="h-4 w-4" />
               返回对话
+            </Link>
+            <Link
+              href="/logs/sop"
+              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50"
+            >
+              <Send className="h-4 w-4" />
+              SOP
             </Link>
             <button
               type="button"

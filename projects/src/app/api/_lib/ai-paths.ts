@@ -44,7 +44,7 @@ type WorkflowCompatibleBody = {
 };
 
 export type AiPathsReplyMessage = {
-  type?: "text" | "image" | "human_handoff" | "payment_collection" | "store_address";
+  type?: "text" | "image" | "video" | "human_handoff" | "payment_collection" | "store_address";
   order?: number;
   content?: string | Record<string, unknown>;
 };
@@ -180,6 +180,32 @@ export async function callAiPathsReplyBackend(body: ChatRequestBody) {
   return callAiPathsBackendPath(body, "/reply", process.env.AI_EXTERNAL_API_KEY || "");
 }
 
+export async function proxyAiPathsSopEventRaw(bodyText: string) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const token = process.env.AI_EXTERNAL_API_KEY || "";
+  const headers: Record<string, string> = { "Content-Type": "application/json; charset=utf-8" };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  try {
+    const response = await fetch(`${apiBase.replace(/\/$/, "")}/sop/events`, {
+      method: "POST",
+      headers,
+      body: Buffer.from(bodyText, "utf8"),
+      cache: "no-store",
+    });
+    const text = await response.text();
+    return new Response(text, {
+      status: response.status,
+      headers: { "Content-Type": response.headers.get("content-type") || "application/json; charset=utf-8" },
+    });
+  } catch (error) {
+    console.error("AI Paths SOP event call failed:", error);
+    return jsonResponse({ code: 500, msg: "Failed to call AI Paths SOP event API", data: { accepted: false } }, 500);
+  }
+}
+
 async function callAiPathsBackendPath(body: ChatRequestBody, path: "/chat" | "/reply", token: string) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const payload = {
@@ -253,6 +279,15 @@ export type AiPathsRunsQuery = {
   has_error?: string;
 };
 
+export type AiPathsSopEventsQuery = {
+  limit?: string;
+  event_type?: string;
+  status?: string;
+  customer_id?: string;
+  external_userid?: string;
+  has_error?: string;
+};
+
 export async function listAiPathsRuns(query: AiPathsRunsQuery) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const headers = aiPathsAuthHeaders();
@@ -276,6 +311,34 @@ export async function getAiPathsRun(requestId: string) {
   const headers = aiPathsAuthHeaders();
 
   return fetch(`${apiBase.replace(/\/$/, "")}/admin/runs/${encodeURIComponent(requestId)}`, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+  });
+}
+
+export async function listAiPathsSopEvents(query: AiPathsSopEventsQuery) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers = aiPathsAuthHeaders();
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value) {
+      search.set(key, value);
+    }
+  }
+
+  return fetch(`${apiBase.replace(/\/$/, "")}/admin/sop-events?${search.toString()}`, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+  });
+}
+
+export async function getAiPathsSopEvent(eventId: string) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers = aiPathsAuthHeaders();
+
+  return fetch(`${apiBase.replace(/\/$/, "")}/admin/sop-events/${encodeURIComponent(eventId)}`, {
     method: "GET",
     headers,
     cache: "no-store",
@@ -500,11 +563,11 @@ function normalizeWorkflowReplyMessages(messages: AiPathsReplyMessage[]) {
           content: storeAddressContent(item.content),
         };
       }
-      const content = replyMessageContent(item, type === "image" ? "url" : "text");
+      const content = replyMessageContent(item, type === "image" || type === "video" ? "url" : "text");
       return {
         type,
         order: item.order || index + 1,
-        content: type === "image" ? { url: content } : { text: content },
+        content: type === "image" || type === "video" ? { url: content } : { text: content },
       };
     });
 }
