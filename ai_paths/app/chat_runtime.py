@@ -20,6 +20,7 @@ from app.schemas import ChatRequest, ChatResponse, ReplyMessage
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
+from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
 
@@ -36,6 +37,8 @@ class ChatRuntime:
         outreach_send_client: OutreachSendClient | None = None,
         memory_store: CustomerMemoryStore | None = None,
         platform_reply_coordinator: PlatformReplyCoordinator | None = None,
+        sop_execution_service: SopExecutionService | None = None,
+        profile_event_extractor: Any | None = None,
     ) -> None:
         self._full_graph = full_graph
         self._planner_graph = planner_graph or full_graph
@@ -45,6 +48,8 @@ class ChatRuntime:
         self._outreach_send_client = outreach_send_client
         self._memory_store = memory_store
         self._platform_reply_coordinator = platform_reply_coordinator
+        self._sop_execution_service = sop_execution_service
+        self._profile_event_extractor = profile_event_extractor
 
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
         request_id = str(uuid4())
@@ -106,6 +111,37 @@ class ChatRuntime:
         if decision and self._platform_reply_coordinator:
             initial_state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
 
+        sop_gate = await self._evaluate_sop_gate(effective_request, request_id, effective_context)
+        initial_state["sop_gate"] = sop_gate
+        _append_sop_gate_trace(initial_state, sop_gate)
+        if sop_gate.get("send_sop"):
+            sop_state = self._sop_reply_state(initial_state, sop_gate)
+            response = self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=sop_state,
+                allow_empty_reply=True,
+            )
+            if sop_gate.get("need_ai_reply"):
+                self._schedule_async_full_ai_and_send(
+                    request=effective_request,
+                    conversation_id=conversation_id,
+                    initial_state=initial_state,
+                    control_record=control_record,
+                    background_tasks=background_tasks,
+                )
+            elif self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            if not sop_gate.get("need_ai_reply"):
+                self._schedule_background_profile_update(
+                    conversation_id=conversation_id,
+                    state=sop_state,
+                    background_tasks=background_tasks,
+                    reason="sop_gate_sync_reply",
+                )
+            return response
+
         try:
             planner_state = await self._run_planner_graph_with_preemption(initial_state, control_record)
         except Exception as exc:
@@ -151,7 +187,46 @@ class ChatRuntime:
             )
         elif self._platform_reply_coordinator:
             await self._platform_reply_coordinator.complete(control_record)
+        if not should_finalize and sync_messages:
+            self._schedule_background_profile_update(
+                conversation_id=conversation_id,
+                state=planner_state,
+                background_tasks=background_tasks,
+                reason="planner_sync_reply",
+            )
         return response
+
+    async def _evaluate_sop_gate(
+        self,
+        request: ChatRequest,
+        request_id: str,
+        request_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self._sop_execution_service:
+            return {"mode": "skipped", "send_sop": False, "reason": "sop_execution_service_missing"}
+        return await self._sop_execution_service.evaluate_chat_gate(
+            request,
+            request_id=request_id,
+            request_context=request_context,
+        )
+
+    @staticmethod
+    def _sop_reply_state(initial_state: AgentState, sop_gate: dict[str, Any]) -> AgentState:
+        state: AgentState = dict(initial_state)
+        messages = sop_gate.get("reply_messages") if isinstance(sop_gate.get("reply_messages"), list) else []
+        state["reply_messages"] = messages
+        state["sync_reply_messages"] = messages
+        state["reply_source"] = "sop_gate"
+        state["planner_decision"] = "direct_reply"
+        state["planner_stage"] = "SOP"
+        state["planner_sub_rule_id"] = str(sop_gate.get("sop_pack_id") or "")
+        state["async_final_reply"] = {
+            "scheduled": bool(sop_gate.get("need_ai_reply")),
+            "status": "scheduled" if sop_gate.get("need_ai_reply") else "not_required",
+            "reason": "sop_gate_requested_ai_reply" if sop_gate.get("need_ai_reply") else "",
+        }
+        _set_sync_return(state, "sop_reply", messages)
+        return state
 
     async def _run_planner_graph_with_preemption(
         self,
@@ -279,6 +354,100 @@ class ChatRuntime:
         else:
             asyncio.create_task(runner())
 
+    def _schedule_async_full_ai_and_send(
+        self,
+        *,
+        request: ChatRequest,
+        conversation_id: str,
+        initial_state: AgentState,
+        control_record: PlatformReplyRecord | None = None,
+        background_tasks: Any | None = None,
+    ) -> None:
+        async def runner() -> None:
+            async_state: AgentState = dict(initial_state)
+            async_state["trace"] = list(initial_state.get("trace") or [])
+            async_state["errors"] = list(initial_state.get("errors") or [])
+            async_context = dict(async_state.get("request_context") if isinstance(async_state.get("request_context"), dict) else {})
+            async_context["skip_sop_gate"] = True
+            async_context["async_origin"] = "sop_gate_ai_reply"
+            async_state["request_context"] = async_context
+            try:
+                if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                    skipped = _async_superseded_result()
+                    async_state["async_final_reply"] = skipped
+                    _set_async_final_control(async_state, skipped)
+                    _append_async_send_trace(async_state, skipped)
+                    self._save_state(conversation_id, async_state)
+                    return
+                final_state: AgentState = await self._full_graph.ainvoke(async_state)
+                _preserve_reply_control(final_state, initial_state)
+                messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
+                if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                    skipped = {**_async_superseded_result(), "reply_messages": messages}
+                    final_state["async_final_reply"] = skipped
+                    _set_async_final_control(final_state, skipped)
+                    _append_async_send_trace(final_state, skipped)
+                    self._save_state(conversation_id, final_state)
+                    return
+                if not messages:
+                    final_state["async_final_reply"] = {
+                        "scheduled": True,
+                        "status": "skipped",
+                        "reason": "empty_full_ai_reply_messages",
+                    }
+                    _set_async_final_control(final_state, final_state["async_final_reply"])
+                    _append_async_send_trace(final_state, final_state["async_final_reply"])
+                    self._save_state(conversation_id, final_state)
+                    return
+                send_result = await self._send_async_reply(request, final_state, messages)
+                send_result["reply_messages"] = messages
+                final_state["async_final_reply"] = send_result
+                _set_async_final_control(final_state, send_result)
+                _append_async_send_trace(final_state, send_result)
+                if send_result.get("status") == "sent" and not bool(final_state.get("test_isolated")):
+                    safe_repository_call(
+                        self._repository.add_assistant_message,
+                        conversation_id=conversation_id,
+                        request_id=f"{final_state.get('request_id')}:sop_async",
+                        reply_messages=messages,
+                    )
+                    if _memory_persistence_allowed(final_state):
+                        _record_sent_case_images(
+                            self._memory_store,
+                            final_state,
+                            customer_id=str(request.customer_id or ""),
+                            reply_messages=messages,
+                        )
+                        _record_activity_intro_image(
+                            self._memory_store,
+                            final_state,
+                            customer_id=str(request.customer_id or ""),
+                            reply_messages=messages,
+                            send_mode="async",
+                        )
+                        _record_visible_store_facts(
+                            self._memory_store,
+                            final_state,
+                            customer_id=str(request.customer_id or ""),
+                            reply_messages=messages,
+                        )
+                self._save_state(conversation_id, final_state)
+            except Exception as exc:
+                error = {"scheduled": True, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
+                async_state["async_final_reply"] = error
+                _set_async_final_control(async_state, error)
+                async_state.setdefault("errors", []).append({"node": "sop_gate_async_ai_reply", "message": "sop_gate_async_ai_failed", "detail": error["error"]})
+                _append_async_send_trace(async_state, error)
+                self._save_state(conversation_id, async_state)
+            finally:
+                if self._platform_reply_coordinator:
+                    await self._platform_reply_coordinator.complete(control_record)
+
+        if background_tasks is not None:
+            background_tasks.add_task(runner)
+        else:
+            asyncio.create_task(runner())
+
     async def _send_async_reply(self, request: ChatRequest, final_state: AgentState, messages: list[dict[str, Any]]) -> dict[str, Any]:
         if not self._outreach_send_client:
             return {"scheduled": True, "status": "skipped", "reason": "outreach_send_client_missing"}
@@ -294,6 +463,63 @@ class ChatRuntime:
         )
         result["scheduled"] = True
         return result
+
+    def _schedule_background_profile_update(
+        self,
+        *,
+        conversation_id: str,
+        state: AgentState,
+        background_tasks: Any | None = None,
+        reason: str,
+    ) -> None:
+        if not self._profile_event_extractor:
+            return
+        if bool(state.get("test_isolated")) or not _memory_persistence_allowed(state):
+            return
+
+        async def runner() -> None:
+            profile_state: AgentState = dict(state)
+            profile_state["trace"] = list(state.get("trace") or [])
+            profile_state.setdefault("background_profile_update", {})["scheduled_reason"] = reason
+            try:
+                output = await self._profile_event_extractor(profile_state)
+                if isinstance(output, dict):
+                    profile_state.update(
+                        {
+                            "profile_update": output.get("profile_update", {}),
+                            "event_updates": output.get("event_updates", []),
+                            "saved_memory": output.get("saved_memory", {}),
+                            "memory_error": output.get("memory_error"),
+                            "background_profile_update": {
+                                "scheduled_reason": reason,
+                                "status": "completed",
+                                "profile_update": output.get("profile_update", {}),
+                                "event_updates": output.get("event_updates", []),
+                                "saved_memory": output.get("saved_memory", {}),
+                                "memory_error": output.get("memory_error"),
+                            },
+                        }
+                    )
+                self._save_state(conversation_id, profile_state)
+            except Exception as exc:
+                profile_state["background_profile_update"] = {
+                    "scheduled_reason": reason,
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+                profile_state.setdefault("errors", []).append(
+                    {
+                        "node": "background_profile_update",
+                        "message": "background_profile_update_failed",
+                        "detail": profile_state["background_profile_update"]["error"],
+                    }
+                )
+                self._save_state(conversation_id, profile_state)
+
+        if background_tasks is not None:
+            background_tasks.add_task(runner)
+        else:
+            asyncio.create_task(runner())
 
     def _prepare_conversation(self, request: ChatRequest, request_id: str, request_context: dict[str, Any]) -> str:
         conversation_id = conversation_id_from_request(request, request_context)
@@ -467,6 +693,7 @@ class ChatRuntime:
                 "postprocess_reasons": final_state.get("postprocess_reasons", []),
                 "async_final_reply": final_state.get("async_final_reply", {}),
                 "reply_control": final_state.get("reply_control", {}),
+                "sop_gate": final_state.get("sop_gate", {}),
                 "conversation_id": conversation_id,
             },
         )
@@ -487,6 +714,19 @@ def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
     if decision == "need_tools":
         return _random_transition_messages()
     if decision == "direct_reply":
+        violations = state.get("tool_policy_violations") if isinstance(state.get("tool_policy_violations"), list) else []
+        if violations:
+            _append_platform_sync_trace(
+                state,
+                {
+                    "message": "planner_direct_reply_rejected",
+                    "detail": {
+                        "reason": "tool_policy_violations",
+                        "violations": violations[:5],
+                    },
+                },
+            )
+            return []
         warnings: list[Any] = []
         output = append_activity_intro_image([item for item in messages if isinstance(item, dict)], state, warnings)
         if warnings:
@@ -544,6 +784,41 @@ def _append_platform_sync_trace(state: AgentState, warning: dict[str, Any]) -> N
     }
     entry["finished_at"] = utc_now_iso()
     entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
+    state.setdefault("trace", []).append(entry)
+
+
+def _append_sop_gate_trace(state: AgentState, result: dict[str, Any]) -> None:
+    started = time.perf_counter()
+    entry = {
+        "node": "sop_gate",
+        "started_at": utc_now_iso(),
+        "input_snapshot": compact(
+            {
+                "content": state.get("content", ""),
+                "customer_id": state.get("customer_id", ""),
+                "external_userid": state.get("external_userid", ""),
+                "skip_sop_gate": (state.get("request_context") or {}).get("skip_sop_gate")
+                if isinstance(state.get("request_context"), dict)
+                else False,
+            }
+        ),
+        "tool_calls": [],
+        "error": result.get("error", ""),
+        "output_snapshot": compact(
+            {
+                "mode": result.get("mode", ""),
+                "send_sop": result.get("send_sop", False),
+                "sop_pack_id": result.get("sop_pack_id", ""),
+                "need_ai_reply": result.get("need_ai_reply", False),
+                "unfinished_count": result.get("unfinished_count", 0),
+                "reason": result.get("reason", ""),
+                "model_usage": result.get("model_usage", {}),
+                "task": result.get("task", {}),
+            }
+        ),
+    }
+    entry["finished_at"] = utc_now_iso()
+    entry["duration_ms"] = int(result.get("duration_ms") or ((time.perf_counter() - started) * 1000))
     state.setdefault("trace", []).append(entry)
 
 

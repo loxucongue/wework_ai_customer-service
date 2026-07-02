@@ -17,9 +17,12 @@ from app.services.outreach_send_client import OutreachSendClient
 from app.services.outreach_system_client import OutreachSystemClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
 from app.services.platform_agent_client import PlatformAgentClient
+from app.services.sop_event_service import SopEventService
+from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository, SQLiteStore
 from app.services.store_service import StoreService
 from app.services.store_snapshot_service import StoreSnapshotService
+from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.trace_logger import TraceLogger
 from app.services.workflow_compat import (
     normalize_workflow_request,
@@ -42,6 +45,18 @@ customer_context_service = CustomerContextService(platform_agent_client)
 store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
 customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_client, store_snapshot_service)
 store_service = StoreService(platform_agent_client)
+sop_reply_pack_service = SopReplyPackService(settings)
+sop_execution_service = SopExecutionService(
+    repository=repository,
+    sop_reply_pack_service=sop_reply_pack_service,
+    model_client=model_client,
+)
+sop_event_service = SopEventService(
+    repository=repository,
+    sop_reply_pack_service=sop_reply_pack_service,
+    outreach_send_client=outreach_send_client,
+    sop_execution_service=sop_execution_service,
+)
 reply_graphs = build_reply_graphs(
     coze_client,
     trace_logger,
@@ -61,6 +76,8 @@ chat_runtime = ChatRuntime(
     outreach_send_client=outreach_send_client,
     memory_store=memory_store,
     platform_reply_coordinator=platform_reply_coordinator,
+    sop_execution_service=sop_execution_service,
+    profile_event_extractor=reply_graphs.profile_event_extractor,
 )
 outreach_service = OutreachService(
     repository=repository,
@@ -137,6 +154,70 @@ async def admin_refresh_store_snapshot() -> dict[str, Any]:
         "store_count": snapshot.get("store_count", 0),
         "refresh_error": snapshot.get("refresh_error", ""),
     }
+
+
+@app.get("/admin/sop-reply-packs", dependencies=[Depends(require_api_key)])
+async def admin_sop_reply_packs() -> dict[str, Any]:
+    return sop_reply_pack_service.load()
+
+
+@app.put("/admin/sop-reply-packs", dependencies=[Depends(require_api_key)])
+async def admin_update_sop_reply_packs(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        return sop_reply_pack_service.save(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/admin/sop-reply-packs/event-first-add-templates", dependencies=[Depends(require_api_key)])
+async def admin_append_event_first_add_templates() -> dict[str, Any]:
+    try:
+        return sop_reply_pack_service.append_missing_event_first_add_templates()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/admin/sop-events", dependencies=[Depends(require_api_key)])
+async def admin_sop_events(
+    limit: int = 50,
+    event_type: str = "",
+    status: str = "",
+    customer_id: str = "",
+    external_userid: str = "",
+    has_error: str = "",
+    include_chat_gate: bool = False,
+) -> dict[str, Any]:
+    return {
+        "items": repository.list_sop_events(
+            limit=limit,
+            event_type=event_type,
+            status=status,
+            customer_id=customer_id,
+            external_userid=external_userid,
+            has_error=has_error,
+            include_chat_gate=include_chat_gate,
+        )
+    }
+
+
+@app.get("/admin/sop-events/{event_id:path}", dependencies=[Depends(require_api_key)])
+async def admin_sop_event_detail(event_id: str) -> dict[str, Any]:
+    detail = repository.get_sop_event_detail(event_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="SOP event not found")
+    return detail
+
+
+@app.post("/sop/events", dependencies=[Depends(require_external_api_key)])
+async def sop_events(
+    background_tasks: BackgroundTasks,
+    payload: dict[str, Any] = Body(...),
+) -> JSONResponse:
+    try:
+        result = await sop_event_service.accept_event(payload, background_tasks=background_tasks)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"code": 400, "msg": str(exc), "data": {"accepted": False}})
+    return JSONResponse(content={"code": 0, "msg": "ok", "data": result})
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -224,6 +305,28 @@ async def admin_customer_memory(customer_id: str) -> dict[str, Any]:
 async def admin_clear_customer_memory(customer_id: str) -> dict[str, Any]:
     memory_store.clear(customer_id)
     return {"status": "ok", "customer_id": customer_id}
+
+
+@app.get("/admin/customer-records", dependencies=[Depends(require_api_key)])
+async def admin_customer_records(customer_id: str) -> dict[str, Any]:
+    customer = str(customer_id or "").strip()
+    if not customer:
+        raise HTTPException(status_code=400, detail="customer_id is required")
+    return repository.inspect_customer_records(customer)
+
+
+@app.post("/admin/customer-records/clear", dependencies=[Depends(require_api_key)])
+async def admin_clear_customer_records(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    customer = str(payload.get("customer_id") or "").strip()
+    if not customer:
+        raise HTTPException(status_code=400, detail="customer_id is required")
+    return repository.clear_customer_records(
+        customer,
+        clear_memory=bool(payload.get("clear_memory", True)),
+        clear_sop=bool(payload.get("clear_sop", True)),
+        clear_conversations=bool(payload.get("clear_conversations", False)),
+        clear_outreach=bool(payload.get("clear_outreach", False)),
+    )
 
 
 @app.get("/admin/runs/{request_id}", dependencies=[Depends(require_api_key)])

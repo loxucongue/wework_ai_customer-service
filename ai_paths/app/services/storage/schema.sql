@@ -166,4 +166,47 @@ CREATE TABLE IF NOT EXISTS outreach_events (
 CREATE INDEX IF NOT EXISTS idx_outreach_events_plan_id ON outreach_events(plan_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_outreach_events_customer_id ON outreach_events(customer_id, created_at);
 
+CREATE TABLE IF NOT EXISTS sop_events (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    request_reply INTEGER NOT NULL DEFAULT 0,
+    upstream_created_at TEXT NOT NULL DEFAULT '',
+    raw_payload_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'accepted',
+    error TEXT NOT NULL DEFAULT '',
+    received_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sop_events_type ON sop_events(event_type, received_at);
+CREATE INDEX IF NOT EXISTS idx_sop_events_status ON sop_events(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS sop_send_tasks (
+    id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    customer_id TEXT NOT NULL DEFAULT '',
+    external_userid TEXT NOT NULL DEFAULT '',
+    corp_id TEXT NOT NULL DEFAULT '',
+    user_id TEXT NOT NULL DEFAULT '',
+    wechat TEXT NOT NULL DEFAULT '',
+    sop_pack_id TEXT NOT NULL DEFAULT '',
+    sop_pack_name TEXT NOT NULL DEFAULT '',
+    sop_category TEXT NOT NULL DEFAULT '',
+    trigger_source TEXT NOT NULL DEFAULT '',
+    reply_messages_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'pending',
+    send_payload_json TEXT NOT NULL DEFAULT '{}',
+    send_response_json TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    sent_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(event_id) REFERENCES sop_events(event_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_event_id ON sop_send_tasks(event_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_customer ON sop_send_tasks(customer_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_pack ON sop_send_tasks(sop_pack_id, status, created_at);
 

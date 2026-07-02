@@ -70,15 +70,79 @@ class OutreachSendClient:
                 "payload_message_count": len(reply_messages),
                 "send_payload": payload,
             }
-        response.raise_for_status()
-        try:
-            data = response.json()
-        except ValueError:
-            data = {"raw": response.text}
+        data = _response_body(response)
+        if response.status_code >= 400:
+            return {
+                "status": "failed",
+                "error": f"http_status:{response.status_code}",
+                "payload_message_count": len(reply_messages),
+                "send_payload": payload,
+                "response": {
+                    "http_status": response.status_code,
+                    "body": data,
+                    "text": response.text[:2000],
+                },
+            }
         return {
             "status": "sent",
             "payload_message_count": len(reply_messages),
             "send_payload": payload,
+            "response": data,
+        }
+
+    async def fetch_conversation(
+        self,
+        *,
+        corp_id: str,
+        customer_id: str,
+        external_userid: str,
+        user_id: str,
+        wechat: str,
+        limit: int = 30,
+    ) -> dict[str, Any]:
+        if not self.available:
+            return {"status": "skipped", "reason": "outreach_send_not_configured"}
+        params = {
+            "corp_id": str(corp_id or "").strip(),
+            "customer_id": str(customer_id or external_userid or "").strip(),
+            "external_userid": str(external_userid or customer_id or "").strip(),
+            "user_id": str(user_id or "").strip(),
+            "wechat": str(wechat or "").strip(),
+            "limit": str(max(1, min(int(limit or 30), 50))),
+        }
+        missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not params.get(key)]
+        if missing:
+            return {"status": "skipped", "reason": "missing_required_fields", "missing": missing, "request": params}
+
+        try:
+            response = await self._http_client().get(
+                urljoin(self._base_url, "api/v1/platform-agent/ai-outreach/conversation"),
+                params=params,
+                headers={"X-Agent-Token": self._token},
+            )
+        except httpx.TimeoutException as exc:
+            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "request": params}
+        except httpx.HTTPError as exc:
+            return {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "request": params}
+
+        data = _response_body(response)
+        if response.status_code >= 400:
+            return {
+                "status": "failed",
+                "error": f"http_status:{response.status_code}",
+                "request": params,
+                "response": {
+                    "http_status": response.status_code,
+                    "body": data,
+                    "text": response.text[:2000],
+                },
+            }
+        messages = _conversation_messages(data)
+        return {
+            "status": "ok",
+            "request": params,
+            "message_count": len(messages),
+            "messages": messages,
             "response": data,
         }
 
@@ -113,3 +177,18 @@ class OutreachSendClient:
             "task_id": f"ai-paths-final-reply-{request_id}",
             "reply_messages": reply_messages,
         }
+
+
+def _response_body(response: httpx.Response) -> dict[str, Any] | list[Any] | str:
+    try:
+        return response.json()
+    except ValueError:
+        return response.text[:2000]
+
+
+def _conversation_messages(payload: dict[str, Any] | list[Any] | str) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    messages = data.get("messages") if isinstance(data, dict) else []
+    return [item for item in messages if isinstance(item, dict)] if isinstance(messages, list) else []

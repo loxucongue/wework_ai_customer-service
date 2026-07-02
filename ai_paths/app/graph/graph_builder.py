@@ -35,6 +35,7 @@ class ReplyGraphs:
     full_graph: Any
     planner_graph: Any
     finalize_graph: Any
+    profile_event_extractor: Any | None = None
 
 
 def _schedule_background_profile_extraction(profile_event_extractor, state: AgentState) -> None:
@@ -91,6 +92,7 @@ def build_reply_graphs(
         full_graph=_compile_full_graph(nodes),
         planner_graph=_compile_planner_graph(nodes),
         finalize_graph=_compile_finalize_graph(nodes),
+        profile_event_extractor=nodes.get("profile_event_extractor"),
     )
 
 
@@ -134,6 +136,7 @@ def _build_nodes(
     profile_event_extractor = create_profile_event_extractor_node(
         trace_logger=trace_logger,
         memory_store=memory_store,
+        model_client=model_client,
         compact_memory=_compact_memory,
     )
 
@@ -152,6 +155,7 @@ def _build_nodes(
         "planner_brain": planner_brain,
         "execute_actions": execute_actions,
         "synthesize_reply": synthesize_reply,
+        "profile_event_extractor": profile_event_extractor,
     }
 
 

@@ -20,6 +20,7 @@ class SQLiteStore:
             conn.executescript(schema)
             self._ensure_customer_memory_columns(conn)
             self._ensure_outreach_plan_columns(conn)
+            self._ensure_sop_send_task_columns(conn)
 
     @staticmethod
     def _ensure_customer_memory_columns(conn: sqlite3.Connection) -> None:
@@ -53,6 +54,21 @@ class SQLiteStore:
             if name not in existing:
                 conn.execute(f"ALTER TABLE outreach_plans ADD COLUMN {name} {definition}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_outreach_plans_sop_plan_id ON outreach_plans(sop_plan_id, created_at)")
+
+    @staticmethod
+    def _ensure_sop_send_task_columns(conn: sqlite3.Connection) -> None:
+        existing = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(sop_send_tasks)").fetchall()
+        }
+        columns = {
+            "trigger_source": "TEXT NOT NULL DEFAULT ''",
+            "sop_category": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE sop_send_tasks ADD COLUMN {name} {definition}")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_category ON sop_send_tasks(sop_category, status, created_at)")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
