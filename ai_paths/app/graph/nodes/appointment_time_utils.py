@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any
 
 
@@ -39,10 +40,10 @@ def _append_time_values(result: list[str], value: Any) -> None:
 
 
 def normalize_time_text(value: str) -> str:
-    text = str(value or "").strip()
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
     if not text:
         return ""
-    exact = re.search(r"\b(\d{1,2})[:：](\d{2})\b", text)
+    exact = re.search(r"(?<!\d)(\d{1,2})[:：.](\d{2})(?!\d)", text)
     if exact:
         return f"{int(exact.group(1)):02d}:{exact.group(2)}"
 
@@ -79,12 +80,13 @@ def target_time_status(slots: dict[str, Any], target_time: str, query: str = "")
 def filter_times_by_preference(times: list[str], content: str) -> list[str]:
     if not times:
         return []
-    exact_times = re.findall(r"\b\d{1,2}:\d{2}\b", content)
+    normalized_content = unicodedata.normalize("NFKC", str(content or ""))
+    exact_times = re.findall(r"\b\d{1,2}:\d{2}\b", normalized_content)
     if exact_times:
         exact = {time if len(time.split(":", 1)[0]) == 2 else f"0{time}" for time in exact_times}
         return [time for time in times if time in exact]
 
-    normalized = normalize_time_text(content)
+    normalized = normalize_time_text(normalized_content)
     if normalized:
         return [time for time in times if time == normalized]
 
@@ -94,15 +96,51 @@ def filter_times_by_preference(times: list[str], content: str) -> list[str]:
         except (ValueError, IndexError):
             return -1
 
-    if "上午" in content or "早上" in content:
+    if "上午" in normalized_content or "早上" in normalized_content:
         return [time for time in times if 0 <= hour_of(time) < 12]
-    if "中午" in content:
+    if "中午" in normalized_content:
         return [time for time in times if 11 <= hour_of(time) < 14]
-    if "下午" in content:
-        return [time for time in times if 12 <= hour_of(time) < 18]
-    if "晚上" in content or "6点后" in content or "六点后" in content:
+    if "下午" in normalized_content:
+        return [time for time in times if 13 <= hour_of(time) < 18]
+    if "晚上" in normalized_content or "6点后" in normalized_content or "六点后" in normalized_content:
         return [time for time in times if hour_of(time) >= 18]
     return times
+
+
+def summarize_available_slots(slots: dict[str, Any], content: str, *, target_time: str = "") -> dict[str, Any]:
+    values = available_time_values(slots)
+    status = target_time_status(slots, target_time, content)
+    target = str(status.get("target_time") or "").strip()
+    target_available = status.get("target_time_available")
+    nearby = [str(item) for item in (status.get("nearby_times") or []) if str(item or "").strip()]
+    preference = _time_preference(content)
+    preferred = filter_times_by_preference(values, content)
+    if not preferred and not preference:
+        preferred = values
+
+    recommended = ""
+    backups: list[str] = []
+    if target and target_available is True:
+        recommended = target
+        backups = [time for time in preferred if time != target][:1]
+    elif target and target_available is False:
+        recommended = nearby[0] if nearby else (preferred[0] if preferred else "")
+        backups = [time for time in nearby[1:] if time != recommended][:1]
+        if not backups:
+            backups = [time for time in preferred if time != recommended][:1]
+    else:
+        recommended = preferred[0] if preferred else ""
+        backups = [time for time in preferred[1:] if time != recommended][:1]
+
+    return {
+        "recommended_slot": recommended,
+        "backup_slots": backups,
+        "slot_count": len(values),
+        "preference": preference,
+        "target_time": target,
+        "target_time_available": target_available,
+        "nearby_times": nearby[:2],
+    }
 
 
 def _nearby_times(times: list[str], target: str, *, max_items: int = 5) -> list[str]:
@@ -116,6 +154,21 @@ def _nearby_times(times: list[str], target: str, *, max_items: int = 5) -> list[
             continue
         ranked.append((abs(minutes - target_minutes), time))
     return [time for _, time in sorted(ranked)[:max_items]]
+
+
+def _time_preference(content: str) -> str:
+    text = str(content or "")
+    if "上午" in text or "早上" in text:
+        return "morning"
+    if "中午" in text:
+        return "noon"
+    if "下午" in text:
+        return "afternoon"
+    if "晚上" in text or "6点后" in text or "六点后" in text:
+        return "evening"
+    if normalize_time_text(text):
+        return "specific_time"
+    return ""
 
 
 def _minutes(value: str) -> int | None:

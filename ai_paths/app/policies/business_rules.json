@@ -5,6 +5,22 @@
     "style": "短、直、肯定、有推进，贴近微信短聊",
     "goal": "先承接客户当前问题，再建立信任，最后推进到门店检测、预约和10元预约金报名"
   },
+  "brand_trust_policy": {
+    "goal": "客户问店名、品牌、是否正规、会不会被骗时，用连锁实力和费用透明建立信任，不硬报不确定门店名。",
+    "allowed_points": [
+      "集团连锁门店",
+      "全国300多家门店",
+      "主要做斑点和皮肤管理",
+      "到店路线、门店定位和费用会提前发清楚",
+      "认可再做，费用透明"
+    ],
+    "forbidden_points": [
+      "不输出企微主体名",
+      "不输出戴伊科技",
+      "不编具体门店名",
+      "没有门店工具事实时不说具体门店招牌"
+    ]
+  },
   "offer": {
     "internal_scope": "S10",
     "public_names": ["周年庆淡斑活动", "淡斑活动", "斑点改善"],
@@ -15,7 +31,7 @@
     "includes": ["淡斑", "检测皮肤", "基础清洁", "肌肤补水"],
     "quota": "限30名，名额满恢复原价1980",
     "payment_message_type": "payment_collection",
-    "activity_intro_image_url": "http://47.252.81.104/assets/activity/anniversary-268.jpg",
+    "activity_intro_image_url": "https://test.by4dev.4ba.cn/assets/activity/anniversary-268.jpg",
     "activity_intro_image_policy": {
       "send_once": true,
       "sub_rule_ids": ["S3_PRICE", "S3_AD_PRICE"],
@@ -115,6 +131,13 @@
           "reply_focus": "先肯定改善方向，再引导城市/照片/到店检测"
         },
         {
+          "id": "S1_BRAND_TRUST",
+          "scenes": ["你们店叫什么", "你们是什么店", "正规吗", "会不会被骗", "是不是骗人的"],
+          "decision": "不硬报不确定门店名，不输出企微主体名；用集团连锁、全国300多家、专业斑点和皮肤管理、费用透明建立信任",
+          "tools": [],
+          "reply_focus": "先接住顾虑，再说明路线定位和费用会提前发清楚，最后推进门店或时间"
+        },
+        {
           "id": "S1_CASE_OR_IMAGE",
           "scenes": ["客户发图片", "客户要案例/效果图"],
           "decision": "图片只说表层可见问题，案例必须来自真实素材",
@@ -166,16 +189,16 @@
         {
           "id": "S3_PRICE",
           "scenes": ["多少钱", "价格", "活动", "优惠", "199", "58", "268", "一次费用"],
-          "decision": "直接回答周年庆活动价268，线上预约金10元，到店抵扣，做付258，不做可退",
+          "decision": "直接回答周年庆活动价268，线上预约金10元，到店抵扣，做付258，不做退10元",
           "tools": [],
-          "reply_focus": "先答价格和费用规则，再按conversion_stage推进一个动作；不能因为命中S3_PRICE就自动发送payment_collection"
+          "reply_focus": "先答原价/活动价、预约金、尾款、可退和名额理由，再按conversion_stage推进一个动作；不能因为命中S3_PRICE就自动发送payment_collection"
         },
         {
           "id": "S3_PAYMENT_COLLECTION",
           "scenes": ["付款入口", "怎么交10元", "我付", "先锁名额", "就这个时间", "报名", "怎么约", "怎么预约", "我要预约", "你帮我预约", "帮我报名", "可以约", "不交预约金可以直接去吗", "到店再付"],
           "decision": "只有conversion_stage=deposit_push时才可以发送payment_collection；不要求order_id、门店、姓名、电话或预约时间前置；客户对预约金轻度犹豫时可以先轻推10元入口，明确强拒绝时不硬推",
           "tools": [],
-          "reply_focus": "先说明10元预约金用于锁活动名额、到店抵扣、不做可退，再发送入口；客户有明确预约或报名意向但缺门店或时间时，可以先发入口再补问1个最关键字段；强拒绝时允许安排到店"
+          "reply_focus": "先说明10元预约金用于锁活动名额、到店抵扣、不做退10元，再发送入口；客户有明确预约或报名意向但缺门店或时间时，可以先发入口再补问1个最关键字段；强拒绝时允许安排到店"
         },
         {
           "id": "S3_APPOINTMENT_TIME",

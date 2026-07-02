@@ -118,7 +118,15 @@ def renumber_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for message in messages:
         content = message.get("content")
         if isinstance(content, dict):
-            content_text = str(content.get("text") or content.get("handoff_reason") or "").strip()
+            content_text = str(
+                content.get("text")
+                or content.get("handoff_reason")
+                or content.get("url")
+                or content.get("store_id")
+                or content.get("id")
+                or content.get("amount")
+                or ""
+            ).strip()
         else:
             content_text = str(content or "").strip()
         key = (str(message.get("type") or ""), content_text)

@@ -17,7 +17,7 @@ def create_synthesize_reply_node(
     debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
     reply_messages_for_model: Callable[[AgentState], list[dict[str, Any]]],
     should_use_model_reply: Callable[[AgentState], bool],
-    validated_model_messages: Callable[[dict[str, Any]], list[dict[str, Any]]],
+    validated_model_messages: Callable[..., list[dict[str, Any]]],
     schedule_background_task: Callable[[AgentState], Any] | None = None,
 ):
     async def synthesize_reply(state: AgentState) -> dict[str, Any]:
@@ -35,6 +35,19 @@ def create_synthesize_reply_node(
             try:
                 planner_decision = str(state.get("planner_decision") or "").strip()
                 planner_messages = _normalize_planner_reply_messages(state.get("planner_reply_messages"))
+                planner_direct_valid = False
+                if planner_decision == "direct_reply" and planner_messages and not state.get("tool_policy_violations"):
+                    try:
+                        validate_reply_consistency(planner_messages, state)
+                        planner_direct_valid = True
+                    except Exception as planner_validation_exc:
+                        warnings.append(
+                            {
+                                "node": "synthesize_reply",
+                                "message": "planner_direct_reply_rejected",
+                                "detail": f"{type(planner_validation_exc).__name__}: {planner_validation_exc}",
+                            }
+                        )
                 if planner_decision == "no_reply":
                     reply_source = "planner_no_reply"
                     model_call = {
@@ -42,7 +55,7 @@ def create_synthesize_reply_node(
                         "input": {"decision": planner_decision, "messages": 0},
                         "output": {"messages": 0},
                     }
-                elif planner_decision == "direct_reply" and planner_messages:
+                elif planner_direct_valid:
                     messages = planner_messages
                     reply_source = "planner_direct_reply"
                     model_call = {
@@ -58,7 +71,7 @@ def create_synthesize_reply_node(
                     payload = await model_client.chat_json(model_messages, tier="reply")
                     model_call["usage"] = model_usage_snapshot(model_client)
                     try:
-                        messages = validated_model_messages(payload)
+                        messages = validated_model_messages(payload, state)
                         validate_reply_consistency(messages, state)
                     except Exception as validation_exc:
                         retry_messages = _reply_retry_messages(model_messages, validation_exc)
@@ -67,8 +80,15 @@ def create_synthesize_reply_node(
                             "reason": f"{type(validation_exc).__name__}: {validation_exc}",
                             "usage": model_usage_snapshot(model_client),
                         }
-                        messages = validated_model_messages(retry_payload)
-                        validate_reply_consistency(messages, state)
+                        messages = validated_model_messages(retry_payload, state)
+                        try:
+                            validate_reply_consistency(messages, state)
+                        except Exception as retry_validation_exc:
+                            repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
+                            if repaired_messages is None:
+                                raise
+                            messages = repaired_messages
+                            validate_reply_consistency(messages, state)
                     messages = _filter_unsupported_images(messages, state, warnings)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
@@ -119,9 +139,40 @@ def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> lis
     return [*messages, {"role": "user", "content": retry_instruction}]
 
 
+def _maybe_append_required_store_address(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+    exc: Exception,
+) -> list[dict[str, Any]] | None:
+    if "store_address_message_required_when_reply_promises_location_card" not in str(exc):
+        return None
+    store_id = _single_store_fact_id(state)
+    if not store_id:
+        return None
+    if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
+        return None
+    return _renumber([*messages, {"type": "store_address", "content": {"store_id": store_id}}])
+
+
+def _single_store_fact_id(state: AgentState) -> str:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    store_facts = [item for item in structured.get("store_facts") or [] if isinstance(item, dict)]
+    ids = list(
+        dict.fromkeys(
+            str(item.get("store_id") or item.get("id") or "").strip()
+            for item in store_facts
+            if str(item.get("store_id") or item.get("id") or "").strip()
+        )
+    )
+    return ids[0] if len(ids) == 1 else ""
+
+
 def _reply_repair_hint(error: str) -> str:
     if "payment_collection_required" in error:
         return "如果文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
+    if "ambiguous_deposit_refund_wording" in error:
+        return "预约金退款口径只能说“不做退10元/不做退还10元”，不要说“全额退还/全额退款”，避免客户误解为退还整笔活动价。"
     if "case_context_must_not_use_activity_intro_image" in error:
         return "本轮客户在问效果或案例，且已有 case_facts 案例图片事实。必须回答效果顾虑，并且如输出 image，只能使用 case_facts 里的 image_url；不要输出活动宣传图。"
     if "reply_too_similar" in error:
@@ -136,10 +187,18 @@ def _reply_repair_hint(error: str) -> str:
         return "没有门店详情事实时，不要输出具体地址。"
     if "unsupported_store_address_message" in error:
         return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时，不要输出 store_address，只能用文字说明暂时没查到并继续确认城市、区域或门店。"
+    if "store_address_message_required_when_reply_promises_location_card" in error:
+        return "你已经在文本里承诺发地址、位置或让客户点开导航；如果本轮有门店事实，必须追加对应 store_address 卡片。若不想发卡，就删除“我发您/点开导航/位置卡”等承诺。"
     if "distance_fact_required" in error:
-        return "没有距离工具事实时，不要输出最近、几公里或几分钟。"
+        return "没有 distance_calculate 距离事实时，不要输出最近、离您最近、较近、就近、几公里、几分钟、车程等距离排序表达。只回答门店名、地址、停车或营业时间等已有门店事实，再问客户哪个区域/哪家更方便。"
     if "available_time_fact_required" in error:
         return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。"
+    if "too_many_appointment_time_options" in error:
+        return "档期回复最多只能给 1 个推荐时间和 1 个备选时间。请基于 recommended_slot 和 backup_slots 重写，不要列完整时间表。"
+    if "unfinished_appointment_lookup_promise" in error:
+        return "没有真实 available_time 档期事实时，不要说“查档期/核对档期/看档期/可约时间”。如果本轮已有门店事实，只回答门店位置并引导客户选择区域或门店；如果缺门店或具体时间，只问客户补一个关键字段。"
+    if "unfinished_tool_promise_after_tool_execution" in error:
+        return "本轮工具已经执行完，不能再说“马上查、帮您查一下、帮您找案例、稍后给您”。请直接基于已有事实回答；如果事实不足，只问客户补一个关键字段，或说明当前没有可发事实。"
     return ""
 
 

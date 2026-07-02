@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.nodes.contextual_short_message import is_contextual_short_message, short_message_context_for_model
@@ -11,7 +14,8 @@ from app.graph.planner.planner_contract import ALLOWED_TOOLS
 from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, safety_fallback_plan
 from app.graph.state import AgentState
-from app.policies.business_rules import business_rules_prompt_section
+from app.policies.business_rules import planner_business_rules_prompt_section
+from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.model_client import ModelClient
 
 def planner_v2_model_tier(state: AgentState) -> str:
@@ -23,7 +27,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": "# Four Stage Business Rules JSON\n" + business_rules_prompt_section()},
+        {"role": "system", "content": "# Planner Rule Packs\n" + planner_business_rules_prompt_section()},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
 
@@ -42,7 +46,7 @@ def planner_v2_repair_messages_for_model(
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": "# Four Stage Business Rules JSON\n" + business_rules_prompt_section()},
+        {"role": "system", "content": "# Planner Rule Packs\n" + planner_business_rules_prompt_section()},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
@@ -121,6 +125,8 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
     suppress_memory = _should_suppress_planner_memory(state)
     sent_message_summary = {} if suppress_memory else sent_message_summary_for_model(state)
     payload = {
+        "current_date": _current_date_iso(),
+        "timezone": "Asia/Shanghai",
         "current_message": state.get("normalized_content") or "",
         "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-10:],
         "short_message_context": {} if suppress_memory else short_message_context_for_model(
@@ -133,11 +139,225 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_profile": {} if suppress_memory else state.get("customer_profile") or {},
         "history_events": [] if suppress_memory else (state.get("history_events") or [])[-8:],
         "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
+        "current_known_store": _current_known_store_for_planner(state),
         "store_scope_summary": _store_scope_summary(state.get("customer_store_knowledge") or {}),
         "sent_message_summary": sent_message_summary,
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
     return _drop_empty(payload)
+
+
+def _current_date_iso() -> str:
+    return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+
+def _current_known_store_for_planner(state: AgentState) -> dict[str, Any]:
+    store_id = str(state.get("confirmed_store_id") or state.get("store_id") or "").strip()
+    store_name = str(state.get("confirmed_store_name") or state.get("store_name") or "").strip()
+    if store_id or store_name:
+        return _drop_empty({"store_id": store_id, "store_name": store_name, "source": "request"})
+
+    current_message_store = _store_from_current_message(state)
+    if current_message_store:
+        return current_message_store
+
+    explicit_store = _recent_explicit_store_for_planner(state)
+    if explicit_store:
+        return explicit_store
+
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    appointment = customer_context.get("appointment") if isinstance(customer_context.get("appointment"), dict) else {}
+    if _current_turn_can_use_appointment_store(state):
+        store_id = str(appointment.get("store_id") or "").strip()
+        store_name = str(appointment.get("store_name") or "").strip()
+        return _drop_empty({"store_id": store_id, "store_name": store_name, "source": "appointment_context"})
+
+    basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    preferred = _store_from_basic_info(basic_info)
+    if preferred:
+        return preferred
+    return {}
+
+
+def _recent_explicit_store_for_planner(state: AgentState) -> dict[str, Any]:
+    event_store = _store_from_recent_events(state)
+    if event_store:
+        return event_store
+
+    return _store_from_recent_conversation(state)
+
+
+def _store_from_current_message(state: AgentState) -> dict[str, Any]:
+    text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    matched = _stores_matching_text_for_planner(state, text)
+    if len(matched) == 1:
+        return {**_compact_store_for_planner(matched[0]), "source": "current_message"}
+    if len(matched) > 1:
+        return {
+            "ambiguous": True,
+            "matched_store_names": [_store_name_for_planner(store) for store in matched[:5]],
+            "source": "current_message",
+        }
+    return {}
+
+
+def _stores_matching_text_for_planner(state: AgentState, text: str) -> list[dict[str, Any]]:
+    if not text:
+        return []
+    matched: list[dict[str, Any]] = []
+    for store in _known_store_candidates_for_planner(state):
+        name = _store_name_for_planner(store)
+        if name and name in text:
+            matched.append(store)
+    return _without_subsumed_store_matches(_dedupe_store_matches(matched))
+
+
+def _known_store_candidates_for_planner(state: AgentState) -> list[dict[str, Any]]:
+    candidates = list(_customer_scope_stores_for_planner(state))
+    seen_names = {_store_name_for_planner(store) for store in candidates if _store_name_for_planner(store)}
+    for name in KNOWN_STORE_NAMES:
+        if name and name not in seen_names:
+            candidates.append({"store_name": name})
+            seen_names.add(name)
+    return candidates
+
+
+def _dedupe_store_matches(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for store in stores:
+        store_id = str(store.get("store_id") or store.get("id") or "").strip()
+        name = _store_name_for_planner(store)
+        key = (store_id, name)
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        output.append(store)
+    return output
+
+
+def _without_subsumed_store_matches(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    names = [_store_name_for_planner(store) for store in stores]
+    output: list[dict[str, Any]] = []
+    for store, name in zip(stores, names):
+        if any(name != other and name in other for other in names):
+            continue
+        output.append(store)
+    return output
+
+
+def _store_from_basic_info(raw: dict[str, Any]) -> dict[str, Any]:
+    store_id = str(raw.get("preferred_store_id") or "").strip()
+    store_name = str(raw.get("preferred_store_name") or "").strip()
+    city = str(raw.get("city") or "").strip()
+    if not (store_id or store_name):
+        return {}
+    return _drop_empty({"store_id": store_id, "store_name": store_name, "city": city, "source": "customer_profile"})
+
+
+def _store_from_recent_events(state: AgentState) -> dict[str, Any]:
+    events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
+    for event in reversed(events[-20:]):
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("event_type") or "") not in {"store_matched", "store_address_sent"}:
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        store_id = str(facts.get("store_id") or facts.get("id") or "").strip()
+        store_name = str(facts.get("store_name") or facts.get("name") or "").strip()
+        if store_id or store_name:
+            return _drop_empty(
+                {
+                    "store_id": store_id,
+                    "store_name": store_name,
+                    "city": str(facts.get("city") or "").strip(),
+                    "district": str(facts.get("district") or "").strip(),
+                    "source": "history_event",
+                }
+            )
+    return {}
+
+
+def _store_from_recent_conversation(state: AgentState) -> dict[str, Any]:
+    stores = _customer_scope_stores_for_planner(state)
+    if not stores:
+        return {}
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    chunks: list[str] = []
+    for item in history[-6:]:
+        text = _conversation_item_text(item)
+        if text:
+            chunks.append(text)
+    store_by_id = {
+        str(store.get("store_id") or store.get("id") or "").strip(): store
+        for store in stores
+        if str(store.get("store_id") or store.get("id") or "").strip()
+    }
+    for chunk in reversed(chunks):
+        match = re.search(r"(?:store_id|门店ID)\s*[=:：]\s*(\d+)", chunk, flags=re.IGNORECASE)
+        if match and match.group(1) in store_by_id:
+            return {**_compact_store_for_planner(store_by_id[match.group(1)]), "source": "recent_store_address_message"}
+    for chunk in reversed(chunks):
+        matched = [store for store in stores if _store_name_for_planner(store) and _store_name_for_planner(store) in chunk]
+        if len(matched) == 1:
+            return {**_compact_store_for_planner(matched[0]), "source": "recent_conversation"}
+        if len(matched) > 1:
+            return {
+                "ambiguous": True,
+                "matched_store_names": [_store_name_for_planner(store) for store in matched[:5]],
+                "source": "recent_conversation",
+            }
+    return {}
+
+
+def _customer_scope_stores_for_planner(state: AgentState) -> list[dict[str, Any]]:
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    return [store for store in stores if isinstance(store, dict)]
+
+
+def _store_name_for_planner(store: dict[str, Any]) -> str:
+    return str(store.get("store_name") or store.get("name") or "").strip()
+
+
+def _compact_store_for_planner(store: dict[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "store_id": str(store.get("store_id") or store.get("id") or "").strip(),
+            "store_name": _store_name_for_planner(store),
+            "city": str(store.get("city") or "").strip(),
+            "district": str(store.get("district") or "").strip(),
+        }
+    )
+
+
+def _conversation_item_text(item: Any) -> str:
+    if isinstance(item, dict):
+        content = item.get("content")
+        if isinstance(content, dict):
+            return str(content.get("text") or content.get("url") or "").strip()
+        return str(content or "").strip()
+    return str(item or "").strip()
+
+
+def _current_turn_can_use_appointment_store(state: AgentState) -> bool:
+    content = "".join(str(state.get("normalized_content") or state.get("content") or "").split())
+    if not content:
+        return False
+    if _recent_explicit_store_for_planner(state):
+        return False
+    return any(
+        term in content
+        for term in (
+            "预约",
+            "改约",
+            "取消",
+            "档期",
+            "已约",
+            "约过",
+            "预约记录",
+        )
+    )
 
 
 def _should_suppress_planner_memory(state: AgentState) -> bool:

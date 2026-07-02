@@ -44,6 +44,7 @@ def create_execute_actions_node(
             planned_tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
             if planned_tools:
                 required_tools = [tool for tool in planned_tools if isinstance(tool, dict)]
+            required_tools = _filter_invalid_planned_tools(required_tools, state, tool_results, tool_calls)
 
             for tool in required_tools:
                 _queue_planned_tool_tasks(
@@ -138,6 +139,47 @@ def create_execute_actions_node(
             return output
 
     return execute_actions
+
+
+def _filter_invalid_planned_tools(
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+    tool_results: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    invalid_by_name = _invalid_tool_policy_by_name(state)
+    if not invalid_by_name:
+        return required_tools
+    filtered: list[dict[str, Any]] = []
+    for tool in required_tools:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name") or "").strip()
+        violation = invalid_by_name.get(name)
+        if not violation:
+            filtered.append(tool)
+            continue
+        missing = str(violation.get("missing") or "tool_policy_violation")
+        error = f"planner_tool_policy_violation: {missing}"
+        if name == "available_time":
+            tool_results[name] = {"slots": {}, "missing": ["store_id"], "error": error}
+        else:
+            tool_results[name] = {"error": error}
+        tool_calls.append({"name": name, "input": tool, "error": error, "skipped": True})
+    return filtered
+
+
+def _invalid_tool_policy_by_name(state: AgentState) -> dict[str, dict[str, Any]]:
+    output: dict[str, dict[str, Any]] = {}
+    violations = state.get("tool_policy_violations") if isinstance(state.get("tool_policy_violations"), list) else []
+    for item in violations:
+        if not isinstance(item, dict):
+            continue
+        subtype = str(item.get("subtype") or "").strip()
+        missing = str(item.get("missing") or "").strip()
+        if subtype == "available_time" and missing.startswith("available_time_"):
+            output["available_time"] = item
+    return output
 
 
 def _queue_planned_tool_tasks(

@@ -8,14 +8,17 @@ from typing import Any
 from app.graph.nodes.common import renumber_messages
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
 
-VISIBLE_MESSAGE_TYPES = {"text", "image", "payment_collection", "store_address"}
-ALLOWED_MESSAGE_TYPES = {"text", "image", "human_handoff", "payment_collection", "store_address"}
+VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "human_handoff", "payment_collection", "store_address"}
+MAX_VISIBLE_MESSAGES = 4
+MAX_SOP_SEQUENCE_VISIBLE_MESSAGES = 8
 
 
-def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     messages = payload.get("reply_messages")
     if not isinstance(messages, list) or not messages:
         raise ValueError("Model JSON missing reply_messages")
+    max_visible_messages = _max_visible_messages(state or {})
     result: list[dict[str, Any]] = []
     visible_count = 0
     has_handoff = False
@@ -39,7 +42,7 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
             has_handoff = True
             continue
         if msg_type == "payment_collection":
-            if visible_count >= 3:
+            if visible_count >= max_visible_messages:
                 continue
             result.append(
                 {
@@ -51,7 +54,7 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
             visible_count += 1
             continue
         if msg_type == "store_address":
-            if visible_count >= 3:
+            if visible_count >= max_visible_messages:
                 continue
             store_id = message_content_store_id(item.get("content"))
             if not store_id:
@@ -59,7 +62,7 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
             result.append({"type": "store_address", "order": len(result) + 1, "content": {"store_id": store_id}})
             visible_count += 1
             continue
-        if visible_count >= 3:
+        if visible_count >= max_visible_messages:
             continue
         content = message_content_text(item.get("content"))
         if not content:
@@ -81,12 +84,41 @@ def validated_model_messages(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return renumber_messages(result)
 
 
+def _max_visible_messages(state: dict[str, Any]) -> int:
+    return MAX_SOP_SEQUENCE_VISIBLE_MESSAGES if _is_sop_sequence_state(state) else MAX_VISIBLE_MESSAGES
+
+
+def _is_sop_sequence_state(state: dict[str, Any]) -> bool:
+    explicit = str(state.get("reply_mode") or "").strip()
+    if explicit == "sop_sequence":
+        return True
+    if explicit == "normal_answer":
+        return False
+    if str(state.get("planner_stage") or "").upper() == "S4":
+        return False
+    sub_rule = str(state.get("planner_sub_rule_id") or "").lower()
+    if any(marker in sub_rule for marker in ("parking", "business_hours", "appointment_change", "appointment_cancel", "after_sales")):
+        return False
+    conversion_stage = str(state.get("conversion_stage") or "").lower()
+    if conversion_stage in {"interest_capture", "objection_resolution", "store_match", "deposit_push"}:
+        return True
+    structured = _structured_facts(state)
+    store_facts = structured.get("store_facts") if isinstance(structured.get("store_facts"), list) else []
+    case_facts = structured.get("case_facts") if isinstance(structured.get("case_facts"), list) else []
+    return bool(store_facts or case_facts)
+
+
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_payment_collection_consistency(messages, state)
+    _validate_deposit_refund_wording(messages, state)
     _validate_case_image_priority(messages, state)
     _validate_store_address_message_facts(messages, state)
+    _validate_store_address_card_consistency(messages, state)
     _validate_appointment_time_facts(messages, state)
-    _validate_two_text_rhythm(messages, state)
+    _validate_appointment_lookup_promise(messages, state)
+    _validate_appointment_time_option_count(messages, state)
+    _validate_appointment_confirmation_facts(messages, state)
+    _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
     _validate_repeat_similarity(messages, state)
     _validate_fact_boundaries(messages, state)
 
@@ -109,6 +141,14 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         )
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
+
+
+def _validate_deposit_refund_wording(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    text = _combined_text(messages)
+    if not text:
+        return
+    if "全额退还" in text or "全额退款" in text:
+        raise ValueError("ambiguous_deposit_refund_wording")
 
 
 def _validate_case_image_priority(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -140,6 +180,18 @@ def _validate_store_address_message_facts(messages: list[dict[str, Any]], state:
         raise ValueError("unsupported_store_address_message")
 
 
+def _validate_store_address_card_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    text = _combined_text(messages)
+    current_content = str(state.get("normalized_content") or state.get("content") or "")
+    if not _promises_store_address_card(text) and not _current_message_requests_store_address_card(current_content):
+        return
+    if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
+        return
+    allowed_ids = _allowed_store_address_ids(state)
+    if allowed_ids:
+        raise ValueError("store_address_message_required_when_reply_promises_location_card")
+
+
 def _validate_appointment_time_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     text = _combined_text(messages)
     if not text or not _asserts_time_available(text):
@@ -154,6 +206,57 @@ def _validate_appointment_time_facts(messages: list[dict[str, Any]], state: dict
         return
     if not any(_available_time_fact_supports_availability(item) for item in available_time_facts):
         raise ValueError("available_time_fact_required")
+
+
+def _validate_appointment_lookup_promise(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    text = _combined_text(messages)
+    if not text or not _promises_appointment_lookup(text):
+        return
+    appointment_facts = _structured_facts(state).get("appointment_facts")
+    if not isinstance(appointment_facts, list) or not appointment_facts:
+        raise ValueError("unfinished_appointment_lookup_promise")
+    if not any(
+        isinstance(item, dict)
+        and str(item.get("type") or "") == "available_time"
+        and _available_time_fact_supports_availability(item)
+        for item in appointment_facts
+    ):
+        raise ValueError("unfinished_appointment_lookup_promise")
+
+
+def _validate_appointment_time_option_count(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    appointment_facts = _structured_facts(state).get("appointment_facts")
+    if not isinstance(appointment_facts, list) or not any(
+        isinstance(item, dict) and str(item.get("type") or "") == "available_time" for item in appointment_facts
+    ):
+        return
+    text = _combined_text(messages)
+    if not text:
+        return
+    times = list(dict.fromkeys(re.findall(r"\b\d{1,2}[:：]\d{2}\b", text)))
+    if len(times) > 2:
+        raise ValueError("too_many_appointment_time_options")
+
+
+def _validate_appointment_confirmation_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    text = _combined_text(messages)
+    if not text or not _asserts_appointment_confirmed(text):
+        return
+    if _has_appointment_confirmation_fact(state):
+        return
+    raise ValueError("appointment_confirmation_fact_required")
+
+
+def _validate_finished_tool_turn_does_not_promise_pending_work(
+    messages: list[dict[str, Any]], state: dict[str, Any]
+) -> None:
+    if str(state.get("planner_decision") or "") != "need_tools":
+        return
+    text = _combined_text(messages)
+    if not text:
+        return
+    if _promises_unfinished_lookup(text):
+        raise ValueError("unfinished_tool_promise_after_tool_execution")
 
 
 def _validate_repeat_similarity(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -310,11 +413,61 @@ def _asserts_business_hours(text: str) -> bool:
 
 
 def _asserts_address(text: str) -> bool:
-    return any(term in text for term in ("地址是", "地址在", "位于", "路", "号")) and any(term in text for term in ("门店", "店", "导航", "地址"))
+    if any(term in text for term in ("地址是", "地址在", "位于")) and any(term in text for term in ("门店", "店", "导航", "地址")):
+        return True
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z0-9]{1,30}(?:路|街|大道|巷)\s*\d+\s*号", text))
 
 
 def _asserts_distance(text: str) -> bool:
-    return bool(re.search(r"\d+(?:\.\d+)?\s*(?:公里|km|KM|分钟)", text)) or any(term in text for term in ("最近的是", "离您最近", "距离最近"))
+    return bool(re.search(r"\d+(?:\.\d+)?\s*(?:公里|km|KM|分钟)", text)) or any(
+        term in text for term in ("最近的是", "离您最近", "距离最近", "就近门店", "就近的门店")
+    )
+
+
+def _promises_store_address_card(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return any(
+        term in compact
+        for term in (
+            "地址我发",
+            "地址发您",
+            "地址发你",
+            "位置我发",
+            "位置发您",
+            "位置发你",
+            "点开导航",
+            "直接导航过去",
+            "门店卡片",
+            "位置卡",
+            "定位卡",
+        )
+    )
+
+
+def _current_message_requests_store_address_card(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if any(
+        term in compact
+        for term in (
+            "发个位置",
+            "发位置",
+            "位置发我",
+            "位置给我",
+            "发个地址",
+            "发地址",
+            "地址发我",
+            "地址给我",
+            "发导航",
+            "导航发我",
+            "发定位",
+            "定位发我",
+            "门店位置",
+        )
+    ):
+        return True
+    return bool(re.search(r"发.{0,8}(地址|位置|定位|导航)", compact)) or bool(
+        re.search(r"(地址|位置|定位|导航).{0,8}(发|给)", compact)
+    )
 
 
 def _asserts_time_available(text: str) -> bool:
@@ -322,6 +475,11 @@ def _asserts_time_available(text: str) -> bool:
 
 
 def _available_time_fact_supports_availability(item: dict[str, Any]) -> bool:
+    if str(item.get("recommended_slot") or "").strip():
+        return True
+    backup_slots = item.get("backup_slots")
+    if isinstance(backup_slots, list) and any(str(slot or "").strip() for slot in backup_slots):
+        return True
     if item.get("target_time_available") is True:
         return True
     nearby = item.get("nearby_times")
@@ -335,8 +493,131 @@ def _available_time_fact_supports_availability(item: dict[str, Any]) -> bool:
     return False
 
 
+def _asserts_appointment_confirmed(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return any(term in compact for term in ("已为您锁定", "已经为您锁定", "已锁定", "已安排好", "安排好了", "预约好了", "准时等您"))
+
+
+def _has_appointment_confirmation_fact(state: dict[str, Any]) -> bool:
+    if str(state.get("appointment_id") or "").strip() or str(state.get("appointment_time") or "").strip():
+        return True
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    if str(request_context.get("appointment_id") or "").strip() or str(request_context.get("appointment_time") or "").strip():
+        return True
+    structured = _structured_facts(state)
+    for item in structured.get("appointment_facts") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") in {"appointment_created", "appointment_confirmed", "appointment_record"}:
+            if str(item.get("appointment_id") or item.get("appointment_time") or item.get("time") or "").strip():
+                return True
+    return False
+
+
 def _promises_payment_entry(text: str) -> bool:
-    return any(term in text for term in ("发入口", "重新发", "付款入口", "收款入口", "支付入口", "现在为您发", "马上发您"))
+    compact = "".join(str(text or "").split())
+    return any(
+        term in compact
+        for term in (
+            "发入口",
+            "发送入口",
+            "重新发",
+            "付款入口",
+            "收款入口",
+            "支付入口",
+            "预约金入口",
+            "报名入口",
+            "发报名入口",
+            "发送报名入口",
+            "现在为您发",
+            "马上发您",
+        )
+    )
+
+
+def _promises_unfinished_lookup(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if re.search(r"(查|核对|看).{0,12}(档期|案例|参考)", compact):
+        return True
+    if any(term in compact for term in _unicode_unfinished_lookup_terms()):
+        return True
+    return any(
+        term in compact
+        for term in (
+            "马上查",
+            "马上核",
+            "稍后给",
+            "等下给",
+            "待会给",
+            "一会给",
+            "帮您查一下",
+            "帮您查",
+            "帮您看一下",
+            "帮您看档期",
+            "帮您找一下",
+            "帮您找同类",
+            "帮您找案例",
+            "帮您找参考",
+        )
+    )
+
+
+def _unicode_unfinished_lookup_terms() -> tuple[str, ...]:
+    return (
+        "\u9a6c\u4e0a\u540c\u6b65",
+        "\u7a0d\u540e\u540c\u6b65",
+        "\u665a\u70b9\u540c\u6b65",
+        "\u6838\u5bf9\u4e2d",
+        "\u786e\u8ba4\u597d\u9a6c\u4e0a",
+        "\u5e2e\u60a8\u786e\u8ba4\u597d",
+        "\u5e2e\u60a8\u67e5\u4e00\u4e0b",
+        "\u6211\u5e2e\u60a8\u67e5",
+        "\u67e5\u5176\u4ed6\u65f6\u6bb5",
+        "\u6838\u5bf9\u6863\u671f",
+        "\u67e5\u6863\u671f",
+        "\u770b\u6863\u671f",
+        "\u53ef\u7ea6\u65f6\u95f4",
+    )
+
+
+def _promises_appointment_lookup(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if any(term in compact for term in _unicode_appointment_lookup_terms()):
+        return True
+    return any(
+        term in compact
+        for term in (
+            "查档期",
+            "查下档期",
+            "核对档期",
+            "看档期",
+            "可约时间",
+            "可预约时间",
+            "可约名额",
+            "名额时间",
+            "查时间",
+            "看时间",
+            "核对时间",
+        )
+    ) or bool(
+        re.search(r"(查|核对|看).{0,12}档期", compact)
+    )
+
+
+def _unicode_appointment_lookup_terms() -> tuple[str, ...]:
+    return (
+        "\u67e5\u6863\u671f",
+        "\u67e5\u4e0b\u6863\u671f",
+        "\u6838\u5bf9\u6863\u671f",
+        "\u770b\u6863\u671f",
+        "\u53ef\u7ea6\u65f6\u95f4",
+        "\u53ef\u9884\u7ea6\u65f6\u95f4",
+        "\u53ef\u7ea6\u540d\u989d",
+        "\u540d\u989d\u65f6\u95f4",
+        "\u67e5\u65f6\u95f4",
+        "\u770b\u65f6\u95f4",
+        "\u6838\u5bf9\u65f6\u95f4",
+    )
 
 
 def _explains_previous_payment_entry(text: str) -> bool:

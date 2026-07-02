@@ -17,7 +17,7 @@ from app.graph.planner.runtime_plan import (
 )
 from app.graph.state import AgentState
 from app.graph.runtime_turn_policy import should_suspend_appointment_context_for_current_turn
-from app.policies.business_rules import load_business_rules
+from app.policies.business_rules import reply_business_rules_for_model
 from app.policies.compliance_terms import (
     QUALIFICATION_CONTEXT_SAFE_NOTE,
     SERVICE_COMMITMENT_CONTEXT_SAFE_NOTE,
@@ -35,6 +35,12 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     handoff = planner_handoff(state)
     appointment_context = _appointment_context_for_model(state) if should_show_appointment_context else {}
     sent_message_summary = {} if suppress_profile_memory else sent_message_summary_for_model(state)
+    sop_progress = _sop_progress_for_reply(
+        state,
+        sent_message_summary=sent_message_summary,
+        fact_envelope=state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else fact_envelope,
+    )
+    reply_mode = str(sop_progress.get("recommended_reply_mode") or "normal_answer").strip() or "normal_answer"
     return {
         "content": state.get("normalized_content"),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-6:],
@@ -59,11 +65,17 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "main_blocker": state.get("main_blocker", ""),
         "next_step": state.get("next_step", ""),
         "reply_constraints": state.get("reply_constraints", []),
+        "planner_tool_policy_violations": _compact_planner_violations(state.get("tool_policy_violations", [])),
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "store_scope_summary": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
         "sent_message_summary": sent_message_summary,
-        "business_rules": load_business_rules(),
+        "reply_mode": reply_mode,
+        "sop_progress": sop_progress,
+        "business_rules": reply_business_rules_for_model(
+            stage=str(state.get("planner_stage") or ""),
+            sub_rule_id=str(state.get("planner_sub_rule_id") or ""),
+        ),
         "fact_envelope": fact_envelope,
         "fact_notes": _fact_notes_for_model(
             fact_envelope,
@@ -71,6 +83,158 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
             sent_message_summary=sent_message_summary,
         ),
     }
+
+
+def _sop_progress_for_reply(
+    state: AgentState,
+    *,
+    sent_message_summary: dict[str, Any],
+    fact_envelope: dict[str, Any],
+) -> dict[str, Any]:
+    sent_categories = _sent_sop_like_categories(state, sent_message_summary=sent_message_summary)
+    candidates = _sop_next_candidates(
+        state,
+        sent_categories=sent_categories,
+        fact_envelope=fact_envelope,
+    )
+    if not sent_categories and not candidates:
+        return {}
+    reply_mode = "sop_sequence" if _should_use_sop_sequence(state, candidates) else "normal_answer"
+    return {
+        "recommended_reply_mode": reply_mode,
+        "sent_categories": sent_categories,
+        "next_candidates": candidates[:3],
+        "usage": "normal_answer 最多短答并轻推一步；sop_sequence 允许 4-8 条短消息组成成交流程包。回答当前问题后，只能从 next_candidates 里选择一个主目标推进；不要照抄 SOP 模板，不要一次推进多个动作。",
+    }
+
+
+def _sent_sop_like_categories(state: AgentState, *, sent_message_summary: dict[str, Any]) -> list[str]:
+    categories: list[str] = []
+    if sent_message_summary.get("store_address_sent_by_store_id"):
+        categories.append("store_address")
+    if sent_message_summary.get("activity_intro_image_sent"):
+        categories.append("activity_intro")
+    if sent_message_summary.get("payment_collection_sent"):
+        categories.append("deposit_push")
+    for event in state.get("history_events") or []:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or "").strip()
+        if event_type in {"store_matched", "store_address_sent"}:
+            categories.append("store_address")
+        elif event_type == "case_image_sent":
+            categories.append("effect_case")
+        elif event_type == "activity_intro_image_sent":
+            categories.append("activity_intro")
+        elif event_type == "offer_explained":
+            categories.append("price_quote")
+        elif event_type in {"deposit_explained", "payment_collection_sent"}:
+            categories.append("deposit_push")
+    return list(dict.fromkeys(item for item in categories if item))
+
+
+def _sop_next_candidates(
+    state: AgentState,
+    *,
+    sent_categories: list[str],
+    fact_envelope: dict[str, Any],
+) -> list[dict[str, str]]:
+    sent = set(sent_categories)
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    store_facts = structured.get("store_facts") if isinstance(structured.get("store_facts"), list) else []
+    case_facts = structured.get("case_facts") if isinstance(structured.get("case_facts"), list) else []
+    candidates: list[dict[str, str]] = []
+
+    if store_facts and "store_address" not in sent:
+        candidates.append(
+            {
+                "category": "store_address",
+                "purpose": "把客户的位置兴趣落到具体可到店门店。",
+                "how_to_push": "发真实门店位置后，问客户哪家或哪个区域方便。",
+            }
+        )
+    if store_facts and "effect_case" not in sent:
+        candidates.append(
+            {
+                "category": "effect_case",
+                "purpose": "门店已承接后，铺垫斑点检测、操作时间和效果信心。",
+                "how_to_push": "用一句话说明到店老师一对一看斑点，顺手问斑点多久或是否要看同类效果。",
+            }
+        )
+    if case_facts and "effect_case" not in sent:
+        candidates.append(
+            {
+                "category": "effect_case",
+                "purpose": "客户在意效果时，用案例事实建立信心。",
+                "how_to_push": "先回答效果顾虑，再带客户看门店或活动价。",
+            }
+        )
+    if "activity_intro" not in sent and _should_offer_activity_candidate(state, sent):
+        candidates.append(
+            {
+                "category": "activity_intro",
+                "purpose": "客户已进入咨询后，说明周年庆活动价和权益。",
+                "how_to_push": "用短句带出268、10元预约金、到店抵扣，不要写说明书。",
+            }
+        )
+    if "deposit_push" not in sent and _should_offer_deposit_candidate(state):
+        candidates.append(
+            {
+                "category": "deposit_push",
+                "purpose": "客户已有到店或报名意向时，推进10元预约金锁名额。",
+                "how_to_push": "说明10元用于锁活动名额，到店抵扣，不做退10元。",
+            }
+        )
+    return _dedupe_candidate_categories(candidates)
+
+
+def _should_offer_activity_candidate(state: AgentState, sent: set[str]) -> bool:
+    if "price_quote" in sent or "activity_intro" in sent:
+        return False
+    values = " ".join(
+        str(state.get(key) or "")
+        for key in ("planner_stage", "planner_sub_rule_id", "conversion_stage", "customer_type", "main_blocker", "next_step")
+    ).lower()
+    return any(marker in values for marker in ("s3", "price", "activity", "objection", "store_match", "effect"))
+
+
+def _should_offer_deposit_candidate(state: AgentState) -> bool:
+    values = " ".join(
+        str(state.get(key) or "")
+        for key in ("conversion_stage", "customer_type", "main_blocker", "next_step", "planner_sub_rule_id")
+    ).lower()
+    return any(marker in values for marker in ("deposit", "send_deposit", "time_confirm", "appointment", "price"))
+
+
+def _dedupe_candidate_categories(candidates: list[dict[str, str]]) -> list[dict[str, str]]:
+    output: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in candidates:
+        category = str(item.get("category") or "").strip()
+        if not category or category in seen:
+            continue
+        seen.add(category)
+        output.append(item)
+    return output
+
+
+def _should_use_sop_sequence(state: AgentState, candidates: list[dict[str, str]]) -> bool:
+    if not candidates:
+        return False
+    stage = str(state.get("planner_stage") or "").upper()
+    sub_rule = str(state.get("planner_sub_rule_id") or "").lower()
+    conversion_stage = str(state.get("conversion_stage") or "").lower()
+    next_step = str(state.get("next_step") or "").lower()
+    if stage == "S4":
+        return False
+    if any(marker in sub_rule for marker in ("parking", "business_hours", "appointment_change", "appointment_cancel", "after_sales")):
+        return False
+    if any(marker in next_step for marker in ("handoff", "no_action")):
+        return False
+    if conversion_stage in {"interest_capture", "objection_resolution", "store_match", "deposit_push"}:
+        return True
+    candidate_categories = {str(item.get("category") or "") for item in candidates}
+    return bool(candidate_categories & {"store_address", "effect_case", "activity_intro", "deposit_push"})
 
 
 def _sanitize_planner_context_for_reply(value: Any) -> Any:
@@ -94,6 +258,22 @@ def _sanitize_planner_context_for_reply(value: Any) -> Any:
             return SERVICE_COMMITMENT_CONTEXT_SAFE_NOTE
         return _sanitize_internal_project_context_text(value)
     return value
+
+
+def _compact_planner_violations(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    output: list[dict[str, str]] = []
+    for item in value[:5]:
+        if not isinstance(item, dict):
+            continue
+        compact = {
+            "missing": str(item.get("missing") or "").strip(),
+            "note": str(item.get("note") or "").strip()[:240],
+        }
+        if compact["missing"] or compact["note"]:
+            output.append(compact)
+    return output
 
 
 def _sanitize_internal_project_context_text(value: str) -> str:
@@ -180,10 +360,37 @@ def _fact_notes_for_model(
         for item in appointment_facts:
             if not isinstance(item, dict):
                 continue
-            if item.get("type") == "available_time" and item.get("slots"):
+            if item.get("type") == "available_time" and item.get("missing"):
+                missing = [
+                    str(value).strip()
+                    for value in (item.get("missing") or [])
+                    if str(value).strip()
+                ]
+                if missing:
+                    notes.append(
+                        "档期工具缺少必要信息："
+                        + "、".join(missing[:3])
+                        + "。本轮不能说已经查到档期，也不要承诺继续查；只能问客户补最关键的一个信息。"
+                    )
+                    break
+            if item.get("type") == "available_time" and (
+                item.get("slots")
+                or str(item.get("recommended_slot") or "").strip()
+                or item.get("backup_slots")
+            ):
                 summary = _available_time_fact_note(item, content)
                 notes.append(summary or "已有档期事实，可直接回答可约时间。")
                 break
+
+    case_facts = structured_facts.get("case_facts") or []
+    if isinstance(case_facts, list) and case_facts:
+        has_case_image = any(isinstance(item, dict) and str(item.get("image_url") or "").strip() for item in case_facts)
+        has_no_new_marker = any(
+            isinstance(item, dict) and str(item.get("status") or "").strip() == "no_new_case_image"
+            for item in case_facts
+        )
+        if not has_case_image and has_no_new_marker:
+            notes.append("本轮没有可发送的案例图片事实；不要承诺稍后发案例图，也不要输出 image。")
 
     professional_assist = structured_facts.get("professional_assist") or {}
     if isinstance(professional_assist, dict) and professional_assist.get("status") == "requested":
@@ -193,6 +400,46 @@ def _fact_notes_for_model(
 
 
 def _available_time_fact_note(item: dict[str, Any], content: str) -> str:
+    recommended_slot = str(item.get("recommended_slot") or "").strip()
+    backup_slots = [
+        str(slot).strip()
+        for slot in (item.get("backup_slots") or [])
+        if str(slot or "").strip()
+    ]
+    if recommended_slot:
+        target_time = str(item.get("target_time") or "").strip()
+        target_available = item.get("target_time_available")
+        date = str(item.get("date") or "").strip()
+        store = str(item.get("store") or item.get("store_id") or "").strip()
+        parts = []
+        if store:
+            parts.append(f"门店ID {store}")
+        if date:
+            parts.append(date)
+        parts.append(f"推荐时间 {recommended_slot}")
+        if backup_slots:
+            parts.append(f"备选时间 {backup_slots[0]}")
+        slot_count = item.get("slot_count")
+        if slot_count:
+            parts.append(f"共有{slot_count}个可约时间")
+        if target_time and target_available is False:
+            return (
+                "已有档期事实："
+                + "，".join(parts)
+                + f"。客户问的{target_time}暂未看到可约；第一句先说明该时间不可约，再推荐时间，最多1个备选。"
+            )
+        if target_time and target_available is True:
+            return (
+                "已有档期事实："
+                + "，".join(parts)
+                + "。第一句可以确认客户问的时间可约，再推进确认或预约金。"
+            )
+        return (
+            "已有档期事实："
+            + "，".join(parts)
+            + "。客户问有没有时间时，只推荐 recommended_slot，最多补1个 backup_slot；不要列完整时间表。"
+        )
+
     slots = item.get("slots") if isinstance(item.get("slots"), dict) else {}
     if not slots:
         return ""
@@ -205,7 +452,7 @@ def _available_time_fact_note(item: dict[str, Any], content: str) -> str:
     if not preferred_times:
         preferred_times = available_time_values(slots)
     preferred_times = filter_times_by_preference(preferred_times, content) or preferred_times
-    times = preferred_times[:6]
+    times = preferred_times[:2]
     date = str(item.get("date") or "").strip()
     store = str(item.get("store") or item.get("store_id") or "").strip()
     if not times:
@@ -216,17 +463,19 @@ def _available_time_fact_note(item: dict[str, Any], content: str) -> str:
         parts.append(f"门店ID {store}")
     if date:
         parts.append(date)
-    parts.append(f"可约时间包括{'、'.join(times)}")
+    parts.append(f"推荐时间{'、'.join(times[:1])}")
+    if len(times) > 1:
+        parts.append(f"备选时间{times[1]}")
     if target_time and target_available is False:
         parts.append(f"客户问的{target_time}不在可约时间内")
         nearby = item.get("nearby_times") if isinstance(item.get("nearby_times"), list) else target_status.get("nearby_times") or []
         if nearby:
-            parts.append(f"临近可选时间为{'、'.join(str(time) for time in nearby[:4])}")
-        return prefix + "，".join(parts) + "。第一句必须说明客户问的具体时间暂未看到可约，不能说该时间可以约；再给可选时间让客户选。"
+            parts.append(f"临近可选时间为{'、'.join(str(time) for time in nearby[:2])}")
+        return prefix + "，".join(parts) + "。第一句必须说明客户问的具体时间暂未看到可约，不能说该时间可以约；再推荐时间，最多1个备选。"
     if target_time and target_available is True:
         parts.append(f"客户问的{target_time}可约")
         return prefix + "，".join(parts) + "。第一句可以直接确认该时间可约，再推进预约金或确认信息。"
-    return prefix + "，".join(parts) + "。客户问有没有时间时，第一句必须先回答这些可约时间，并让客户选一个；不要同轮追加payment_collection，除非客户本轮已经明确选定时间或要付款入口。"
+    return prefix + "，".join(parts) + "。客户问有没有时间时，只推荐第一个可约时间，最多补1个备选；不要列完整时间表，也不要同轮追加payment_collection，除非客户本轮已经明确选定时间或要付款入口。"
 
 
 def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:

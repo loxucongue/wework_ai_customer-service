@@ -4,7 +4,7 @@ import html
 import re
 from typing import Any
 
-from app.graph.nodes.appointment_time_utils import target_time_status
+from app.graph.nodes.appointment_time_utils import summarize_available_slots, target_time_status
 from app.graph.state import AgentState
 
 
@@ -114,6 +114,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             continue
 
         if key == "available_time":
+            slot_summary = summarize_available_slots(
+                value.get("slots") if isinstance(value.get("slots"), dict) else {},
+                str(state.get("normalized_content") or state.get("content") or ""),
+                target_time=str(value.get("target_time") or ""),
+            )
             status = target_time_status(
                 value.get("slots") if isinstance(value.get("slots"), dict) else {},
                 str(value.get("target_time") or ""),
@@ -123,16 +128,20 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "type": "available_time",
                 "store": value.get("store_name") or value.get("store_id") or "",
                 "date": value.get("date") or "",
-                "slots": value.get("slots") or {},
+                "recommended_slot": slot_summary.get("recommended_slot") or "",
+                "backup_slots": slot_summary.get("backup_slots") or [],
+                "slot_count": slot_summary.get("slot_count") or 0,
+                "preference": slot_summary.get("preference") or "",
                 "missing": value.get("missing") or [],
                 "target_time": status.get("target_time") or "",
                 "target_time_available": status.get("target_time_available"),
-                "nearby_times": status.get("nearby_times") or [],
+                "nearby_times": slot_summary.get("nearby_times") or [],
             }
             structured_facts["appointment_facts"].append(appointment_fact)
             facts.append(
                 f"available_time: store={appointment_fact['store']}; "
-                f"date={appointment_fact['date']}; slots={appointment_fact['slots']}"
+                f"date={appointment_fact['date']}; recommended={appointment_fact['recommended_slot']}; "
+                f"backup={appointment_fact['backup_slots']}; slot_count={appointment_fact['slot_count']}"
             )
             missing_slots.extend(str(item) for item in appointment_fact["missing"][:4])
             continue

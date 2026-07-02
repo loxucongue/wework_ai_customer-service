@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 import re
 from typing import Any
 
@@ -13,6 +14,7 @@ from app.graph.planner.planner_contract import (
     ALLOWED_TOOLS,
 )
 from app.graph.state import AgentState
+from app.policies.constants import KNOWN_STORE_NAMES
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -64,6 +66,22 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         ]
         executable_tools = required_tools
         decision = "need_tools"
+    elif (
+        decision == "direct_reply"
+        and not executable_tools
+        and _current_message_requests_store_detail(str(state.get("normalized_content") or state.get("content") or ""))
+    ):
+        lookup_query = _store_lookup_query_from_state(state)
+        planner_reply_messages = [_standard_transition_message()]
+        required_tools = [
+            {
+                "name": "customer_store_lookup",
+                "purpose": "detail",
+                "query": lookup_query,
+            }
+        ]
+        executable_tools = required_tools
+        decision = "need_tools"
     if executable_tools and decision == "direct_reply":
         decision = "need_tools"
     if decision == "need_tools":
@@ -72,6 +90,22 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     tool_policy_violations = [
         *_rejected_tool_violations(model_payload.get("tool_calls") if isinstance(model_payload, dict) else []),
         *_tool_policy_violations(required_tools, state),
+        *_store_detail_tool_violations(
+            decision=decision,
+            messages=planner_reply_messages,
+            required_tools=required_tools,
+            state=state,
+        ),
+        *_distance_tool_violations(required_tools),
+        *_direct_reply_message_violations(
+            decision=decision,
+            messages=planner_reply_messages,
+        ),
+        *_direct_reply_store_consistency_violations(
+            state=state,
+            decision=decision,
+            messages=planner_reply_messages,
+        ),
         *_payment_consistency_violations(
             decision=decision,
             conversion_stage=conversion_stage,
@@ -83,6 +117,14 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             decision=decision,
             conversion_stage=conversion_stage,
             next_step=next_step,
+            messages=planner_reply_messages,
+        ),
+        *_pending_lookup_reply_violations(
+            decision=decision,
+            messages=planner_reply_messages,
+        ),
+        *_appointment_availability_reply_violations(
+            decision=decision,
             messages=planner_reply_messages,
         ),
     ]
@@ -158,16 +200,30 @@ def _normalize_enum(value: Any, allowed: tuple[str, ...], default: str) -> str:
 
 
 def _normalize_reply_messages(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        value = [value]
     if not isinstance(value, list):
         return []
     output: list[dict[str, Any]] = []
     for item in value[:4]:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                output.append({"type": "text", "order": len(output) + 1, "content": {"text": text}})
+            continue
         if not isinstance(item, dict):
             continue
         msg_type = str(item.get("type") or "text").strip()
         if msg_type not in {"text", "image", "payment_collection", "human_handoff", "store_address"}:
             msg_type = "text"
         content = item.get("content")
+        if content in (None, "", [], {}) and any(item.get(key) for key in ("text", "url", "handoff_reason", "store_id")):
+            content = {
+                "text": item.get("text"),
+                "url": item.get("url"),
+                "handoff_reason": item.get("handoff_reason"),
+                "store_id": item.get("store_id"),
+            }
         if msg_type == "payment_collection":
             output.append({"type": "payment_collection", "order": len(output) + 1, "content": {"amount": 10, "remark": ""}})
             continue
@@ -305,16 +361,350 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                     }
                 )
             continue
-        if name == "customer_store_lookup" and str(tool.get("purpose") or "").strip() == "nearby_candidates":
-            if not _location_query_has_scope_region(query, state):
+        if name == "customer_store_lookup":
+            if not _location_query_has_scope_region(query, state) and not _query_matches_scope_store_name(query, state):
                 violations.append(_ambiguous_location_tool_violation("customer_store_lookup"))
             continue
         if name == "distance_calculate":
             origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or "").strip()
             if not _location_query_has_scope_region(origin, state):
                 violations.append(_ambiguous_location_tool_violation("distance_calculate"))
+            continue
+        if name == "available_time":
+            missing_args: list[str] = []
+            store_id = str(tool.get("store_id") or "").strip()
+            if not store_id:
+                missing_args.append("store_id")
+            if not str(tool.get("date") or "").strip():
+                missing_args.append("date")
+            if missing_args:
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "available_time",
+                        "missing": "available_time_missing_" + "_".join(missing_args),
+                        "note": (
+                            "available_time requires a concrete store_id and date. If the customer only provided a city, "
+                            "district, landmark, or store name, call customer_store_lookup first or ask one missing field; "
+                            "do not call available_time with an empty store_id/date."
+                        ),
+                    }
+                )
+            elif not _is_known_numeric_store_id(store_id, state):
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "available_time",
+                        "missing": "available_time_invalid_store_id",
+                        "note": (
+                            "available_time.store_id must be a real numeric store id from request_context, appointment_cache, "
+                            "customer_context, or customer_store_knowledge. Do not invent symbolic ids such as store_xxx."
+                        ),
+                    }
+                )
+            elif _is_past_iso_date(str(tool.get("date") or "")):
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "available_time",
+                        "missing": "available_time_past_date",
+                        "note": "available_time.date must be today or a future date based on current_date. Do not use old example dates.",
+                    }
+                )
 
     return violations
+
+
+def _direct_reply_message_violations(*, decision: str, messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    if decision == "direct_reply" and not messages:
+        return [
+            {
+                "missing": "direct_reply_messages",
+                "note": "decision=direct_reply must include at least one customer-visible reply_messages item. Rewrite with a short direct answer, or switch to need_tools/no_reply when appropriate.",
+            }
+        ]
+    return []
+
+
+def _direct_reply_store_consistency_violations(
+    *,
+    state: AgentState,
+    decision: str,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if decision != "direct_reply" or _request_store_from_state(state):
+        return []
+    current_store = _store_from_current_message(state)
+    if not current_store or current_store.get("ambiguous"):
+        return []
+    current_name = str(current_store.get("store_name") or "").strip()
+    if not current_name:
+        return []
+    text = " ".join(
+        _message_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    compact_text = _compact_text(text)
+    if not compact_text or _compact_text(current_name) in compact_text:
+        return []
+    other_names = [
+        name
+        for name in _known_store_names_for_state(state)
+        if name != current_name and _compact_text(name) in compact_text
+    ]
+    other_names = _without_subsumed_store_names(_dedupe_names(other_names))
+    if not other_names:
+        return []
+    return [
+        {
+            "task_type": "reply_fact_consistency",
+            "subtype": "current_message_store",
+            "missing": "direct_reply_store_mismatch",
+            "note": (
+                "The current customer message explicitly names store "
+                f"{current_name}, but the direct reply mentions another known store "
+                f"{'、'.join(other_names[:3])}. Rewrite the reply to use the current-message store, "
+                "or ask the customer to clarify if multiple stores are intended."
+            ),
+        }
+    ]
+
+
+def _request_store_from_state(state: AgentState) -> dict[str, str]:
+    store_id = str(state.get("confirmed_store_id") or state.get("store_id") or "").strip()
+    store_name = str(state.get("confirmed_store_name") or state.get("store_name") or "").strip()
+    if not (store_id or store_name):
+        return {}
+    return {"store_id": store_id, "store_name": store_name}
+
+
+def _store_from_current_message(state: AgentState) -> dict[str, Any]:
+    text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    matched_names = _store_names_matching_text(state, text)
+    if len(matched_names) == 1:
+        return {"store_name": matched_names[0], "source": "current_message"}
+    if len(matched_names) > 1:
+        return {"ambiguous": True, "matched_store_names": matched_names[:5], "source": "current_message"}
+    return {}
+
+
+def _store_names_matching_text(state: AgentState, text: str) -> list[str]:
+    if not text:
+        return []
+    matched = [name for name in _known_store_names_for_state(state) if name and name in text]
+    return _without_subsumed_store_names(_dedupe_names(matched))
+
+
+def _known_store_names_for_state(state: AgentState) -> list[str]:
+    names: list[str] = []
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    for store in stores:
+        if not isinstance(store, dict):
+            continue
+        name = str(store.get("store_name") or store.get("name") or "").strip()
+        if name:
+            names.append(name)
+    names.extend(name for name in KNOWN_STORE_NAMES if name)
+    return _dedupe_names(names)
+
+
+def _dedupe_names(names: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        output.append(name)
+    return output
+
+
+def _without_subsumed_store_names(names: list[str]) -> list[str]:
+    return [name for name in names if not any(name != other and name in other for other in names)]
+
+
+def _store_detail_tool_violations(
+    *,
+    decision: str,
+    messages: list[dict[str, Any]],
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+) -> list[dict[str, str]]:
+    if decision != "direct_reply" or _has_tool(required_tools, "customer_store_lookup"):
+        return []
+    text = " ".join(
+        _message_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    current_text = str(state.get("normalized_content") or state.get("content") or "")
+    if not (_direct_text_requires_store_detail_tool(text) or _current_message_requests_store_detail(current_text)):
+        return []
+    return [
+        {
+            "task_type": "tool_required",
+            "subtype": "customer_store_lookup",
+            "missing": "store_detail_tool_required",
+            "note": (
+                "Customer-visible store address, location card, navigation, route, or concrete store detail must come from "
+                "customer_store_lookup facts. Switch to need_tools and call customer_store_lookup. If current_known_store "
+                "has a single store, use its store_name as query; if it is ambiguous, ask which store instead of asserting details."
+            ),
+        }
+    ]
+
+
+def _distance_tool_violations(required_tools: list[dict[str, Any]]) -> list[dict[str, str]]:
+    if _has_tool(required_tools, "distance_calculate"):
+        return []
+    for tool in required_tools:
+        if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
+            continue
+        if str(tool.get("purpose") or "").strip() == "nearby_candidates":
+            return [
+                {
+                    "task_type": "tool_required",
+                    "subtype": "distance_calculate",
+                    "missing": "distance_calculate_required",
+                    "note": (
+                        "Nearby, closest, airport-nearby, or distance-ranking store questions require distance_calculate after "
+                        "customer_store_lookup. Add distance_calculate with candidate_source=customer_store_lookup, or change "
+                        "the lookup purpose to existence/detail if no distance ranking is needed."
+                    ),
+                }
+            ]
+    return []
+
+
+def _has_tool(required_tools: list[dict[str, Any]], name: str) -> bool:
+    return any(isinstance(tool, dict) and str(tool.get("name") or "") == name for tool in required_tools)
+
+
+def _direct_text_requires_store_detail_tool(text: str) -> bool:
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    if _asserts_store_address_detail(compact):
+        return True
+    return any(
+        term in compact
+        for term in (
+            "地址:",
+            "地址：",
+            "营业时间",
+            "停车",
+            "地下停车",
+            "可停",
+            "定位卡",
+            "门店卡",
+            "位置卡",
+            "路线卡",
+            "导航过去",
+            "直接导航",
+            "发您地址",
+            "发你地址",
+            "已发地址",
+            "发过地址",
+            "地址发您",
+            "地址发你",
+        )
+    )
+
+
+def _current_message_requests_store_detail(text: str) -> bool:
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    if any(term in compact for term in ("发个位置", "发位置", "位置发我", "发个地址", "发地址", "地址发我", "发导航", "发定位", "定位发我")):
+        return True
+    return bool(re.search(r"发.{0,8}(地址|位置|定位|导航)", compact)) or bool(
+        re.search(r"(地址|位置|定位|导航).{0,8}(发|给)", compact)
+    )
+
+
+def _asserts_store_address_detail(text: str) -> bool:
+    if any(term in text for term in ("地址是", "地址在", "地址:", "地址：", "门店地址", "详细地址")):
+        return True
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z0-9]{1,30}(?:路|街|大道|巷)\s*\d+\s*号", text))
+
+
+def _is_known_numeric_store_id(store_id: str, state: AgentState) -> bool:
+    text = str(store_id or "").strip()
+    if not text.isdigit():
+        return False
+    known_ids = _known_store_ids(state)
+    return bool(known_ids) and text in known_ids
+
+
+def _is_past_iso_date(value: str) -> bool:
+    try:
+        parsed = date.fromisoformat(str(value or "").strip())
+    except ValueError:
+        return False
+    return parsed < date.today()
+
+
+def _known_store_ids(state: AgentState) -> set[str]:
+    ids: set[str] = set()
+    for source in (
+        state,
+        state.get("request_context") if isinstance(state.get("request_context"), dict) else {},
+        state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {},
+    ):
+        if not isinstance(source, dict):
+            continue
+        for key in ("store_id", "confirmed_store_id"):
+            value = str(source.get(key) or "").strip()
+            if value and value != "0":
+                ids.add(value)
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    appointment = customer_context.get("appointment") if isinstance(customer_context.get("appointment"), dict) else {}
+    value = str(appointment.get("store_id") or "").strip()
+    if value and value != "0":
+        ids.add(value)
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    recommended = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
+    for key in ("store_id", "id"):
+        value = str(recommended.get(key) or "").strip()
+        if value and value != "0":
+            ids.add(value)
+    store_facts = structured.get("store_facts") if isinstance(structured.get("store_facts"), list) else []
+    for store in store_facts:
+        if not isinstance(store, dict):
+            continue
+        for key in ("store_id", "id"):
+            value = str(store.get(key) or "").strip()
+            if value and value != "0":
+                ids.add(value)
+    ids.update(_recent_explicit_store_ids(state))
+    return ids
+
+
+def _recent_explicit_store_ids(state: AgentState) -> set[str]:
+    ids: set[str] = set()
+    basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    preferred_id = str(basic_info.get("preferred_store_id") or "").strip()
+    if preferred_id and preferred_id != "0":
+        ids.add(preferred_id)
+    events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
+    for event in events[-20:]:
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("event_type") or "") not in {"store_matched", "store_address_sent"}:
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        store_id = str(facts.get("store_id") or facts.get("id") or "").strip()
+        if store_id and store_id != "0":
+            ids.add(store_id)
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in history[-10:]:
+        text = _history_item_text(item)
+        for match in re.finditer(r"(?:store_id|门店ID)\s*[=:：]\s*(\d+)", text, flags=re.IGNORECASE):
+            ids.add(match.group(1))
+    return ids
 
 
 def _ambiguous_location_tool_violation(tool_name: str) -> dict[str, str]:
@@ -338,7 +728,29 @@ def _location_query_has_scope_region(value: str, state: AgentState) -> bool:
         compact = _compact_text(token)
         if compact and compact in text:
             return True
+    if _looks_like_specific_region(text):
+        return True
     return False
+
+
+def _query_matches_scope_store_name(value: str, state: AgentState) -> bool:
+    text = _compact_text(value)
+    if not text:
+        return False
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    for store in stores:
+        if not isinstance(store, dict):
+            continue
+        for key in ("store_name", "name"):
+            name = _compact_text(store.get(key))
+            if name and (name in text or text in name):
+                return True
+    return False
+
+
+def _looks_like_specific_region(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]{2,}(省|市|区|县|镇|乡|旗|州|盟|新区|机场|高铁站|火车站)", text))
 
 
 def _scope_region_tokens(state: AgentState) -> set[str]:
@@ -361,6 +773,15 @@ def _scope_region_tokens(state: AgentState) -> set[str]:
 
 def _compact_text(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "").strip()).lower()
+
+
+def _history_item_text(item: Any) -> str:
+    if isinstance(item, dict):
+        content = item.get("content")
+        if isinstance(content, dict):
+            return str(content.get("text") or content.get("url") or "").strip()
+        return str(content or "").strip()
+    return str(item or "").strip()
 
 
 def _rejected_tool_violations(raw_tools: Any) -> list[dict[str, str]]:
@@ -422,7 +843,24 @@ def _text_mentions_payment_entry(messages: list[dict[str, Any]]) -> bool:
         for item in messages
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     )
-    return any(term in text for term in ("发入口", "重新发", "付款入口", "收款入口", "支付入口", "现在为您发", "马上发您"))
+    compact = "".join(str(text or "").split())
+    return any(
+        term in compact
+        for term in (
+            "发入口",
+            "发送入口",
+            "重新发",
+            "付款入口",
+            "收款入口",
+            "支付入口",
+            "预约金入口",
+            "报名入口",
+            "发报名入口",
+            "发送报名入口",
+            "现在为您发",
+            "马上发您",
+        )
+    )
 
 
 def _text_explains_previous_payment_entry(messages: list[dict[str, Any]]) -> bool:
@@ -462,6 +900,66 @@ def _two_text_rhythm_violations(
             "note": "This direct text reply contains both an answer and a next-step prompt. Rewrite reply_messages as two short text messages: answer first, then one light next-step action.",
         }
     ]
+
+
+def _pending_lookup_reply_violations(
+    *,
+    decision: str,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if decision != "direct_reply":
+        return []
+    text = " ".join(
+        _message_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    compact = _compact_text(text)
+    if not compact:
+        return []
+    if re.search(r"(查|核对|看).{0,12}(档期|案例|参考)", compact):
+        return [
+            {
+                "task_type": "reply_fact_consistency",
+                "subtype": "pending_lookup_promise",
+                "missing": "direct_reply_promises_unfinished_lookup",
+                "note": (
+                    "direct_reply must not promise pending lookup work such as checking schedule/cases. "
+                    "If the answer needs cases, use kb_search(case_studies). If it needs real schedule, use available_time with store_id/date or ask one missing field."
+                ),
+            }
+        ]
+    return []
+
+
+def _appointment_availability_reply_violations(
+    *,
+    decision: str,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if decision != "direct_reply":
+        return []
+    text = " ".join(
+        _message_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    compact = _compact_text(text)
+    if not compact:
+        return []
+    if any(term in compact for term in ("可以约", "能约", "可以预约", "能预约", "有空档", "有档期")):
+        return [
+            {
+                "task_type": "reply_fact_consistency",
+                "subtype": "appointment_availability",
+                "missing": "available_time_required_for_availability_claim",
+                "note": (
+                    "Direct replies must not claim a time can be booked without available_time facts. "
+                    "Ask for the missing store/time field, or call available_time when store_id/date are known."
+                ),
+            }
+        ]
+    return []
 
 
 def _looks_like_answer_with_next_step(text: str) -> bool:
