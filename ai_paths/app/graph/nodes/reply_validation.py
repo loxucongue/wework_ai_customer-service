@@ -188,6 +188,7 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         return
     has_payment = any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict))
     text = _combined_text(messages)
+    payment_context = payment_collection_context(state=state, messages=messages)
     needs_payment = False
     if not _explains_previous_payment_entry(text):
         needs_payment = (
@@ -195,6 +196,10 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
             or str(state.get("next_step") or "") == "send_deposit"
             or _promises_payment_entry(text)
         )
+    if needs_payment and payment_context.get("over_limit") and not has_payment:
+        if _promises_payment_entry(text) or not _asks_over_limit_participant_confirmation(text):
+            raise ValueError("payment_participant_count_confirm_required")
+        return
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
 
@@ -646,6 +651,16 @@ def _promises_payment_entry(text: str) -> bool:
             "马上发您",
         )
     )
+
+
+def _asks_over_limit_participant_confirmation(text: str) -> bool:
+    compact = "".join(str(text or "").split())
+    if not compact:
+        return False
+    has_count_word = any(term in compact for term in ("几位", "几个人", "多少人", "人数", "一共几", "总共几", "共几"))
+    has_confirmation_word = any(term in compact for term in ("确认", "核对", "先问", "先看", "先帮您看", "先帮您确认"))
+    has_group_word = any(term in compact for term in ("多人", "同行", "一起到店", "一起过去", "名额"))
+    return has_count_word or (has_confirmation_word and has_group_word)
 
 
 def _promises_unfinished_lookup(text: str) -> bool:

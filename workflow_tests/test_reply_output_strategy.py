@@ -754,6 +754,41 @@ def test_reply_validation_rejects_payment_collection_when_participants_over_limi
         )
 
 
+def test_reply_validation_allows_over_limit_participant_confirmation_without_payment() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "可以，多人同行我先帮您确认实际到店人数和名额。您这边一共几位到店？"},
+            }
+        ],
+        {
+            "normalized_content": "我带四个朋友一起过去",
+            "conversion_stage": "deposit_push",
+            "next_step": "send_deposit",
+        },
+    )
+
+
+def test_reply_validation_rejects_over_limit_text_promising_entry_without_payment() -> None:
+    with pytest.raises(ValueError, match="payment_participant_count_confirm_required"):
+        validate_reply_consistency(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "可以，我马上发入口，您确认一下一共几位到店。"},
+                }
+            ],
+            {
+                "normalized_content": "我带四个朋友一起过去",
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+            },
+        )
+
+
 def test_workflow_response_keeps_payment_collection_amount() -> None:
     response = ChatResponse(
         request_id="payment-amount-test",

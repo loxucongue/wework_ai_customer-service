@@ -5,7 +5,11 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.nodes.reply_validation import validate_reply_consistency
-from app.services.payment_collection import normalize_deposit_refund_policy_text, payment_collection_content
+from app.services.payment_collection import (
+    normalize_deposit_refund_policy_text,
+    payment_collection_content,
+    payment_collection_context,
+)
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
@@ -98,16 +102,21 @@ def create_synthesize_reply_node(
                             validate_reply_consistency(messages, state)
                         except Exception as retry_exc:
                             retry_validation_exc = retry_exc
-                            handoff_fallback = _maybe_build_handoff_notice_fallback(messages, state, retry_validation_exc)
-                            if handoff_fallback is not None:
-                                messages = handoff_fallback
+                            over_limit_fallback = _maybe_build_over_limit_payment_fallback(state, retry_validation_exc)
+                            if over_limit_fallback is not None:
+                                messages = over_limit_fallback
                                 validate_reply_consistency(messages, state)
                             else:
-                                repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
-                                if repaired_messages is None:
-                                    raise
-                                messages = repaired_messages
-                                validate_reply_consistency(messages, state)
+                                handoff_fallback = _maybe_build_handoff_notice_fallback(messages, state, retry_validation_exc)
+                                if handoff_fallback is not None:
+                                    messages = handoff_fallback
+                                    validate_reply_consistency(messages, state)
+                                else:
+                                    repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
+                                    if repaired_messages is None:
+                                        raise
+                                    messages = repaired_messages
+                                    validate_reply_consistency(messages, state)
                         else:
                             retry_validation_exc = None
                         if retry_validation_exc is not None and _messages_have_handoff_notice(messages):
@@ -125,26 +134,37 @@ def create_synthesize_reply_node(
             except Exception as exc:
                 model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
                 primary_error = f"{type(exc).__name__}: {exc}"
-                handoff_fallback = _maybe_build_handoff_notice_fallback(messages or planner_messages, state, exc)
-                if handoff_fallback is not None:
-                    messages = handoff_fallback
+                over_limit_fallback = _maybe_build_over_limit_payment_fallback(state, exc)
+                if over_limit_fallback is not None:
+                    messages = over_limit_fallback
                     validate_reply_consistency(messages, state)
-                    reply_source = "deterministic_handoff_notice_fallback"
+                    reply_source = "deterministic_over_limit_payment_fallback"
                     model_call["fallback"] = {
                         "reason": primary_error,
-                        "strategy": "deterministic_handoff_notice",
+                        "strategy": "deterministic_over_limit_payment",
                     }
                     model_call["output"] = {"messages": len(messages)}
                 else:
-                    model_call["error"] = primary_error
-                    errors.append(
-                        {
-                            "node": "synthesize_reply",
-                            "message": "final_reply_failed",
-                            "detail": primary_error,
+                    handoff_fallback = _maybe_build_handoff_notice_fallback(messages or planner_messages, state, exc)
+                    if handoff_fallback is not None:
+                        messages = handoff_fallback
+                        validate_reply_consistency(messages, state)
+                        reply_source = "deterministic_handoff_notice_fallback"
+                        model_call["fallback"] = {
+                            "reason": primary_error,
+                            "strategy": "deterministic_handoff_notice",
                         }
-                    )
-                    messages = []
+                        model_call["output"] = {"messages": len(messages)}
+                    else:
+                        model_call["error"] = primary_error
+                        errors.append(
+                            {
+                                "node": "synthesize_reply",
+                                "message": "final_reply_failed",
+                                "detail": primary_error,
+                            }
+                        )
+                        messages = []
 
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
@@ -189,6 +209,23 @@ def _maybe_append_required_store_address(
     if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
         return None
     return _renumber([*messages, {"type": "store_address", "content": {"store_id": store_id}}])
+
+
+def _maybe_build_over_limit_payment_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
+    error = str(exc)
+    if "payment_participant_count_confirm_required" not in error and "payment_collection_required" not in error:
+        return None
+    if not payment_collection_context(state=state, messages=[]).get("over_limit"):
+        return None
+    return _renumber(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "可以，多人同行我先帮您确认实际到店人数和名额。您这边一共几位到店？确认后再按人数安排。",
+            }
+        ]
+    )
 
 
 def _maybe_build_handoff_notice_fallback(
