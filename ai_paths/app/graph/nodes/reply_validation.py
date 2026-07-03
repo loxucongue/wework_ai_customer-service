@@ -646,6 +646,9 @@ def _known_store_names_for_validation(state: dict[str, Any]) -> list[str]:
         if name:
             names.append(name)
     names.extend(name for name in KNOWN_STORE_NAMES if name)
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in history[-12:]:
+        names.extend(_store_like_names_from_text(str(item or "")))
     output: list[str] = []
     seen: set[str] = set()
     for name in names:
@@ -653,6 +656,21 @@ def _known_store_names_for_validation(state: dict[str, Any]) -> list[str]:
             seen.add(name)
             output.append(name)
     return output
+
+
+def _store_like_names_from_text(text: str) -> list[str]:
+    names: list[str] = []
+    for match in re.finditer(r"[\u4e00-\u9fff]{2,}(?:一店|二店|三店|四店|五店|六店|七店|八店|九店|十店|旗舰店|中心店|分店)", text):
+        name = match.group(0).strip()
+        if not name:
+            continue
+        names.append(name)
+        max_len = min(12, len(name))
+        for size in range(4, max_len + 1):
+            suffix = name[-size:]
+            if suffix not in {"这个店", "那个店"}:
+                names.append(suffix)
+    return names
 
 
 def _asserts_time_available(text: str) -> bool:

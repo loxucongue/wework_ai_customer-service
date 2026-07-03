@@ -494,6 +494,20 @@ def test_generic_store_reply_must_not_use_history_store_without_facts() -> None:
         )
 
 
+def test_generic_store_reply_must_not_use_store_name_from_history_text() -> None:
+    with pytest.raises(ValueError, match="store_context_over_anchor_for_generic_question"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "广州白云三店是当前为您匹配的门店。"}}],
+            {
+                "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
+                "conversation_history": [
+                    _u(r"\u7528\u6237: \u6211\u5728\u5e7f\u5dde\u767d\u4e91\u9644\u8fd1"),
+                    _u(r"\u5c0f\u8d1d: \u6309\u60a8\u8fd9\u4e2a\u4f4d\u7f6e\uff0c\u4f18\u5148\u770b\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97\u3002"),
+                ],
+            },
+        )
+
+
 def test_generic_store_reply_can_ask_current_city_or_district() -> None:
     validate_reply_consistency(
         [{"type": "text", "order": 1, "content": {"text": "您在哪个城市或哪个区？我按您方便的位置帮您查附近门店。"}}],
