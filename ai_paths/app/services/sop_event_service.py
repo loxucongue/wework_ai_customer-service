@@ -121,18 +121,28 @@ class SopEventService:
             limit=30,
         )
         if conversation_fetch.get("status") != "ok":
-            return self._create_task_record(
-                payload,
-                customer,
-                index=index,
-                identity=identity,
-                sop_pack_id=base_pack_id,
-                sop_pack_name=base_pack_name,
-                reply_messages=[],
-                status="failed_conversation_fetch",
-                error=str(conversation_fetch.get("error") or conversation_fetch.get("reason") or "conversation_fetch_failed"),
-                send_payload={"identity": identity, "conversation_fetch": compact(conversation_fetch, max_chars=4000)},
-            )
+            if event_type in FIRST_ADD_EVENT_TYPES:
+                conversation_fetch = {
+                    "status": "fallback_empty",
+                    "reason": "conversation_fetch_failed",
+                    "error": str(conversation_fetch.get("error") or conversation_fetch.get("reason") or ""),
+                    "request": conversation_fetch.get("request", {}),
+                    "message_count": 0,
+                    "messages": [],
+                }
+            else:
+                return self._create_task_record(
+                    payload,
+                    customer,
+                    index=index,
+                    identity=identity,
+                    sop_pack_id=base_pack_id,
+                    sop_pack_name=base_pack_name,
+                    reply_messages=[],
+                    status="failed_conversation_fetch",
+                    error=str(conversation_fetch.get("error") or conversation_fetch.get("reason") or "conversation_fetch_failed"),
+                    send_payload={"identity": identity, "conversation_fetch": compact(conversation_fetch, max_chars=4000)},
+                )
 
         conversation_messages = conversation_fetch.get("messages") if isinstance(conversation_fetch.get("messages"), list) else []
         if event_type in FIRST_ADD_EVENT_TYPES:

@@ -117,6 +117,26 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls[0]["event_type"], "sop_friend_added_schedule_batch")
         self.assertEqual(selector.calls[0]["candidate_packs"][0]["id"], "opening")
 
+    async def test_first_added_event_uses_empty_history_when_conversation_fetch_fails(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(fetch_result={"status": "failed", "error": "http_status:404"})
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send opening"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_first_fetch_failed",
+            event_type="sop_friend_added_schedule_batch",
+            sop={"delay_minutes": 1},
+            customers=[{"first_added_event": {"trace_id": "trace_fetch_failed"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_first_fetch_failed")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(repo.tasks[0]["send_payload"]["conversation_fetch"]["status"], "fallback_empty")
+        self.assertEqual(selector.calls[0]["conversation_messages"], [])
+
     async def test_first_added_event_ignores_conversation_before_first_add_time(self) -> None:
         repo = _Repo()
         client = _OutreachClient(
@@ -638,13 +658,22 @@ class _PromptCaptureModel:
 
 
 class _OutreachClient:
-    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        messages: list[dict[str, Any]] | None = None,
+        fetch_result: dict[str, Any] | None = None,
+    ) -> None:
         self.messages = messages or []
+        self.fetch_result = fetch_result
         self.fetch_calls: list[dict[str, Any]] = []
         self.send_calls: list[dict[str, Any]] = []
 
     async def fetch_conversation(self, **kwargs: Any) -> dict[str, Any]:
         self.fetch_calls.append(kwargs)
+        if self.fetch_result is not None:
+            result = dict(self.fetch_result)
+            result.setdefault("request", kwargs)
+            return result
         return {"status": "ok", "request": kwargs, "message_count": len(self.messages), "messages": self.messages}
 
     async def send_reply_messages(self, **kwargs: Any) -> dict[str, Any]:
