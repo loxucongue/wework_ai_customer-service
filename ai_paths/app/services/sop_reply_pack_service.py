@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.services.payment_collection import PAYMENT_COLLECTION_ALLOWED_AMOUNTS
+from app.services.sop_message_sanitizer import has_forbidden_deposit_refund_text
 
 
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address", "human_handoff", "human_handoff_notice"}
@@ -122,7 +124,7 @@ DEFAULT_SOP_REPLY_PACKS: dict[str, Any] = {
 EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
     {
         "id": "event_s10_intro_1min",
-        "enabled": True,
+        "enabled": False,
         "scope": "event_first_add",
         "sop_category": "intro",
         "name": "事件-1分钟介绍补发",
@@ -215,7 +217,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
         "scope": "event_first_add",
         "sop_category": "price_quote",
         "name": "事件-60分钟报价",
-        "purpose": "客户沉默时补齐活动价、预约金、尾款和可退规则，推进优惠名额。",
+        "purpose": "客户沉默时补齐活动价、预约金、尾款和不做退10元规则，推进优惠名额。",
         "order": 140,
         "send_once": True,
         "event_type": "sop_friend_added_schedule_batch",
@@ -236,7 +238,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
                 "type": "text",
                 "order": 2,
                 "content": {
-                    "text": "到店先看效果和方案，满意再做；不做的话10元预约金也退，主要是先帮您保留活动价名额。"
+                    "text": "到店先看效果和方案，满意再做；线上10元预约金到店抵扣，不做退10元，主要是先帮您保留活动价名额。"
                 },
             },
             {
@@ -268,7 +270,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
                 "type": "text",
                 "order": 1,
                 "content": {
-                    "text": "亲，我先给您把优惠名额留住，10元只是预约金，到店直接抵扣，不满意也可以退。"
+                    "text": "亲，我先给您把优惠名额留住，10元只是预约金，到店直接抵扣，不做退10元。"
                 },
             },
             {
@@ -291,7 +293,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
         "scope": "event_first_add",
         "sop_category": "payment_followup",
         "name": "事件-未付款1小时效果跟进",
-        "purpose": "客户未付预约金时，继续用效果参考和可退规则降低付款压力。",
+        "purpose": "客户未付预约金时，继续用效果参考和到店抵扣规则降低付款压力。",
         "order": 160,
         "send_once": True,
         "event_type": "sop_friend_added_schedule_batch",
@@ -305,7 +307,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
                 "type": "text",
                 "order": 1,
                 "content": {
-                    "text": "您看下这个改善参考，活动名额先锁住更稳，不限到店时间，不做10元也是退给您的。"
+                    "text": "您看下这个改善参考，活动名额先锁住更稳，不限到店时间，10元预约金到店抵扣，不做退10元。"
                 },
             },
             {
@@ -388,19 +390,31 @@ class SopReplyPackService:
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
-            return deepcopy(DEFAULT_SOP_REPLY_PACKS)
+            normalized = deepcopy(DEFAULT_SOP_REPLY_PACKS)
+            normalized["audit"] = _audit_config(normalized)
+            return normalized
         try:
             with self.path.open("r", encoding="utf-8") as file:
                 payload = json.load(file)
-            return self._normalize(payload)
+            normalized = self._normalize(payload)
+            normalized["audit"] = _audit_config(normalized)
+            return normalized
         except (OSError, json.JSONDecodeError, ValueError):
-            return deepcopy(DEFAULT_SOP_REPLY_PACKS)
+            normalized = deepcopy(DEFAULT_SOP_REPLY_PACKS)
+            normalized["audit"] = _audit_config(normalized)
+            return normalized
 
     def save(self, payload: dict[str, Any]) -> dict[str, Any]:
         normalized = self._normalize(payload)
+        audit = _audit_config(normalized)
+        errors = [issue for issue in audit["issues"] if issue.get("severity") == "error"]
+        if errors:
+            summary = "; ".join(str(issue.get("message") or issue.get("code") or "") for issue in errors[:5])
+            raise ValueError(f"SOP reply pack audit failed: {summary}")
         normalized["version"] = int(normalized.get("version") or 1)
         normalized["updated_at"] = datetime.now(UTC).isoformat()
         self._write_json(self.path, normalized)
+        normalized["audit"] = _audit_config(normalized)
         return normalized
 
     def append_missing_event_first_add_templates(self) -> dict[str, Any]:
@@ -520,6 +534,101 @@ def _checked_text(value: Any, default: str) -> str:
     if "{{" in text or "}}" in text:
         raise ValueError("SOP reply packs must use fixed content, not template placeholders")
     return text
+
+
+def _audit_config(config: dict[str, Any]) -> dict[str, Any]:
+    packs = config.get("packs") if isinstance(config.get("packs"), list) else []
+    issues: list[dict[str, Any]] = []
+    for pack in packs:
+        if not isinstance(pack, dict):
+            continue
+        pack_id = str(pack.get("id") or "")
+        enabled = bool(pack.get("enabled"))
+        messages = pack.get("reply_messages") if isinstance(pack.get("reply_messages"), list) else []
+        if enabled and not messages:
+            issues.append(_audit_issue("error", "enabled_pack_empty", pack_id, "启用的 SOP 话术包不能为空。"))
+        previous_text = ""
+        for index, message in enumerate(messages, start=1):
+            if not isinstance(message, dict):
+                continue
+            message_type = str(message.get("type") or "")
+            content = message.get("content") if isinstance(message.get("content"), dict) else {}
+            if message_type == "text":
+                text = str(content.get("text") or "")
+                if enabled and not text.strip():
+                    issues.append(_audit_issue("error", "empty_text", pack_id, "启用包存在空 text 消息。", order=index))
+                if has_forbidden_deposit_refund_text(text):
+                    issues.append(_audit_issue("error", "deposit_refund_conflict", pack_id, "预约金退款口径必须统一为“不做退10元/不做退还10元”。", order=index))
+                previous_text = text
+                continue
+            if message_type in {"image", "video"}:
+                url = str(content.get("url") or "")
+                if enabled and not url.strip():
+                    issues.append(_audit_issue("error", "empty_media_url", pack_id, "启用包存在空媒体 URL。", order=index))
+                elif url and "test.by4dev.4ba.cn" not in url:
+                    issues.append(_audit_issue("warning", "non_test_oss_url", pack_id, "媒体 URL 不是 test.by4dev.4ba.cn，需要确认长期有效。", order=index))
+                continue
+            if message_type == "payment_collection":
+                amount = _positive_int(content.get("amount"), 10)
+                if amount not in PAYMENT_COLLECTION_ALLOWED_AMOUNTS:
+                    issues.append(_audit_issue("error", "invalid_payment_amount", pack_id, "预约金金额只能是 10/20/30/40。", order=index))
+                if enabled and not previous_text:
+                    issues.append(_audit_issue("warning", "payment_without_intro_text", pack_id, "payment_collection 前应有 text 说明锁名额、到店抵扣和不做退10元。", order=index))
+
+    _audit_first_add_candidates(packs, issues)
+    errors = sum(1 for issue in issues if issue.get("severity") == "error")
+    warnings = sum(1 for issue in issues if issue.get("severity") == "warning")
+    return {
+        "status": "error" if errors else ("warning" if warnings else "ok"),
+        "error_count": errors,
+        "warning_count": warnings,
+        "issues": issues,
+    }
+
+
+def _audit_first_add_candidates(packs: list[Any], issues: list[dict[str, Any]]) -> None:
+    opening = next((pack for pack in packs if isinstance(pack, dict) and str(pack.get("id") or "") == "s10_new_customer_opening"), {})
+    if not opening or not bool(opening.get("enabled")):
+        issues.append(_audit_issue("error", "first_add_opening_disabled", "s10_new_customer_opening", "首次加微必须启用 s10_new_customer_opening。"))
+    elif "event_first_add" not in _normalize_scopes(opening):
+        issues.append(_audit_issue("error", "first_add_opening_scope_missing", "s10_new_customer_opening", "s10_new_customer_opening 必须支持 event_first_add 执行范围。"))
+
+    immediate = [
+        pack
+        for pack in packs
+        if isinstance(pack, dict)
+        and bool(pack.get("enabled"))
+        and "event_first_add" in _normalize_scopes(pack)
+        and (not str(pack.get("event_type") or "").strip() or str(pack.get("event_type") or "").strip() == "sop_friend_added_immediate")
+        and _non_negative_int(pack.get("delay_minutes"), 0) <= 0
+        and pack.get("reply_messages")
+    ]
+    scheduled = [
+        pack
+        for pack in packs
+        if isinstance(pack, dict)
+        and bool(pack.get("enabled"))
+        and "event_first_add" in _normalize_scopes(pack)
+        and (not str(pack.get("event_type") or "").strip() or str(pack.get("event_type") or "").strip() == "sop_friend_added_schedule_batch")
+        and _non_negative_int(pack.get("delay_minutes"), 0) <= 1
+        and pack.get("reply_messages")
+    ]
+    if not immediate:
+        issues.append(_audit_issue("error", "first_add_immediate_no_candidate", "", "sop_friend_added_immediate 没有可发送的首次加微候选包。"))
+    if not scheduled:
+        issues.append(_audit_issue("error", "first_add_schedule_no_candidate", "", "sop_friend_added_schedule_batch 1 分钟没有可发送的首次加微候选包。"))
+
+
+def _audit_issue(severity: str, code: str, pack_id: str, message: str, *, order: int | None = None) -> dict[str, Any]:
+    issue = {
+        "severity": severity,
+        "code": code,
+        "pack_id": pack_id,
+        "message": message,
+    }
+    if order is not None:
+        issue["message_order"] = order
+    return issue
 
 
 def _choice_text(value: Any, default: str, choices: set[str], *, allow_custom: bool = False) -> str:

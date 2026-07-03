@@ -6,13 +6,17 @@
       "id": "s10_new_customer_opening",
       "enabled": true,
       "scope": "chat_gate",
+      "scopes": [
+        "chat_gate",
+        "event_first_add"
+      ],
       "sop_category": "s10_new_customer_opening",
       "name": "新客破冰",
       "purpose": "新客加微后建立基本信任，并引导客户说出位置和主要诉求。",
       "order": 10,
       "send_once": true,
-      "event_type": "sop_friend_added_schedule_batch",
-      "delay_minutes": 1,
+      "event_type": "",
+      "delay_minutes": 0,
       "day_stage": "day1",
       "customer_state": "first_add_ai_notice",
       "stage_tag": "first_add_ai_notice",
@@ -143,7 +147,7 @@
           "type": "text",
           "order": 3,
           "content": {
-            "text": "参加了活动，不限制到店时间。到店亲眼看到效果了，满意再做。不满意订金10元直接退还，给您保留一个优惠名额吗？"
+            "text": "参加了活动，不限制到店时间。到店亲眼看到效果了，满意再做。线上预约金到店抵扣，不做退10元，给您保留一个优惠名额吗？"
           }
         },
         {
@@ -178,7 +182,7 @@
       "purpose": "客户担心效果、套路、乱收费、预约金或时间时，先消除最大顾虑。",
       "order": 40,
       "send_once": true,
-      "event_type": "sop_platform_task",
+      "event_type": "",
       "delay_minutes": 0,
       "day_stage": "day1",
       "customer_state": "",
@@ -220,7 +224,7 @@
           "type": "text",
           "order": 5,
           "content": {
-            "text": "报名登记只是为了给您保留本次活动价名额，后期根据您的时间提前预约资深老师档期，到店后如有任何不满意不做，或者您后期没时间不来了，这个10元的预约金也是一分不少退还的，您没任何损失的~"
+            "text": "报名登记只是为了给您保留本次活动价名额，后期根据您的时间提前预约资深老师档期。10元预约金到店抵扣，不做退10元，您不用担心额外损失。"
           }
         }
       ]
@@ -246,7 +250,7 @@
     },
     {
       "id": "event_s10_intro_1min",
-      "enabled": true,
+      "enabled": false,
       "scope": "event_first_add",
       "sop_category": "intro",
       "name": "事件-1分钟介绍补发",
@@ -348,7 +352,7 @@
       "scope": "event_first_add",
       "sop_category": "price_quote",
       "name": "事件-60分钟报价",
-      "purpose": "客户沉默时补齐活动价、预约金、尾款和可退规则，推进优惠名额。",
+      "purpose": "客户沉默时补齐活动价、预约金、尾款和不做退10元规则，推进优惠名额。",
       "order": 140,
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
@@ -372,7 +376,7 @@
           "type": "text",
           "order": 2,
           "content": {
-            "text": "到店先看效果和方案，满意再做；不做的话10元预约金也退，主要是先帮您保留活动价名额。"
+            "text": "到店先看效果和方案，满意再做；线上10元预约金到店抵扣，不做退10元，主要是先帮您保留活动价名额。"
           }
         }
       ]
@@ -400,7 +404,7 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "亲，我先给您把优惠名额留住，10元只是预约金，到店直接抵扣，不满意也可以退。"
+            "text": "亲，我先给您把优惠名额留住，10元只是预约金，到店直接抵扣，不做退10元。"
           }
         },
         {
@@ -426,7 +430,7 @@
       "scope": "event_first_add",
       "sop_category": "payment_followup",
       "name": "事件-未付款1小时效果跟进",
-      "purpose": "客户未付预约金时，继续用效果参考和可退规则降低付款压力。",
+      "purpose": "客户未付预约金时，继续用效果参考和到店抵扣规则降低付款压力。",
       "order": 160,
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
@@ -443,7 +447,7 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "您看下这个改善参考，活动名额先锁住更稳，不限到店时间，不做10元也是退给您的。"
+            "text": "您看下这个改善参考，活动名额先锁住更稳，不限到店时间，10元预约金到店抵扣，不做退10元。"
           }
         },
         {

@@ -692,6 +692,21 @@ def test_reply_validation_allows_group_payment_text_with_per_person_wording() ->
     )
 
 
+def test_reply_validation_rejects_payment_collection_when_participants_over_limit() -> None:
+    with pytest.raises(ValueError, match="payment_participant_count_confirm_required"):
+        validate_reply_consistency(
+            [
+                {"type": "text", "order": 1, "content": {"text": "可以，我给您发10元预约金入口，先帮您锁活动名额。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            {
+                "normalized_content": "我带四个朋友一起过去",
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+            },
+        )
+
+
 def test_workflow_response_keeps_payment_collection_amount() -> None:
     response = ChatResponse(
         request_id="payment-amount-test",
@@ -1070,7 +1085,7 @@ def test_reply_payload_keeps_context_for_low_information_message() -> None:
         }
     )
 
-    assert payload["conversation_history"] == [f"history-{index}" for index in range(3, 15)]
+    assert payload["conversation_history"] == [f"history-{index}" for index in range(15)]
     assert payload["customer_profile"]["decision_stage"] == "预约推进"
     assert payload["customer_basic_info"]["preferred_store_name"] == "广州白云三店"
     assert payload["history_events"]

@@ -66,6 +66,22 @@ type SopConfig = {
   version: number;
   updated_at: string;
   packs: SopPack[];
+  audit?: SopAudit;
+};
+
+type SopAuditIssue = {
+  severity: "error" | "warning";
+  code: string;
+  pack_id: string;
+  message: string;
+  message_order?: number;
+};
+
+type SopAudit = {
+  status: "ok" | "warning" | "error";
+  error_count: number;
+  warning_count: number;
+  issues: SopAuditIssue[];
 };
 
 const EMPTY_CONFIG: SopConfig = {
@@ -123,7 +139,7 @@ export function SopReplyPackWorkbench() {
     [config.packs, selectedId]
   );
 
-  const diagnostics = useMemo(() => validateConfig(config), [config]);
+  const diagnostics = useMemo(() => [...validateConfig(config), ...auditDiagnostics(config.audit)], [config]);
   const blockingErrors = diagnostics.filter((item) => item.level === "error");
   const warnings = diagnostics.filter((item) => item.level === "warning");
 
@@ -875,6 +891,33 @@ function normalizeConfig(value: unknown): SopConfig {
     version: numberValue(value.version, 1),
     updated_at: stringValue(value.updated_at),
     packs,
+    audit: normalizeAudit(value.audit),
+  };
+}
+
+function normalizeAudit(value: unknown): SopAudit | undefined {
+  if (!isRecord(value)) return undefined;
+  const issues = Array.isArray(value.issues)
+    ? value.issues.map(normalizeAuditIssue).filter(Boolean)
+    : [];
+  const status = stringValue(value.status);
+  return {
+    status: status === "error" || status === "warning" ? status : "ok",
+    error_count: numberValue(value.error_count, issues.filter((item) => item.severity === "error").length),
+    warning_count: numberValue(value.warning_count, issues.filter((item) => item.severity === "warning").length),
+    issues,
+  };
+}
+
+function normalizeAuditIssue(value: unknown): SopAuditIssue {
+  const record = isRecord(value) ? value : {};
+  const severity = stringValue(record.severity) === "error" ? "error" : "warning";
+  return {
+    severity,
+    code: stringValue(record.code),
+    pack_id: stringValue(record.pack_id),
+    message: stringValue(record.message),
+    message_order: numberValue(record.message_order, 0) || undefined,
   };
 }
 
@@ -951,6 +994,17 @@ function validateConfig(config: SopConfig): Array<{ level: "error" | "warning"; 
     }
   }
   return diagnostics;
+}
+
+function auditDiagnostics(audit: SopAudit | undefined): Array<{ level: "error" | "warning"; message: string }> {
+  if (!audit?.issues?.length) return [];
+  return audit.issues.map((issue) => {
+    const position = [issue.pack_id, issue.message_order ? `#${issue.message_order}` : ""].filter(Boolean).join(" ");
+    return {
+      level: issue.severity,
+      message: position ? `${position}: ${issue.message}` : issue.message,
+    };
+  });
 }
 
 function createMessage(type: MessageType, order: number): ReplyMessage {

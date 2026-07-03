@@ -73,7 +73,7 @@ PROFILE_ANALYZER_SYSTEM_PROMPT = """
 - image 且 URL 包含 anniversary-268.jpg：event_type=activity_intro_image_sent，facts 写 image_url；summary 写“已发送活动宣传图”。
 - human_handoff_notice：event_type=handoff_requested，facts 写 handoff_reason；summary 写“已记录需要内部关注的高风险/人工诉求”。
 - text 中明确解释周年庆活动价、268、做付258、报名规则：event_type=offer_explained。
-- text 中明确解释10元预约金、抵扣、可退：event_type=deposit_explained。
+- text 中明确解释10元预约金、抵扣、不做退10元：event_type=deposit_explained。
 
 如果本轮同时有心理变化和系统动作，可以分别记录；event_updates 最多 4 条。
 

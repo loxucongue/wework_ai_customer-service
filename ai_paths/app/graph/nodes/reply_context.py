@@ -47,7 +47,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     reply_mode = str(sop_progress.get("recommended_reply_mode") or "normal_answer").strip() or "normal_answer"
     return {
         "content": state.get("normalized_content"),
-        "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-12:],
+        "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-20:],
         "short_message_context": {} if suppress_profile_memory else short_message_context_for_model(
             content=str(state.get("normalized_content") or state.get("content") or ""),
             conversation_history=state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else [],

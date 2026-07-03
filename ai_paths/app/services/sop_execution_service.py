@@ -5,6 +5,7 @@ from typing import Any
 
 from app.schemas import ChatRequest
 from app.services.model_client import ModelClient
+from app.services.sop_message_sanitizer import sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
@@ -93,7 +94,15 @@ class SopExecutionService:
                 )
                 return _finish(result, started)
 
-            messages = _pack_messages(selected)
+            messages, sanitize_summary = sanitize_sop_reply_messages(
+                _pack_messages(selected),
+                state={
+                    "content": request.content,
+                    "normalized_content": request.content,
+                    "conversation_history": request.conversation_history if isinstance(request.conversation_history, list) else [],
+                },
+            )
+            result["message_sanitize"] = sanitize_summary
             if not messages:
                 result.update(
                     {

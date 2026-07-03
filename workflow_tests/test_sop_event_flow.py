@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 
 from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import SopExecutionService
+from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage import AppRepository, SQLiteStore
 
 
@@ -93,6 +94,37 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.tasks[0]["status"], "sent")
         self.assertEqual(repo.tasks[0]["send_payload"]["identity"]["identity_source"], "default_platform_identity")
         self.assertEqual(repo.tasks[0]["send_payload"]["identity"]["identity_default_fields"], "corp_id")
+
+    async def test_event_identity_uses_default_when_lookup_fails(self) -> None:
+        repo = _Repo()
+        repo.identity_lookup_error = RuntimeError("lookup down")
+        client = _OutreachClient(messages=[])
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send opening"})
+        service = _service(
+            repo=repo,
+            client=client,
+            selector=selector,
+            default_identity={
+                "corp_id": "ww943af61cd5d2afe4",
+                "user_id": "test2",
+                "wechat": "auto-3a03ca3ecaae3ae2",
+            },
+        )
+        payload = {
+            "event_id": "evt_identity_lookup_error",
+            "event_type": "sop_friend_added_schedule_batch",
+            "sop": {"delay_minutes": 1},
+            "customers": [{"customer": {"external_userid": "ext_user"}}],
+        }
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_identity_lookup_error")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(client.fetch_calls[0]["corp_id"], "ww943af61cd5d2afe4")
+        self.assertEqual(client.fetch_calls[0]["user_id"], "test2")
+        self.assertEqual(client.fetch_calls[0]["wechat"], "auto-3a03ca3ecaae3ae2")
+        self.assertIn("identity_lookup_error", repo.tasks[0]["send_payload"]["identity"])
 
     async def test_first_added_event_fetches_conversation_then_selects_first_add_sop(self) -> None:
         repo = _Repo()
@@ -208,6 +240,46 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.tasks[0]["status"], "sent")
         self.assertEqual(repo.tasks[0]["sop_pack_id"], "s10_new_customer_opening")
         self.assertEqual(selector.calls[0]["candidate_packs"][0]["id"], "s10_new_customer_opening")
+
+    async def test_event_payment_collection_amount_uses_recent_participant_count(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[{"direction": "customer", "content": "我带两个朋友一起过去"}])
+        selector = _Selector({"send_sop": True, "sop_pack_id": "deposit_pack", "reason": "send deposit"})
+        service = _service(repo=repo, client=client, selector=selector, pack_service=_DepositPackService())
+        payload = _base_payload(
+            event_id="evt_group_payment",
+            event_type="sop_friend_added_schedule_batch",
+            sop={"delay_minutes": 70},
+            customers=[{"first_added_event": {"trace_id": "trace_group"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_group_payment")
+
+        self.assertEqual(result["status"], "processed")
+        messages = repo.tasks[0]["reply_messages"]
+        self.assertEqual(messages[0]["content"]["text"], "可以，3位一共30元预约金，每位10元，用来锁活动名额，到店抵扣，不做退10元。")
+        self.assertEqual(messages[1]["content"]["amount"], 30)
+
+    async def test_event_payment_collection_over_four_people_asks_confirmation(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[{"direction": "customer", "content": "我带四个朋友一起过去"}])
+        selector = _Selector({"send_sop": True, "sop_pack_id": "deposit_pack", "reason": "send deposit"})
+        service = _service(repo=repo, client=client, selector=selector, pack_service=_DepositPackService())
+        payload = _base_payload(
+            event_id="evt_group_payment_over_limit",
+            event_type="sop_friend_added_schedule_batch",
+            sop={"delay_minutes": 70},
+            customers=[{"first_added_event": {"trace_id": "trace_group_over_limit"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_group_payment_over_limit")
+
+        self.assertEqual(result["status"], "processed")
+        messages = repo.tasks[0]["reply_messages"]
+        self.assertTrue(all(item["type"] != "payment_collection" for item in messages))
+        self.assertIn("一共几位到店", messages[0]["content"]["text"])
 
     async def test_platform_task_only_judges_and_sends_platform_actions(self) -> None:
         repo = _Repo()
@@ -440,6 +512,18 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 ["before_category"],
             )
 
+    def test_current_sop_reply_pack_config_audit_has_no_errors(self) -> None:
+        service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
+        config = service.load()
+
+        self.assertEqual(config["audit"]["status"], "ok")
+        self.assertEqual(config["audit"]["error_count"], 0)
+        opening = next(item for item in config["packs"] if item["id"] == "s10_new_customer_opening")
+        self.assertTrue(opening["enabled"])
+        self.assertIn("event_first_add", opening["scopes"])
+        self.assertEqual(opening["event_type"], "")
+        self.assertEqual(opening["delay_minutes"], 0)
+
     async def test_event_judge_prompt_defaults_to_platform_sop_unless_conflict_or_overlap(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "effect_followup", "need_ai_reply": False, "reason": "ok"})
         service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_PackService(), model_client=model)
@@ -634,6 +718,30 @@ class _DualScopeOpeningPackService:
         }
 
 
+class _DepositPackService:
+    def load(self) -> dict[str, Any]:
+        return {
+            "packs": [
+                {
+                    "id": "deposit_pack",
+                    "enabled": True,
+                    "scope": "event_first_add",
+                    "sop_category": "deposit_push",
+                    "name": "收款推进",
+                    "purpose": "发预约金",
+                    "order": 10,
+                    "send_once": True,
+                    "event_type": "sop_friend_added_schedule_batch",
+                    "delay_minutes": 70,
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": "我先给您发10元预约金入口，锁活动名额。"}},
+                        {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+                    ],
+                }
+            ]
+        }
+
+
 class _Selector:
     def __init__(self, output: dict[str, Any]) -> None:
         self.output = output
@@ -692,6 +800,7 @@ class _Repo:
         self.sent_ids: set[str] = set()
         self.sent_categories: set[str] = set()
         self.identity_lookup: dict[str, str] = {}
+        self.identity_lookup_error: Exception | None = None
 
     def create_sop_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         event_id = str(payload["event_id"])
@@ -731,6 +840,8 @@ class _Repo:
         return sorted(self.sent_categories)
 
     def find_sop_event_identity(self, *, customer_id: str = "", external_userid: str = "", wechat: str = "") -> dict[str, str]:
+        if self.identity_lookup_error:
+            raise self.identity_lookup_error
         return dict(self.identity_lookup)
 
     def create_sop_send_task(self, **kwargs: Any) -> dict[str, Any]:

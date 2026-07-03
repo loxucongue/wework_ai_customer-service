@@ -9,6 +9,7 @@ from fastapi import BackgroundTasks
 
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs
+from app.services.sop_message_sanitizer import sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import ALLOWED_MESSAGE_TYPES, SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
@@ -179,22 +180,20 @@ class SopEventService:
 
     def _complete_identity(self, identity: dict[str, str]) -> dict[str, str]:
         lookup = getattr(self.repository, "find_sop_event_identity", None)
-        if not callable(lookup):
-            return identity
-        missing = [key for key in ("corp_id", "user_id", "wechat") if not _string(identity.get(key))]
-        if not missing:
-            return identity
-        try:
-            found = lookup(
-                customer_id=identity.get("customer_id", ""),
-                external_userid=identity.get("external_userid", ""),
-                wechat=identity.get("wechat", ""),
-            )
-        except Exception:
-            return identity
-        if not isinstance(found, dict) or not found:
-            found = {}
         merged = dict(identity)
+        found: dict[str, Any] = {}
+        lookup_error = ""
+        missing = [key for key in ("corp_id", "user_id", "wechat") if not _string(identity.get(key))]
+        if missing and callable(lookup):
+            try:
+                raw_found = lookup(
+                    customer_id=identity.get("customer_id", ""),
+                    external_userid=identity.get("external_userid", ""),
+                    wechat=identity.get("wechat", ""),
+                )
+                found = raw_found if isinstance(raw_found, dict) else {}
+            except Exception as exc:
+                lookup_error = f"{type(exc).__name__}: {exc}"
         for key in ("corp_id", "user_id", "wechat", "external_userid", "customer_id"):
             if not _string(merged.get(key)) and _string(found.get(key)):
                 merged[key] = _string(found.get(key))
@@ -209,6 +208,8 @@ class SopEventService:
             merged["identity_source"] = "default_platform_identity"
         if filled_from_default:
             merged["identity_default_fields"] = ",".join(filled_from_default)
+        if lookup_error:
+            merged["identity_lookup_error"] = lookup_error
         return merged
 
     async def _create_first_add_task(
@@ -293,7 +294,31 @@ class SopEventService:
                 send_response={"event_decision": decision},
             )
 
-        messages = _pack_messages(selected)
+        messages, sanitize_summary = sanitize_sop_reply_messages(
+            _pack_messages(selected),
+            conversation_messages=event_conversation_messages,
+        )
+        if not messages:
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id=str(selected.get("id") or ""),
+                sop_pack_name=str(selected.get("name") or ""),
+                sop_category=_pack_category(selected),
+                reply_messages=[],
+                status="skipped_empty_reply_messages",
+                error="selected_sop_messages_empty_after_sanitize",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_filter": conversation_filter,
+                    "message_sanitize": sanitize_summary,
+                    "event_decision_input": decision.get("selector_input", {}),
+                },
+                send_response={"event_decision": decision},
+            )
         return self._create_task_record(
             payload,
             customer,
@@ -310,6 +335,7 @@ class SopEventService:
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                 "conversation_filter": conversation_filter,
+                "message_sanitize": sanitize_summary,
                 "event_decision_input": decision.get("selector_input", {}),
             },
             send_response={"event_decision": decision},
@@ -325,7 +351,11 @@ class SopEventService:
         conversation_fetch: dict[str, Any],
         conversation_messages: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        messages = _actions_to_reply_messages(_customer_actions(payload, customer))
+        raw_messages = _actions_to_reply_messages(_customer_actions(payload, customer))
+        messages, sanitize_summary = sanitize_sop_reply_messages(
+            raw_messages,
+            conversation_messages=conversation_messages,
+        )
         if not messages:
             return self._create_task_record(
                 payload,
@@ -338,7 +368,11 @@ class SopEventService:
                 reply_messages=[],
                 status="skipped_empty_reply_messages",
                 error="empty_platform_actions",
-                send_payload={"identity": identity, "conversation_fetch": _conversation_fetch_summary(conversation_fetch)},
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "message_sanitize": sanitize_summary,
+                },
             )
 
         decision = await self._event_decision(
@@ -366,6 +400,7 @@ class SopEventService:
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "message_sanitize": sanitize_summary,
                     "event_decision_input": decision.get("selector_input", {}),
                 },
                 send_response={"event_decision": decision},
@@ -385,6 +420,7 @@ class SopEventService:
             send_payload={
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                "message_sanitize": sanitize_summary,
                 "event_decision_input": decision.get("selector_input", {}),
             },
             send_response={"event_decision": decision},

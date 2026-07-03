@@ -57,6 +57,9 @@ def payment_participants_from_text(text: str) -> tuple[int, bool]:
     if not compact:
         return 1, False
 
+    if _has_single_person_signal(compact):
+        return 1, False
+
     companion_count = _companion_count(compact)
     if companion_count is not None:
         participants = companion_count + 1
@@ -179,6 +182,10 @@ def _has_simple_companion_signal(compact: str) -> bool:
             "姐妹一起",
         )
     )
+
+
+def _has_single_person_signal(compact: str) -> bool:
+    return any(term in compact for term in ("我一个人", "自己一个人", "一个人过去", "一个人到店", "一位过去", "一位到店"))
 
 
 def _number_value(value: str) -> int:

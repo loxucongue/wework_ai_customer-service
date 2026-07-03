@@ -321,6 +321,8 @@ def _reply_repair_hint(error: str) -> str:
         return "如果文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
     if "payment_collection_amount_text_mismatch" in error:
         return "预约金卡片金额必须和文本一致；同行按每位10元锁活动名额，2位说一共20元，3位说一共30元，4位说一共40元。"
+    if "payment_participant_count_confirm_required" in error:
+        return "客户同行人数超过4位时不要发送 payment_collection；改成 text 确认一共几位到店，或说明多人同行先由门店承接确认。"
     if "human_handoff_notice" in error:
         return "需要内部关注时，先用客户可见 text 正面回答和引导到店检测或核对事实，再追加 human_handoff_notice；text 不要说转人工、转同事、专业同事、稍等一下哈。"
     if "ambiguous_deposit_refund_wording" in error:

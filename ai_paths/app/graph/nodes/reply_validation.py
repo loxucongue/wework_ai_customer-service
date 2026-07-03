@@ -7,7 +7,7 @@ from typing import Any
 
 from app.graph.nodes.common import renumber_messages
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
-from app.services.payment_collection import payment_amount_matches_text, payment_collection_content
+from app.services.payment_collection import payment_amount_matches_text, payment_collection_content, payment_collection_context
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "human_handoff", "human_handoff_notice", "payment_collection", "store_address"}
@@ -196,6 +196,8 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
 def _validate_payment_collection_amount_text(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     if not any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict)):
         return
+    if payment_collection_context(state=state, messages=messages).get("over_limit"):
+        raise ValueError("payment_participant_count_confirm_required")
     if not payment_amount_matches_text(messages):
         raise ValueError("payment_collection_amount_text_mismatch")
 

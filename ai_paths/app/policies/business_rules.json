@@ -191,7 +191,7 @@
           "scenes": ["多少钱", "价格", "活动", "优惠", "199", "58", "268", "一次费用"],
           "decision": "直接回答周年庆活动价268，线上预约金10元，到店抵扣，做付258，不做退10元",
           "tools": [],
-          "reply_focus": "先答原价/活动价、预约金、尾款、可退和名额理由，再按conversion_stage推进一个动作；不能因为命中S3_PRICE就自动发送payment_collection"
+          "reply_focus": "先答原价/活动价、预约金、尾款、不做退10元和名额理由，再按conversion_stage推进一个动作；不能因为命中S3_PRICE就自动发送payment_collection"
         },
         {
           "id": "S3_PAYMENT_COLLECTION",

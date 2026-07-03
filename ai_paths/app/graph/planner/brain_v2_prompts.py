@@ -223,7 +223,7 @@ decision = direct_reply | need_tools | no_reply
 ## 6. 决策优先级
 基础原则：
 - 永远优先判断客户当前消息和最近几轮对话里的真实需求；画像、历史事件、订单、预约和门店事实只作为辅助事实，不得把客户已经转移的话题拉回旧任务。
-- 如果 current_message 是“人呢、在吗、还在吗、可以、好、嗯、行、那就这家、再发一下、没收到、明天、下午、三点、报名、发吧、等会儿”等短消息，必须优先绑定 current_turn_context、short_message_context、最近 1-3 轮对话或上一轮助手问题，不得当作新一轮泛咨询；只有 current_turn_context.open_task=none 且完全没有上下文时才回到 S1_GREETING。
+- 如果 current_message 是“人呢、在吗、还在吗、可以、好、嗯、行、那就这家、再发一下、没收到、明天、下午、三点、报名、发吧、等会儿”等短消息，必须优先绑定 current_turn_context、short_message_context、平台近30条对话或上一轮助手问题，不得当作新一轮泛咨询；只有 current_turn_context.open_task=none 且完全没有上下文时才回到 S1_GREETING。
 - 如果 current_turn_context.open_task 不是 none，优先按 current_turn_context.reply_anchor 承接当前任务；不要重新问已经锚定的城市、门店、项目或预约时间。
 - 如果客户连续追问同一类顾虑，不能重复上一轮核心话术；需要换角度回答。第一次解释原则，第二次补充降低风险，第三次给下一步，第四次及以上直接确认客户最担心的是价格、效果还是到店体验。
 - 如果当前消息能直接回答，先直接回答；只有当前问题确实依赖案例、距离、档期、预约记录或专业协助时才输出 need_tools。
@@ -513,7 +513,7 @@ S4_APPOINTMENT_RECORD, S4_APPOINTMENT_CHANGE, S4_APPOINTMENT_CANCEL, S4_HESITATI
 - 没有真实档期不能说预约成功。
 
 payment_collection 输出示例：
-前一条 text 必须说明 10 元预约金的锁名额/抵扣/可退价值。
+前一条 text 必须说明 10 元预约金的锁名额/抵扣/不做退10元价值。
 {"type":"payment_collection","order":2,"content":{"amount":10,"remark":""}}
 
 ## 14. 成交心理阶段
@@ -721,7 +721,7 @@ PLANNER_SYSTEM_PROMPT = """
 - 客户问“明天能约吗/今天能去吗/什么时候可以预约/怎么预约”，但本轮没有明确数字 store_id 时，不能调用 available_time，也不能说查档期、核对档期、看可约时间；先问城市、区域、想约哪家门店，或先调用 customer_store_lookup 确定门店。
 - 客户只有预约意向但缺门店时，本轮目标是把预约意向落到门店/区域，不要把预约直接等同于查档期。
 - 客户多轮表达位置时，customer_store_lookup.query 必须合并上下文，例如“我在厦门”后“机场附近”应输出“厦门市机场”。
-- 短消息如“可以、好、那就这家、明天、下午、三点、报名、发吧、没收到”必须结合最近 1-3 轮上下文理解。
+- 短消息如“可以、好、那就这家、明天、下午、三点、报名、发吧、没收到”必须结合 current_turn_context、short_message_context 和平台近30条对话理解。
 - 同类顾虑连续追问时，要换角度，不要重复上一轮核心话术。
 
 ## 直回要求
