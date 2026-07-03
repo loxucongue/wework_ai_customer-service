@@ -5,6 +5,7 @@ import time
 from typing import Any, Callable
 
 from app.graph.nodes.common import looks_bad_text, model_usage_snapshot
+from app.graph.nodes.conversation_history_fetch import ConversationFetcher, fetch_platform_conversation_history
 from app.graph.nodes.image_info import build_vision_prompt, fallback_image_info, validated_image_info
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
@@ -72,6 +73,7 @@ def create_background_context_layer(
     customer_context_service: CustomerContextService | None,
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None,
     coze_client: CozeClient | None = None,
+    conversation_fetcher: ConversationFetcher | None = None,
 ) -> Callable[[AgentState], Any]:
     async def background_context_layer(state: AgentState) -> dict[str, Any]:
         request_context = request_context_from_state(state)
@@ -91,6 +93,13 @@ def create_background_context_layer(
             identity_context = identity.get("request_context") if isinstance(identity, dict) else {}
             scoped_request_context = {**request_context, **identity_context} if isinstance(identity_context, dict) else request_context
             saved_memory = memory.get("saved_memory") if isinstance(memory, dict) else {}
+            conversation_task = asyncio.create_task(
+                _timed_conversation_fetch(
+                    state,
+                    conversation_fetcher,
+                    request_context=scoped_request_context,
+                )
+            )
             customer_task = asyncio.to_thread(
                 _timed_call,
                 "order_index",
@@ -110,10 +119,24 @@ def create_background_context_layer(
                 {},
                 identity,
             )
-            customer_result_timed, store_result_timed = await asyncio.gather(customer_task, store_task)
+            customer_result_timed, store_result_timed, conversation_result_timed = await asyncio.gather(
+                customer_task,
+                store_task,
+                conversation_task,
+            )
             customer_result = customer_result_timed["result"]
             customer_store_knowledge = store_result_timed["result"]
-            substeps.extend([_without_result(customer_result_timed), _without_result(store_result_timed)])
+            conversation_result = conversation_result_timed["result"] if isinstance(conversation_result_timed.get("result"), dict) else {}
+            conversation_history = conversation_result.get("conversation_history")
+            if not isinstance(conversation_history, list):
+                conversation_history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+            substeps.extend(
+                [
+                    _without_result(customer_result_timed),
+                    _without_result(store_result_timed),
+                    _without_result(conversation_result_timed),
+                ]
+            )
             customer_context = customer_result.get("customer_context", {})
             extra_result = _timed_call(
                 "store_snapshot_hydrate",
@@ -130,7 +153,7 @@ def create_background_context_layer(
                     {
                         "name": f"background_{item.get('name')}",
                         "input": {"cache_hit": item.get("cache_hit", False)},
-                        "output": {"duration_ms": item.get("duration_ms", 0)},
+                        "output": _substep_tool_output(item),
                         "error": item.get("error"),
                     }
                     for item in substeps
@@ -140,6 +163,8 @@ def create_background_context_layer(
                 **memory,
                 **customer_result,
                 "customer_store_knowledge": customer_store_knowledge,
+                "conversation_history": conversation_history,
+                "conversation_fetch": conversation_result.get("conversation_fetch", {}),
                 "background_substeps": substeps,
                 "trace": state.get("trace", []),
             }
@@ -171,12 +196,71 @@ def _timed_call(name: str, func: Callable[..., Any], *args: Any, **kwargs: Any) 
 
 
 def _without_result(item: dict[str, Any]) -> dict[str, Any]:
-    return {
+    output = {
         "name": item.get("name", ""),
         "duration_ms": item.get("duration_ms", 0),
         "cache_hit": item.get("cache_hit", False),
         "error": item.get("error"),
     }
+    summary = item.get("summary")
+    if isinstance(summary, dict):
+        output.update(summary)
+    return output
+
+
+def _substep_tool_output(item: dict[str, Any]) -> dict[str, Any]:
+    output = {"duration_ms": item.get("duration_ms", 0)}
+    for key in ("status", "reason", "missing", "message_count", "used_message_count", "limit"):
+        if key in item:
+            output[key] = item.get(key)
+    return output
+
+
+async def _timed_conversation_fetch(
+    state: AgentState,
+    conversation_fetcher: ConversationFetcher | None,
+    *,
+    request_context: dict[str, Any],
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        conversation_history, conversation_fetch = await fetch_platform_conversation_history(
+            state,
+            conversation_fetcher,
+            limit=30,
+            fallback_limit=30,
+            request_context=request_context,
+        )
+        return {
+            "name": "conversation_fetch",
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "result": {
+                "conversation_history": conversation_history,
+                "conversation_fetch": conversation_fetch,
+            },
+            "summary": conversation_fetch,
+            "cache_hit": False,
+            "error": conversation_fetch.get("error", "") if isinstance(conversation_fetch, dict) else "",
+        }
+    except Exception as exc:
+        fallback = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+        summary = {
+            "status": "failed",
+            "error": f"{type(exc).__name__}: {exc}",
+            "used_message_count": len(fallback[-30:]),
+            "limit": 30,
+        }
+        return {
+            "name": "conversation_fetch",
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "result": {
+                "conversation_history": fallback[-30:],
+                "conversation_fetch": summary,
+            },
+            "summary": summary,
+            "cache_hit": False,
+            "error": summary["error"],
+        }
 
 
 def _cache_hit_from_result(result: Any) -> bool:
@@ -342,6 +426,8 @@ def _background_output_snapshot(output: dict[str, Any]) -> dict[str, Any]:
             "error": store_knowledge.get("error", ""),
         },
         "background_substeps": output.get("background_substeps", []),
+        "conversation_fetch": output.get("conversation_fetch", {}),
+        "conversation_history_count": len(output.get("conversation_history") or []),
     }
 
 

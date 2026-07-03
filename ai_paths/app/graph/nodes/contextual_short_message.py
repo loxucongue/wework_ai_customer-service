@@ -4,6 +4,10 @@ from typing import Any
 
 
 CONTEXTUAL_SHORT_MESSAGES = {
+    "人呢",
+    "在吗",
+    "还在吗",
+    "怎么不回",
     "可以",
     "可以的",
     "好",
@@ -22,6 +26,10 @@ CONTEXTUAL_SHORT_MESSAGES = {
     "发吧",
     "发我",
     "等会儿",
+    "这家",
+    "那家",
+    "刚刚那家",
+    "刚才那家",
 }
 
 
@@ -39,7 +47,7 @@ def short_message_context_for_model(
     if not is_contextual_short_message(content):
         return {}
     last_assistant = _last_assistant_text(conversation_history)
-    output: dict[str, Any] = {}
+    output: dict[str, Any] = {"is_contextual_short_message": True}
     if last_assistant:
         output["pending_context"] = f"上一轮助手回复：{last_assistant[:220]}"
         output["last_reply_summary"] = last_assistant[:160]
@@ -48,6 +56,8 @@ def short_message_context_for_model(
     special = _last_special_message(sent_message_summary or {})
     if special:
         output["last_special_message"] = special
+    if len(output) == 1:
+        output["needs_recent_context"] = True
     return output
 
 

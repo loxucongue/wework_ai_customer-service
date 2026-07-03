@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from app.graph.nodes.common import clean_model_value, json_dumps, model_usage_snapshot
+from app.graph.nodes.conversation_history_fetch import fetch_platform_conversation_history
 from app.graph.nodes.memory_usage_policy import order_session_state
 from app.graph.state import AgentState
 from app.prompts.profile_analyzer import build_profile_analyzer_messages
@@ -17,6 +18,7 @@ def create_profile_event_extractor_node(
     memory_store: CustomerMemoryStore | None,
     model_client: ModelClient | None = None,
     compact_memory: Callable[[dict[str, Any]], dict[str, Any]],
+    conversation_fetcher: Callable[..., Awaitable[dict[str, Any]]] | None = None,
 ) -> Callable[[AgentState], Any]:
     async def profile_event_extractor(state: AgentState) -> dict[str, Any]:
         with trace_logger.node(
@@ -44,10 +46,18 @@ def create_profile_event_extractor_node(
             profile_update: dict[str, Any] = {}
             event_updates: list[dict[str, Any]] = []
             llm_profile_call: dict[str, Any] | None = None
+            conversation_history, conversation_fetch = await _profile_conversation_history(state, conversation_fetcher)
             if model_client and model_client.available:
-                llm_profile_call = {"name": "profile_analyzer_model", "input": {"tier": "fast"}}
+                llm_profile_call = {
+                    "name": "profile_analyzer_model",
+                    "input": {"tier": "fast", "conversation_fetch": conversation_fetch},
+                }
                 try:
-                    llm_update = await _profile_update_from_model(state, model_client)
+                    llm_update = await _profile_update_from_model(
+                        state,
+                        model_client,
+                        conversation_history=conversation_history,
+                    )
                     llm_profile_call["usage"] = model_usage_snapshot(model_client)
                     llm_profile_call["output"] = clean_model_value(llm_update, max_string_chars=600)
                     profile_update = _normalize_profile_update(llm_update.get("profile_update", {}))
@@ -70,6 +80,7 @@ def create_profile_event_extractor_node(
                 "event_updates": event_updates,
                 "saved_memory": compact_memory(saved_memory),
                 "memory_error": memory_error,
+                "profile_conversation_fetch": conversation_fetch,
                 "trace": state.get("trace", []),
             }
             if llm_profile_call:
@@ -85,10 +96,15 @@ def _memory_persistence_allowed(state: AgentState) -> bool:
     return bool(request_context.get("memory_persist_allowed"))
 
 
-async def _profile_update_from_model(state: AgentState, model_client: ModelClient) -> dict[str, Any]:
+async def _profile_update_from_model(
+    state: AgentState,
+    model_client: ModelClient,
+    *,
+    conversation_history: list[str] | None = None,
+) -> dict[str, Any]:
     payload = {
         "content": state.get("normalized_content"),
-        "conversation_history": state.get("conversation_history", [])[-8:],
+        "conversation_history": conversation_history if conversation_history is not None else state.get("conversation_history", [])[-50:],
         "reply_messages": state.get("reply_messages", []),
         "customer_profile": state.get("customer_profile", {}),
         "customer_basic_info": state.get("customer_basic_info", {}),
@@ -104,9 +120,20 @@ async def _profile_update_from_model(state: AgentState, model_client: ModelClien
         build_profile_analyzer_messages(payload, json_dumps=json_dumps),
         tier="fast",
         temperature=0.2,
-        response_format={"type": "json_object"},
     )
     return result if isinstance(result, dict) else {}
+
+
+async def _profile_conversation_history(
+    state: AgentState,
+    conversation_fetcher: Callable[..., Awaitable[dict[str, Any]]] | None,
+) -> tuple[list[str], dict[str, Any]]:
+    return await fetch_platform_conversation_history(
+        state,
+        conversation_fetcher,
+        limit=50,
+        fallback_limit=50,
+    )
 
 
 def _normalize_profile_update(incoming: Any) -> dict[str, Any]:

@@ -7,9 +7,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.graph.nodes.common import model_usage_snapshot
-from app.graph.nodes.contextual_short_message import is_contextual_short_message, short_message_context_for_model
+from app.graph.nodes.contextual_short_message import short_message_context_for_model
+from app.graph.nodes.current_turn_context import (
+    build_current_turn_context,
+    can_use_contextual_store_for_message,
+    current_store_anchor_from_state,
+)
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
-from app.graph.signals.general import is_low_information_content
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
 from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, safety_fallback_plan
@@ -122,13 +126,19 @@ async def run_planner_brain_v2(
 
 
 def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
-    suppress_memory = _should_suppress_planner_memory(state)
+    suppress_memory = False
     sent_message_summary = {} if suppress_memory else sent_message_summary_for_model(state)
+    current_known_store = _current_known_store_for_planner(state)
+    current_turn_context = {} if suppress_memory else build_current_turn_context(
+        state,
+        current_known_store=current_known_store,
+        sent_message_summary=sent_message_summary,
+    )
     payload = {
         "current_date": _current_date_iso(),
         "timezone": "Asia/Shanghai",
         "current_message": state.get("normalized_content") or "",
-        "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-10:],
+        "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-30:],
         "short_message_context": {} if suppress_memory else short_message_context_for_model(
             content=str(state.get("normalized_content") or state.get("content") or ""),
             conversation_history=state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else [],
@@ -139,7 +149,8 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_profile": {} if suppress_memory else state.get("customer_profile") or {},
         "history_events": [] if suppress_memory else (state.get("history_events") or [])[-8:],
         "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
-        "current_known_store": _current_known_store_for_planner(state),
+        "current_known_store": current_known_store,
+        "current_turn_context": current_turn_context,
         "store_scope_summary": _store_scope_summary(state.get("customer_store_knowledge") or {}),
         "sent_message_summary": sent_message_summary,
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
@@ -161,9 +172,19 @@ def _current_known_store_for_planner(state: AgentState) -> dict[str, Any]:
     if current_message_store:
         return current_message_store
 
-    explicit_store = _recent_explicit_store_for_planner(state)
-    if explicit_store:
-        return explicit_store
+    content = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if can_use_contextual_store_for_message(content, state):
+        explicit_store = _recent_explicit_store_for_planner(state)
+        if explicit_store:
+            return explicit_store
+        contextual_store = current_store_anchor_from_state(
+            state,
+            current_known_store=None,
+            allow_profile=False,
+            prefer_recent=True,
+        )
+        if contextual_store:
+            return contextual_store
 
     customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
     appointment = customer_context.get("appointment") if isinstance(customer_context.get("appointment"), dict) else {}
@@ -361,12 +382,7 @@ def _current_turn_can_use_appointment_store(state: AgentState) -> bool:
 
 
 def _should_suppress_planner_memory(state: AgentState) -> bool:
-    content = str(state.get("normalized_content") or "").strip()
-    if is_contextual_short_message(content):
-        return False
-    if not is_low_information_content(content):
-        return False
-    return not any(term in content for term in ("刚刚", "刚才", "之前", "上次", "那个", "这家", "继续"))
+    return False
 
 
 def _compact_plan_for_repair(plan: dict[str, Any]) -> dict[str, Any]:

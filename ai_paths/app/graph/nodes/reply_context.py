@@ -5,10 +5,10 @@ from typing import Any
 from app.graph.nodes.common import recent_assistant_replies
 from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference, target_time_status
 from app.graph.nodes.contextual_short_message import short_message_context_for_model
+from app.graph.nodes.current_turn_context import build_current_turn_context
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
-    should_suppress_profile_memory_for_reply,
 )
 from app.graph.planner.runtime_plan import (
     planner_handoff,
@@ -29,7 +29,7 @@ from app.policies.compliance_terms import (
 def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     planner_views = planner_task_views(state)
     should_show_appointment_context = not should_suspend_appointment_context_for_current_turn(state, planner_views)
-    suppress_profile_memory = should_suppress_profile_memory_for_reply(state)
+    suppress_profile_memory = False
     fact_envelope = {} if suppress_profile_memory else (state.get("fact_envelope") or {})
     required_tools = planner_required_tools(state)
     handoff = planner_handoff(state)
@@ -40,10 +40,14 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         sent_message_summary=sent_message_summary,
         fact_envelope=state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else fact_envelope,
     )
+    current_turn_context = {} if suppress_profile_memory else build_current_turn_context(
+        state,
+        sent_message_summary=sent_message_summary,
+    )
     reply_mode = str(sop_progress.get("recommended_reply_mode") or "normal_answer").strip() or "normal_answer"
     return {
         "content": state.get("normalized_content"),
-        "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-6:],
+        "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-12:],
         "short_message_context": {} if suppress_profile_memory else short_message_context_for_model(
             content=str(state.get("normalized_content") or state.get("content") or ""),
             conversation_history=state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else [],
@@ -68,6 +72,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "planner_tool_policy_violations": _compact_planner_violations(state.get("tool_policy_violations", [])),
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
+        "current_turn_context": current_turn_context,
         "store_scope_summary": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
         "sent_message_summary": sent_message_summary,
         "reply_mode": reply_mode,
@@ -114,8 +119,6 @@ def _sent_sop_like_categories(state: AgentState, *, sent_message_summary: dict[s
         categories.append("store_address")
     if sent_message_summary.get("activity_intro_image_sent"):
         categories.append("activity_intro")
-    if sent_message_summary.get("payment_collection_sent"):
-        categories.append("deposit_push")
     for event in state.get("history_events") or []:
         if not isinstance(event, dict):
             continue
@@ -128,8 +131,6 @@ def _sent_sop_like_categories(state: AgentState, *, sent_message_summary: dict[s
             categories.append("activity_intro")
         elif event_type == "offer_explained":
             categories.append("price_quote")
-        elif event_type in {"deposit_explained", "payment_collection_sent"}:
-            categories.append("deposit_push")
     return list(dict.fromkeys(item for item in categories if item))
 
 
@@ -318,11 +319,11 @@ def _fact_notes_for_model(
     if isinstance(recommended_store, dict) and recommended_store.get("name"):
         notes.append("已有推荐门店事实，可优先按推荐门店回答。")
         if recommended_store.get("reason") == "distance_calculate_rank_1":
-            notes.append("客户问附近或最近门店时，必须优先回答 distance_calculate 排序第一的推荐门店，不要泛泛列多家门店或反问客户选哪家。")
+            notes.append("客户问附近或最近门店时，必须优先回答 distance_calculate 排序第一的推荐门店；距离只用于排序，客户可见回复不要输出几公里、几分钟、车程或步行时长。")
 
     store_lookup_status = structured_facts.get("store_lookup_status") or {}
     if isinstance(store_lookup_status, dict) and store_lookup_status.get("distance_lookup_required"):
-        notes.append("客户在问距离或附近门店，但本轮没有真实距离结果；不要说最近、更近、几公里或几分钟，只能基于候选门店说明还需要按地图距离核对。")
+        notes.append("客户在问距离或附近门店，但本轮没有真实距离排序结果；不要说最近、更近、几公里或几分钟，只能基于候选门店说明还需要按地图距离核对。")
 
     sent_store_ids = {
         str(item).strip()
@@ -394,7 +395,7 @@ def _fact_notes_for_model(
 
     professional_assist = structured_facts.get("professional_assist") or {}
     if isinstance(professional_assist, dict) and professional_assist.get("status") == "requested":
-        notes.append("本轮已有专业同事协助事实；客户可见回复应先承接当前诉求，再说明会协助核对。")
+        notes.append("本轮已有内部关注 notice 事实；客户可见回复应先正面承接诉求。健康类引导到店检测，纠纷类核对门店/付款/项目，并追加 human_handoff_notice。")
 
     return notes[:6]
 

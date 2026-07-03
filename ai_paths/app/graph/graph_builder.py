@@ -26,6 +26,7 @@ from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
+from app.services.outreach_send_client import OutreachSendClient
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -58,6 +59,7 @@ def build_graph(
     customer_context_service: CustomerContextService | None = None,
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None = None,
     store_service: StoreService | None = None,
+    outreach_send_client: OutreachSendClient | None = None,
 ):
     return build_reply_graphs(
         coze_client,
@@ -67,6 +69,7 @@ def build_graph(
         customer_context_service,
         customer_store_knowledge_service,
         store_service,
+        outreach_send_client,
     ).full_graph
 
 
@@ -78,6 +81,7 @@ def build_reply_graphs(
     customer_context_service: CustomerContextService | None = None,
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None = None,
     store_service: StoreService | None = None,
+    outreach_send_client: OutreachSendClient | None = None,
 ) -> ReplyGraphs:
     nodes = _build_nodes(
         coze_client=coze_client,
@@ -87,6 +91,7 @@ def build_reply_graphs(
         customer_context_service=customer_context_service,
         customer_store_knowledge_service=customer_store_knowledge_service,
         store_service=store_service,
+        outreach_send_client=outreach_send_client,
     )
     return ReplyGraphs(
         full_graph=_compile_full_graph(nodes),
@@ -105,6 +110,7 @@ def _build_nodes(
     customer_context_service: CustomerContextService | None,
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None,
     store_service: StoreService | None,
+    outreach_send_client: OutreachSendClient | None,
 ) -> dict[str, Any]:
     layer_1_input_normalization = create_input_normalization_layer(
         trace_logger=trace_logger,
@@ -116,6 +122,7 @@ def _build_nodes(
         customer_context_service=customer_context_service,
         customer_store_knowledge_service=customer_store_knowledge_service,
         coze_client=coze_client,
+        conversation_fetcher=outreach_send_client.fetch_conversation if outreach_send_client else None,
     )
     planner_brain = create_planner_brain_node(
         trace_logger=trace_logger,
@@ -138,6 +145,7 @@ def _build_nodes(
         memory_store=memory_store,
         model_client=model_client,
         compact_memory=_compact_memory,
+        conversation_fetcher=outreach_send_client.fetch_conversation if outreach_send_client else None,
     )
 
     synthesize_reply = create_synthesize_reply_node(
