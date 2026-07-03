@@ -5,7 +5,7 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.nodes.reply_validation import validate_reply_consistency
-from app.services.payment_collection import payment_collection_content
+from app.services.payment_collection import normalize_deposit_refund_policy_text, payment_collection_content
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
@@ -118,7 +118,7 @@ def create_synthesize_reply_node(
                     messages = _filter_unsupported_images(messages, state, warnings)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
-                messages = append_activity_intro_image(messages, state, warnings)
+                messages = _normalize_deposit_refund_policy_messages(append_activity_intro_image(messages, state, warnings))
                 for warning in warnings:
                     if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
                         warning.setdefault("node", "synthesize_reply")
@@ -326,7 +326,7 @@ def _reply_repair_hint(error: str) -> str:
     if "human_handoff_notice" in error:
         return "需要内部关注时，先用客户可见 text 正面回答和引导到店检测或核对事实，再追加 human_handoff_notice；text 不要说转人工、转同事、专业同事、稍等一下哈。"
     if "ambiguous_deposit_refund_wording" in error:
-        return "预约金退款口径只能说“不做退10元/不做退还10元”，不要说“全额退还/全额退款”，避免客户误解为退还整笔活动价。"
+        return "预约金退款口径统一说“到店抵扣，不做退10元”。不要说“退还10元/退还20元/全额退款/一分不少退还/不满意退”，避免同客户口径冲突。"
     if "case_context_must_not_use_activity_intro_image" in error:
         return "本轮客户在问效果或案例，且已有 case_facts 案例图片事实。必须回答效果顾虑，并且如输出 image，只能使用 case_facts 里的 image_url；不要输出活动宣传图。"
     if "reply_too_similar" in error:
@@ -431,6 +431,7 @@ def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = 
                 text = str(content.get("text") or "").strip()
             else:
                 text = str(content or item.get("text") or "").strip()
+            text = normalize_deposit_refund_policy_text(text)
             if text:
                 messages.append({"type": "text", "order": int(item.get("order") or index), "content": {"text": text}})
             continue
@@ -453,6 +454,23 @@ def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = 
             if store_id:
                 messages.append({"type": "store_address", "order": int(item.get("order") or index), "content": {"store_id": store_id}})
     return messages
+
+
+def _normalize_deposit_refund_policy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") != "text":
+            output.append(item)
+            continue
+        content = item.get("content")
+        if isinstance(content, dict):
+            text = normalize_deposit_refund_policy_text(str(content.get("text") or ""))
+            output.append({**item, "content": {**content, "text": text}})
+        else:
+            output.append({**item, "content": normalize_deposit_refund_policy_text(str(content or ""))})
+    return _renumber(output)
 
 
 def _schedule_profile_event_background(

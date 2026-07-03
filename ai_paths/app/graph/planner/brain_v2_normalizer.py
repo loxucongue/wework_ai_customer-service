@@ -15,7 +15,11 @@ from app.graph.planner.planner_contract import (
 )
 from app.graph.state import AgentState
 from app.policies.constants import KNOWN_STORE_NAMES
-from app.services.payment_collection import payment_collection_content, payment_collection_context
+from app.services.payment_collection import (
+    normalize_deposit_refund_policy_text,
+    payment_collection_content,
+    payment_collection_context,
+)
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -224,7 +228,7 @@ def _normalize_reply_messages(value: Any, *, state: AgentState | None = None) ->
     output: list[dict[str, Any]] = []
     for item in value[:4]:
         if isinstance(item, str):
-            text = item.strip()
+            text = normalize_deposit_refund_policy_text(item.strip())
             if text:
                 output.append({"type": "text", "order": len(output) + 1, "content": {"text": text}})
             continue
@@ -257,7 +261,7 @@ def _normalize_reply_messages(value: Any, *, state: AgentState | None = None) ->
             if store_id:
                 output.append({"type": "store_address", "order": len(output) + 1, "content": {"store_id": store_id}})
             continue
-        text = _message_text(content)
+        text = normalize_deposit_refund_policy_text(_message_text(content))
         if text:
             key = "handoff_reason" if msg_type == "human_handoff_notice" else ("url" if msg_type == "image" else "text")
             output.append({"type": msg_type, "order": len(output) + 1, "content": {key: text}})

@@ -295,6 +295,30 @@ def test_payment_collection_over_four_people_requires_confirmation() -> None:
     assert any(item.get("missing") == "payment_participant_count_confirm_required" for item in plan["tool_policy_violations"])
 
 
+def test_payment_refund_wording_is_normalized_before_reply_validation() -> None:
+    messages = validated_model_messages(
+        {
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "content": {
+                        "text": _u(
+                            r"\u4e24\u4f4d\u4e00\u8d77\u62a5\u540d\uff0c\u9884\u7ea6\u91d1\u517120\u5143\uff0c\u5230\u5e97\u53ef\u62b5\u6263\uff0c\u4e0d\u505a\u9000\u8fd820\u5143\u3002"
+                        )
+                    },
+                },
+                {"type": "payment_collection", "content": {"amount": 20}},
+            ]
+        },
+        {"normalized_content": _u(r"\u6211\u548c\u670b\u53cb\u4e24\u4e2a\u4eba\u62a5\u540d")},
+    )
+
+    text = messages[0]["content"]
+    assert _u(r"\u4e0d\u505a\u900010\u5143") in text
+    assert _u(r"\u9000\u8fd820\u5143") not in text
+    validate_reply_consistency(messages, {"normalized_content": _u(r"\u6211\u548c\u670b\u53cb\u4e24\u4e2a\u4eba\u62a5\u540d")})
+
+
 def test_generic_store_question_does_not_inherit_appointment_store() -> None:
     known = _current_known_store_for_planner(
         {

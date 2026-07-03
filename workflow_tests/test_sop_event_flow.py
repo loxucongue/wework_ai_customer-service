@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 
 from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import SopExecutionService
+from app.services.sop_message_sanitizer import sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage import AppRepository, SQLiteStore
 
@@ -280,6 +281,23 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         messages = repo.tasks[0]["reply_messages"]
         self.assertTrue(all(item["type"] != "payment_collection" for item in messages))
         self.assertIn("一共几位到店", messages[0]["content"]["text"])
+
+    async def test_sop_message_sanitizer_handles_string_content_and_over_limit(self) -> None:
+        messages, summary = sanitize_sop_reply_messages(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": "\u7ed9\u60a8\u53d1\u9884\u7ea6\u91d1\u5165\u53e3\uff0c10\u5143\u5230\u5e97\u62b5\u6263\uff0c\u4e0d\u505a\u9000\u8fd810\u5143\u3002",
+                },
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            state={"conversation_history": ["\u7528\u6237: \u6211\u5e26\u56db\u4e2a\u670b\u53cb\u4e00\u8d77\u62a5\u540d"]},
+        )
+
+        self.assertEqual(summary["payment_suppressed"], "over_limit_participants")
+        self.assertTrue(all(item["type"] != "payment_collection" for item in messages))
+        self.assertTrue(any("\u4e00\u5171\u51e0\u4f4d\u5230\u5e97" in item["content"]["text"] for item in messages))
 
     async def test_platform_task_only_judges_and_sends_platform_actions(self) -> None:
         repo = _Repo()

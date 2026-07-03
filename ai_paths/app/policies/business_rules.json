@@ -27,7 +27,7 @@
     "new_customer_price": 268,
     "prepay_amount": 10,
     "tail_amount": 258,
-    "refund_rule": "不做退还10元",
+    "refund_rule": "不做退10元",
     "includes": ["淡斑", "检测皮肤", "基础清洁", "肌肤补水"],
     "quota": "限30名，名额满恢复原价1980",
     "payment_message_type": "payment_collection",

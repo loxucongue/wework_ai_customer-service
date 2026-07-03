@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.payment_collection import (
+    has_forbidden_deposit_refund_policy_text,
+    normalize_deposit_refund_policy_text,
     payment_collection_content,
     payment_collection_context,
 )
@@ -32,7 +34,7 @@ def sanitize_sop_reply_messages(
     first_payment_index = _first_payment_index(normalized)
     for index, message in enumerate(normalized):
         item = dict(message)
-        item["content"] = dict(message.get("content") if isinstance(message.get("content"), dict) else {})
+        item["content"] = _content_dict(message.get("content"))
         message_type = str(item.get("type") or "")
         if message_type == "text":
             text = str(item["content"].get("text") or "")
@@ -61,54 +63,30 @@ def sanitize_sop_reply_messages(
 
 
 def normalize_deposit_refund_text(text: str) -> str:
-    value = str(text or "")
-    if not _mentions_deposit(value):
-        return value
-    replacements = (
-        ("不满意订金10元直接退还", "不做退10元"),
-        ("不满意定金10元直接退还", "不做退10元"),
-        ("不满意预约金10元直接退还", "不做退10元"),
-        ("不满意也可以退", "不做退10元"),
-        ("不做的话10元预约金也退", "不做退10元"),
-        ("不做的话10元订金也退", "不做退10元"),
-        ("不做的话10元定金也退", "不做退10元"),
-        ("不做10元也是退给您的", "不做退10元"),
-        ("这个10元的预约金也是一分不少退还的", "这个10元预约金不做退10元"),
-        ("10元的预约金也是一分不少退还的", "10元预约金不做退10元"),
-        ("预约金也是一分不少退还的", "预约金不做退10元"),
-        ("订金10元直接退还", "不做退10元"),
-        ("定金10元直接退还", "不做退10元"),
-    )
-    for old, new in replacements:
-        value = value.replace(old, new)
-    value = value.replace("10元预约金可退", "不做退10元")
-    value = value.replace("10 元预约金可退", "不做退10元")
-    value = value.replace("预约金可退", "预约金不做退10元")
-    return value
+    return normalize_deposit_refund_policy_text(text)
 
 
 def has_forbidden_deposit_refund_text(text: str) -> bool:
-    value = str(text or "")
-    if not _mentions_deposit(value):
-        return False
-    normalized = normalize_deposit_refund_text(value)
-    if normalized != value:
-        return True
-    compact = "".join(value.split())
-    forbidden_terms = ("一分不少退", "直接退还", "不满意也可以退", "预约金可退", "订金可退", "定金可退")
-    return any(term in compact for term in forbidden_terms)
+    return has_forbidden_deposit_refund_policy_text(text)
 
 
 def _normalize_message(message: dict[str, Any], index: int) -> dict[str, Any]:
     if not isinstance(message, dict):
         return {}
     message_type = str(message.get("type") or "text").strip() or "text"
-    content = message.get("content") if isinstance(message.get("content"), dict) else {}
+    content = _content_dict(message.get("content"))
     return {
         "type": "human_handoff_notice" if message_type == "human_handoff" else message_type,
         "order": _positive_int(message.get("order"), index),
         "content": dict(content),
     }
+
+
+def _content_dict(content: Any) -> dict[str, Any]:
+    if isinstance(content, dict):
+        return dict(content)
+    text = str(content or "").strip()
+    return {"text": text} if text else {}
 
 
 def _payment_state(

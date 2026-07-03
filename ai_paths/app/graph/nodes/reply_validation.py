@@ -7,7 +7,13 @@ from typing import Any
 
 from app.graph.nodes.common import renumber_messages
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
-from app.services.payment_collection import payment_amount_matches_text, payment_collection_content, payment_collection_context
+from app.services.payment_collection import (
+    has_forbidden_deposit_refund_policy_text,
+    normalize_deposit_refund_policy_text,
+    payment_amount_matches_text,
+    payment_collection_content,
+    payment_collection_context,
+)
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "human_handoff", "human_handoff_notice", "payment_collection", "store_address"}
@@ -65,7 +71,7 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
             continue
         if visible_count >= max_visible_messages:
             continue
-        content = message_content_text(item.get("content"))
+        content = normalize_deposit_refund_policy_text(message_content_text(item.get("content")))
         if not content:
             continue
         if msg_type == "text":
@@ -206,7 +212,7 @@ def _validate_deposit_refund_wording(messages: list[dict[str, Any]], state: dict
     text = _combined_text(messages)
     if not text:
         return
-    if "全额退还" in text or "全额退款" in text:
+    if "全额退还" in text or "全额退款" in text or has_forbidden_deposit_refund_policy_text(text):
         raise ValueError("ambiguous_deposit_refund_wording")
 
 

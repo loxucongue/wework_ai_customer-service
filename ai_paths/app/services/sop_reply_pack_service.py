@@ -558,7 +558,7 @@ def _audit_config(config: dict[str, Any]) -> dict[str, Any]:
                 if enabled and not text.strip():
                     issues.append(_audit_issue("error", "empty_text", pack_id, "启用包存在空 text 消息。", order=index))
                 if has_forbidden_deposit_refund_text(text):
-                    issues.append(_audit_issue("error", "deposit_refund_conflict", pack_id, "预约金退款口径必须统一为“不做退10元/不做退还10元”。", order=index))
+                    issues.append(_audit_issue("error", "deposit_refund_conflict", pack_id, "预约金退款口径必须统一为“到店抵扣，不做退10元”。", order=index))
                 previous_text = text
                 continue
             if message_type in {"image", "video"}:

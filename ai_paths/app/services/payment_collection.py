@@ -7,6 +7,16 @@ from typing import Any
 PAYMENT_COLLECTION_UNIT_AMOUNT = 10
 PAYMENT_COLLECTION_ALLOWED_AMOUNTS = (10, 20, 30, 40)
 PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS = 4
+DEPOSIT_REFUND_CONTEXT_TERMS = (
+    "预约金",
+    "订金",
+    "定金",
+    "报名入口",
+    "付款入口",
+    "收款入口",
+    "锁活动名额",
+    "锁名额",
+)
 
 
 def payment_collection_content(
@@ -63,15 +73,54 @@ def payment_participants_from_text(text: str) -> tuple[int, bool]:
     companion_count = _companion_count(compact)
     if companion_count is not None:
         participants = companion_count + 1
-        return min(participants, PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS), participants > PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS
+        return participants, participants > PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS
 
     group_count = _group_count(compact)
     if group_count is not None:
-        return min(group_count, PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS), group_count > PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS
+        return group_count, group_count > PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS
 
     if _has_simple_companion_signal(compact):
         return 2, False
     return 1, False
+
+
+def normalize_deposit_refund_policy_text(text: str) -> str:
+    value = str(text or "")
+    if not _mentions_deposit_refund_context(value):
+        return value
+    value = value.replace("一分不少退还", "不做退10元")
+    value = value.replace("不满意也可以退", "不做退10元")
+    value = value.replace("不满意可退", "不做退10元")
+    value = value.replace("预约金可退", "预约金到店抵扣，不做退10元")
+    value = value.replace("订金可退", "订金到店抵扣，不做退10元")
+    value = value.replace("定金可退", "定金到店抵扣，不做退10元")
+    value = re.sub(
+        r"(不做|不到店|不来|不过来|不满意|后期没时间不来了)?(?:全额)?(?:也|都|也是|直接|可以|可)?退还?\s*(?:10|20|30|40)\s*元",
+        "不做退10元",
+        value,
+    )
+    value = re.sub(r"(?:10|20|30|40)\s*元(?:的)?(?:预约金|订金|定金)(?:也|都|也是)?(?:一分不少)?退还?", "预约金不做退10元", value)
+    return value
+
+
+def has_forbidden_deposit_refund_policy_text(text: str) -> bool:
+    value = str(text or "")
+    if not _mentions_deposit_refund_context(value):
+        return False
+    if normalize_deposit_refund_policy_text(value) != value:
+        return True
+    compact = "".join(value.split())
+    forbidden_terms = (
+        "一分不少退",
+        "直接退还",
+        "直接退款",
+        "不满意也可以退",
+        "不满意可退",
+        "预约金可退",
+        "订金可退",
+        "定金可退",
+    )
+    return any(term in compact for term in forbidden_terms)
 
 
 def payment_amount_matches_text(messages: list[dict[str, Any]]) -> bool:
@@ -210,3 +259,10 @@ def _number_value(value: str) -> int:
 
 def _mentions_total_amount(compact: str, amount: int) -> bool:
     return any(term in compact for term in (f"一共{amount}", f"共{amount}", f"合计{amount}", f"{amount}元预约金", f"{amount}元入口"))
+
+
+def _mentions_deposit_refund_context(text: str) -> bool:
+    value = str(text or "")
+    if any(term in value for term in DEPOSIT_REFUND_CONTEXT_TERMS):
+        return True
+    return bool(re.search(r"(?:10|20|30|40)\s*元.*(?:到店抵扣|锁|名额|入口)", value))
