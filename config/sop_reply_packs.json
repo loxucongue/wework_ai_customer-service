@@ -1,37 +1,55 @@
 {
   "version": 1,
-  "updated_at": "",
+  "updated_at": "2026-07-02T01:45:06+00:00",
   "packs": [
     {
       "id": "s10_new_customer_opening",
-      "enabled": false,
+      "enabled": true,
       "scope": "chat_gate",
-      "scopes": [
-        "chat_gate",
-        "event_first_add"
-      ],
-      "sop_category": "opening",
+      "sop_category": "s10_new_customer_opening",
       "name": "新客破冰",
-      "purpose": "新客首次加微后的基础破冰话术包。",
+      "purpose": "新客加微后建立基本信任，并引导客户说出位置和主要诉求。",
       "order": 10,
       "send_once": true,
-      "event_type": "",
-      "delay_minutes": 0,
+      "event_type": "sop_friend_added_schedule_batch",
+      "delay_minutes": 1,
       "day_stage": "day1",
       "customer_state": "first_add_ai_notice",
       "stage_tag": "first_add_ai_notice",
       "triggers": [
         "new_customer_added"
       ],
-      "reply_messages": []
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "你好\n我给您介绍一下，我们采用肌源调肤点斑技术，目前公认最先进最有效的方式，随做随走不影响出门上班，做完不伤害皮肤哦！"
+          }
+        },
+        {
+          "type": "text",
+          "order": 2,
+          "content": {
+            "text": "您在哪个城市哪个区或者您发个定位给我，我们是全国连锁门店，我把离您最近的门店位置发给你"
+          }
+        },
+        {
+          "type": "image",
+          "order": 3,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png"
+          }
+        }
+      ]
     },
     {
       "id": "s10_need_and_case",
-      "enabled": false,
+      "enabled": true,
       "scope": "chat_gate",
-      "sop_category": "effect_case",
+      "sop_category": "s10_need_and_case",
       "name": "需求与效果承接",
-      "purpose": "客户首次表达斑点、效果或是否能做时的话术包。",
+      "purpose": "客户第一次问斑点、效果或是否能做时，承接需求并准备案例参考。",
       "order": 20,
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
@@ -43,15 +61,58 @@
         "first_need",
         "first_effect_question"
       ],
-      "reply_messages": []
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "好的亲，无论您是雀斑，晒斑，老年斑，遗传斑，痘印、混合斑点，色素沉着都可以操作的，现在很多明星网红都是选择这种方式，效果都是很好的"
+          }
+        },
+        {
+          "type": "image",
+          "order": 2,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f52d53829c1fc73e-1329752764320508_1780495764839841063_EURwtgbwZf.png"
+          }
+        },
+        {
+          "type": "image",
+          "order": 3,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/47715b170aba6133-1329752764320508_1780495757690203274_fX4YTfxiDH.png"
+          }
+        },
+        {
+          "type": "image",
+          "order": 4,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/0a6b56f5b46105e8-1329752764320508_1780495762081910231_hroUm72iti.png"
+          }
+        },
+        {
+          "type": "image",
+          "order": 5,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/972ba51fb3eb0fed-1329752764320508_1780495762650549425_IPXfQYnsyV.png"
+          }
+        },
+        {
+          "type": "text",
+          "order": 6,
+          "content": {
+            "text": "您是看到我们线上推广活动加进来的是吗?"
+          }
+        }
+      ]
     },
     {
       "id": "s10_activity_intro",
-      "enabled": false,
+      "enabled": true,
       "scope": "chat_gate",
-      "sop_category": "activity_intro",
+      "sop_category": "s10_activity_intro",
       "name": "活动介绍",
-      "purpose": "客户首次了解活动、价格或预约金时的话术包。",
+      "purpose": "客户第一次了解活动、价格或预约金时，说明活动价值和费用规则。",
       "order": 30,
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
@@ -63,45 +124,413 @@
         "first_activity_question",
         "first_price_question"
       ],
-      "reply_messages": []
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "抖音活动 （清扫斑点套餐）\n①268活动价格仅限30名，套餐包括（清扫斑点+CT检测皮肤+美白管理）\n②线上预定10元+电话姓名，到店抵扣10元，做完只需支付258。不做退还10元\n③仅限线上报名客户有效  名额满活动结束，恢复原价1980元  线下客人到店按原价1980。预定名额后到店全程做完只需要268"
+          }
+        },
+        {
+          "type": "image",
+          "order": 2,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png"
+          }
+        },
+        {
+          "type": "text",
+          "order": 3,
+          "content": {
+            "text": "参加了活动，不限制到店时间。到店亲眼看到效果了，满意再做。不满意订金10元直接退还，给您保留一个优惠名额吗？"
+          }
+        },
+        {
+          "type": "text",
+          "order": 4,
+          "content": {
+            "text": "亲，您看要保留一个名额吗？活动就这两天，预约之后名额一直有效，不限制您到店时间的，您什么时候有空过来都可以"
+          }
+        },
+        {
+          "type": "text",
+          "order": 5,
+          "content": {
+            "text": "您可以看下这位吴先生就是这个月参加我们特惠活动来我们当地门店操作完斑点的效果，有效的清理斑点底层黑色素"
+          }
+        },
+        {
+          "type": "image",
+          "order": 6,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f9095a62ef1f6f9f-1329752764320508_1780495754436492285_YSvXwtYX8O.png"
+          }
+        }
+      ]
     },
     {
       "id": "s10_objection_resolution",
-      "enabled": false,
+      "enabled": true,
       "scope": "chat_gate",
-      "sop_category": "intro",
+      "sop_category": "s10_objection_resolution",
       "name": "顾虑处理",
-      "purpose": "客户担心效果、套路、乱收费、预约金或时间时的话术包。",
+      "purpose": "客户担心效果、套路、乱收费、预约金或时间时，先消除最大顾虑。",
       "order": 40,
       "send_once": true,
-      "event_type": "sop_friend_added_schedule_batch",
-      "delay_minutes": 5,
+      "event_type": "sop_platform_task",
+      "delay_minutes": 0,
       "day_stage": "day1",
-      "customer_state": "first_add_ai_notice",
-      "stage_tag": "first_add_ai_notice",
+      "customer_state": "",
+      "stage_tag": "",
       "triggers": [
         "first_objection"
       ],
-      "reply_messages": []
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "您放心，我们是全国连锁店，都是明码标价没有任何强制性消费的"
+          }
+        },
+        {
+          "type": "text",
+          "order": 2,
+          "content": {
+            "text": "您现在登记记下来优惠名额就是这个价格处理斑点问题，没有其他强制消费哈(仅限现在登记才是这个价格哦)"
+          }
+        },
+        {
+          "type": "text",
+          "order": 3,
+          "content": {
+            "text": "线上预付10到店在付款258共268 明码标价没有胡乱收费哈亲放心"
+          }
+        },
+        {
+          "type": "payment_collection",
+          "order": 4,
+          "content": {
+            "amount": 10,
+            "remark": ""
+          }
+        },
+        {
+          "type": "text",
+          "order": 5,
+          "content": {
+            "text": "报名登记只是为了给您保留本次活动价名额，后期根据您的时间提前预约资深老师档期，到店后如有任何不满意不做，或者您后期没时间不来了，这个10元的预约金也是一分不少退还的，您没任何损失的~"
+          }
+        }
+      ]
     },
     {
       "id": "s10_deposit_close",
       "enabled": false,
       "scope": "chat_gate",
-      "sop_category": "deposit_push",
+      "sop_category": "s10_deposit_close",
       "name": "预约金推进",
-      "purpose": "客户已有明确兴趣或愿意登记时的话术包。",
+      "purpose": "客户已有明确兴趣或愿意登记时，推进 10 元预约金入口。",
       "order": 50,
       "send_once": true,
-      "event_type": "sop_friend_added_schedule_batch",
-      "delay_minutes": 5,
+      "event_type": "sop_platform_task",
+      "delay_minutes": 0,
       "day_stage": "day1",
-      "customer_state": "first_add_ai_notice",
-      "stage_tag": "first_add_ai_notice",
+      "customer_state": "",
+      "stage_tag": "",
       "triggers": [
         "deposit_intent"
       ],
       "reply_messages": []
+    },
+    {
+      "id": "event_s10_intro_1min",
+      "enabled": true,
+      "scope": "event_first_add",
+      "sop_category": "intro",
+      "name": "事件-1分钟介绍补发",
+      "purpose": "加微后客户未回复时，补发技术和效果铺垫，建立基础信任。",
+      "order": 110,
+      "send_once": true,
+      "event_type": "sop_friend_added_schedule_batch",
+      "delay_minutes": 1,
+      "day_stage": "day1",
+      "customer_state": "first_add_no_reply",
+      "stage_tag": "intro_followup",
+      "triggers": [
+        "first_add_1min_no_reply",
+        "intro_followup"
+      ],
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "亲，给您介绍一下，我们现在做的是肌源调肤点斑技术，随做随走，不影响上班出门。"
+          }
+        },
+        {
+          "type": "text",
+          "order": 2,
+          "content": {
+            "text": "您主要是脸上斑点、晒斑、老年斑，还是色沉痘印这类？我先按您的情况给您看适合的方向。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "event_s10_store_prompt_5min",
+      "enabled": true,
+      "scope": "event_first_add",
+      "sop_category": "store_prompt",
+      "name": "事件-5分钟问地址",
+      "purpose": "介绍后客户未回复时，追问城市或区域，为门店匹配做铺垫。",
+      "order": 120,
+      "send_once": true,
+      "event_type": "sop_friend_added_schedule_batch",
+      "delay_minutes": 5,
+      "day_stage": "day1",
+      "customer_state": "intro_sent_no_reply",
+      "stage_tag": "store_prompt",
+      "triggers": [
+        "first_add_5min_no_reply",
+        "store_prompt"
+      ],
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "亲，您是在什么城市哪个区呢？我们全国连锁门店比较多，我先帮您看附近方便到店的位置。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "event_s10_effect_warmup_30min",
+      "enabled": true,
+      "scope": "event_first_add",
+      "sop_category": "effect_case",
+      "name": "事件-30分钟效果铺垫",
+      "purpose": "门店或地址沟通后未回复时，发送效果参考，强化客户价值预期。",
+      "order": 130,
+      "send_once": true,
+      "event_type": "sop_friend_added_schedule_batch",
+      "delay_minutes": 30,
+      "day_stage": "day1",
+      "customer_state": "store_prompt_no_reply",
+      "stage_tag": "effect_warmup",
+      "triggers": [
+        "effect_warmup",
+        "after_store_no_reply"
+      ],
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "亲，您看一下这个是参加活动进来的顾客做完后的参考，主要是淡化黑色素，不伤皮肤。"
+          }
+        },
+        {
+          "type": "image",
+          "order": 2,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f39ca4ff98754506-63c3c33d9f8777431fea56e4-f39ca4ff98754506472880e.jpg"
+          }
+        }
+      ]
+    },
+    {
+      "id": "event_s10_price_quote_60min",
+      "enabled": true,
+      "scope": "event_first_add",
+      "sop_category": "price_quote",
+      "name": "事件-60分钟报价",
+      "purpose": "客户沉默时补齐活动价、预约金、尾款和可退规则，推进优惠名额。",
+      "order": 140,
+      "send_once": true,
+      "event_type": "sop_friend_added_schedule_batch",
+      "delay_minutes": 60,
+      "day_stage": "day1",
+      "customer_state": "effect_warmup_no_reply",
+      "stage_tag": "price_quote",
+      "triggers": [
+        "price_quote",
+        "day1_quote"
+      ],
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "现在周年庆活动价是268元，线上先付10元预约金锁活动名额，到店抵扣10元，做完再付258。"
+          }
+        },
+        {
+          "type": "text",
+          "order": 2,
+          "content": {
+            "text": "到店先看效果和方案，满意再做；不做的话10元预约金也退，主要是先帮您保留活动价名额。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "event_s10_deposit_push_70min",
+      "enabled": true,
+      "scope": "event_first_add",
+      "sop_category": "deposit_push",
+      "name": "事件-70分钟通单收款",
+      "purpose": "报价后客户未成交时，轻推预约金入口，完成活动名额锁定。",
+      "order": 150,
+      "send_once": true,
+      "event_type": "sop_friend_added_schedule_batch",
+      "delay_minutes": 70,
+      "day_stage": "day1",
+      "customer_state": "quoted_no_deposit",
+      "stage_tag": "deposit_push",
+      "triggers": [
+        "deposit_push",
+        "after_quote_no_reply"
+      ],
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "亲，我先给您把优惠名额留住，10元只是预约金，到店直接抵扣，不满意也可以退。"
+          }
+        },
+        {
+          "type": "payment_collection",
+          "order": 2,
+          "content": {
+            "amount": 10,
+            "remark": ""
+          }
+        },
+        {
+          "type": "text",
+          "order": 3,
+          "content": {
+            "text": "付完我这边就按活动价给您登记，后面您有空再安排到店时间就行。"
+          }
+        }
+      ]
+    },
+    {
+      "id": "event_s10_unpaid_effect_1h",
+      "enabled": true,
+      "scope": "event_first_add",
+      "sop_category": "payment_followup",
+      "name": "事件-未付款1小时效果跟进",
+      "purpose": "客户未付预约金时，继续用效果参考和可退规则降低付款压力。",
+      "order": 160,
+      "send_once": true,
+      "event_type": "sop_friend_added_schedule_batch",
+      "delay_minutes": 120,
+      "day_stage": "day1",
+      "customer_state": "deposit_unpaid_1h",
+      "stage_tag": "payment_followup",
+      "triggers": [
+        "deposit_unpaid_1h",
+        "effect_followup"
+      ],
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "您看下这个改善参考，活动名额先锁住更稳，不限到店时间，不做10元也是退给您的。"
+          }
+        },
+        {
+          "type": "image",
+          "order": 2,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/aa3a631d6695ceeb-0c2f169cb20a46d94574726f-aa3a631d6695ceebb674949.jpg"
+          }
+        },
+        {
+          "type": "image",
+          "order": 3,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/4dacb2bc1439b0de-1329752764320508_1780495782026006111_Tv2Q4qEwhb.jpg"
+          }
+        }
+      ]
+    },
+    {
+      "id": "event_s10_unpaid_video_2h",
+      "enabled": true,
+      "scope": "event_first_add",
+      "sop_category": "operation_video",
+      "name": "事件-未付款2小时操作视频",
+      "purpose": "客户未付预约金且未回复时，发送操作视频缓解效果和安全顾虑。",
+      "order": 170,
+      "send_once": true,
+      "event_type": "sop_friend_added_schedule_batch",
+      "delay_minutes": 180,
+      "day_stage": "day1",
+      "customer_state": "deposit_unpaid_2h",
+      "stage_tag": "operation_video",
+      "triggers": [
+        "deposit_unpaid_2h",
+        "operation_video"
+      ],
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "亲，您看下老师操作视频，过程是比较轻松的，想去可以先放心预约名额。"
+          }
+        },
+        {
+          "type": "video",
+          "order": 2,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/bab56f91a8660848-8848063f655c91794027acd1-bab56f91a8660848324dd21.mp4"
+          }
+        }
+      ]
+    },
+    {
+      "id": "event_s10_day1_final_close",
+      "enabled": true,
+      "scope": "event_first_add",
+      "sop_category": "final_close",
+      "name": "事件-当天18点最后收单",
+      "purpose": "加微当天未付款时，做当天最后一次活动名额提醒。",
+      "order": 180,
+      "send_once": true,
+      "event_type": "sop_friend_added_schedule_batch",
+      "delay_minutes": 600,
+      "day_stage": "day1_evening",
+      "customer_state": "day1_unpaid",
+      "stage_tag": "final_close",
+      "triggers": [
+        "day1_18_final_close"
+      ],
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "亲，我帮您看了下优惠名额今天还有，您先登记一个活动名额，后面有空再到店也可以。"
+          }
+        },
+        {
+          "type": "payment_collection",
+          "order": 2,
+          "content": {
+            "amount": 10,
+            "remark": ""
+          }
+        }
+      ]
     }
   ]
 }
