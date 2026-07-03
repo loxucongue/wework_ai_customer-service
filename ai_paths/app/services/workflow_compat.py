@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.schemas import ChatRequest, ChatResponse
+from app.services.payment_collection import payment_collection_content
 
 
 def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
@@ -122,9 +123,9 @@ def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
     message_type = _string(message.get("type")) or "text"
     raw_content = message.get("content")
     order = int(message.get("order") or 1)
-    if message_type == "human_handoff":
+    if message_type in {"human_handoff", "human_handoff_notice"}:
         return {
-            "type": "human_handoff",
+            "type": "human_handoff_notice",
             "order": order,
             "content": {"handoff_reason": _message_content_value(raw_content, "handoff_reason")},
         }
@@ -162,10 +163,7 @@ def _message_content_value(value: Any, preferred_key: str) -> str:
 
 
 def _payment_collection_content(value: Any) -> dict[str, Any]:
-    remark = ""
-    if isinstance(value, dict):
-        remark = _string(value.get("remark"))
-    return {"amount": 10, "remark": remark}
+    return payment_collection_content(value)
 
 
 def _store_address_content(value: Any) -> dict[str, Any]:

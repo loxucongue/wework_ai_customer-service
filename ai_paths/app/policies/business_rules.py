@@ -163,7 +163,7 @@ def _fact_boundary_for_rule(rule_id: str, tools: list[str]) -> str:
     if "kb_search(case_studies)" in tools:
         return "案例、效果图必须来自 case_studies 工具事实。"
     if "distance_calculate" in tools:
-        return "最近、距离、几公里、几分钟必须来自 distance_calculate。"
+        return "最近门店排序必须来自 distance_calculate；客户可见回复只说推荐门店，不输出几公里、几分钟或车程。"
     if "customer_store_lookup" in tools:
         return "具体门店、地址、停车、营业时间必须来自 customer_store_lookup。"
     if "available_time" in tools:
@@ -171,7 +171,7 @@ def _fact_boundary_for_rule(rule_id: str, tools: list[str]) -> str:
     if "appointment_record_query" in tools:
         return "预约记录、改约、取消必须先查 appointment_record_query。"
     if "professional_assist" in tools:
-        return "投诉、退款、严重不适、强人工诉求走 professional_assist。"
+        return "投诉、退款、严重不适、强人工诉求走 professional_assist，并在客户回复后追加 human_handoff_notice。"
     if rule_id == "S3_PRICE":
         return "价格可直接使用 offer_facts：268、10、258、不做退10元、原价1980、名额有限。"
     if rule_id == "S1_BRAND_TRUST":
@@ -199,7 +199,7 @@ def _planner_tool_rule_pack() -> list[dict[str, Any]]:
             "tool": "distance_calculate",
             "schema": {"name": "distance_calculate", "origin": "<客户地标/地址>", "candidate_source": "customer_store_lookup"},
             "use_when": "客户问最近、附近、哪家更方便、几公里或几分钟。",
-            "boundary": "必须先有 customer_store_lookup 候选；没有距离结果不能说最近或具体距离。",
+            "boundary": "必须先有 customer_store_lookup 候选；distance_calculate 只用于排序推荐门店，客户可见回复不输出具体公里、分钟或车程。",
         },
         {
             "tool": "available_time",
@@ -217,6 +217,6 @@ def _planner_tool_rule_pack() -> list[dict[str, Any]]:
             "tool": "professional_assist",
             "schema": {"name": "professional_assist", "reason": "<需要协助原因>"},
             "use_when": "投诉、退款、付款纠纷、严重不适、健康高风险、强烈要求真人。",
-            "boundary": "客户可见回复用专业同事协助口径，不说生硬转人工。",
+            "boundary": "客户可见回复直接承接诉求；健康类引导到店检测，纠纷类核对门店/付款/项目，不说转人工或专业同事。",
         },
     ]

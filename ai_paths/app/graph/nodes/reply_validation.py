@@ -7,9 +7,10 @@ from typing import Any
 
 from app.graph.nodes.common import renumber_messages
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
+from app.services.payment_collection import payment_amount_matches_text, payment_collection_content
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
-ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "human_handoff", "payment_collection", "store_address"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "human_handoff", "human_handoff_notice", "payment_collection", "store_address"}
 MAX_VISIBLE_MESSAGES = 4
 MAX_SOP_SEQUENCE_VISIBLE_MESSAGES = 8
 
@@ -26,7 +27,7 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
         if not isinstance(item, dict):
             continue
         msg_type = item.get("type") if item.get("type") in ALLOWED_MESSAGE_TYPES else "text"
-        if msg_type == "human_handoff":
+        if msg_type in {"human_handoff", "human_handoff_notice"}:
             if has_handoff:
                 continue
             handoff_reason = message_content_text(item.get("content"))
@@ -34,7 +35,7 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
                 continue
             result.append(
                 {
-                    "type": "human_handoff",
+                    "type": "human_handoff_notice",
                     "order": len(result) + 1,
                     "content": {"handoff_reason": handoff_reason},
                 }
@@ -48,7 +49,7 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
                 {
                     "type": "payment_collection",
                     "order": len(result) + 1,
-                    "content": message_content_payment_collection(item.get("content")),
+                    "content": message_content_payment_collection(item.get("content"), state=state or {}, messages=messages),
                 }
             )
             visible_count += 1
@@ -81,6 +82,7 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
         visible_count += 1
     if not result:
         raise ValueError("Model reply_messages are empty")
+    result = _move_handoff_notices_after_visible(result)
     return renumber_messages(result)
 
 
@@ -108,8 +110,18 @@ def _is_sop_sequence_state(state: dict[str, Any]) -> bool:
     return bool(store_facts or case_facts)
 
 
+def _move_handoff_notices_after_visible(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    notices = [item for item in messages if str(item.get("type") or "") == "human_handoff_notice"]
+    if not notices:
+        return messages
+    visible = [item for item in messages if str(item.get("type") or "") != "human_handoff_notice"]
+    return [*visible, *notices]
+
+
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    _validate_handoff_notice_text(messages)
     _validate_payment_collection_consistency(messages, state)
+    _validate_payment_collection_amount_text(messages, state)
     _validate_deposit_refund_wording(messages, state)
     _validate_case_image_priority(messages, state)
     _validate_store_address_message_facts(messages, state)
@@ -121,6 +133,44 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
     _validate_repeat_similarity(messages, state)
     _validate_fact_boundaries(messages, state)
+
+
+def _validate_handoff_notice_text(messages: list[dict[str, Any]]) -> None:
+    has_notice = any(
+        str(item.get("type") or "") in {"human_handoff", "human_handoff_notice"}
+        for item in messages
+        if isinstance(item, dict)
+    )
+    if not has_notice:
+        return
+    text = _combined_text(messages)
+    if not text:
+        raise ValueError("human_handoff_notice_requires_visible_answer")
+    banned = (
+        "转人工",
+        "转接",
+        "转同事",
+        "专业同事",
+        "专业顾问",
+        "同事沟通",
+        "同事协助",
+        "同步给同事",
+        "同步给专业",
+        "我帮您同步处理",
+        "同步处理",
+        "同步反馈处理",
+        "反馈处理",
+        "专人联系",
+        "稍后会有专人",
+        "马上帮您核对",
+        "马上核对",
+        "马上帮您对接",
+        "稍等一下哈",
+        "稍等哈",
+        "我先帮您看一下",
+    )
+    if any(term in text for term in banned):
+        raise ValueError("human_handoff_notice_customer_text_not_resolved")
 
 
 def debug_message_contents(messages: list[dict[str, Any]]) -> list[str]:
@@ -141,6 +191,13 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         )
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
+
+
+def _validate_payment_collection_amount_text(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if not any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict)):
+        return
+    if not payment_amount_matches_text(messages):
+        raise ValueError("payment_collection_amount_text_mismatch")
 
 
 def _validate_deposit_refund_wording(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -305,14 +362,16 @@ def _validate_fact_boundaries(messages: list[dict[str, Any]], state: dict[str, A
         isinstance(item, dict) and str(item.get("business_hours") or item.get("hours") or "").strip()
         for item in store_facts
     )
-    has_distance = bool(recommended_store.get("distance_km") or recommended_store.get("distance_text")) or recommended_store.get("reason") == "distance_calculate_rank_1"
+    has_distance = _has_distance_ranking_fact(structured)
     if _asserts_parking(text) and not has_parking:
         raise ValueError("parking_fact_required")
     if _asserts_business_hours(text) and not has_hours:
         raise ValueError("business_hours_fact_required")
     if _asserts_address(text) and not has_store_detail:
         raise ValueError("store_address_fact_required")
-    if _asserts_distance(text) and not has_distance:
+    if _asserts_customer_visible_distance_value(text, state):
+        raise ValueError("distance_value_not_customer_visible")
+    if _asserts_distance_ranking(text) and not has_distance:
         raise ValueError("distance_fact_required")
 
 
@@ -376,6 +435,24 @@ def _structured_facts(state: dict[str, Any]) -> dict[str, Any]:
     return structured if isinstance(structured, dict) else {}
 
 
+def _has_distance_ranking_fact(structured: dict[str, Any]) -> bool:
+    recommended_store = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
+    store_lookup_status = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    recommendation_status = str(store_lookup_status.get("recommendation_status") or store_lookup_status.get("status") or "")
+    try:
+        candidate_count = int(store_lookup_status.get("candidate_count") or 0)
+    except (TypeError, ValueError):
+        candidate_count = 0
+    return (
+        recommended_store.get("reason") == "distance_calculate_rank_1"
+        or (
+            store_lookup_status.get("source") == "distance_calculate"
+            and candidate_count > 0
+            and recommendation_status not in {"distance_tool_unavailable", "error", "failed"}
+        )
+    )
+
+
 def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
     structured = _structured_facts(state)
     allowed: set[str] = set()
@@ -418,10 +495,38 @@ def _asserts_address(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fffA-Za-z0-9]{1,30}(?:路|街|大道|巷)\s*\d+\s*号", text))
 
 
-def _asserts_distance(text: str) -> bool:
-    return bool(re.search(r"\d+(?:\.\d+)?\s*(?:公里|km|KM|分钟)", text)) or any(
-        term in text for term in ("最近的是", "离您最近", "距离最近", "就近门店", "就近的门店")
+def _asserts_distance_ranking(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if any(term in compact for term in ("最近的是", "离您最近", "离你最近", "距离最近", "就近门店", "就近的门店")):
+        return True
+    return any(term in compact for term in ("更近", "近一些", "近一点", "较近")) and any(
+        term in compact for term in ("门店", "店", "地址", "导航", "位置", "离您", "离你")
     )
+
+
+def _asserts_customer_visible_distance_value(text: str, state: dict[str, Any]) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not _is_store_distance_context(compact, state):
+        return False
+    if re.search(r"\d+(?:\.\d+)?(?:公里|千米|km|KM)", compact):
+        return True
+    route_terms = "车程|步行|打车|开车|公交|地铁|骑车|过去|过来|到店|路程|导航|路上|交通"
+    if re.search(rf"(?:{route_terms})[^，。！？；,.!?;]{{0,12}}\d+(?:-\d+)?分钟", compact):
+        return True
+    return bool(re.search(rf"\d+(?:-\d+)?分钟[^，。！？；,.!?;]{{0,8}}(?:{route_terms}|到)", compact))
+
+
+def _is_store_distance_context(text: str, state: dict[str, Any]) -> bool:
+    structured = _structured_facts(state)
+    if _has_distance_ranking_fact(structured):
+        return True
+    state_markers = " ".join(
+        str(state.get(key) or "")
+        for key in ("conversion_stage", "customer_type", "main_blocker", "next_step", "planner_sub_rule_id")
+    ).lower()
+    if "distance" in state_markers or "store" in state_markers:
+        return True
+    return any(term in text for term in ("门店", "店", "地址", "导航", "位置", "距离", "离您", "离你", "车程", "步行"))
 
 
 def _promises_store_address_card(text: str) -> bool:
@@ -662,11 +767,13 @@ def message_content_text(content: Any) -> str:
     return str(content or "").strip()
 
 
-def message_content_payment_collection(content: Any) -> dict[str, Any]:
-    remark = ""
-    if isinstance(content, dict):
-        remark = str(content.get("remark") or "").strip()
-    return {"amount": 10, "remark": remark}
+def message_content_payment_collection(
+    content: Any,
+    *,
+    state: dict[str, Any] | None = None,
+    messages: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return payment_collection_content(content, state=state, messages=messages)
 
 
 def message_content_store_id(content: Any) -> str:

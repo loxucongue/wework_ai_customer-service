@@ -15,6 +15,7 @@ from app.graph.planner.planner_contract import (
 )
 from app.graph.state import AgentState
 from app.policies.constants import KNOWN_STORE_NAMES
+from app.services.payment_collection import payment_collection_content, payment_collection_context
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -41,7 +42,10 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         ALLOWED_NEXT_STEPS,
         "no_action",
     )
-    planner_reply_messages = _normalize_reply_messages(model_payload.get("reply_messages") if isinstance(model_payload, dict) else [])
+    planner_reply_messages = _normalize_reply_messages(
+        model_payload.get("reply_messages") if isinstance(model_payload, dict) else [],
+        state=state,
+    )
     planner_tool_calls = _normalize_tools(model_payload.get("tool_calls") if isinstance(model_payload, dict) else [])
     reply_constraints = _clean_str_list(model_payload.get("reply_constraints") if isinstance(model_payload, dict) else [])
     handoff_raw = model_payload.get("handoff") if isinstance(model_payload, dict) else {}
@@ -86,6 +90,13 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         decision = "need_tools"
     if decision == "need_tools":
         planner_reply_messages = [_standard_transition_message()]
+    planner_reply_messages = _append_required_payment_collection(
+        state=state,
+        decision=decision,
+        conversion_stage=conversion_stage,
+        next_step=next_step,
+        messages=planner_reply_messages,
+    )
     handoff = _normalize_handoff(handoff_raw)
     tool_policy_violations = [
         *_rejected_tool_violations(model_payload.get("tool_calls") if isinstance(model_payload, dict) else []),
@@ -107,6 +118,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             messages=planner_reply_messages,
         ),
         *_payment_consistency_violations(
+            state=state,
             decision=decision,
             conversion_stage=conversion_stage,
             next_step=next_step,
@@ -165,8 +177,13 @@ def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailabl
             "next_step": "solve_blocker",
             "reply_messages": [
                 {
-                    "type": "human_handoff",
+                    "type": "text",
                     "order": 1,
+                    "content": {"text": "这边先帮您把情况记录清楚，按实际情况核对后再处理。"},
+                },
+                {
+                    "type": "human_handoff_notice",
+                    "order": 2,
                     "content": {"handoff_reason": handoff_reason},
                 }
             ],
@@ -199,7 +216,7 @@ def _normalize_enum(value: Any, allowed: tuple[str, ...], default: str) -> str:
     return text if text in allowed else default
 
 
-def _normalize_reply_messages(value: Any) -> list[dict[str, Any]]:
+def _normalize_reply_messages(value: Any, *, state: AgentState | None = None) -> list[dict[str, Any]]:
     if isinstance(value, dict):
         value = [value]
     if not isinstance(value, list):
@@ -214,7 +231,9 @@ def _normalize_reply_messages(value: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         msg_type = str(item.get("type") or "text").strip()
-        if msg_type not in {"text", "image", "payment_collection", "human_handoff", "store_address"}:
+        if msg_type == "human_handoff":
+            msg_type = "human_handoff_notice"
+        if msg_type not in {"text", "image", "payment_collection", "human_handoff_notice", "store_address"}:
             msg_type = "text"
         content = item.get("content")
         if content in (None, "", [], {}) and any(item.get(key) for key in ("text", "url", "handoff_reason", "store_id")):
@@ -225,7 +244,13 @@ def _normalize_reply_messages(value: Any) -> list[dict[str, Any]]:
                 "store_id": item.get("store_id"),
             }
         if msg_type == "payment_collection":
-            output.append({"type": "payment_collection", "order": len(output) + 1, "content": {"amount": 10, "remark": ""}})
+            output.append(
+                {
+                    "type": "payment_collection",
+                    "order": len(output) + 1,
+                    "content": payment_collection_content(content, state=state, messages=output),
+                }
+            )
             continue
         if msg_type == "store_address":
             store_id = _store_address_id(content)
@@ -234,7 +259,7 @@ def _normalize_reply_messages(value: Any) -> list[dict[str, Any]]:
             continue
         text = _message_text(content)
         if text:
-            key = "handoff_reason" if msg_type == "human_handoff" else ("url" if msg_type == "image" else "text")
+            key = "handoff_reason" if msg_type == "human_handoff_notice" else ("url" if msg_type == "image" else "text")
             output.append({"type": msg_type, "order": len(output) + 1, "content": {key: text}})
     return output
 
@@ -807,6 +832,7 @@ def _rejected_tool_violations(raw_tools: Any) -> list[dict[str, str]]:
 
 def _payment_consistency_violations(
     *,
+    state: AgentState,
     decision: str,
     conversion_stage: str,
     next_step: str,
@@ -817,6 +843,19 @@ def _payment_consistency_violations(
     if _text_explains_previous_payment_entry(messages):
         return []
     needs_payment = conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)
+    payment_context = payment_collection_context(state=state, messages=messages)
+    if needs_payment and payment_context["over_limit"]:
+        return [
+            {
+                "task_type": "reply_schema_consistency",
+                "subtype": "payment_collection",
+                "missing": "payment_participant_count_confirm_required",
+                "note": (
+                    "The current message implies more than 4 participants. Do not auto-send payment_collection. "
+                    "Reply with text to confirm the number of participants or ask store staff to handle group booking."
+                ),
+            }
+        ]
     if not needs_payment or _has_payment_collection(messages):
         return []
     return [
@@ -835,6 +874,45 @@ def _payment_consistency_violations(
 
 def _has_payment_collection(messages: list[dict[str, Any]]) -> bool:
     return any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict))
+
+
+def _append_required_payment_collection(
+    *,
+    state: AgentState,
+    decision: str,
+    conversion_stage: str,
+    next_step: str,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if decision != "direct_reply":
+        return messages
+    if not messages or _has_payment_collection(messages) or _text_explains_previous_payment_entry(messages):
+        return messages
+    needs_payment = conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)
+    if not needs_payment:
+        return messages
+    payment_context = payment_collection_context(state=state, messages=messages)
+    if payment_context["over_limit"]:
+        return messages
+    return [
+        *_renumber_reply_messages(messages),
+        {
+            "type": "payment_collection",
+            "order": len(messages) + 1,
+            "content": {"amount": payment_context["amount"], "remark": ""},
+        },
+    ]
+
+
+def _renumber_reply_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        normalized = dict(item)
+        normalized["order"] = len(output) + 1
+        output.append(normalized)
+    return output
 
 
 def _text_mentions_payment_entry(messages: list[dict[str, Any]]) -> bool:

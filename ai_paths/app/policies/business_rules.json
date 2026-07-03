@@ -57,7 +57,7 @@
       "appointment_record_query",
       "professional_assist"
     ],
-    "store_policy": "门店覆盖概览来自store_scope_summary；具体门店、地址、停车、营业时间只能来自customer_store_lookup或distance_calculate工具事实"
+    "store_policy": "门店覆盖概览来自store_scope_summary；具体门店、地址、停车、营业时间只能来自customer_store_lookup；distance_calculate只用于排序推荐门店，客户可见回复不输出公里、分钟或车程"
   },
   "conversion_psychology": {
     "goal": "先解决客户当前最大心理阻力，再推进一个最自然的成交动作，最终把兴趣推进到门店时间和10元预约金。",
@@ -65,8 +65,8 @@
       "先判断conversion_stage，再判断stage/sub_rule_id；conversion_stage决定本轮成交推进策略，stage/sub_rule_id只负责事实边界、工具边界和风险边界。",
       "客户没有被说服前，不要为了成交节奏跳过当前问题。",
       "每轮只解决一个主要阻力，只推进一个下一步动作。",
-      "sent_message_summary只用于避免重复发送特殊消息，不代表客户已点击、已支付、支付失败或任何支付状态。",
-      "发payment_collection前必须给一个清晰理由，不重复催付。"
+      "sent_message_summary只提示特殊消息是否发过，不代表客户已点击、已支付、支付失败或任何支付状态；payment_collection_sent不是硬去重。",
+      "发payment_collection前必须给一个清晰理由，避免无理由连续催付。"
     ],
     "customer_types": {
       "price": "价格型，关注多少钱、199/268、是不是另收费或隐形消费。",
@@ -163,7 +163,7 @@
           "scenes": ["区", "机场", "地铁站", "商圈", "地标", "附近哪家"],
           "decision": "用客户范围门店候选；需要最近排序时调用距离工具",
           "tools": ["customer_store_lookup", "distance_calculate"],
-          "reply_focus": "有距离事实再说最近/几公里/几分钟"
+          "reply_focus": "有距离事实只说优先哪家/哪家更近一些，不输出几公里、几分钟或车程"
         },
         {
           "id": "S2_ADDRESS_PARKING_HOURS",
@@ -195,8 +195,8 @@
         },
         {
           "id": "S3_PAYMENT_COLLECTION",
-          "scenes": ["付款入口", "怎么交10元", "我付", "先锁名额", "就这个时间", "报名", "怎么约", "怎么预约", "我要预约", "你帮我预约", "帮我报名", "可以约", "不交预约金可以直接去吗", "到店再付"],
-          "decision": "只有conversion_stage=deposit_push时才可以发送payment_collection；不要求order_id、门店、姓名、电话或预约时间前置；客户对预约金轻度犹豫时可以先轻推10元入口，明确强拒绝时不硬推",
+          "scenes": ["付款入口", "怎么交10元", "我付", "先锁名额", "就这个时间", "报名", "怎么约", "怎么预约", "我要预约", "你帮我预约", "帮我报名", "可以约", "要交钱吗", "预约金怎么抵扣", "能不能退", "尾款多少", "是不是额外收费", "不交预约金可以直接去吗", "到店再付"],
+          "decision": "只有conversion_stage=deposit_push时才可以发送payment_collection；不要求order_id、门店、姓名、电话或预约时间前置；客户对预约金用途、退款、抵扣、尾款或额外收费轻度疑问时，若当前已处于预约推进、已明确门店/到店意向、历史已完成活动报价铺垫或画像deposit_state可正式推定金，可以解释规则后同轮轻推10元入口；明确强拒绝时不硬推",
           "tools": [],
           "reply_focus": "先说明10元预约金用于锁活动名额、到店抵扣、不做退10元，再发送入口；客户有明确预约或报名意向但缺门店或时间时，可以先发入口再补问1个最关键字段；强拒绝时允许安排到店"
         },
@@ -212,7 +212,7 @@
     {
       "id": "S4",
       "name": "回访/已邀约/到店后/售后",
-      "goal": "承接犹豫、改约、取消、到店反馈、售后不满和复购，真实纠纷交专业同事",
+      "goal": "承接犹豫、改约、取消、到店反馈、售后不满和复购，真实纠纷走内部关注 notice",
       "rules": [
         {
           "id": "S4_APPOINTMENT_FOLLOWUP",
@@ -233,7 +233,7 @@
           "scenes": ["投诉", "退款", "付款异常", "多收钱", "严重不适", "强烈不满"],
           "decision": "需要professional_assist",
           "tools": ["professional_assist"],
-          "reply_focus": "先给客户可见text，再追加human_handoff"
+          "reply_focus": "先正面承接并核对门店/付款/项目，再追加human_handoff_notice"
         }
       ]
     }

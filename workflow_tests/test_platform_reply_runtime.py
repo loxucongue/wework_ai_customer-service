@@ -51,6 +51,20 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(messages, [{"type": "text", "order": 1, "content": {"text": "稍等哈"}}])
 
+    async def test_professional_assist_need_tools_has_no_waiting_sync_reply(self) -> None:
+        with patch("app.chat_runtime.random.random", return_value=0.9), patch(
+            "app.chat_runtime.random.choice", return_value="稍等一下哈"
+        ):
+            messages = _planner_sync_reply_messages(
+                {
+                    "planner_decision": "need_tools",
+                    "required_tools": [{"name": "professional_assist", "reason": "健康高风险"}],
+                    "planner_reply_messages": [],
+                }
+            )
+
+        self.assertEqual(messages, [])
+
 
 class _SlowPlannerGraph:
     def __init__(self) -> None:

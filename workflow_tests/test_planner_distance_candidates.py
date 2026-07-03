@@ -173,7 +173,7 @@ class PlannerModelOwnershipTests(unittest.TestCase):
 
         self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text"])
 
-    def test_low_information_opening_suppresses_old_profile_for_planner(self) -> None:
+    def test_low_information_opening_keeps_context_for_planner(self) -> None:
         payload = _planner_payload_for_model(
             {
                 "normalized_content": "你好",
@@ -183,9 +183,9 @@ class PlannerModelOwnershipTests(unittest.TestCase):
             }
         )
 
-        self.assertNotIn("customer_profile", payload)
-        self.assertNotIn("history_events", payload)
-        self.assertNotIn("conversation_history", payload)
+        self.assertEqual(payload["customer_profile"], {"summary": "旧画像"})
+        self.assertEqual(payload["history_events"], [{"event_type": "old"}])
+        self.assertEqual(payload["conversation_history"], ["用户: 之前的历史"])
 
     def test_planner_store_scope_payload_only_contains_province_counts(self) -> None:
         payload = _planner_payload_for_model(

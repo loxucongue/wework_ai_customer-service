@@ -712,6 +712,9 @@ def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
     messages = state.get("planner_reply_messages") if isinstance(state.get("planner_reply_messages"), list) else []
     decision = str(state.get("planner_decision") or "")
     if decision == "need_tools":
+        required_tools = state.get("required_tools") if isinstance(state.get("required_tools"), list) else []
+        if any(str(item.get("name") or "") == "professional_assist" for item in required_tools if isinstance(item, dict)):
+            return []
         return _random_transition_messages()
     if decision == "direct_reply":
         violations = state.get("tool_policy_violations") if isinstance(state.get("tool_policy_violations"), list) else []

@@ -88,9 +88,6 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             structured_facts["store_facts"] = [
                 {
                     **_store_fact_from_lookup_item(item),
-                    "distance_km": item.get("distance_km"),
-                    "distance_meters": item.get("distance_meters"),
-                    "duration_seconds": item.get("duration_seconds"),
                     "distance_source": str(item.get("distance_source") or ""),
                     "distance_error": str(item.get("distance_error") or ""),
                 }
@@ -102,7 +99,6 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 structured_facts["recommended_store"] = {
                     **top_store,
                     "reason": "distance_calculate_rank_1",
-                    "distance_km": top_store.get("distance_km"),
                 }
             facts.append(
                 "distance_calculate: "
