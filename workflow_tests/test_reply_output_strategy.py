@@ -706,6 +706,29 @@ def test_reply_validation_rejects_group_payment_text_mismatch() -> None:
         )
 
 
+def test_reply_validation_rejects_group_payment_wrong_total_amount() -> None:
+    with pytest.raises(ValueError, match="payment_collection_amount_text_mismatch"):
+        validate_reply_consistency(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {
+                        "text": _u(
+                            r"\u4e24\u4f4d\u670b\u53cb\u4e00\u8d77\u62a5\u540d\uff0c\u5171\u970020\u5143\u9884\u7ea6\u91d1\uff0c\u9a6c\u4e0a\u4e3a\u60a8\u751f\u621020\u5143\u9884\u7ea6\u91d1\u5165\u53e3\u3002"
+                        )
+                    },
+                },
+                {"type": "payment_collection", "order": 2, "content": {"amount": 30, "remark": ""}},
+            ],
+            {
+                "normalized_content": _u(r"\u6211\u5e26\u4e24\u4e2a\u670b\u53cb\u4e00\u8d77\u62a5\u540d"),
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+            },
+        )
+
+
 def test_reply_validation_allows_group_payment_text_with_per_person_wording() -> None:
     validate_reply_consistency(
         [

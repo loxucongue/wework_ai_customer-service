@@ -131,6 +131,8 @@ def payment_amount_matches_text(messages: list[dict[str, Any]]) -> bool:
     compact = "".join(text.split())
     if not compact:
         return True
+    if _mentions_conflicting_total_amount(compact, amount):
+        return False
     if _mentions_total_amount(compact, amount):
         return True
     if "每位10" in compact or "每人10" in compact or "一人10" in compact or "每位10元" in compact or "每人10元" in compact:
@@ -259,6 +261,23 @@ def _number_value(value: str) -> int:
 
 def _mentions_total_amount(compact: str, amount: int) -> bool:
     return any(term in compact for term in (f"一共{amount}", f"共{amount}", f"合计{amount}", f"{amount}元预约金", f"{amount}元入口"))
+
+
+def _mentions_conflicting_total_amount(compact: str, expected_amount: int) -> bool:
+    for pattern in (
+        r"(?:一共|共需|共|合计)(10|20|30|40)元(?:预约金|入口)?",
+        r"(?:生成|发|发送|给您发)(10|20|30|40)元(?:预约金)?(?:入口)?",
+        r"(10|20|30|40)元(?:预约金|预约金入口|付款入口|报名入口|收款入口)",
+    ):
+        for match in re.finditer(pattern, compact):
+            amount = int(match.group(1))
+            if amount == expected_amount:
+                continue
+            prefix = compact[max(0, match.start() - 4) : match.start()]
+            if amount == PAYMENT_COLLECTION_UNIT_AMOUNT and any(marker in prefix for marker in ("每位", "每人", "一人", "每个")):
+                continue
+            return True
+    return False
 
 
 def _mentions_deposit_refund_context(text: str) -> bool:
