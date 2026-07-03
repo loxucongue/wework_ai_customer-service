@@ -7,6 +7,7 @@ from typing import Any
 
 from app.graph.nodes.common import renumber_messages
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
+from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
     has_forbidden_deposit_refund_policy_text,
     normalize_deposit_refund_policy_text,
@@ -132,6 +133,7 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_case_image_priority(messages, state)
     _validate_store_address_message_facts(messages, state)
     _validate_store_address_card_consistency(messages, state)
+    _validate_generic_store_question_does_not_use_context_store(messages, state)
     _validate_appointment_time_facts(messages, state)
     _validate_appointment_lookup_promise(messages, state)
     _validate_appointment_time_option_count(messages, state)
@@ -264,6 +266,20 @@ def _validate_store_address_card_consistency(messages: list[dict[str, Any]], sta
     allowed_ids = _allowed_store_address_ids(state)
     if allowed_ids:
         raise ValueError("store_address_message_required_when_reply_promises_location_card")
+
+
+def _validate_generic_store_question_does_not_use_context_store(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if not _is_generic_store_question_without_current_scope(state):
+        return
+    structured = _structured_facts(state)
+    if structured.get("store_facts") or structured.get("recommended_store"):
+        return
+    text = _combined_text(messages)
+    if not text:
+        return
+    for name in _known_store_names_for_validation(state):
+        if name and name in text:
+            raise ValueError("store_context_over_anchor_for_generic_question")
 
 
 def _validate_appointment_time_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -590,6 +606,53 @@ def _current_message_requests_store_address_card(text: str) -> bool:
     return bool(re.search(r"发.{0,8}(地址|位置|定位|导航)", compact)) or bool(
         re.search(r"(地址|位置|定位|导航).{0,8}(发|给)", compact)
     )
+
+
+def _is_generic_store_question_without_current_scope(state: dict[str, Any]) -> bool:
+    text = str(state.get("normalized_content") or state.get("content") or "")
+    compact = re.sub(r"\s+", "", text)
+    if not compact:
+        return False
+    if any(term in compact for term in ("这家", "那家", "这个店", "刚刚", "刚才", "上面那家", "前面那家")):
+        return False
+    generic_terms = (
+        "门店在哪里",
+        "门店在哪",
+        "哪里有门店",
+        "有哪些门店",
+        "有门店吗",
+        "门店地址",
+        "门店位置",
+        "你们店在哪里",
+        "你们店在哪",
+        "店在哪里",
+        "店在哪",
+    )
+    if not any(term in compact for term in generic_terms):
+        return False
+    if any(name and name in text for name in _known_store_names_for_validation(state)):
+        return False
+    return not bool(re.search(r"[\u4e00-\u9fff]{2,}(省|市|区|县|镇|乡|旗|州|盟|新区|机场|高铁站|火车站)", compact))
+
+
+def _known_store_names_for_validation(state: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    for store in stores:
+        if not isinstance(store, dict):
+            continue
+        name = str(store.get("store_name") or store.get("name") or "").strip()
+        if name:
+            names.append(name)
+    names.extend(name for name in KNOWN_STORE_NAMES if name)
+    output: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        if name and name not in seen:
+            seen.add(name)
+            output.append(name)
+    return output
 
 
 def _asserts_time_available(text: str) -> bool:

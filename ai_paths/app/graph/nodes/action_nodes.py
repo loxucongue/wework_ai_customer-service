@@ -179,6 +179,11 @@ def _invalid_tool_policy_by_name(state: AgentState) -> dict[str, dict[str, Any]]
         missing = str(item.get("missing") or "").strip()
         if subtype == "available_time" and missing.startswith("available_time_"):
             output["available_time"] = item
+        if subtype == "customer_store_lookup" and missing in {
+            "location_query_missing_city_or_region",
+            "store_lookup_query_over_anchors_history",
+        }:
+            output["customer_store_lookup"] = item
     return output
 
 

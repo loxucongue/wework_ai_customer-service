@@ -483,6 +483,27 @@ def test_generic_store_lookup_must_not_fill_query_from_history_store() -> None:
     assert any(item.get("missing") == "store_lookup_query_over_anchors_history" for item in plan["tool_policy_violations"])
 
 
+def test_generic_store_reply_must_not_use_history_store_without_facts() -> None:
+    with pytest.raises(ValueError, match="store_context_over_anchor_for_generic_question"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "广州白云三店我帮您核对一下。"}}],
+            {
+                "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
+                "customer_store_knowledge": {"stores": [{"city": "广州市", "store_name": "广州白云三店"}]},
+            },
+        )
+
+
+def test_generic_store_reply_can_ask_current_city_or_district() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "您在哪个城市或哪个区？我按您方便的位置帮您查附近门店。"}}],
+        {
+            "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
+            "customer_store_knowledge": {"stores": [{"city": "广州市", "store_name": "广州白云三店"}]},
+        },
+    )
+
+
 def test_nearby_store_lookup_requires_distance_calculate() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "airport nearby", "customer_store_knowledge": {"stores": [{"city": "Xiamen"}]}},
