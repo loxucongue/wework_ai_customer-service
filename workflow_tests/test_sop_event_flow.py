@@ -61,6 +61,39 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.tasks[0]["status"], "sent")
         self.assertEqual(repo.tasks[0]["send_payload"]["identity"]["identity_source"], "conversations")
 
+    async def test_event_identity_falls_back_to_default_platform_identity(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[{"direction": "customer", "content": "hello"}])
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send opening"})
+        service = _service(
+            repo=repo,
+            client=client,
+            selector=selector,
+            default_identity={
+                "corp_id": "ww943af61cd5d2afe4",
+                "user_id": "test2",
+                "wechat": "auto-3a03ca3ecaae3ae2",
+            },
+        )
+        payload = {
+            "event_id": "evt_identity_default",
+            "event_type": "sop_friend_added_schedule_batch",
+            "account": {"enterprise_id": "ent", "wework_user_id": "SL097", "assignee_id": "test"},
+            "sop": {"delay_minutes": 1},
+            "customers": [{"customer": {"external_userid": "ext_user"}}],
+        }
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_identity_default")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(client.fetch_calls[0]["corp_id"], "ww943af61cd5d2afe4")
+        self.assertEqual(client.fetch_calls[0]["user_id"], "test")
+        self.assertEqual(client.fetch_calls[0]["wechat"], "SL097")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(repo.tasks[0]["send_payload"]["identity"]["identity_source"], "default_platform_identity")
+        self.assertEqual(repo.tasks[0]["send_payload"]["identity"]["identity_default_fields"], "corp_id")
+
     async def test_first_added_event_fetches_conversation_then_selects_first_add_sop(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[{"direction": "customer", "content": "你好"}])
@@ -413,12 +446,19 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("不因为事件时间到了就机械发送", system_prompt)
 
 
-def _service(repo: Any, client: Any, selector: Any | None = None, pack_service: Any | None = None) -> SopEventService:
+def _service(
+    repo: Any,
+    client: Any,
+    selector: Any | None = None,
+    pack_service: Any | None = None,
+    default_identity: dict[str, Any] | None = None,
+) -> SopEventService:
     return SopEventService(
         repository=repo,
         sop_reply_pack_service=pack_service or _PackService(),
         outreach_send_client=client,
         sop_execution_service=selector or _Selector({"send_sop": False, "reason": "default reject"}),
+        default_identity=default_identity,
     )
 
 

@@ -25,11 +25,17 @@ class SopEventService:
         sop_reply_pack_service: SopReplyPackService,
         outreach_send_client: OutreachSendClient,
         sop_execution_service: SopExecutionService | None = None,
+        default_identity: dict[str, Any] | None = None,
     ) -> None:
         self.repository = repository
         self.sop_reply_pack_service = sop_reply_pack_service
         self.outreach_send_client = outreach_send_client
         self.sop_execution_service = sop_execution_service
+        self.default_identity = {
+            "corp_id": _string((default_identity or {}).get("corp_id")),
+            "user_id": _string((default_identity or {}).get("user_id")),
+            "wechat": _string((default_identity or {}).get("wechat")),
+        }
 
     async def accept_event(self, payload: dict[str, Any], background_tasks: BackgroundTasks | None = None) -> dict[str, Any]:
         event_id = str(payload.get("event_id") or "").strip()
@@ -177,13 +183,22 @@ class SopEventService:
         except Exception:
             return identity
         if not isinstance(found, dict) or not found:
-            return identity
+            found = {}
         merged = dict(identity)
         for key in ("corp_id", "user_id", "wechat", "external_userid", "customer_id"):
             if not _string(merged.get(key)) and _string(found.get(key)):
                 merged[key] = _string(found.get(key))
         if _string(found.get("identity_source")):
             merged["identity_source"] = _string(found.get("identity_source"))
+        filled_from_default: list[str] = []
+        for key in ("corp_id", "user_id", "wechat"):
+            if not _string(merged.get(key)) and _string(self.default_identity.get(key)):
+                merged[key] = _string(self.default_identity.get(key))
+                filled_from_default.append(key)
+        if filled_from_default and not _string(merged.get("identity_source")):
+            merged["identity_source"] = "default_platform_identity"
+        if filled_from_default:
+            merged["identity_default_fields"] = ",".join(filled_from_default)
         return merged
 
     async def _create_first_add_task(
@@ -535,6 +550,7 @@ def _customer_identity(payload: dict[str, Any], customer: dict[str, Any]) -> dic
             root_sop.get("user_id"),
             payload.get("user_id"),
             account.get("user_id"),
+            account.get("assignee_id"),
         ),
         "wechat": _first_string(
             customer.get("wechat"),
