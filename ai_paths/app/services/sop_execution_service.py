@@ -112,6 +112,17 @@ class SopExecutionService:
                 pack=selected,
                 reply_messages=messages,
             )
+            if task.get("status") != "sent":
+                result.update(
+                    {
+                        "mode": "complete",
+                        "send_sop": False,
+                        "need_ai_reply": True,
+                        "reason": str(task.get("error") or "sop_pack_already_sent_or_pending"),
+                        "task": task,
+                    }
+                )
+                return _finish(result, started)
             result.update(
                 {
                     "mode": "selected",
@@ -222,11 +233,13 @@ class SopExecutionService:
             "error": "",
         }
         try:
+            sent_before = _event_created_at(payload)
             completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
                 customer_id=identity.get("customer_id", ""),
                 external_userid=identity.get("external_userid", ""),
+                sent_before=sent_before,
             )
-            completed_categories = _sent_categories(self.repository, identity)
+            completed_categories = _sent_categories(self.repository, identity, sent_before=sent_before)
             result["completed_sop_pack_ids"] = completed_ids
             result["completed_sop_categories"] = completed_categories
             selector_input = {
@@ -243,7 +256,7 @@ class SopExecutionService:
             result["selector_output"] = selector_output
             result["model_usage"] = dict(self.model_client.last_usage or {})
 
-            if event_type == "sop_friend_added_schedule_batch":
+            if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}:
                 selected = _selected_pack(selector_output, candidate_packs)
                 send_sop = bool(selector_output.get("send_sop") and selected)
                 result.update(
@@ -293,18 +306,24 @@ class SopExecutionService:
                     "2. platform_actions：公司业务群发任务。你只能判断 platform_actions 当前是否适合发送，不能换成新客 SOP，不能改写内容。\n\n"
                     "# Input\n"
                     "你会收到：事件字段、最近 30 条聊天摘要、candidate_sops、platform_actions_summary、completed_sop_pack_ids、completed_sop_categories。\n"
-                    "candidate_sops 已经按同客户已发送包 ID 和同类目做过预过滤，但你仍要结合最近聊天判断是否重复或不合时机。\n\n"
+                    "candidate_sops 已经按同客户已发送包 ID 和同类目做过预过滤，但你仍要结合最近聊天判断是否正在对话、冲突或严重重合。\n\n"
                     "# Decision Policy\n"
-                    "- 事件到了时间不等于必须发送；必须看最近 30 条聊天是否已经覆盖同类内容。\n"
-                    "- 如果 completed_sop_pack_ids 或 completed_sop_categories 显示客户已收到相同包或同类 SOP，必须 send_sop=false。\n"
-                    "- 如果最近 30 条聊天里已经出现同类图片、活动图、付款入口、门店地址、报价或效果铺垫，也要拒发。\n"
-                    "- 如果客户刚刚提出明确问题或正在正常对话，且事件包会打断当前沟通，拒发。\n"
+                    "- 平台已经按 SOP 规则判断到了定时触达节点；你的职责不是重新设计流程，而是做发送前闸门。\n"
+                    "- 默认按照平台 SOP 全流程发送候选话术包。只有出现明确拒发理由时才 send_sop=false。\n"
+                    "- 明确拒发理由只有四类：客户当前正在和销冠连续对话且候选包会打断；候选包和客户当前问题/诉求冲突；候选包内容与最近聊天严重重合；completed_sop_pack_ids 或 completed_sop_categories 已显示同包/同类完成。\n"
+                    "- first_add_flow 是销冠式分阶段主动触达：破冰/介绍 -> 问地址 -> 效果铺垫 -> 报价 -> 通单/收款。客户未回复、staff-only 连续 SOP 消息、或上一阶段正常铺垫，都不是拒发理由。\n"
+                    "- 客户的自动加微开场（如“我已经添加了你，现在可以开始聊天了”）不算有效主动咨询；如果之后没有新的 customer 消息，应按未回复跟进处理。\n"
+                    "- 判断重复时，只看候选 SOP 自己的 pack id 和 sop_category：completed_sop_pack_ids 包含候选 id，或 completed_sop_categories 包含候选 sop_category，才算已完成同类。opening/store_prompt/activity_intro 不等于 effect_case，不能阻断 30 分钟效果铺垫。\n"
+                    "- 不要把任何图片都当成效果图。普通活动图、破冰图、门店/品牌素材、上一阶段配图，不等于“效果铺垫已完成”；只有最近聊天已经明确发过同类效果案例/对比图/效果预期话术，才可拒发 effect_case/effect_warmup。\n"
+                    "- 对定时 first_add_flow，如果多个候选可选，优先选择与当前 delay_minutes 和阶段目的最匹配的候选，不要回头补发更早阶段，除非更早阶段是当前唯一合理候选。\n"
+                    "- 客户刚刚提出明确问题不必然拒发；只有该问题正在被销冠承接、或候选包会明显打断/答非所问时才拒发。\n"
                     "- first_add_flow 只能选择 candidate_sops 里的 sop_pack_id。\n"
-                    "- platform_actions 只判断平台 actions 是否发送；send_sop=true 时 sop_pack_id 为空即可。\n\n"
+                    "- platform_actions 也遵循同一闸门：平台已给出 actions，你只判断最近聊天是否正在进行、冲突或严重重合；send_sop=true 时 sop_pack_id 为空即可。\n\n"
                     "# Do Not\n"
                     "- 不追加普通 AI 回复，need_ai_reply 必须是 false。\n"
                     "- 不补门店、价格、档期、案例或客户事实。\n"
-                    "- 不因为事件时间到了就机械发送。\n"
+                    "- 不因为前序 SOP 已发、客户未回复或最近只有 staff 消息就拒发后续阶段。\n"
+                    "- 不把轻微相关或同一活动主题当作严重重合；只有同阶段核心内容已覆盖才算严重重合。\n"
                     "- 不输出多余字段或内部长分析。\n\n"
                     "# Output\n"
                     "只能输出 JSON，字段必须是 send_sop、sop_pack_id、need_ai_reply、reason。"
@@ -374,8 +393,10 @@ class SopExecutionService:
             trigger_source="chat_gate",
             reply_messages=reply_messages,
             status="pending",
+            send_once_key=_send_once_key(identity, sop_pack_id),
         )
-        if task.get("id"):
+        if task.get("id") and task.get("status") == "pending":
+            created = bool(task.get("created"))
             task = self.repository.update_sop_send_task(
                 str(task["id"]),
                 status="sent",
@@ -387,6 +408,7 @@ class SopExecutionService:
                 send_response={"accepted": True, "mode": "sync_http_response"},
                 sent_at=utc_now_iso(),
             )
+            task["created"] = created
         return task
 
 
@@ -401,7 +423,7 @@ def _enabled_chat_packs(config: dict[str, Any]) -> list[dict[str, Any]]:
     for pack in packs:
         if not isinstance(pack, dict) or not bool(pack.get("enabled")) or not _pack_messages(pack):
             continue
-        if _pack_scope(pack) != "chat_gate":
+        if not _pack_has_scope(pack, "chat_gate"):
             continue
         event_type = _string(pack.get("event_type"))
         if event_type and event_type != "sop_friend_added_schedule_batch":
@@ -416,6 +438,7 @@ def first_add_candidate_packs(
     completed_sop_pack_ids: list[str],
     completed_sop_categories: list[str] | None = None,
     delay_minutes: int,
+    event_type: str = "sop_friend_added_schedule_batch",
 ) -> list[dict[str, Any]]:
     packs = config.get("packs") if isinstance(config.get("packs"), list) else []
     completed = set(completed_sop_pack_ids)
@@ -424,9 +447,10 @@ def first_add_candidate_packs(
     for pack in packs:
         if not isinstance(pack, dict) or not bool(pack.get("enabled")) or not _pack_messages(pack):
             continue
-        if _pack_scope(pack) != "event_first_add":
+        if not _pack_has_scope(pack, "event_first_add"):
             continue
-        if _string(pack.get("event_type")) != "sop_friend_added_schedule_batch":
+        pack_event_type = _string(pack.get("event_type"))
+        if pack_event_type and pack_event_type != event_type:
             continue
         pack_id = _string(pack.get("id"))
         if pack_id in completed:
@@ -434,6 +458,8 @@ def first_add_candidate_packs(
         if _pack_category(pack) in completed_categories:
             continue
         pack_delay = _int(pack.get("delay_minutes"), 0)
+        if delay_minutes <= 0 and pack_delay > 0:
+            continue
         if delay_minutes > 0 and pack_delay > delay_minutes:
             continue
         candidates.append(pack)
@@ -498,6 +524,7 @@ def _sop_summary(pack: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(pack.get("id") or ""),
         "scope": _pack_scope(pack),
+        "scopes": _pack_scopes(pack),
         "sop_category": _pack_category(pack),
         "name": str(pack.get("name") or ""),
         "purpose": str(pack.get("purpose") or "")[:240],
@@ -552,15 +579,41 @@ def _pack_messages(pack: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _pack_scope(pack: dict[str, Any]) -> str:
-    scope = _string(pack.get("scope"))
-    return scope if scope in {"chat_gate", "event_first_add", "event_platform_task"} else "chat_gate"
+    return _pack_scopes(pack)[0]
+
+
+def _pack_scopes(pack: dict[str, Any]) -> list[str]:
+    raw_scopes = pack.get("scopes")
+    values = raw_scopes if isinstance(raw_scopes, list) else [pack.get("scope")]
+    scopes: list[str] = []
+    for value in values:
+        scope = _string(value)
+        if scope in {"chat_gate", "event_first_add", "event_platform_task"} and scope not in scopes:
+            scopes.append(scope)
+    return scopes or ["chat_gate"]
+
+
+def _pack_has_scope(pack: dict[str, Any], scope: str) -> bool:
+    return scope in _pack_scopes(pack)
 
 
 def _pack_category(pack: dict[str, Any]) -> str:
     return _string(pack.get("sop_category")) or _string(pack.get("id"))
 
 
-def _sent_categories(repository: Any, identity: dict[str, str]) -> list[str]:
+def _send_once_key(identity: dict[str, str], sop_pack_id: str) -> str:
+    pack_id = _string(sop_pack_id).lower()
+    external_userid = _string(identity.get("external_userid")).lower()
+    customer_id = _string(identity.get("customer_id")).lower()
+    customer_key = external_userid or customer_id
+    if not pack_id or not customer_key:
+        return ""
+    corp_id = _string(identity.get("corp_id")).lower()
+    customer_kind = "external" if external_userid else "customer"
+    return f"sop_pack:{pack_id}|corp:{corp_id}|{customer_kind}:{customer_key}"
+
+
+def _sent_categories(repository: Any, identity: dict[str, str], *, sent_before: str = "") -> list[str]:
     func = getattr(repository, "list_sent_sop_categories_for_customer", None)
     if not callable(func):
         return []
@@ -568,6 +621,7 @@ def _sent_categories(repository: Any, identity: dict[str, str]) -> list[str]:
         func(
             customer_id=identity.get("customer_id", ""),
             external_userid=identity.get("external_userid", ""),
+            sent_before=sent_before,
         )
         or []
     )
@@ -583,6 +637,11 @@ def _chat_identity(request: ChatRequest, request_context: dict[str, Any]) -> dic
         "external_userid": external_userid,
         "customer_id": external_userid or customer_id,
     }
+
+
+def _event_created_at(payload: dict[str, Any]) -> str:
+    value = payload.get("created_at") or payload.get("upstream_created_at")
+    return _string(value)
 
 
 def _string(value: Any) -> str:

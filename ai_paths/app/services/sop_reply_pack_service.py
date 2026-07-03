@@ -9,7 +9,7 @@ from typing import Any
 from app.config import Settings
 
 
-ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address", "human_handoff"}
+ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address", "human_handoff", "human_handoff_notice"}
 ALLOWED_SOP_SCOPES = {"chat_gate", "event_first_add", "event_platform_task"}
 ALLOWED_SOP_CATEGORIES = {
     "opening",
@@ -33,13 +33,14 @@ DEFAULT_SOP_REPLY_PACKS: dict[str, Any] = {
             "id": "s10_new_customer_opening",
             "enabled": False,
             "scope": "chat_gate",
+            "scopes": ["chat_gate", "event_first_add"],
             "sop_category": "opening",
             "name": "新客破冰",
             "purpose": "新客首次加微后的基础破冰话术包。",
             "order": 10,
             "send_once": True,
-            "event_type": "sop_friend_added_schedule_batch",
-            "delay_minutes": 1,
+            "event_type": "",
+            "delay_minutes": 0,
             "day_stage": "day1",
             "customer_state": "first_add_ai_notice",
             "stage_tag": "first_add_ai_notice",
@@ -447,10 +448,12 @@ class SopReplyPackService:
             raise ValueError(f"pack #{index + 1} id is required")
         triggers = item.get("triggers") if isinstance(item.get("triggers"), list) else []
         messages = item.get("reply_messages") if isinstance(item.get("reply_messages"), list) else []
+        scopes = _normalize_scopes(item)
         return {
             "id": pack_id,
             "enabled": bool(item.get("enabled")),
-            "scope": _choice_text(item.get("scope"), "chat_gate", ALLOWED_SOP_SCOPES),
+            "scope": scopes[0],
+            "scopes": scopes,
             "sop_category": _choice_text(item.get("sop_category"), pack_id, ALLOWED_SOP_CATEGORIES, allow_custom=True),
             "name": _checked_text(item.get("name"), f"SOP {index + 1}"),
             "purpose": _checked_text(item.get("purpose"), ""),
@@ -473,6 +476,8 @@ class SopReplyPackService:
         message_type = str(item.get("type") or "text").strip()
         if message_type not in ALLOWED_MESSAGE_TYPES:
             raise ValueError(f"unsupported reply message type: {message_type}")
+        if message_type == "human_handoff":
+            message_type = "human_handoff_notice"
         content = item.get("content") if isinstance(item.get("content"), dict) else {}
         normalized_content = self._normalize_message_content(message_type, content)
         return {
@@ -497,7 +502,7 @@ class SopReplyPackService:
             }
         if message_type == "store_address":
             return {"store_id": _checked_text(content.get("store_id"), "")}
-        if message_type == "human_handoff":
+        if message_type == "human_handoff_notice":
             return {"handoff_reason": _checked_text(content.get("handoff_reason") or content.get("text"), "")}
         return {}
 
@@ -523,6 +528,17 @@ def _choice_text(value: Any, default: str, choices: set[str], *, allow_custom: b
         cleaned = _clean_identifier(text)
         return cleaned or _clean_identifier(default)
     return text if text in choices else default
+
+
+def _normalize_scopes(item: dict[str, Any]) -> list[str]:
+    raw_scopes = item.get("scopes")
+    values = raw_scopes if isinstance(raw_scopes, list) else [item.get("scope")]
+    scopes: list[str] = []
+    for value in values:
+        scope = _choice_text(value, "", ALLOWED_SOP_SCOPES)
+        if scope and scope not in scopes:
+            scopes.append(scope)
+    return scopes or ["chat_gate"]
 
 
 def _positive_int(value: Any, default: int) -> int:

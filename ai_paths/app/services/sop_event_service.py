@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import BackgroundTasks
@@ -11,6 +12,9 @@ from app.services.sop_execution_service import SopExecutionService, first_add_ca
 from app.services.sop_reply_pack_service import ALLOWED_MESSAGE_TYPES, SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
+
+
+FIRST_ADD_EVENT_TYPES = {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}
 
 
 class SopEventService:
@@ -70,7 +74,7 @@ class SopEventService:
             task_results.append(await self._send_task(task))
 
         status = "processed"
-        if any(str(item.get("status") or "").startswith("failed") for item in task_results):
+        if any(_task_has_processing_error(item) for item in task_results):
             status = "processed_with_errors"
         elif not task_results:
             status = "skipped_no_tasks"
@@ -79,7 +83,7 @@ class SopEventService:
 
     async def _create_customer_task(self, payload: dict[str, Any], customer: dict[str, Any], *, index: int) -> dict[str, Any]:
         event_type = _string(payload.get("event_type"))
-        identity = _customer_identity(payload, customer)
+        identity = self._complete_identity(_customer_identity(payload, customer))
         base_pack_id = "platform_actions" if event_type == "sop_platform_task" else "event_decision"
         base_pack_name = base_pack_id
 
@@ -125,7 +129,7 @@ class SopEventService:
             )
 
         conversation_messages = conversation_fetch.get("messages") if isinstance(conversation_fetch.get("messages"), list) else []
-        if event_type == "sop_friend_added_schedule_batch":
+        if event_type in FIRST_ADD_EVENT_TYPES:
             return await self._create_first_add_task(
                 payload,
                 customer,
@@ -157,6 +161,31 @@ class SopEventService:
             send_payload={"identity": identity, "conversation_fetch": _conversation_fetch_summary(conversation_fetch)},
         )
 
+    def _complete_identity(self, identity: dict[str, str]) -> dict[str, str]:
+        lookup = getattr(self.repository, "find_sop_event_identity", None)
+        if not callable(lookup):
+            return identity
+        missing = [key for key in ("corp_id", "user_id", "wechat") if not _string(identity.get(key))]
+        if not missing:
+            return identity
+        try:
+            found = lookup(
+                customer_id=identity.get("customer_id", ""),
+                external_userid=identity.get("external_userid", ""),
+                wechat=identity.get("wechat", ""),
+            )
+        except Exception:
+            return identity
+        if not isinstance(found, dict) or not found:
+            return identity
+        merged = dict(identity)
+        for key in ("corp_id", "user_id", "wechat", "external_userid", "customer_id"):
+            if not _string(merged.get(key)) and _string(found.get(key)):
+                merged[key] = _string(found.get(key))
+        if _string(found.get("identity_source")):
+            merged["identity_source"] = _string(found.get("identity_source"))
+        return merged
+
     async def _create_first_add_task(
         self,
         payload: dict[str, Any],
@@ -167,17 +196,25 @@ class SopEventService:
         conversation_fetch: dict[str, Any],
         conversation_messages: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        sent_before = _event_created_at(payload)
         completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
             customer_id=identity["customer_id"],
             external_userid=identity["external_userid"],
+            sent_before=sent_before,
         )
-        completed_categories = _sent_categories(self.repository, identity)
+        completed_categories = _sent_categories(self.repository, identity, sent_before=sent_before)
         delay_minutes = _match_context(payload, customer)["delay_minutes"]
+        event_conversation_messages, conversation_filter = _first_add_conversation_messages(
+            payload,
+            customer,
+            conversation_messages,
+        )
         candidates = first_add_candidate_packs(
             self.sop_reply_pack_service.load(),
             completed_sop_pack_ids=completed_ids,
             completed_sop_categories=completed_categories,
             delay_minutes=delay_minutes,
+            event_type=_string(payload.get("event_type")),
         )
         if not candidates:
             return self._create_task_record(
@@ -195,6 +232,7 @@ class SopEventService:
                     "completed_sop_pack_ids": completed_ids,
                     "completed_sop_categories": completed_categories,
                     "delay_minutes": delay_minutes,
+                    "conversation_filter": conversation_filter,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                 },
             )
@@ -203,13 +241,14 @@ class SopEventService:
             payload=payload,
             customer=customer,
             identity=identity,
-            event_type="sop_friend_added_schedule_batch",
-            conversation_messages=conversation_messages,
+            event_type=_string(payload.get("event_type")),
+            conversation_messages=event_conversation_messages,
             candidate_packs=candidates,
             actions_reply_messages=[],
         )
         selected = _pack_by_id(candidates, str(decision.get("sop_pack_id") or ""))
         if not decision.get("send_sop") or not selected:
+            is_model_error = bool(decision.get("error"))
             return self._create_task_record(
                 payload,
                 customer,
@@ -218,11 +257,12 @@ class SopEventService:
                 sop_pack_id=str(decision.get("sop_pack_id") or "first_add_model_rejected"),
                 sop_pack_name=str(decision.get("sop_pack_name") or "first_add_model_rejected"),
                 reply_messages=[],
-                status="skipped_model_error" if decision.get("error") else "skipped_model_rejected",
-                error=str(decision.get("error") or decision.get("reason") or "model_rejected_sop_event"),
+                status="skipped_model_error" if is_model_error else "skipped_model_rejected",
+                error=str(decision.get("error") or "") if is_model_error else "",
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_filter": conversation_filter,
                     "event_decision_input": decision.get("selector_input", {}),
                 },
                 send_response={"event_decision": decision},
@@ -240,9 +280,11 @@ class SopEventService:
             reply_messages=messages,
             status="pending",
             error="",
+            send_once_key=_send_once_key(identity, str(selected.get("id") or "")),
             send_payload={
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                "conversation_filter": conversation_filter,
                 "event_decision_input": decision.get("selector_input", {}),
             },
             send_response={"event_decision": decision},
@@ -284,6 +326,7 @@ class SopEventService:
             actions_reply_messages=messages,
         )
         if not decision.get("send_sop"):
+            is_model_error = bool(decision.get("error"))
             return self._create_task_record(
                 payload,
                 customer,
@@ -293,8 +336,8 @@ class SopEventService:
                 sop_pack_name="platform_actions",
                 sop_category="platform_actions",
                 reply_messages=messages,
-                status="skipped_model_error" if decision.get("error") else "skipped_model_rejected",
-                error=str(decision.get("error") or decision.get("reason") or "model_rejected_platform_actions"),
+                status="skipped_model_error" if is_model_error else "skipped_model_rejected",
+                error=str(decision.get("error") or "") if is_model_error else "",
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
@@ -366,6 +409,7 @@ class SopEventService:
         status: str,
         error: str,
         sop_category: str = "",
+        send_once_key: str = "",
         send_payload: dict[str, Any] | None = None,
         send_response: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -384,15 +428,18 @@ class SopEventService:
             reply_messages=reply_messages,
             status=status,
             error=error,
+            send_once_key=send_once_key,
         )
         if task.get("id") and task.get("created") and (send_payload or send_response):
             created = bool(task.get("created"))
+            task_status = _string(task.get("status")) or status
+            task_error = _string(task.get("error")) if task_status != status else error
             task = self.repository.update_sop_send_task(
                 str(task["id"]),
-                status=status,
+                status=task_status,
                 send_payload=send_payload or {},
                 send_response=send_response or {},
-                error=error,
+                error=task_error,
             )
             task["created"] = created
         return task
@@ -492,10 +539,12 @@ def _customer_identity(payload: dict[str, Any], customer: dict[str, Any]) -> dic
         "wechat": _first_string(
             customer.get("wechat"),
             conversation.get("wechat"),
+            conversation.get("wework_user_id"),
             customer_sop.get("wechat"),
             root_sop.get("wechat"),
             payload.get("wechat"),
             account.get("wechat"),
+            account.get("wework_user_id"),
         ),
         "external_userid": external_userid,
         "customer_id": customer_id,
@@ -530,7 +579,19 @@ def _pack_category(pack: dict[str, Any]) -> str:
     return _string(pack.get("sop_category")) or _string(pack.get("id"))
 
 
-def _sent_categories(repository: Any, identity: dict[str, str]) -> list[str]:
+def _send_once_key(identity: dict[str, str], sop_pack_id: str) -> str:
+    pack_id = _string(sop_pack_id).lower()
+    external_userid = _string(identity.get("external_userid")).lower()
+    customer_id = _string(identity.get("customer_id")).lower()
+    customer_key = external_userid or customer_id
+    if not pack_id or not customer_key:
+        return ""
+    corp_id = _string(identity.get("corp_id")).lower()
+    customer_kind = "external" if external_userid else "customer"
+    return f"sop_pack:{pack_id}|corp:{corp_id}|{customer_kind}:{customer_key}"
+
+
+def _sent_categories(repository: Any, identity: dict[str, str], *, sent_before: str = "") -> list[str]:
     func = getattr(repository, "list_sent_sop_categories_for_customer", None)
     if not callable(func):
         return []
@@ -538,6 +599,7 @@ def _sent_categories(repository: Any, identity: dict[str, str]) -> list[str]:
         func(
             customer_id=identity.get("customer_id", ""),
             external_userid=identity.get("external_userid", ""),
+            sent_before=sent_before,
         )
         or []
     )
@@ -560,6 +622,8 @@ def _actions_to_reply_messages(actions: list[Any]) -> list[dict[str, Any]]:
         message_type = _string(action.get("type")) or "text"
         if message_type not in ALLOWED_MESSAGE_TYPES:
             message_type = "text"
+        if message_type == "human_handoff":
+            message_type = "human_handoff_notice"
         content = _message_content(message_type, action.get("content"))
         if not _content_has_value(content):
             continue
@@ -577,9 +641,20 @@ def _message_content(message_type: str, value: Any) -> dict[str, Any]:
         return {"amount": _int(content.get("amount"), 10), "remark": _string(content.get("remark"))}
     if message_type == "store_address":
         return {"store_id": _string(content.get("store_id")) or _string(content.get("id")) or _string(value)}
-    if message_type == "human_handoff":
+    if message_type == "human_handoff_notice":
         return {"handoff_reason": _string(content.get("handoff_reason")) or _string(content.get("text")) or _string(value)}
     return {}
+
+
+def _task_has_processing_error(task: dict[str, Any]) -> bool:
+    status = _string(task.get("status"))
+    if status.startswith("failed"):
+        return True
+    return status in {
+        "skipped_missing_identity",
+        "skipped_unsupported_event_type",
+        "skipped_model_error",
+    }
 
 
 def _content_has_value(content: dict[str, Any]) -> bool:
@@ -613,6 +688,93 @@ def _conversation_fetch_summary(conversation_fetch: dict[str, Any]) -> dict[str,
         "message_count": conversation_fetch.get("message_count", 0),
         "response": compact(response, max_chars=2000) if response else {},
     }
+
+
+def _event_created_at(payload: dict[str, Any]) -> str:
+    parsed = _parse_time(payload.get("created_at") or payload.get("upstream_created_at"))
+    return parsed.isoformat() if parsed else ""
+
+
+def _first_add_conversation_messages(
+    payload: dict[str, Any],
+    customer: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    first_added = customer.get("first_added_event") if isinstance(customer.get("first_added_event"), dict) else {}
+    first_added_at = _parse_time(first_added.get("timestamp") or first_added.get("created_at") or first_added.get("time"))
+    event_created_at = _parse_time(payload.get("created_at") or payload.get("upstream_created_at"))
+    summary: dict[str, Any] = {
+        "scope": "first_add_event_window",
+        "input_count": len(messages),
+        "kept_count": len(messages),
+        "dropped_before_first_add": 0,
+        "dropped_after_event_created": 0,
+        "kept_unknown_time": 0,
+        "first_added_at": first_added_at.isoformat() if first_added_at else "",
+        "event_created_at": event_created_at.isoformat() if event_created_at else "",
+    }
+    if not first_added_at and not event_created_at:
+        summary["scope"] = "first_add_no_time_window"
+        return messages, summary
+
+    filtered: list[dict[str, Any]] = []
+    dropped = 0
+    dropped_after_event = 0
+    unknown = 0
+    for message in messages:
+        message_at = _message_time(message)
+        if not message_at:
+            filtered.append(message)
+            unknown += 1
+            continue
+        if first_added_at and message_at < first_added_at:
+            dropped += 1
+            continue
+        if event_created_at and message_at > event_created_at:
+            dropped_after_event += 1
+            continue
+        filtered.append(message)
+    summary["kept_count"] = len(filtered)
+    summary["dropped_before_first_add"] = dropped
+    summary["dropped_after_event_created"] = dropped_after_event
+    summary["kept_unknown_time"] = unknown
+    return filtered, summary
+
+
+def _message_time(message: dict[str, Any]) -> datetime | None:
+    for key in ("msgtime", "timestamp", "created_at", "time"):
+        parsed = _parse_time(message.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if value in ("", None):
+        return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if seconds > 10_000_000_000:
+            seconds /= 1000
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    text = _string(value)
+    if not text:
+        return None
+    if text.replace(".", "", 1).isdigit():
+        try:
+            return _parse_time(float(text))
+        except ValueError:
+            return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _idempotency_key(payload: dict[str, Any], customer: dict[str, Any], *, sop_pack_id: str, index: int) -> str:

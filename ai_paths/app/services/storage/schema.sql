@@ -167,6 +167,7 @@ CREATE INDEX IF NOT EXISTS idx_outreach_events_plan_id ON outreach_events(plan_i
 CREATE INDEX IF NOT EXISTS idx_outreach_events_customer_id ON outreach_events(customer_id, created_at);
 
 CREATE TABLE IF NOT EXISTS sop_events (
+    id TEXT NOT NULL DEFAULT '',
     event_id TEXT PRIMARY KEY,
     event_type TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT '',
@@ -186,6 +187,7 @@ CREATE TABLE IF NOT EXISTS sop_send_tasks (
     id TEXT PRIMARY KEY,
     event_id TEXT NOT NULL,
     idempotency_key TEXT NOT NULL UNIQUE,
+    send_once_key TEXT NOT NULL DEFAULT '',
     customer_id TEXT NOT NULL DEFAULT '',
     external_userid TEXT NOT NULL DEFAULT '',
     corp_id TEXT NOT NULL DEFAULT '',
@@ -209,4 +211,3 @@ CREATE TABLE IF NOT EXISTS sop_send_tasks (
 CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_event_id ON sop_send_tasks(event_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_customer ON sop_send_tasks(customer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_pack ON sop_send_tasks(sop_pack_id, status, created_at);
-

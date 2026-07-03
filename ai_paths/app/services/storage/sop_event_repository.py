@@ -12,15 +12,17 @@ class SopEventRepositoryMixin:
         if not event_id:
             raise ValueError("event_id is required")
         now = utc_now_iso()
+        log_id = str(uuid4())
         with self.store.connect() as conn:
             result = conn.execute(
                 """
                 INSERT OR IGNORE INTO sop_events
-                    (event_id, event_type, source, request_reply, upstream_created_at,
+                    (id, event_id, event_type, source, request_reply, upstream_created_at,
                      raw_payload_json, status, received_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'accepted', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)
                 """,
                 (
+                    log_id,
                     event_id,
                     str(payload.get("event_type") or ""),
                     str(payload.get("source") or ""),
@@ -38,7 +40,10 @@ class SopEventRepositoryMixin:
 
     def get_sop_event(self, event_id: str) -> dict[str, Any]:
         with self.store.connect() as conn:
-            row = conn.execute("SELECT * FROM sop_events WHERE event_id=?", (event_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM sop_events WHERE event_id=? OR id=?",
+                (event_id, event_id),
+            ).fetchone()
         return self._decode_sop_event(dict(row)) if row else {}
 
     def list_sop_events(
@@ -72,17 +77,16 @@ class SopEventRepositoryMixin:
                 "EXISTS (SELECT 1 FROM sop_send_tasks t WHERE t.event_id=e.event_id AND t.external_userid=?)"
             )
             params.append(external_userid)
+        task_error_sql = _sop_task_error_sql("t")
         if has_error.lower() in {"true", "1", "yes"}:
             clauses.append(
                 "(e.error<>'' OR e.status LIKE '%error%' OR e.status LIKE '%failed%' OR EXISTS "
-                "(SELECT 1 FROM sop_send_tasks t WHERE t.event_id=e.event_id AND "
-                "(t.error<>'' OR t.status LIKE 'failed%' OR t.status LIKE '%error%')))"
+                f"(SELECT 1 FROM sop_send_tasks t WHERE t.event_id=e.event_id AND {task_error_sql}))"
             )
         elif has_error.lower() in {"false", "0", "no"}:
             clauses.append(
                 "(e.error='' AND e.status NOT LIKE '%error%' AND e.status NOT LIKE '%failed%' AND NOT EXISTS "
-                "(SELECT 1 FROM sop_send_tasks t WHERE t.event_id=e.event_id AND "
-                "(t.error<>'' OR t.status LIKE 'failed%' OR t.status LIKE '%error%')))"
+                f"(SELECT 1 FROM sop_send_tasks t WHERE t.event_id=e.event_id AND {task_error_sql}))"
             )
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         safe_limit = max(1, min(int(limit or 50), 200))
@@ -92,7 +96,7 @@ class SopEventRepositoryMixin:
                 SELECT e.*,
                        COUNT(t.id) AS task_count,
                        SUM(CASE WHEN t.status='sent' THEN 1 ELSE 0 END) AS sent_count,
-                       SUM(CASE WHEN t.status LIKE 'failed%' OR t.error<>'' THEN 1 ELSE 0 END) AS failed_count,
+                       SUM(CASE WHEN {task_error_sql} THEN 1 ELSE 0 END) AS failed_count,
                        SUM(CASE WHEN t.status LIKE 'skipped%' THEN 1 ELSE 0 END) AS skipped_count
                 FROM sop_events e
                 LEFT JOIN sop_send_tasks t ON t.event_id=e.event_id
@@ -145,22 +149,25 @@ class SopEventRepositoryMixin:
         reply_messages: list[dict[str, Any]],
         status: str = "pending",
         error: str = "",
+        send_once_key: str = "",
     ) -> dict[str, Any]:
         now = utc_now_iso()
         task_id = str(uuid4())
+        send_once_key = str(send_once_key or "").strip()
         with self.store.connect() as conn:
             result = conn.execute(
                 """
                 INSERT OR IGNORE INTO sop_send_tasks
-                    (id, event_id, idempotency_key, customer_id, external_userid, corp_id,
+                    (id, event_id, idempotency_key, send_once_key, customer_id, external_userid, corp_id,
                      user_id, wechat, sop_pack_id, sop_pack_name, sop_category, trigger_source, reply_messages_json,
                      status, error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
                     event_id,
                     idempotency_key,
+                    send_once_key,
                     customer_id,
                     external_userid,
                     corp_id,
@@ -182,8 +189,57 @@ class SopEventRepositoryMixin:
                 "SELECT * FROM sop_send_tasks WHERE idempotency_key=?",
                 (idempotency_key,),
             ).fetchone()
+            duplicate_of_task_id = ""
+            if row is None and send_once_key:
+                duplicate = conn.execute(
+                    """
+                    SELECT *
+                    FROM sop_send_tasks
+                    WHERE send_once_key=? AND status IN ('pending','sent')
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (send_once_key,),
+                ).fetchone()
+                if duplicate is not None:
+                    duplicate_of_task_id = str(duplicate["id"] or "")
+                    result = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO sop_send_tasks
+                            (id, event_id, idempotency_key, send_once_key, customer_id, external_userid, corp_id,
+                             user_id, wechat, sop_pack_id, sop_pack_name, sop_category, trigger_source, reply_messages_json,
+                             status, error, created_at, updated_at)
+                        VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'skipped_send_once_duplicate', ?, ?, ?)
+                        """,
+                        (
+                            task_id,
+                            event_id,
+                            idempotency_key,
+                            customer_id,
+                            external_userid,
+                            corp_id,
+                            user_id,
+                            wechat,
+                            sop_pack_id,
+                            sop_pack_name,
+                            sop_category,
+                            trigger_source,
+                            dumps(reply_messages),
+                            f"duplicate_sop_pack_task:{duplicate_of_task_id}",
+                            now,
+                            now,
+                        ),
+                    )
+                    created = result.rowcount > 0
+                    row = conn.execute(
+                        "SELECT * FROM sop_send_tasks WHERE idempotency_key=?",
+                        (idempotency_key,),
+                    ).fetchone()
         task = self._decode_sop_send_task(dict(row)) if row else {}
         task["created"] = created
+        if duplicate_of_task_id:
+            task["dedupe_reason"] = "send_once_key"
+            task["duplicate_of_task_id"] = duplicate_of_task_id
         return task
 
     def update_sop_send_task(
@@ -236,10 +292,73 @@ class SopEventRepositoryMixin:
         if not event:
             return {}
         event["raw_payload_summary"] = _sop_payload_summary(event.get("raw_payload"))
+        canonical_event_id = str(event.get("event_id") or event_id)
         return {
             "event": event,
-            "tasks": self.list_sop_send_tasks_for_event(event_id),
+            "tasks": self.list_sop_send_tasks_for_event(canonical_event_id),
         }
+
+    def find_sop_event_identity(
+        self,
+        *,
+        customer_id: str = "",
+        external_userid: str = "",
+        wechat: str = "",
+    ) -> dict[str, str]:
+        external_key = str(external_userid or customer_id or "").strip()
+        customer_key = str(customer_id or external_userid or "").strip()
+        wechat_key = str(wechat or "").strip()
+        with self.store.connect() as conn:
+            if external_key or customer_key:
+                row = conn.execute(
+                    """
+                    SELECT customer_id, external_userid, corp_id, user_id, wechat, source, updated_at FROM (
+                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'conversations' AS source, updated_at
+                        FROM conversations
+                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
+                          AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
+                        UNION ALL
+                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'sop_send_tasks' AS source, updated_at
+                        FROM sop_send_tasks
+                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
+                          AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
+                        UNION ALL
+                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'outreach_plans' AS source, updated_at
+                        FROM outreach_plans
+                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
+                          AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
+                    )
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (external_key, customer_key, external_key, customer_key, external_key, customer_key),
+                ).fetchone()
+                if row:
+                    return _identity_row(dict(row))
+            if wechat_key:
+                row = conn.execute(
+                    """
+                    SELECT customer_id, external_userid, corp_id, user_id, wechat, source, updated_at FROM (
+                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'conversations' AS source, updated_at
+                        FROM conversations
+                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND LOWER(wechat)=LOWER(?)
+                        UNION ALL
+                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'sop_send_tasks' AS source, updated_at
+                        FROM sop_send_tasks
+                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND LOWER(wechat)=LOWER(?)
+                        UNION ALL
+                        SELECT customer_id, external_userid, corp_id, user_id, wechat, 'outreach_plans' AS source, updated_at
+                        FROM outreach_plans
+                        WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND LOWER(wechat)=LOWER(?)
+                    )
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    (wechat_key, wechat_key, wechat_key),
+                ).fetchone()
+                if row:
+                    return _identity_row(dict(row))
+        return {}
 
     def has_sent_sop_pack_for_customer(self, *, customer_id: str, external_userid: str, sop_pack_id: str) -> bool:
         if not sop_pack_id:
@@ -261,7 +380,13 @@ class SopEventRepositoryMixin:
             ).fetchone()
         return row is not None
 
-    def list_sent_sop_pack_ids_for_customer(self, *, customer_id: str, external_userid: str) -> list[str]:
+    def list_sent_sop_pack_ids_for_customer(
+        self,
+        *,
+        customer_id: str,
+        external_userid: str,
+        sent_before: str = "",
+    ) -> list[str]:
         clauses = ["status='sent'", "sop_pack_id<>''"]
         params: list[Any] = []
         if external_userid:
@@ -272,6 +397,9 @@ class SopEventRepositoryMixin:
             params.append(customer_id)
         else:
             return []
+        if sent_before:
+            clauses.append("COALESCE(NULLIF(sent_at, ''), updated_at)<=?")
+            params.append(sent_before)
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -283,7 +411,13 @@ class SopEventRepositoryMixin:
             ).fetchall()
         return [str(row["sop_pack_id"]) for row in rows if str(row["sop_pack_id"] or "").strip()]
 
-    def list_sent_sop_categories_for_customer(self, *, customer_id: str, external_userid: str) -> list[str]:
+    def list_sent_sop_categories_for_customer(
+        self,
+        *,
+        customer_id: str,
+        external_userid: str,
+        sent_before: str = "",
+    ) -> list[str]:
         clauses = ["status='sent'", "sop_category<>''"]
         params: list[Any] = []
         if external_userid:
@@ -294,6 +428,9 @@ class SopEventRepositoryMixin:
             params.append(customer_id)
         else:
             return []
+        if sent_before:
+            clauses.append("COALESCE(NULLIF(sent_at, ''), updated_at)<=?")
+            params.append(sent_before)
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""
@@ -307,6 +444,8 @@ class SopEventRepositoryMixin:
 
     @staticmethod
     def _decode_sop_event(row: dict[str, Any]) -> dict[str, Any]:
+        if not str(row.get("id") or "").strip():
+            row["id"] = str(row.get("event_id") or "")
         row["request_reply"] = bool(row.get("request_reply"))
         row["raw_payload"] = loads_dict(row.get("raw_payload_json"))
         row.pop("raw_payload_json", None)
@@ -342,3 +481,21 @@ def _sop_payload_summary(payload: Any) -> dict[str, Any]:
         "first_external_userid": str(customer.get("external_userid") or conversation.get("external_userid") or ""),
         "first_wechat": str(conversation.get("wework_user_id") or ""),
     }
+
+
+def _identity_row(row: dict[str, Any]) -> dict[str, str]:
+    return {
+        "customer_id": str(row.get("customer_id") or "").strip(),
+        "external_userid": str(row.get("external_userid") or "").strip(),
+        "corp_id": str(row.get("corp_id") or "").strip(),
+        "user_id": str(row.get("user_id") or "").strip(),
+        "wechat": str(row.get("wechat") or "").strip(),
+        "identity_source": str(row.get("source") or "").strip(),
+    }
+
+
+def _sop_task_error_sql(alias: str) -> str:
+    return (
+        f"({alias}.status LIKE 'failed%' OR "
+        f"{alias}.status IN ('skipped_missing_identity','skipped_unsupported_event_type','skipped_model_error'))"
+    )
