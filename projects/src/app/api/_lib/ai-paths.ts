@@ -44,7 +44,7 @@ type WorkflowCompatibleBody = {
 };
 
 export type AiPathsReplyMessage = {
-  type?: "text" | "image" | "video" | "human_handoff" | "payment_collection" | "store_address";
+  type?: "text" | "image" | "video" | "human_handoff" | "human_handoff_notice" | "payment_collection" | "store_address";
   order?: number;
   content?: string | Record<string, unknown>;
 };
@@ -538,13 +538,15 @@ function workflowDirectionLabel(direction: string) {
 
 function normalizeWorkflowReplyMessages(messages: AiPathsReplyMessage[]) {
   return messages
-    .filter((item) => replyMessagePayload(item, item.type === "human_handoff" ? "handoff_reason" : "text") !== "")
+    .filter((item) =>
+      replyMessagePayload(item, item.type === "human_handoff" || item.type === "human_handoff_notice" ? "handoff_reason" : "text") !== ""
+    )
     .map((item, index) => {
       const type = item.type || "text";
-      if (type === "human_handoff") {
+      if (type === "human_handoff" || type === "human_handoff_notice") {
         const reason = replyMessageContent(item, "handoff_reason");
         return {
-          type,
+          type: "human_handoff_notice",
           order: item.order || index + 1,
           content: { handoff_reason: reason },
         };

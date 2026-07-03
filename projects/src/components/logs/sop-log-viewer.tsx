@@ -8,6 +8,7 @@ import { AlertCircle, ArrowLeft, Database, RefreshCw, Search, Send } from "lucid
 type JsonValue = unknown;
 
 type SopEventItem = {
+  id?: string;
   event_id: string;
   event_type?: string;
   source?: string;
@@ -77,7 +78,7 @@ export function SopLogViewer() {
   const [error, setError] = useState("");
 
   const selectedEvent = useMemo(
-    () => detail?.event || events.find((item) => item.event_id === selectedId) || null,
+    () => detail?.event || events.find((item) => eventKey(item) === selectedId || item.event_id === selectedId) || null,
     [detail, events, selectedId]
   );
 
@@ -97,7 +98,7 @@ export function SopLogViewer() {
       }
       const items = Array.isArray(data?.items) ? data.items : [];
       setEvents(items);
-      setSelectedId((current) => current || items[0]?.event_id || "");
+      setSelectedId((current) => current || eventKey(items[0]) || "");
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载 SOP 日志失败");
     } finally {
@@ -209,17 +210,18 @@ export function SopLogViewer() {
         <section className="min-h-0 flex-1 overflow-y-auto">
           {events.map((event) => (
             <button
-              key={event.event_id}
+              key={eventKey(event)}
               type="button"
-              onClick={() => setSelectedId(event.event_id)}
+              onClick={() => setSelectedId(eventKey(event))}
               className={`w-full border-b p-4 text-left hover:bg-slate-50 ${
-                selectedId === event.event_id ? "bg-slate-100" : "bg-white"
+                selectedId === eventKey(event) ? "bg-slate-100" : "bg-white"
               }`}
             >
               <div className="flex items-center justify-between gap-3">
-                <span className="truncate font-mono text-xs text-slate-500">{event.event_id}</span>
+                <span className="truncate font-mono text-xs text-slate-600">{eventKey(event)}</span>
                 <span className="shrink-0 text-xs text-slate-500">{formatTime(event.received_at)}</span>
               </div>
+              <div className="mt-1 truncate font-mono text-xs text-slate-400">{event.event_id}</div>
               <div className="mt-2 line-clamp-1 text-sm">{event.event_type || "unknown_event"}</div>
               <div className="mt-1 line-clamp-1 text-xs text-slate-500">
                 {summaryText(event.raw_payload_summary)} / tasks {event.task_count || 0}
@@ -228,7 +230,7 @@ export function SopLogViewer() {
                 <StatusBadge status={event.status || ""} />
                 {event.sent_count ? <Badge>{event.sent_count} sent</Badge> : null}
                 {event.skipped_count ? <Badge>{event.skipped_count} skipped</Badge> : null}
-                {event.failed_count || event.error ? <Badge tone="red">错误</Badge> : null}
+                {eventHasError(event) ? <Badge tone="red">错误</Badge> : null}
               </div>
             </button>
           ))}
@@ -277,14 +279,17 @@ function SopDetailPanel({
       <section className="rounded-lg border bg-white p-5">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h2 className="break-all font-mono text-sm font-semibold">{event.event_id}</h2>
+            <h2 className="break-all font-mono text-sm font-semibold">{eventKey(event)}</h2>
+            <p className="mt-1 break-all font-mono text-xs text-slate-500">{event.event_id}</p>
             <p className="mt-2 text-sm text-slate-600">
               {event.event_type} / {event.status} / {formatTime(event.received_at)}
             </p>
           </div>
           <Database className="h-5 w-5 shrink-0 text-slate-400" />
         </div>
-        {event.error ? <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{event.error}</div> : null}
+        {event.error && eventHasError(event) ? (
+          <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{event.error}</div>
+        ) : null}
         <div className="mt-4 grid grid-cols-4 gap-3 text-sm">
           <Metric label="任务" value={event.task_count || 0} />
           <Metric label="已发" value={event.sent_count || 0} />
@@ -295,29 +300,41 @@ function SopDetailPanel({
 
       <section className="rounded-lg border bg-white p-5">
         <h3 className="mb-3 text-sm font-semibold">发送任务</h3>
-        {tasks.map((task) => (
-          <div key={task.id || `${task.event_id}-${task.sop_pack_id}`} className="mb-4 rounded-md border p-4 last:mb-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <StatusBadge status={task.status || ""} />
-              <span className="font-mono text-xs text-slate-500">{task.sop_pack_id || "actions_fallback"}</span>
-              {task.sop_category ? <span className="text-xs text-slate-500">category: {task.sop_category}</span> : null}
-              <span className="text-xs text-slate-500">{task.trigger_source}</span>
+        {tasks.map((task) => {
+          const isTaskError = taskHasError(task);
+          return (
+            <div key={task.id || `${task.event_id}-${task.sop_pack_id}`} className="mb-4 rounded-md border p-4 last:mb-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusBadge status={task.status || ""} />
+                <span className="font-mono text-xs text-slate-500">{task.sop_pack_id || "actions_fallback"}</span>
+                {task.sop_category ? <span className="text-xs text-slate-500">category: {task.sop_category}</span> : null}
+                <span className="text-xs text-slate-500">{task.trigger_source}</span>
+              </div>
+              <div className="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
+                <div>客户：{task.customer_id || "-"}</div>
+                <div>external_userid：{task.external_userid || "-"}</div>
+                <div>员工：{task.user_id || "-"}</div>
+                <div>企微：{task.wechat || "-"}</div>
+                <div>创建：{formatTime(task.created_at)}</div>
+                <div>发送：{formatTime(task.sent_at)}</div>
+              </div>
+              {task.error ? (
+                <div
+                  className={`mt-3 whitespace-pre-wrap rounded-md border p-3 text-sm ${
+                    isTaskError ? "border-red-200 bg-red-50 text-red-700" : "border-amber-200 bg-amber-50 text-amber-800"
+                  }`}
+                >
+                  <span className="font-medium">{isTaskError ? "错误" : "跳过原因"}：</span>
+                  {task.error}
+                </div>
+              ) : null}
+              <MessagePreview messages={task.reply_messages || []} />
+              <JsonBlock title="reply_messages" value={task.reply_messages || []} />
+              <JsonBlock title="send_payload（含 conversation_fetch / event_decision_input）" value={task.send_payload || {}} />
+              <JsonBlock title="send_response（含 event_decision / 主动发送响应体）" value={task.send_response || {}} />
             </div>
-            <div className="mt-3 grid gap-2 text-sm text-slate-600 md:grid-cols-2">
-              <div>客户：{task.customer_id || "-"}</div>
-              <div>external_userid：{task.external_userid || "-"}</div>
-              <div>员工：{task.user_id || "-"}</div>
-              <div>企微：{task.wechat || "-"}</div>
-              <div>创建：{formatTime(task.created_at)}</div>
-              <div>发送：{formatTime(task.sent_at)}</div>
-            </div>
-            {task.error ? <div className="mt-3 whitespace-pre-wrap rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{task.error}</div> : null}
-            <MessagePreview messages={task.reply_messages || []} />
-            <JsonBlock title="reply_messages" value={task.reply_messages || []} />
-            <JsonBlock title="send_payload（含 conversation_fetch / event_decision_input）" value={task.send_payload || {}} />
-            <JsonBlock title="send_response（含 event_decision / 主动发送响应体）" value={task.send_response || {}} />
-          </div>
-        ))}
+          );
+        })}
         {!loading && tasks.length === 0 ? <div className="text-sm text-slate-500">暂无发送任务。</div> : null}
       </section>
 
@@ -418,6 +435,31 @@ function isRecord(value: JsonValue): value is Record<string, JsonValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function eventKey(event?: SopEventItem) {
+  return event?.id || event?.event_id || "";
+}
+
+function eventHasError(event?: SopEventItem) {
+  if (!event) return false;
+  return statusHasError(event.status) || Boolean(event.failed_count) || (Boolean(event.error) && statusHasError(event.status));
+}
+
+function taskHasError(task?: SopSendTask) {
+  if (!task) return false;
+  return statusHasError(task.status);
+}
+
+function statusHasError(status?: string) {
+  const value = String(status || "");
+  return (
+    value.startsWith("failed") ||
+    value === "skipped_missing_identity" ||
+    value === "skipped_unsupported_event_type" ||
+    value === "skipped_model_error" ||
+    value.includes("processed_with_errors")
+  );
+}
+
 function Metric({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-md border bg-slate-50 p-3">
@@ -438,7 +480,7 @@ function JsonBlock({ title, value, initiallyOpen = false }: { title: string; val
 
 function StatusBadge({ status }: { status: string }) {
   if (!status) return null;
-  const tone = status.includes("failed") || status.includes("error") ? "red" : status.includes("skipped") ? "amber" : "slate";
+  const tone = statusHasError(status) ? "red" : status.includes("skipped") ? "amber" : "slate";
   return <Badge tone={tone}>{status}</Badge>;
 }
 

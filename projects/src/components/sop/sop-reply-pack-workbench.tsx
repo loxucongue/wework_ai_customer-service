@@ -35,7 +35,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 
-type MessageType = "text" | "image" | "video" | "payment_collection" | "store_address" | "human_handoff";
+type MessageType = "text" | "image" | "video" | "payment_collection" | "store_address" | "human_handoff" | "human_handoff_notice";
 
 type ReplyMessage = {
   type: MessageType;
@@ -47,6 +47,7 @@ type SopPack = {
   id: string;
   enabled: boolean;
   scope: string;
+  scopes: string[];
   sop_category: string;
   name: string;
   purpose: string;
@@ -79,11 +80,12 @@ const MESSAGE_TYPES: Array<{ value: MessageType; label: string }> = [
   { value: "video", label: "视频 URL" },
   { value: "payment_collection", label: "10 元预约金" },
   { value: "store_address", label: "门店地址卡" },
-  { value: "human_handoff", label: "专业协助" },
+  { value: "human_handoff_notice", label: "内部关注" },
 ];
 
 const SOP_EVENT_TYPES = [
   { value: "__any", label: "不限制" },
+  { value: "sop_friend_added_immediate", label: "首次加微立即通知" },
   { value: "sop_friend_added_schedule_batch", label: "首次加微定时通知" },
   { value: "sop_platform_task", label: "平台任务即时转发" },
 ];
@@ -214,6 +216,7 @@ export function SopReplyPackWorkbench() {
       id: uniquePackId(config.packs, "s10_sop_pack"),
       enabled: false,
       scope: "chat_gate",
+      scopes: ["chat_gate"],
       sop_category: "opening",
       name: "新的 SOP 话术包",
       purpose: "",
@@ -395,6 +398,7 @@ function PackEditor({
   onMessagesChange: (messages: ReplyMessage[]) => void;
 }) {
   const triggerText = pack.triggers.join("\n");
+  const scopes = normalizeScopes(pack);
 
   function addMessage(type: MessageType = "text") {
     onMessagesChange([...pack.reply_messages, createMessage(type, pack.reply_messages.length + 1)]);
@@ -435,6 +439,12 @@ function PackEditor({
     const [message] = messages.splice(index, 1);
     messages.splice(nextIndex, 0, message);
     onMessagesChange(messages);
+  }
+
+  function toggleScope(scope: string, checked: boolean) {
+    const nextScopes = checked ? [...scopes, scope] : scopes.filter((item) => item !== scope);
+    const normalized = uniqueScopes(nextScopes);
+    onChange({ scopes: normalized, scope: normalized[0] || "chat_gate" });
   }
 
   return (
@@ -481,18 +491,19 @@ function PackEditor({
             />
           </div>
           <Field label="执行范围">
-            <Select value={pack.scope || "chat_gate"} onValueChange={(value) => onChange({ scope: value })}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {SOP_SCOPES.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="space-y-2 rounded-md border bg-white p-3">
+              {SOP_SCOPES.map((item) => (
+                <label key={item.value} className="flex items-center justify-between gap-3 text-sm">
+                  <span>{item.label}</span>
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-zinc-950"
+                    checked={scopes.includes(item.value)}
+                    onChange={(event) => toggleScope(item.value, event.target.checked)}
+                  />
+                </label>
+              ))}
+            </div>
           </Field>
           <Field label="去重类目">
             <Input
@@ -700,7 +711,7 @@ function MessageContentEditor({
     );
   }
 
-  if (message.type === "human_handoff") {
+  if (message.type === "human_handoff" || message.type === "human_handoff_notice") {
     return (
       <Field label="专业协助原因">
         <Textarea
@@ -853,7 +864,7 @@ function MessageIcon({ type }: { type: MessageType }) {
   if (type === "video") return <Video className="size-4 text-zinc-500" />;
   if (type === "payment_collection") return <WalletCards className="size-4 text-zinc-500" />;
   if (type === "store_address") return <MapPin className="size-4 text-zinc-500" />;
-  if (type === "human_handoff") return <Handshake className="size-4 text-zinc-500" />;
+  if (type === "human_handoff" || type === "human_handoff_notice") return <Handshake className="size-4 text-zinc-500" />;
   return <span className="flex size-4 items-center justify-center text-xs text-zinc-500">T</span>;
 }
 
@@ -875,7 +886,8 @@ function normalizePack(value: unknown): SopPack {
   return {
     id: cleanIdentifier(stringValue(record.id) || "sop_pack"),
     enabled: Boolean(record.enabled),
-    scope: SOP_SCOPES.some((item) => item.value === record.scope) ? stringValue(record.scope) : "chat_gate",
+    scope: normalizeScopes(record)[0],
+    scopes: normalizeScopes(record),
     sop_category: cleanIdentifier(stringValue(record.sop_category) || stringValue(record.id) || "sop_pack"),
     name: stringValue(record.name),
     purpose: stringValue(record.purpose),
@@ -889,6 +901,24 @@ function normalizePack(value: unknown): SopPack {
     triggers: Array.isArray(record.triggers) ? record.triggers.map(stringValue).filter(Boolean) : [],
     reply_messages: reindexMessages(messages),
   };
+}
+
+function normalizeScopes(value: unknown): string[] {
+  const record = isRecord(value) ? value : {};
+  const values = Array.isArray(record.scopes) ? record.scopes : [record.scope];
+  return uniqueScopes(values);
+}
+
+function uniqueScopes(values: unknown[]): string[] {
+  const allowed = new Set(SOP_SCOPES.map((item) => item.value));
+  const scopes: string[] = [];
+  for (const value of values) {
+    const scope = stringValue(value);
+    if (allowed.has(scope) && !scopes.includes(scope)) {
+      scopes.push(scope);
+    }
+  }
+  return scopes.length ? scopes : ["chat_gate"];
 }
 
 function normalizeMessage(value: unknown): ReplyMessage {
@@ -935,7 +965,7 @@ function defaultContent(type: MessageType): Record<string, unknown> {
   if (type === "image" || type === "video") return { url: "", key: "" };
   if (type === "payment_collection") return { amount: 10, remark: "" };
   if (type === "store_address") return { store_id: "" };
-  if (type === "human_handoff") return { handoff_reason: "" };
+  if (type === "human_handoff" || type === "human_handoff_notice") return { handoff_reason: "" };
   return { text: "" };
 }
 
@@ -947,7 +977,7 @@ function messageContentFilled(message: ReplyMessage) {
   if (message.type === "payment_collection") return numberValue(message.content.amount, 10) > 0;
   if (message.type === "store_address") return stringValue(message.content.store_id) !== "";
   if (message.type === "image" || message.type === "video") return stringValue(message.content.url) !== "";
-  if (message.type === "human_handoff") return stringValue(message.content.handoff_reason) !== "";
+  if (message.type === "human_handoff" || message.type === "human_handoff_notice") return stringValue(message.content.handoff_reason) !== "";
   return stringValue(message.content.text) !== "";
 }
 
@@ -956,6 +986,7 @@ function packContainsTemplateMarker(pack: SopPack) {
     pack.name,
     pack.purpose,
     pack.scope,
+    ...pack.scopes,
     pack.sop_category,
     pack.event_type,
     pack.day_stage,
