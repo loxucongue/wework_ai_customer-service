@@ -458,6 +458,31 @@ def test_generic_store_lookup_query_requires_city_or_store_name() -> None:
     assert any(item.get("missing") == "location_query_missing_city_or_region" for item in plan["tool_policy_violations"])
 
 
+def test_generic_store_lookup_must_not_fill_query_from_history_store() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
+            "conversation_history": [
+                _u(r"\u7528\u6237: \u6211\u5728\u5e7f\u5dde\u767d\u4e91\u9644\u8fd1"),
+                _u(r"\u5c0f\u8d1d: \u6309\u60a8\u8fd9\u4e2a\u4f4d\u7f6e\uff0c\u4f18\u5148\u770b\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97\u3002"),
+            ],
+            "customer_store_knowledge": {"stores": [{"city": "广州市", "store_name": "广州白云三店"}]},
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_CITY_ONLY",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "ok"}}],
+            "tool_calls": [{"name": "customer_store_lookup", "query": "广州市白云区白云三店", "purpose": "detail"}],
+        },
+    )
+    assert any(item.get("missing") == "store_lookup_query_over_anchors_history" for item in plan["tool_policy_violations"])
+
+
 def test_nearby_store_lookup_requires_distance_calculate() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "airport nearby", "customer_store_knowledge": {"stores": [{"city": "Xiamen"}]}},
@@ -779,6 +804,24 @@ def test_reply_validation_rejects_over_limit_text_promising_entry_without_paymen
                     "type": "text",
                     "order": 1,
                     "content": {"text": "可以，我马上发入口，您确认一下一共几位到店。"},
+                }
+            ],
+            {
+                "normalized_content": "我带四个朋友一起过去",
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+            },
+        )
+
+
+def test_reply_validation_rejects_over_limit_text_with_high_payment_amount_without_card() -> None:
+    with pytest.raises(ValueError, match="payment_participant_count_confirm_required"):
+        validate_reply_consistency(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "您带4位朋友一共5人，预约金需要50元，每人10元锁名额。"},
                 }
             ],
             {

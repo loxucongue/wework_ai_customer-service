@@ -197,7 +197,11 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
             or _promises_payment_entry(text)
         )
     if needs_payment and payment_context.get("over_limit") and not has_payment:
-        if _promises_payment_entry(text) or not _asks_over_limit_participant_confirmation(text):
+        if (
+            _promises_payment_entry(text)
+            or _mentions_over_limit_payment_amount(text)
+            or not _asks_over_limit_participant_confirmation(text)
+        ):
             raise ValueError("payment_participant_count_confirm_required")
         return
     if needs_payment and not has_payment:
@@ -657,10 +661,23 @@ def _asks_over_limit_participant_confirmation(text: str) -> bool:
     compact = "".join(str(text or "").split())
     if not compact:
         return False
-    has_count_word = any(term in compact for term in ("几位", "几个人", "多少人", "人数", "一共几", "总共几", "共几"))
+    if re.search(r"(?:一共|总共|共)?\d+人吗", compact):
+        return True
+    has_count_word = any(term in compact for term in ("几位", "几个人", "多少人", "人数", "一共几", "总共几", "共几", "实际到店"))
     has_confirmation_word = any(term in compact for term in ("确认", "核对", "先问", "先看", "先帮您看", "先帮您确认"))
-    has_group_word = any(term in compact for term in ("多人", "同行", "一起到店", "一起过去", "名额"))
-    return has_count_word or (has_confirmation_word and has_group_word)
+    return has_count_word or (has_confirmation_word and "人" in compact)
+
+
+def _mentions_over_limit_payment_amount(text: str) -> bool:
+    compact = "".join(str(text or "").split())
+    if not compact:
+        return False
+    high_amount = r"(?:[5-9]\d|[1-9]\d{2,})"
+    payment_terms = r"(?:预约金|定金|订金|锁名额|锁活动名额)"
+    return bool(
+        re.search(payment_terms + r".{0,10}" + high_amount + r"元", compact)
+        or re.search(high_amount + r"元.{0,10}" + payment_terms, compact)
+    )
 
 
 def _promises_unfinished_lookup(text: str) -> bool:

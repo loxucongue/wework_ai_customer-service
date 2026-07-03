@@ -391,7 +391,21 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                 )
             continue
         if name == "customer_store_lookup":
-            if not _location_query_has_scope_region(query, state) and not _query_matches_scope_store_name(query, state):
+            if _generic_store_question_uses_history_query(query, state):
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "customer_store_lookup",
+                        "missing": "store_lookup_query_over_anchors_history",
+                        "note": (
+                            "The current message is a generic store-location question without a current city, region, "
+                            "landmark, or explicit store reference. Do not fill the query from historical store context; "
+                            "ask the customer for their city or district instead. Contextual references like 'this store' "
+                            "or 'the one just mentioned' may still use recent store context."
+                        ),
+                    }
+                )
+            elif not _location_query_has_scope_region(query, state) and not _query_matches_scope_store_name(query, state):
                 violations.append(_ambiguous_location_tool_violation("customer_store_lookup"))
             continue
         if name == "distance_calculate":
@@ -747,6 +761,48 @@ def _ambiguous_location_tool_violation(tool_name: str) -> dict[str, str]:
             "call store/distance tools; ask the customer which city or district first."
         ),
     }
+
+
+def _generic_store_question_uses_history_query(query: str, state: AgentState) -> bool:
+    current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if not _is_generic_store_location_question_without_current_scope(current_text, state):
+        return False
+    query_compact = _compact_text(query)
+    current_compact = _compact_text(current_text)
+    return bool(query_compact and query_compact != current_compact)
+
+
+def _is_generic_store_location_question_without_current_scope(text: str, state: AgentState) -> bool:
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    if any(term in compact for term in ("这家", "那家", "这个店", "刚刚", "刚才", "上面那家", "前面那家")):
+        return False
+    generic_terms = (
+        "门店在哪里",
+        "门店在哪",
+        "哪里有门店",
+        "有哪些门店",
+        "有门店吗",
+        "门店地址",
+        "门店位置",
+        "你们店在哪里",
+        "你们店在哪",
+        "店在哪里",
+        "店在哪",
+    )
+    if not any(term in compact for term in generic_terms):
+        return False
+    if _store_names_matching_text(state, text):
+        return False
+    return not _location_query_has_current_message_scope(text)
+
+
+def _location_query_has_current_message_scope(value: str) -> bool:
+    text = _compact_text(value)
+    if not text:
+        return False
+    return _looks_like_specific_region(text)
 
 
 def _location_query_has_scope_region(value: str, state: AgentState) -> bool:
