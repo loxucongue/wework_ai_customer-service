@@ -13,6 +13,7 @@ from app.graph.nodes.layer_nodes import create_background_context_layer
 from app.graph.nodes.reply_context import reply_user_payload_for_model
 from app.graph.nodes.appointment_time_utils import normalize_time_text, summarize_available_slots
 from app.graph.nodes.profile_nodes import _profile_conversation_history
+from app.graph.nodes.reply_nodes import _ensure_required_handoff_notice
 from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
 from app.graph.planner.brain_v2 import _current_known_store_for_planner, _planner_payload_for_model, _should_suppress_planner_memory
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
@@ -1062,6 +1063,28 @@ def test_planner_normalizes_old_handoff_to_notice() -> None:
     )
 
     assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "human_handoff_notice"]
+
+
+def test_final_reply_appends_missing_required_handoff_notice() -> None:
+    messages = [
+        {
+            "type": "text",
+            "order": 1,
+            "content": {"text": _u(r"\u5230\u5e97\u5148\u505a\u68c0\u6d4b\u8bc4\u4f30\uff0c\u786e\u8ba4\u9002\u5408\u518d\u5b89\u6392\u3002")},
+        }
+    ]
+    state = {
+        "normalized_content": _u(r"\u6211\u662f\u4e25\u91cd\u8fc7\u654f\u4f53\u8d28\uff0c\u8138\u4e4b\u524d\u80bf\u8fc7\uff0c\u8fd9\u4e2a\u80fd\u4e0d\u80fd\u505a"),
+        "handoff": {"needed": True, "reason": _u(r"\u5065\u5eb7\u9ad8\u98ce\u9669\uff1a\u9700\u5230\u5e97\u68c0\u6d4b\u540e\u786e\u8ba4\u9002\u914d\u6027")},
+        "required_tools": [{"name": "professional_assist", "reason": _u(r"\u5065\u5eb7\u9ad8\u98ce\u9669")}],
+    }
+
+    normalized, changed = _ensure_required_handoff_notice(messages, state)
+
+    assert changed is True
+    assert [item["type"] for item in normalized] == ["text", "human_handoff_notice"]
+    assert normalized[1]["content"]["handoff_reason"]
+    validate_reply_consistency(normalized, state)
 
 
 def test_merged_health_risk_overrides_store_lookup_task() -> None:

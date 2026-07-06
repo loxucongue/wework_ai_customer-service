@@ -215,6 +215,12 @@ def create_synthesize_reply_node(
                                     )
                                     messages = []
 
+            messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
+            if handoff_notice_appended:
+                validate_reply_consistency(messages, state)
+                warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
+                if model_call:
+                    model_call["handoff_notice_appended"] = True
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
             output = {
@@ -353,6 +359,25 @@ def _maybe_build_handoff_notice_fallback(
         {"type": "human_handoff_notice", "order": 2, "content": {"handoff_reason": reason}},
     ]
     return _renumber(fallback)
+
+
+def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
+    if not messages or _messages_have_handoff_notice(messages) or not _state_requests_handoff_notice(state):
+        return messages, False
+    reason = _handoff_notice_reason(state)
+    return (
+        _renumber(
+            [
+                *messages,
+                {
+                    "type": "human_handoff_notice",
+                    "order": len(messages) + 1,
+                    "content": {"handoff_reason": reason},
+                },
+            ]
+        ),
+        True,
+    )
 
 
 def _maybe_build_no_reply_dissatisfaction_fallback(state: AgentState) -> list[dict[str, Any]] | None:
