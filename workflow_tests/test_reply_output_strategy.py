@@ -1156,6 +1156,42 @@ def test_history_health_context_does_not_hijack_current_time_change() -> None:
     assert _u(r"\u7a0d\u7b49") not in text
 
 
+def test_history_health_context_removes_direct_reply_handoff_notice() -> None:
+    state = {
+        "normalized_content": _u(r"\u6211\u8981\u4e0b\u5348\u624d\u80fd\u8fc7\u53bb\u4e86"),
+        "conversation_history": [
+            _u(r"\u7528\u6237: \u6211\u6709\u5fc3\u810f\u75c5\uff0c\u8fd9\u4e2a\u80fd\u505a\u5417"),
+            _u(r"\u5c0f\u8d1d: \u5230\u5e97\u5148\u505a\u68c0\u6d4b\uff0c\u786e\u8ba4\u9002\u5408\u518d\u5b89\u6392\u3002"),
+        ],
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_APPOINTMENT_TIME",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "confirm_time",
+            "reply_messages": [
+                {"type": "text", "content": {"text": _u(r"\u53ef\u4ee5\uff0c\u90a3\u5c31\u6309\u4e0b\u5348\u7ee7\u7eed\u786e\u8ba4\u3002")}},
+                {
+                    "type": "human_handoff_notice",
+                    "content": {"handoff_reason": _u(r"\u5065\u5eb7\u98ce\u9669\u8bc4\u4f30\u672a\u5173\u95ed")},
+                },
+            ],
+            "tool_calls": [],
+            "handoff": {"needed": True, "reason": _u(r"\u5065\u5eb7\u98ce\u9669\u8bc4\u4f30\u672a\u5173\u95ed")},
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["handoff"]["needed"] is False
+    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
+    assert plan["reply_strategy"]["current_turn_context_guard"] == "advisory_health_history_removed_handoff_notice"
+
+
 def test_history_health_context_does_not_block_payment_collection_after_notice() -> None:
     state = {
         "normalized_content": _u(r"\u90a3\u6211\u5148\u5230\u5e97\u68c0\u6d4b\uff0c\u660e\u5929\u4e0b\u5348\u53ef\u4ee5\u5417"),

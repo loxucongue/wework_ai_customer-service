@@ -183,6 +183,13 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         handoff_raw = advisory_health_guard["handoff"]
         reply_constraints.extend(advisory_health_guard.get("reply_constraints") or [])
         reply_strategy["current_turn_context_guard"] = advisory_health_guard.get("guard_reason", "")
+    elif not explicit_risk_reason and not is_hard_health_risk_hold(risk_hold):
+        cleaned_messages, removed_advisory_handoff = _remove_advisory_health_handoff_notices(planner_reply_messages)
+        if removed_advisory_handoff:
+            planner_reply_messages = cleaned_messages
+            handoff_raw = {"needed": False, "reason": ""}
+            reply_constraints.append("历史健康风险只作为到店检测提醒；当前消息没有再次提病史/过敏/严重不适时，不输出 human_handoff_notice。")
+            reply_strategy["current_turn_context_guard"] = "advisory_health_history_removed_handoff_notice"
     planner_reply_messages = _append_required_payment_collection(
         state=state,
         decision=decision,
@@ -1341,6 +1348,22 @@ def _remove_payment_collection_messages(messages: list[dict[str, Any]]) -> list[
     return _renumber_reply_messages(
         [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") != "payment_collection"]
     )
+
+
+def _remove_advisory_health_handoff_notices(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    output: list[dict[str, Any]] = []
+    removed = False
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        message_type = str(item.get("type") or "")
+        content = item.get("content") if isinstance(item.get("content"), dict) else {}
+        reason = str(content.get("handoff_reason") or content.get("reason") or "")
+        if message_type in {"human_handoff", "human_handoff_notice"} and _mentions_health_risk_text(reason):
+            removed = True
+            continue
+        output.append(item)
+    return _renumber_reply_messages(output), removed
 
 
 def _append_required_payment_collection(
