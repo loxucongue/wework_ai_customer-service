@@ -13,7 +13,7 @@ from app.graph.nodes.layer_nodes import create_background_context_layer
 from app.graph.nodes.reply_context import reply_user_payload_for_model
 from app.graph.nodes.appointment_time_utils import normalize_time_text, summarize_available_slots
 from app.graph.nodes.profile_nodes import _profile_conversation_history
-from app.graph.nodes.reply_nodes import _ensure_required_handoff_notice
+from app.graph.nodes.reply_nodes import _ensure_required_handoff_notice, _maybe_build_required_payment_collection_fallback
 from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
 from app.graph.planner.brain_v2 import _current_known_store_for_planner, _planner_payload_for_model, _should_suppress_planner_memory
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
@@ -1087,6 +1087,49 @@ def test_final_reply_appends_missing_required_handoff_notice() -> None:
     assert _u(r"\u5fc3\u810f\u75c5") not in normalized[1]["content"]["handoff_reason"]
     assert _u(r"\u9ad8\u8840\u538b") not in normalized[1]["content"]["handoff_reason"]
     validate_reply_consistency(normalized, state)
+
+
+def test_required_payment_collection_fallback_adds_missing_card() -> None:
+    state = {
+        "normalized_content": _u(r"\u53ef\u4ee5"),
+        "conversion_stage": "deposit_push",
+        "next_step": "send_deposit",
+        "current_turn_context": {
+            "confirmed_store": {"store_name": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97")},
+            "open_task": "deposit_push",
+            "deposit_state": "payment_link_sent",
+        },
+        "conversation_history": [
+            _u(r"\u7528\u6237: \u670b\u53cb\u4e00\u8d77\u8fc7\u53bb"),
+            _u(r"\u5c0f\u8d1d: \u6211\u628a\u53cc\u4eba20\u5143\u9884\u7ea6\u91d1\u5165\u53e3\u53d1\u60a8"),
+        ],
+    }
+
+    messages = _maybe_build_required_payment_collection_fallback(
+        state,
+        ValueError("payment_collection_required_when_reply_promises_payment_entry"),
+    )
+
+    assert messages is not None
+    assert [item["type"] for item in messages] == ["text", "payment_collection"]
+    assert messages[1]["content"]["amount"] == 20
+    assert _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97") in messages[0]["content"]["text"]
+    validate_reply_consistency(messages, state)
+
+
+def test_required_payment_collection_fallback_respects_hard_health_risk() -> None:
+    state = {
+        "normalized_content": _u(r"\u6211\u6709\u9ad8\u8840\u538b\u548c\u5fc3\u810f\u75c5\uff0c\u660e\u5929\u53ef\u4ee5\u5417"),
+        "conversion_stage": "deposit_push",
+        "next_step": "send_deposit",
+    }
+
+    messages = _maybe_build_required_payment_collection_fallback(
+        state,
+        ValueError("payment_collection_required_when_reply_promises_payment_entry"),
+    )
+
+    assert messages is None
 
 
 def test_merged_health_risk_overrides_store_lookup_task() -> None:
