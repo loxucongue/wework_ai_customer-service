@@ -1,5 +1,4 @@
 import { NextRequest } from "next/server";
-import { S3Storage } from "coze-coding-dev-sdk";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHmac } from "node:crypto";
@@ -163,6 +162,7 @@ export async function POST(request: NextRequest) {
 
     if (endpointUrl && bucketName) {
       try {
+        const { S3Storage } = await import("coze-coding-dev-sdk");
         const fileName = `chat_uploads/${Date.now()}_${safeName}`;
         const storage = new S3Storage({
           endpointUrl,

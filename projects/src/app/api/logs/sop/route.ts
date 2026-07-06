@@ -28,11 +28,27 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      return jsonResponse(
+        {
+          error: "AI Paths API returned non-json response",
+          detail: compactResponseText(text),
+        },
+        502
+      );
+    }
+
     return new Response(text, {
-      headers: { "Content-Type": "application/json; charset=utf-8" },
+      status: response.status,
+      headers: { "Content-Type": contentType || "application/json; charset=utf-8" },
     });
   } catch (error) {
     console.error("Failed to load AI Paths SOP logs:", error);
     return jsonResponse({ error: "Failed to load AI Paths SOP logs" }, 500);
   }
+}
+
+function compactResponseText(text: string) {
+  return text.replace(/\s+/g, " ").slice(0, 1000);
 }

@@ -92,9 +92,9 @@ export function SopLogViewer() {
 
     try {
       const response = await fetch(`/api/logs/sop?${search.toString()}`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await readJsonResponse(response, "加载 SOP 日志失败");
       if (!response.ok) {
-        throw new Error(data?.error || "加载 SOP 日志失败");
+        throw new Error(errorMessage(data, "加载 SOP 日志失败"));
       }
       const items = Array.isArray(data?.items) ? data.items : [];
       setEvents(items);
@@ -112,9 +112,9 @@ export function SopLogViewer() {
     setError("");
     try {
       const response = await fetch(`/api/logs/sop?event_id=${encodeURIComponent(eventId)}`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await readJsonResponse(response, "加载 SOP 详情失败");
       if (!response.ok) {
-        throw new Error(data?.error || "加载 SOP 详情失败");
+        throw new Error(errorMessage(data, "加载 SOP 详情失败"));
       }
       setDetail(data);
     } catch (err) {
@@ -433,6 +433,23 @@ function MessagePreviewItem({ message, index }: { message: JsonValue; index: num
 
 function isRecord(value: JsonValue): value is Record<string, JsonValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function errorMessage(data: Record<string, JsonValue>, fallback: string) {
+  return typeof data.error === "string" && data.error ? data.error : fallback;
+}
+
+async function readJsonResponse(response: Response, fallbackMessage: string) {
+  const text = await response.text();
+  if (!text) {
+    return {} as Record<string, JsonValue>;
+  }
+  try {
+    return JSON.parse(text) as Record<string, JsonValue>;
+  } catch {
+    const preview = text.replace(/\s+/g, " ").slice(0, 180);
+    throw new Error(`${fallbackMessage}：接口返回了非 JSON 响应（${response.status}）${preview ? `：${preview}` : ""}`);
+  }
 }
 
 function eventKey(event?: SopEventItem) {

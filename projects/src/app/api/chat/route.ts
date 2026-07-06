@@ -16,6 +16,10 @@ const FRONTEND_TEST_WECHAT_CONTEXT = {
 };
 
 export async function POST(request: NextRequest) {
+  if (process.env.NODE_ENV === "production") {
+    return jsonResponse({ error: "not found" }, 404);
+  }
+
   const { body, error } = await parseChatRequest(request);
   if (error) {
     return error;

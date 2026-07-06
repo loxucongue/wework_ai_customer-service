@@ -1,12 +1,17 @@
 import { NextRequest } from "next/server";
-import { proxyAiPathsAdmin } from "../../../../_lib/ai-paths";
+import { proxyAiPathsAdmin, requireExternalApiKey } from "../../../../_lib/ai-paths";
 
 const ALLOWED = new Set(["activate", "pause", "resume", "cancel"]);
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ planId: string; action: string }> }
 ) {
+  const authError = requireExternalApiKey(request);
+  if (authError) {
+    return authError;
+  }
+
   const { planId, action } = await params;
   if (!ALLOWED.has(action)) {
     return new Response(JSON.stringify({ error: "unsupported action" }), {

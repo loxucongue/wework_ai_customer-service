@@ -75,9 +75,9 @@ export function RunLogViewer() {
 
     try {
       const response = await fetch(`/api/logs/runs?${search.toString()}`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await readJsonResponse(response, "加载日志失败");
       if (!response.ok) {
-        throw new Error(data?.error || "加载日志失败");
+        throw new Error(errorMessage(data, "加载日志失败"));
       }
       const items = Array.isArray(data?.items) ? data.items : [];
       setRuns(items);
@@ -97,9 +97,9 @@ export function RunLogViewer() {
       const response = await fetch(`/api/logs/runs?request_id=${encodeURIComponent(requestId)}`, {
         cache: "no-store",
       });
-      const data = await response.json();
+      const data = await readJsonResponse(response, "加载详情失败");
       if (!response.ok) {
-        throw new Error(data?.error || "加载详情失败");
+        throw new Error(errorMessage(data, "加载详情失败"));
       }
       setDetail(data);
     } catch (err) {
@@ -357,6 +357,23 @@ function Snapshot({ title, value }: { title: string; value: JsonValue }) {
 
 function contentSnippet(run: RunItem) {
   return stringField(run.input_snapshot?.content) || stringField(run.input_snapshot?.current_message) || "无文本输入";
+}
+
+function errorMessage(data: Record<string, JsonValue>, fallback: string) {
+  return typeof data.error === "string" && data.error ? data.error : fallback;
+}
+
+async function readJsonResponse(response: Response, fallbackMessage: string) {
+  const text = await response.text();
+  if (!text) {
+    return {} as Record<string, JsonValue>;
+  }
+  try {
+    return JSON.parse(text) as Record<string, JsonValue>;
+  } catch {
+    const preview = text.replace(/\s+/g, " ").slice(0, 180);
+    throw new Error(`${fallbackMessage}：接口返回了非 JSON 响应（${response.status}）${preview ? `：${preview}` : ""}`);
+  }
 }
 
 function replySnippet(run: RunItem) {

@@ -1,7 +1,12 @@
 import { NextRequest } from "next/server";
-import { clearAiPathsCustomerMemory, jsonResponse } from "../../_lib/ai-paths";
+import { clearAiPathsCustomerMemory, jsonResponse, requireExternalApiKey } from "../../_lib/ai-paths";
 
 export async function POST(request: NextRequest) {
+  const authError = requireExternalApiKey(request);
+  if (authError) {
+    return authError;
+  }
+
   let body: { customer_id?: string };
   try {
     body = (await request.json()) as { customer_id?: string };

@@ -160,8 +160,15 @@ export function normalizeWorkflowCompatibleBody(
 }
 
 export function requireExternalApiKey(request: NextRequest) {
+  if (!request.nextUrl.pathname.startsWith("/api/ai/")) {
+    return null;
+  }
+
   const expected = process.env.AI_EXTERNAL_API_KEY || "";
   if (!expected) {
+    if (process.env.NODE_ENV === "production") {
+      return jsonResponse({ error: "external api key is not configured" }, 503);
+    }
     return null;
   }
   const authorization = request.headers.get("authorization") || "";

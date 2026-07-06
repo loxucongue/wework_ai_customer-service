@@ -1,10 +1,15 @@
 import { NextRequest } from "next/server";
-import { proxyAiPathsAdmin } from "../../../../_lib/ai-paths";
+import { proxyAiPathsAdmin, requireExternalApiKey } from "../../../../_lib/ai-paths";
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ taskId: string }> }
 ) {
+  const authError = requireExternalApiKey(request);
+  if (authError) {
+    return authError;
+  }
+
   const { taskId } = await params;
   return proxyAiPathsAdmin(`/admin/outreach/tasks/${encodeURIComponent(taskId)}/execute`, {
     method: "POST",
