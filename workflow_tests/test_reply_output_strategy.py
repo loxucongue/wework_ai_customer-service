@@ -1075,7 +1075,7 @@ def test_final_reply_appends_missing_required_handoff_notice() -> None:
     ]
     state = {
         "normalized_content": _u(r"\u6211\u662f\u4e25\u91cd\u8fc7\u654f\u4f53\u8d28\uff0c\u8138\u4e4b\u524d\u80bf\u8fc7\uff0c\u8fd9\u4e2a\u80fd\u4e0d\u80fd\u505a"),
-        "handoff": {"needed": True, "reason": _u(r"\u5065\u5eb7\u9ad8\u98ce\u9669\uff1a\u9700\u5230\u5e97\u68c0\u6d4b\u540e\u786e\u8ba4\u9002\u914d\u6027")},
+        "handoff": {"needed": True, "reason": _u(r"\u5065\u5eb7\u9ad8\u98ce\u9669\uff1a\u5fc3\u810f\u75c5/\u9ad8\u8840\u538b")},
         "required_tools": [{"name": "professional_assist", "reason": _u(r"\u5065\u5eb7\u9ad8\u98ce\u9669")}],
     }
 
@@ -1084,6 +1084,8 @@ def test_final_reply_appends_missing_required_handoff_notice() -> None:
     assert changed is True
     assert [item["type"] for item in normalized] == ["text", "human_handoff_notice"]
     assert normalized[1]["content"]["handoff_reason"]
+    assert _u(r"\u5fc3\u810f\u75c5") not in normalized[1]["content"]["handoff_reason"]
+    assert _u(r"\u9ad8\u8840\u538b") not in normalized[1]["content"]["handoff_reason"]
     validate_reply_consistency(normalized, state)
 
 

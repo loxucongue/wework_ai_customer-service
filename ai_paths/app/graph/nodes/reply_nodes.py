@@ -423,6 +423,11 @@ def _state_requests_handoff_notice(state: AgentState) -> bool:
 
 
 def _handoff_notice_reason(state: AgentState) -> str:
+    risk_hold = health_risk_hold(state)
+    if is_hard_health_risk_hold(risk_hold):
+        reason = str(risk_hold.get("reason") or "").strip()
+        if reason:
+            return reason[:180]
     candidates: list[str] = []
     structured = _structured_facts(state)
     assist_fact = structured.get("professional_assist") if isinstance(structured.get("professional_assist"), dict) else {}
