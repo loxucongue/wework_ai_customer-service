@@ -10,7 +10,7 @@ from app.services.payment_collection import (
     payment_collection_content,
     payment_collection_context,
 )
-from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
+from app.services.risk_hold import explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
@@ -237,6 +237,12 @@ def create_synthesize_reply_node(
                 warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
                 if model_call:
                     model_call["handoff_notice_appended"] = True
+            messages, stale_handoff_removed = _suppress_stale_handoff_notice(messages, state)
+            if stale_handoff_removed:
+                validate_reply_consistency(messages, state)
+                warnings.append({"node": "synthesize_reply", "message": "stale_handoff_notice_removed"})
+                if model_call:
+                    model_call["stale_handoff_notice_removed"] = True
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
             output = {
@@ -438,6 +444,8 @@ def _maybe_build_handoff_notice_fallback(
 
 
 def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
+    if _is_stale_handoff_context(state):
+        return messages, False
     if not messages or _messages_have_handoff_notice(messages) or not _state_requests_handoff_notice(state):
         return messages, False
     reason = _handoff_notice_reason(state)
@@ -454,6 +462,62 @@ def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: Agent
         ),
         True,
     )
+
+
+def _suppress_stale_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
+    if not messages or not _is_stale_handoff_context(state):
+        return messages, False
+    changed = False
+    filtered: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") in {"human_handoff", "human_handoff_notice"}:
+            changed = True
+            continue
+        if str(item.get("type") or "") == "text" and _is_stale_handoff_status_text(_message_text(item.get("content"))):
+            changed = True
+            continue
+        filtered.append(item)
+    if not filtered:
+        return messages, False
+    return _renumber(filtered), changed
+
+
+def _is_stale_handoff_context(state: AgentState) -> bool:
+    if explicit_professional_assist_reason(state):
+        return False
+    if is_hard_health_risk_hold(health_risk_hold(state)):
+        return False
+    current = str(state.get("normalized_content") or state.get("content") or "")
+    if _contains_any(current, ("说了三遍", "说了很多遍", "一直问", "还问", "烦死了", "很烦", "不会回答", "强烈不满")):
+        return False
+    return True
+
+
+def _is_stale_handoff_status_text(text: str) -> bool:
+    compact = "".join(str(text or "").split())
+    if not compact:
+        return False
+    stale_markers = (
+        "健康评估正在",
+        "健康评估未闭环",
+        "专业团队核验",
+        "加急处理",
+        "结果出来后",
+        "内部关注",
+    )
+    return any(marker in compact for marker in stale_markers)
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, dict):
+        for key in ("text", "handoff_reason", "reason", "url", "store_id", "amount"):
+            value = content.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return ""
+    return str(content or "")
 
 
 def _maybe_build_no_reply_dissatisfaction_fallback(state: AgentState) -> list[dict[str, Any]] | None:

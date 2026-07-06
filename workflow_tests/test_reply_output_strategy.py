@@ -14,7 +14,11 @@ from app.graph.nodes.layer_nodes import create_background_context_layer
 from app.graph.nodes.reply_context import reply_user_payload_for_model
 from app.graph.nodes.appointment_time_utils import normalize_time_text, summarize_available_slots
 from app.graph.nodes.profile_nodes import _profile_conversation_history
-from app.graph.nodes.reply_nodes import _ensure_required_handoff_notice, _maybe_build_required_payment_collection_fallback
+from app.graph.nodes.reply_nodes import (
+    _ensure_required_handoff_notice,
+    _maybe_build_required_payment_collection_fallback,
+    _suppress_stale_handoff_notice,
+)
 from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
 from app.graph.planner.brain_v2 import _current_known_store_for_planner, _planner_payload_for_model, _should_suppress_planner_memory
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
@@ -1194,6 +1198,45 @@ def test_final_reply_appends_missing_required_handoff_notice() -> None:
     assert normalized[1]["content"]["handoff_reason"]
     assert _u(r"\u5fc3\u810f\u75c5") not in normalized[1]["content"]["handoff_reason"]
     assert _u(r"\u9ad8\u8840\u538b") not in normalized[1]["content"]["handoff_reason"]
+    validate_reply_consistency(normalized, state)
+
+
+def test_final_reply_suppresses_stale_history_health_handoff_notice() -> None:
+    messages = [
+        {"type": "text", "order": 1, "content": {"text": "周年庆活动价268元，线上10元预约金锁名额，到店抵扣，不做退10元。"}},
+        {"type": "text", "order": 2, "content": {"text": "目前您的健康评估正在由专业人员加急处理，结果出来后我会第一时间同步您。"}},
+        {"type": "human_handoff_notice", "order": 3, "content": {"handoff_reason": "健康高风险评估未闭环"}},
+    ]
+    state = {
+        "normalized_content": "价格多少，会不会隐形消费",
+        "conversation_history": [
+            "用户: 我有心脏病，这个能做吗",
+            "小贝: 到店先做检测确认适合再安排。",
+            '小贝: human_handoff_notice {"handoff_reason":"健康高风险"}',
+        ],
+        "handoff": {"needed": True, "reason": "健康高风险评估未闭环"},
+    }
+
+    normalized, changed = _suppress_stale_handoff_notice(messages, state)
+
+    assert changed is True
+    assert [item["type"] for item in normalized] == ["text"]
+    assert len(normalized) == 1
+    assert "活动价268元" in normalized[0]["content"]["text"]
+    validate_reply_consistency(normalized, state)
+
+
+def test_final_reply_keeps_current_refund_handoff_notice() -> None:
+    messages = [
+        {"type": "text", "order": 1, "content": {"text": "我先把情况核对清楚。您是在我们哪家门店做的？"}},
+        {"type": "human_handoff_notice", "order": 2, "content": {"handoff_reason": "投诉退款或付款纠纷：需核对门店、付款时间、金额和项目"}},
+    ]
+    state = {"normalized_content": "我刚刚多收钱了，要退款"}
+
+    normalized, changed = _suppress_stale_handoff_notice(messages, state)
+
+    assert changed is False
+    assert [item["type"] for item in normalized] == ["text", "human_handoff_notice"]
     validate_reply_consistency(normalized, state)
 
 
