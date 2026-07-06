@@ -6,6 +6,7 @@ import pytest
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_nodes import _snapshot_stores_for_exact_query
+from app.graph.nodes.common import repair_mojibake_text
 from app.graph.nodes.contextual_short_message import short_message_context_for_model
 from app.graph.nodes.conversation_history_fetch import platform_messages_to_history
 from app.graph.nodes.current_turn_context import build_current_turn_context
@@ -32,6 +33,16 @@ def test_short_message_context_marks_renne_as_contextual() -> None:
 
     assert context["is_contextual_short_message"] is True
     assert context["needs_recent_context"] is True
+
+
+def test_input_mojibake_repair_decodes_utf8_as_gbk_text() -> None:
+    original = "门店在哪？"
+    garbled = original.encode("utf-8").decode("gbk", errors="replace")
+
+    repaired, info = repair_mojibake_text(garbled)
+
+    assert info["applied"] is True
+    assert "门店在哪" in repaired
 
 
 def test_current_turn_context_binds_renne_to_deposit_push() -> None:
@@ -191,6 +202,27 @@ def test_current_turn_context_history_health_risk_is_advisory_for_short_message(
 
     assert context["open_task"] == "none"
     assert context["resolved_slots"]["health_check"] == "advisory"
+    assert "payment_collection" not in context.get("blocked_actions", [])
+    assert context.get("recommended_next_action") != "confirm_detection_visit"
+
+
+def test_current_turn_context_old_health_risk_does_not_shadow_store_question() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "门店在哪",
+            "conversation_history": [
+                "用户: 我有心脏病和高血压，这个能做吗",
+                "小贝: 这个要到店先做检测，确认适合再安排。",
+                '小贝: human_handoff_notice {"handoff_reason":"健康高风险"}',
+                "用户: 好的",
+                "小贝: 您想看哪个城市的门店？",
+                "用户: 我在厦门",
+                "小贝: 厦门有湖里和思明门店，您在哪个区方便？",
+            ],
+        }
+    )
+
+    assert context.get("resolved_slots", {}).get("health_check") != "advisory"
     assert "payment_collection" not in context.get("blocked_actions", [])
     assert context.get("recommended_next_action") != "confirm_detection_visit"
 
@@ -664,9 +696,81 @@ def test_generic_store_question_still_rejects_history_store_query() -> None:
         },
     )
 
-    assert any(
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
+
+
+def test_generic_store_question_with_payment_task_allows_recent_store_query() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u95e8\u5e97\u5728\u54ea"),
+            "conversation_history": [
+                _u(r"\u7528\u6237: \u6211\u660e\u5929\u4e0a\u534811\u70b9\u8fc7\u53bb"),
+                _u(r"\u5c0f\u8d1d: \u5e7f\u5dde\u767d\u4e91\u4e09\u5e97\u660e\u5929\u4e0a\u534811\u70b9\u540d\u989d\u5df2\u7ecf\u5e2e\u60a8\u9884\u7559"),
+                _u(r"\u5c0f\u8d1d: payment_collection amount=10"),
+            ],
+            "customer_store_knowledge": {
+                "stores": [{"store_id": "562", "store_name": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"), "city": _u(r"\u5e7f\u5dde\u5e02")}]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u7a0d\u7b49\u4e00\u4e0b\u54c8")}}],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "detail",
+                    "query": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"),
+                }
+            ],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert not any(
         item.get("missing") == "store_lookup_query_over_anchors_history" for item in plan["tool_policy_violations"]
     )
+
+
+def test_generic_store_question_with_profile_only_asks_for_scope() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u95e8\u5e97\u5728\u54ea"),
+            "customer_basic_info": {
+                "preferred_store_id": "23",
+                "preferred_store_name": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
+                "city": _u(r"\u53a6\u95e8"),
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u7a0d\u7b49\u4e00\u4e0b\u54c8")}}],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "detail",
+                    "query": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
+                }
+            ],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
 
 
 def test_current_preferred_store_overrides_old_appointment_store() -> None:
@@ -784,7 +888,9 @@ def test_generic_store_lookup_query_requires_city_or_store_name() -> None:
             "tool_calls": [{"name": "customer_store_lookup", "query": _u(r"\u95e8\u5e97\u5728\u54ea\u91cc"), "purpose": "existence"}],
         },
     )
-    assert any(item.get("missing") == "location_query_missing_city_or_region" for item in plan["tool_policy_violations"])
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
 
 
 def test_generic_store_lookup_must_not_fill_query_from_history_store() -> None:
@@ -809,7 +915,9 @@ def test_generic_store_lookup_must_not_fill_query_from_history_store() -> None:
             "tool_calls": [{"name": "customer_store_lookup", "query": "广州市白云区白云三店", "purpose": "detail"}],
         },
     )
-    assert any(item.get("missing") == "store_lookup_query_over_anchors_history" for item in plan["tool_policy_violations"])
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
 
 
 def test_generic_store_reply_must_not_use_history_store_without_facts() -> None:

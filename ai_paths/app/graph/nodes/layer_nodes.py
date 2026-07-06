@@ -4,7 +4,7 @@ import asyncio
 import time
 from typing import Any, Callable
 
-from app.graph.nodes.common import looks_bad_text, model_usage_snapshot
+from app.graph.nodes.common import looks_bad_text, model_usage_snapshot, repair_mojibake_text
 from app.graph.nodes.conversation_history_fetch import ConversationFetcher, fetch_platform_conversation_history
 from app.graph.nodes.image_info import build_vision_prompt, fallback_image_info, validated_image_info
 from app.graph.state import AgentState
@@ -26,6 +26,7 @@ def create_input_normalization_layer(
             normalized = (state.get("content") or "").strip()
             if not normalized and state.get("file_image"):
                 normalized = "[图片]"
+            normalized, encoding_repair = repair_mojibake_text(normalized)
             errors = list(state.get("errors", []))
             if looks_bad_text(normalized):
                 errors.append({"node": "layer_1_input_normalization", "message": "输入疑似乱码，已保留原文但后续会降低置信度"})
@@ -35,7 +36,13 @@ def create_input_normalization_layer(
             image_info, model_call = await image_task
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
-            output = {"normalized_content": normalized, "image_info": image_info, "errors": errors, "trace": state.get("trace", [])}
+            output = {
+                "normalized_content": normalized,
+                "image_info": image_info,
+                "errors": errors,
+                "encoding_repair": encoding_repair,
+                "trace": state.get("trace", []),
+            }
             span["output_snapshot"] = output
             return output
 

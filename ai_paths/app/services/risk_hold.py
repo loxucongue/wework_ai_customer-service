@@ -102,7 +102,7 @@ def _current_and_merged_text(state: dict[str, Any]) -> str:
 
 def _recent_history_text(state: dict[str, Any]) -> str:
     history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
-    return "\n".join(str(item or "") for item in history[-6:])
+    return "\n".join(str(item or "") for item in history[-3:])
 
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:

@@ -18,6 +18,56 @@ def looks_bad_text(text: str) -> bool:
     return text.count("?") >= 2 and not any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
+def repair_mojibake_text(text: str) -> tuple[str, dict[str, Any]]:
+    value = str(text or "")
+    info: dict[str, Any] = {"applied": False}
+    if not value or not _looks_like_utf8_as_gbk_mojibake(value):
+        return value, info
+
+    best_text = value
+    best_source = ""
+    best_score = _readability_score(value)
+    for source_encoding in ("gbk", "gb18030", "cp936"):
+        try:
+            candidate = value.encode(source_encoding, errors="replace").decode("utf-8", errors="replace")
+        except (LookupError, UnicodeError):
+            continue
+        candidate = _normalize_repaired_mojibake(candidate)
+        score = _readability_score(candidate)
+        if score > best_score:
+            best_text = candidate
+            best_source = source_encoding
+            best_score = score
+
+    if best_text != value and best_score >= _readability_score(value) + 4:
+        return best_text, {"applied": True, "source": f"{best_source}->utf-8", "preview": best_text[:80]}
+    return value, info
+
+
+def _looks_like_utf8_as_gbk_mojibake(text: str) -> bool:
+    if not text:
+        return False
+    if any("\u3100" <= ch <= "\u312f" for ch in text):
+        return True
+    markers = ("锛", "闂", "鍦", "灏忚礉", "瀹㈡埛", "棰勭害", "杈撳叆")
+    return sum(1 for marker in markers if marker in text) >= 2
+
+
+def _normalize_repaired_mojibake(text: str) -> str:
+    value = str(text or "")
+    return value.replace("\ufffd?", "？").replace("\ufffd？", "？").replace("\ufffd", "")
+
+
+def _readability_score(text: str) -> int:
+    value = str(text or "")
+    cjk_count = sum(1 for ch in value if "\u4e00" <= ch <= "\u9fff")
+    bopomofo_count = sum(1 for ch in value if "\u3100" <= ch <= "\u312f")
+    replacement_count = value.count("\ufffd")
+    marker_count = sum(1 for marker in ("锛", "闂", "鍦", "灏忚礉", "瀹㈡埛") if marker in value)
+    punctuation_bonus = sum(1 for ch in value if ch in "，。？！：；,.?!")
+    return cjk_count * 2 + punctuation_bonus - bopomofo_count * 6 - replacement_count * 8 - marker_count * 4
+
+
 def looks_garbled_text(text: str) -> bool:
     value = str(text or "").strip()
     if not value:

@@ -75,6 +75,19 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
+    generic_store_guard = _generic_store_lookup_guard(required_tools, state)
+    if generic_store_guard:
+        decision = generic_store_guard["decision"]
+        stage = generic_store_guard["stage"]
+        sub_rule_id = generic_store_guard["sub_rule_id"]
+        conversion_stage = generic_store_guard["conversion_stage"]
+        customer_type = generic_store_guard["customer_type"]
+        main_blocker = generic_store_guard["main_blocker"]
+        next_step = generic_store_guard["next_step"]
+        planner_reply_messages = generic_store_guard["reply_messages"]
+        required_tools = generic_store_guard["required_tools"]
+        executable_tools = []
+        reply_strategy["current_turn_context_guard"] = generic_store_guard["guard_reason"]
     if (
         explicit_risk_reason
         and decision == "direct_reply"
@@ -653,6 +666,28 @@ def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]]
     return rewritten
 
 
+def _generic_store_lookup_guard(required_tools: list[dict[str, Any]], state: AgentState) -> dict[str, Any]:
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if not _is_generic_store_location_question_without_current_scope(content, state):
+        return {}
+    if _generic_store_question_has_allowed_tool_query(required_tools, state):
+        return {}
+    if not any(isinstance(tool, dict) and str(tool.get("name") or "") == "customer_store_lookup" for tool in required_tools):
+        return {}
+    return {
+        "decision": "direct_reply",
+        "stage": "S2",
+        "sub_rule_id": "S2_STORE_LOCATION_NEEDS_SCOPE",
+        "conversion_stage": "store_match",
+        "customer_type": "distance",
+        "main_blocker": "logistics",
+        "next_step": "lookup_store",
+        "reply_messages": [_text_message("您想看哪个城市或区域的门店？发我城市或区名，我给您匹配附近门店。")],
+        "required_tools": [{"name": "no_tool", "purpose": "generic_store_location_needs_city_or_region"}],
+        "guard_reason": "generic_store_question_needs_current_scope",
+    }
+
+
 def _recent_store_name_from_context(state: AgentState) -> str:
     turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
     if not turn_context:
@@ -660,13 +695,12 @@ def _recent_store_name_from_context(state: AgentState) -> str:
     for key in ("current_store_anchor", "confirmed_store"):
         value = turn_context.get(key)
         if isinstance(value, dict):
+            source = str(value.get("source") or "").strip()
+            if source in {"customer_profile", "profile", "preferred_store"}:
+                continue
             name = str(value.get("store_name") or value.get("name") or "").strip()
             if name:
                 return name
-    basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    preferred_name = str(basic_info.get("preferred_store_name") or "").strip()
-    if preferred_name:
-        return preferred_name
     text = _state_text_context(state)
     if not text:
         return ""
@@ -1143,9 +1177,45 @@ def _generic_store_question_uses_history_query(query: str, state: AgentState) ->
     current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
     if not _is_generic_store_location_question_without_current_scope(current_text, state):
         return False
+    if _generic_store_question_can_use_contextual_anchor(state, query=query):
+        return False
     query_compact = _compact_text(query)
     current_compact = _compact_text(current_text)
     return bool(query_compact and query_compact != current_compact)
+
+
+def _generic_store_question_has_allowed_tool_query(required_tools: list[dict[str, Any]], state: AgentState) -> bool:
+    for tool in required_tools:
+        if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
+            continue
+        if _generic_store_question_can_use_contextual_anchor(state, query=str(tool.get("query") or "")):
+            return True
+    return False
+
+
+def _generic_store_question_can_use_contextual_anchor(state: AgentState, *, query: str = "") -> bool:
+    turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
+    if not turn_context:
+        turn_context = _turn_context_for_guard(state)
+    open_task = str(turn_context.get("open_task") or "").strip()
+    if open_task in {"deposit_push", "appointment_confirm"} and _query_matches_scope_store_name(query, state):
+        return True
+    anchor = turn_context.get("current_store_anchor") if isinstance(turn_context.get("current_store_anchor"), dict) else {}
+    if not anchor:
+        anchor = turn_context.get("confirmed_store") if isinstance(turn_context.get("confirmed_store"), dict) else {}
+    if not anchor or anchor.get("ambiguous"):
+        return False
+    source = str(anchor.get("source") or "").strip()
+    if source in {"customer_profile", "profile", "preferred_store"}:
+        return False
+    if open_task in {
+        "deposit_push",
+        "appointment_confirm",
+        "post_deposit_store_assignment",
+        "post_deposit_next_step_clarification",
+    }:
+        return True
+    return False
 
 
 def _is_generic_store_location_question_without_current_scope(text: str, state: AgentState) -> bool:
