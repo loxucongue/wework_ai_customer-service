@@ -10,6 +10,7 @@ from app.services.payment_collection import (
     payment_collection_content,
     payment_collection_context,
 )
+from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
@@ -112,16 +113,26 @@ def create_synthesize_reply_node(
                                     messages = over_limit_fallback
                                     validate_reply_consistency(messages, state)
                                 else:
-                                    handoff_fallback = _maybe_build_handoff_notice_fallback(messages, state, retry_validation_exc)
-                                    if handoff_fallback is not None:
-                                        messages = handoff_fallback
+                                    risk_hold_fallback = _maybe_build_health_risk_hold_fallback(state, retry_validation_exc)
+                                    if risk_hold_fallback is not None:
+                                        messages = risk_hold_fallback
                                         validate_reply_consistency(messages, state)
                                     else:
-                                        repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
-                                        if repaired_messages is None:
-                                            raise
-                                        messages = repaired_messages
-                                        validate_reply_consistency(messages, state)
+                                        handoff_fallback = _maybe_build_handoff_notice_fallback(messages, state, retry_validation_exc)
+                                        if handoff_fallback is not None:
+                                            messages = handoff_fallback
+                                            validate_reply_consistency(messages, state)
+                                        else:
+                                            tool_fallback = _maybe_build_store_tool_unavailable_fallback(state, retry_validation_exc)
+                                            if tool_fallback is not None:
+                                                messages = tool_fallback
+                                                validate_reply_consistency(messages, state)
+                                            else:
+                                                repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
+                                                if repaired_messages is None:
+                                                    raise
+                                                messages = repaired_messages
+                                                validate_reply_consistency(messages, state)
                         else:
                             retry_validation_exc = None
                         if retry_validation_exc is not None and _messages_have_handoff_notice(messages):
@@ -161,26 +172,48 @@ def create_synthesize_reply_node(
                         }
                         model_call["output"] = {"messages": len(messages)}
                     else:
-                        handoff_fallback = _maybe_build_handoff_notice_fallback(messages or planner_messages, state, exc)
-                        if handoff_fallback is not None:
-                            messages = handoff_fallback
+                        risk_hold_fallback = _maybe_build_health_risk_hold_fallback(state, exc)
+                        if risk_hold_fallback is not None:
+                            messages = risk_hold_fallback
                             validate_reply_consistency(messages, state)
-                            reply_source = "deterministic_handoff_notice_fallback"
+                            reply_source = "deterministic_health_risk_hold_fallback"
                             model_call["fallback"] = {
                                 "reason": primary_error,
-                                "strategy": "deterministic_handoff_notice",
+                                "strategy": "deterministic_health_risk_hold",
                             }
                             model_call["output"] = {"messages": len(messages)}
                         else:
-                            model_call["error"] = primary_error
-                            errors.append(
-                                {
-                                    "node": "synthesize_reply",
-                                    "message": "final_reply_failed",
-                                    "detail": primary_error,
+                            handoff_fallback = _maybe_build_handoff_notice_fallback(messages or planner_messages, state, exc)
+                            if handoff_fallback is not None:
+                                messages = handoff_fallback
+                                validate_reply_consistency(messages, state)
+                                reply_source = "deterministic_handoff_notice_fallback"
+                                model_call["fallback"] = {
+                                    "reason": primary_error,
+                                    "strategy": "deterministic_handoff_notice",
                                 }
-                            )
-                            messages = []
+                                model_call["output"] = {"messages": len(messages)}
+                            else:
+                                tool_fallback = _maybe_build_store_tool_unavailable_fallback(state, exc)
+                                if tool_fallback is not None:
+                                    messages = tool_fallback
+                                    validate_reply_consistency(messages, state)
+                                    reply_source = "deterministic_store_tool_unavailable_fallback"
+                                    model_call["fallback"] = {
+                                        "reason": primary_error,
+                                        "strategy": "deterministic_store_tool_unavailable",
+                                    }
+                                    model_call["output"] = {"messages": len(messages)}
+                                else:
+                                    model_call["error"] = primary_error
+                                    errors.append(
+                                        {
+                                            "node": "synthesize_reply",
+                                            "message": "final_reply_failed",
+                                            "detail": primary_error,
+                                        }
+                                    )
+                                    messages = []
 
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
@@ -225,6 +258,51 @@ def _maybe_append_required_store_address(
     if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
         return None
     return _renumber([*messages, {"type": "store_address", "content": {"store_id": store_id}}])
+
+
+def _maybe_build_health_risk_hold_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
+    if not is_hard_health_risk_hold(health_risk_hold(state)):
+        return None
+    if "payment_collection" not in str(exc):
+        return None
+    return [
+        {
+            "type": "text",
+            "order": 1,
+            "content": {
+                "text": "可以先按到店检测来安排，您这个情况要让门店专业人员先看皮肤耐受和适配性，确认适合后再安排。"
+            },
+        }
+    ]
+
+
+def _maybe_build_store_tool_unavailable_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
+    error = str(exc)
+    if not any(
+        marker in error
+        for marker in (
+            "payment_collection_required",
+            "store_address_fact_required",
+            "unsupported_store_address_message",
+            "unfinished_tool_promise_after_tool_execution",
+        )
+    ):
+        return None
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    structured = _structured_facts(state)
+    tool_errors = structured.get("tool_errors") if isinstance(structured.get("tool_errors"), list) else []
+    has_store_tool_error = any(
+        isinstance(item, dict) and str(item.get("tool") or "") == "customer_store_lookup" for item in tool_errors
+    )
+    if not has_store_tool_error and not any(term in content for term in ("地址", "位置", "定位", "导航", "这家", "那家")):
+        return None
+    return [
+        {
+            "type": "text",
+            "order": 1,
+            "content": {"text": "这家门店信息我暂时没核到，您发下城市、区域或门店全称，我给您核对。"},
+        }
+    ]
 
 
 def _maybe_build_store_context_over_anchor_fallback(exc: Exception) -> list[dict[str, Any]] | None:
@@ -384,6 +462,8 @@ def _single_store_fact_id(state: AgentState) -> str:
 
 
 def _reply_repair_hint(error: str) -> str:
+    if "payment_collection_blocked_by_health_risk_hold" in error:
+        return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_required" in error:
         return "如果文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
     if "payment_collection_amount_text_mismatch" in error:

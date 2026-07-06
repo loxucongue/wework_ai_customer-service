@@ -51,6 +51,10 @@ class SopExecutionService:
             if request_context.get("skip_sop_gate"):
                 result.update({"mode": "skipped", "reason": "skip_sop_gate"})
                 return _finish(result, started)
+            gate_risk = _chat_gate_professional_assist_risk(request)
+            if gate_risk:
+                result.update({"mode": "skipped", "need_ai_reply": True, "reason": gate_risk})
+                return _finish(result, started)
 
             identity = _chat_identity(request, request_context)
             enabled_packs = _enabled_chat_packs(self.sop_reply_pack_service.load())
@@ -646,6 +650,47 @@ def _chat_identity(request: ChatRequest, request_context: dict[str, Any]) -> dic
         "external_userid": external_userid,
         "customer_id": external_userid or customer_id,
     }
+
+
+def _chat_gate_professional_assist_risk(request: ChatRequest) -> str:
+    content = _string(request.content)
+    if not content:
+        return ""
+    risk_terms = {
+        "health_or_medical_risk": (
+            "心脏病",
+            "高血压",
+            "怀孕",
+            "孕期",
+            "哺乳",
+            "未成年",
+            "过敏",
+            "病史",
+            "慢病",
+            "用药",
+            "处方",
+        ),
+        "complaint_or_payment_risk": (
+            "退款",
+            "退钱",
+            "投诉",
+            "维权",
+            "报警",
+            "曝光",
+            "付款失败",
+            "支付失败",
+            "扣了",
+            "扣款",
+            "多收",
+            "订单",
+        ),
+        "after_sales_discomfort": ("红肿", "刺痛", "流脓", "发烧", "烂脸", "严重不适"),
+        "explicit_human_request": ("真人", "人工", "机器人", "换人"),
+    }
+    for reason, terms in risk_terms.items():
+        if any(term in content for term in terms):
+            return reason
+    return ""
 
 
 def _event_created_at(payload: dict[str, Any]) -> str:

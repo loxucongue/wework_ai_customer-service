@@ -183,7 +183,7 @@ class PlannerModelOwnershipTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(payload["customer_profile"], {"summary": "旧画像"})
+        self.assertNotIn("customer_profile", payload)
         self.assertEqual(payload["history_events"], [{"event_type": "old"}])
         self.assertEqual(payload["conversation_history"], ["用户: 之前的历史"])
 

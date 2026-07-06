@@ -51,7 +51,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(messages, [{"type": "text", "order": 1, "content": {"text": "稍等哈"}}])
 
-    async def test_professional_assist_need_tools_has_no_waiting_sync_reply(self) -> None:
+    async def test_professional_assist_need_tools_returns_notice_sync_reply(self) -> None:
         with patch("app.chat_runtime.random.random", return_value=0.9), patch(
             "app.chat_runtime.random.choice", return_value="稍等一下哈"
         ):
@@ -63,7 +63,43 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 }
             )
 
-        self.assertEqual(messages, [])
+        self.assertEqual([item["type"] for item in messages], ["text", "human_handoff_notice"])
+        self.assertEqual(messages[1]["content"]["handoff_reason"], "健康高风险")
+        visible_text = messages[0]["content"]["text"]
+        self.assertIn("到店先做检测", visible_text)
+        self.assertNotIn("转人工", visible_text)
+        self.assertNotIn("专业同事", visible_text)
+
+    async def test_run_chat_graph_exception_returns_deterministic_reply_instead_of_502(self) -> None:
+        repository = _Repository()
+        runtime = ChatRuntime(
+            full_graph=_ErrorGraph(),
+            trace_logger=_TraceLogger(),
+            repository=repository,
+        )
+
+        response = await runtime.run_chat(_request("这家地址发我一下"))
+
+        self.assertEqual(len(response.reply_messages), 1)
+        self.assertEqual(response.reply_messages[0].type, "text")
+        self.assertIn("门店", str(response.reply_messages[0].content))
+        self.assertTrue(repository.saved_states)
+        self.assertEqual(repository.saved_states[-1]["reply_source"], "deterministic_runtime_exception_fallback")
+
+    async def test_run_chat_empty_final_reply_returns_deterministic_reply_instead_of_502(self) -> None:
+        repository = _Repository()
+        runtime = ChatRuntime(
+            full_graph=_EmptyReplyGraph(),
+            trace_logger=_TraceLogger(),
+            repository=repository,
+        )
+
+        response = await runtime.run_chat(_request("预约金入口发我"))
+
+        self.assertEqual(len(response.reply_messages), 1)
+        self.assertEqual(response.reply_messages[0].type, "text")
+        self.assertIn("刚刚这条", str(response.reply_messages[0].content))
+        self.assertEqual(repository.saved_states[-1]["reply_source"], "deterministic_empty_reply_fallback")
 
 
 class _SlowPlannerGraph:
@@ -84,6 +120,27 @@ class _SlowPlannerGraph:
                 "planner_sub_rule_id": "S1_GREETING",
                 "planner_reply_messages": [{"type": "text", "order": 1, "content": {"text": "reply"}}],
                 "reply_messages": [{"type": "text", "order": 1, "content": {"text": "reply"}}],
+                "trace": [],
+                "errors": [],
+            }
+        )
+        return output
+
+
+class _ErrorGraph:
+    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+
+class _EmptyReplyGraph:
+    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        output = dict(state)
+        output.update(
+            {
+                "planner_decision": "direct_reply",
+                "planner_stage": "S1",
+                "planner_sub_rule_id": "S1_EMPTY",
+                "reply_messages": [],
                 "trace": [],
                 "errors": [],
             }

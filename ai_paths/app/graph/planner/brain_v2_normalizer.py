@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 import re
+from pathlib import Path
 from typing import Any
 
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
+from app.graph.nodes.current_turn_context import build_current_turn_context
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.planner.planner_contract import (
     ALLOWED_CONVERSION_STAGES,
     ALLOWED_CUSTOMER_TYPES,
@@ -20,9 +24,15 @@ from app.services.payment_collection import (
     payment_collection_content,
     payment_collection_context,
 )
+from app.services.risk_hold import HEALTH_RISK_TERMS, explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
+
+
+_STORE_SNAPSHOT_NAME_CACHE: list[str] | None = None
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
+    explicit_risk_reason = explicit_professional_assist_reason(state)
+    risk_hold = health_risk_hold(state)
     decision = _normalize_decision(model_payload.get("decision") if isinstance(model_payload, dict) else "")
     stage = str(model_payload.get("stage") or "").strip() if isinstance(model_payload, dict) else ""
     sub_rule_id = str(model_payload.get("sub_rule_id") or "").strip() if isinstance(model_payload, dict) else ""
@@ -59,10 +69,45 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     secondary_tasks: list[dict[str, Any]] = []
 
     reply_strategy: dict[str, Any] = {}
+    if risk_hold:
+        reply_strategy["risk_hold"] = risk_hold
     required_tools = _dedupe_tools(planner_tool_calls)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
+    required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
-    if _has_store_address_message(planner_reply_messages) and not executable_tools:
+    if (
+        explicit_risk_reason
+        and decision == "direct_reply"
+        and planner_reply_messages
+        and not executable_tools
+    ):
+        conversion_stage = "objection_resolution"
+        customer_type = "risk"
+        main_blocker = "risk"
+        next_step = "solve_blocker"
+        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        if not _has_handoff_notice(planner_reply_messages):
+            planner_reply_messages.append(
+                {
+                    "type": "human_handoff_notice",
+                    "order": len(planner_reply_messages) + 1,
+                    "content": {"handoff_reason": explicit_risk_reason},
+                }
+            )
+        handoff_raw = {"needed": True, "reason": explicit_risk_reason}
+    elif explicit_risk_reason:
+        decision = "need_tools"
+        stage = stage or "S4"
+        sub_rule_id = sub_rule_id or "S4_PROFESSIONAL_ASSIST"
+        conversion_stage = "objection_resolution"
+        customer_type = "risk"
+        main_blocker = "risk"
+        next_step = "solve_blocker"
+        planner_reply_messages = [_standard_transition_message()]
+        required_tools = [{"name": "professional_assist", "reason": explicit_risk_reason}]
+        executable_tools = required_tools
+        handoff_raw = {"needed": True, "reason": explicit_risk_reason}
+    elif _has_store_address_message(planner_reply_messages) and not executable_tools:
         lookup_query = _store_lookup_query_from_state(state)
         planner_reply_messages = [_standard_transition_message()]
         required_tools = [
@@ -94,6 +139,50 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         decision = "need_tools"
     if decision == "need_tools":
         planner_reply_messages = [_standard_transition_message()]
+    if is_hard_health_risk_hold(risk_hold) and not explicit_risk_reason:
+        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        if conversion_stage == "deposit_push":
+            conversion_stage = "time_confirm"
+        if next_step == "send_deposit":
+            next_step = "confirm_time"
+        reply_constraints.append("健康/过敏高风险未完成到店检测前，先确认检测和到店安排，不发送 payment_collection。")
+    turn_guard = _current_turn_context_guard(state, risk_hold=risk_hold)
+    if turn_guard:
+        decision = turn_guard["decision"]
+        stage = turn_guard["stage"]
+        sub_rule_id = turn_guard["sub_rule_id"]
+        conversion_stage = turn_guard["conversion_stage"]
+        customer_type = turn_guard["customer_type"]
+        main_blocker = turn_guard["main_blocker"]
+        next_step = turn_guard["next_step"]
+        planner_reply_messages = turn_guard["reply_messages"]
+        required_tools = turn_guard["required_tools"]
+        executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
+        if turn_guard.get("handoff"):
+            handoff_raw = turn_guard["handoff"]
+        reply_constraints.extend(turn_guard.get("reply_constraints") or [])
+        reply_strategy["current_turn_context_guard"] = turn_guard.get("guard_reason", "")
+    advisory_health_guard = _advisory_health_professional_assist_guard(
+        state=state,
+        risk_hold=risk_hold,
+        explicit_risk_reason=explicit_risk_reason,
+        required_tools=required_tools,
+        handoff_raw=handoff_raw,
+    )
+    if advisory_health_guard:
+        decision = advisory_health_guard["decision"]
+        stage = advisory_health_guard["stage"]
+        sub_rule_id = advisory_health_guard["sub_rule_id"]
+        conversion_stage = advisory_health_guard["conversion_stage"]
+        customer_type = advisory_health_guard["customer_type"]
+        main_blocker = advisory_health_guard["main_blocker"]
+        next_step = advisory_health_guard["next_step"]
+        planner_reply_messages = advisory_health_guard["reply_messages"]
+        required_tools = advisory_health_guard["required_tools"]
+        executable_tools = []
+        handoff_raw = advisory_health_guard["handoff"]
+        reply_constraints.extend(advisory_health_guard.get("reply_constraints") or [])
+        reply_strategy["current_turn_context_guard"] = advisory_health_guard.get("guard_reason", "")
     planner_reply_messages = _append_required_payment_collection(
         state=state,
         decision=decision,
@@ -215,6 +304,229 @@ def _standard_transition_message() -> dict[str, Any]:
     return {"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}
 
 
+def _current_turn_context_guard(state: AgentState, *, risk_hold: dict[str, Any]) -> dict[str, Any]:
+    turn_context = _turn_context_for_guard(state)
+    open_task = str(turn_context.get("open_task") or "").strip()
+    if open_task == "post_deposit_store_assignment":
+        return _post_deposit_store_assignment_guard(turn_context, risk_hold=risk_hold)
+    if open_task == "post_deposit_next_step_clarification":
+        return _post_deposit_next_step_guard(turn_context, risk_hold=risk_hold)
+    if open_task == "health_risk_followup":
+        return _health_risk_followup_guard(turn_context, risk_hold=risk_hold)
+    return {}
+
+
+def _advisory_health_professional_assist_guard(
+    *,
+    state: AgentState,
+    risk_hold: dict[str, Any],
+    explicit_risk_reason: str,
+    required_tools: list[dict[str, Any]],
+    handoff_raw: Any,
+) -> dict[str, Any]:
+    if explicit_risk_reason or is_hard_health_risk_hold(risk_hold):
+        return {}
+    if not any(isinstance(tool, dict) and str(tool.get("name") or "") == "professional_assist" for tool in required_tools):
+        return {}
+    reason_text = _handoff_and_tool_reason_text(handoff_raw, required_tools)
+    if not _mentions_health_risk_text(reason_text) and str(risk_hold.get("risk_hold") or "") != "health_check_context":
+        return {}
+    turn_context = _turn_context_for_guard(state)
+    open_task = str(turn_context.get("open_task") or "").strip()
+    if open_task == "health_risk_followup":
+        return {}
+    message = _advisory_health_context_message(turn_context, state)
+    return _guard_plan(
+        stage="S3",
+        sub_rule_id="S3_APPOINTMENT_TIME",
+        conversion_stage="time_confirm",
+        customer_type="time",
+        main_blocker="time",
+        next_step="confirm_time",
+        messages=[_text_message(message)],
+        handoff=False,
+        handoff_reason="",
+        guard_reason="advisory_health_history_demoted_from_professional_assist",
+        constraints=["历史健康风险只作为到店检测提醒；当前消息没有再次提病史/过敏/严重不适时，不调用 professional_assist。"],
+    )
+
+
+def _handoff_and_tool_reason_text(handoff_raw: Any, required_tools: list[dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    if isinstance(handoff_raw, dict):
+        chunks.append(str(handoff_raw.get("reason") or ""))
+    for tool in required_tools:
+        if isinstance(tool, dict):
+            chunks.append(str(tool.get("reason") or tool.get("purpose") or ""))
+    return "\n".join(chunk for chunk in chunks if chunk)
+
+
+def _mentions_health_risk_text(text: str) -> bool:
+    raw = str(text or "")
+    return "健康风险" in raw or any(term in raw for term in HEALTH_RISK_TERMS)
+
+
+def _advisory_health_context_message(turn_context: dict[str, Any], state: AgentState) -> str:
+    appointment = turn_context.get("confirmed_appointment") if isinstance(turn_context.get("confirmed_appointment"), dict) else {}
+    store = turn_context.get("confirmed_store") if isinstance(turn_context.get("confirmed_store"), dict) else {}
+    store_name = str(store.get("store_name") or "").strip()
+    appointment_text = _appointment_text(appointment)
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if "下午" in content and "下午" not in appointment_text:
+        appointment_text = "明天下午" if "明天" in content or "明天" in appointment_text else "下午"
+    if appointment_text and store_name:
+        prefix = f"可以，那就按{appointment_text}继续给您确认{store_name}。"
+    elif appointment_text:
+        prefix = f"可以，那就按{appointment_text}继续给您确认到店安排。"
+    elif store_name:
+        prefix = f"可以，这边继续给您确认{store_name}的到店安排。"
+    else:
+        prefix = "可以，这边继续帮您确认到店安排。"
+    return f"{prefix}到店会先做检测评估，确认适合再安排操作。"
+
+
+def _turn_context_for_guard(state: AgentState) -> dict[str, Any]:
+    existing = state.get("current_turn_context")
+    if isinstance(existing, dict) and existing.get("open_task"):
+        return existing
+    try:
+        return build_current_turn_context(state, sent_message_summary=sent_message_summary_for_model(state))
+    except Exception:
+        return {}
+
+
+def _post_deposit_store_assignment_guard(turn_context: dict[str, Any], *, risk_hold: dict[str, Any]) -> dict[str, Any]:
+    appointment = turn_context.get("confirmed_appointment") if isinstance(turn_context.get("confirmed_appointment"), dict) else {}
+    time_text = _appointment_text(appointment)
+    missing_slots = turn_context.get("missing_slots") if isinstance(turn_context.get("missing_slots"), list) else []
+    ask_text = "您现在在哪个城市或区域？我按您这边就近匹配门店和地址。"
+    if "city_or_region" not in missing_slots:
+        ask_text = "您想去哪个门店或哪个区域？我按这个给您核对到店安排。"
+    first = f"可以，{time_text}这边先按到店检测给您接上。" if time_text else "可以，这边先按到店检测给您接上。"
+    messages = [_text_message(first), _text_message(ask_text)]
+    if risk_hold:
+        messages.append(_text_message("有健康或过敏情况的话，到店会先做检测评估，确认适合再安排操作。"))
+    if is_hard_health_risk_hold(risk_hold):
+        messages.append(_handoff_notice_message(risk_hold))
+    return _guard_plan(
+        stage="S3",
+        sub_rule_id="S3_APPOINTMENT_TIME",
+        conversion_stage="time_confirm",
+        customer_type="time",
+        main_blocker="logistics",
+        next_step="lookup_store",
+        messages=messages,
+        handoff=is_hard_health_risk_hold(risk_hold),
+        handoff_reason=_risk_hold_reason(risk_hold),
+        guard_reason="post_deposit_store_assignment_missing_location",
+        constraints=[
+            "客户已付预约金并确认到店时间但缺门店/区域；先补城市/区域或门店，不调用 available_time，不重复发送 payment_collection。"
+        ],
+    )
+
+
+def _post_deposit_next_step_guard(turn_context: dict[str, Any], *, risk_hold: dict[str, Any]) -> dict[str, Any]:
+    missing_slots = turn_context.get("missing_slots") if isinstance(turn_context.get("missing_slots"), list) else []
+    if "city_or_region" in missing_slots:
+        text = "付完后这边先帮您匹配就近门店，到店先做检测评估，确认适合再安排操作。您现在在哪个城市或区域？"
+    else:
+        text = "付完后这边继续帮您核对门店和到店安排，到店先做检测评估，确认适合再安排操作。"
+    messages = [_text_message(text)]
+    if is_hard_health_risk_hold(risk_hold):
+        messages.append(_handoff_notice_message(risk_hold))
+    return _guard_plan(
+        stage="S3",
+        sub_rule_id="S3_PAYMENT_COLLECTION",
+        conversion_stage="time_confirm",
+        customer_type="time",
+        main_blocker="logistics",
+        next_step="lookup_store" if missing_slots else "confirm_time",
+        messages=messages,
+        handoff=is_hard_health_risk_hold(risk_hold),
+        handoff_reason=_risk_hold_reason(risk_hold),
+        guard_reason="post_deposit_next_step_clarification",
+        constraints=["客户已付预约金后询问下一步；解释门店/检测/适配流程，不重复发送 payment_collection。"],
+    )
+
+
+def _health_risk_followup_guard(turn_context: dict[str, Any], *, risk_hold: dict[str, Any]) -> dict[str, Any]:
+    appointment = turn_context.get("confirmed_appointment") if isinstance(turn_context.get("confirmed_appointment"), dict) else {}
+    time_text = _appointment_text(appointment)
+    prefix = f"{time_text}可以先按到店检测评估来接，" if time_text else "在的，这个先按到店检测评估来处理，"
+    text = prefix + "确认适合再安排操作。您把想去的城市或门店发我，我先帮您接上检测安排。"
+    return _guard_plan(
+        stage="S4",
+        sub_rule_id="S4_PROFESSIONAL_ASSIST",
+        conversion_stage="time_confirm",
+        customer_type="risk",
+        main_blocker="risk",
+        next_step="confirm_time",
+        messages=[_text_message(text), _handoff_notice_message(risk_hold)],
+        handoff=True,
+        handoff_reason=_risk_hold_reason(risk_hold),
+        guard_reason="health_risk_followup",
+        constraints=["健康/过敏风险后续轮次先承接检测和到店安排，不发送 payment_collection。"],
+    )
+
+
+def _guard_plan(
+    *,
+    stage: str,
+    sub_rule_id: str,
+    conversion_stage: str,
+    customer_type: str,
+    main_blocker: str,
+    next_step: str,
+    messages: list[dict[str, Any]],
+    handoff: bool,
+    handoff_reason: str,
+    guard_reason: str,
+    constraints: list[str],
+) -> dict[str, Any]:
+    return {
+        "decision": "direct_reply",
+        "stage": stage,
+        "sub_rule_id": sub_rule_id,
+        "conversion_stage": conversion_stage,
+        "customer_type": customer_type,
+        "main_blocker": main_blocker,
+        "next_step": next_step,
+        "reply_messages": _renumber_messages(messages),
+        "required_tools": [{"name": "no_tool", "purpose": guard_reason}],
+        "handoff": {"needed": handoff, "reason": handoff_reason} if handoff else {"needed": False, "reason": ""},
+        "reply_constraints": constraints,
+        "guard_reason": guard_reason,
+    }
+
+
+def _text_message(text: str) -> dict[str, Any]:
+    return {"type": "text", "order": 1, "content": {"text": normalize_deposit_refund_policy_text(text)}}
+
+
+def _handoff_notice_message(risk_hold: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "human_handoff_notice", "order": 1, "content": {"handoff_reason": _risk_hold_reason(risk_hold)}}
+
+
+def _risk_hold_reason(risk_hold: dict[str, Any]) -> str:
+    return str(risk_hold.get("reason") or "健康/过敏高风险，需先到店检测确认适配性").strip()
+
+
+def _appointment_text(appointment: dict[str, Any]) -> str:
+    bits = [str(appointment.get(key) or "").strip() for key in ("date", "time")]
+    return " ".join(bit for bit in bits if bit)
+
+
+def _renumber_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        updated = dict(item)
+        updated["order"] = len(output) + 1
+        output.append(updated)
+    return output
+
+
 def _normalize_enum(value: Any, allowed: tuple[str, ...], default: str) -> str:
     text = str(value or "").strip()
     return text if text in allowed else default
@@ -294,7 +606,36 @@ def _store_lookup_query_from_state(state: AgentState) -> str:
     return str(state.get("normalized_content") or state.get("content") or "").strip()
 
 
+def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]], state: AgentState) -> list[dict[str, Any]]:
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if not _current_message_requests_store_detail(content):
+        return required_tools
+    if not any(term in content for term in ("这家", "那家", "刚刚", "地址", "位置", "定位", "导航")):
+        return required_tools
+    anchor = _recent_store_name_from_context(state)
+    if not anchor:
+        return required_tools
+    rewritten: list[dict[str, Any]] = []
+    for tool in required_tools:
+        if isinstance(tool, dict) and str(tool.get("name") or "") == "customer_store_lookup":
+            updated = dict(tool)
+            updated["query"] = anchor
+            rewritten.append(updated)
+        else:
+            rewritten.append(tool)
+    return rewritten
+
+
 def _recent_store_name_from_context(state: AgentState) -> str:
+    turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
+    if not turn_context:
+        turn_context = _turn_context_for_guard(state)
+    for key in ("current_store_anchor", "confirmed_store"):
+        value = turn_context.get(key)
+        if isinstance(value, dict):
+            name = str(value.get("store_name") or value.get("name") or "").strip()
+            if name:
+                return name
     basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
     preferred_name = str(basic_info.get("preferred_store_name") or "").strip()
     if preferred_name:
@@ -316,13 +657,21 @@ def _recent_store_name_from_context(state: AgentState) -> str:
         if pos > best_pos:
             best_name = name
             best_pos = pos
+    for name in _snapshot_store_names():
+        compact_name = str(name or "").strip()
+        if not compact_name:
+            continue
+        pos = text.rfind(compact_name)
+        if pos > best_pos:
+            best_name = compact_name
+            best_pos = pos
     return best_name
 
 
 def _state_text_context(state: AgentState) -> str:
     chunks: list[str] = [str(state.get("normalized_content") or state.get("content") or "")]
     history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
-    for item in history[-8:]:
+    for item in history[-20:]:
         if isinstance(item, dict):
             content = item.get("content")
             chunks.append(str(content.get("text") if isinstance(content, dict) else content or ""))
@@ -829,9 +1178,51 @@ def _query_matches_scope_store_name(value: str, state: AgentState) -> bool:
             continue
         for key in ("store_name", "name"):
             name = _compact_text(store.get(key))
-            if name and (name in text or text in name):
+            if _store_name_query_matches(name, text):
                 return True
+    for name in _snapshot_store_names():
+        compact_name = _compact_text(name)
+        if _store_name_query_matches(compact_name, text):
+            return True
     return False
+
+
+def _store_name_query_matches(name: str, text: str) -> bool:
+    if name and text and (name in text or (len(text) >= 4 and text in name)):
+        return True
+    normalized_name = _normalize_store_name_for_match(name)
+    normalized_text = _normalize_store_name_for_match(text)
+    return bool(
+        normalized_name
+        and normalized_text
+        and (normalized_name in normalized_text or (len(normalized_text) >= 4 and normalized_text in normalized_name))
+    )
+
+
+def _normalize_store_name_for_match(value: str) -> str:
+    return _compact_text(value).replace("市", "")
+
+
+def _snapshot_store_names() -> list[str]:
+    global _STORE_SNAPSHOT_NAME_CACHE
+    if _STORE_SNAPSHOT_NAME_CACHE is not None:
+        return _STORE_SNAPSHOT_NAME_CACHE
+    path = Path("data/store_snapshot.json")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _STORE_SNAPSHOT_NAME_CACHE = []
+        return _STORE_SNAPSHOT_NAME_CACHE
+    stores_by_id = data.get("stores_by_id") if isinstance(data, dict) else {}
+    names = []
+    if isinstance(stores_by_id, dict):
+        names = [
+            str(store.get("store_name") or store.get("name") or "").strip()
+            for store in stores_by_id.values()
+            if isinstance(store, dict) and str(store.get("store_name") or store.get("name") or "").strip()
+        ]
+    _STORE_SNAPSHOT_NAME_CACHE = list(dict.fromkeys(names))
+    return _STORE_SNAPSHOT_NAME_CACHE
 
 
 def _looks_like_specific_region(text: str) -> bool:
@@ -902,6 +1293,8 @@ def _payment_consistency_violations(
         return []
     if _text_explains_previous_payment_entry(messages):
         return []
+    if decision != "direct_reply" and not _text_mentions_payment_entry(messages):
+        return []
     needs_payment = conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)
     payment_context = payment_collection_context(state=state, messages=messages)
     if needs_payment and payment_context["over_limit"]:
@@ -936,6 +1329,20 @@ def _has_payment_collection(messages: list[dict[str, Any]]) -> bool:
     return any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict))
 
 
+def _has_handoff_notice(messages: list[dict[str, Any]]) -> bool:
+    return any(
+        str(item.get("type") or "") in {"human_handoff", "human_handoff_notice"}
+        for item in messages
+        if isinstance(item, dict)
+    )
+
+
+def _remove_payment_collection_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return _renumber_reply_messages(
+        [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") != "payment_collection"]
+    )
+
+
 def _append_required_payment_collection(
     *,
     state: AgentState,
@@ -946,6 +1353,8 @@ def _append_required_payment_collection(
 ) -> list[dict[str, Any]]:
     if decision != "direct_reply":
         return messages
+    if is_hard_health_risk_hold(health_risk_hold(state)):
+        return _remove_payment_collection_messages(messages)
     if not messages or _has_payment_collection(messages) or _text_explains_previous_payment_entry(messages):
         return messages
     needs_payment = conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)

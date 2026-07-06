@@ -15,6 +15,7 @@ from app.services.payment_collection import (
     payment_collection_content,
     payment_collection_context,
 )
+from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "human_handoff", "human_handoff_notice", "payment_collection", "store_address"}
@@ -127,6 +128,7 @@ def _move_handoff_notices_after_visible(messages: list[dict[str, Any]]) -> list[
 
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_handoff_notice_text(messages)
+    _validate_payment_not_during_health_risk_hold(messages, state)
     _validate_payment_collection_consistency(messages, state)
     _validate_payment_collection_amount_text(messages, state)
     _validate_deposit_refund_wording(messages, state)
@@ -189,6 +191,8 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
     if str(state.get("planner_decision") or "") == "no_reply":
         return
     has_payment = any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict))
+    if is_hard_health_risk_hold(health_risk_hold(state)):
+        return
     text = _combined_text(messages)
     payment_context = payment_collection_context(state=state, messages=messages)
     needs_payment = False
@@ -208,6 +212,16 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         return
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
+
+
+def _validate_payment_not_during_health_risk_hold(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if not is_hard_health_risk_hold(health_risk_hold(state)):
+        return
+    if any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict)):
+        raise ValueError("payment_collection_blocked_by_health_risk_hold")
+    text = _combined_text(messages)
+    if any(term in text for term in ("预约金", "付款入口", "收款入口", "报名入口", "支付入口", "线上10元", "锁名额")):
+        raise ValueError("payment_collection_blocked_by_health_risk_hold")
 
 
 def _validate_payment_collection_amount_text(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:

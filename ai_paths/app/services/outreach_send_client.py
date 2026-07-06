@@ -9,6 +9,11 @@ import httpx
 from app.config import Settings
 
 
+_REQUEST_RETRY_ATTEMPTS = 3
+_REQUEST_RETRY_BACKOFF_SECONDS = 0.4
+_RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+
 class OutreachSendClient:
     """Client for the platform proactive message send endpoint."""
 
@@ -58,15 +63,22 @@ class OutreachSendClient:
             return {"status": "skipped", "reason": "empty_reply_messages"}
 
         try:
-            response = await self._http_client().post(
-                urljoin(self._base_url, "api/v1/platform-agent/ai-outreach/send"),
+            response = await self._request_with_retry(
+                "POST",
+                "api/v1/platform-agent/ai-outreach/send",
                 json=payload,
-                headers={"X-Agent-Token": self._token},
             )
         except httpx.ReadTimeout:
             return {
                 "status": "sent",
                 "send_status": "accepted_no_response",
+                "payload_message_count": len(reply_messages),
+                "send_payload": payload,
+            }
+        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+            return {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
                 "payload_message_count": len(reply_messages),
                 "send_payload": payload,
             }
@@ -115,10 +127,10 @@ class OutreachSendClient:
             return {"status": "skipped", "reason": "missing_required_fields", "missing": missing, "request": params}
 
         try:
-            response = await self._http_client().get(
-                urljoin(self._base_url, "api/v1/platform-agent/ai-outreach/conversation"),
+            response = await self._request_with_retry(
+                "GET",
+                "api/v1/platform-agent/ai-outreach/conversation",
                 params=params,
-                headers={"X-Agent-Token": self._token},
             )
         except httpx.TimeoutException as exc:
             return {"status": "failed", "error": f"{type(exc).__name__}: {exc}", "request": params}
@@ -152,6 +164,37 @@ class OutreachSendClient:
             self._client = httpx.AsyncClient(timeout=self._timeout)
             self._client_loop_id = loop_id
         return self._client
+
+    async def _request_with_retry(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        client = self._http_client()
+        url = urljoin(self._base_url, path)
+        headers = {"X-Agent-Token": self._token}
+        last_exc: Exception | None = None
+        for attempt in range(_REQUEST_RETRY_ATTEMPTS):
+            try:
+                response = await client.request(method, url, params=params, json=json, headers=headers)
+                if response.status_code in _RETRYABLE_STATUS_CODES and attempt < (_REQUEST_RETRY_ATTEMPTS - 1):
+                    await asyncio.sleep(_REQUEST_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                return response
+            except httpx.ReadTimeout:
+                raise
+            except (httpx.ConnectTimeout, httpx.ConnectError, httpx.NetworkError, httpx.RemoteProtocolError, httpx.PoolTimeout) as exc:
+                last_exc = exc
+                if attempt < (_REQUEST_RETRY_ATTEMPTS - 1):
+                    await asyncio.sleep(_REQUEST_RETRY_BACKOFF_SECONDS * (attempt + 1))
+                    continue
+                raise
+        if last_exc:
+            raise last_exc
+        raise RuntimeError(f"Outreach {method} request failed without response")
 
     @staticmethod
     def _payload(

@@ -142,6 +142,11 @@ async def require_api_key(authorization: str | None = Header(default=None)) -> N
 
 async def require_external_api_key(authorization: str | None = Header(default=None)) -> None:
     if not settings.ai_external_api_key:
+        if not settings.allow_missing_external_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="External API token is not configured",
+            )
         return
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or token != settings.ai_external_api_key:

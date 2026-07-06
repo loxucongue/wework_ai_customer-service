@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
@@ -17,6 +18,9 @@ from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
+
+
+_STORE_SNAPSHOT_CACHE: dict[str, Any] | None = None
 
 
 def create_execute_actions_node(
@@ -400,6 +404,9 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     if not candidates:
         candidates = _stores_for_text_query(query, stores, purpose)
         source = "customer_scope_text_match"
+    if not candidates:
+        candidates = _snapshot_stores_for_exact_query(query)
+        source = "store_snapshot_exact_name"
 
     normalized = [_store_lookup_item(store) for store in candidates[:60]]
     status = "ok" if normalized else "no_match"
@@ -731,6 +738,75 @@ def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
     return [store for store in stores if isinstance(store, dict)]
+
+
+def _snapshot_stores_for_exact_query(query: str) -> list[dict[str, Any]]:
+    text = _compact_text(query)
+    if not text:
+        return []
+    stores = _snapshot_store_values()
+    matched: list[dict[str, Any]] = []
+    for store in stores:
+        name = _compact_text(store.get("store_name") or store.get("name"))
+        if not name:
+            continue
+        if _snapshot_store_name_matches_query(name, text):
+            matched.append(store)
+    return _without_subsumed_snapshot_stores(_dedupe_snapshot_stores(matched))[:5]
+
+
+def _snapshot_store_name_matches_query(name: str, text: str) -> bool:
+    if name in text or (len(text) >= 4 and text in name):
+        return True
+    normalized_name = _normalize_store_name_for_match(name)
+    normalized_text = _normalize_store_name_for_match(text)
+    return bool(
+        normalized_name
+        and normalized_text
+        and (normalized_name in normalized_text or (len(normalized_text) >= 4 and normalized_text in normalized_name))
+    )
+
+
+def _normalize_store_name_for_match(value: str) -> str:
+    return str(value or "").replace("市", "").strip()
+
+
+def _snapshot_store_values() -> list[dict[str, Any]]:
+    global _STORE_SNAPSHOT_CACHE
+    if _STORE_SNAPSHOT_CACHE is None:
+        path = Path("data/store_snapshot.json")
+        try:
+            _STORE_SNAPSHOT_CACHE = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            _STORE_SNAPSHOT_CACHE = {}
+    stores_by_id = _STORE_SNAPSHOT_CACHE.get("stores_by_id") if isinstance(_STORE_SNAPSHOT_CACHE, dict) else {}
+    return [store for store in stores_by_id.values() if isinstance(store, dict)] if isinstance(stores_by_id, dict) else []
+
+
+def _dedupe_snapshot_stores(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for store in stores:
+        key = (
+            str(store.get("store_id") or store.get("id") or "").strip(),
+            str(store.get("store_name") or store.get("name") or "").strip(),
+        )
+        if not key[1] or key in seen:
+            continue
+        seen.add(key)
+        output.append(store)
+    return output
+
+
+def _without_subsumed_snapshot_stores(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    names = [str(store.get("store_name") or store.get("name") or "").strip() for store in stores]
+    output: list[dict[str, Any]] = []
+    for store, name in zip(stores, names):
+        compact_name = _compact_text(name)
+        if any(compact_name != _compact_text(other) and compact_name in _compact_text(other) for other in names):
+            continue
+        output.append(store)
+    return output
 
 
 def _region_tokens(value: str) -> list[str]:

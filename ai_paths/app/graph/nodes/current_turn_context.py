@@ -10,12 +10,19 @@ from app.policies.constants import (
     STORE_CONTEXT_REFERENCE_TERMS,
     TIME_REFERENCE_TERMS,
 )
+from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
 
 
 STORE_REFERENCE_HINTS = tuple(STORE_CONTEXT_REFERENCE_TERMS) + ("这家", "那家", "这个店", "刚才", "刚刚")
 STORE_FACT_EXTRA_TERMS = ("位置", "定位", "发位置", "发个位置", "发一下位置", "发下位置")
 APPOINTMENT_HINTS = ("预约", "约", "到店", "名额", "时间", "明天", "今天", "后天", "上午", "下午", "晚上")
 PAYMENT_HINTS = ("预约金", "付款入口", "收款入口", "报名入口", "付款", "交10", "交 10", "10元", "10 元")
+DEPOSIT_PAID_TERMS = ("已支付", "支付成功", "已付款", "已经付款", "付好了", "已付预约金", "预约金已付", "交了预约金", "收款成功")
+DEPOSIT_UNPAID_TERMS = ("未支付", "没支付", "没有支付", "未付款", "没付款", "没有付款", "没付", "未付", "支付失败", "付款失败", "还没付")
+DEPOSIT_HISTORY_PAID_TERMS = ("我已经付款", "我已付款", "我付款了", "我付好了", "付好了", "已付预约金", "预约金已付", "交了预约金", "收款成功", "支付成功")
+NEXT_STEP_TERMS = ("付完然后呢", "付完了然后呢", "然后呢", "下一步", "接下来", "后面怎么", "之后怎么")
+VISIT_CONFIRM_TERMS = ("可以", "就可以", "方便", "没问题", "行", "好", "到店", "过去", "来店", "去店")
+LOCATION_KEYS = ("city", "current_city", "district", "area", "region", "address_region", "intent_city", "intent_area")
 
 
 def build_current_turn_context(
@@ -36,9 +43,20 @@ def build_current_turn_context(
         allow_profile=True,
         prefer_recent=is_short or is_reference or _has_store_fact_request(content),
     )
-    appointment = confirmed_appointment_from_state(state)
+    appointment = _merge_appointments(_appointment_from_current_message(content), confirmed_appointment_from_state(state))
     last_action = _last_assistant_action(last_assistant, sent_summary)
     deposit_state = _deposit_state(state, sent_summary=sent_summary, last_assistant=last_assistant)
+    risk_hold = health_risk_hold(state)
+    location_missing = _missing_location_slots(state, store_anchor=store_anchor)
+    resolved_slots = _resolved_slots(
+        state,
+        appointment=appointment,
+        store_anchor=store_anchor,
+        deposit_state=deposit_state,
+        risk_hold=risk_hold,
+    )
+    current_time_confirmed = _is_current_turn_time_confirmation(content, appointment)
+    next_step_clarification = _is_next_step_clarification(content)
     open_task = _open_task(
         content=content,
         is_short=is_short,
@@ -47,6 +65,15 @@ def build_current_turn_context(
         appointment=appointment,
         last_assistant_action=last_action,
         deposit_state=deposit_state,
+        risk_hold=risk_hold,
+        location_missing=location_missing,
+        current_time_confirmed=current_time_confirmed,
+        next_step_clarification=next_step_clarification,
+    )
+    blocked_actions = _blocked_actions(
+        open_task=open_task,
+        risk_hold=risk_hold,
+        location_missing=location_missing,
     )
     binding_source = _binding_source(
         is_short=is_short,
@@ -71,6 +98,16 @@ def build_current_turn_context(
         output["confirmed_appointment"] = appointment
     if deposit_state != "unknown":
         output["deposit_state"] = deposit_state
+    if resolved_slots:
+        output["resolved_slots"] = resolved_slots
+    visible_missing_slots = _visible_missing_slots(open_task=open_task, is_reference=is_reference, content=content, location_missing=location_missing)
+    if visible_missing_slots:
+        output["missing_slots"] = visible_missing_slots
+    if blocked_actions:
+        output["blocked_actions"] = blocked_actions
+    recommended_next_action = _recommended_next_action(open_task=open_task, location_missing=visible_missing_slots, risk_hold=risk_hold)
+    if recommended_next_action:
+        output["recommended_next_action"] = recommended_next_action
     reply_anchor = _reply_anchor(
         open_task=open_task,
         store_anchor=store_anchor,
@@ -78,6 +115,8 @@ def build_current_turn_context(
         deposit_state=deposit_state,
         last_assistant=last_assistant,
         binding_source=binding_source,
+        location_missing=visible_missing_slots,
+        risk_hold=risk_hold,
     )
     if reply_anchor:
         output["reply_anchor"] = reply_anchor
@@ -148,6 +187,8 @@ def confirmed_appointment_from_state(state: dict[str, Any]) -> dict[str, Any]:
         (_customer_context_mapping(state, "appointment_info_v2"), "appointment_context"),
         (_latest_appointment_fact(state), "fact_envelope"),
     ):
+        if source in {"appointment_cache", "appointment_context"} and _appointment_mapping_low_confidence(state, mapping):
+            continue
         appointment = _appointment_from_mapping(mapping, source=source)
         if appointment:
             return appointment
@@ -196,7 +237,19 @@ def _open_task(
     appointment: dict[str, Any],
     last_assistant_action: str,
     deposit_state: str,
+    risk_hold: dict[str, Any],
+    location_missing: list[str],
+    current_time_confirmed: bool,
+    next_step_clarification: bool,
 ) -> str:
+    if deposit_state == "deposit_paid" and location_missing and (current_time_confirmed or next_step_clarification):
+        return "post_deposit_store_assignment"
+    if deposit_state == "deposit_paid" and next_step_clarification:
+        return "post_deposit_next_step_clarification"
+    if is_hard_health_risk_hold(risk_hold) and (
+        is_short or _is_short_followup_greeting(content) or current_time_confirmed or _mentions_visit_or_detection(content)
+    ):
+        return "health_risk_followup"
     if deposit_state == "payment_link_sent" or last_assistant_action in {"sent_payment_collection", "asked_for_payment"}:
         return "deposit_push"
     if appointment and (is_short or _has_appointment_hint(content) or last_assistant_action == "asked_for_time_or_store"):
@@ -237,12 +290,210 @@ def _last_assistant_action(last_assistant: str, sent_summary: dict[str, Any]) ->
 
 
 def _deposit_state(state: dict[str, Any], *, sent_summary: dict[str, Any], last_assistant: str) -> str:
+    if _deposit_paid_signal(state):
+        return "deposit_paid"
     recent_text = _recent_text(state, limit=8)
     if sent_summary.get("payment_collection_sent") or any(term in recent_text for term in ("payment_collection", "预约金收款", "付款入口", "收款入口")):
         return "payment_link_sent"
     if any(term in f"{last_assistant}\n{recent_text}" for term in ("预约金", "到店抵扣", "不做退10", "锁活动名额", "锁名额")):
         return "deposit_explained"
     return "unknown"
+
+
+def _deposit_paid_signal(state: dict[str, Any]) -> bool:
+    for mapping in _deposit_signal_mappings(state):
+        for key, value in mapping.items():
+            key_text = str(key or "").lower()
+            value_text = str(value or "")
+            if key_text in {"deposit_paid", "payment_paid", "has_paid_deposit"} and _truthy_flag(value):
+                return True
+            if any(marker in key_text for marker in ("deposit", "payment", "预约金", "付款", "支付")):
+                if _negates_deposit_paid(value_text):
+                    continue
+                if any(term in value_text for term in DEPOSIT_PAID_TERMS):
+                    return True
+    recent_text = _recent_text(state, limit=20)
+    if _negates_deposit_paid(recent_text):
+        return False
+    return any(term in recent_text for term in DEPOSIT_HISTORY_PAID_TERMS) and "预约金" in recent_text
+
+
+def _deposit_signal_mappings(state: dict[str, Any]) -> list[dict[str, Any]]:
+    mappings: list[dict[str, Any]] = []
+    for key in ("customer_profile", "customer_basic_info", "customer_context", "appointment_cache", "request_context", "sent_message_summary"):
+        value = state.get(key)
+        if isinstance(value, dict):
+            mappings.append(value)
+    events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
+    for event in events[-20:]:
+        if not isinstance(event, dict):
+            continue
+        facts = event.get("facts")
+        if isinstance(facts, dict):
+            mappings.append(facts)
+    return mappings
+
+
+def _truthy_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "y", "paid", "已支付", "已付款", "支付成功"}
+
+
+def _negates_deposit_paid(text: str) -> bool:
+    return any(term in str(text or "") for term in DEPOSIT_UNPAID_TERMS)
+
+
+def _appointment_from_current_message(content: str) -> dict[str, Any]:
+    if not _has_current_time_reference(content):
+        return {}
+    return _appointment_from_mapping({"summary": content}, source="current_message")
+
+
+def _merge_appointments(primary: dict[str, Any], secondary: dict[str, Any]) -> dict[str, Any]:
+    if not primary:
+        return secondary
+    if not secondary:
+        return primary
+    return _drop_empty(
+        {
+            "date": primary.get("date") or secondary.get("date"),
+            "time": primary.get("time") or secondary.get("time"),
+            "store_id": primary.get("store_id") or secondary.get("store_id"),
+            "store_name": primary.get("store_name") or secondary.get("store_name"),
+            "source": primary.get("source") or secondary.get("source"),
+            "store_source": secondary.get("source") if secondary.get("store_id") or secondary.get("store_name") else "",
+        }
+    )
+
+
+def _has_current_time_reference(content: str) -> bool:
+    text = str(content or "")
+    if not text:
+        return False
+    if _extract_date(text) or _extract_time(text):
+        return True
+    return any(term in text for term in ("上午", "下午", "中午", "晚上", "周一", "周二", "周三", "周四", "周五", "周六", "周日", "周末"))
+
+
+def _is_current_turn_time_confirmation(content: str, appointment: dict[str, Any]) -> bool:
+    if not appointment:
+        return False
+    text = str(content or "")
+    if not text:
+        return False
+    if _extract_date(text) or _extract_time(text):
+        return True
+    return any(term in text for term in VISIT_CONFIRM_TERMS) and _has_current_time_reference(text)
+
+
+def _is_next_step_clarification(content: str) -> bool:
+    text = "".join(str(content or "").split())
+    return any(term in text for term in NEXT_STEP_TERMS)
+
+
+def _mentions_visit_or_detection(content: str) -> bool:
+    text = str(content or "")
+    return any(term in text for term in ("到店", "检测", "检查", "评估", "适合", "明天", "今天", "后天", "上午", "下午", "晚上"))
+
+
+def _is_short_followup_greeting(content: str) -> bool:
+    text = "".join(str(content or "").split())
+    return text in {"你好", "您好", "在吗", "有人吗", "还在吗", "hello", "hi"}
+
+
+def _missing_location_slots(state: dict[str, Any], *, store_anchor: dict[str, Any]) -> list[str]:
+    if isinstance(store_anchor, dict) and not store_anchor.get("ambiguous") and (store_anchor.get("store_name") or store_anchor.get("store_id")):
+        return []
+    has_city_or_region = _has_city_or_region_slot(state)
+    return ["store"] if has_city_or_region else ["city_or_region", "store"]
+
+
+def _has_city_or_region_slot(state: dict[str, Any]) -> bool:
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if any(word in content for word in ("市", "区", "县", "镇", "附近")) and len(content) <= 40:
+        return True
+    for mapping in _location_slot_mappings(state):
+        for key in LOCATION_KEYS:
+            if str(mapping.get(key) or "").strip():
+                return True
+    return False
+
+
+def _location_slot_mappings(state: dict[str, Any]) -> list[dict[str, Any]]:
+    mappings: list[dict[str, Any]] = []
+    for key in ("request_context", "customer_basic_info", "customer_context", "appointment_cache"):
+        value = state.get(key)
+        if isinstance(value, dict):
+            mappings.append(value)
+            for nested_key in ("appointment", "appointment_info", "appointment_info_v2"):
+                nested = value.get(nested_key)
+                if isinstance(nested, dict):
+                    mappings.append(nested)
+    return mappings
+
+
+def _resolved_slots(
+    state: dict[str, Any],
+    *,
+    appointment: dict[str, Any],
+    store_anchor: dict[str, Any],
+    deposit_state: str,
+    risk_hold: dict[str, Any],
+) -> dict[str, Any]:
+    slots: dict[str, Any] = {}
+    if isinstance(store_anchor, dict) and not store_anchor.get("ambiguous"):
+        if store_anchor.get("store_name") or store_anchor.get("store_id"):
+            slots["store"] = _store_for_context(store_anchor)
+    if appointment.get("date"):
+        slots["visit_date"] = appointment.get("date")
+    if appointment.get("time"):
+        slots["visit_time"] = appointment.get("time")
+    if _has_city_or_region_slot(state):
+        slots["city_or_region"] = True
+    if deposit_state == "deposit_paid":
+        slots["deposit"] = "paid"
+    elif deposit_state != "unknown":
+        slots["deposit"] = deposit_state
+    if is_hard_health_risk_hold(risk_hold):
+        slots["health_check"] = "required"
+    elif risk_hold:
+        slots["health_check"] = "advisory"
+    return _drop_empty(slots)
+
+
+def _blocked_actions(*, open_task: str, risk_hold: dict[str, Any], location_missing: list[str]) -> list[str]:
+    blocked: list[str] = []
+    if open_task == "post_deposit_store_assignment":
+        blocked.extend(["available_time", "payment_collection"])
+        if location_missing:
+            blocked.append("professional_assist_primary_reply")
+    if is_hard_health_risk_hold(risk_hold):
+        blocked.append("payment_collection")
+    return list(dict.fromkeys(blocked))
+
+
+def _recommended_next_action(*, open_task: str, location_missing: list[str], risk_hold: dict[str, Any]) -> str:
+    if open_task == "post_deposit_store_assignment":
+        return "ask_city_or_region" if "city_or_region" in location_missing else "ask_store_or_area"
+    if open_task == "post_deposit_next_step_clarification":
+        return "explain_next_step_after_deposit"
+    if open_task == "health_risk_followup":
+        return "confirm_detection_visit"
+    if is_hard_health_risk_hold(risk_hold):
+        return "health_check_first"
+    return ""
+
+
+def _visible_missing_slots(*, open_task: str, is_reference: bool, content: str, location_missing: list[str]) -> list[str]:
+    if not location_missing:
+        return []
+    if open_task in {"post_deposit_store_assignment", "post_deposit_next_step_clarification", "store_followup", "appointment_confirm"}:
+        return location_missing
+    if is_reference or _has_store_fact_request(content):
+        return location_missing
+    return []
 
 
 def _reply_anchor(
@@ -253,6 +504,8 @@ def _reply_anchor(
     deposit_state: str,
     last_assistant: str,
     binding_source: str,
+    location_missing: list[str],
+    risk_hold: dict[str, Any],
 ) -> str:
     store_name = str(store_anchor.get("store_name") or store_anchor.get("name") or "").strip() if isinstance(store_anchor, dict) else ""
     appointment_bits = []
@@ -262,6 +515,19 @@ def _reply_anchor(
         appointment_bits.append(str(appointment.get("time")))
     appointment_text = " ".join(appointment_bits)
     facts = "，".join(part for part in (store_name, appointment_text) if part)
+    if open_task == "post_deposit_store_assignment":
+        time_text = appointment_text or "客户刚确认的到店时间"
+        missing_text = "、".join(location_missing) if location_missing else "门店"
+        health_text = "；当前消息有健康/过敏风险，要同步说明到店先检测确认适配性" if is_hard_health_risk_hold(risk_hold) else ""
+        return (
+            f"客户已付预约金并确认{time_text}，但还缺{missing_text}；先承接已确认时间，"
+            f"补问城市/区域或门店，不要调用 available_time，不要重新收预约金{health_text}。"
+        )
+    if open_task == "health_risk_followup":
+        return "客户近期有健康/过敏风险，本轮在继续确认到店或检测；先承接当前问题，引导到店检测确认适配性，不要发送预约金或冷启动。"
+    if open_task == "post_deposit_next_step_clarification":
+        suffix = f"已确认{facts}，" if facts else ""
+        return f"客户已付预约金后在问下一步；{suffix}应说明接下来是匹配门店、到店检测和确认适配性，不要重新推预约金。"
     if open_task == "deposit_push":
         suffix = f"已确认{facts}，" if facts else ""
         if deposit_state == "payment_link_sent":
@@ -304,10 +570,58 @@ def _store_from_appointment_context(state: dict[str, Any]) -> dict[str, Any]:
         (_customer_context_mapping(state, "appointment_info_v2"), "appointment_context"),
         (_latest_appointment_fact(state), "fact_envelope"),
     ):
+        if source in {"appointment_cache", "appointment_context"} and _appointment_mapping_low_confidence(state, mapping):
+            continue
         store = _compact_store(mapping if isinstance(mapping, dict) else {}, source=source)
         if store:
             return store
     return {}
+
+
+def _appointment_mapping_low_confidence(state: dict[str, Any], mapping: Any) -> bool:
+    if not isinstance(mapping, dict):
+        return False
+    appointment_store = _compact_store(mapping, source="appointment_context")
+    if not appointment_store:
+        return False
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if _content_mentions_store(content, appointment_store):
+        return False
+    current_store = _store_from_text(content, state, source="current_message")
+    if _stores_conflict(appointment_store, current_store):
+        return True
+    recent_store = _store_from_recent_conversation(state)
+    if _stores_conflict(appointment_store, recent_store):
+        return True
+    profile_store = _store_from_profile(state)
+    if _stores_conflict(appointment_store, profile_store):
+        return True
+    return False
+
+
+def _content_mentions_store(content: str, store: dict[str, Any]) -> bool:
+    text = str(content or "")
+    store_name = str(store.get("store_name") or "").strip()
+    store_id = str(store.get("store_id") or "").strip()
+    if store_name and store_name in text:
+        return True
+    return bool(store_id and store_id in text)
+
+
+def _stores_conflict(primary: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    if not isinstance(candidate, dict) or not candidate:
+        return False
+    if candidate.get("ambiguous"):
+        matched = {str(name or "").strip() for name in candidate.get("matched_store_names") or []}
+        primary_name = str(primary.get("store_name") or "").strip()
+        return bool(matched and primary_name and primary_name not in matched)
+    primary_id = str(primary.get("store_id") or "").strip()
+    candidate_id = str(candidate.get("store_id") or "").strip()
+    if primary_id and candidate_id and primary_id != candidate_id:
+        return True
+    primary_name = str(primary.get("store_name") or "").strip()
+    candidate_name = str(candidate.get("store_name") or "").strip()
+    return bool(primary_name and candidate_name and primary_name != candidate_name)
 
 
 def _store_from_history_events(state: dict[str, Any]) -> dict[str, Any]:
@@ -370,6 +684,12 @@ def _store_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     stores = [store for store in knowledge.get("stores", []) if isinstance(store, dict)] if isinstance(knowledge.get("stores"), list) else []
     seen = {_store_name(store) for store in stores if _store_name(store)}
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    for key in ("confirmed_store_name", "preferred_store_name"):
+        name = str(basic.get(key) or "").strip()
+        if name and name not in seen:
+            stores.append({"store_name": name, "store_id": basic.get("confirmed_store_id") or basic.get("preferred_store_id")})
+            seen.add(name)
     for name in KNOWN_STORE_NAMES:
         if name and name not in seen:
             stores.append({"store_name": name})

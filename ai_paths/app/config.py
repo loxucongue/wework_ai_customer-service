@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     app_name: str = "AI Paths"
     ai_paths_api_key: str = Field(default="", repr=False)
     ai_external_api_key: str = Field(default="", repr=False)
+    allow_missing_external_api_key: bool = False
     coze_api_base: str = "https://api.coze.cn"
     coze_oauth_client_id: str = Field(default="", repr=False)
     coze_oauth_public_key_id: str = Field(default="", repr=False)

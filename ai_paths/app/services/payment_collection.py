@@ -75,6 +75,10 @@ def payment_participants_from_text(text: str) -> tuple[int, bool]:
         participants = companion_count + 1
         return participants, participants > PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS
 
+    explicit_participants = _participants_from_explicit_total_or_group(compact)
+    if explicit_participants is not None:
+        return explicit_participants, explicit_participants > PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS
+
     group_count = _group_count(compact)
     if group_count is not None:
         return group_count, group_count > PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS
@@ -125,12 +129,16 @@ def has_forbidden_deposit_refund_policy_text(text: str) -> bool:
 
 def payment_amount_matches_text(messages: list[dict[str, Any]]) -> bool:
     amount = _first_payment_amount(messages)
-    if amount <= PAYMENT_COLLECTION_UNIT_AMOUNT:
-        return True
     text = _messages_text(messages)
     compact = "".join(text.split())
     if not compact:
         return True
+    participants, over_limit = payment_participants_from_text(compact)
+    expected_amount = participants * PAYMENT_COLLECTION_UNIT_AMOUNT
+    if not over_limit and participants > 1 and amount != expected_amount:
+        return False
+    if amount <= PAYMENT_COLLECTION_UNIT_AMOUNT:
+        return not _mentions_larger_payment_total(compact)
     if _mentions_conflicting_total_amount(compact, amount):
         return False
     if _mentions_total_amount(compact, amount):
@@ -194,10 +202,10 @@ def _first_payment_amount(messages: list[dict[str, Any]]) -> int:
 
 def _companion_count(compact: str) -> int | None:
     companion_terms = r"(朋友|家人|闺蜜|姐妹|对象|老公|老婆|妈妈|爸爸|母亲|父亲)"
-    match = re.search(rf"带([一二两俩三四五六七八九\d]+)个?{companion_terms}", compact)
+    match = re.search(rf"带([一二两俩三四五六七八九\d]+)(个|位)?{companion_terms}", compact)
     if match:
         return _number_value(match.group(1))
-    match = re.search(rf"和([一二两俩三四五六七八九\d]+)个?{companion_terms}一起", compact)
+    match = re.search(rf"和([一二两俩三四五六七八九\d]+)(个|位)?{companion_terms}一起", compact)
     if match:
         return _number_value(match.group(1))
     return None
@@ -233,6 +241,25 @@ def _has_simple_companion_signal(compact: str) -> bool:
             "姐妹一起",
         )
     )
+
+
+def _participants_from_explicit_total_or_group(compact: str) -> int | None:
+    if any(term in compact for term in ("双人", "两位", "2位", "二位", "两人", "2人", "二人")):
+        return 2
+    if any(term in compact for term in ("三位", "3位", "三人", "3人")):
+        return 3
+    if any(term in compact for term in ("四位", "4位", "四人", "4人")):
+        return 4
+    for pattern in (
+        r"(?:一共|共需|共|合计|总共|总计)(20|30|40)元(?:预约金|入口|付款|报名|收款)?",
+        r"(20|30|40)元(?:双人|两位|2位|三位|3位|四位|4位|预约金|预约金入口|付款入口|报名入口|收款入口)",
+        r"(?:payment_collection|预约金收款)[:：]?(20|30|40)",
+        r"[\"']?amount[\"']?[:=](20|30|40)",
+    ):
+        match = re.search(pattern, compact, flags=re.IGNORECASE)
+        if match:
+            return int(match.group(1)) // PAYMENT_COLLECTION_UNIT_AMOUNT
+    return None
 
 
 def _has_single_person_signal(compact: str) -> bool:
@@ -278,6 +305,10 @@ def _mentions_conflicting_total_amount(compact: str, expected_amount: int) -> bo
                 continue
             return True
     return False
+
+
+def _mentions_larger_payment_total(compact: str) -> bool:
+    return _participants_from_explicit_total_or_group(compact) not in (None, 1)
 
 
 def _mentions_deposit_refund_context(text: str) -> bool:

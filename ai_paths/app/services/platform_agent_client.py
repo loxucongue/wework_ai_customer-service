@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime
 from threading import Lock
+import time
 from typing import Any
 from urllib.parse import urljoin
 
 import httpx
 
 from app.config import Settings
+
+
+_REQUEST_RETRY_ATTEMPTS = 3
+_REQUEST_RETRY_BACKOFF_SECONDS = 0.4
+_RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 
 class PlatformAgentClient:
@@ -315,45 +321,56 @@ class PlatformAgentClient:
         if not self.available:
             raise RuntimeError("Platform agent token is not configured")
         clean_params = {key: value for key, value in params.items() if value not in (None, "")}
-        response = self._http_client().get(urljoin(self._base_url, path.lstrip("/")), params=clean_params, headers=self._headers())
-        response.raise_for_status()
-        payload = response.json()
-        code = payload.get("code")
-        if code not in (0, 200, "0", "200", None):
-            raise RuntimeError(
-                str(
-                    {
-                        "method": "GET",
-                        "path": path,
-                        "params": clean_params,
-                        "code": code,
-                        "msg": payload.get("msg") or f"Platform agent error: {code}",
-                    }
-                )
-            )
-        return payload.get("data", {})
+        return self._request_json("GET", path, params=clean_params)
 
     def _post(self, path: str, payload: dict[str, Any]) -> Any:
         if not self.available:
             raise RuntimeError("Platform agent token is not configured")
         clean_payload = {key: value for key, value in payload.items() if value not in (None, "")}
-        response = self._http_client().post(urljoin(self._base_url, path.lstrip("/")), json=clean_payload, headers=self._headers())
-        response.raise_for_status()
-        payload = response.json()
-        code = payload.get("code")
-        if code not in (0, 200, "0", "200", None):
-            raise RuntimeError(
-                str(
-                    {
-                        "method": "POST",
-                        "path": path,
-                        "payload": clean_payload,
-                        "code": code,
-                        "msg": payload.get("msg") or f"Platform agent error: {code}",
-                    }
-                )
-            )
-        return payload.get("data", {})
+        return self._request_json("POST", path, json=clean_payload)
+
+    def _request_json(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> Any:
+        url = urljoin(self._base_url, path.lstrip("/"))
+        client = self._http_client()
+        last_exc: Exception | None = None
+        for attempt in range(_REQUEST_RETRY_ATTEMPTS):
+            try:
+                response = client.request(method, url, params=params, json=json, headers=self._headers())
+                response.raise_for_status()
+                payload = response.json()
+                code = payload.get("code")
+                if code not in (0, 200, "0", "200", None):
+                    raise RuntimeError(
+                        str(
+                            {
+                                "method": method,
+                                "path": path,
+                                "params": params or {},
+                                "payload": json or {},
+                                "code": code,
+                                "msg": payload.get("msg") or f"Platform agent error: {code}",
+                            }
+                        )
+                    )
+                return payload.get("data", {})
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
+                last_exc = exc
+            except httpx.HTTPStatusError as exc:
+                last_exc = exc
+                if exc.response.status_code not in _RETRYABLE_STATUS_CODES:
+                    raise
+            if attempt < (_REQUEST_RETRY_ATTEMPTS - 1):
+                time.sleep(_REQUEST_RETRY_BACKOFF_SECONDS * (attempt + 1))
+        if last_exc:
+            raise last_exc
+        raise RuntimeError(f"Platform agent {method} request failed without response")
 
     def _headers(self) -> dict[str, str]:
         return {

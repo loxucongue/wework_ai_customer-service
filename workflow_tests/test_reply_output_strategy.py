@@ -5,7 +5,9 @@ import asyncio
 import pytest
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
+from app.graph.nodes.action_nodes import _snapshot_stores_for_exact_query
 from app.graph.nodes.contextual_short_message import short_message_context_for_model
+from app.graph.nodes.conversation_history_fetch import platform_messages_to_history
 from app.graph.nodes.current_turn_context import build_current_turn_context
 from app.graph.nodes.layer_nodes import create_background_context_layer
 from app.graph.nodes.reply_context import reply_user_payload_for_model
@@ -112,6 +114,100 @@ def test_current_turn_context_marks_ambiguous_recent_stores() -> None:
     assert set(context["current_store_anchor"]["matched_store_names"]) == {"广州白云三店", "广州天河店"}
 
 
+def test_platform_history_sorts_by_timestamp_before_taking_latest() -> None:
+    history = platform_messages_to_history(
+        [
+            {"direction": "customer", "content": "message-3", "created_at": "2026-07-06T10:00:03+08:00"},
+            {"direction": "staff", "content": "message-1", "created_at": "2026-07-06T10:00:01+08:00"},
+            {"direction": "customer", "content": "message-2", "created_at": "2026-07-06T10:00:02+08:00"},
+        ],
+        limit=2,
+    )
+
+    assert history == ["用户: message-2", "用户: message-3"]
+
+
+def test_platform_history_preserves_order_when_timestamp_missing() -> None:
+    history = platform_messages_to_history(
+        [
+            {"direction": "customer", "content": "message-1"},
+            {"direction": "staff", "content": "message-2"},
+            {"direction": "customer", "content": "message-3"},
+        ],
+        limit=2,
+    )
+
+    assert history == ["小贝: message-2", "用户: message-3"]
+
+
+def test_current_turn_context_post_deposit_time_confirmation_missing_store() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "明天就可以",
+            "conversation_history": [
+                "用户: 我已经付款了，预约金已付",
+                "小贝: 好的，您明天还是后天方便到店检测？",
+            ],
+            "customer_profile": {"deposit_state": "已支付"},
+        }
+    )
+
+    assert context["open_task"] == "post_deposit_store_assignment"
+    assert context["deposit_state"] == "deposit_paid"
+    assert context["confirmed_appointment"]["date"] == "明天"
+    assert context["missing_slots"] == ["city_or_region", "store"]
+    assert "available_time" in context["blocked_actions"]
+    assert "payment_collection" in context["blocked_actions"]
+    assert context["recommended_next_action"] == "ask_city_or_region"
+
+
+def test_current_turn_context_does_not_treat_unpaid_history_as_paid_deposit() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "明天就可以",
+            "conversation_history": [
+                "用户: 我还没付预约金，刚才支付失败了",
+                "小贝: 那您明天还是后天方便到店检测？",
+            ],
+        }
+    )
+
+    assert context.get("deposit_state") != "deposit_paid"
+    assert context["open_task"] != "post_deposit_store_assignment"
+
+
+def test_current_turn_context_history_health_risk_is_advisory_for_short_message() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "你好",
+            "conversation_history": [
+                "用户: 我有心脏病和高血压，这个能做吗",
+                "小贝: 您有心脏病和高血压，这个要到店先做检测，让门店专业人员看下适不适合再安排。",
+                '小贝: human_handoff_notice {"handoff_reason":"健康高风险"}',
+            ],
+        }
+    )
+
+    assert context["open_task"] == "none"
+    assert context["resolved_slots"]["health_check"] == "advisory"
+    assert "payment_collection" not in context.get("blocked_actions", [])
+    assert context.get("recommended_next_action") != "confirm_detection_visit"
+
+
+def test_current_turn_context_current_health_risk_still_hard_blocks_payment() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "我有心脏病和高血压，明天下午可以到店检测吗",
+            "conversation_history": ["小贝: 您明天上午还是下午方便？"],
+        }
+    )
+
+    assert context["open_task"] == "health_risk_followup"
+    assert context["resolved_slots"]["health_check"] == "required"
+    assert "payment_collection" in context["blocked_actions"]
+    assert context["recommended_next_action"] == "confirm_detection_visit"
+
+
 def test_planner_payload_keeps_context_for_low_information_message() -> None:
     payload = _planner_payload_for_model(
         {
@@ -124,13 +220,65 @@ def test_planner_payload_keeps_context_for_low_information_message() -> None:
         }
     )
 
-    assert payload["conversation_history"] == [f"history-{index}" for index in range(5, 35)]
+    assert payload["conversation_history"] == [f"history-{index}" for index in range(15, 35)]
     assert payload["customer_profile"]["decision_stage"] == "预约推进"
     assert payload["history_events"]
     assert payload["customer_context"]["appointment_info"]["store_name"] == "广州白云三店"
     assert payload["current_turn_context"]["open_task"] == "deposit_push"
     assert payload["current_turn_context"]["binding_source"] == "open_task"
     assert payload["current_turn_context"]["confirmed_store"]["store_name"] == "广州白云三店"
+
+
+def test_planner_payload_does_not_send_long_sales_strategy_to_planner() -> None:
+    payload = _planner_payload_for_model(
+        {
+            "normalized_content": "明天可以",
+            "conversation_history": [],
+            "customer_profile": {
+                "decision_stage": "预约推进",
+                "deposit_state": "已支付",
+                "main_objection": "担心效果",
+                "next_sales_strategy": "很长的销售策略不应该进 planner",
+            },
+        }
+    )
+
+    assert payload["customer_profile"]["decision_stage"] == "预约推进"
+    assert payload["customer_profile"]["deposit_state"] == "已支付"
+    assert "next_sales_strategy" not in payload["customer_profile"]
+
+
+def test_planner_guard_post_deposit_time_confirmation_asks_location_before_schedule() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "明天就可以",
+            "conversation_history": [
+                "用户: 我已经付款了，预约金已付",
+                "小贝: 好的，您明天还是后天方便到店检测？",
+            ],
+            "customer_profile": {"deposit_state": "已支付"},
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S3",
+            "sub_rule_id": "S3_APPOINTMENT_TIME",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "confirm_time",
+            "reply_messages": [{"type": "text", "content": {"text": "我帮您查一下明天档期"}}],
+            "tool_calls": [{"name": "available_time", "store_id": "", "date": "2026-07-07"}],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "post_deposit_store_assignment_missing_location"}]
+    assert not plan["planner_tool_calls"]
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    text = " ".join(item["content"]["text"] for item in plan["planner_reply_messages"] if item["type"] == "text")
+    assert "明天" in text
+    assert "城市或区域" in text
+    assert not any(item.get("subtype") == "available_time" for item in plan["tool_policy_violations"])
 
 
 def test_need_tools_transition_is_standardized() -> None:
@@ -276,6 +424,57 @@ def test_payment_collection_amount_follows_participant_count(content: str, expec
     assert payment["content"]["amount"] == expected_amount
 
 
+def test_payment_collection_amount_inherits_recent_twenty_yuan_context() -> None:
+    state = {
+        "normalized_content": _u(r"\u4eba\u5462"),
+        "conversation_history": [
+            _u(r"\u5c0f\u8d1d: 2\u4f4d\u4e00\u517120\u5143\u9884\u7ea6\u91d1\u5165\u53e3\u5df2\u53d1"),
+            "小贝: payment_collection amount=20",
+        ],
+        "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 20}}],
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "price",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "content": {
+                        "text": _u(r"\u5728\u7684\uff0c\u6211\u521a\u521a\u7ed9\u60a8\u53d1\u7684\u662f20\u5143\u53cc\u4eba\u9884\u7ea6\u91d1\u5165\u53e3")
+                    },
+                },
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    payment = [item for item in plan["planner_reply_messages"] if item["type"] == "payment_collection"][0]
+    assert payment["content"]["amount"] == 20
+
+
+def test_reply_validation_rejects_text_twenty_yuan_with_ten_yuan_card() -> None:
+    with pytest.raises(ValueError, match="payment_collection_amount_text_mismatch"):
+        validate_reply_consistency(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": _u(r"\u6211\u5e2e\u60a8\u53d120\u5143\u53cc\u4eba\u9884\u7ea6\u5165\u53e3")},
+                },
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            {"normalized_content": _u(r"\u4eba\u5462")},
+        )
+
+
 def test_payment_collection_over_four_people_requires_confirmation() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "带四个朋友一起过去", "content": "带四个朋友一起过去"},
@@ -338,6 +537,135 @@ def test_appointment_question_can_use_appointment_store() -> None:
     )
     assert known["store_id"] == "458"
     assert known["source"] == "appointment_context"
+
+
+def test_store_lookup_exact_snapshot_name_is_allowed_without_extra_city() -> None:
+    stores = _snapshot_stores_for_exact_query(_u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"))
+
+    assert stores
+    assert str(stores[0].get("store_id") or stores[0].get("id") or "") == "562"
+    city_suffix_stores = _snapshot_stores_for_exact_query(_u(r"\u5e7f\u5dde\u5e02\u767d\u4e91\u4e09\u5e97"))
+    assert city_suffix_stores
+    assert str(city_suffix_stores[0].get("store_id") or city_suffix_stores[0].get("id") or "") == "562"
+
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
+            "conversation_history": [_u(r"\u5c0f\u8d1d: \u7ed9\u60a8\u63a8\u8350\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")],
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_ADDRESS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u7a0d\u7b49\u4e00\u4e0b\u54c8")}}],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "detail",
+                    "query": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"),
+                }
+            ],
+        },
+    )
+
+    assert not any(
+        item.get("missing") == "location_query_missing_city_or_region" for item in plan["tool_policy_violations"]
+    )
+
+
+def test_store_detail_reference_uses_recent_snapshot_store_name() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
+            "conversation_history": [
+                _u(r"\u5c0f\u8d1d: \u5e7f\u5dde\u767d\u4e91\u4e09\u5e97\u660e\u5929\u4e0a\u534811\u70b9\u53ef\u4ee5\u7ea6"),
+                *[f"history filler {index}" for index in range(10)],
+            ],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "accompany",
+            "main_blocker": "logistics",
+            "next_step": "send_deposit",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u6211\u53d1\u60a8\u5730\u5740")}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"][0]["query"] == _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")
+    assert not any(item.get("missing") == "payment_collection_required" for item in plan["tool_policy_violations"])
+    assert not any(
+        item.get("missing") == "location_query_missing_city_or_region" for item in plan["tool_policy_violations"]
+    )
+
+
+def test_store_detail_reference_rewrites_region_query_to_recent_store_anchor() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
+            "conversation_history": [
+                _u(r"\u5c0f\u8d1d: \u5e7f\u5dde\u767d\u4e91\u4e09\u5e97\u660e\u5929\u4e0a\u534811\u70b9\u53ef\u4ee5\u7ea6"),
+                *[f"history filler {index}" for index in range(10)],
+            ],
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_ADDRESS_PARKING_HOURS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u7a0d\u7b49\u4e00\u4e0b\u54c8")}}],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "detail",
+                    "query": _u(r"\u5e7f\u5dde\u5e02\u767d\u4e91\u533a"),
+                }
+            ],
+        },
+    )
+
+    assert plan["planner_tool_calls"][0]["query"] == _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")
+
+
+def test_generic_store_question_still_rejects_history_store_query() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
+            "conversation_history": [_u(r"\u5c0f\u8d1d: \u7ed9\u60a8\u63a8\u8350\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")],
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u7a0d\u7b49\u4e00\u4e0b\u54c8")}}],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "detail",
+                    "query": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"),
+                }
+            ],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "store_lookup_query_over_anchors_history" for item in plan["tool_policy_violations"]
+    )
 
 
 def test_current_preferred_store_overrides_old_appointment_store() -> None:
@@ -734,6 +1062,149 @@ def test_planner_normalizes_old_handoff_to_notice() -> None:
     )
 
     assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "human_handoff_notice"]
+
+
+def test_merged_health_risk_overrides_store_lookup_task() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
+            "request_context": {
+                "merged_customer_messages": [
+                    _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
+                    _u(r"\u6211\u6709\u8fc7\u654f\u4f53\u8d28\uff0c\u4e4b\u524d\u505a\u533b\u7f8e\u8138\u80bf\u8fc7\uff0c\u8fd9\u4e2a\u80fd\u505a\u5417"),
+                ]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_ADDRESS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u7a0d\u7b49\u4e00\u4e0b\u54c8")}}],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "detail",
+                    "query": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"),
+                }
+            ],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "professional_assist", "reason": _u(r"\u5065\u5eb7\u9ad8\u98ce\u9669\uff1a\u9700\u5230\u5e97\u68c0\u6d4b\u540e\u786e\u8ba4\u9002\u914d\u6027")}
+    ]
+    assert plan["handoff"]["needed"] is True
+    assert plan["reply_strategy"]["risk_hold"]["risk_hold"] == "health_check_required"
+
+
+def test_history_health_context_does_not_hijack_current_time_change() -> None:
+    state = {
+        "normalized_content": _u(
+            r"\u6f58\u6c5f\u9f99\uff1a\u660e\u5929\u53ef\u4ee5\uff0c\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97\u6700\u65e9\u80fd\u7ea609:00\uff0c\u60a8\u770b\u8fd9\u4e2a\u65f6\u95f4\u65b9\u4fbf\u5417\uff1f\n"
+            r"\u6211\u8981\u4e0b\u5348\u624d\u80fd\u8fc7\u53bb\u4e86"
+        ),
+        "conversation_history": [
+            _u(r"\u7528\u6237: \u6211\u6709\u5fc3\u810f\u75c5\uff0c\u8fd9\u4e2a\u80fd\u505a\u5417"),
+            _u(r"\u5c0f\u8d1d: \u8fd9\u4e2a\u8981\u5230\u5e97\u5148\u505a\u68c0\u6d4b\uff0c\u786e\u8ba4\u9002\u5408\u518d\u5b89\u6392\u64cd\u4f5c\u3002"),
+            '小贝: human_handoff_notice {"handoff_reason":"健康高风险"}',
+        ],
+        "customer_profile": {
+            "customer_type_tags": [_u(r"\u5065\u5eb7\u98ce\u9669\u578b"), _u(r"\u65f6\u95f4\u578b")],
+            "main_objection": _u(r"\u5fc3\u810f\u75c5\u662f\u5426\u9002\u5408\u64cd\u4f5c"),
+        },
+        "customer_basic_info": {
+            "preferred_store_name": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
+            "intent_date": "2026-07-07",
+            "intent_time": "09:00",
+        },
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "need_tools",
+            "stage": "S4",
+            "sub_rule_id": "S4_COMPLAINT_REFUND",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "risk",
+            "main_blocker": "risk",
+            "next_step": "solve_blocker",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u7a0d\u7b49\u4e00\u4e0b\u54c8")}}],
+            "tool_calls": [
+                {
+                    "name": "professional_assist",
+                    "reason": _u(r"\u5065\u5eb7\u98ce\u9669\u8bc4\u4f30\u672a\u5173\u95ed\uff0c\u9700\u4e13\u4e1a\u534f\u52a9"),
+                }
+            ],
+            "handoff": {"needed": True, "reason": _u(r"\u5065\u5eb7\u98ce\u9669\u8bc4\u4f30\u672a\u5173\u95ed")},
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "advisory_health_history_demoted_from_professional_assist"}]
+    assert plan["planner_tool_calls"] == []
+    assert plan["handoff"]["needed"] is False
+    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
+    text = plan["planner_reply_messages"][0]["content"]["text"]
+    assert _u(r"\u4e0b\u5348") in text
+    assert _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97") in text
+    assert _u(r"\u68c0\u6d4b") in text
+    assert _u(r"\u7a0d\u7b49") not in text
+
+
+def test_history_health_context_does_not_block_payment_collection_after_notice() -> None:
+    state = {
+        "normalized_content": _u(r"\u90a3\u6211\u5148\u5230\u5e97\u68c0\u6d4b\uff0c\u660e\u5929\u4e0b\u5348\u53ef\u4ee5\u5417"),
+        "conversation_history": [
+            _u(r"\u5c0f\u8d1d: \u60a8\u6709\u8fc7\u654f\u4f53\u8d28\uff0c\u8fd9\u4e2a\u8981\u5230\u5e97\u5148\u505a\u68c0\u6d4b\uff0c\u8ba9\u95e8\u5e97\u4e13\u4e1a\u4eba\u5458\u770b\u4e0b\u9002\u4e0d\u9002\u5408\u518d\u5b89\u6392\u3002"),
+            '小贝: human_handoff_notice {"handoff_reason":"health"}',
+        ],
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "time",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "reply_messages": [
+                {"type": "text", "content": {"text": _u(r"\u53ef\u4ee5\uff0c\u660e\u5929\u4e0b\u5348\u5148\u5230\u5e97\u68c0\u6d4b")}},
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["conversion_stage"] == "deposit_push"
+    assert plan["next_step"] == "send_deposit"
+    assert any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
+
+    validate_reply_consistency(
+        plan["planner_reply_messages"],
+        {**state, "conversion_stage": "deposit_push", "next_step": "send_deposit"},
+    )
+
+
+def test_current_health_risk_hold_blocks_payment_collection() -> None:
+    state = {
+        "normalized_content": _u(r"\u6211\u6709\u8fc7\u654f\u4f53\u8d28\uff0c\u660e\u5929\u4e0b\u5348\u53ef\u4ee5\u5417"),
+        "conversation_history": [],
+    }
+    with pytest.raises(ValueError, match="payment_collection_blocked_by_health_risk_hold"):
+        validate_reply_consistency(
+            [
+                {"type": "text", "order": 1, "content": {"text": _u(r"\u53ef\u4ee5\uff0c\u7ebf\u4e0a10\u5143\u9884\u7ea6\u91d1\u9501\u540d\u989d\u3002")}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            state,
+        )
 
 
 def test_reply_validation_allows_payment_collection_after_previous_send() -> None:
@@ -1329,7 +1800,7 @@ def test_profile_conversation_history_falls_back_when_fetch_params_missing() -> 
     assert meta["reason"] == "missing_required_fields"
 
 
-def test_background_context_replaces_request_history_with_platform_30_messages() -> None:
+def test_background_context_replaces_request_history_with_platform_20_messages() -> None:
     calls: list[dict[str, object]] = []
 
     async def fetcher(**kwargs: object) -> dict[str, object]:
@@ -1365,13 +1836,13 @@ def test_background_context_replaces_request_history_with_platform_30_messages()
         )
     )
 
-    assert calls[0]["limit"] == 30
+    assert calls[0]["limit"] == 20
     assert calls[0]["customer_id"] == "external"
-    assert len(output["conversation_history"]) == 30
-    assert output["conversation_history"][0] == "用户: message-5"
-    assert output["conversation_history"][1] == "小贝: message-6"
+    assert len(output["conversation_history"]) == 20
+    assert output["conversation_history"][0] == "用户: message-15"
+    assert output["conversation_history"][1] == "小贝: message-16"
     assert output["conversation_fetch"]["status"] == "ok"
-    assert output["conversation_fetch"]["used_message_count"] == 30
+    assert output["conversation_fetch"]["used_message_count"] == 20
 
 
 def test_background_context_keeps_request_history_when_platform_fetch_fails() -> None:

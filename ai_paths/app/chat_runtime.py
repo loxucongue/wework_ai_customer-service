@@ -8,8 +8,6 @@ from contextlib import suppress
 from typing import Any
 from uuid import uuid4
 
-from fastapi import HTTPException, status
-
 from app.chat_request_context import build_request_context, conversation_id_from_request, conversation_title
 from app.chat_runtime_helpers import failed_state_from_exception, safe_repository_call
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
@@ -61,7 +59,7 @@ class ChatRuntime:
         try:
             final_state: AgentState = await self._full_graph.ainvoke(initial_state)
         except Exception as exc:
-            self._handle_graph_exception(initial_state, conversation_id, exc)
+            final_state = self._handle_graph_exception(initial_state, exc)
 
         return self._persist_and_build_response(
             request=request,
@@ -147,7 +145,7 @@ class ChatRuntime:
         except Exception as exc:
             if self._platform_reply_coordinator:
                 await self._platform_reply_coordinator.complete(control_record)
-            self._handle_graph_exception(initial_state, conversation_id, exc)
+            planner_state = self._handle_graph_exception(initial_state, exc)
         _preserve_reply_control(planner_state, initial_state)
         if control_record and self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
             planner_state = self._superseded_state(initial_state, control_record)
@@ -565,19 +563,11 @@ class ChatRuntime:
             "errors": [],
         }
 
-    def _handle_graph_exception(self, initial_state: AgentState, conversation_id: str, exc: Exception) -> None:
+    def _handle_graph_exception(self, initial_state: AgentState, exc: Exception) -> AgentState:
         failed_state = failed_state_from_exception(initial_state, exc)
-        self._trace_logger.write_run(failed_state)
-        safe_repository_call(
-            self._repository.save_run,
-            conversation_id=conversation_id,
-            final_state=failed_state,
-            token_usage=collect_model_usage(failed_state.get("trace", []))["summary"],
-        )
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="AI customer service run failed before producing a reply.",
-        ) from exc
+        failed_state["reply_messages"] = _deterministic_final_fallback_messages(failed_state)
+        failed_state["reply_source"] = "deterministic_runtime_exception_fallback"
+        return failed_state
 
     def _persist_and_build_response(
         self,
@@ -599,17 +589,9 @@ class ChatRuntime:
                     "error": "Final reply model failed or produced no customer-facing reply.",
                 }
             )
-            self._trace_logger.write_run(final_state)
-            safe_repository_call(
-                self._repository.save_run,
-                conversation_id=conversation_id,
-                final_state=final_state,
-                token_usage=model_usage["summary"],
-            )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Final reply model failed or produced no customer-facing reply.",
-            )
+            raw_reply_messages = _deterministic_final_fallback_messages(final_state)
+            final_state["reply_messages"] = raw_reply_messages
+            final_state["reply_source"] = "deterministic_empty_reply_fallback"
         reply_messages = [ReplyMessage(**message) for message in raw_reply_messages]
         if reply_messages and not bool(final_state.get("test_isolated")):
             safe_repository_call(
@@ -714,7 +696,7 @@ def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
     if decision == "need_tools":
         required_tools = state.get("required_tools") if isinstance(state.get("required_tools"), list) else []
         if any(str(item.get("name") or "") == "professional_assist" for item in required_tools if isinstance(item, dict)):
-            return []
+            return _professional_assist_sync_messages(state)
         return _random_transition_messages()
     if decision == "direct_reply":
         violations = state.get("tool_policy_violations") if isinstance(state.get("tool_policy_violations"), list) else []
@@ -743,6 +725,112 @@ def _random_transition_messages() -> list[dict[str, Any]]:
         return []
     text = random.choice(("稍等一下哈", "稍等哈", "我先帮您看一下"))
     return [{"type": "text", "order": 1, "content": {"text": text}}]
+
+
+def _professional_assist_sync_messages(state: AgentState) -> list[dict[str, Any]]:
+    reason = _professional_assist_reason(state)
+    text = _professional_assist_customer_text(state, reason)
+    return [
+        {"type": "text", "order": 1, "content": {"text": text}},
+        {"type": "human_handoff_notice", "order": 2, "content": {"handoff_reason": reason}},
+    ]
+
+
+def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
+    if _has_structured_professional_assist(state):
+        return [
+            *_professional_assist_sync_messages(state),
+        ]
+    text = "我在，刚刚这条已经收到。我先继续帮您核对，您可以把要确认的门店、时间或具体问题再补一句。"
+    return [{"type": "text", "order": 1, "content": {"text": text}}]
+
+
+def _has_structured_professional_assist(state: AgentState) -> bool:
+    handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
+    if handoff.get("needed"):
+        return True
+    reply_strategy = state.get("reply_strategy") if isinstance(state.get("reply_strategy"), dict) else {}
+    risk_hold = reply_strategy.get("risk_hold")
+    if isinstance(risk_hold, dict) and (
+        str(risk_hold.get("risk_hold") or "") == "health_check_required" or str(risk_hold.get("severity") or "") == "hard"
+    ):
+        return True
+    for key in ("required_tools", "planner_tool_calls"):
+        tools = state.get(key) if isinstance(state.get(key), list) else []
+        if any(isinstance(item, dict) and str(item.get("name") or "") == "professional_assist" for item in tools):
+            return True
+    structured = ((state.get("fact_envelope") or {}).get("structured_facts") or {}) if isinstance(state.get("fact_envelope"), dict) else {}
+    professional_assist = structured.get("professional_assist") if isinstance(structured, dict) else {}
+    return isinstance(professional_assist, dict) and professional_assist.get("status") == "requested"
+
+
+def _professional_assist_reason(state: AgentState) -> str:
+    candidates: list[str] = []
+    handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
+    candidates.append(str(handoff.get("reason") or ""))
+    for item in state.get("required_tools") or []:
+        if isinstance(item, dict) and str(item.get("name") or "") == "professional_assist":
+            candidates.append(str(item.get("reason") or item.get("purpose") or ""))
+    for item in state.get("planner_tool_calls") or []:
+        if isinstance(item, dict) and str(item.get("name") or "") == "professional_assist":
+            candidates.append(str(item.get("reason") or item.get("purpose") or ""))
+    for value in candidates:
+        reason = " ".join(value.split())
+        if reason:
+            return reason[:180]
+    return "高风险或人工诉求，需要内部关注"
+
+
+def _professional_assist_customer_text(state: AgentState, reason: str) -> str:
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    combined = f"{content} {reason}"
+    if _contains_any(
+        combined,
+        (
+            "心脏病",
+            "高血压",
+            "怀孕",
+            "孕",
+            "哺乳",
+            "未成年",
+            "过敏",
+            "病史",
+            "慢病",
+            "用药",
+            "处方",
+            "健康",
+        ),
+    ):
+        return "这个要到店先做检测，让门店专业人员看下皮肤和身体情况适不适合再安排。您什么时候方便到店？"
+    if _contains_any(combined, ("红肿", "刺痛", "疼", "痛", "流脓", "发烧", "严重不适", "不适", "烂脸")):
+        return "您先别继续刺激皮肤，也先别自行乱用产品。方便把做的门店、时间、项目和现在照片发我一下，我按实际情况记录核对。"
+    if _contains_any(
+        combined,
+        (
+            "退款",
+            "退钱",
+            "投诉",
+            "维权",
+            "报警",
+            "曝光",
+            "付款",
+            "支付",
+            "扣款",
+            "多收",
+            "订单",
+            "没效果",
+            "忽悠",
+            "被骗",
+        ),
+    ):
+        return "我先把情况核对清楚，您是在我们哪家门店做的或付款的？把门店、付款时间、金额和项目发我一下，我按实际记录核对。"
+    if _contains_any(combined, ("真人", "人工", "机器人", "换人")):
+        return "我在，您直接把现在要处理的问题发我，我先按实际情况给您核对清楚。"
+    return "我先把情况记录清楚，您补充一下门店、时间和具体问题，我按实际记录核对。"
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
 
 
 def _platform_reply_source(state: AgentState) -> str:
@@ -877,6 +965,9 @@ def _should_run_async_finalize(state: AgentState) -> bool:
     if str(state.get("planner_decision") or "").strip() != "need_tools":
         return False
     tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
+    tool_names = [str(tool.get("name") or "").strip() for tool in tools if isinstance(tool, dict)]
+    if tool_names and all(name == "professional_assist" for name in tool_names):
+        return False
     return any(isinstance(tool, dict) and str(tool.get("name") or "").strip() not in {"", "no_tool"} for tool in tools)
 
 

@@ -21,6 +21,7 @@ from app.graph.state import AgentState
 from app.policies.business_rules import planner_business_rules_prompt_section
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.model_client import ModelClient
+from app.services.risk_hold import HEALTH_RISK_TERMS, health_risk_hold
 
 def planner_v2_model_tier(state: AgentState) -> str:
     return "planner"
@@ -134,11 +135,12 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         current_known_store=current_known_store,
         sent_message_summary=sent_message_summary,
     )
+    risk_hold = {} if suppress_memory else health_risk_hold(state)
     payload = {
         "current_date": _current_date_iso(),
         "timezone": "Asia/Shanghai",
         "current_message": state.get("normalized_content") or "",
-        "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-30:],
+        "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-20:],
         "short_message_context": {} if suppress_memory else short_message_context_for_model(
             content=str(state.get("normalized_content") or state.get("content") or ""),
             conversation_history=state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else [],
@@ -146,11 +148,12 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         ),
         "image_info": _compact_image_info(state.get("image_info") or {}),
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
-        "customer_profile": {} if suppress_memory else state.get("customer_profile") or {},
+        "customer_profile": {} if suppress_memory else _compact_customer_profile_for_planner(state.get("customer_profile") or {}),
         "history_events": [] if suppress_memory else (state.get("history_events") or [])[-8:],
         "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
         "current_known_store": current_known_store,
         "current_turn_context": current_turn_context,
+        "risk_hold": risk_hold,
         "store_scope_summary": _store_scope_summary(state.get("customer_store_knowledge") or {}),
         "sent_message_summary": sent_message_summary,
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
@@ -160,6 +163,49 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
 
 def _current_date_iso() -> str:
     return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+
+def _compact_customer_profile_for_planner(profile: Any) -> dict[str, Any]:
+    if not isinstance(profile, dict):
+        return {}
+    allowed_keys = (
+        "decision_stage",
+        "conversion_stage",
+        "customer_stage",
+        "deposit_state",
+        "deposit_status",
+        "payment_status",
+        "intent_level",
+        "trust_level",
+        "main_objection",
+        "main_concern",
+        "risk_tags",
+        "customer_type_tags",
+        "tags",
+        "preferred_project",
+        "preferred_store",
+        "preferred_store_name",
+        "intent_date",
+        "intent_time",
+    )
+    compact: dict[str, Any] = {}
+    for key in allowed_keys:
+        value = profile.get(key)
+        if value not in (None, "", [], {}):
+            if key in {"main_objection", "main_concern"} and _mentions_health_risk(value):
+                continue
+            if key in {"risk_tags", "customer_type_tags", "tags"} and isinstance(value, list):
+                filtered = [item for item in value if not _mentions_health_risk(item)]
+                if filtered:
+                    compact[key] = filtered
+                continue
+            compact[key] = value
+    return compact
+
+
+def _mentions_health_risk(value: Any) -> bool:
+    text = str(value or "")
+    return any(term in text for term in HEALTH_RISK_TERMS) or "健康风险" in text
 
 
 def _current_known_store_for_planner(state: AgentState) -> dict[str, Any]:

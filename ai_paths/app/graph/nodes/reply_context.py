@@ -24,6 +24,7 @@ from app.policies.compliance_terms import (
     UNSUPPORTED_QUALIFICATION_CONTEXT_TERMS,
     UNSUPPORTED_SERVICE_COMMITMENT_CONTEXT_TERMS,
 )
+from app.services.risk_hold import health_risk_hold
 
 
 def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
@@ -44,6 +45,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         state,
         sent_message_summary=sent_message_summary,
     )
+    risk_hold = {} if suppress_profile_memory else health_risk_hold(state)
     reply_mode = str(sop_progress.get("recommended_reply_mode") or "normal_answer").strip() or "normal_answer"
     return {
         "content": state.get("normalized_content"),
@@ -73,6 +75,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "current_turn_context": current_turn_context,
+        "risk_hold": risk_hold,
         "store_scope_summary": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
         "sent_message_summary": sent_message_summary,
         "reply_mode": reply_mode,

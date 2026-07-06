@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Awaitable, Callable
 
 from app.graph.state import AgentState
@@ -92,7 +93,8 @@ def conversation_fetch_params(
 
 def platform_messages_to_history(messages: list[dict[str, Any]], *, limit: int) -> list[str]:
     output: list[str] = []
-    for item in messages[-limit:]:
+    ordered_messages = _ordered_platform_messages(messages)
+    for item in ordered_messages[-limit:]:
         if not isinstance(item, dict):
             continue
         text = message_text(item.get("content"))
@@ -102,6 +104,60 @@ def platform_messages_to_history(messages: list[dict[str, Any]], *, limit: int) 
             continue
         output.append(f"{message_role_label(item)}: {text[:220]}")
     return output
+
+
+def _ordered_platform_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    typed = [item for item in messages if isinstance(item, dict)]
+    if not typed:
+        return []
+    indexed: list[tuple[float, int, dict[str, Any]]] = []
+    for index, item in enumerate(typed):
+        timestamp = _message_timestamp(item)
+        if timestamp is None:
+            return typed
+        indexed.append((timestamp, index, item))
+    return [item for _, _, item in sorted(indexed, key=lambda part: (part[0], part[1]))]
+
+
+def _message_timestamp(item: dict[str, Any]) -> float | None:
+    for key in (
+        "created_at",
+        "create_time",
+        "created_time",
+        "timestamp",
+        "msgtime",
+        "msg_time",
+        "send_time",
+        "time",
+    ):
+        if key not in item:
+            continue
+        parsed = _parse_timestamp(item.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_timestamp(value: Any) -> float | None:
+    if isinstance(value, bool) or value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if number > 10_000_000_000:
+            number = number / 1000.0
+        return number
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        number = float(raw)
+        if number > 10_000_000_000:
+            number = number / 1000.0
+        return number
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def message_role_label(item: dict[str, Any]) -> str:
