@@ -1102,6 +1102,46 @@ def test_merged_health_risk_overrides_store_lookup_task() -> None:
     assert plan["reply_strategy"]["risk_hold"]["risk_hold"] == "health_check_required"
 
 
+def test_store_detail_tool_clears_deposit_stage_residue() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
+            "confirmed_store_name": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "risk",
+            "main_blocker": "risk",
+            "next_step": "send_deposit",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u7a0d\u7b49\u4e00\u4e0b\u54c8")}}],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "detail",
+                    "query": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
+                }
+            ],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_stage"] == "S2"
+    assert plan["planner_sub_rule_id"] == "S2_STORE_ADDRESS"
+    assert plan["conversion_stage"] == "store_match"
+    assert plan["next_step"] == "lookup_store"
+    assert plan["planner_tool_calls"] == [
+        {
+            "name": "customer_store_lookup",
+            "purpose": "detail",
+            "query": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
+        }
+    ]
+    assert not plan["tool_policy_violations"]
+
+
 def test_history_health_context_does_not_hijack_current_time_change() -> None:
     state = {
         "normalized_content": _u(

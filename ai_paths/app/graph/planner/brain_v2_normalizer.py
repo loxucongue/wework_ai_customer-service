@@ -139,6 +139,16 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         decision = "need_tools"
     if decision == "need_tools":
         planner_reply_messages = [_standard_transition_message()]
+    if _should_force_store_detail_stage(state, required_tools):
+        stage = "S2"
+        sub_rule_id = "S2_STORE_ADDRESS"
+        conversion_stage = "store_match"
+        customer_type = "distance"
+        main_blocker = "logistics"
+        next_step = "lookup_store"
+        if handoff_raw and isinstance(handoff_raw, dict) and _mentions_health_risk_text(str(handoff_raw.get("reason") or "")):
+            handoff_raw = {"needed": False, "reason": ""}
+        reply_constraints.append("当前消息是门店地址/导航/停车/位置详情查询，本轮只查门店事实；不要保留 deposit_push/send_deposit。")
     if is_hard_health_risk_hold(risk_hold) and not explicit_risk_reason:
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
         if conversion_stage == "deposit_push":
@@ -309,6 +319,16 @@ def _normalize_decision(value: Any) -> str:
 
 def _standard_transition_message() -> dict[str, Any]:
     return {"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}
+
+
+def _should_force_store_detail_stage(state: AgentState, required_tools: list[dict[str, Any]]) -> bool:
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if not _current_message_requests_store_detail(content):
+        return False
+    return any(
+        isinstance(tool, dict) and str(tool.get("name") or "") == "customer_store_lookup"
+        for tool in required_tools
+    )
 
 
 def _current_turn_context_guard(state: AgentState, *, risk_hold: dict[str, Any]) -> dict[str, Any]:
