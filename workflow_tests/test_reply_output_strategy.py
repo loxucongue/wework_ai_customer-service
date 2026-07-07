@@ -357,6 +357,26 @@ def test_effect_question_direct_reply_forces_case_studies_tool() -> None:
     assert plan["planner_reply_messages"] == [{"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}]
 
 
+def test_specific_spot_can_do_question_forces_case_studies_tool() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "雀斑能不能做"},
+        {
+            "decision": "direct_reply",
+            "stage": "S1",
+            "sub_rule_id": "S1_PROJECT_DIRECTION",
+            "conversion_stage": "interest_capture",
+            "customer_type": "unknown",
+            "main_blocker": "none",
+            "next_step": "ask_intent",
+            "reply_messages": [{"type": "text", "content": {"text": "雀斑可以做。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["required_tools"] == [{"name": "kb_search", "kb_name": "case_studies", "query": "雀斑淡斑效果"}]
+
+
 def test_deposit_push_without_payment_auto_appends_payment_collection() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "报名"},

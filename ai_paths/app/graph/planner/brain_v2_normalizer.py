@@ -409,12 +409,13 @@ def _is_effect_or_case_question(content: str) -> bool:
     text = str(content or "")
     if not text:
         return False
-    return any(
+    direct_effect = any(
         term in text
         for term in (
             "效果怎么样",
             "有没有效果",
             "有效果吗",
+            "没效果",
             "会不会没效果",
             "没效果怎么办",
             "一次有没有效果",
@@ -431,6 +432,9 @@ def _is_effect_or_case_question(content: str) -> bool:
             "案例",
         )
     )
+    concern_terms = ("斑", "黑色素", "色沉", "痘印")
+    can_do_terms = ("能不能做", "能做吗", "可以做吗", "可以改善吗", "能改善吗", "能不能改善")
+    return direct_effect or (any(term in text for term in concern_terms) and any(term in text for term in can_do_terms))
 
 
 def _case_search_query(content: str) -> str:
