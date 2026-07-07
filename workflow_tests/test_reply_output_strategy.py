@@ -85,6 +85,37 @@ def test_current_turn_context_binds_renne_to_deposit_push() -> None:
     assert "不要重新问城市或项目" in context["reply_anchor"]
 
 
+def test_contextual_short_open_task_recovers_planner_no_reply() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "人呢",
+            "content": "人呢",
+            "conversation_history": [
+                "用户: 我明天上午11点过去",
+                "小贝: 厦门思明店明天上午11点名额我先帮您预留，预约金入口也发您了。",
+                "小贝: payment_collection amount=10",
+            ],
+            "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 10}}],
+        },
+        {
+            "decision": "no_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_HESITATION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "unknown",
+            "main_blocker": "trust",
+            "next_step": "no_action",
+            "reply_messages": [],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_reply_messages"]
+    assert "在的" in plan["planner_reply_messages"][0]["content"]["text"]
+    assert plan["reply_strategy"]["current_turn_context_guard"] == "contextual_short_open_task_no_reply_recovered"
+
+
 def test_current_turn_context_allows_greeting_without_context() -> None:
     context = build_current_turn_context({"normalized_content": "人呢", "conversation_history": []})
 
@@ -1855,6 +1886,30 @@ def test_current_payment_entry_uses_three_person_amount() -> None:
 
     assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "payment_collection"]
     assert plan["planner_reply_messages"][1]["content"]["amount"] == 30
+
+
+def test_current_payment_entry_uses_twenty_yuan_for_two_person_total() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "我和朋友两个人想预约，发入口", "content": "我和朋友两个人想预约，发入口"},
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "high_intent",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "可以，10元预约金入口发您。"}},
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "payment_collection"]
+    assert plan["planner_reply_messages"][0]["content"]["text"].startswith("可以，2位一共20元预约金入口")
+    assert plan["planner_reply_messages"][1]["content"]["amount"] == 20
 
 
 def test_current_time_confirmation_missing_location_does_not_reuse_failed_distance_lookup() -> None:

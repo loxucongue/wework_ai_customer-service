@@ -278,6 +278,24 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             handoff_raw = turn_guard["handoff"]
         reply_constraints.extend(turn_guard.get("reply_constraints") or [])
         reply_strategy["current_turn_context_guard"] = turn_guard.get("guard_reason", "")
+    short_no_reply_guard = _contextual_short_no_reply_guard(
+        state=state,
+        decision=decision,
+        executable_tools=executable_tools,
+    )
+    if short_no_reply_guard:
+        decision = short_no_reply_guard["decision"]
+        stage = short_no_reply_guard["stage"]
+        sub_rule_id = short_no_reply_guard["sub_rule_id"]
+        conversion_stage = short_no_reply_guard["conversion_stage"]
+        customer_type = short_no_reply_guard["customer_type"]
+        main_blocker = short_no_reply_guard["main_blocker"]
+        next_step = short_no_reply_guard["next_step"]
+        planner_reply_messages = short_no_reply_guard["reply_messages"]
+        required_tools = short_no_reply_guard["required_tools"]
+        executable_tools = []
+        reply_constraints.extend(short_no_reply_guard.get("reply_constraints") or [])
+        reply_strategy["current_turn_context_guard"] = short_no_reply_guard.get("guard_reason", "")
     advisory_health_guard = _advisory_health_professional_assist_guard(
         state=state,
         risk_hold=risk_hold,
@@ -517,6 +535,46 @@ def _current_turn_context_guard(state: AgentState, *, risk_hold: dict[str, Any])
     if open_task == "appointment_confirm" and _turn_context_missing_location(turn_context):
         return _appointment_confirm_missing_location_guard(turn_context, risk_hold=risk_hold, state=state)
     return {}
+
+
+def _contextual_short_no_reply_guard(
+    *,
+    state: AgentState,
+    decision: str,
+    executable_tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if decision != "no_reply" or executable_tools:
+        return {}
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if not is_contextual_short_message(content):
+        return {}
+    turn_context = _turn_context_for_guard(state)
+    open_task = str(turn_context.get("open_task") or "").strip()
+    if not open_task or open_task == "none":
+        return {}
+    return _guard_plan(
+        stage="S4",
+        sub_rule_id="S4_CONTEXTUAL_SHORT_FOLLOWUP",
+        conversion_stage="deposit_push" if open_task == "deposit_push" else "time_confirm",
+        customer_type="high_intent",
+        main_blocker="none",
+        next_step="send_deposit" if open_task == "deposit_push" else "confirm_time",
+        messages=[_text_message(_contextual_short_no_reply_text(turn_context))],
+        handoff=False,
+        handoff_reason="",
+        guard_reason="contextual_short_open_task_no_reply_recovered",
+        constraints=["当前消息是短承接，但 current_turn_context 已有未完成任务；不能 no_reply 空回。"],
+    )
+
+
+def _contextual_short_no_reply_text(turn_context: dict[str, Any]) -> str:
+    anchor = str(turn_context.get("reply_anchor") or "").strip()
+    open_task = str(turn_context.get("open_task") or "").strip()
+    if open_task == "deposit_push" or "预约金" in anchor or "入口" in anchor:
+        return "在的，刚刚预约金入口和到店安排我这边接着，您按入口操作就可以；没收到我再发您。"
+    if "门店" in anchor or "地址" in anchor:
+        return "在的，刚刚这家门店我继续帮您核对，您把要确认的地址或时间发我就行。"
+    return "在的，刚刚这条我接着处理，您继续把要确认的门店、时间或入口发我就行。"
 
 
 def _advisory_health_professional_assist_guard(
