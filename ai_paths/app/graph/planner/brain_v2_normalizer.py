@@ -28,6 +28,7 @@ from app.services.risk_hold import HEALTH_RISK_TERMS, explicit_professional_assi
 
 
 _STORE_SNAPSHOT_NAME_CACHE: list[str] | None = None
+_STORE_SNAPSHOT_REGION_TOKEN_CACHE: set[str] | None = None
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +75,18 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = _dedupe_tools(planner_tool_calls)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
+    scoped_store_lookup_plan = _scoped_store_lookup_plan_from_current_message(state)
+    if scoped_store_lookup_plan and (decision == "direct_reply" or _has_tool(required_tools, "customer_store_lookup")):
+        decision = scoped_store_lookup_plan["decision"]
+        stage = scoped_store_lookup_plan["stage"]
+        sub_rule_id = scoped_store_lookup_plan["sub_rule_id"]
+        conversion_stage = scoped_store_lookup_plan["conversion_stage"]
+        customer_type = scoped_store_lookup_plan["customer_type"]
+        main_blocker = scoped_store_lookup_plan["main_blocker"]
+        next_step = scoped_store_lookup_plan["next_step"]
+        planner_reply_messages = scoped_store_lookup_plan["reply_messages"]
+        required_tools = scoped_store_lookup_plan["required_tools"]
+        reply_strategy["current_turn_context_guard"] = scoped_store_lookup_plan["guard_reason"]
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
     generic_store_guard = _generic_store_lookup_guard(required_tools, state)
     if generic_store_guard:
@@ -88,6 +101,36 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools = generic_store_guard["required_tools"]
         executable_tools = []
         reply_strategy["current_turn_context_guard"] = generic_store_guard["guard_reason"]
+    generic_store_direct_guard = _generic_store_no_scope_direct_guard(state, executable_tools=executable_tools)
+    if generic_store_direct_guard:
+        decision = generic_store_direct_guard["decision"]
+        stage = generic_store_direct_guard["stage"]
+        sub_rule_id = generic_store_direct_guard["sub_rule_id"]
+        conversion_stage = generic_store_direct_guard["conversion_stage"]
+        customer_type = generic_store_direct_guard["customer_type"]
+        main_blocker = generic_store_direct_guard["main_blocker"]
+        next_step = generic_store_direct_guard["next_step"]
+        planner_reply_messages = generic_store_direct_guard["reply_messages"]
+        required_tools = generic_store_direct_guard["required_tools"]
+        executable_tools = []
+        reply_strategy["current_turn_context_guard"] = generic_store_direct_guard["guard_reason"]
+    contextual_store_anchor_guard = _contextual_store_anchor_lookup_guard(
+        state=state,
+        decision=decision,
+        executable_tools=executable_tools,
+    )
+    if contextual_store_anchor_guard:
+        decision = contextual_store_anchor_guard["decision"]
+        stage = contextual_store_anchor_guard["stage"]
+        sub_rule_id = contextual_store_anchor_guard["sub_rule_id"]
+        conversion_stage = contextual_store_anchor_guard["conversion_stage"]
+        customer_type = contextual_store_anchor_guard["customer_type"]
+        main_blocker = contextual_store_anchor_guard["main_blocker"]
+        next_step = contextual_store_anchor_guard["next_step"]
+        planner_reply_messages = contextual_store_anchor_guard["reply_messages"]
+        required_tools = contextual_store_anchor_guard["required_tools"]
+        executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
+        reply_strategy["current_turn_context_guard"] = contextual_store_anchor_guard["guard_reason"]
     if (
         explicit_risk_reason
         and decision == "direct_reply"
@@ -148,6 +191,23 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         ]
         executable_tools = required_tools
         decision = "need_tools"
+    scoped_store_lookup_guard = _scoped_store_lookup_request_guard(
+        state=state,
+        decision=decision,
+        executable_tools=executable_tools,
+    )
+    if scoped_store_lookup_guard:
+        decision = scoped_store_lookup_guard["decision"]
+        stage = scoped_store_lookup_guard["stage"]
+        sub_rule_id = scoped_store_lookup_guard["sub_rule_id"]
+        conversion_stage = scoped_store_lookup_guard["conversion_stage"]
+        customer_type = scoped_store_lookup_guard["customer_type"]
+        main_blocker = scoped_store_lookup_guard["main_blocker"]
+        next_step = scoped_store_lookup_guard["next_step"]
+        planner_reply_messages = scoped_store_lookup_guard["reply_messages"]
+        required_tools = scoped_store_lookup_guard["required_tools"]
+        executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
+        reply_strategy["current_turn_context_guard"] = scoped_store_lookup_guard["guard_reason"]
     effect_case_guard = _effect_case_tool_guard(
         state=state,
         required_tools=required_tools,
@@ -902,6 +962,145 @@ def _generic_store_lookup_guard(required_tools: list[dict[str, Any]], state: Age
     }
 
 
+def _generic_store_no_scope_direct_guard(state: AgentState, *, executable_tools: list[dict[str, Any]]) -> dict[str, Any]:
+    if executable_tools:
+        return {}
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if not _is_generic_store_location_question_without_current_scope(content, state):
+        return {}
+    anchor_query = _recent_store_name_from_context(state)
+    if _generic_store_question_can_use_contextual_anchor(state, query=anchor_query):
+        return {}
+    return {
+        "decision": "direct_reply",
+        "stage": "S2",
+        "sub_rule_id": "S2_STORE_LOCATION_NEEDS_SCOPE",
+        "conversion_stage": "store_match",
+        "customer_type": "distance",
+        "main_blocker": "logistics",
+        "next_step": "lookup_store",
+        "reply_messages": [_text_message("您想看哪个城市或区域的门店？发我城市或区名，我给您匹配附近门店。")],
+        "required_tools": [{"name": "no_tool", "purpose": "generic_store_location_needs_city_or_region"}],
+        "guard_reason": "generic_store_question_needs_current_scope",
+    }
+
+
+def _contextual_store_anchor_lookup_guard(
+    *,
+    state: AgentState,
+    decision: str,
+    executable_tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if decision != "direct_reply" or executable_tools:
+        return {}
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if not _is_generic_store_location_question_without_current_scope(content, state):
+        return {}
+    anchor_query = _recent_store_name_from_context(state)
+    if not _generic_store_question_can_use_contextual_anchor(state, query=anchor_query):
+        return {}
+    return {
+        "decision": "need_tools",
+        "stage": "S2",
+        "sub_rule_id": "S2_STORE_ADDRESS_CONTEXTUAL_ANCHOR",
+        "conversion_stage": "store_match",
+        "customer_type": "distance",
+        "main_blocker": "logistics",
+        "next_step": "lookup_store",
+        "reply_messages": [_standard_transition_message()],
+        "required_tools": [{"name": "customer_store_lookup", "purpose": "detail", "query": anchor_query}],
+        "guard_reason": "contextual_store_anchor_lookup",
+    }
+
+
+def _scoped_store_lookup_request_guard(
+    *,
+    state: AgentState,
+    decision: str,
+    executable_tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if decision != "direct_reply" or executable_tools:
+        return {}
+    return _scoped_store_lookup_plan_from_current_message(state)
+
+
+def _scoped_store_lookup_plan_from_current_message(state: AgentState) -> dict[str, Any]:
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if not _current_message_requests_store_lookup(content):
+        return {}
+    if _is_generic_store_location_question_without_current_scope(content, state):
+        return {}
+    if not (_location_query_has_current_message_scope(content, state) or _query_matches_scope_store_name(content, state)):
+        return {}
+    query = _scoped_store_lookup_query_from_current_message(state)
+    if not query:
+        return {}
+    purpose = _store_lookup_purpose_from_current_message(content)
+    tools: list[dict[str, Any]] = [{"name": "customer_store_lookup", "purpose": purpose, "query": query}]
+    if purpose == "nearby_candidates":
+        tools.append({"name": "distance_calculate", "origin": query, "candidate_source": "customer_store_lookup"})
+    return {
+        "decision": "need_tools",
+        "stage": "S2",
+        "sub_rule_id": "S2_STORE_LOOKUP_SCOPED_CURRENT_MESSAGE",
+        "conversion_stage": "store_match",
+        "customer_type": "distance",
+        "main_blocker": "logistics",
+        "next_step": "lookup_store",
+        "reply_messages": [_standard_transition_message()],
+        "required_tools": tools,
+        "guard_reason": "scoped_current_message_store_lookup",
+    }
+
+
+def _current_message_requests_store_lookup(text: str) -> bool:
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    if _current_message_requests_store_detail(compact):
+        return True
+    if any(term in compact for term in ("门店", "店", "附近", "最近", "近一点", "近点", "地址", "位置", "导航", "停车", "营业时间", "几点下班")):
+        return True
+    return False
+
+
+def _store_lookup_purpose_from_current_message(text: str) -> str:
+    compact = _compact_text(text)
+    if _current_message_requests_store_detail(compact) or any(
+        term in compact for term in ("地址", "位置", "导航", "停车", "营业时间", "几点下班", "几点关门")
+    ):
+        return "detail"
+    if any(term in compact for term in ("附近", "最近", "更近", "近一点", "近点", "离")):
+        return "nearby_candidates"
+    return "existence"
+
+
+def _scoped_store_lookup_query_from_current_message(state: AgentState) -> str:
+    content = str(state.get("normalized_content") or state.get("content") or "").strip()
+    matched_stores = _store_names_matching_text(state, content)
+    if len(matched_stores) == 1:
+        return matched_stores[0]
+    cleaned = _clean_scoped_location_query(content)
+    if cleaned and (_location_query_has_current_message_scope(cleaned, state) or _query_matches_scope_store_name(cleaned, state)):
+        return cleaned
+    region_tokens = _matching_current_message_region_tokens(content, state)
+    if region_tokens:
+        return "".join(region_tokens[:3])
+    return content
+
+
+def _clean_scoped_location_query(value: str) -> str:
+    text = re.sub(r"[，,。？?！!\s]", "", str(value or "").strip())
+    if not text:
+        return ""
+    text = re.sub(
+        r"(哪家|哪个|哪一个|有没有|有吗|附近|周边|最近|更近|比较近|近点|近一点|门店|店|地址|路线|导航|停车|营业时间|几点下班|几点关门|发我|给我|一下|有|吗|呢|呀|的|在|离)",
+        "",
+        text,
+    )
+    return text.strip()
+
+
 def _recent_store_name_from_context(state: AgentState) -> str:
     turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
     if not turn_context:
@@ -1408,26 +1607,16 @@ def _generic_store_question_has_allowed_tool_query(required_tools: list[dict[str
 
 
 def _generic_store_question_can_use_contextual_anchor(state: AgentState, *, query: str = "") -> bool:
+    current_text = _compact_text(state.get("normalized_content") or state.get("content") or "")
+    if not current_text or "你们" in current_text:
+        return False
+    if current_text not in {"门店在哪", "门店在哪里", "店在哪", "店在哪里", "门店地址", "地址在哪", "地址在哪里"}:
+        return False
     turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
     if not turn_context:
         turn_context = _turn_context_for_guard(state)
     open_task = str(turn_context.get("open_task") or "").strip()
     if open_task in {"deposit_push", "appointment_confirm"} and _query_matches_scope_store_name(query, state):
-        return True
-    anchor = turn_context.get("current_store_anchor") if isinstance(turn_context.get("current_store_anchor"), dict) else {}
-    if not anchor:
-        anchor = turn_context.get("confirmed_store") if isinstance(turn_context.get("confirmed_store"), dict) else {}
-    if not anchor or anchor.get("ambiguous"):
-        return False
-    source = str(anchor.get("source") or "").strip()
-    if source in {"customer_profile", "profile", "preferred_store"}:
-        return False
-    if open_task in {
-        "deposit_push",
-        "appointment_confirm",
-        "post_deposit_store_assignment",
-        "post_deposit_next_step_clarification",
-    }:
         return True
     return False
 
@@ -1455,13 +1644,15 @@ def _is_generic_store_location_question_without_current_scope(text: str, state: 
         return False
     if _store_names_matching_text(state, text):
         return False
-    return not _location_query_has_current_message_scope(text)
+    return not _location_query_has_current_message_scope(text, state)
 
 
-def _location_query_has_current_message_scope(value: str) -> bool:
+def _location_query_has_current_message_scope(value: str, state: AgentState) -> bool:
     text = _compact_text(value)
     if not text:
         return False
+    if _matching_current_message_region_tokens(text, state):
+        return True
     return _looks_like_specific_region(text)
 
 
@@ -1470,6 +1661,10 @@ def _location_query_has_scope_region(value: str, state: AgentState) -> bool:
     if not text:
         return False
     for token in _scope_region_tokens(state):
+        compact = _compact_text(token)
+        if compact and compact in text:
+            return True
+    for token in _snapshot_region_tokens():
         compact = _compact_text(token)
         if compact and compact in text:
             return True
@@ -1534,6 +1729,57 @@ def _snapshot_store_names() -> list[str]:
         ]
     _STORE_SNAPSHOT_NAME_CACHE = list(dict.fromkeys(names))
     return _STORE_SNAPSHOT_NAME_CACHE
+
+
+def _snapshot_region_tokens() -> set[str]:
+    global _STORE_SNAPSHOT_REGION_TOKEN_CACHE
+    if _STORE_SNAPSHOT_REGION_TOKEN_CACHE is not None:
+        return _STORE_SNAPSHOT_REGION_TOKEN_CACHE
+    path = Path("data/store_snapshot.json")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _STORE_SNAPSHOT_REGION_TOKEN_CACHE = set()
+        return _STORE_SNAPSHOT_REGION_TOKEN_CACHE
+    stores_by_id = data.get("stores_by_id") if isinstance(data, dict) else {}
+    tokens: set[str] = set()
+    if isinstance(stores_by_id, dict):
+        for store in stores_by_id.values():
+            if not isinstance(store, dict):
+                continue
+            for key in ("province", "city", "district"):
+                raw = str(store.get(key) or "").strip()
+                if not raw:
+                    continue
+                tokens.add(raw)
+                for suffix in ("省", "市", "区", "县", "旗", "自治州", "自治县", "新区"):
+                    if raw.endswith(suffix) and len(raw) > len(suffix):
+                        tokens.add(raw[: -len(suffix)])
+    _STORE_SNAPSHOT_REGION_TOKEN_CACHE = {token for token in tokens if len(_compact_text(token)) >= 2}
+    return _STORE_SNAPSHOT_REGION_TOKEN_CACHE
+
+
+def _matching_current_message_region_tokens(value: str, state: AgentState) -> list[str]:
+    text = _compact_text(value)
+    if not text:
+        return []
+    candidates = [token for token in (*_scope_region_tokens(state), *_snapshot_region_tokens()) if _compact_text(token) in text]
+    ranked: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    for token in candidates:
+        compact = _compact_text(token)
+        if not compact or compact in seen:
+            continue
+        seen.add(compact)
+        ranked.append((text.find(compact), -len(compact), token))
+    ranked.sort()
+    output: list[str] = []
+    for _, _, token in ranked:
+        compact = _compact_text(token)
+        if any(compact != _compact_text(other) and compact in _compact_text(other) for other in output):
+            continue
+        output.append(token)
+    return output
 
 
 def _looks_like_specific_region(text: str) -> bool:

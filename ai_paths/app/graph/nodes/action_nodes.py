@@ -430,7 +430,7 @@ async def _distance_calculate(
     tool_results: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or state.get("normalized_content") or "").strip()
-    geocode_origin = _normalize_distance_origin_from_store_regions(origin, state)
+    geocode_origin = _normalize_distance_origin_from_store_regions(_normalize_known_landmark_origin(origin), state)
     candidates = _distance_candidate_stores(tool, state, tool_results or {})
     if not origin:
         return {"status": "missing_origin", "candidate_stores": candidates, "error": "missing_origin"}
@@ -818,6 +818,14 @@ def _region_tokens(value: str) -> list[str]:
         if text.endswith(suffix) and len(text) > len(suffix):
             tokens.add(text[: -len(suffix)])
     return sorted(tokens, key=len, reverse=True)
+
+
+def _normalize_known_landmark_origin(origin: str) -> str:
+    text = str(origin or "").strip()
+    compact = _compact_text(text)
+    if "厦门" in compact and "机场" in compact and "高崎" not in compact:
+        return "厦门高崎国际机场"
+    return text
 
 
 def _join_region(*, province: str, city: str, district: str) -> str:

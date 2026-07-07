@@ -8,6 +8,7 @@ from app.graph.nodes.action_nodes import (
     _distance_candidate_stores,
     _distance_between_points,
     _geocode_has_unconflicted_location,
+    _normalize_known_landmark_origin,
     _normalize_distance_origin_from_store_regions,
     _store_lookup_item,
     _stores_for_geocode,
@@ -105,6 +106,10 @@ class DistanceOriginNormalizationTests(unittest.TestCase):
         }
 
         self.assertEqual(_administrative_area_origin_candidate("厦门机场附近哪家近", state), {})
+
+    def test_xiamen_airport_origin_uses_known_landmark_alias(self) -> None:
+        self.assertEqual(_normalize_known_landmark_origin("厦门机场"), "厦门高崎国际机场")
+        self.assertEqual(_normalize_known_landmark_origin("厦门高崎国际机场"), "厦门高崎国际机场")
 
     def test_geocode_with_location_and_empty_district_is_unconflicted(self) -> None:
         self.assertTrue(_geocode_has_unconflicted_location({"location": "106.551787,29.562680", "district": ""}))

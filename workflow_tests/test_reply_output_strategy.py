@@ -858,6 +858,40 @@ def test_generic_store_question_with_payment_task_allows_recent_store_query() ->
     )
 
 
+def test_contextual_store_question_with_payment_task_forces_lookup_when_model_direct_replies() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u95e8\u5e97\u5728\u54ea"),
+            "conversation_history": [
+                _u(r"\u7528\u6237: \u6211\u660e\u5929\u4e0a\u534811\u70b9\u8fc7\u53bb"),
+                _u(r"\u5c0f\u8d1d: \u5e7f\u5dde\u767d\u4e91\u4e09\u5e97\u660e\u5929\u4e0a\u534811\u70b9\u540d\u989d\u5df2\u7ecf\u5e2e\u60a8\u9884\u7559"),
+                _u(r"\u5c0f\u8d1d: payment_collection amount=10"),
+            ],
+            "customer_store_knowledge": {
+                "stores": [{"store_id": "562", "store_name": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"), "city": _u(r"\u5e7f\u5dde\u5e02")}]
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_DEPOSIT_PUSH",
+            "conversion_stage": "deposit_push",
+            "customer_type": "price",
+            "main_blocker": "price",
+            "next_step": "send_deposit",
+            "reply_messages": [{"type": "text", "content": {"text": _u(r"\u95e8\u5e97\u6211\u5e2e\u60a8\u6838\u5bf9\u4e0b")}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["conversion_stage"] == "store_match"
+    assert plan["next_step"] == "lookup_store"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "detail", "query": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")}
+    ]
+
+
 def test_generic_store_question_with_profile_only_asks_for_scope() -> None:
     plan = build_planner_plan_v2(
         {
@@ -1037,6 +1071,175 @@ def test_generic_store_lookup_must_not_fill_query_from_history_store() -> None:
     assert plan["planner_decision"] == "direct_reply"
     assert plan["planner_tool_calls"] == []
     assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
+
+
+def test_scoped_city_store_question_uses_store_lookup_instead_of_reasking_city() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "厦门有门店吗",
+            "customer_store_knowledge": {"stores": [{"city": "厦门市", "district": "思明区", "store_name": "厦门思明店"}]},
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION_NEEDS_SCOPE",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "您想看哪个城市或区域的门店？"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "existence", "query": "厦门"}]
+
+
+def test_scoped_city_store_question_overrides_historical_store_tool_query() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "厦门有门店吗",
+            "customer_store_knowledge": {
+                "stores": [
+                    {"city": "厦门市", "district": "思明区", "store_name": "厦门思明店"},
+                    {"city": "厦门市", "district": "湖里区", "store_name": "厦门百星湖里店"},
+                ]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S4",
+            "sub_rule_id": "S4_HESITATION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "price",
+            "main_blocker": "price",
+            "next_step": "send_deposit",
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [{"name": "customer_store_lookup", "query": "厦门百星湖里店", "purpose": "detail"}],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["conversion_stage"] == "store_match"
+    assert plan["next_step"] == "lookup_store"
+    assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "existence", "query": "厦门"}]
+
+
+def test_scoped_nearby_store_question_uses_lookup_and_distance() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "厦门思明附近有门店吗",
+            "customer_store_knowledge": {"stores": [{"city": "厦门市", "district": "思明区", "store_name": "厦门思明店"}]},
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION_NEEDS_SCOPE",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "您想看哪个城市或区域的门店？"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": "厦门思明"},
+        {"name": "distance_calculate", "origin": "厦门思明", "candidate_source": "customer_store_lookup"},
+    ]
+
+
+def test_scoped_nearby_landmark_preserves_landmark_in_distance_origin() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "哪家离厦门机场近一点",
+            "customer_store_knowledge": {
+                "stores": [
+                    {"city": "厦门市", "district": "思明区", "store_name": "厦门思明店"},
+                    {"city": "厦门市", "district": "湖里区", "store_name": "厦门百星湖里店"},
+                ]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_LOCATION_DETAIL",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [{"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": "厦门"}],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": "厦门机场"},
+        {"name": "distance_calculate", "origin": "厦门机场", "candidate_source": "customer_store_lookup"},
+    ]
+
+
+def test_generic_store_question_does_not_use_contextual_anchor_even_with_open_task() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "你们门店在哪里",
+            "current_turn_context": {
+                "open_task": "appointment_confirm",
+                "current_store_anchor": {"store_name": "厦门百星湖里店", "source": "appointment_context"},
+            },
+            "customer_store_knowledge": {"stores": [{"city": "厦门市", "district": "湖里区", "store_name": "厦门百星湖里店"}]},
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [{"name": "customer_store_lookup", "query": "厦门百星湖里店", "purpose": "detail"}],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
+
+
+def test_generic_store_question_without_scope_overrides_deposit_direct_reply() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "你们门店在哪里",
+            "current_turn_context": {
+                "open_task": "deposit_push",
+                "current_store_anchor": {"store_name": "厦门百星湖里店", "source": "appointment_context"},
+            },
+            "customer_store_knowledge": {"stores": [{"city": "厦门市", "district": "湖里区", "store_name": "厦门百星湖里店"}]},
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_DEPOSIT_PUSH",
+            "conversion_stage": "deposit_push",
+            "customer_type": "price",
+            "main_blocker": "price",
+            "next_step": "send_deposit",
+            "reply_messages": [{"type": "text", "content": {"text": "我把10元预约金入口发您。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["conversion_stage"] == "store_match"
+    assert plan["next_step"] == "lookup_store"
+    assert plan["planner_tool_calls"] == []
+    assert plan["planner_reply_messages"][0]["content"]["text"] == "您想看哪个城市或区域的门店？发我城市或区名，我给您匹配附近门店。"
+    assert not any(item.get("type") == "payment_collection" for item in plan["planner_reply_messages"])
 
 
 def test_generic_store_reply_must_not_use_history_store_without_facts() -> None:
