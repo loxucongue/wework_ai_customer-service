@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
@@ -48,6 +49,16 @@ class SopExecutionService:
             "error": "",
         }
         try:
+            if is_platform_auto_opening_message(request.content):
+                result.update(
+                    {
+                        "mode": "ignored_platform_auto_message",
+                        "send_sop": False,
+                        "need_ai_reply": False,
+                        "reason": "platform_auto_opening_message",
+                    }
+                )
+                return _finish(result, started)
             if request_context.get("skip_sop_gate"):
                 result.update({"mode": "skipped", "reason": "skip_sop_gate"})
                 return _finish(result, started)
@@ -174,6 +185,9 @@ class SopExecutionService:
                     "当前业务目标是让新客按销冠主线完成前置认知：活动介绍、信任建立、效果/案例铺垫、费用规则、预约金价值和下一步成交动作。\n"
                     "普通聊天 AI 负责回答复杂实时问题；SOP Gate 负责在新客 SOP 未完成前，优先把配置好的话术包按客户当前阶段铺出去。\n"
                     "如果 SOP 已经覆盖客户当前关心点，不要再让 AI 补发，避免客户同一轮收到重复内容。\n\n"
+                    "# Source Priority\n"
+                    "判断时按当前消息、最近对话、unfinished_sops 的 purpose/order/tags/triggers/reply_messages 摘要排序。\n"
+                    "SOP Gate 不拥有门店、档期、支付、订单、案例事实；这些事实缺失时不能自行补全，只能决定是否让普通 AI 继续。\n\n"
                     "# Input\n"
                     "你会收到：\n"
                     "- current_message：客户当前消息。\n"
@@ -193,6 +207,16 @@ class SopExecutionService:
                     "- 如果选中的 SOP 已经覆盖价格、效果、活动、预约金、普通顾虑、品牌信任或成交推进诉求，即使客户问题明确，也保持 need_ai_reply=false。\n"
                     "- 只有以下情况才允许 need_ai_reply=true：客户明确索要具体门店地址/导航/真实档期/预约或订单状态；投诉退款、身体不适、强人工诉求；或客户同一句包含多个独立问题，而当前 SOP 只覆盖其中一部分。\n"
                     "- 如果所有 unfinished_sops 都明显不适合当前客户状态，可以 send_sop=false，并让普通 AI 继续处理。\n\n"
+                    "# Negative Cases\n"
+                    "- 客户只是沉默、刚加微后未回复、或上一阶段 SOP 正常铺垫后没有新 customer 消息：不算冲突，优先继续 SOP。\n"
+                    "- 客户正在问具体门店地址、真实档期、订单/付款异常、投诉退款或身体不适：SOP 不足以覆盖，need_ai_reply=true。\n"
+                    "- 候选包只是和历史同属一个活动主题，不等于严重重合；只有同阶段核心目的和核心素材都已覆盖，才算严重重合。\n"
+                    "- 普通价格、效果、信任、隐形消费顾虑如果候选 SOP 已覆盖，就不需要额外 AI 文案。\n\n"
+                    "# Few-Shot Calibration\n"
+                    "- 新客未回复，1分钟介绍包已发，5分钟问地址包候选可用：send_sop=true，need_ai_reply=false。\n"
+                    "- 客户刚问“这家地址发我”：如果候选 SOP 不是门店地址事实，send_sop=false 或 need_ai_reply=true，交给普通 AI 查门店。\n"
+                    "- 客户问“效果怎么样”：候选效果案例/效果铺垫包可用且未发送过，send_sop=true，need_ai_reply=false。\n"
+                    "- 客户说“我付款多扣了”：send_sop=false，need_ai_reply=true。\n\n"
                     "# Do Not\n"
                     "- 不生成客户可见 text/image/payment_collection/store_address/video。\n"
                     "- 不改写 SOP 文案，不补写话术包。\n"
@@ -332,6 +356,16 @@ class SopExecutionService:
                     "- 客户刚刚提出明确问题不必然拒发；只有该问题正在被销冠承接、或候选包会明显打断/答非所问时才拒发。\n"
                     "- first_add_flow 只能选择 candidate_sops 里的 sop_pack_id。\n"
                     "- platform_actions 也遵循同一闸门：平台已给出 actions，你只判断最近聊天是否正在进行、冲突或严重重合；send_sop=true 时 sop_pack_id 为空即可。\n\n"
+                    "# Negative Cases\n"
+                    "- 客户未回复、只有 staff-only 连续铺垫、或上一阶段正常完成后等待下一阶段：不是拒发理由。\n"
+                    "- 最近发过活动破冰图，不代表效果案例已经完成；不要把普通图片当效果图。\n"
+                    "- 最近只聊过活动价格，不代表门店地址、效果铺垫、预约金价值都已严重重合。\n"
+                    "- 客户正在实时投诉、退款、付款异常、严重不适、强人工诉求，或销冠已经在连续承接同一问题时，才应拒发当前定时包。\n\n"
+                    "# Few-Shot Calibration\n"
+                    "- 30分钟效果铺垫到点，客户一直未回复，opening/store_prompt 已发但 effect_case 未发：send_sop=true。\n"
+                    "- 候选是收款铺垫，最近客户刚明确说“到店再付不想交”：如果包会硬催收款，send_sop=false。\n"
+                    "- 候选是活动介绍，最近两轮已发完整活动介绍和同一张活动图：send_sop=false，reason 写严重重合。\n"
+                    "- platform_actions 已给出内容，最近聊天没有冲突也没有同内容覆盖：send_sop=true。\n\n"
                     "# Do Not\n"
                     "- 不追加普通 AI 回复，need_ai_reply 必须是 false。\n"
                     "- 不补门店、价格、档期、案例或客户事实。\n"
@@ -428,6 +462,14 @@ class SopExecutionService:
 def _finish(result: dict[str, Any], started: float) -> dict[str, Any]:
     result["duration_ms"] = int((time.perf_counter() - started) * 1000)
     return result
+
+
+def is_platform_auto_opening_message(content: str) -> bool:
+    normalized = re.sub(r"[\s，,。.!！?？:：；;、\"'“”‘’（）()【】\[\]《》<>-]+", "", str(content or ""))
+    return normalized in {
+        "我已经添加了你现在我们可以开始聊天了",
+        "我已经添加了你现在可以开始聊天了",
+    }
 
 
 def _enabled_chat_packs(config: dict[str, Any]) -> list[dict[str, Any]]:

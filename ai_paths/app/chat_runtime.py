@@ -139,6 +139,29 @@ class ChatRuntime:
                     reason="sop_gate_sync_reply",
                 )
             return response
+        if _sop_gate_terminal_no_reply(sop_gate):
+            terminal_state = dict(initial_state)
+            terminal_state["reply_messages"] = []
+            terminal_state["sync_reply_messages"] = []
+            terminal_state["reply_source"] = str(sop_gate.get("mode") or "sop_gate_no_reply")
+            terminal_state["planner_decision"] = "no_reply"
+            terminal_state["planner_stage"] = "SOP_GATE"
+            terminal_state["planner_sub_rule_id"] = str(sop_gate.get("reason") or "")
+            terminal_state["async_final_reply"] = {
+                "scheduled": False,
+                "status": "not_required",
+                "reason": str(sop_gate.get("reason") or ""),
+            }
+            _set_sync_return(terminal_state, "empty", [])
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=terminal_state,
+                allow_empty_reply=True,
+            )
 
         try:
             planner_state = await self._run_planner_graph_with_preemption(initial_state, control_record)
@@ -842,6 +865,14 @@ def _platform_reply_source(state: AgentState) -> str:
     if decision == "need_tools":
         return "planner_transition_reply"
     return "planner_direct_reply"
+
+
+def _sop_gate_terminal_no_reply(sop_gate: dict[str, Any]) -> bool:
+    return (
+        str(sop_gate.get("mode") or "") == "ignored_platform_auto_message"
+        and not sop_gate.get("send_sop")
+        and not sop_gate.get("need_ai_reply")
+    )
 
 
 def _sync_return_type(state: AgentState) -> str:

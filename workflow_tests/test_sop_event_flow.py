@@ -6,8 +6,9 @@ from types import SimpleNamespace
 from typing import Any
 from tempfile import TemporaryDirectory
 
+from app.schemas import ChatRequest
 from app.services.sop_event_service import SopEventService
-from app.services.sop_execution_service import SopExecutionService
+from app.services.sop_execution_service import SopExecutionService, is_platform_auto_opening_message
 from app.services.sop_message_sanitizer import sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage import AppRepository, SQLiteStore
@@ -566,6 +567,33 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("严重重合", system_prompt)
         self.assertIn("客户未回复、staff-only 连续 SOP 消息", system_prompt)
         self.assertNotIn("不因为事件时间到了就机械发送", system_prompt)
+
+    async def test_chat_gate_ignores_platform_auto_opening_before_model(self) -> None:
+        model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening", "need_ai_reply": False})
+        service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_ChatOnlyPackService(), model_client=model)
+        request = ChatRequest(
+            content="我已经添加了你，现在我们可以开始聊天了。",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+            conversation_history=["用户: 门店在哪？"],
+        )
+
+        result = await service.evaluate_chat_gate(request, request_id="req_auto_opening", request_context={})
+
+        self.assertEqual(result["mode"], "ignored_platform_auto_message")
+        self.assertFalse(result["send_sop"])
+        self.assertFalse(result["need_ai_reply"])
+        self.assertEqual(result["reason"], "platform_auto_opening_message")
+        self.assertEqual(result["reply_messages"], [])
+        self.assertEqual(model.messages, [])
+
+    def test_platform_auto_opening_matcher_is_narrow(self) -> None:
+        self.assertTrue(is_platform_auto_opening_message("我已经添加了你，现在我们可以开始聊天了。"))
+        self.assertTrue(is_platform_auto_opening_message("我已经添加了你 现在可以开始聊天了"))
+        self.assertFalse(is_platform_auto_opening_message("你好"))
+        self.assertFalse(is_platform_auto_opening_message("门店在哪？"))
+        self.assertFalse(is_platform_auto_opening_message("这家地址发我"))
 
 
 def _service(
