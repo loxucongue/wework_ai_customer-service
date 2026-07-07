@@ -145,7 +145,22 @@ def payment_amount_matches_text(messages: list[dict[str, Any]]) -> bool:
         return True
     if "每位10" in compact or "每人10" in compact or "一人10" in compact or "每位10元" in compact or "每人10元" in compact:
         return True
-    return not bool(re.search(r"(?<!每位)(?<!每人)(?<!一人)10元?预约金", compact))
+    return not bool(_single_person_payment_total_pattern().search(compact))
+
+
+def normalize_payment_amount_text(text: str, amount: int) -> str:
+    value = str(text or "")
+    normalized_amount = _normalize_amount(amount)
+    if normalized_amount <= PAYMENT_COLLECTION_UNIT_AMOUNT:
+        return value
+    compact = "".join(value.split())
+    if not compact or _mentions_per_person_ten_yuan(compact):
+        return value
+    if not _single_person_payment_total_pattern().search(compact):
+        return value
+    participants = normalized_amount // PAYMENT_COLLECTION_UNIT_AMOUNT
+    replacement = f"{participants}位一共{normalized_amount}元预约金入口"
+    return _single_person_payment_total_pattern().sub(replacement, value)
 
 
 def _amount_from_content(content: Any) -> int | None:
@@ -302,8 +317,8 @@ def _mentions_total_amount(compact: str, amount: int) -> bool:
 def _mentions_conflicting_total_amount(compact: str, expected_amount: int) -> bool:
     for pattern in (
         r"(?:一共|共需|共|合计)(10|20|30|40)元(?:预约金|入口)?",
-        r"(?:生成|发|发送|给您发)(10|20|30|40)元(?:预约金)?(?:入口)?",
-        r"(10|20|30|40)元(?:预约金|预约金入口|付款入口|报名入口|收款入口)",
+        r"(?:生成|发|发送|给您发)(?:你|您)?(10|20|30|40)元(?:预约金)?(?:预约|报名|付款|收款)?(?:入口)?",
+        r"(10|20|30|40)元(?:预约金|预约金入口|预约入口|入口|付款入口|报名入口|收款入口)",
     ):
         for match in re.finditer(pattern, compact):
             amount = int(match.group(1))
@@ -318,6 +333,14 @@ def _mentions_conflicting_total_amount(compact: str, expected_amount: int) -> bo
 
 def _mentions_larger_payment_total(compact: str) -> bool:
     return _participants_from_explicit_total_or_group(compact) not in (None, 1)
+
+
+def _mentions_per_person_ten_yuan(compact: str) -> bool:
+    return any(term in compact for term in ("每位10", "每人10", "一人10", "每个10", "每位10元", "每人10元"))
+
+
+def _single_person_payment_total_pattern() -> re.Pattern[str]:
+    return re.compile(r"(?<!每位)(?<!每人)(?<!一人)(?<!每个)10\s*元\s*(?:的)?(?:预约金入口|预约入口|报名入口|付款入口|收款入口|入口|预约金|订金|定金)")
 
 
 def _mentions_deposit_refund_context(text: str) -> bool:

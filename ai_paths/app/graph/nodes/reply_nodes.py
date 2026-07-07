@@ -7,6 +7,7 @@ from app.graph.nodes.common import model_usage_snapshot
 from app.graph.nodes.reply_validation import validate_reply_consistency
 from app.services.payment_collection import (
     normalize_deposit_refund_policy_text,
+    normalize_payment_amount_text,
     payment_collection_content,
     payment_collection_context,
 )
@@ -153,7 +154,9 @@ def create_synthesize_reply_node(
                     messages = _filter_unsupported_images(messages, state, warnings)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
-                messages = _normalize_deposit_refund_policy_messages(append_activity_intro_image(messages, state, warnings))
+                messages = _normalize_payment_amount_text_messages(
+                    _normalize_deposit_refund_policy_messages(append_activity_intro_image(messages, state, warnings))
+                )
                 for warning in warnings:
                     if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
                         warning.setdefault("node", "synthesize_reply")
@@ -841,7 +844,7 @@ def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = 
             store_id = str(content.get("store_id") if isinstance(content, dict) else content or "").strip()
             if store_id:
                 messages.append({"type": "store_address", "order": int(item.get("order") or index), "content": {"store_id": store_id}})
-    return messages
+    return _normalize_payment_amount_text_messages(messages)
 
 
 def _normalize_deposit_refund_policy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -859,6 +862,41 @@ def _normalize_deposit_refund_policy_messages(messages: list[dict[str, Any]]) ->
         else:
             output.append({**item, "content": normalize_deposit_refund_policy_text(str(content or ""))})
     return _renumber(output)
+
+
+def _normalize_payment_amount_text_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    amount = _first_payment_collection_amount(messages)
+    if amount <= 10:
+        return _renumber(messages)
+    output: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") != "text":
+            output.append(item)
+            continue
+        content = item.get("content")
+        if isinstance(content, dict):
+            text = normalize_payment_amount_text(str(content.get("text") or ""), amount)
+            output.append({**item, "content": {**content, "text": text}})
+        else:
+            output.append({**item, "content": normalize_payment_amount_text(str(content or ""), amount)})
+    return _renumber(output)
+
+
+def _first_payment_collection_amount(messages: list[dict[str, Any]]) -> int:
+    for item in messages:
+        if not isinstance(item, dict) or str(item.get("type") or "") != "payment_collection":
+            continue
+        content = item.get("content")
+        if not isinstance(content, dict):
+            continue
+        try:
+            amount = int(float(str(content.get("amount") or "").strip()))
+        except (TypeError, ValueError):
+            return 10
+        return amount
+    return 10
 
 
 def _schedule_profile_event_background(

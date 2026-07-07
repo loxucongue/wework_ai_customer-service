@@ -18,6 +18,7 @@ from app.graph.nodes.reply_nodes import (
     _ensure_required_handoff_notice,
     _maybe_build_effect_case_fallback,
     _maybe_build_required_payment_collection_fallback,
+    _normalize_planner_reply_messages,
     _suppress_stale_handoff_notice,
 )
 from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
@@ -586,6 +587,44 @@ def test_reply_validation_rejects_text_twenty_yuan_with_ten_yuan_card() -> None:
             ],
             {"normalized_content": _u(r"\u4eba\u5462")},
         )
+
+
+def test_reply_validation_rejects_text_ten_yuan_entry_with_twenty_yuan_card() -> None:
+    with pytest.raises(ValueError, match="payment_collection_amount_text_mismatch"):
+        validate_reply_consistency(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": _u(r"\u6211\u53d1\u4f6010\u5143\u9884\u7ea6\u5165\u53e3\uff0c\u5148\u9501\u540d\u989d")},
+                },
+                {"type": "payment_collection", "order": 2, "content": {"amount": 20, "remark": ""}},
+            ],
+            {"normalized_content": _u(r"\u670b\u53cb\u4e00\u8d77\u8fc7\u53bb")},
+        )
+
+
+def test_planner_reply_normalizes_ten_yuan_entry_text_for_twenty_yuan_card() -> None:
+    messages = _normalize_planner_reply_messages(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": _u(r"\u6211\u53d1\u4f6010\u5143\u9884\u7ea6\u5165\u53e3\uff0c\u5148\u9501\u540d\u989d")},
+            },
+            {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+        ],
+        state={
+            "normalized_content": _u(r"\u53ef\u4ee5\uff0c\u53d1\u9884\u7ea6\u91d1\u5165\u53e3"),
+            "conversation_history": [
+                _u(r"\u7528\u6237: \u670b\u53cb\u53ef\u4ee5\u4e00\u8d77\u8fc7\u53bb\u5417"),
+                _u(r"\u5c0f\u8d1d: \u53ef\u4ee5\uff0c\u670b\u53cb\u4e5f\u80fd\u4e00\u8d77\u53bb"),
+            ],
+        },
+    )
+
+    assert messages[0]["content"]["text"] == _u(r"\u6211\u53d1\u4f602\u4f4d\u4e00\u517120\u5143\u9884\u7ea6\u91d1\u5165\u53e3\uff0c\u5148\u9501\u540d\u989d")
+    assert messages[1]["content"]["amount"] == 20
 
 
 def test_payment_collection_over_four_people_requires_confirmation() -> None:
