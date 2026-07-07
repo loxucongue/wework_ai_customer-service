@@ -53,11 +53,6 @@ def _anthropic_text(raw: dict[str, Any]) -> str:
     ).strip()
 
 
-def _is_claude_model(model: str) -> bool:
-    value = str(model or "").strip().lower()
-    return value.startswith("claude-") or "/claude-" in value or value.startswith("anthropic/claude-")
-
-
 async def _probe_model(
     client: httpx.AsyncClient,
     *,
@@ -67,6 +62,7 @@ async def _probe_model(
     json_mode: bool,
     protocol: str,
     use_response_format: bool,
+    reasoning_enabled: bool,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     try:
@@ -85,6 +81,7 @@ async def _probe_model(
             }
             if json_mode:
                 payload["system"] = "Return valid JSON only."
+            payload["reasoning"] = {"enabled": reasoning_enabled}
             response = await client.post(
                 url,
                 headers={
@@ -110,8 +107,9 @@ async def _probe_model(
                     {"role": "system", "content": "Return valid JSON only."},
                     {"role": "user", "content": '{"task":"connectivity_test","reply_schema":{"ok":true,"model":"string"}}'},
                 ]
-                if use_response_format and not _is_claude_model(model):
+                if use_response_format:
                     payload["response_format"] = {"type": "json_object"}
+            payload["reasoning"] = {"enabled": reasoning_enabled}
             response = await client.post(
                 url,
                 headers={
@@ -161,6 +159,7 @@ async def _main() -> int:
     parser.add_argument("--protocol", choices=["auto", "openai", "anthropic"], default=os.getenv("MODEL_RELAY_PROTOCOL", "auto"))
     parser.add_argument("--json-mode", action="store_true", help="Ask the model to return a JSON object.")
     parser.add_argument("--no-response-format", action="store_true", help="Do not send OpenAI response_format=json_object.")
+    parser.add_argument("--reasoning-enabled", action="store_true", help="Send reasoning.enabled=true instead of the default false.")
     args = parser.parse_args()
 
     defaults = _settings_defaults()
@@ -204,6 +203,7 @@ async def _main() -> int:
                 json_mode=args.json_mode,
                 protocol=protocol,
                 use_response_format=not args.no_response_format,
+                reasoning_enabled=bool(args.reasoning_enabled),
             )
             results.append(result)
             status = "OK" if result["ok"] else "FAIL"
@@ -215,6 +215,7 @@ async def _main() -> int:
                     "protocol": protocol,
                     "json_mode": args.json_mode,
                     "response_format": bool(args.json_mode and not args.no_response_format),
+                    "reasoning_enabled": bool(args.reasoning_enabled),
                     "results": results,
                 },
                 ensure_ascii=False,

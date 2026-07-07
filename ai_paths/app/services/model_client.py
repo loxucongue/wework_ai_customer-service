@@ -41,6 +41,7 @@ class ModelClient:
                 "messages": messages,
                 "temperature": temperature,
             }
+            self._apply_relay_reasoning(payload, json_mode=False)
             try:
                 raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
                 return self._extract_text(raw)
@@ -66,8 +67,9 @@ class ModelClient:
                 "messages": self._ensure_json_marker(messages),
                 "temperature": temperature,
             }
-            if self.settings.model_response_format_enabled and not model_selection.is_claude_model(model):
+            if self.settings.model_response_format_enabled:
                 payload["response_format"] = {"type": "json_object"}
+            self._apply_relay_reasoning(payload, json_mode=True)
             if self.settings.model_provider.lower() == "aliyun":
                 payload["enable_thinking"] = False
             try:
@@ -108,6 +110,7 @@ class ModelClient:
         errors: list[str] = []
         for index, model in enumerate(self._model_names(tier)):
             payload["model"] = model
+            self._apply_relay_reasoning(payload, json_mode=True)
             try:
                 raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
                 return self._parse_json(self._extract_text(raw))
@@ -237,7 +240,32 @@ class ModelClient:
         }
         if system_parts:
             result["system"] = "\n\n".join(system_parts)
+        reasoning = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else {}
+        if reasoning:
+            result["reasoning"] = reasoning
         return result
+
+    def _apply_relay_reasoning(self, payload: dict[str, Any], *, json_mode: bool) -> None:
+        provider = self.settings.model_provider.lower()
+        if provider not in {"relay", "openai_compatible", "openai-compatible"}:
+            return
+        if not self.settings.model_relay_reasoning_control_enabled:
+            return
+        if json_mode and not self.settings.model_json_reasoning_enabled:
+            payload["reasoning"] = {"enabled": False}
+            return
+        if not json_mode and not self.settings.model_reasoning_enabled:
+            payload["reasoning"] = {"enabled": False}
+            return
+        if self.settings.model_reasoning_enabled:
+            reasoning: dict[str, Any] = {"enabled": True}
+            effort = str(self.settings.model_reasoning_effort or "").strip()
+            if effort:
+                reasoning["effort"] = effort
+            max_tokens = int(self.settings.model_reasoning_max_tokens or 0)
+            if max_tokens > 0:
+                reasoning["max_tokens"] = max_tokens
+            payload["reasoning"] = reasoning
 
     @staticmethod
     def _anthropic_content_to_text(content: Any) -> str:

@@ -35,6 +35,11 @@ class Settings(BaseSettings):
     anthropic_version: str = "2023-06-01"
     model_max_tokens: int = 4096
     model_response_format_enabled: bool = True
+    model_relay_reasoning_control_enabled: bool = True
+    model_reasoning_enabled: bool = False
+    model_reasoning_effort: str = "low"
+    model_reasoning_max_tokens: int = 0
+    model_json_reasoning_enabled: bool = False
     model_fast: str = "qwen-plus"
     model_planner: str = "qwen-plus"
     model_balanced: str = "qwen-plus"

@@ -164,8 +164,9 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"ok": True})
         self.assertIsNotNone(client.payload)
         self.assertNotIn("response_format", client.payload or {})
+        self.assertEqual((client.payload or {}).get("reasoning"), {"enabled": False})
 
-    async def test_model_client_skips_response_format_for_claude_model(self) -> None:
+    async def test_model_client_uses_json_mode_and_disables_reasoning_for_claude_model(self) -> None:
         class CaptureModelClient(ModelClient):
             def __init__(self, settings: Settings) -> None:
                 super().__init__(settings)
@@ -197,7 +198,42 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"ok": True})
         self.assertIsNotNone(client.payload)
-        self.assertNotIn("response_format", client.payload or {})
+        self.assertEqual((client.payload or {}).get("response_format"), {"type": "json_object"})
+        self.assertEqual((client.payload or {}).get("reasoning"), {"enabled": False})
+
+    async def test_model_client_can_enable_reasoning_for_text_relay(self) -> None:
+        class CaptureModelClient(ModelClient):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.payload: dict[str, Any] | None = None
+
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                self.payload = payload
+                return {"choices": [{"message": {"content": "ok"}}]}
+
+        client = CaptureModelClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_reasoning_enabled=True,
+                model_reasoning_effort="medium",
+                model_reasoning_max_tokens=200,
+                model_fast="gpt-5.4-mini",
+                model_fast_fallbacks="",
+            )
+        )
+
+        result = await client.chat_text([{"role": "user", "content": "hi"}], tier="fast")
+
+        self.assertEqual(result, "ok")
+        self.assertEqual((client.payload or {}).get("reasoning"), {"enabled": True, "effort": "medium", "max_tokens": 200})
 
     def test_planner_payload_drops_empty_optional_sections(self) -> None:
         payload = _planner_payload_for_model(
