@@ -65,8 +65,9 @@ class ModelClient:
                 "model": model,
                 "messages": self._ensure_json_marker(messages),
                 "temperature": temperature,
-                "response_format": {"type": "json_object"},
             }
+            if self.settings.model_response_format_enabled:
+                payload["response_format"] = {"type": "json_object"}
             if self.settings.model_provider.lower() == "aliyun":
                 payload["enable_thinking"] = False
             try:
@@ -124,6 +125,8 @@ class ModelClient:
         fallback_index: int,
         errors: list[str],
     ) -> dict[str, Any]:
+        if self._uses_anthropic_messages_api():
+            return await self._post_anthropic_messages(payload, tier=tier, fallback_index=fallback_index, errors=errors)
         url = f"{self._base_url().rstrip('/')}/chat/completions"
         headers = {
             "Authorization": f"Bearer {self._api_key()}",
@@ -147,6 +150,120 @@ class ModelClient:
             "usage": raw.get("usage") or {},
         }
         return raw
+
+    async def _post_anthropic_messages(
+        self,
+        payload: dict[str, Any],
+        *,
+        tier: ModelTier,
+        fallback_index: int,
+        errors: list[str],
+    ) -> dict[str, Any]:
+        url = self._anthropic_messages_url()
+        headers = {
+            "Authorization": f"Bearer {self._api_key()}",
+            "anthropic-version": self.settings.anthropic_version,
+            "Content-Type": "application/json; charset=utf-8",
+        }
+        anthropic_payload = self._anthropic_messages_payload(payload)
+        body = json.dumps(anthropic_payload, ensure_ascii=False).encode("utf-8")
+        client = self._http_client()
+        response = await client.post(url, headers=headers, content=body)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = response.text[:800]
+            raise RuntimeError(f"Model HTTP {response.status_code}: {detail}") from exc
+        raw = self._normalize_anthropic_response(response.json())
+        self.last_usage = {
+            "provider": self.settings.model_provider,
+            "protocol": "anthropic",
+            "model": payload.get("model"),
+            "tier": tier,
+            "fallback_index": fallback_index,
+            "fallback_errors": list(errors),
+            "usage": raw.get("usage") or {},
+        }
+        return raw
+
+    def _uses_anthropic_messages_api(self) -> bool:
+        if self.settings.model_provider.lower() not in {"relay", "openai_compatible", "openai-compatible"}:
+            return False
+        protocol = (self.settings.model_relay_protocol or "auto").strip().lower()
+        if protocol == "anthropic":
+            return True
+        if protocol == "openai":
+            return False
+        return bool(self.settings.anthropic_base_url and not self.settings.model_relay_base_url)
+
+    def _anthropic_messages_url(self) -> str:
+        base_url = self._base_url().rstrip("/")
+        if base_url.endswith("/v1"):
+            return f"{base_url}/messages"
+        return f"{base_url}/v1/messages"
+
+    def _anthropic_messages_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        system_parts: list[str] = []
+        messages: list[dict[str, Any]] = []
+        for item in payload.get("messages") or []:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "user").strip().lower()
+            content = item.get("content")
+            if role == "system":
+                text = self._anthropic_content_to_text(content)
+                if text:
+                    system_parts.append(text)
+                continue
+            anthropic_role = "assistant" if role == "assistant" else "user"
+            text = self._anthropic_content_to_text(content)
+            if not text:
+                continue
+            if messages and messages[-1].get("role") == anthropic_role:
+                messages[-1]["content"] = f"{messages[-1].get('content', '')}\n{text}".strip()
+            else:
+                messages.append({"role": anthropic_role, "content": text})
+        if not messages:
+            messages.append({"role": "user", "content": "Return a brief response."})
+        result: dict[str, Any] = {
+            "model": payload.get("model"),
+            "messages": messages,
+            "max_tokens": int(self.settings.model_max_tokens),
+            "temperature": payload.get("temperature", 0.1),
+        }
+        if system_parts:
+            result["system"] = "\n\n".join(system_parts)
+        return result
+
+    @staticmethod
+    def _anthropic_content_to_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if text:
+                        parts.append(str(text))
+            return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+        return str(content or "").strip()
+
+    @staticmethod
+    def _normalize_anthropic_response(raw: dict[str, Any]) -> dict[str, Any]:
+        parts: list[str] = []
+        for item in raw.get("content") or []:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if text:
+                    parts.append(str(text))
+        return {
+            "choices": [{"message": {"content": "\n".join(parts).strip()}}],
+            "usage": raw.get("usage") or {},
+            "raw_provider": "anthropic",
+        }
 
     def _http_client(self) -> httpx.AsyncClient:
         timeout = int(self.settings.model_timeout_seconds)

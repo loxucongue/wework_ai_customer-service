@@ -23,9 +23,18 @@ class Settings(BaseSettings):
     coze_oauth_token_ttl: int = 7200
     aliyun_dashscope_api_key: str = Field(default="", repr=False)
     volcengine_ark_api_key: str = Field(default="", repr=False)
+    model_relay_api_key: str = Field(default="", repr=False)
+    claude_relay_api_key: str = Field(default="", repr=False)
+    anthropic_auth_token: str = Field(default="", repr=False)
     model_provider: str = "aliyun"
     aliyun_openai_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     volcengine_openai_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    model_relay_base_url: str = ""
+    anthropic_base_url: str = ""
+    model_relay_protocol: str = "auto"
+    anthropic_version: str = "2023-06-01"
+    model_max_tokens: int = 4096
+    model_response_format_enabled: bool = True
     model_fast: str = "qwen-plus"
     model_planner: str = "qwen-plus"
     model_balanced: str = "qwen-plus"

@@ -14,6 +14,8 @@ def api_key(settings: Settings) -> str:
     provider = settings.model_provider.lower()
     if provider == "volcengine":
         return settings.volcengine_ark_api_key
+    if provider in {"relay", "openai_compatible", "openai-compatible"}:
+        return settings.model_relay_api_key or settings.claude_relay_api_key or settings.anthropic_auth_token
     return settings.aliyun_dashscope_api_key
 
 
@@ -21,6 +23,8 @@ def base_url(settings: Settings) -> str:
     provider = settings.model_provider.lower()
     if provider == "volcengine":
         return settings.volcengine_openai_base_url
+    if provider in {"relay", "openai_compatible", "openai-compatible"}:
+        return settings.model_relay_base_url or settings.anthropic_base_url
     return settings.aliyun_openai_base_url
 
 
@@ -56,7 +60,7 @@ def model_names(settings: Settings, tier: ModelTier) -> list[str]:
     for name in split_models(fallback_text):
         if name:
             models.append(name)
-    if tier == "planner" and "qwen-turbo" not in models:
+    if tier == "planner" and settings.model_provider.lower() == "aliyun" and "qwen-turbo" not in models:
         models.append("qwen-turbo")
     return models
 

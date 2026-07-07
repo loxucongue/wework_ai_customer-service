@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import unittest
+from typing import Any
 
 from app.config import Settings
 from app.graph.nodes.image_info import fallback_image_info
 from app.graph.planner.brain_v2 import _planner_payload_for_model
 from app.services.model_client import ModelClient
-from app.services.model_selection import model_names
+from app.services.model_selection import api_key, base_url, model_names
+
+
+def _settings(**overrides: Any) -> Settings:
+    return Settings(_env_file=None, **overrides)
 
 
 class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_model_client_uses_five_second_connect_timeout(self) -> None:
-        client = ModelClient(Settings(model_timeout_seconds=45))
+        client = ModelClient(_settings(model_timeout_seconds=45))
 
         http_client = client._http_client()
 
@@ -20,19 +25,128 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         await client.aclose()
 
     def test_planner_retries_primary_once_then_falls_back_to_qwen_turbo(self) -> None:
-        settings = Settings(model_planner="qwen-plus", model_planner_fallbacks="")
+        settings = _settings(model_planner="qwen-plus", model_planner_fallbacks="")
 
         self.assertEqual(model_names(settings, "planner"), ["qwen-plus", "qwen-plus", "qwen-turbo"])
 
     def test_planner_keeps_qwen_turbo_after_custom_fallbacks(self) -> None:
-        settings = Settings(model_planner="qwen-plus", model_planner_fallbacks="custom-model")
+        settings = _settings(model_planner="qwen-plus", model_planner_fallbacks="custom-model")
 
         self.assertEqual(model_names(settings, "planner"), ["qwen-plus", "qwen-plus", "custom-model", "qwen-turbo"])
 
+    def test_relay_planner_does_not_append_qwen_turbo(self) -> None:
+        settings = _settings(
+            model_provider="relay",
+            model_planner="gpt-5.4-mini",
+            model_planner_fallbacks="gpt-5.4",
+        )
+
+        self.assertEqual(model_names(settings, "planner"), ["gpt-5.4-mini", "gpt-5.4-mini", "gpt-5.4"])
+
     def test_reply_uses_qwen_plus_multiple_times_without_turbo(self) -> None:
-        settings = Settings(model_reply="qwen-plus", model_reply_fallbacks="qwen-plus,qwen-plus")
+        settings = _settings(model_reply="qwen-plus", model_reply_fallbacks="qwen-plus,qwen-plus")
 
         self.assertEqual(model_names(settings, "reply"), ["qwen-plus", "qwen-plus", "qwen-plus"])
+
+    def test_relay_provider_uses_relay_credentials(self) -> None:
+        settings = _settings(
+            model_provider="relay",
+            model_relay_api_key="relay-key",
+            model_relay_base_url="https://relay.example.com/v1",
+            aliyun_dashscope_api_key="aliyun-key",
+        )
+
+        self.assertEqual(api_key(settings), "relay-key")
+        self.assertEqual(base_url(settings), "https://relay.example.com/v1")
+
+    def test_relay_provider_accepts_anthropic_env_aliases(self) -> None:
+        settings = _settings(
+            model_provider="relay",
+            anthropic_auth_token="anthropic-style-key",
+            anthropic_base_url="https://linkai.shop/v1",
+        )
+
+        self.assertEqual(api_key(settings), "anthropic-style-key")
+        self.assertEqual(base_url(settings), "https://linkai.shop/v1")
+
+    def test_relay_provider_accepts_claude_test_key_alias(self) -> None:
+        settings = _settings(
+            model_provider="relay",
+            claude_relay_api_key="claude-test-key",
+            anthropic_auth_token="anthropic-style-key",
+            anthropic_base_url="https://linkai.shop/v1",
+        )
+
+        self.assertEqual(api_key(settings), "claude-test-key")
+
+    def test_relay_auto_uses_anthropic_messages_when_only_anthropic_base_is_set(self) -> None:
+        client = ModelClient(
+            _settings(
+                model_provider="relay",
+                anthropic_auth_token="anthropic-style-key",
+                anthropic_base_url="https://linkai.shop/v1",
+                model_relay_protocol="auto",
+            )
+        )
+
+        self.assertTrue(client._uses_anthropic_messages_api())
+        self.assertEqual(client._anthropic_messages_url(), "https://linkai.shop/v1/messages")
+
+    def test_anthropic_payload_moves_system_messages_to_system_field(self) -> None:
+        client = ModelClient(_settings(model_provider="relay", anthropic_auth_token="key", anthropic_base_url="https://linkai.shop"))
+
+        payload = client._anthropic_messages_payload(
+            {
+                "model": "anthropic/claude-haiku-4-5-20251001",
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": "Return JSON only."},
+                    {"role": "user", "content": "hello"},
+                    {"role": "assistant", "content": "hi"},
+                    {"role": "user", "content": [{"type": "text", "text": "next"}]},
+                ],
+            }
+        )
+
+        self.assertEqual(payload["system"], "Return JSON only.")
+        self.assertEqual(payload["messages"], [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "next"},
+        ])
+
+    async def test_model_client_can_disable_response_format_for_relay_json(self) -> None:
+        class CaptureModelClient(ModelClient):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.payload: dict[str, Any] | None = None
+
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                self.payload = payload
+                return {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+
+        client = CaptureModelClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_response_format_enabled=False,
+                model_fast="openai/gpt-5.4-mini",
+                model_fast_fallbacks="",
+            )
+        )
+
+        result = await client.chat_json([{"role": "user", "content": "Return JSON."}], tier="fast")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertIsNotNone(client.payload)
+        self.assertNotIn("response_format", client.payload or {})
 
     def test_planner_payload_drops_empty_optional_sections(self) -> None:
         payload = _planner_payload_for_model(
