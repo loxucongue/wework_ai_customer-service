@@ -66,7 +66,7 @@ class ModelClient:
                 "messages": self._ensure_json_marker(messages),
                 "temperature": temperature,
             }
-            if self.settings.model_response_format_enabled:
+            if self.settings.model_response_format_enabled and not model_selection.is_claude_model(model):
                 payload["response_format"] = {"type": "json_object"}
             if self.settings.model_provider.lower() == "aliyun":
                 payload["enable_thinking"] = False
@@ -125,11 +125,12 @@ class ModelClient:
         fallback_index: int,
         errors: list[str],
     ) -> dict[str, Any]:
-        if self._uses_anthropic_messages_api():
+        model = str(payload.get("model") or "")
+        if self._uses_anthropic_messages_api(model):
             return await self._post_anthropic_messages(payload, tier=tier, fallback_index=fallback_index, errors=errors)
-        url = f"{self._base_url().rstrip('/')}/chat/completions"
+        url = f"{self._base_url(model).rstrip('/')}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {self._api_key()}",
+            "Authorization": f"Bearer {self._api_key(model)}",
             "Content-Type": "application/json; charset=utf-8",
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -159,9 +160,10 @@ class ModelClient:
         fallback_index: int,
         errors: list[str],
     ) -> dict[str, Any]:
-        url = self._anthropic_messages_url()
+        model = str(payload.get("model") or "")
+        url = self._anthropic_messages_url(model)
         headers = {
-            "Authorization": f"Bearer {self._api_key()}",
+            "Authorization": f"Bearer {self._api_key(model)}",
             "anthropic-version": self.settings.anthropic_version,
             "Content-Type": "application/json; charset=utf-8",
         }
@@ -186,7 +188,7 @@ class ModelClient:
         }
         return raw
 
-    def _uses_anthropic_messages_api(self) -> bool:
+    def _uses_anthropic_messages_api(self, model: str | None = None) -> bool:
         if self.settings.model_provider.lower() not in {"relay", "openai_compatible", "openai-compatible"}:
             return False
         protocol = (self.settings.model_relay_protocol or "auto").strip().lower()
@@ -194,10 +196,12 @@ class ModelClient:
             return True
         if protocol == "openai":
             return False
+        if protocol == "mixed":
+            return model_selection.is_claude_model(model) and bool(self.settings.anthropic_base_url)
         return bool(self.settings.anthropic_base_url and not self.settings.model_relay_base_url)
 
-    def _anthropic_messages_url(self) -> str:
-        base_url = self._base_url().rstrip("/")
+    def _anthropic_messages_url(self, model: str | None = None) -> str:
+        base_url = self._anthropic_base_url(model).rstrip("/")
         if base_url.endswith("/v1"):
             return f"{base_url}/messages"
         return f"{base_url}/v1/messages"
@@ -287,11 +291,14 @@ class ModelClient:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    def _api_key(self) -> str:
-        return model_selection.api_key(self.settings)
+    def _api_key(self, model: str | None = None) -> str:
+        return model_selection.api_key(self.settings, model=model)
 
-    def _base_url(self) -> str:
+    def _base_url(self, model: str | None = None) -> str:
         return model_selection.base_url(self.settings)
+
+    def _anthropic_base_url(self, model: str | None = None) -> str:
+        return self.settings.anthropic_base_url or self._base_url(model)
 
     def _model_name(self, tier: ModelTier) -> str:
         return model_selection.model_name(self.settings, tier)

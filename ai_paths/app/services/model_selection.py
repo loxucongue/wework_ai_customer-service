@@ -10,11 +10,13 @@ from app.config import Settings
 ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision"]
 
 
-def api_key(settings: Settings) -> str:
+def api_key(settings: Settings, model: str | None = None) -> str:
     provider = settings.model_provider.lower()
     if provider == "volcengine":
         return settings.volcengine_ark_api_key
     if provider in {"relay", "openai_compatible", "openai-compatible"}:
+        if is_claude_model(model):
+            return settings.claude_relay_api_key or settings.anthropic_auth_token or settings.model_relay_api_key
         return settings.model_relay_api_key or settings.claude_relay_api_key or settings.anthropic_auth_token
     return settings.aliyun_dashscope_api_key
 
@@ -67,6 +69,13 @@ def model_names(settings: Settings, tier: ModelTier) -> list[str]:
 
 def split_models(value: str) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def is_claude_model(model: str | None) -> bool:
+    value = str(model or "").strip().lower()
+    if not value:
+        return False
+    return value.startswith("claude-") or "/claude-" in value or value.startswith("anthropic/claude-")
 
 
 def should_try_next_model(exc: Exception) -> bool:

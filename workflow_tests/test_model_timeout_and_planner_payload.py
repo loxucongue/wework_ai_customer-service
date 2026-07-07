@@ -7,7 +7,7 @@ from app.config import Settings
 from app.graph.nodes.image_info import fallback_image_info
 from app.graph.planner.brain_v2 import _planner_payload_for_model
 from app.services.model_client import ModelClient
-from app.services.model_selection import api_key, base_url, model_names
+from app.services.model_selection import api_key, base_url, is_claude_model, model_names
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -79,6 +79,23 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(api_key(settings), "claude-test-key")
 
+    def test_relay_provider_uses_model_specific_key_for_claude_candidates(self) -> None:
+        settings = _settings(
+            model_provider="relay",
+            model_relay_api_key="gpt-key",
+            claude_relay_api_key="claude-key",
+            anthropic_auth_token="anthropic-style-key",
+        )
+
+        self.assertEqual(api_key(settings, model="gpt-5.4-mini"), "gpt-key")
+        self.assertEqual(api_key(settings, model="claude-haiku-4-5-20251001"), "claude-key")
+        self.assertEqual(api_key(settings, model="anthropic/claude-opus-4-7"), "claude-key")
+
+    def test_claude_model_detection_accepts_gateway_ids(self) -> None:
+        self.assertTrue(is_claude_model("claude-haiku-4-5-20251001"))
+        self.assertTrue(is_claude_model("anthropic/claude-opus-4-7"))
+        self.assertFalse(is_claude_model("gpt-5.4-mini"))
+
     def test_relay_auto_uses_anthropic_messages_when_only_anthropic_base_is_set(self) -> None:
         client = ModelClient(
             _settings(
@@ -138,6 +155,40 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
                 model_relay_api_key="relay-key",
                 model_response_format_enabled=False,
                 model_fast="openai/gpt-5.4-mini",
+                model_fast_fallbacks="",
+            )
+        )
+
+        result = await client.chat_json([{"role": "user", "content": "Return JSON."}], tier="fast")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertIsNotNone(client.payload)
+        self.assertNotIn("response_format", client.payload or {})
+
+    async def test_model_client_skips_response_format_for_claude_model(self) -> None:
+        class CaptureModelClient(ModelClient):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.payload: dict[str, Any] | None = None
+
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                self.payload = payload
+                return {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+
+        client = CaptureModelClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                claude_relay_api_key="claude-key",
+                model_response_format_enabled=True,
+                model_fast="claude-haiku-4-5-20251001",
                 model_fast_fallbacks="",
             )
         )

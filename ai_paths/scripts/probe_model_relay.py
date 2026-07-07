@@ -53,6 +53,11 @@ def _anthropic_text(raw: dict[str, Any]) -> str:
     ).strip()
 
 
+def _is_claude_model(model: str) -> bool:
+    value = str(model or "").strip().lower()
+    return value.startswith("claude-") or "/claude-" in value or value.startswith("anthropic/claude-")
+
+
 async def _probe_model(
     client: httpx.AsyncClient,
     *,
@@ -61,6 +66,7 @@ async def _probe_model(
     model: str,
     json_mode: bool,
     protocol: str,
+    use_response_format: bool,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     try:
@@ -104,7 +110,8 @@ async def _probe_model(
                     {"role": "system", "content": "Return valid JSON only."},
                     {"role": "user", "content": '{"task":"connectivity_test","reply_schema":{"ok":true,"model":"string"}}'},
                 ]
-                payload["response_format"] = {"type": "json_object"}
+                if use_response_format and not _is_claude_model(model):
+                    payload["response_format"] = {"type": "json_object"}
             response = await client.post(
                 url,
                 headers={
@@ -152,7 +159,8 @@ async def _main() -> int:
     parser.add_argument("--models", default=os.getenv("MODEL_RELAY_PROBE_MODELS", ""))
     parser.add_argument("--timeout", type=float, default=float(os.getenv("MODEL_RELAY_PROBE_TIMEOUT", "60")))
     parser.add_argument("--protocol", choices=["auto", "openai", "anthropic"], default=os.getenv("MODEL_RELAY_PROTOCOL", "auto"))
-    parser.add_argument("--json-mode", action="store_true", help="Also require OpenAI response_format=json_object support.")
+    parser.add_argument("--json-mode", action="store_true", help="Ask the model to return a JSON object.")
+    parser.add_argument("--no-response-format", action="store_true", help="Do not send OpenAI response_format=json_object.")
     args = parser.parse_args()
 
     defaults = _settings_defaults()
@@ -195,11 +203,24 @@ async def _main() -> int:
                 model=model,
                 json_mode=args.json_mode,
                 protocol=protocol,
+                use_response_format=not args.no_response_format,
             )
             results.append(result)
             status = "OK" if result["ok"] else "FAIL"
             print(f"{status}\t{result['model']}\t{result['elapsed_ms']}ms\tHTTP {result['status_code']}", flush=True)
-        print(json.dumps({"base_url": base_url, "protocol": protocol, "json_mode": args.json_mode, "results": results}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {
+                    "base_url": base_url,
+                    "protocol": protocol,
+                    "json_mode": args.json_mode,
+                    "response_format": bool(args.json_mode and not args.no_response_format),
+                    "results": results,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     return 0 if all(item.get("ok") for item in results) else 1
 
 
