@@ -16,6 +16,7 @@ from app.graph.nodes.appointment_time_utils import normalize_time_text, summariz
 from app.graph.nodes.profile_nodes import _profile_conversation_history
 from app.graph.nodes.reply_nodes import (
     _ensure_required_handoff_notice,
+    _maybe_build_effect_case_fallback,
     _maybe_build_required_payment_collection_fallback,
     _suppress_stale_handoff_notice,
 )
@@ -2103,6 +2104,27 @@ def test_reply_validation_allows_view_case_reference_after_case_tool() -> None:
             },
         },
     )
+
+
+def test_effect_case_fallback_uses_case_image_and_positive_text() -> None:
+    state = {
+        "normalized_content": "老年斑可以改善吗",
+        "planner_decision": "need_tools",
+        "planner_sub_rule_id": "S1_CASE_REQUEST",
+        "customer_type": "effect",
+        "main_blocker": "effect",
+        "fact_envelope": {
+            "structured_facts": {
+                "case_facts": [{"document_id": "doc-1", "image_url": "https://example.com/case.jpg"}]
+            }
+        },
+    }
+
+    messages = _maybe_build_effect_case_fallback(state, ValueError("unfinished_tool_promise_after_tool_execution"))
+
+    assert [item["type"] for item in messages or []] == ["text", "image", "text"]
+    assert "老年斑可以改善" in messages[0]["content"]["text"]
+    validate_reply_consistency(messages or [], state)
 
 
 def _u(value: str) -> str:

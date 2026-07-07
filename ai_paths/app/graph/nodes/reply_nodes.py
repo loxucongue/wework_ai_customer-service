@@ -128,16 +128,21 @@ def create_synthesize_reply_node(
                                                 messages = handoff_fallback
                                                 validate_reply_consistency(messages, state)
                                             else:
-                                                tool_fallback = _maybe_build_store_tool_unavailable_fallback(state, retry_validation_exc)
-                                                if tool_fallback is not None:
-                                                    messages = tool_fallback
+                                                effect_case_fallback = _maybe_build_effect_case_fallback(state, retry_validation_exc)
+                                                if effect_case_fallback is not None:
+                                                    messages = effect_case_fallback
                                                     validate_reply_consistency(messages, state)
                                                 else:
-                                                    repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
-                                                    if repaired_messages is None:
-                                                        raise
-                                                    messages = repaired_messages
-                                                    validate_reply_consistency(messages, state)
+                                                    tool_fallback = _maybe_build_store_tool_unavailable_fallback(state, retry_validation_exc)
+                                                    if tool_fallback is not None:
+                                                        messages = tool_fallback
+                                                        validate_reply_consistency(messages, state)
+                                                    else:
+                                                        repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
+                                                        if repaired_messages is None:
+                                                            raise
+                                                        messages = repaired_messages
+                                                        validate_reply_consistency(messages, state)
                         else:
                             retry_validation_exc = None
                         if retry_validation_exc is not None and _messages_have_handoff_notice(messages):
@@ -210,26 +215,37 @@ def create_synthesize_reply_node(
                                     }
                                     model_call["output"] = {"messages": len(messages)}
                                 else:
-                                    tool_fallback = _maybe_build_store_tool_unavailable_fallback(state, exc)
-                                    if tool_fallback is not None:
-                                        messages = tool_fallback
+                                    effect_case_fallback = _maybe_build_effect_case_fallback(state, exc)
+                                    if effect_case_fallback is not None:
+                                        messages = effect_case_fallback
                                         validate_reply_consistency(messages, state)
-                                        reply_source = "deterministic_store_tool_unavailable_fallback"
+                                        reply_source = "deterministic_effect_case_fallback"
                                         model_call["fallback"] = {
                                             "reason": primary_error,
-                                            "strategy": "deterministic_store_tool_unavailable",
+                                            "strategy": "deterministic_effect_case",
                                         }
                                         model_call["output"] = {"messages": len(messages)}
                                     else:
-                                        model_call["error"] = primary_error
-                                        errors.append(
-                                            {
-                                                "node": "synthesize_reply",
-                                                "message": "final_reply_failed",
-                                                "detail": primary_error,
+                                        tool_fallback = _maybe_build_store_tool_unavailable_fallback(state, exc)
+                                        if tool_fallback is not None:
+                                            messages = tool_fallback
+                                            validate_reply_consistency(messages, state)
+                                            reply_source = "deterministic_store_tool_unavailable_fallback"
+                                            model_call["fallback"] = {
+                                                "reason": primary_error,
+                                                "strategy": "deterministic_store_tool_unavailable",
                                             }
-                                        )
-                                        messages = []
+                                            model_call["output"] = {"messages": len(messages)}
+                                        else:
+                                            model_call["error"] = primary_error
+                                            errors.append(
+                                                {
+                                                    "node": "synthesize_reply",
+                                                    "message": "final_reply_failed",
+                                                    "detail": primary_error,
+                                                }
+                                            )
+                                            messages = []
 
             messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
             if handoff_notice_appended:
@@ -441,6 +457,55 @@ def _maybe_build_handoff_notice_fallback(
         {"type": "human_handoff_notice", "order": 2, "content": {"handoff_reason": reason}},
     ]
     return _renumber(fallback)
+
+
+def _maybe_build_effect_case_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
+    error = str(exc)
+    if not any(
+        marker in error
+        for marker in (
+            "effect_reply_confidence_order_required",
+            "case_image_required_for_effect_turn",
+            "unfinished_tool_promise_after_tool_execution",
+        )
+    ):
+        return None
+    case_fact = _first_case_fact_with_image(state)
+    image_url = str(case_fact.get("image_url") or "").strip() if case_fact else ""
+    if not image_url:
+        return None
+    return _renumber(
+        [
+            {"type": "text", "order": 1, "content": {"text": _effect_case_fallback_text(state)}},
+            {"type": "image", "order": 2, "content": image_url},
+            {
+                "type": "text",
+                "order": 3,
+                "content": {"text": "到店会先检测斑型和皮肤状态，看适合再安排。"},
+            },
+        ]
+    )
+
+
+def _first_case_fact_with_image(state: AgentState) -> dict[str, Any]:
+    structured = _structured_facts(state)
+    for item in structured.get("case_facts") or []:
+        if isinstance(item, dict) and str(item.get("image_url") or "").strip():
+            return item
+    return {}
+
+
+def _effect_case_fallback_text(state: AgentState) -> str:
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if "老年斑" in content:
+        return "老年斑可以改善，很多客户反馈斑点淡化、肤色更均匀。"
+    if "雀斑" in content:
+        return "雀斑可以做，很多客户反馈斑点淡化、肤色更均匀。"
+    if "晒斑" in content:
+        return "晒斑可以改善，很多客户反馈斑点淡化、肤色更均匀。"
+    if "黑色素" in content:
+        return "黑色素斑点可以看改善，很多客户反馈淡化效果不错。"
+    return "淡斑方向可以看，很多客户反馈改善效果不错。"
 
 
 def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
