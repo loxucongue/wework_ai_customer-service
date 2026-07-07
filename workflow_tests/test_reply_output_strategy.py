@@ -1723,6 +1723,27 @@ def test_reply_validation_allows_distance_rank_without_numeric_value() -> None:
     )
 
 
+def test_reply_validation_allows_asking_location_before_nearby_matching() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "淡斑效果因人而异，会先检测皮肤状态再定方案。方便告诉我您所在的城市吗？我帮您匹配就近门店。"},
+            }
+        ],
+        {"normalized_content": "我想淡斑，效果怎么样", "planner_decision": "direct_reply"},
+    )
+
+
+def test_reply_validation_requires_distance_fact_for_specific_nearer_store() -> None:
+    with pytest.raises(ValueError, match="distance_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "厦门思明店离您更近一些。"}}],
+            {"normalized_content": "哪家近一点", "planner_decision": "direct_reply"},
+        )
+
+
 @pytest.mark.parametrize(
     "text",
     [

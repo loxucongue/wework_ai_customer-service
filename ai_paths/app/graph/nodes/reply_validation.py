@@ -544,11 +544,21 @@ def _asserts_address(text: str) -> bool:
 
 def _asserts_distance_ranking(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
+    if _asks_location_before_distance_matching(compact):
+        return False
     if any(term in compact for term in ("最近的是", "离您最近", "离你最近", "距离最近", "就近门店", "就近的门店")):
         return True
     return any(term in compact for term in ("更近", "近一些", "近一点", "较近")) and any(
         term in compact for term in ("门店", "店", "地址", "导航", "位置", "离您", "离你")
     )
+
+
+def _asks_location_before_distance_matching(compact: str) -> bool:
+    if not compact:
+        return False
+    asks_location = any(term in compact for term in ("告诉我您所在的城市", "告诉我所在城市", "您所在的城市", "您在哪个城市", "哪个城市", "哪个区", "城市或区域", "城市或者区域", "发我定位", "发个定位"))
+    future_match = any(term in compact for term in ("帮您匹配", "帮你匹配", "给您匹配", "给你匹配", "匹配附近", "匹配就近", "查附近", "推荐附近"))
+    return asks_location and future_match
 
 
 def _asserts_customer_visible_distance_value(text: str, state: dict[str, Any]) -> bool:
