@@ -133,6 +133,9 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_payment_collection_amount_text(messages, state)
     _validate_deposit_refund_wording(messages, state)
     _validate_case_image_priority(messages, state)
+    _validate_case_image_required_for_effect_turn(messages, state)
+    _validate_effect_reply_confidence_order(messages, state)
+    _validate_effect_absolute_safety_claims(messages, state)
     _validate_store_address_message_facts(messages, state)
     _validate_store_address_card_consistency(messages, state)
     _validate_generic_store_question_does_not_use_context_store(messages, state)
@@ -253,6 +256,56 @@ def _validate_case_image_priority(messages: list[dict[str, Any]], state: dict[st
             continue
         if _normalized_image_url(message_content_text(item.get("content"))) == activity_marker:
             raise ValueError("case_context_must_not_use_activity_intro_image")
+
+
+def _validate_case_image_required_for_effect_turn(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if not _is_case_or_effect_turn(state) or not _has_visible_case_image_fact(state):
+        return
+    case_urls = _case_image_urls(state)
+    for item in messages:
+        if not isinstance(item, dict) or str(item.get("type") or "") != "image":
+            continue
+        if _normalized_image_url(message_content_text(item.get("content"))) in case_urls:
+            return
+    raise ValueError("case_image_required_for_effect_turn")
+
+
+def _validate_effect_reply_confidence_order(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if not _is_case_or_effect_turn(state):
+        return
+    text = _first_text(messages)
+    if not text:
+        return
+    prefix = re.sub(r"^[\s，。,.、~～哈呀亲您你好您好]+", "", text)[:40]
+    cautious_terms = ("因人而异", "每个人不同", "每个人肤质不同", "不保证", "不能保证", "不好保证", "具体要看", "要看个人情况")
+    confidence_terms = ("可以做", "可以先看", "能做", "能改善", "大多数", "反馈不错", "效果不错", "改善明显", "改善反馈")
+    bad_indexes = [prefix.find(term) for term in cautious_terms if prefix.find(term) >= 0]
+    if not bad_indexes:
+        return
+    first_bad = min(bad_indexes)
+    good_indexes = [prefix.find(term) for term in confidence_terms if prefix.find(term) >= 0]
+    first_good = min(good_indexes) if good_indexes else -1
+    if first_good < 0 or first_bad < first_good:
+        raise ValueError("effect_reply_confidence_order_required")
+
+
+def _validate_effect_absolute_safety_claims(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    text = re.sub(r"\s+", "", _combined_text(messages))
+    if not text:
+        return
+    banned = (
+        "绝不会反黑",
+        "不会做坏",
+        "不会越做越差",
+        "一定有效",
+        "一次一定",
+        "保证效果",
+        "包效果",
+    )
+    if any(term in text for term in banned):
+        raise ValueError("effect_absolute_safety_claim")
+    if re.search(r"不会[^，。！？,.!?]{0,6}反黑", text):
+        raise ValueError("effect_absolute_safety_claim")
 
 
 def _validate_store_address_message_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -435,13 +488,59 @@ def _is_case_or_effect_turn(state: dict[str, Any]) -> bool:
         str(state.get(key) or "")
         for key in ("planner_sub_rule_id", "customer_type", "main_blocker", "next_step")
     ).lower()
-    return any(marker in values for marker in ("case", "effect"))
+    if any(marker in values for marker in ("case", "effect")):
+        return True
+    return _is_effect_question_text(str(state.get("normalized_content") or state.get("content") or ""))
+
+
+def _is_effect_question_text(content: str) -> bool:
+    text = str(content or "")
+    if not text:
+        return False
+    return any(
+        term in text
+        for term in (
+            "效果怎么样",
+            "有没有效果",
+            "有效果吗",
+            "会不会没效果",
+            "没效果怎么办",
+            "一次有没有效果",
+            "一次效果",
+            "做完明显",
+            "能不能淡",
+            "能淡吗",
+            "可以淡吗",
+            "怕反黑",
+            "会不会反黑",
+            "怕做坏",
+            "效果图",
+            "案例",
+        )
+    )
 
 
 def _has_visible_case_image_fact(state: dict[str, Any]) -> bool:
+    return bool(_case_image_urls(state))
+
+
+def _case_image_urls(state: dict[str, Any]) -> set[str]:
     structured = _structured_facts(state)
     case_facts = structured.get("case_facts") if isinstance(structured.get("case_facts"), list) else []
-    return any(isinstance(item, dict) and str(item.get("image_url") or "").strip() for item in case_facts)
+    return {
+        _normalized_image_url(str(item.get("image_url") or ""))
+        for item in case_facts
+        if isinstance(item, dict) and str(item.get("image_url") or "").strip()
+    }
+
+
+def _first_text(messages: list[dict[str, Any]]) -> str:
+    for item in messages:
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text":
+            text = message_content_text(item.get("content"))
+            if text:
+                return text
+    return ""
 
 
 def _activity_intro_image_url(state: dict[str, Any]) -> str:

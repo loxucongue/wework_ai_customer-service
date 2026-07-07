@@ -646,6 +646,12 @@ def _reply_repair_hint(error: str) -> str:
         return "预约金退款口径统一说“到店抵扣，不做退10元”。不要说“退还10元/退还20元/全额退款/一分不少退还/不满意退”，避免同客户口径冲突。"
     if "case_context_must_not_use_activity_intro_image" in error:
         return "本轮客户在问效果或案例，且已有 case_facts 案例图片事实。必须回答效果顾虑，并且如输出 image，只能使用 case_facts 里的 image_url；不要输出活动宣传图。"
+    if "case_image_required_for_effect_turn" in error:
+        return "本轮客户在问效果或案例，且已有 case_facts 案例图片事实。必须先用 text 肯定效果方向，再追加 1 条 case_facts.image_url 的 image。"
+    if "effect_reply_confidence_order_required" in error:
+        return "效果疑问要先肯定对应需求可以做、大多数客户改善反馈不错，再补到店检测更准确；不要第一句就说因人而异、不保证或具体看个人情况。"
+    if "effect_absolute_safety_claim" in error:
+        return "效果和安全顾虑可以积极承接，但不要承诺不会反黑、不会做坏、一定有效、保证效果或包效果；改成先检测评估、按皮肤状态操作、降低刺激风险。"
     if "reply_too_similar" in error:
         return "客户在重复追问同类问题，请换一个角度回答，不要复用上一轮核心话术。"
     if "two_text_required" in error:

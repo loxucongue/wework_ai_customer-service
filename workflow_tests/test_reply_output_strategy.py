@@ -1814,7 +1814,7 @@ def test_reply_validation_allows_asking_location_before_nearby_matching() -> Non
             {
                 "type": "text",
                 "order": 1,
-                "content": {"text": "淡斑效果因人而异，会先检测皮肤状态再定方案。方便告诉我您所在的城市吗？我帮您匹配就近门店。"},
+                "content": {"text": "可以做，这类斑点大多数客户改善反馈都不错，到店检测后看斑型会更准。方便告诉我您所在城市吗？"},
             }
         ],
         {"normalized_content": "我想淡斑，效果怎么样", "planner_decision": "direct_reply"},
@@ -1963,6 +1963,67 @@ def test_reply_validation_allows_case_image_when_case_fact_available() -> None:
             "customer_type": "effect",
             "main_blocker": "effect",
             "business_rules": {"offer": {"activity_intro_image_url": "https://example.com/activity.jpg"}},
+            "fact_envelope": {
+                "structured_facts": {
+                    "case_facts": [{"document_id": "doc-1", "image_url": "https://example.com/case.jpg"}]
+                }
+            },
+        },
+    )
+
+
+def test_reply_validation_requires_case_image_for_effect_turn_when_available() -> None:
+    state = {
+        "planner_sub_rule_id": "S1_CASE_REQUEST",
+        "customer_type": "effect",
+        "main_blocker": "effect",
+        "fact_envelope": {
+            "structured_facts": {
+                "case_facts": [{"document_id": "doc-1", "image_url": "https://example.com/case.jpg"}]
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="case_image_required_for_effect_turn"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "可以做，这类斑点大多数客户改善反馈都不错。"}}],
+            state,
+        )
+
+
+def test_reply_validation_rejects_effect_reply_starting_with_risk_disclaimer() -> None:
+    with pytest.raises(ValueError, match="effect_reply_confidence_order_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "淡斑效果因人而异，主要看斑点类型和皮肤状态。"}}],
+            {
+                "planner_sub_rule_id": "S1_CASE_REQUEST",
+                "customer_type": "effect",
+                "main_blocker": "effect",
+            },
+        )
+
+
+def test_reply_validation_rejects_effect_absolute_safety_claim() -> None:
+    with pytest.raises(ValueError, match="effect_absolute_safety_claim"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "淡斑方向可以看，不会导致反黑，到店检测后再安排。"}}],
+            {"normalized_content": "做完会不会反黑"},
+        )
+
+
+def test_reply_validation_allows_positive_effect_text_and_case_image() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "可以做，这类斑点大多数客户改善反馈都不错，到店检测后看斑型会更准。"},
+            },
+            {"type": "image", "order": 2, "content": {"url": "https://example.com/case.jpg"}},
+        ],
+        {
+            "planner_sub_rule_id": "S1_CASE_REQUEST",
+            "customer_type": "effect",
+            "main_blocker": "effect",
             "fact_envelope": {
                 "structured_facts": {
                     "case_facts": [{"document_id": "doc-1", "image_url": "https://example.com/case.jpg"}]
