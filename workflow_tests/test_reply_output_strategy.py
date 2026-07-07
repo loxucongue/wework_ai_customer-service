@@ -539,6 +539,40 @@ def test_payment_collection_amount_inherits_recent_twenty_yuan_context() -> None
     assert payment["content"]["amount"] == 20
 
 
+def test_payment_collection_amount_infers_recent_companion_confirmation() -> None:
+    state = {
+        "normalized_content": _u(r"\u53ef\u4ee5\uff0c\u53d1\u9884\u7ea6\u91d1\u5165\u53e3"),
+        "content": _u(r"\u53ef\u4ee5\uff0c\u53d1\u9884\u7ea6\u91d1\u5165\u53e3"),
+        "conversation_history": [
+            _u(r"\u7528\u6237: \u670b\u53cb\u53ef\u4ee5\u4e00\u8d77\u8fc7\u53bb\u5417"),
+            _u(r"\u5c0f\u8d1d: \u53ef\u4ee5\uff0c\u670b\u53cb\u4e5f\u80fd\u4e00\u8d77\u53bb\u3002"),
+        ],
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "accompany",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "content": {"text": _u(r"\u53ef\u4ee5\uff0c10\u5143\u9884\u7ea6\u91d1\u5165\u53e3\u53d1\u60a8")},
+                },
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    payment = [item for item in plan["planner_reply_messages"] if item["type"] == "payment_collection"][0]
+    assert payment["content"]["amount"] == 20
+
+
 def test_reply_validation_rejects_text_twenty_yuan_with_ten_yuan_card() -> None:
     with pytest.raises(ValueError, match="payment_collection_amount_text_mismatch"):
         validate_reply_consistency(
