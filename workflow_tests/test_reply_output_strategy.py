@@ -2081,6 +2081,30 @@ def test_reply_validation_allows_positive_effect_text_and_case_image() -> None:
     )
 
 
+def test_reply_validation_allows_view_case_reference_after_case_tool() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "老年斑可以改善，很多客户反馈斑点淡化明显，先给您看这张同类参考。"},
+            },
+            {"type": "image", "order": 2, "content": {"url": "https://example.com/case.jpg"}},
+        ],
+        {
+            "planner_decision": "need_tools",
+            "planner_sub_rule_id": "S1_CASE_REQUEST",
+            "customer_type": "effect",
+            "main_blocker": "effect",
+            "fact_envelope": {
+                "structured_facts": {
+                    "case_facts": [{"document_id": "doc-1", "image_url": "https://example.com/case.jpg"}]
+                }
+            },
+        },
+    )
+
+
 def _u(value: str) -> str:
     return value.encode("ascii").decode("unicode_escape")
 

@@ -890,7 +890,7 @@ def _mentions_over_limit_payment_amount(text: str) -> bool:
 
 def _promises_unfinished_lookup(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
-    if re.search(r"(查|核对|看).{0,12}(档期|案例|参考)", compact):
+    if re.search(r"(查|核对|找).{0,12}(档期|案例|参考)", compact):
         return True
     if any(term in compact for term in _unicode_unfinished_lookup_terms()):
         return True
