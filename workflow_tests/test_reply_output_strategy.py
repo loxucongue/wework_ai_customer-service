@@ -1453,7 +1453,7 @@ def test_history_health_context_removes_direct_reply_handoff_notice() -> None:
 
 def test_history_health_context_does_not_block_payment_collection_after_notice() -> None:
     state = {
-        "normalized_content": _u(r"\u90a3\u6211\u5148\u5230\u5e97\u68c0\u6d4b\uff0c\u660e\u5929\u4e0b\u5348\u53ef\u4ee5\u5417"),
+        "normalized_content": _u(r"\u90a3\u6211\u5148\u5230\u5e97\u68c0\u6d4b\uff0c\u660e\u5929\u4e0b\u5348\u53ef\u4ee5\uff0c\u53d1\u5165\u53e3"),
         "conversation_history": [
             _u(r"\u5c0f\u8d1d: \u60a8\u6709\u8fc7\u654f\u4f53\u8d28\uff0c\u8fd9\u4e2a\u8981\u5230\u5e97\u5148\u505a\u68c0\u6d4b\uff0c\u8ba9\u95e8\u5e97\u4e13\u4e1a\u4eba\u5458\u770b\u4e0b\u9002\u4e0d\u9002\u5408\u518d\u5b89\u6392\u3002"),
             '小贝: human_handoff_notice {"handoff_reason":"health"}',
@@ -1485,6 +1485,91 @@ def test_history_health_context_does_not_block_payment_collection_after_notice()
         plan["planner_reply_messages"],
         {**state, "conversion_stage": "deposit_push", "next_step": "send_deposit"},
     )
+
+
+def test_current_payment_entry_overrides_unfinished_store_lookup_for_friend() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "我和朋友一起过去，发入口",
+            "conversation_history": [
+                "用户: 我在厦门机场附近，哪家近一点",
+                "小贝: 厦门机场附近暂未匹配到门店，您常去思明区还是湖里区？",
+            ],
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_LOCATION_DETAIL",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [
+                {"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": "厦门市机场附近"},
+                {"name": "distance_calculate", "origin": "厦门市机场附近", "candidate_source": "customer_store_lookup"},
+            ],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "current_message_requests_payment_entry"}]
+    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "payment_collection"]
+    assert plan["planner_reply_messages"][1]["content"]["amount"] == 20
+    validate_reply_consistency(plan["planner_reply_messages"], {**plan, "normalized_content": "我和朋友一起过去，发入口"})
+
+
+def test_current_payment_entry_uses_three_person_amount() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "带两个朋友一起去，发入口"},
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_LOCATION_DETAIL",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [{"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": "厦门市机场附近"}],
+        },
+    )
+
+    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "payment_collection"]
+    assert plan["planner_reply_messages"][1]["content"]["amount"] == 30
+
+
+def test_current_time_confirmation_missing_location_does_not_reuse_failed_distance_lookup() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "明天下午可以过去",
+            "conversation_history": [
+                "用户: 我在厦门机场附近，哪家近一点",
+                "小贝: 厦门机场附近暂未匹配到门店，您常去思明区还是湖里区？",
+            ],
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_LOCATION_DETAIL",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [
+                {"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": "厦门市机场附近"},
+                {"name": "distance_calculate", "origin": "厦门市机场附近", "candidate_source": "customer_store_lookup"},
+            ],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "appointment_confirm_missing_location"}]
+    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "text"]
+    text = " ".join(item["content"]["text"] for item in plan["planner_reply_messages"])
+    assert "明天下午" in text
+    assert "城市或区域" in text
 
 
 def test_current_health_risk_hold_blocks_payment_collection() -> None:

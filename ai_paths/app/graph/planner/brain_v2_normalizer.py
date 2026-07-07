@@ -169,7 +169,22 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         if next_step == "send_deposit":
             next_step = "confirm_time"
         reply_constraints.append("健康/过敏高风险未完成到店检测前，先确认检测和到店安排，不发送 payment_collection。")
-    turn_guard = _current_turn_context_guard(state, risk_hold=risk_hold)
+    payment_entry_guard = _current_payment_entry_guard(state, risk_hold=risk_hold)
+    if payment_entry_guard:
+        decision = payment_entry_guard["decision"]
+        stage = payment_entry_guard["stage"]
+        sub_rule_id = payment_entry_guard["sub_rule_id"]
+        conversion_stage = payment_entry_guard["conversion_stage"]
+        customer_type = payment_entry_guard["customer_type"]
+        main_blocker = payment_entry_guard["main_blocker"]
+        next_step = payment_entry_guard["next_step"]
+        planner_reply_messages = payment_entry_guard["reply_messages"]
+        required_tools = payment_entry_guard["required_tools"]
+        executable_tools = []
+        handoff_raw = payment_entry_guard["handoff"]
+        reply_constraints.extend(payment_entry_guard.get("reply_constraints") or [])
+        reply_strategy["current_turn_context_guard"] = payment_entry_guard.get("guard_reason", "")
+    turn_guard = {} if payment_entry_guard else _current_turn_context_guard(state, risk_hold=risk_hold)
     if turn_guard:
         decision = turn_guard["decision"]
         stage = turn_guard["stage"]
@@ -353,6 +368,8 @@ def _current_turn_context_guard(state: AgentState, *, risk_hold: dict[str, Any])
         return _post_deposit_next_step_guard(turn_context, risk_hold=risk_hold)
     if open_task == "health_risk_followup":
         return _health_risk_followup_guard(turn_context, risk_hold=risk_hold)
+    if open_task == "appointment_confirm" and _turn_context_missing_location(turn_context):
+        return _appointment_confirm_missing_location_guard(turn_context, risk_hold=risk_hold, state=state)
     return {}
 
 
@@ -507,6 +524,117 @@ def _health_risk_followup_guard(turn_context: dict[str, Any], *, risk_hold: dict
         guard_reason="health_risk_followup",
         constraints=["健康/过敏风险后续轮次先承接检测和到店安排，不发送 payment_collection。"],
     )
+
+
+def _appointment_confirm_missing_location_guard(
+    turn_context: dict[str, Any], *, risk_hold: dict[str, Any], state: AgentState
+) -> dict[str, Any]:
+    appointment = turn_context.get("confirmed_appointment") if isinstance(turn_context.get("confirmed_appointment"), dict) else {}
+    time_text = _appointment_text(appointment)
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if time_text and "下午" in content and "下午" not in time_text:
+        time_text = f"{time_text}下午"
+    first = f"可以，{time_text}这边先按到店意向记下。" if time_text else "可以，这边先按到店意向记下。"
+    second = "您现在在哪个城市或区域？我按您方便的位置匹配门店和到店时间。"
+    messages = [_text_message(first), _text_message(second)]
+    if is_hard_health_risk_hold(risk_hold):
+        messages.append(_handoff_notice_message(risk_hold))
+    return _guard_plan(
+        stage="S3",
+        sub_rule_id="S3_APPOINTMENT_TIME",
+        conversion_stage="time_confirm",
+        customer_type="time",
+        main_blocker="logistics",
+        next_step="lookup_store",
+        messages=messages,
+        handoff=is_hard_health_risk_hold(risk_hold),
+        handoff_reason=_risk_hold_reason(risk_hold),
+        guard_reason="appointment_confirm_missing_location",
+        constraints=["客户本轮确认到店时间但缺城市/区域/门店；先承接时间，再补问城市/区域或门店，不沿用上一轮失败的门店距离查询。"],
+    )
+
+
+def _turn_context_missing_location(turn_context: dict[str, Any]) -> bool:
+    missing = turn_context.get("missing_slots") if isinstance(turn_context.get("missing_slots"), list) else []
+    return "city_or_region" in missing or "store" in missing
+
+
+def _current_payment_entry_guard(state: AgentState, *, risk_hold: dict[str, Any]) -> dict[str, Any]:
+    if is_hard_health_risk_hold(risk_hold):
+        return {}
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if not _current_message_requests_payment_entry(content):
+        return {}
+    payment_context = payment_collection_context(state=state, messages=[])
+    if payment_context.get("over_limit"):
+        return _guard_plan(
+            stage="S3",
+            sub_rule_id="S3_PAYMENT_COLLECTION",
+            conversion_stage="deposit_push",
+            customer_type="high_intent",
+            main_blocker="none",
+            next_step="confirm_time",
+            messages=[_text_message("可以，多人同行我先帮您确认实际到店人数和名额。您这边一共几位到店？确认后再按人数安排。")],
+            handoff=False,
+            handoff_reason="",
+            guard_reason="payment_entry_over_limit_confirm_participants",
+            constraints=["客户要预约金入口但同行人数超过自动收款上限；先确认人数，不发送 payment_collection。"],
+        )
+    amount = int(payment_context.get("amount") or 10)
+    text = _payment_entry_guard_text(state, amount)
+    messages = [
+        _text_message(text),
+        {
+            "type": "payment_collection",
+            "order": 2,
+            "content": {"amount": amount, "remark": ""},
+        },
+    ]
+    return _guard_plan(
+        stage="S3",
+        sub_rule_id="S3_PAYMENT_COLLECTION",
+        conversion_stage="deposit_push",
+        customer_type="high_intent",
+        main_blocker="none",
+        next_step="send_deposit",
+        messages=messages,
+        handoff=False,
+        handoff_reason="",
+        guard_reason="current_message_requests_payment_entry",
+        constraints=["客户本轮明确要预约金/报名/付款入口；按同行人数补 payment_collection，不让上一轮未完成门店查询覆盖当前发入口诉求。"],
+    )
+
+
+def _current_message_requests_payment_entry(content: str) -> bool:
+    compact = "".join(str(content or "").split())
+    if not compact:
+        return False
+    return any(
+        term in compact
+        for term in (
+            "发入口",
+            "付款入口",
+            "收款入口",
+            "支付入口",
+            "预约金入口",
+            "报名入口",
+            "发预约金",
+            "发报名",
+        )
+    )
+
+
+def _payment_entry_guard_text(state: AgentState, amount: int) -> str:
+    turn_context = _turn_context_for_guard(state)
+    missing_location = _turn_context_missing_location(turn_context)
+    if amount > 10:
+        participants = max(2, amount // 10)
+        prefix = f"可以，{participants}位一共{amount}元预约金入口发您，每位10元用于锁活动名额，到店抵扣，不做退10元。"
+    else:
+        prefix = "可以，10元预约金入口发您，用于锁活动名额，到店抵扣，不做退10元。"
+    if missing_location:
+        return f"{prefix}您再把城市/区域或想去的门店发我，我帮您接上到店安排。"
+    return prefix
 
 
 def _guard_plan(
