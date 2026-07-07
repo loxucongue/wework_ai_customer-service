@@ -944,9 +944,6 @@ def _promises_appointment_lookup(text: str) -> bool:
             "可预约时间",
             "可约名额",
             "名额时间",
-            "查时间",
-            "看时间",
-            "核对时间",
         )
     ) or bool(
         re.search(r"(查|核对|看).{0,12}档期", compact)
@@ -963,9 +960,6 @@ def _unicode_appointment_lookup_terms() -> tuple[str, ...]:
         "\u53ef\u9884\u7ea6\u65f6\u95f4",
         "\u53ef\u7ea6\u540d\u989d",
         "\u540d\u989d\u65f6\u95f4",
-        "\u67e5\u65f6\u95f4",
-        "\u770b\u65f6\u95f4",
-        "\u6838\u5bf9\u65f6\u95f4",
     )
 
 

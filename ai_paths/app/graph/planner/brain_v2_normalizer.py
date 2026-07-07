@@ -148,6 +148,24 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         ]
         executable_tools = required_tools
         decision = "need_tools"
+    effect_case_guard = _effect_case_tool_guard(
+        state=state,
+        required_tools=required_tools,
+        explicit_risk_reason=explicit_risk_reason,
+        risk_hold=risk_hold,
+    )
+    if effect_case_guard:
+        decision = effect_case_guard["decision"]
+        stage = effect_case_guard["stage"]
+        sub_rule_id = effect_case_guard["sub_rule_id"]
+        conversion_stage = effect_case_guard["conversion_stage"]
+        customer_type = effect_case_guard["customer_type"]
+        main_blocker = effect_case_guard["main_blocker"]
+        next_step = effect_case_guard["next_step"]
+        planner_reply_messages = effect_case_guard["reply_messages"]
+        required_tools = effect_case_guard["required_tools"]
+        executable_tools = required_tools
+        reply_constraints.append(effect_case_guard["reply_constraint"])
     if executable_tools and decision == "direct_reply":
         decision = "need_tools"
     if decision == "need_tools":
@@ -357,6 +375,70 @@ def _should_force_store_detail_stage(state: AgentState, required_tools: list[dic
         isinstance(tool, dict) and str(tool.get("name") or "") == "customer_store_lookup"
         for tool in required_tools
     )
+
+
+def _effect_case_tool_guard(
+    *,
+    state: AgentState,
+    required_tools: list[dict[str, Any]],
+    explicit_risk_reason: str,
+    risk_hold: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if explicit_risk_reason or is_hard_health_risk_hold(risk_hold):
+        return {}
+    if any(isinstance(tool, dict) and str(tool.get("name") or "") == "kb_search" for tool in required_tools):
+        return {}
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if not _is_effect_or_case_question(content):
+        return {}
+    return {
+        "decision": "need_tools",
+        "stage": "S1",
+        "sub_rule_id": "S1_CASE_REQUEST",
+        "conversion_stage": "objection_resolution",
+        "customer_type": "effect",
+        "main_blocker": "effect",
+        "next_step": "solve_blocker",
+        "reply_messages": [_standard_transition_message()],
+        "required_tools": [{"name": "kb_search", "kb_name": "case_studies", "query": _case_search_query(content)}],
+        "reply_constraint": "效果疑问必须先查 case_studies 获取真实案例图；最终回复先肯定改善方向，再发案例图，再引导到店检测。",
+    }
+
+
+def _is_effect_or_case_question(content: str) -> bool:
+    text = str(content or "")
+    if not text:
+        return False
+    return any(
+        term in text
+        for term in (
+            "效果怎么样",
+            "有没有效果",
+            "有效果吗",
+            "会不会没效果",
+            "没效果怎么办",
+            "一次有没有效果",
+            "一次效果",
+            "一次能看到",
+            "做完明显",
+            "能不能淡",
+            "能淡吗",
+            "可以淡吗",
+            "怕反黑",
+            "会不会反黑",
+            "怕做坏",
+            "效果图",
+            "案例",
+        )
+    )
+
+
+def _case_search_query(content: str) -> str:
+    text = str(content or "")
+    for marker in ("雀斑", "晒斑", "老年斑", "黑色素", "色沉", "痘印", "黄褐斑", "遗传斑"):
+        if marker in text:
+            return f"{marker}淡斑效果"
+    return "淡斑效果"
 
 
 def _current_turn_context_guard(state: AgentState, *, risk_hold: dict[str, Any]) -> dict[str, Any]:

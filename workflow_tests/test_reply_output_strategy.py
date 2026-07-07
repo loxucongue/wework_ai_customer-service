@@ -336,6 +336,27 @@ def test_need_tools_transition_is_standardized() -> None:
     assert plan["planner_reply_messages"] == [{"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}]
 
 
+def test_effect_question_direct_reply_forces_case_studies_tool() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "会不会没效果"},
+        {
+            "decision": "direct_reply",
+            "stage": "S1",
+            "sub_rule_id": "S1_PROJECT_DIRECTION",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "effect",
+            "main_blocker": "effect",
+            "next_step": "solve_blocker",
+            "reply_messages": [{"type": "text", "content": {"text": "淡斑效果因人而异，到店检测后看。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["required_tools"] == [{"name": "kb_search", "kb_name": "case_studies", "query": "淡斑效果"}]
+    assert plan["planner_reply_messages"] == [{"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}]
+
+
 def test_deposit_push_without_payment_auto_appends_payment_collection() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "报名"},
@@ -1818,6 +1839,13 @@ def test_reply_validation_allows_asking_location_before_nearby_matching() -> Non
             }
         ],
         {"normalized_content": "我想淡斑，效果怎么样", "planner_decision": "direct_reply"},
+    )
+
+
+def test_reply_validation_allows_look_at_time_phrase_without_schedule_lookup() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "您看时间方便的话，到店检测会更准，确认适合再安排。"}}],
+        {"normalized_content": "有做完效果图吗"},
     )
 
 
