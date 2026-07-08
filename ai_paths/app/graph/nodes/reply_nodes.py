@@ -504,7 +504,7 @@ def _reply_repair_hint(error: str) -> str:
     if "distance_fact_required" in error:
         return "没有 distance_calculate 排序事实时，不要输出最近、离您最近、较近、就近等距离排序表达。只回答门店名、地址、停车或营业时间等已有门店事实，再问客户哪个区域/哪家更方便。"
     if "available_time_fact_required" in error:
-        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。"
+        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“多数可以看改善 + 发送 case_facts.image_url + 到店专业检测更准”。"
     if "appointment_confirmation_fact_required" in error:
         return "available_time 只表示看到可约时段，不代表已经留位、锁定或安排成功。请改成“这个时间可以看/推荐这个时间/您看这个时间方便吗”，不要说帮您留、锁定、安排、记上或预约成功。"
     if "too_many_appointment_time_options" in error:
