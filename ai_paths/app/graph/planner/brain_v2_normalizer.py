@@ -45,6 +45,8 @@ ALLOWED_PAYMENT_ACTIONS = (
     "explain_existing",
     "confirm_next_step",
 )
+
+
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
     explicit_risk_reason = explicit_professional_assist_reason(state)
     risk_hold = health_risk_hold(state)
@@ -112,19 +114,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools = scoped_store_lookup_plan["required_tools"]
         reply_strategy["current_turn_context_guard"] = scoped_store_lookup_plan["guard_reason"]
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
-    generic_store_direct_guard = _generic_store_no_scope_direct_guard(state, executable_tools=executable_tools)
-    if generic_store_direct_guard:
-        decision = generic_store_direct_guard["decision"]
-        stage = generic_store_direct_guard["stage"]
-        sub_rule_id = generic_store_direct_guard["sub_rule_id"]
-        conversion_stage = generic_store_direct_guard["conversion_stage"]
-        customer_type = generic_store_direct_guard["customer_type"]
-        main_blocker = generic_store_direct_guard["main_blocker"]
-        next_step = generic_store_direct_guard["next_step"]
-        planner_reply_messages = generic_store_direct_guard["reply_messages"]
-        required_tools = generic_store_direct_guard["required_tools"]
-        executable_tools = []
-        reply_strategy["current_turn_context_guard"] = generic_store_direct_guard["guard_reason"]
     contextual_store_anchor_guard = _contextual_store_anchor_lookup_guard(
         state=state,
         decision=decision,
@@ -674,29 +663,6 @@ def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]]
         else:
             rewritten.append(tool)
     return rewritten
-
-
-def _generic_store_no_scope_direct_guard(state: AgentState, *, executable_tools: list[dict[str, Any]]) -> dict[str, Any]:
-    if executable_tools:
-        return {}
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if not _is_generic_store_location_question_without_current_scope(content, state):
-        return {}
-    anchor_query = _recent_store_name_from_context(state)
-    if _generic_store_question_can_use_contextual_anchor(state, query=anchor_query):
-        return {}
-    return {
-        "decision": "direct_reply",
-        "stage": "S2",
-        "sub_rule_id": "S2_STORE_LOCATION_NEEDS_SCOPE",
-        "conversion_stage": "store_match",
-        "customer_type": "distance",
-        "main_blocker": "logistics",
-        "next_step": "lookup_store",
-        "reply_messages": [_text_message("您想看哪个城市或区域的门店？发我城市或区名，我给您匹配附近门店。")],
-        "required_tools": [{"name": "no_tool", "purpose": "generic_store_location_needs_city_or_region"}],
-        "guard_reason": "generic_store_question_needs_current_scope",
-    }
 
 
 def _contextual_store_anchor_lookup_guard(

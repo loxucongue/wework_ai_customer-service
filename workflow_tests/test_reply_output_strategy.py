@@ -1453,6 +1453,42 @@ def test_generic_store_lookup_rewrites_noncanonical_history_query_to_anchor() ->
     )
 
 
+def test_generic_store_direct_reply_is_not_rewritten_by_normalizer() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
+            "customer_basic_info": {
+                "preferred_store_name": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
+                "city": _u(r"\u53a6\u95e8"),
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [
+                {"type": "text", "content": {"text": _u(r"\u60a8\u73b0\u5728\u60f3\u770b\u54ea\u4e2a\u57ce\u5e02\u6216\u533a\u57df\u7684\u95e8\u5e97\uff1f")}}
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert plan["planner_reply_messages"] == [
+        {
+            "type": "text",
+            "order": 1,
+            "content": {"text": _u(r"\u60a8\u73b0\u5728\u60f3\u770b\u54ea\u4e2a\u57ce\u5e02\u6216\u533a\u57df\u7684\u95e8\u5e97\uff1f")},
+        }
+    ]
+    assert "current_turn_context_guard" not in plan["reply_strategy"]
+
+
 def test_scoped_city_store_question_uses_store_lookup_instead_of_reasking_city() -> None:
     plan = build_planner_plan_v2(
         {
