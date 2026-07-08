@@ -45,46 +45,6 @@ ALLOWED_PAYMENT_ACTIONS = (
     "explain_existing",
     "confirm_next_step",
 )
-PAYMENT_CONTEXT_TERMS = (
-    "payment_collection",
-    "预约金",
-    "付款入口",
-    "收款入口",
-    "支付入口",
-    "报名入口",
-    "入口发",
-)
-CUSTOMER_PAID_CLAIM_TERMS = (
-    "已付",
-    "已付款",
-    "已支付",
-    "已经付",
-    "付了",
-    "付好",
-    "付完",
-    "交了",
-    "缴了",
-    "支付成功",
-    "付款成功",
-)
-PAYMENT_CLAIM_NEGATION_TERMS = (
-    "没付",
-    "未付",
-    "还没付",
-    "没有付",
-    "付不了",
-    "支付不了",
-    "付款失败",
-    "支付失败",
-    "没成功",
-    "未成功",
-    "没收到",
-    "再发",
-    "重发",
-    "打不开",
-)
-
-
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
     explicit_risk_reason = explicit_professional_assist_reason(state)
     risk_hold = health_risk_hold(state)
@@ -1886,56 +1846,9 @@ def _has_paid_deposit_context(state: AgentState, *, payment_state: str = "unknow
     turn_context = _turn_context_for_guard(state)
     if str(turn_context.get("deposit_state") or "") == "deposit_paid":
         return True
-    return _has_customer_claimed_paid_evidence(state, turn_context=turn_context)
-
-
-def _has_customer_claimed_paid_evidence(state: AgentState, *, turn_context: dict[str, Any]) -> bool:
-    texts = _payment_evidence_texts(state, turn_context=turn_context)
-    if not any(_has_payment_context_terms(text) for text in texts):
-        return False
-    for text in _customer_side_payment_texts(state, turn_context=turn_context):
-        compact = _compact_text(text)
-        if not compact or any(term in compact for term in PAYMENT_CLAIM_NEGATION_TERMS):
-            continue
-        if any(term in compact for term in CUSTOMER_PAID_CLAIM_TERMS):
-            return True
-    return False
-
-
-def _payment_evidence_texts(state: AgentState, *, turn_context: dict[str, Any]) -> list[str]:
-    texts = [str(state.get("normalized_content") or state.get("content") or "")]
-    evidence = turn_context.get("payment_evidence") if isinstance(turn_context.get("payment_evidence"), dict) else {}
-    for key in ("current_payment_text", "last_assistant_payment_text"):
-        value = evidence.get(key)
-        if value:
-            texts.append(str(value))
-    recent = evidence.get("recent_payment_texts")
-    if isinstance(recent, list):
-        texts.extend(str(item) for item in recent if item)
-    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
-    texts.extend(str(item) for item in history[-8:] if item)
-    return texts
-
-
-def _customer_side_payment_texts(state: AgentState, *, turn_context: dict[str, Any]) -> list[str]:
-    texts = [str(state.get("normalized_content") or state.get("content") or "")]
-    evidence = turn_context.get("payment_evidence") if isinstance(turn_context.get("payment_evidence"), dict) else {}
-    current_payment_text = evidence.get("current_payment_text")
-    if current_payment_text:
-        texts.append(str(current_payment_text))
-    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
-    for item in history[-8:]:
-        text = str(item or "")
-        stripped = text.lstrip()
-        if stripped.startswith(("小贝:", "小贝：", "客服:", "客服：", "assistant:", "assistant：")):
-            continue
-        texts.append(text)
-    return texts
-
-
-def _has_payment_context_terms(text: str) -> bool:
-    compact = _compact_text(text)
-    return bool(compact and any(term in compact for term in PAYMENT_CONTEXT_TERMS))
+    turn_evidence = turn_context.get("turn_evidence") if isinstance(turn_context.get("turn_evidence"), dict) else {}
+    payment_evidence = turn_evidence.get("payment_evidence") if isinstance(turn_evidence.get("payment_evidence"), dict) else {}
+    return str(payment_evidence.get("structured_payment_state") or "") == "deposit_paid"
 
 
 def _compact_text(text: str) -> str:

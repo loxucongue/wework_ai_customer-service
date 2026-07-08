@@ -454,7 +454,7 @@ def test_planner_removes_payment_collection_after_customer_says_paid() -> None:
     assert plan["reply_strategy"]["current_turn_context_guard"] == "payment_card_removed_after_model_paid_state"
 
 
-def test_planner_infers_paid_context_from_payment_evidence_when_model_omits_state() -> None:
+def test_planner_does_not_infer_paid_context_when_model_omits_state() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "付完然后呢",
@@ -463,6 +463,43 @@ def test_planner_infers_paid_context_from_payment_evidence_when_model_omits_stat
                 "小贝: 2位一共20元预约金入口发您，每位10元，到店抵扣。",
                 "用户: 已经付了",
             ],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "time",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "unknown",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "收到，接下来帮您安排到店时间。"}},
+                {"type": "payment_collection", "content": {"amount": 20, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["payment_state"] == "unknown"
+    assert plan["conversion_stage"] == "deposit_push"
+    assert plan["next_step"] == "send_deposit"
+    assert any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
+
+
+def test_planner_removes_payment_collection_after_structured_paid_state() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "下一步呢",
+            "current_turn_context": {
+                "deposit_state": "deposit_paid",
+                "turn_evidence": {
+                    "payment_evidence": {
+                        "structured_payment_state": "deposit_paid",
+                        "source_policy": "evidence_only_planner_decides_payment_state",
+                    }
+                },
+            },
         },
         {
             "decision": "direct_reply",
