@@ -1223,7 +1223,7 @@ def test_generic_store_question_with_payment_task_allows_recent_store_query() ->
     ]
 
 
-def test_contextual_store_question_with_payment_task_forces_lookup_when_model_direct_replies() -> None:
+def test_contextual_store_question_with_payment_task_is_not_forced_to_lookup_by_normalizer() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": _u(r"\u95e8\u5e97\u5728\u54ea"),
@@ -1249,10 +1249,9 @@ def test_contextual_store_question_with_payment_task_forces_lookup_when_model_di
         },
     )
 
-    assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "detail", "query": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")}
-    ]
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert "current_turn_context_guard" not in plan["reply_strategy"]
 
 
 def test_generic_store_question_with_profile_only_flags_tool_for_repair() -> None:
@@ -1626,7 +1625,7 @@ def test_generic_store_question_uses_contextual_anchor_with_open_task() -> None:
     assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "detail", "query": "厦门百星湖里店"}]
 
 
-def test_generic_store_question_without_scope_overrides_deposit_direct_reply() -> None:
+def test_generic_store_question_without_scope_does_not_override_deposit_direct_reply() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "你们门店在哪里",
@@ -1649,11 +1648,9 @@ def test_generic_store_question_without_scope_overrides_deposit_direct_reply() -
         },
     )
 
-    assert plan["planner_decision"] == "need_tools"
-    assert plan["conversion_stage"] == "store_match"
-    assert plan["next_step"] == "lookup_store"
-    assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "detail", "query": "厦门百星湖里店"}]
-    assert not any(item.get("type") == "payment_collection" for item in plan["planner_reply_messages"])
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert "current_turn_context_guard" not in plan["reply_strategy"]
 
 
 def test_generic_store_reply_must_not_use_history_store_without_facts() -> None:
