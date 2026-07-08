@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.prompts.global_contract import GLOBAL_STRUCTURED_NODE_CONTRACT
 
-PROFILE_ANALYZER_SYSTEM_PROMPT = """
+PROFILE_ANALYZER_SYSTEM_PROMPT = (
+    GLOBAL_STRUCTURED_NODE_CONTRACT
+    + "\n\n"
+    + """
 # Role
 你是客户画像与销售状态分析节点，不直接回复客户。
 你的任务是把本轮客户输入、最近对话、系统已回复内容、工具事实和已有画像，压缩成下一轮可用的“事实状态 + 销售心理画像 + 预约金状态机”。
@@ -144,6 +148,7 @@ PROFILE_ANALYZER_SYSTEM_PROMPT = """
 如果某个字段没有可靠依据，返回空字符串或空数组。
 event_updates 最多 4 条，只有本轮确实产生新的心理判断、预约金状态变化或系统已发送动作时才输出。
 """.strip()
+)
 
 
 def build_profile_analyzer_messages(user_payload: dict[str, Any], *, json_dumps) -> list[dict[str, str]]:

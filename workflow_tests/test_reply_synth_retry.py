@@ -136,14 +136,15 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(model.calls, 2)
         self.assertEqual(output["errors"], [])
+        self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
         text = output["reply_messages"][0]["content"]
-        self.assertIn("具体问题", text)
+        self.assertEqual("我在，继续帮您处理。", text)
         self.assertNotIn("专业顾问", text)
         self.assertNotIn("专人联系", text)
         self.assertNotIn("同步处理", text)
         fallback_info = state["trace"][0]["tool_calls"][0].get("fallback")
-        self.assertEqual(fallback_info.get("strategy"), "deterministic_handoff_notice")
+        self.assertEqual(fallback_info.get("strategy"), "deterministic_neutral_final")
 
     async def test_no_reply_strong_dissatisfaction_gets_visible_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -170,9 +171,8 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             output = await node(state)
 
         self.assertEqual(output["errors"], [])
-        self.assertEqual(output["reply_source"], "deterministic_dissatisfaction_fallback")
-        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
-        self.assertIn("不再重复问", output["reply_messages"][0]["content"])
+        self.assertEqual(output["reply_source"], "planner_no_reply")
+        self.assertEqual(output["reply_messages"], [])
 
     async def test_no_reply_explicit_stop_stays_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -231,8 +231,9 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             output = await node(state)
 
         self.assertEqual(output["errors"], [])
-        self.assertEqual(output["reply_source"], "deterministic_handoff_notice_fallback")
+        self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
+        self.assertEqual("我在，继续帮您处理。", output["reply_messages"][0]["content"])
 
     async def test_current_professional_assist_notice_is_not_removed_as_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

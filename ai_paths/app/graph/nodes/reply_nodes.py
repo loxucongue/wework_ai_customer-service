@@ -4,7 +4,7 @@ from typing import Any, Callable
 
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_usage_snapshot
-from app.graph.nodes.reply_validation import validate_reply_consistency
+from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency
 from app.services.payment_collection import (
     normalize_deposit_refund_policy_text,
     normalize_payment_amount_text,
@@ -57,23 +57,12 @@ def create_synthesize_reply_node(
                             }
                         )
                 if planner_decision == "no_reply" and not state.get("tool_policy_violations"):
-                    no_reply_fallback = _maybe_build_no_reply_dissatisfaction_fallback(state)
-                    if no_reply_fallback:
-                        messages = no_reply_fallback
-                        validate_reply_consistency(messages, state)
-                        reply_source = "deterministic_dissatisfaction_fallback"
-                        model_call = {
-                            "name": "deterministic_dissatisfaction_fallback",
-                            "input": {"decision": planner_decision, "messages": 0},
-                            "output": {"messages": len(messages)},
-                        }
-                    else:
-                        reply_source = "planner_no_reply"
-                        model_call = {
-                            "name": "planner_direct_reply",
-                            "input": {"decision": planner_decision, "messages": 0},
-                            "output": {"messages": 0},
-                        }
+                    reply_source = "planner_no_reply"
+                    model_call = {
+                        "name": "planner_direct_reply",
+                        "input": {"decision": planner_decision, "messages": 0},
+                        "output": {"messages": 0},
+                    }
                 elif planner_direct_valid:
                     messages = planner_messages
                     reply_source = "planner_direct_reply"
@@ -104,46 +93,17 @@ def create_synthesize_reply_node(
                             validate_reply_consistency(messages, state)
                         except Exception as retry_exc:
                             retry_validation_exc = retry_exc
-                            store_context_fallback = _maybe_build_store_context_over_anchor_fallback(retry_validation_exc)
-                            if store_context_fallback is not None:
-                                messages = store_context_fallback
+                            required_payment_fallback = _maybe_build_required_payment_collection_fallback(state, retry_validation_exc)
+                            if required_payment_fallback is not None:
+                                messages = required_payment_fallback
                                 validate_reply_consistency(messages, state)
                             else:
-                                over_limit_fallback = _maybe_build_over_limit_payment_fallback(state, retry_validation_exc)
-                                if over_limit_fallback is not None:
-                                    messages = over_limit_fallback
+                                repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
+                                if repaired_messages is not None:
+                                    messages = repaired_messages
                                     validate_reply_consistency(messages, state)
                                 else:
-                                    required_payment_fallback = _maybe_build_required_payment_collection_fallback(state, retry_validation_exc)
-                                    if required_payment_fallback is not None:
-                                        messages = required_payment_fallback
-                                        validate_reply_consistency(messages, state)
-                                    else:
-                                        risk_hold_fallback = _maybe_build_health_risk_hold_fallback(state, retry_validation_exc)
-                                        if risk_hold_fallback is not None:
-                                            messages = risk_hold_fallback
-                                            validate_reply_consistency(messages, state)
-                                        else:
-                                            handoff_fallback = _maybe_build_handoff_notice_fallback(messages, state, retry_validation_exc)
-                                            if handoff_fallback is not None:
-                                                messages = handoff_fallback
-                                                validate_reply_consistency(messages, state)
-                                            else:
-                                                effect_case_fallback = _maybe_build_effect_case_fallback(state, retry_validation_exc)
-                                                if effect_case_fallback is not None:
-                                                    messages = effect_case_fallback
-                                                    validate_reply_consistency(messages, state)
-                                                else:
-                                                    tool_fallback = _maybe_build_store_tool_unavailable_fallback(state, retry_validation_exc)
-                                                    if tool_fallback is not None:
-                                                        messages = tool_fallback
-                                                        validate_reply_consistency(messages, state)
-                                                    else:
-                                                        repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
-                                                        if repaired_messages is None:
-                                                            raise
-                                                        messages = repaired_messages
-                                                        validate_reply_consistency(messages, state)
+                                    raise
                         else:
                             retry_validation_exc = None
                         if retry_validation_exc is not None and _messages_have_handoff_notice(messages):
@@ -163,92 +123,37 @@ def create_synthesize_reply_node(
             except Exception as exc:
                 model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
                 primary_error = f"{type(exc).__name__}: {exc}"
-                store_context_fallback = _maybe_build_store_context_over_anchor_fallback(exc)
-                if store_context_fallback is not None:
-                    messages = store_context_fallback
+                required_payment_fallback = _maybe_build_required_payment_collection_fallback(state, exc)
+                if required_payment_fallback is not None:
+                    messages = required_payment_fallback
                     validate_reply_consistency(messages, state)
-                    reply_source = "deterministic_store_context_fallback"
+                    reply_source = "deterministic_required_payment_collection_fallback"
                     model_call["fallback"] = {
                         "reason": primary_error,
-                        "strategy": "deterministic_store_context",
+                        "strategy": "deterministic_required_payment_collection",
                     }
                     model_call["output"] = {"messages": len(messages)}
                 else:
-                    over_limit_fallback = _maybe_build_over_limit_payment_fallback(state, exc)
-                    if over_limit_fallback is not None:
-                        messages = over_limit_fallback
+                    repaired_messages = _maybe_append_required_store_address(messages or planner_messages, state, exc)
+                    if repaired_messages is not None:
+                        messages = repaired_messages
                         validate_reply_consistency(messages, state)
-                        reply_source = "deterministic_over_limit_payment_fallback"
+                        reply_source = "deterministic_store_address_append"
                         model_call["fallback"] = {
                             "reason": primary_error,
-                            "strategy": "deterministic_over_limit_payment",
+                            "strategy": "deterministic_store_address_append",
                         }
                         model_call["output"] = {"messages": len(messages)}
                     else:
-                        risk_hold_fallback = _maybe_build_health_risk_hold_fallback(state, exc)
-                        if risk_hold_fallback is not None:
-                            messages = risk_hold_fallback
-                            validate_reply_consistency(messages, state)
-                            reply_source = "deterministic_health_risk_hold_fallback"
-                            model_call["fallback"] = {
-                                "reason": primary_error,
-                                "strategy": "deterministic_health_risk_hold",
+                        model_call["error"] = primary_error
+                        errors.append(
+                            {
+                                "node": "synthesize_reply",
+                                "message": "final_reply_failed",
+                                "detail": primary_error,
                             }
-                            model_call["output"] = {"messages": len(messages)}
-                        else:
-                            required_payment_fallback = _maybe_build_required_payment_collection_fallback(state, exc)
-                            if required_payment_fallback is not None:
-                                messages = required_payment_fallback
-                                validate_reply_consistency(messages, state)
-                                reply_source = "deterministic_required_payment_collection_fallback"
-                                model_call["fallback"] = {
-                                    "reason": primary_error,
-                                    "strategy": "deterministic_required_payment_collection",
-                                }
-                                model_call["output"] = {"messages": len(messages)}
-                            else:
-                                handoff_fallback = _maybe_build_handoff_notice_fallback(messages or planner_messages, state, exc)
-                                if handoff_fallback is not None:
-                                    messages = handoff_fallback
-                                    validate_reply_consistency(messages, state)
-                                    reply_source = "deterministic_handoff_notice_fallback"
-                                    model_call["fallback"] = {
-                                        "reason": primary_error,
-                                        "strategy": "deterministic_handoff_notice",
-                                    }
-                                    model_call["output"] = {"messages": len(messages)}
-                                else:
-                                    effect_case_fallback = _maybe_build_effect_case_fallback(state, exc)
-                                    if effect_case_fallback is not None:
-                                        messages = effect_case_fallback
-                                        validate_reply_consistency(messages, state)
-                                        reply_source = "deterministic_effect_case_fallback"
-                                        model_call["fallback"] = {
-                                            "reason": primary_error,
-                                            "strategy": "deterministic_effect_case",
-                                        }
-                                        model_call["output"] = {"messages": len(messages)}
-                                    else:
-                                        tool_fallback = _maybe_build_store_tool_unavailable_fallback(state, exc)
-                                        if tool_fallback is not None:
-                                            messages = tool_fallback
-                                            validate_reply_consistency(messages, state)
-                                            reply_source = "deterministic_store_tool_unavailable_fallback"
-                                            model_call["fallback"] = {
-                                                "reason": primary_error,
-                                                "strategy": "deterministic_store_tool_unavailable",
-                                            }
-                                            model_call["output"] = {"messages": len(messages)}
-                                        else:
-                                            model_call["error"] = primary_error
-                                            errors.append(
-                                                {
-                                                    "node": "synthesize_reply",
-                                                    "message": "final_reply_failed",
-                                                    "detail": primary_error,
-                                                }
-                                            )
-                                            messages = []
+                        )
+                        messages = []
 
             messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
             if handoff_notice_appended:
@@ -262,6 +167,30 @@ def create_synthesize_reply_node(
                 warnings.append({"node": "synthesize_reply", "message": "stale_handoff_notice_removed"})
                 if model_call:
                     model_call["stale_handoff_notice_removed"] = True
+            if not messages and errors:
+                messages = _neutral_final_fallback_messages()
+                reply_source = "deterministic_neutral_final_fallback"
+                recovered_error = errors.pop() if errors else None
+                if recovered_error:
+                    warnings.append(
+                        {
+                            "node": "synthesize_reply",
+                            "message": "final_reply_recovered_by_neutral_fallback",
+                            "detail": str(recovered_error.get("detail") if isinstance(recovered_error, dict) else recovered_error),
+                        }
+                    )
+                warnings.append({"node": "synthesize_reply", "message": "neutral_final_fallback_used"})
+                if model_call:
+                    model_call["fallback"] = {"strategy": "deterministic_neutral_final"}
+                    model_call["output"] = {"messages": len(messages)}
+                messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
+                if handoff_notice_appended_after_fallback:
+                    validate_reply_consistency(messages, state)
+                    warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
+                    if model_call:
+                        model_call["handoff_notice_appended"] = True
+            if messages:
+                warnings.extend(collect_reply_soft_warnings(messages, state))
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
             output = {
@@ -292,6 +221,10 @@ def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> lis
     return [*messages, {"role": "user", "content": retry_instruction}]
 
 
+def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
+    return [{"type": "text", "order": 1, "content": "我在，继续帮您处理。"}]
+
+
 def _maybe_append_required_store_address(
     messages: list[dict[str, Any]],
     state: AgentState,
@@ -305,82 +238,6 @@ def _maybe_append_required_store_address(
     if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
         return None
     return _renumber([*messages, {"type": "store_address", "content": {"store_id": store_id}}])
-
-
-def _maybe_build_health_risk_hold_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
-    if not is_hard_health_risk_hold(health_risk_hold(state)):
-        return None
-    if "payment_collection" not in str(exc):
-        return None
-    return [
-        {
-            "type": "text",
-            "order": 1,
-            "content": {
-                "text": "可以先按到店检测来安排，您这个情况要让门店专业人员先看皮肤耐受和适配性，确认适合后再安排。"
-            },
-        }
-    ]
-
-
-def _maybe_build_store_tool_unavailable_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
-    error = str(exc)
-    if not any(
-        marker in error
-        for marker in (
-            "payment_collection_required",
-            "store_address_fact_required",
-            "unsupported_store_address_message",
-            "unfinished_tool_promise_after_tool_execution",
-        )
-    ):
-        return None
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    structured = _structured_facts(state)
-    tool_errors = structured.get("tool_errors") if isinstance(structured.get("tool_errors"), list) else []
-    has_store_tool_error = any(
-        isinstance(item, dict) and str(item.get("tool") or "") == "customer_store_lookup" for item in tool_errors
-    )
-    if not has_store_tool_error and not any(term in content for term in ("地址", "位置", "定位", "导航", "这家", "那家")):
-        return None
-    return [
-        {
-            "type": "text",
-            "order": 1,
-            "content": {"text": "这家门店信息我暂时没核到，您发下城市、区域或门店全称，我给您核对。"},
-        }
-    ]
-
-
-def _maybe_build_store_context_over_anchor_fallback(exc: Exception) -> list[dict[str, Any]] | None:
-    if "store_context_over_anchor_for_generic_question" not in str(exc):
-        return None
-    return _renumber(
-        [
-            {
-                "type": "text",
-                "order": 1,
-                "content": "您在哪个城市或哪个区？我按您方便的位置帮您查附近门店。",
-            }
-        ]
-    )
-
-
-def _maybe_build_over_limit_payment_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
-    error = str(exc)
-    if "payment_participant_count_confirm_required" not in error and "payment_collection_required" not in error:
-        return None
-    if not payment_collection_context(state=state, messages=[]).get("over_limit"):
-        return None
-    return _renumber(
-        [
-            {
-                "type": "text",
-                "order": 1,
-                "content": "可以，多人同行我先帮您确认实际到店人数和名额。您这边一共几位到店？确认后再按人数安排。",
-            }
-        ]
-    )
 
 
 def _maybe_build_required_payment_collection_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
@@ -457,74 +314,6 @@ def _current_turn_store_name(state: AgentState) -> str:
         if text:
             return text
     return ""
-
-
-def _maybe_build_handoff_notice_fallback(
-    messages: list[dict[str, Any]],
-    state: AgentState,
-    exc: Exception,
-) -> list[dict[str, Any]] | None:
-    if not (
-        "human_handoff_notice" in str(exc)
-        or _messages_have_handoff_notice(messages)
-        or _state_requests_handoff_notice(state)
-    ):
-        return None
-    reason = _handoff_notice_reason(state)
-    fallback = [
-        {"type": "text", "order": 1, "content": _handoff_customer_text(state, reason)},
-        {"type": "human_handoff_notice", "order": 2, "content": {"handoff_reason": reason}},
-    ]
-    return _renumber(fallback)
-
-
-def _maybe_build_effect_case_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
-    error = str(exc)
-    if not any(
-        marker in error
-        for marker in (
-            "effect_reply_confidence_order_required",
-            "case_image_required_for_effect_turn",
-            "unfinished_tool_promise_after_tool_execution",
-        )
-    ):
-        return None
-    case_fact = _first_case_fact_with_image(state)
-    image_url = str(case_fact.get("image_url") or "").strip() if case_fact else ""
-    if not image_url:
-        return None
-    return _renumber(
-        [
-            {"type": "text", "order": 1, "content": {"text": _effect_case_fallback_text(state)}},
-            {"type": "image", "order": 2, "content": image_url},
-            {
-                "type": "text",
-                "order": 3,
-                "content": {"text": "到店会先检测斑型和皮肤状态，看适合再安排。"},
-            },
-        ]
-    )
-
-
-def _first_case_fact_with_image(state: AgentState) -> dict[str, Any]:
-    structured = _structured_facts(state)
-    for item in structured.get("case_facts") or []:
-        if isinstance(item, dict) and str(item.get("image_url") or "").strip():
-            return item
-    return {}
-
-
-def _effect_case_fallback_text(state: AgentState) -> str:
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if "老年斑" in content:
-        return "老年斑可以改善，很多客户反馈斑点淡化、肤色更均匀。"
-    if "雀斑" in content:
-        return "雀斑可以做，很多客户反馈斑点淡化、肤色更均匀。"
-    if "晒斑" in content:
-        return "晒斑可以改善，很多客户反馈斑点淡化、肤色更均匀。"
-    if "黑色素" in content:
-        return "黑色素斑点可以看改善，很多客户反馈淡化效果不错。"
-    return "淡斑方向可以看，很多客户反馈改善效果不错。"
 
 
 def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
@@ -604,25 +393,6 @@ def _message_text(content: Any) -> str:
     return str(content or "")
 
 
-def _maybe_build_no_reply_dissatisfaction_fallback(state: AgentState) -> list[dict[str, Any]] | None:
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if not content or _contains_any(content, ("别回", "不用回", "不要回", "别理我", "不想聊")):
-        return None
-    if not _contains_any(content, ("说了三遍", "说了很多遍", "一直问", "还问", "烦死了", "很烦", "不会回答", "换人")):
-        return None
-    reason = "客户强烈不满：反复询问或回答不顺导致不满"
-    return _renumber(
-        [
-            {
-                "type": "text",
-                "order": 1,
-                "content": "抱歉，刚刚反复确认让您不舒服了。我先按您前面说的重点接着处理，不再重复问；您把当前最要紧的问题发我，我直接承接。",
-            },
-            {"type": "human_handoff_notice", "order": 2, "content": {"handoff_reason": reason}},
-        ]
-    )
-
-
 def _messages_have_handoff_notice(messages: list[dict[str, Any]]) -> bool:
     return any(
         isinstance(item, dict) and str(item.get("type") or "") in {"human_handoff", "human_handoff_notice"}
@@ -673,27 +443,6 @@ def _handoff_notice_reason(state: AgentState) -> str:
         if reason:
             return reason[:180]
     return "高风险或人工诉求，需要内部关注"
-
-
-def _handoff_customer_text(state: AgentState, reason: str) -> str:
-    text = " ".join(
-        str(value or "")
-        for value in (
-            state.get("normalized_content"),
-            state.get("content"),
-            reason,
-            state.get("planner_sub_rule_id"),
-        )
-    )
-    if _contains_any(text, ("心脏", "高血压", "糖尿病", "病史", "过敏", "怀孕", "孕期", "哺乳", "未成年", "处方", "用药", "病例", "病历", "报告")):
-        return "这个需要到店先做专业检测，让门店专业人员看下适不适合再安排。您什么时候方便到店？"
-    if _contains_any(text, ("红肿", "肿痛", "刺痛", "发烫", "感染", "坏死", "伤口", "出血", "看不清", "胸闷", "喘不过气", "严重不适")):
-        return "您这个不适情况先别继续刺激皮肤。您是在我们哪家门店做的、做的什么项目、什么时间做的？把这些信息发我，我按实际记录核对。"
-    if _contains_any(text, ("退款", "退钱", "投诉", "维权", "曝光", "付款", "支付", "扣款", "多收", "订单", "骗")):
-        return "我先把情况核对清楚。您是在我们哪家门店做的？把门店、付款时间和项目发我一下，我按实际记录核对。"
-    if _contains_any(text, ("人工", "真人", "换人")):
-        return "您先把具体问题发我，我直接帮您把当前情况梳理清楚；如果涉及门店、付款或项目，也把门店和时间一起发我。"
-    return "我先把情况核对清楚。您把具体问题、涉及的门店和时间发我一下，我按实际记录核对。"
 
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:

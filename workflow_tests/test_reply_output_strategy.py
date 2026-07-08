@@ -16,12 +16,11 @@ from app.graph.nodes.appointment_time_utils import normalize_time_text, summariz
 from app.graph.nodes.profile_nodes import _profile_conversation_history
 from app.graph.nodes.reply_nodes import (
     _ensure_required_handoff_notice,
-    _maybe_build_effect_case_fallback,
     _maybe_build_required_payment_collection_fallback,
     _normalize_planner_reply_messages,
     _suppress_stale_handoff_notice,
 )
-from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
+from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency, validated_model_messages
 from app.graph.planner.brain_v2 import _current_known_store_for_planner, _planner_payload_for_model, _should_suppress_planner_memory
 from app.graph.planner.brain_v2_normalizer import _clean_scoped_location_query, build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import PLANNER_SYSTEM_PROMPT
@@ -1683,28 +1682,32 @@ def test_generic_store_question_without_scope_does_not_override_deposit_direct_r
 
 
 def test_generic_store_reply_must_not_use_history_store_without_facts() -> None:
-    with pytest.raises(ValueError, match="store_context_over_anchor_for_generic_question"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "广州白云三店我帮您核对一下。"}}],
-            {
-                "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
-                "customer_store_knowledge": {"stores": [{"city": "广州市", "store_name": "广州白云三店"}]},
-            },
-        )
+    messages = [{"type": "text", "order": 1, "content": {"text": "广州白云三店我帮您核对一下。"}}]
+    state = {
+        "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
+        "customer_store_knowledge": {"stores": [{"city": "广州市", "store_name": "广州白云三店"}]},
+    }
+
+    validate_reply_consistency(messages, state)
+    warnings = collect_reply_soft_warnings(messages, state)
+
+    assert any("store_context_over_anchor_for_generic_question" in item["detail"] for item in warnings)
 
 
 def test_generic_store_reply_must_not_use_store_name_from_history_text() -> None:
-    with pytest.raises(ValueError, match="store_context_over_anchor_for_generic_question"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "广州白云三店是当前为您匹配的门店。"}}],
-            {
-                "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
-                "conversation_history": [
-                    _u(r"\u7528\u6237: \u6211\u5728\u5e7f\u5dde\u767d\u4e91\u9644\u8fd1"),
-                    _u(r"\u5c0f\u8d1d: \u6309\u60a8\u8fd9\u4e2a\u4f4d\u7f6e\uff0c\u4f18\u5148\u770b\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97\u3002"),
-                ],
-            },
-        )
+    messages = [{"type": "text", "order": 1, "content": {"text": "广州白云三店是当前为您匹配的门店。"}}]
+    state = {
+        "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
+        "conversation_history": [
+            _u(r"\u7528\u6237: \u6211\u5728\u5e7f\u5dde\u767d\u4e91\u9644\u8fd1"),
+            _u(r"\u5c0f\u8d1d: \u6309\u60a8\u8fd9\u4e2a\u4f4d\u7f6e\uff0c\u4f18\u5148\u770b\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97\u3002"),
+        ],
+    }
+
+    validate_reply_consistency(messages, state)
+    warnings = collect_reply_soft_warnings(messages, state)
+
+    assert any("store_context_over_anchor_for_generic_question" in item["detail"] for item in warnings)
 
 
 def test_generic_store_reply_can_ask_current_city_or_district() -> None:
@@ -2981,23 +2984,26 @@ def test_reply_validation_requires_case_image_for_effect_turn_when_available() -
             }
         },
     }
-    with pytest.raises(ValueError, match="case_image_required_for_effect_turn"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "可以做，这类斑点大多数客户改善反馈都不错。"}}],
-            state,
-        )
+    messages = [{"type": "text", "order": 1, "content": {"text": "可以做，这类斑点大多数客户改善反馈都不错。"}}]
+
+    validate_reply_consistency(messages, state)
+    warnings = collect_reply_soft_warnings(messages, state)
+
+    assert any("case_image_required_for_effect_turn" in item["detail"] for item in warnings)
 
 
 def test_reply_validation_rejects_effect_reply_starting_with_risk_disclaimer() -> None:
-    with pytest.raises(ValueError, match="effect_reply_confidence_order_required"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "淡斑效果因人而异，主要看斑点类型和皮肤状态。"}}],
-            {
-                "planner_sub_rule_id": "S1_CASE_REQUEST",
-                "customer_type": "effect",
-                "main_blocker": "effect",
-            },
-        )
+    messages = [{"type": "text", "order": 1, "content": {"text": "淡斑效果因人而异，主要看斑点类型和皮肤状态。"}}]
+    state = {
+        "planner_sub_rule_id": "S1_CASE_REQUEST",
+        "customer_type": "effect",
+        "main_blocker": "effect",
+    }
+
+    validate_reply_consistency(messages, state)
+    warnings = collect_reply_soft_warnings(messages, state)
+
+    assert any("effect_reply_confidence_order_required" in item["detail"] for item in warnings)
 
 
 def test_reply_validation_rejects_effect_absolute_safety_claim() -> None:
@@ -3063,7 +3069,7 @@ def test_reply_validation_allows_view_case_reference_after_case_tool() -> None:
     )
 
 
-def test_effect_case_fallback_uses_case_image_and_positive_text() -> None:
+def test_effect_case_soft_warning_keeps_reply_non_blocking() -> None:
     state = {
         "normalized_content": "老年斑可以改善吗",
         "planner_decision": "need_tools",
@@ -3076,12 +3082,12 @@ def test_effect_case_fallback_uses_case_image_and_positive_text() -> None:
             }
         },
     }
+    messages = [{"type": "text", "order": 1, "content": {"text": "老年斑可以改善，到店检测看斑型会更准。"}}]
 
-    messages = _maybe_build_effect_case_fallback(state, ValueError("unfinished_tool_promise_after_tool_execution"))
+    validate_reply_consistency(messages, state)
+    warnings = collect_reply_soft_warnings(messages, state)
 
-    assert [item["type"] for item in messages or []] == ["text", "image", "text"]
-    assert "老年斑可以改善" in messages[0]["content"]["text"]
-    validate_reply_consistency(messages or [], state)
+    assert any("case_image_required_for_effect_turn" in item["detail"] for item in warnings)
 
 
 def _u(value: str) -> str:

@@ -5,6 +5,7 @@ from typing import Any
 
 from app.graph.nodes.common import dedupe_strings, json_dumps
 from app.graph.nodes.image_validation import validated_image_info
+from app.prompts.global_contract import GLOBAL_STRUCTURED_NODE_CONTRACT
 
 
 def build_vision_prompt(state: dict[str, Any]) -> str:
@@ -13,6 +14,8 @@ def build_vision_prompt(state: dict[str, Any]) -> str:
         "conversation_history": state.get("conversation_history", [])[-4:],
     }
     return f"""
+{GLOBAL_STRUCTURED_NODE_CONTRACT}
+
 # Vision Node Role
 你是企业微信线上活动接待链路中的图片理解节点，不回复客户，不推荐项目，只输出结构化 JSON。
 

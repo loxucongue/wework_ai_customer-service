@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.graph.nodes.image_info import build_vision_prompt
 from app.graph.planner.brain_v2_prompts import PLANNER_SYSTEM_PROMPT
+from app.prompts.global_contract import GLOBAL_REPLY_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.prompts.profile_analyzer import PROFILE_ANALYZER_SYSTEM_PROMPT
 from app.prompts.reply_synthesizer import REPLY_SYSTEM_PROMPT
 from app.services.outreach_prompts import OUTREACH_MESSAGE_SYSTEM_PROMPT, OUTREACH_PLAN_SYSTEM_PROMPT
@@ -11,6 +12,7 @@ from app.services.outreach_prompts import OUTREACH_MESSAGE_SYSTEM_PROMPT, OUTREA
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPT_FILES = [
+    ROOT / "ai_paths/app/prompts/global_contract.py",
     ROOT / "ai_paths/app/graph/planner/brain_v2_prompts.py",
     ROOT / "ai_paths/app/prompts/reply_synthesizer.py",
     ROOT / "ai_paths/app/prompts/profile_analyzer.py",
@@ -58,6 +60,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "客户给出明确城市、区域或地标并问门店/附近/地址/停车/营业时间/导航时，输出 need_tools",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
+    assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
+    assert "evidence_summary" not in PLANNER_SYSTEM_PROMPT
 
 
 def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
@@ -73,6 +77,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "到店先做皮肤检测/专业检测",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
+    assert GLOBAL_REPLY_CONTRACT in REPLY_SYSTEM_PROMPT
 
 
 def test_profile_prompt_downgrades_stale_history_without_dropping_facts() -> None:
@@ -80,6 +85,7 @@ def test_profile_prompt_downgrades_stale_history_without_dropping_facts() -> Non
         assert marker in PROFILE_ANALYZER_SYSTEM_PROMPT
     assert "旧健康风险、旧门店、旧预约任务只有在本轮客户继续提到时" in PROFILE_ANALYZER_SYSTEM_PROMPT
     assert "系统发过 payment_collection 不等于客户已支付" in PROFILE_ANALYZER_SYSTEM_PROMPT
+    assert GLOBAL_STRUCTURED_NODE_CONTRACT in PROFILE_ANALYZER_SYSTEM_PROMPT
 
 
 def test_vision_prompt_is_sectioned_json_only_and_non_diagnostic() -> None:
@@ -88,6 +94,7 @@ def test_vision_prompt_is_sectioned_json_only_and_non_diagnostic() -> None:
         assert marker in prompt
     assert "不写黄褐斑、皮炎、感染等诊断词" in prompt
     assert "不输出治疗结论、疾病判断、保证效果、同等效果承诺" in prompt
+    assert GLOBAL_STRUCTURED_NODE_CONTRACT in prompt
 
 
 def test_sop_and_outreach_prompts_keep_gate_boundaries() -> None:
