@@ -102,12 +102,17 @@ def create_synthesize_reply_node(
                                 messages = required_payment_fallback
                                 validate_reply_consistency(messages, state)
                             else:
-                                repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
-                                if repaired_messages is not None:
-                                    messages = repaired_messages
+                                case_facts_fallback = _maybe_build_case_facts_fallback(state, retry_validation_exc)
+                                if case_facts_fallback is not None:
+                                    messages = case_facts_fallback
                                     validate_reply_consistency(messages, state)
                                 else:
-                                    raise
+                                    repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
+                                    if repaired_messages is not None:
+                                        messages = repaired_messages
+                                        validate_reply_consistency(messages, state)
+                                    else:
+                                        raise
                         else:
                             retry_validation_exc = None
                         if retry_validation_exc is not None and _messages_have_handoff_notice(messages):
@@ -142,26 +147,37 @@ def create_synthesize_reply_node(
                     }
                     model_call["output"] = {"messages": len(messages)}
                 else:
-                    repaired_messages = _maybe_append_required_store_address(messages or planner_messages, state, exc)
-                    if repaired_messages is not None:
-                        messages = repaired_messages
+                    case_facts_fallback = _maybe_build_case_facts_fallback(state, exc)
+                    if case_facts_fallback is not None:
+                        messages = case_facts_fallback
                         validate_reply_consistency(messages, state)
-                        reply_source = "deterministic_store_address_append"
+                        reply_source = "deterministic_case_facts_fallback"
                         model_call["fallback"] = {
                             "reason": primary_error,
-                            "strategy": "deterministic_store_address_append",
+                            "strategy": "deterministic_case_facts",
                         }
                         model_call["output"] = {"messages": len(messages)}
                     else:
-                        model_call["error"] = primary_error
-                        errors.append(
-                            {
-                                "node": "synthesize_reply",
-                                "message": "final_reply_failed",
-                                "detail": primary_error,
+                        repaired_messages = _maybe_append_required_store_address(messages or planner_messages, state, exc)
+                        if repaired_messages is not None:
+                            messages = repaired_messages
+                            validate_reply_consistency(messages, state)
+                            reply_source = "deterministic_store_address_append"
+                            model_call["fallback"] = {
+                                "reason": primary_error,
+                                "strategy": "deterministic_store_address_append",
                             }
-                        )
-                        messages = []
+                            model_call["output"] = {"messages": len(messages)}
+                        else:
+                            model_call["error"] = primary_error
+                            errors.append(
+                                {
+                                    "node": "synthesize_reply",
+                                    "message": "final_reply_failed",
+                                    "detail": primary_error,
+                                }
+                            )
+                            messages = []
 
             messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
             if handoff_notice_appended:
@@ -231,6 +247,48 @@ def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> lis
 
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
     return [{"type": "text", "order": 1, "content": "我在，继续帮您处理。"}]
+
+
+def _maybe_build_case_facts_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
+    error = str(exc)
+    if not any(
+        marker in error
+        for marker in (
+            "available_time_fact_required",
+            "appointment_confirmation_fact_required",
+            "unfinished_appointment_lookup_promise",
+            "case_image_required_for_effect_turn",
+            "effect_reply_confidence_order_required",
+        )
+    ):
+        return None
+    if not _state_requested_case_studies(state):
+        return None
+    image_urls = _case_image_urls(state)
+    if not image_urls:
+        return None
+    return [
+        {
+            "type": "text",
+            "order": 1,
+            "content": "可以，这类斑点大多数客户都可以看改善，反馈也不错。",
+        },
+        {"type": "image", "order": 2, "content": {"url": image_urls[0]}},
+        {
+            "type": "text",
+            "order": 3,
+            "content": "到店先做专业检测，确认斑型和皮肤状态会更准确。",
+        },
+    ]
+
+
+def _state_requested_case_studies(state: AgentState) -> bool:
+    for item in state.get("required_tools") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name") or "") == "kb_search" and str(item.get("kb_name") or "") == "case_studies":
+            return True
+    return False
 
 
 def _maybe_append_required_store_address(
