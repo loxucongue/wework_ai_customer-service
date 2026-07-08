@@ -194,6 +194,9 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     effect_case_guard = _effect_case_tool_guard(
         state=state,
         required_tools=required_tools,
+        sub_rule_id=sub_rule_id,
+        customer_type=customer_type,
+        main_blocker=main_blocker,
         explicit_risk_reason=explicit_risk_reason,
         risk_hold=risk_hold,
     )
@@ -423,6 +426,9 @@ def _effect_case_tool_guard(
     *,
     state: AgentState,
     required_tools: list[dict[str, Any]],
+    sub_rule_id: str,
+    customer_type: str,
+    main_blocker: str,
     explicit_risk_reason: str,
     risk_hold: dict[str, Any] | None,
 ) -> dict[str, Any]:
@@ -430,9 +436,13 @@ def _effect_case_tool_guard(
         return {}
     if any(isinstance(tool, dict) and str(tool.get("name") or "") == "kb_search" for tool in required_tools):
         return {}
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if not _is_effect_or_case_question(content):
+    if not _planner_marked_effect_or_case_need(
+        sub_rule_id=sub_rule_id,
+        customer_type=customer_type,
+        main_blocker=main_blocker,
+    ):
         return {}
+    content = str(state.get("normalized_content") or state.get("content") or "")
     return {
         "decision": "need_tools",
         "stage": "S1",
@@ -447,36 +457,14 @@ def _effect_case_tool_guard(
     }
 
 
-def _is_effect_or_case_question(content: str) -> bool:
-    text = str(content or "")
-    if not text:
-        return False
-    direct_effect = any(
-        term in text
-        for term in (
-            "效果怎么样",
-            "有没有效果",
-            "有效果吗",
-            "没效果",
-            "会不会没效果",
-            "没效果怎么办",
-            "一次有没有效果",
-            "一次效果",
-            "一次能看到",
-            "做完明显",
-            "能不能淡",
-            "能淡吗",
-            "可以淡吗",
-            "怕反黑",
-            "会不会反黑",
-            "怕做坏",
-            "效果图",
-            "案例",
-        )
+def _planner_marked_effect_or_case_need(*, sub_rule_id: str, customer_type: str, main_blocker: str) -> bool:
+    sub_rule = str(sub_rule_id or "").upper()
+    return (
+        customer_type == "effect"
+        or main_blocker == "effect"
+        or "CASE" in sub_rule
+        or "EFFECT" in sub_rule
     )
-    concern_terms = ("斑", "黑色素", "色沉", "痘印")
-    can_do_terms = ("能不能做", "能做吗", "可以做吗", "可以改善吗", "能改善吗", "能不能改善")
-    return direct_effect or (any(term in text for term in concern_terms) and any(term in text for term in can_do_terms))
 
 
 def _case_search_query(content: str) -> str:

@@ -723,7 +723,7 @@ def test_effect_question_direct_reply_forces_case_studies_tool() -> None:
     assert plan["planner_reply_messages"] == [{"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}]
 
 
-def test_specific_spot_can_do_question_forces_case_studies_tool() -> None:
+def test_specific_spot_can_do_question_without_effect_marker_is_not_forced_by_normalizer() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "雀斑能不能做"},
         {
@@ -734,6 +734,26 @@ def test_specific_spot_can_do_question_forces_case_studies_tool() -> None:
             "customer_type": "unknown",
             "main_blocker": "none",
             "next_step": "ask_intent",
+            "reply_messages": [{"type": "text", "content": {"text": "雀斑可以做。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
+
+
+def test_planner_effect_marker_without_case_tool_adds_case_studies_tool() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "雀斑能不能做"},
+        {
+            "decision": "direct_reply",
+            "stage": "S1",
+            "sub_rule_id": "S1_PROJECT_EFFECT",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "effect",
+            "main_blocker": "effect",
+            "next_step": "solve_blocker",
             "reply_messages": [{"type": "text", "content": {"text": "雀斑可以做。"}}],
             "tool_calls": [],
         },
