@@ -23,7 +23,7 @@ from app.graph.nodes.reply_nodes import (
 )
 from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
 from app.graph.planner.brain_v2 import _current_known_store_for_planner, _planner_payload_for_model, _should_suppress_planner_memory
-from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
+from app.graph.planner.brain_v2_normalizer import _clean_scoped_location_query, build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import PLANNER_SYSTEM_PROMPT
 from app.schemas import ChatResponse, ReplyMessage
 from app.services.workflow_compat import workflow_response_from_chat
@@ -1596,6 +1596,12 @@ def test_scoped_nearby_landmark_preserves_landmark_in_distance_origin() -> None:
         {"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": "厦门机场"},
         {"name": "distance_calculate", "origin": "厦门机场", "candidate_source": "customer_store_lookup"},
     ]
+
+
+def test_scoped_location_query_cleaning_keeps_store_name_tokens() -> None:
+    assert _clean_scoped_location_query(_u(r"\u53a6\u95e8\u6709\u95e8\u5e97\u5417")) == _u(r"\u53a6\u95e8")
+    assert _clean_scoped_location_query(_u(r"\u54ea\u5bb6\u79bb\u53a6\u95e8\u673a\u573a\u8fd1\u4e00\u70b9")) == _u(r"\u53a6\u95e8\u673a\u573a")
+    assert _clean_scoped_location_query(_u(r"\u53a6\u95e8\u601d\u660e\u5e97\u5730\u5740")) == _u(r"\u53a6\u95e8\u601d\u660e\u5e97")
 
 
 def test_generic_store_question_uses_contextual_anchor_with_open_task() -> None:

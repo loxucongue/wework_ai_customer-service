@@ -728,11 +728,57 @@ def _clean_scoped_location_query(value: str) -> str:
     text = re.sub(r"[，,。？?！!\s]", "", str(value or "").strip())
     if not text:
         return ""
-    text = re.sub(
-        r"(哪家|哪个|哪一个|有没有|有吗|附近|周边|最近|更近|比较近|近点|近一点|门店|店|地址|路线|导航|停车|营业时间|几点下班|几点关门|发我|给我|一下|有|吗|呢|呀|的|在|离)",
-        "",
-        text,
+    text = re.sub(r"^(请问|麻烦|帮我|帮忙|你们|咱们|我们|我想|想看|想查|查一下|看一下|给我|发我|发个|发一下)", "", text)
+    text = re.sub(r"^(哪家|哪个|哪一个)?离", "", text)
+    text = re.sub(r"^(有没有|有无|哪里有|哪家|哪个|哪一个|在)", "", text)
+    suffixes = (
+        "附近有门店吗",
+        "附近有店吗",
+        "有门店吗",
+        "有店吗",
+        "有没有门店",
+        "有没有店",
+        "门店在哪里",
+        "门店在哪",
+        "店在哪里",
+        "店在哪",
+        "附近门店",
+        "附近店",
+        "门店地址",
+        "门店位置",
+        "附近",
+        "周边",
+        "最近",
+        "更近",
+        "比较近",
+        "近一点",
+        "近点",
+        "地址",
+        "位置",
+        "导航",
+        "路线",
+        "停车",
+        "营业时间",
+        "几点下班",
+        "几点关门",
+        "发我一下",
+        "给我一下",
+        "发我",
+        "给我",
+        "一下",
+        "有吗",
+        "吗",
+        "呢",
+        "呀",
     )
+    changed = True
+    while changed and text:
+        changed = False
+        for suffix in suffixes:
+            if text.endswith(suffix) and len(text) > len(suffix):
+                text = text[: -len(suffix)]
+                changed = True
+                break
     return text.strip()
 
 
