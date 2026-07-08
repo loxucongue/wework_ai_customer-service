@@ -70,6 +70,8 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_type": state.get("customer_type", ""),
         "main_blocker": state.get("main_blocker", ""),
         "next_step": state.get("next_step", ""),
+        "payment_state": state.get("payment_state", ""),
+        "payment_action": state.get("payment_action", ""),
         "reply_constraints": state.get("reply_constraints", []),
         "planner_tool_policy_violations": _compact_planner_violations(state.get("tool_policy_violations", [])),
         "handoff": {} if suppress_profile_memory else handoff,

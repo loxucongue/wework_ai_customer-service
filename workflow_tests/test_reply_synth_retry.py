@@ -52,6 +52,21 @@ class FakeBadHandoffModelClient:
         }
 
 
+class FakePaymentExceptionModelClient:
+    available = True
+
+    async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
+        return {
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "我先帮您核对这笔付款异常。您把付款时间、金额和付款方式发我一下。"},
+                }
+            ]
+        }
+
+
 class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_reply_synth_retries_once_when_json_missing_reply_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -218,6 +233,52 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "deterministic_handoff_notice_fallback")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
+
+    async def test_current_professional_assist_notice_is_not_removed_as_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=FakePaymentExceptionModelClient(),
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-current-professional-assist",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "我付款扣了但是显示没成功",
+                "normalized_content": "我付款扣了但是显示没成功",
+                "planner_decision": "need_tools",
+                "handoff": {"needed": True, "reason": "payment failure / payment exception"},
+                "required_tools": [{"name": "professional_assist", "purpose": ""}],
+                "tool_results": {
+                    "professional_assist": {
+                        "status": "requested",
+                        "reason": "payment failure / payment exception",
+                    }
+                },
+                "fact_envelope": {
+                    "structured_facts": {
+                        "professional_assist": {
+                            "status": "requested",
+                            "reason": "payment failure / payment exception",
+                        }
+                    }
+                },
+            }
+
+            output = await node(state)
+
+        self.assertEqual(output["errors"], [])
+        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
+        self.assertTrue(any(item.get("message") == "handoff_notice_appended" for item in output["warnings"]))
+        self.assertFalse(any(item.get("message") == "stale_handoff_notice_removed" for item in output["warnings"]))
 
 
 if __name__ == "__main__":

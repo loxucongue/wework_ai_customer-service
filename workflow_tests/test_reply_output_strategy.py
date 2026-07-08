@@ -76,13 +76,18 @@ def test_current_turn_context_binds_renne_to_deposit_push() -> None:
         }
     )
 
-    assert context["open_task"] == "deposit_push"
-    assert context["binding_source"] == "open_task"
+    assert context["open_task"] == "none"
+    assert context["binding_source"] == "last_assistant"
+    assert "short_message" in context["context_hints"]
+    assert "payment_context_available" in context["context_hints"]
+    assert "last_assistant_action:sent_payment_collection" in context["context_hints"]
     assert context["last_assistant_action"] == "sent_payment_collection"
     assert context["deposit_state"] == "payment_link_sent"
+    assert context["payment_evidence"]["sent_payment_collection"] is True
     assert context["confirmed_store"]["store_name"] == "广州白云三店"
     assert context["confirmed_appointment"]["time"] == "11:00"
-    assert "不要重新问城市或项目" in context["reply_anchor"]
+    assert "evidence_summary" in context
+    assert "reply_anchor" not in context
 
 
 def test_contextual_short_open_task_recovers_planner_no_reply() -> None:
@@ -110,10 +115,9 @@ def test_contextual_short_open_task_recovers_planner_no_reply() -> None:
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["planner_reply_messages"]
-    assert "在的" in plan["planner_reply_messages"][0]["content"]["text"]
-    assert plan["reply_strategy"]["current_turn_context_guard"] == "contextual_short_open_task_no_reply_recovered"
+    assert plan["planner_decision"] == "no_reply"
+    assert plan["planner_reply_messages"] == []
+    assert "current_turn_context_guard" not in plan["reply_strategy"]
 
 
 def test_current_turn_context_allows_greeting_without_context() -> None:
@@ -140,7 +144,9 @@ def test_current_turn_context_store_anchor_prefers_recent_store_over_profile() -
         }
     )
 
-    assert context["open_task"] == "store_followup"
+    assert context["open_task"] == "none"
+    assert "reference_message" in context["context_hints"]
+    assert "store_context_available" in context["context_hints"]
     assert context["current_store_anchor"]["store_id"] == "562"
     assert context["current_store_anchor"]["source"] == "recent_store_address_message"
 
@@ -201,13 +207,39 @@ def test_current_turn_context_post_deposit_time_confirmation_missing_store() -> 
         }
     )
 
-    assert context["open_task"] == "post_deposit_store_assignment"
+    assert context["open_task"] == "none"
     assert context["deposit_state"] == "deposit_paid"
+    assert "structured_deposit_paid" in context["context_hints"]
+    assert "current_message_has_time_reference" in context["context_hints"]
+    assert "store_or_region_missing" in context["context_hints"]
     assert context["confirmed_appointment"]["date"] == "明天"
     assert context["missing_slots"] == ["city_or_region", "store"]
     assert "available_time" in context["blocked_actions"]
     assert "payment_collection" in context["blocked_actions"]
-    assert context["recommended_next_action"] == "ask_city_or_region"
+    assert "recommended_next_action" not in context
+
+
+def test_current_turn_context_plain_paid_phrase_binds_next_step_without_card() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "付完然后呢",
+            "conversation_history": [
+                "用户: 我报名，朋友一起",
+                "小贝: 2位一共20元预约金入口发您，每位10元，到店抵扣。",
+                "用户: 已经付了",
+            ],
+            "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 20}}],
+        }
+    )
+
+    assert context.get("deposit_state") != "deposit_paid"
+    assert context["open_task"] == "none"
+    assert context["payment_evidence"]["sent_payment_collection"] is True
+    assert context["payment_evidence"]["recent_payment_texts"]
+    assert "current_message_asks_next_step" in context["context_hints"]
+    assert "payment_context_available" in context["context_hints"]
+    assert "payment_collection" not in context.get("blocked_actions", [])
+    assert "recommended_next_action" not in context
 
 
 def test_current_turn_context_does_not_treat_unpaid_history_as_paid_deposit() -> None:
@@ -225,6 +257,25 @@ def test_current_turn_context_does_not_treat_unpaid_history_as_paid_deposit() ->
     assert context["open_task"] != "post_deposit_store_assignment"
 
 
+def test_current_turn_context_payment_retry_does_not_become_paid_deposit() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "没收到，再发一下",
+            "conversation_history": [
+                "用户: 我报名，朋友一起",
+                "小贝: 2位一共20元预约金入口发您，每位10元，到店抵扣。",
+                "用户: 已经付了",
+            ],
+            "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 20}}],
+        }
+    )
+
+    assert context.get("deposit_state") != "deposit_paid"
+    assert context["open_task"] == "none"
+    assert context["payment_evidence"]["sent_payment_collection"] is True
+    assert "payment_context_available" in context["context_hints"]
+
+
 def test_current_turn_context_history_health_risk_is_advisory_for_short_message() -> None:
     context = build_current_turn_context(
         {
@@ -240,7 +291,7 @@ def test_current_turn_context_history_health_risk_is_advisory_for_short_message(
     assert context["open_task"] == "none"
     assert context["resolved_slots"]["health_check"] == "advisory"
     assert "payment_collection" not in context.get("blocked_actions", [])
-    assert context.get("recommended_next_action") != "confirm_detection_visit"
+    assert "recommended_next_action" not in context
 
 
 def test_current_turn_context_old_health_risk_does_not_shadow_store_question() -> None:
@@ -261,7 +312,7 @@ def test_current_turn_context_old_health_risk_does_not_shadow_store_question() -
 
     assert context.get("resolved_slots", {}).get("health_check") != "advisory"
     assert "payment_collection" not in context.get("blocked_actions", [])
-    assert context.get("recommended_next_action") != "confirm_detection_visit"
+    assert "recommended_next_action" not in context
 
 
 def test_current_turn_context_current_health_risk_still_hard_blocks_payment() -> None:
@@ -272,10 +323,11 @@ def test_current_turn_context_current_health_risk_still_hard_blocks_payment() ->
         }
     )
 
-    assert context["open_task"] == "health_risk_followup"
+    assert context["open_task"] == "none"
+    assert "current_hard_health_risk" in context["context_hints"]
     assert context["resolved_slots"]["health_check"] == "required"
     assert "payment_collection" in context["blocked_actions"]
-    assert context["recommended_next_action"] == "confirm_detection_visit"
+    assert "recommended_next_action" not in context
 
 
 def test_planner_payload_keeps_context_for_low_information_message() -> None:
@@ -294,8 +346,9 @@ def test_planner_payload_keeps_context_for_low_information_message() -> None:
     assert payload["customer_profile"]["decision_stage"] == "预约推进"
     assert payload["history_events"]
     assert payload["customer_context"]["appointment_info"]["store_name"] == "广州白云三店"
-    assert payload["current_turn_context"]["open_task"] == "deposit_push"
-    assert payload["current_turn_context"]["binding_source"] == "open_task"
+    assert payload["current_turn_context"]["open_task"] == "none"
+    assert payload["current_turn_context"]["binding_source"] in {"last_assistant", "none"}
+    assert "payment_context_available" in payload["current_turn_context"]["context_hints"]
     assert payload["current_turn_context"]["confirmed_store"]["store_name"] == "广州白云三店"
 
 
@@ -318,7 +371,7 @@ def test_planner_payload_does_not_send_long_sales_strategy_to_planner() -> None:
     assert "next_sales_strategy" not in payload["customer_profile"]
 
 
-def test_planner_guard_post_deposit_time_confirmation_asks_location_before_schedule() -> None:
+def test_planner_tool_policy_flags_post_deposit_time_confirmation_missing_store() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "明天就可以",
@@ -341,14 +394,237 @@ def test_planner_guard_post_deposit_time_confirmation_asks_location_before_sched
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "post_deposit_store_assignment_missing_location"}]
-    assert not plan["planner_tool_calls"]
+    assert plan["planner_decision"] == "need_tools"
     assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
-    text = " ".join(item["content"]["text"] for item in plan["planner_reply_messages"] if item["type"] == "text")
-    assert "明天" in text
-    assert "城市或区域" in text
-    assert not any(item.get("subtype") == "available_time" for item in plan["tool_policy_violations"])
+    assert any(item.get("subtype") == "available_time" for item in plan["tool_policy_violations"])
+
+
+def test_planner_removes_payment_collection_after_customer_says_paid() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "付完然后呢",
+            "conversation_history": [
+                "用户: 我报名，朋友一起",
+                "小贝: 2位一共20元预约金入口发您，每位10元，到店抵扣。",
+                "用户: 已经付了",
+            ],
+            "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 20}}],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "time",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "customer_claimed_paid",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "收到，付完就给您锁名额了。"}},
+                {"type": "payment_collection", "content": {"amount": 20, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["conversion_stage"] == "time_confirm"
+    assert plan["next_step"] == "confirm_time"
+    assert plan["payment_state"] == "customer_claimed_paid"
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    assert plan["reply_strategy"]["current_turn_context_guard"] == "payment_card_removed_after_model_paid_state"
+
+
+def test_planner_infers_paid_context_from_payment_evidence_when_model_omits_state() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "付完然后呢",
+            "conversation_history": [
+                "用户: 我报名，朋友一起",
+                "小贝: 2位一共20元预约金入口发您，每位10元，到店抵扣。",
+                "用户: 已经付了",
+            ],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "time",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "unknown",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "收到，接下来帮您安排到店时间。"}},
+                {"type": "payment_collection", "content": {"amount": 20, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["payment_state"] == "customer_claimed_paid"
+    assert plan["conversion_stage"] == "time_confirm"
+    assert plan["next_step"] == "confirm_time"
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+
+
+def test_planner_does_not_auto_append_payment_collection_after_customer_says_paid() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "已经付了，下一步呢",
+            "conversation_history": [
+                "小贝: 10元预约金入口发您，用于锁活动名额，到店抵扣。",
+                "小贝: payment_collection amount=10",
+            ],
+            "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 10}}],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "time",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "customer_claimed_paid",
+            "reply_messages": [{"type": "text", "content": {"text": "我继续帮您处理后续安排。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    assert not any(item.get("missing") == "payment_collection_required" for item in plan["tool_policy_violations"])
+
+
+def test_planner_keeps_payment_collection_when_customer_requests_resend() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "没收到，再发一下",
+            "conversation_history": [
+                "用户: 我报名，朋友一起",
+                "小贝: 2位一共20元预约金入口发您，每位10元，到店抵扣。",
+                "用户: 已经付了",
+            ],
+            "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 20}}],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "high_intent",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "resend_requested",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "我再给您发一次，2位一共20元预约金，每位10元，到店抵扣。"}},
+                {"type": "payment_collection", "content": {"amount": 20, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
+
+
+def test_planner_payment_action_offer_resend_removes_same_turn_payment_card() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "你好",
+            "conversation_history": [
+                "用户: 我报名",
+                "小贝: 我把10元预约金入口发您，到店抵扣，不做退10元。",
+                "小贝: payment_collection amount=10",
+            ],
+            "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 10}}],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_DEPOSIT_FOLLOWUP",
+            "conversion_stage": "deposit_push",
+            "customer_type": "high_intent",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "link_sent",
+            "payment_action": "offer_resend",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "在的，我在。您是继续确认到店安排，还是需要我继续帮您处理？"}},
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["payment_action"] == "offer_resend"
+    assert plan["conversion_stage"] == "time_confirm"
+    assert plan["next_step"] == "confirm_time"
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    assert plan["reply_strategy"]["payment_action_guard"] == "payment_card_removed_by_payment_action"
+    assert not any(item.get("missing") == "payment_collection_required" for item in plan["tool_policy_violations"])
+
+
+def test_planner_payment_action_send_now_auto_appends_payment_card() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "发吧，我现在付"},
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "high_intent",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "needs_payment",
+            "payment_action": "send_now",
+            "reply_messages": [{"type": "text", "content": {"text": "好的，我给您发10元预约金入口，到店抵扣，不做退10元。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
+    assert not any(item.get("missing") == "payment_collection_required" for item in plan["tool_policy_violations"])
+
+
+def test_planner_downgrades_send_now_when_short_message_has_no_payment_request_evidence() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "你好",
+            "conversation_history": [
+                "用户: 我报名",
+                "小贝: 我把10元预约金入口发您，到店抵扣，不做退10元。",
+                "小贝: payment_collection amount=10",
+            ],
+            "current_turn_context": {
+                "is_contextual_short_message": True,
+                "payment_evidence": {
+                    "sent_payment_collection": True,
+                    "recent_payment_texts": ["小贝: payment_collection amount=10"],
+                },
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "unknown",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "link_sent",
+            "payment_action": "send_now",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "你好，我把10元预约金入口再发您。"}},
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["payment_action"] == "confirm_next_step"
+    assert plan["conversion_stage"] == "time_confirm"
+    assert plan["next_step"] == "confirm_time"
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    assert any(item.get("missing") == "payment_collection_blocked_by_payment_action" for item in plan["tool_policy_violations"])
 
 
 def test_need_tools_transition_is_standardized() -> None:
@@ -821,7 +1097,7 @@ def test_store_detail_reference_rewrites_region_query_to_recent_store_anchor() -
     assert plan["planner_tool_calls"][0]["query"] == _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")
 
 
-def test_generic_store_question_still_rejects_history_store_query() -> None:
+def test_generic_store_question_with_unique_history_store_allows_lookup() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
@@ -846,9 +1122,10 @@ def test_generic_store_question_still_rejects_history_store_query() -> None:
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["planner_tool_calls"] == []
-    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "detail", "query": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")}
+    ]
 
 
 def test_generic_store_question_with_payment_task_allows_recent_store_query() -> None:
@@ -884,9 +1161,9 @@ def test_generic_store_question_with_payment_task_allows_recent_store_query() ->
     )
 
     assert plan["planner_decision"] == "need_tools"
-    assert not any(
-        item.get("missing") == "store_lookup_query_over_anchors_history" for item in plan["tool_policy_violations"]
-    )
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "detail", "query": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")}
+    ]
 
 
 def test_contextual_store_question_with_payment_task_forces_lookup_when_model_direct_replies() -> None:
@@ -916,8 +1193,6 @@ def test_contextual_store_question_with_payment_task_forces_lookup_when_model_di
     )
 
     assert plan["planner_decision"] == "need_tools"
-    assert plan["conversion_stage"] == "store_match"
-    assert plan["next_step"] == "lookup_store"
     assert plan["planner_tool_calls"] == [
         {"name": "customer_store_lookup", "purpose": "detail", "query": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")}
     ]
@@ -1077,7 +1352,7 @@ def test_generic_store_lookup_query_requires_city_or_store_name() -> None:
     assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
 
 
-def test_generic_store_lookup_must_not_fill_query_from_history_store() -> None:
+def test_generic_store_lookup_rewrites_noncanonical_history_query_to_anchor() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": _u(r"\u4f60\u4eec\u95e8\u5e97\u5728\u54ea\u91cc"),
@@ -1099,9 +1374,8 @@ def test_generic_store_lookup_must_not_fill_query_from_history_store() -> None:
             "tool_calls": [{"name": "customer_store_lookup", "query": "广州市白云区白云三店", "purpose": "detail"}],
         },
     )
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["planner_tool_calls"] == []
-    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "detail", "query": "广州白云三店"}]
 
 
 def test_scoped_city_store_question_uses_store_lookup_instead_of_reasking_city() -> None:
@@ -1214,7 +1488,7 @@ def test_scoped_nearby_landmark_preserves_landmark_in_distance_origin() -> None:
     ]
 
 
-def test_generic_store_question_does_not_use_contextual_anchor_even_with_open_task() -> None:
+def test_generic_store_question_uses_contextual_anchor_with_open_task() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "你们门店在哪里",
@@ -1237,9 +1511,8 @@ def test_generic_store_question_does_not_use_contextual_anchor_even_with_open_ta
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["planner_tool_calls"] == []
-    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "detail", "query": "厦门百星湖里店"}]
 
 
 def test_generic_store_question_without_scope_overrides_deposit_direct_reply() -> None:
@@ -1265,11 +1538,10 @@ def test_generic_store_question_without_scope_overrides_deposit_direct_reply() -
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_decision"] == "need_tools"
     assert plan["conversion_stage"] == "store_match"
     assert plan["next_step"] == "lookup_store"
-    assert plan["planner_tool_calls"] == []
-    assert plan["planner_reply_messages"][0]["content"]["text"] == "您想看哪个城市或区域的门店？发我城市或区名，我给您匹配附近门店。"
+    assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "detail", "query": "厦门百星湖里店"}]
     assert not any(item.get("type") == "payment_collection" for item in plan["planner_reply_messages"])
 
 
@@ -1428,6 +1700,132 @@ def test_direct_reply_answer_with_next_step_marks_two_text_violation() -> None:
     assert any(item.get("missing") == "two_text_required" for item in plan["tool_policy_violations"])
 
 
+def test_direct_reply_time_availability_claim_requires_available_time_tool() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "5点有空吧"},
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "confirm_time",
+            "payment_state": "link_sent",
+            "payment_action": "confirm_next_step",
+            "reply_messages": [{"type": "text", "content": {"text": "5点可以，我先帮你按今天晚点安排。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "available_time_required_for_availability_claim"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_direct_reply_hold_wording_requires_appointment_fact() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "我还有我朋友一起哦"},
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "accompany",
+            "main_blocker": "none",
+            "next_step": "confirm_time",
+            "payment_state": "link_sent",
+            "payment_action": "confirm_next_step",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "可以，带朋友一起来没问题。"}},
+                {"type": "text", "content": {"text": "我把你们按今天晚点先留着。"}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "available_time_required_for_availability_claim"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_direct_reply_remember_time_wording_requires_appointment_fact() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "5点有空吧"},
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "confirm_time",
+            "payment_state": "link_sent",
+            "payment_action": "confirm_next_step",
+            "reply_messages": [{"type": "text", "content": {"text": "可以，5点我先帮您记上。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "available_time_required_for_availability_claim"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_direct_reply_current_availability_question_cannot_be_answered_without_tool_or_scope_question() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "5点有空吧"},
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "confirm_time",
+            "payment_state": "unknown",
+            "payment_action": "none",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "您是说5点方便吗"}},
+                {"type": "text", "content": {"text": "我这边先按厦门百星湖里店记着"}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "available_time_required_for_availability_claim"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_no_reply_not_allowed_for_current_availability_question() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "5点有空吧"},
+        {
+            "decision": "no_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "no_action",
+            "payment_state": "unknown",
+            "payment_action": "none",
+            "reply_messages": [],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "no_reply_not_allowed_for_appointment_availability_question"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_reply_validation_requires_payment_when_promising_entry() -> None:
     with pytest.raises(ValueError, match="payment_collection_required"):
         validate_reply_consistency(
@@ -1449,6 +1847,25 @@ def test_reply_validation_requires_payment_when_promising_signup_entry() -> None
                 }
             ],
             {"conversion_stage": "objection_resolution", "next_step": "solve_blocker"},
+        )
+
+
+def test_reply_validation_blocks_payment_card_when_payment_action_only_offers_resend() -> None:
+    with pytest.raises(ValueError, match="payment_collection_blocked_by_payment_action"):
+        validate_reply_consistency(
+            [
+                {"type": "text", "order": 1, "content": {"text": "在的，我在。您需要的话我可以再给您发一次入口。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            {"payment_state": "link_sent", "payment_action": "offer_resend"},
+        )
+
+
+def test_reply_validation_blocks_payment_entry_text_when_payment_action_is_not_send_now() -> None:
+    with pytest.raises(ValueError, match="payment_collection_blocked_by_payment_action"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "之前那个预约金入口还在，如果要我重发就回我重发。"}}],
+            {"payment_state": "link_sent", "payment_action": "confirm_next_step"},
         )
 
 
@@ -1752,16 +2169,9 @@ def test_history_health_context_does_not_hijack_current_time_change() -> None:
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "advisory_health_history_demoted_from_professional_assist"}]
-    assert plan["planner_tool_calls"] == []
-    assert plan["handoff"]["needed"] is False
-    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
-    text = plan["planner_reply_messages"][0]["content"]["text"]
-    assert _u(r"\u4e0b\u5348") in text
-    assert _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97") in text
-    assert _u(r"\u68c0\u6d4b") in text
-    assert _u(r"\u7a0d\u7b49") not in text
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"][0]["name"] == "professional_assist"
+    assert plan["handoff"]["needed"] is True
 
 
 def test_history_health_context_removes_direct_reply_handoff_notice() -> None:
@@ -1861,26 +2271,25 @@ def test_current_payment_entry_overrides_unfinished_store_lookup_for_friend() ->
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "current_message_requests_payment_entry"}]
-    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "payment_collection"]
-    assert plan["planner_reply_messages"][1]["content"]["amount"] == 20
-    validate_reply_consistency(plan["planner_reply_messages"], {**plan, "normalized_content": "我和朋友一起过去，发入口"})
+    assert plan["planner_decision"] == "need_tools"
+    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
+    assert not any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
 
 
 def test_current_payment_entry_uses_three_person_amount() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "带两个朋友一起去，发入口"},
         {
-            "decision": "need_tools",
-            "stage": "S2",
-            "sub_rule_id": "S2_LOCATION_DETAIL",
-            "conversion_stage": "store_match",
-            "customer_type": "distance",
-            "main_blocker": "distance",
-            "next_step": "lookup_store",
-            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
-            "tool_calls": [{"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": "厦门市机场附近"}],
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "accompany",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "needs_payment",
+            "reply_messages": [{"type": "text", "content": {"text": "可以，我给您发预约金入口。"}}],
+            "tool_calls": [],
         },
     )
 
@@ -1908,7 +2317,6 @@ def test_current_payment_entry_uses_twenty_yuan_for_two_person_total() -> None:
     )
 
     assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "payment_collection"]
-    assert plan["planner_reply_messages"][0]["content"]["text"].startswith("可以，2位一共20元预约金入口")
     assert plan["planner_reply_messages"][1]["content"]["amount"] == 20
 
 
@@ -1937,12 +2345,8 @@ def test_current_time_confirmation_missing_location_does_not_reuse_failed_distan
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "appointment_confirm_missing_location"}]
-    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text", "text"]
-    text = " ".join(item["content"]["text"] for item in plan["planner_reply_messages"])
-    assert "明天下午" in text
-    assert "城市或区域" in text
+    assert plan["planner_decision"] == "need_tools"
+    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
 
 
 def test_current_health_risk_hold_blocks_payment_collection() -> None:
@@ -1977,6 +2381,24 @@ def test_reply_validation_allows_payment_collection_after_previous_send() -> Non
             "history_events": [{"event_type": "payment_collection_sent"}],
         },
     )
+
+
+def test_reply_validation_rejects_payment_collection_after_paid_deposit_context() -> None:
+    with pytest.raises(ValueError, match="payment_collection_blocked_by_paid_deposit_context"):
+        validate_reply_consistency(
+            [
+                {"type": "text", "order": 1, "content": {"text": "收到，我继续给您安排后续到店。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 20, "remark": ""}},
+            ],
+            {
+                "conversion_stage": "time_confirm",
+                "next_step": "confirm_time",
+                "current_turn_context": {
+                    "deposit_state": "deposit_paid",
+                    "open_task": "post_deposit_next_step_clarification",
+                },
+            },
+        )
 
 
 def test_reply_validation_rejects_group_payment_text_mismatch() -> None:
@@ -2301,6 +2723,59 @@ def test_reply_validation_rejects_available_time_claim_without_slots() -> None:
         )
 
 
+def test_reply_validation_rejects_time_can_book_without_available_time_fact() -> None:
+    with pytest.raises(ValueError, match="available_time_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "5点可以，我先帮你按今天晚点安排。"}}],
+            {"fact_envelope": {"structured_facts": {"appointment_facts": []}}},
+        )
+
+
+def test_reply_validation_rejects_hold_wording_without_appointment_fact() -> None:
+    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "可以，带朋友一起来没问题，我把你们按今天晚点先留着。"}}],
+            {"fact_envelope": {"structured_facts": {"appointment_facts": []}}},
+        )
+
+
+def test_reply_validation_rejects_lock_time_wording_without_appointment_fact() -> None:
+    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "可以，一起过来没问题。我先给你们锁今天这个时段。"}}],
+            {"fact_envelope": {"structured_facts": {"appointment_facts": []}}},
+        )
+
+
+def test_reply_validation_rejects_hold_wording_with_only_available_time_fact() -> None:
+    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "5点暂未看到可约，最近能帮您留10点。"}}],
+            {
+                "fact_envelope": {
+                    "structured_facts": {
+                        "appointment_facts": [
+                            {
+                                "type": "available_time",
+                                "recommended_slot": "10:00",
+                                "backup_slots": ["10:45"],
+                                "target_time_available": False,
+                            }
+                        ]
+                    }
+                }
+            },
+        )
+
+
+def test_reply_validation_rejects_arrange_group_wording_without_appointment_fact() -> None:
+    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "可以，朋友一起也行。那我先帮你按两位一起安排。"}}],
+            {"fact_envelope": {"structured_facts": {"appointment_facts": []}}},
+        )
+
+
 def test_reply_validation_allows_available_time_claim_with_slots() -> None:
     validate_reply_consistency(
         [{"type": "text", "order": 1, "content": {"text": "厦门思明店明天下午有空，15:30或16:00都可以。"}}],
@@ -2387,6 +2862,14 @@ def test_reply_validation_rejects_effect_absolute_safety_claim() -> None:
         validate_reply_consistency(
             [{"type": "text", "order": 1, "content": {"text": "淡斑方向可以看，不会导致反黑，到店检测后再安排。"}}],
             {"normalized_content": "做完会不会反黑"},
+        )
+
+
+def test_reply_validation_rejects_soft_absolute_safety_claim() -> None:
+    with pytest.raises(ValueError, match="effect_absolute_safety_claim"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "一般不会，咱们会先看皮肤状态再做。"}}],
+            {"normalized_content": "会不会留疤或者伤皮肤"},
         )
 
 
@@ -2608,8 +3091,9 @@ def test_reply_payload_keeps_context_for_low_information_message() -> None:
     assert payload["customer_basic_info"]["preferred_store_name"] == "广州白云三店"
     assert payload["history_events"]
     assert payload["fact_envelope"]["structured_facts"]["appointment_facts"]
-    assert payload["current_turn_context"]["open_task"] == "deposit_push"
-    assert payload["current_turn_context"]["binding_source"] == "open_task"
+    assert payload["current_turn_context"]["open_task"] == "none"
+    assert payload["current_turn_context"]["binding_source"] in {"last_assistant", "none"}
+    assert "payment_context_available" in payload["current_turn_context"]["context_hints"]
     assert payload["current_turn_context"]["confirmed_store"]["store_name"] == "广州白云三店"
 
 

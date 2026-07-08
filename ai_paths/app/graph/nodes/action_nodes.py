@@ -62,13 +62,29 @@ def create_execute_actions_node(
 
             if _needs_customer_store_lookup(required_tools):
                 lookup_tool = _planned_tool(required_tools, "customer_store_lookup")
-                result = await _customer_store_lookup(lookup_tool, state, coze_client)
+                try:
+                    result = await _customer_store_lookup(lookup_tool, state, coze_client)
+                except Exception as exc:
+                    result = _tool_execution_error_result(
+                        tool_name="customer_store_lookup",
+                        tool=lookup_tool,
+                        state=state,
+                        exc=exc,
+                    )
                 tool_results["customer_store_lookup"] = result
                 tool_calls.append({"name": "customer_store_lookup", "input": lookup_tool, "output": result})
 
             if _needs_distance_calculate(required_tools):
                 distance_tool = _planned_tool(required_tools, "distance_calculate")
-                result = await _distance_calculate(distance_tool, state, coze_client, tool_results)
+                try:
+                    result = await _distance_calculate(distance_tool, state, coze_client, tool_results)
+                except Exception as exc:
+                    result = _tool_execution_error_result(
+                        tool_name="distance_calculate",
+                        tool=distance_tool,
+                        state=state,
+                        exc=exc,
+                    )
                 tool_results["distance_calculate"] = result
                 tool_calls.append({"name": "distance_calculate", "input": distance_tool, "output": result})
 
@@ -332,6 +348,34 @@ def _missing_fields_for_error(error: str) -> list[str]:
     return []
 
 
+def _tool_execution_error_result(
+    *,
+    tool_name: str,
+    tool: dict[str, Any],
+    state: AgentState,
+    exc: Exception,
+) -> dict[str, Any]:
+    query = str(
+        tool.get("query")
+        or tool.get("origin")
+        or tool.get("address")
+        or state.get("normalized_content")
+        or state.get("content")
+        or ""
+    ).strip()
+    return {
+        "status": "tool_error",
+        "query": query,
+        "purpose": str(tool.get("purpose") or "").strip(),
+        "stores": [],
+        "candidate_stores": [],
+        "candidate_store_count": 0,
+        "ranked_stores": [],
+        "error": f"{type(exc).__name__}: {exc}",
+        "tool": tool_name,
+    }
+
+
 def _needs_distance_calculate(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "distance_calculate" for item in required_tools if isinstance(item, dict))
 
@@ -383,6 +427,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     query = str(tool.get("query") or tool.get("origin") or tool.get("address") or state.get("normalized_content") or "").strip()
     purpose = str(tool.get("purpose") or "").strip()
     stores = _customer_scope_stores(state)
+    scope_unavailable = _customer_store_scope_unavailable(state)
     if not query:
         return {
             "status": "missing_query",
@@ -407,6 +452,9 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     if not candidates:
         candidates = _snapshot_stores_for_exact_query(query)
         source = "store_snapshot_exact_name"
+    if not candidates and scope_unavailable and _snapshot_region_fallback_allowed(query, geocode):
+        candidates = _snapshot_stores_for_region_query(query, geocode, purpose)
+        source = "store_snapshot_region_fallback"
 
     normalized = [_store_lookup_item(store) for store in candidates[:60]]
     status = "ok" if normalized else "no_match"
@@ -419,7 +467,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         "stores": normalized[:12],
         "candidate_stores": normalized,
         "candidate_store_count": len(normalized),
-        "missing": [] if normalized else ["matched_customer_scope_store"],
+        "missing": [] if normalized else (["store_scope_unavailable"] if scope_unavailable else ["matched_customer_scope_store"]),
     }
 
 
@@ -740,11 +788,32 @@ def _customer_scope_stores(state: AgentState) -> list[dict[str, Any]]:
     return [store for store in stores if isinstance(store, dict)]
 
 
+def _customer_store_scope_unavailable(state: AgentState) -> bool:
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    if not isinstance(knowledge, dict):
+        return True
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    if stores:
+        return False
+    source = str(knowledge.get("source") or "").strip()
+    if source in {
+        "missing_customer_store_scope",
+        "platform_agent_unavailable",
+        "platform_agent.store_index_error",
+        "customer_store_knowledge_error",
+    }:
+        return True
+    if knowledge.get("error") or knowledge.get("store_scope_error"):
+        return True
+    cache = knowledge.get("cache") if isinstance(knowledge.get("cache"), dict) else {}
+    return str(cache.get("store_scope_status") or "") in {"miss", "error"}
+
+
 def _snapshot_stores_for_exact_query(query: str) -> list[dict[str, Any]]:
     text = _compact_text(query)
     if not text:
         return []
-    stores = _snapshot_store_values()
+    stores = _usable_snapshot_store_values()
     matched: list[dict[str, Any]] = []
     for store in stores:
         name = _compact_text(store.get("store_name") or store.get("name"))
@@ -753,6 +822,50 @@ def _snapshot_stores_for_exact_query(query: str) -> list[dict[str, Any]]:
         if _snapshot_store_name_matches_query(name, text):
             matched.append(store)
     return _without_subsumed_snapshot_stores(_dedupe_snapshot_stores(matched))[:5]
+
+
+def _snapshot_stores_for_region_query(query: str, geocode: dict[str, Any], purpose: str) -> list[dict[str, Any]]:
+    stores = _usable_snapshot_store_values()
+    candidates = _stores_for_geocode(geocode, stores, purpose)
+    if not candidates:
+        candidates = _stores_for_text_query(query, stores, purpose)
+    return _dedupe_snapshot_stores(candidates)[:60]
+
+
+def _snapshot_region_fallback_allowed(query: str, geocode: dict[str, Any]) -> bool:
+    text = _compact_text(query)
+    if not text or text in {"门店", "门店在哪里", "你们门店在哪里", "地址", "位置", "附近"}:
+        return False
+    if isinstance(geocode, dict) and (geocode.get("city") or geocode.get("district")):
+        return True
+    return _query_matches_snapshot_region(query)
+
+
+def _query_matches_snapshot_region(query: str) -> bool:
+    text = _compact_text(query)
+    if not text or len(text) < 2:
+        return False
+    for store in _usable_snapshot_store_values():
+        for key in ("city", "district", "province", "store_address"):
+            value = str(store.get(key) or "").strip()
+            for token in _region_tokens(value):
+                compact_token = _compact_text(token)
+                if compact_token and (compact_token in text or (len(text) >= 2 and text in compact_token)):
+                    return True
+    return False
+
+
+def _usable_snapshot_store_values() -> list[dict[str, Any]]:
+    return [store for store in _snapshot_store_values() if _snapshot_store_is_usable(store)]
+
+
+def _snapshot_store_is_usable(store: dict[str, Any]) -> bool:
+    name = str(store.get("store_name") or store.get("name") or "").strip()
+    address = str(store.get("store_address") or store.get("address") or "").strip()
+    store_id = str(store.get("store_id") or store.get("id") or "").strip()
+    if not (store_id and name and address):
+        return False
+    return "停业" not in name
 
 
 def _snapshot_store_name_matches_query(name: str, text: str) -> bool:

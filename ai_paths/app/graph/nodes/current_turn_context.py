@@ -17,9 +17,32 @@ STORE_REFERENCE_HINTS = tuple(STORE_CONTEXT_REFERENCE_TERMS) + ("这家", "那�
 STORE_FACT_EXTRA_TERMS = ("位置", "定位", "发位置", "发个位置", "发一下位置", "发下位置")
 APPOINTMENT_HINTS = ("预约", "约", "到店", "名额", "时间", "明天", "今天", "后天", "上午", "下午", "晚上")
 PAYMENT_HINTS = ("预约金", "付款入口", "收款入口", "报名入口", "付款", "交10", "交 10", "10元", "10 元")
-DEPOSIT_PAID_TERMS = ("已支付", "支付成功", "已付款", "已经付款", "付好了", "已付预约金", "预约金已付", "交了预约金", "收款成功")
-DEPOSIT_UNPAID_TERMS = ("未支付", "没支付", "没有支付", "未付款", "没付款", "没有付款", "没付", "未付", "支付失败", "付款失败", "还没付")
-DEPOSIT_HISTORY_PAID_TERMS = ("我已经付款", "我已付款", "我付款了", "我付好了", "付好了", "已付预约金", "预约金已付", "交了预约金", "收款成功", "支付成功")
+PAYMENT_EVIDENCE_TERMS = (
+    "payment_collection",
+    "预约金",
+    "付款",
+    "支付",
+    "收款",
+    "报名入口",
+    "付款入口",
+    "收款入口",
+    "支付入口",
+    "入口",
+    "发吧",
+    "现在付",
+    "我付",
+    "先付",
+    "已付",
+    "付了",
+    "付完",
+    "没收到",
+    "打不开",
+    "失败",
+    "再发",
+    "重发",
+)
+STRUCTURED_DEPOSIT_PAID_VALUES = {"1", "true", "yes", "y", "paid", "deposit_paid", "已支付", "已付款", "支付成功"}
+STRUCTURED_DEPOSIT_FAILED_VALUES = {"failed", "failure", "payment_failed", "支付失败", "付款失败"}
 NEXT_STEP_TERMS = ("付完然后呢", "付完了然后呢", "然后呢", "下一步", "接下来", "后面怎么", "之后怎么")
 VISIT_CONFIRM_TERMS = ("可以", "就可以", "方便", "没问题", "行", "好", "到店", "过去", "来店", "去店")
 LOCATION_KEYS = ("city", "current_city", "district", "area", "region", "address_region", "intent_city", "intent_area")
@@ -45,7 +68,8 @@ def build_current_turn_context(
     )
     appointment = _merge_appointments(_appointment_from_current_message(content), confirmed_appointment_from_state(state))
     last_action = _last_assistant_action(last_assistant, sent_summary)
-    deposit_state = _deposit_state(state, sent_summary=sent_summary, last_assistant=last_assistant)
+    deposit_state = _structured_deposit_state(state, sent_summary=sent_summary)
+    payment_evidence = _payment_evidence(state, sent_summary=sent_summary, last_assistant=last_assistant)
     risk_hold = health_risk_hold(state)
     location_missing = _missing_location_slots(state, store_anchor=store_anchor)
     resolved_slots = _resolved_slots(
@@ -57,7 +81,7 @@ def build_current_turn_context(
     )
     current_time_confirmed = _is_current_turn_time_confirmation(content, appointment)
     next_step_clarification = _is_next_step_clarification(content)
-    open_task = _open_task(
+    context_hints = _context_hints(
         content=content,
         is_short=is_short,
         is_reference=is_reference,
@@ -65,28 +89,31 @@ def build_current_turn_context(
         appointment=appointment,
         last_assistant_action=last_action,
         deposit_state=deposit_state,
+        payment_evidence=payment_evidence,
         risk_hold=risk_hold,
         location_missing=location_missing,
         current_time_confirmed=current_time_confirmed,
         next_step_clarification=next_step_clarification,
     )
     blocked_actions = _blocked_actions(
-        open_task=open_task,
+        deposit_state=deposit_state,
         risk_hold=risk_hold,
+        appointment=appointment,
         location_missing=location_missing,
     )
     binding_source = _binding_source(
         is_short=is_short,
         is_reference=is_reference,
-        open_task=open_task,
         last_assistant=last_assistant,
         store_anchor=store_anchor,
     )
     output: dict[str, Any] = {
         "is_contextual_short_message": is_short,
         "binding_source": binding_source,
-        "open_task": open_task,
+        "open_task": "none",
     }
+    if context_hints:
+        output["context_hints"] = context_hints
     if is_reference:
         output["is_context_reference_message"] = True
     if last_action != "none":
@@ -98,28 +125,33 @@ def build_current_turn_context(
         output["confirmed_appointment"] = appointment
     if deposit_state != "unknown":
         output["deposit_state"] = deposit_state
+    if payment_evidence:
+        output["payment_evidence"] = payment_evidence
     if resolved_slots:
         output["resolved_slots"] = resolved_slots
-    visible_missing_slots = _visible_missing_slots(open_task=open_task, is_reference=is_reference, content=content, location_missing=location_missing)
+    visible_missing_slots = _visible_missing_slots(
+        is_reference=is_reference,
+        content=content,
+        appointment=appointment,
+        location_missing=location_missing,
+    )
     if visible_missing_slots:
         output["missing_slots"] = visible_missing_slots
     if blocked_actions:
         output["blocked_actions"] = blocked_actions
-    recommended_next_action = _recommended_next_action(open_task=open_task, location_missing=visible_missing_slots, risk_hold=risk_hold)
-    if recommended_next_action:
-        output["recommended_next_action"] = recommended_next_action
-    reply_anchor = _reply_anchor(
-        open_task=open_task,
+    evidence_summary = _evidence_summary(
+        context_hints=context_hints,
         store_anchor=store_anchor,
         appointment=appointment,
         deposit_state=deposit_state,
         last_assistant=last_assistant,
         binding_source=binding_source,
+        payment_evidence=payment_evidence,
         location_missing=visible_missing_slots,
         risk_hold=risk_hold,
     )
-    if reply_anchor:
-        output["reply_anchor"] = reply_anchor
+    if evidence_summary:
+        output["evidence_summary"] = evidence_summary
     return _drop_empty(output)
 
 
@@ -228,7 +260,7 @@ def can_use_contextual_store_for_message(content: str, state: dict[str, Any]) ->
     return False
 
 
-def _open_task(
+def _context_hints(
     *,
     content: str,
     is_short: bool,
@@ -237,38 +269,47 @@ def _open_task(
     appointment: dict[str, Any],
     last_assistant_action: str,
     deposit_state: str,
+    payment_evidence: dict[str, Any],
     risk_hold: dict[str, Any],
     location_missing: list[str],
     current_time_confirmed: bool,
     next_step_clarification: bool,
-) -> str:
-    if deposit_state == "deposit_paid" and location_missing and (current_time_confirmed or next_step_clarification):
-        return "post_deposit_store_assignment"
-    if deposit_state == "deposit_paid" and next_step_clarification:
-        return "post_deposit_next_step_clarification"
-    if is_hard_health_risk_hold(risk_hold) and (
-        is_short or _is_short_followup_greeting(content) or current_time_confirmed or _mentions_visit_or_detection(content)
-    ):
-        return "health_risk_followup"
-    if deposit_state == "payment_link_sent" or last_assistant_action in {"sent_payment_collection", "asked_for_payment"}:
-        return "deposit_push"
-    if appointment and (is_short or _has_appointment_hint(content) or last_assistant_action == "asked_for_time_or_store"):
-        return "appointment_confirm"
+) -> list[str]:
+    hints: list[str] = []
+    if is_short:
+        hints.append("short_message")
+    if is_reference:
+        hints.append("reference_message")
     if store_anchor and (is_reference or _has_store_fact_request(content)):
-        return "store_followup"
-    return "none"
+        hints.append("store_context_available")
+    if appointment:
+        hints.append("appointment_context_available")
+    if current_time_confirmed:
+        hints.append("current_message_has_time_reference")
+    if next_step_clarification:
+        hints.append("current_message_asks_next_step")
+    if payment_evidence:
+        hints.append("payment_context_available")
+    if last_assistant_action != "none":
+        hints.append(f"last_assistant_action:{last_assistant_action}")
+    if deposit_state == "deposit_paid":
+        hints.append("structured_deposit_paid")
+    if is_hard_health_risk_hold(risk_hold):
+        hints.append("current_hard_health_risk")
+    elif risk_hold:
+        hints.append("health_risk_context")
+    if location_missing and (appointment or is_reference or _has_store_fact_request(content)):
+        hints.append("store_or_region_missing")
+    return list(dict.fromkeys(hints))
 
 
 def _binding_source(
     *,
     is_short: bool,
     is_reference: bool,
-    open_task: str,
     last_assistant: str,
     store_anchor: dict[str, Any],
 ) -> str:
-    if (is_short or is_reference) and open_task != "none":
-        return "open_task"
     if is_reference and store_anchor:
         return "recent_store"
     if is_short and last_assistant:
@@ -289,33 +330,65 @@ def _last_assistant_action(last_assistant: str, sent_summary: dict[str, Any]) ->
     return "none"
 
 
-def _deposit_state(state: dict[str, Any], *, sent_summary: dict[str, Any], last_assistant: str) -> str:
-    if _deposit_paid_signal(state):
-        return "deposit_paid"
-    recent_text = _recent_text(state, limit=8)
-    if sent_summary.get("payment_collection_sent") or any(term in recent_text for term in ("payment_collection", "预约金收款", "付款入口", "收款入口")):
-        return "payment_link_sent"
-    if any(term in f"{last_assistant}\n{recent_text}" for term in ("预约金", "到店抵扣", "不做退10", "锁活动名额", "锁名额")):
-        return "deposit_explained"
-    return "unknown"
-
-
-def _deposit_paid_signal(state: dict[str, Any]) -> bool:
+def _structured_deposit_state(state: dict[str, Any], *, sent_summary: dict[str, Any]) -> str:
     for mapping in _deposit_signal_mappings(state):
         for key, value in mapping.items():
             key_text = str(key or "").lower()
             value_text = str(value or "")
             if key_text in {"deposit_paid", "payment_paid", "has_paid_deposit"} and _truthy_flag(value):
-                return True
+                return "deposit_paid"
+            if key_text in {"deposit_failed", "payment_failed"} and _failed_flag(value):
+                return "payment_failed"
             if any(marker in key_text for marker in ("deposit", "payment", "预约金", "付款", "支付")):
-                if _negates_deposit_paid(value_text):
-                    continue
-                if any(term in value_text for term in DEPOSIT_PAID_TERMS):
-                    return True
-    recent_text = _recent_text(state, limit=20)
-    if _negates_deposit_paid(recent_text):
-        return False
-    return any(term in recent_text for term in DEPOSIT_HISTORY_PAID_TERMS) and "预约金" in recent_text
+                normalized = value_text.strip().lower()
+                if normalized in STRUCTURED_DEPOSIT_PAID_VALUES:
+                    return "deposit_paid"
+                if normalized in STRUCTURED_DEPOSIT_FAILED_VALUES:
+                    return "payment_failed"
+    if sent_summary.get("payment_collection_sent") or _payment_collection_sent_from_events(state):
+        return "payment_link_sent"
+    return "unknown"
+
+
+def _payment_evidence(state: dict[str, Any], *, sent_summary: dict[str, Any], last_assistant: str) -> dict[str, Any]:
+    current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    event_count = _payment_collection_sent_count_from_events(state)
+    sent_count = sent_summary.get("payment_collection_count") or event_count or 0
+    recent_payment_texts: list[str] = []
+    for item in history[-12:]:
+        text = _conversation_item_text(item)
+        if text and _looks_payment_related(text):
+            recent_payment_texts.append(text[:160])
+    evidence = {
+        "sent_payment_collection": bool(sent_summary.get("payment_collection_sent") or event_count),
+        "payment_collection_count": sent_count,
+        "last_assistant_payment_text": last_assistant[:160] if _looks_payment_related(last_assistant) else "",
+        "current_payment_text": current_text[:160] if _looks_payment_related(current_text) else "",
+        "recent_payment_texts": recent_payment_texts[-6:],
+        "source_policy": "evidence_only_planner_decides_payment_state",
+    }
+    return _drop_empty(evidence)
+
+
+def _payment_collection_sent_from_events(state: dict[str, Any]) -> bool:
+    return _payment_collection_sent_count_from_events(state) > 0
+
+
+def _payment_collection_sent_count_from_events(state: dict[str, Any]) -> int:
+    events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
+    count = 0
+    for event in events[-30:]:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or "").strip()
+        if event_type == "payment_collection_sent":
+            count += 1
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        if str(facts.get("message_type") or facts.get("type") or "").strip() == "payment_collection":
+            count += 1
+    return count
 
 
 def _deposit_signal_mappings(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -338,11 +411,19 @@ def _truthy_flag(value: Any) -> bool:
     if isinstance(value, bool):
         return value
     text = str(value or "").strip().lower()
-    return text in {"1", "true", "yes", "y", "paid", "已支付", "已付款", "支付成功"}
+    return text in STRUCTURED_DEPOSIT_PAID_VALUES
 
 
-def _negates_deposit_paid(text: str) -> bool:
-    return any(term in str(text or "") for term in DEPOSIT_UNPAID_TERMS)
+def _failed_flag(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    return text in STRUCTURED_DEPOSIT_FAILED_VALUES
+
+
+def _looks_payment_related(text: str) -> bool:
+    compact = "".join(str(text or "").split())
+    return bool(compact and any(term in compact for term in PAYMENT_EVIDENCE_TERMS))
 
 
 def _appointment_from_current_message(content: str) -> dict[str, Any]:
@@ -463,47 +544,46 @@ def _resolved_slots(
     return _drop_empty(slots)
 
 
-def _blocked_actions(*, open_task: str, risk_hold: dict[str, Any], location_missing: list[str]) -> list[str]:
+def _blocked_actions(
+    *,
+    deposit_state: str,
+    risk_hold: dict[str, Any],
+    appointment: dict[str, Any],
+    location_missing: list[str],
+) -> list[str]:
     blocked: list[str] = []
-    if open_task == "post_deposit_store_assignment":
-        blocked.extend(["available_time", "payment_collection"])
-        if location_missing:
-            blocked.append("professional_assist_primary_reply")
+    if deposit_state == "deposit_paid":
+        blocked.append("payment_collection")
+    if appointment and location_missing:
+        blocked.append("available_time")
     if is_hard_health_risk_hold(risk_hold):
         blocked.append("payment_collection")
     return list(dict.fromkeys(blocked))
 
 
-def _recommended_next_action(*, open_task: str, location_missing: list[str], risk_hold: dict[str, Any]) -> str:
-    if open_task == "post_deposit_store_assignment":
-        return "ask_city_or_region" if "city_or_region" in location_missing else "ask_store_or_area"
-    if open_task == "post_deposit_next_step_clarification":
-        return "explain_next_step_after_deposit"
-    if open_task == "health_risk_followup":
-        return "confirm_detection_visit"
-    if is_hard_health_risk_hold(risk_hold):
-        return "health_check_first"
-    return ""
-
-
-def _visible_missing_slots(*, open_task: str, is_reference: bool, content: str, location_missing: list[str]) -> list[str]:
+def _visible_missing_slots(
+    *,
+    is_reference: bool,
+    content: str,
+    appointment: dict[str, Any],
+    location_missing: list[str],
+) -> list[str]:
     if not location_missing:
         return []
-    if open_task in {"post_deposit_store_assignment", "post_deposit_next_step_clarification", "store_followup", "appointment_confirm"}:
-        return location_missing
-    if is_reference or _has_store_fact_request(content):
+    if is_reference or _has_store_fact_request(content) or appointment:
         return location_missing
     return []
 
 
-def _reply_anchor(
+def _evidence_summary(
     *,
-    open_task: str,
+    context_hints: list[str],
     store_anchor: dict[str, Any],
     appointment: dict[str, Any],
     deposit_state: str,
     last_assistant: str,
     binding_source: str,
+    payment_evidence: dict[str, Any],
     location_missing: list[str],
     risk_hold: dict[str, Any],
 ) -> str:
@@ -514,34 +594,24 @@ def _reply_anchor(
     if appointment.get("time"):
         appointment_bits.append(str(appointment.get("time")))
     appointment_text = " ".join(appointment_bits)
-    facts = "，".join(part for part in (store_name, appointment_text) if part)
-    if open_task == "post_deposit_store_assignment":
-        time_text = appointment_text or "客户刚确认的到店时间"
-        missing_text = "、".join(location_missing) if location_missing else "门店"
-        health_text = "；当前消息有健康/过敏风险，要同步说明到店先检测确认适配性" if is_hard_health_risk_hold(risk_hold) else ""
-        return (
-            f"客户已付预约金并确认{time_text}，但还缺{missing_text}；先承接已确认时间，"
-            f"补问城市/区域或门店，不要调用 available_time，不要重新收预约金{health_text}。"
-        )
-    if open_task == "health_risk_followup":
-        return "客户近期有健康/过敏风险，本轮在继续确认到店或检测；先承接当前问题，引导到店检测确认适配性，不要发送预约金或冷启动。"
-    if open_task == "post_deposit_next_step_clarification":
-        suffix = f"已确认{facts}，" if facts else ""
-        return f"客户已付预约金后在问下一步；{suffix}应说明接下来是匹配门店、到店检测和确认适配性，不要重新推预约金。"
-    if open_task == "deposit_push":
-        suffix = f"已确认{facts}，" if facts else ""
-        if deposit_state == "payment_link_sent":
-            return f"客户在催刚才的预约金/预约安排；{suffix}应承接预约金入口或到店抵扣顾虑，不要重新问城市或项目。"
-        return f"客户在承接预约金解释；{suffix}不要重新问城市或项目。"
-    if open_task == "appointment_confirm":
-        suffix = f"已确认{facts}，" if facts else ""
-        return f"客户在承接刚才的预约安排；{suffix}应继续确认预约，不要冷启动。"
-    if open_task == "store_followup":
-        suffix = f"当前门店是{store_name}，" if store_name else ""
-        return f"客户在追问刚才门店；{suffix}应围绕这家门店承接，不要重新问城市或项目。"
+    parts: list[str] = []
+    if context_hints:
+        parts.append("hints=" + ",".join(context_hints[:8]))
+    if store_name:
+        parts.append(f"store={store_name}")
+    if appointment_text:
+        parts.append(f"appointment={appointment_text}")
+    if deposit_state != "unknown":
+        parts.append(f"structured_deposit_state={deposit_state}")
+    if payment_evidence:
+        parts.append("payment_evidence_available=true")
+    if location_missing:
+        parts.append("missing=" + ",".join(location_missing))
+    if risk_hold:
+        parts.append("risk_hold=" + str(risk_hold.get("risk_hold") or "context"))
     if binding_source == "last_assistant" and last_assistant:
-        return f"客户在回应上一轮助手问题：{last_assistant[:120]}"
-    return ""
+        parts.append(f"last_assistant={last_assistant[:80]}")
+    return "；".join(parts)
 
 
 def _store_from_request(state: dict[str, Any]) -> dict[str, Any]:

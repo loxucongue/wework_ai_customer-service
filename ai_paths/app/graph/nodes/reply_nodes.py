@@ -56,7 +56,7 @@ def create_synthesize_reply_node(
                                 "detail": f"{type(planner_validation_exc).__name__}: {planner_validation_exc}",
                             }
                         )
-                if planner_decision == "no_reply":
+                if planner_decision == "no_reply" and not state.get("tool_policy_violations"):
                     no_reply_fallback = _maybe_build_no_reply_dissatisfaction_fallback(state)
                     if no_reply_fallback:
                         messages = no_reply_fallback
@@ -388,6 +388,8 @@ def _maybe_build_required_payment_collection_fallback(state: AgentState, exc: Ex
         return None
     if is_hard_health_risk_hold(health_risk_hold(state)):
         return None
+    if _state_has_paid_deposit_context(state):
+        return None
     if not _state_requires_payment_collection(state):
         return None
     context = payment_collection_context(state=state, messages=[])
@@ -407,6 +409,13 @@ def _maybe_build_required_payment_collection_fallback(state: AgentState, exc: Ex
 
 
 def _state_requires_payment_collection(state: AgentState) -> bool:
+    payment_action = str(state.get("payment_action") or "")
+    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+        return False
+    if payment_action == "send_now":
+        return True
+    if str(state.get("payment_state") or "") == "customer_claimed_paid":
+        return False
     if str(state.get("conversion_stage") or "") == "deposit_push":
         return True
     if str(state.get("next_step") or "") == "send_deposit":
@@ -415,6 +424,13 @@ def _state_requires_payment_collection(state: AgentState) -> bool:
         if isinstance(item, dict) and str(item.get("type") or "") == "payment_collection":
             return True
     return False
+
+
+def _state_has_paid_deposit_context(state: AgentState) -> bool:
+    if str(state.get("payment_state") or "") == "customer_claimed_paid":
+        return True
+    current_turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
+    return str(current_turn_context.get("deposit_state") or "") == "deposit_paid"
 
 
 def _required_payment_collection_fallback_text(state: AgentState, amount: int) -> str:
@@ -512,8 +528,6 @@ def _effect_case_fallback_text(state: AgentState) -> str:
 
 
 def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
-    if _is_stale_handoff_context(state):
-        return messages, False
     if not messages or _messages_have_handoff_notice(messages) or not _state_requests_handoff_notice(state):
         return messages, False
     reason = _handoff_notice_reason(state)
@@ -533,6 +547,8 @@ def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: Agent
 
 
 def _suppress_stale_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
+    if _state_has_current_handoff_notice_signal(state):
+        return messages, False
     if not messages or not _is_stale_handoff_context(state):
         return messages, False
     changed = False
@@ -618,6 +634,10 @@ def _state_requests_handoff_notice(state: AgentState) -> bool:
     handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
     if bool(handoff.get("needed")):
         return True
+    return _state_has_current_handoff_notice_signal(state)
+
+
+def _state_has_current_handoff_notice_signal(state: AgentState) -> bool:
     required_tools = state.get("required_tools") if isinstance(state.get("required_tools"), list) else []
     if any(isinstance(item, dict) and str(item.get("name") or "") == "professional_assist" for item in required_tools):
         return True
@@ -702,8 +722,10 @@ def _single_store_fact_id(state: AgentState) -> str:
 def _reply_repair_hint(error: str) -> str:
     if "payment_collection_blocked_by_health_risk_hold" in error:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
+    if "payment_collection_blocked_by_payment_action" in error:
+        return "planner 的 payment_action 表示本轮不直接发预约金入口时，不要输出 payment_collection，也不要在 text 里说马上发入口；改成自然承接、询问是否需要重发或推进下一步。"
     if "payment_collection_required" in error:
-        return "如果文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
+        return "如果 payment_action=send_now、文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
     if "payment_collection_amount_text_mismatch" in error:
         return "预约金卡片金额必须和文本一致；同行按每位10元锁活动名额，2位说一共20元，3位说一共30元，4位说一共40元。"
     if "payment_participant_count_confirm_required" in error:
@@ -719,7 +741,7 @@ def _reply_repair_hint(error: str) -> str:
     if "effect_reply_confidence_order_required" in error:
         return "效果疑问要先肯定对应需求可以做、大多数客户改善反馈不错，再补到店检测更准确；不要第一句就说因人而异、不保证或具体看个人情况。"
     if "effect_absolute_safety_claim" in error:
-        return "效果和安全顾虑可以积极承接，但不要承诺不会反黑、不会做坏、一定有效、保证效果或包效果；改成先检测评估、按皮肤状态操作、降低刺激风险。"
+        return "效果和安全顾虑可以积极承接，但不要说不会反黑、不会做坏、一般不会、通常不会、一定有效、保证效果或包效果；改成先给多数客户反馈正常/改善不错的信心，再说到店检测评估、按皮肤状态操作、适合再安排。"
     if "reply_too_similar" in error:
         return "客户在重复追问同类问题，请换一个角度回答，不要复用上一轮核心话术。"
     if "two_text_required" in error:
@@ -740,6 +762,8 @@ def _reply_repair_hint(error: str) -> str:
         return "没有 distance_calculate 排序事实时，不要输出最近、离您最近、较近、就近等距离排序表达。只回答门店名、地址、停车或营业时间等已有门店事实，再问客户哪个区域/哪家更方便。"
     if "available_time_fact_required" in error:
         return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。"
+    if "appointment_confirmation_fact_required" in error:
+        return "available_time 只表示看到可约时段，不代表已经留位、锁定或安排成功。请改成“这个时间可以看/推荐这个时间/您看这个时间方便吗”，不要说帮您留、锁定、安排、记上或预约成功。"
     if "too_many_appointment_time_options" in error:
         return "档期回复最多只能给 1 个推荐时间和 1 个备选时间。请基于 recommended_slot 和 backup_slots 重写，不要列完整时间表。"
     if "unfinished_appointment_lookup_promise" in error:

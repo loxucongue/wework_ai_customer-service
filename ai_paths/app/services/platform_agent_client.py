@@ -46,12 +46,15 @@ class PlatformAgentClient:
             return {}
         data = self._get(
             "/platform_agent/customer/get_customer_info",
-            {
-                "user_id": user_id,
-                "corp_id": corp_id,
-                "wechat": wechat,
-                "external_userid": external_userid,
-            },
+            self._with_common_params(
+                {
+                    "user_id": user_id,
+                    "corp_id": corp_id,
+                    "wechat": wechat,
+                    "external_userid": external_userid,
+                },
+                None,
+            ),
         )
         info = data.get("info") if isinstance(data, dict) else None
         return info if isinstance(info, dict) else {}

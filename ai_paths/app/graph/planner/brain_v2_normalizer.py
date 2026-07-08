@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
-from app.graph.nodes.current_turn_context import build_current_turn_context
+from app.graph.nodes.current_turn_context import build_current_turn_context, current_store_anchor_from_state
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.planner.planner_contract import (
     ALLOWED_CONVERSION_STAGES,
@@ -29,6 +29,60 @@ from app.services.risk_hold import HEALTH_RISK_TERMS, explicit_professional_assi
 
 _STORE_SNAPSHOT_NAME_CACHE: list[str] | None = None
 _STORE_SNAPSHOT_REGION_TOKEN_CACHE: set[str] | None = None
+ALLOWED_PAYMENT_STATES = (
+    "unknown",
+    "link_sent",
+    "customer_claimed_paid",
+    "resend_requested",
+    "payment_failed",
+    "needs_payment",
+)
+ALLOWED_PAYMENT_ACTIONS = (
+    "unknown",
+    "none",
+    "send_now",
+    "offer_resend",
+    "explain_existing",
+    "confirm_next_step",
+)
+PAYMENT_CONTEXT_TERMS = (
+    "payment_collection",
+    "预约金",
+    "付款入口",
+    "收款入口",
+    "支付入口",
+    "报名入口",
+    "入口发",
+)
+CUSTOMER_PAID_CLAIM_TERMS = (
+    "已付",
+    "已付款",
+    "已支付",
+    "已经付",
+    "付了",
+    "付好",
+    "付完",
+    "交了",
+    "缴了",
+    "支付成功",
+    "付款成功",
+)
+PAYMENT_CLAIM_NEGATION_TERMS = (
+    "没付",
+    "未付",
+    "还没付",
+    "没有付",
+    "付不了",
+    "支付不了",
+    "付款失败",
+    "支付失败",
+    "没成功",
+    "未成功",
+    "没收到",
+    "再发",
+    "重发",
+    "打不开",
+)
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -56,6 +110,16 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         model_payload.get("next_step") if isinstance(model_payload, dict) else "",
         ALLOWED_NEXT_STEPS,
         "no_action",
+    )
+    payment_state = _normalize_enum(
+        model_payload.get("payment_state") if isinstance(model_payload, dict) else "",
+        ALLOWED_PAYMENT_STATES,
+        "unknown",
+    )
+    payment_action = _normalize_enum(
+        model_payload.get("payment_action") if isinstance(model_payload, dict) else "",
+        ALLOWED_PAYMENT_ACTIONS,
+        "unknown",
     )
     planner_reply_messages = _normalize_reply_messages(
         model_payload.get("reply_messages") if isinstance(model_payload, dict) else [],
@@ -99,7 +163,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         next_step = generic_store_guard["next_step"]
         planner_reply_messages = generic_store_guard["reply_messages"]
         required_tools = generic_store_guard["required_tools"]
-        executable_tools = []
+        executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
         reply_strategy["current_turn_context_guard"] = generic_store_guard["guard_reason"]
     generic_store_direct_guard = _generic_store_no_scope_direct_guard(state, executable_tools=executable_tools)
     if generic_store_direct_guard:
@@ -247,88 +311,60 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         if next_step == "send_deposit":
             next_step = "confirm_time"
         reply_constraints.append("健康/过敏高风险未完成到店检测前，先确认检测和到店安排，不发送 payment_collection。")
-    payment_entry_guard = _current_payment_entry_guard(state, risk_hold=risk_hold)
-    if payment_entry_guard:
-        decision = payment_entry_guard["decision"]
-        stage = payment_entry_guard["stage"]
-        sub_rule_id = payment_entry_guard["sub_rule_id"]
-        conversion_stage = payment_entry_guard["conversion_stage"]
-        customer_type = payment_entry_guard["customer_type"]
-        main_blocker = payment_entry_guard["main_blocker"]
-        next_step = payment_entry_guard["next_step"]
-        planner_reply_messages = payment_entry_guard["reply_messages"]
-        required_tools = payment_entry_guard["required_tools"]
-        executable_tools = []
-        handoff_raw = payment_entry_guard["handoff"]
-        reply_constraints.extend(payment_entry_guard.get("reply_constraints") or [])
-        reply_strategy["current_turn_context_guard"] = payment_entry_guard.get("guard_reason", "")
-    turn_guard = {} if payment_entry_guard else _current_turn_context_guard(state, risk_hold=risk_hold)
-    if turn_guard:
-        decision = turn_guard["decision"]
-        stage = turn_guard["stage"]
-        sub_rule_id = turn_guard["sub_rule_id"]
-        conversion_stage = turn_guard["conversion_stage"]
-        customer_type = turn_guard["customer_type"]
-        main_blocker = turn_guard["main_blocker"]
-        next_step = turn_guard["next_step"]
-        planner_reply_messages = turn_guard["reply_messages"]
-        required_tools = turn_guard["required_tools"]
-        executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
-        if turn_guard.get("handoff"):
-            handoff_raw = turn_guard["handoff"]
-        reply_constraints.extend(turn_guard.get("reply_constraints") or [])
-        reply_strategy["current_turn_context_guard"] = turn_guard.get("guard_reason", "")
-    short_no_reply_guard = _contextual_short_no_reply_guard(
-        state=state,
-        decision=decision,
-        executable_tools=executable_tools,
-    )
-    if short_no_reply_guard:
-        decision = short_no_reply_guard["decision"]
-        stage = short_no_reply_guard["stage"]
-        sub_rule_id = short_no_reply_guard["sub_rule_id"]
-        conversion_stage = short_no_reply_guard["conversion_stage"]
-        customer_type = short_no_reply_guard["customer_type"]
-        main_blocker = short_no_reply_guard["main_blocker"]
-        next_step = short_no_reply_guard["next_step"]
-        planner_reply_messages = short_no_reply_guard["reply_messages"]
-        required_tools = short_no_reply_guard["required_tools"]
-        executable_tools = []
-        reply_constraints.extend(short_no_reply_guard.get("reply_constraints") or [])
-        reply_strategy["current_turn_context_guard"] = short_no_reply_guard.get("guard_reason", "")
-    advisory_health_guard = _advisory_health_professional_assist_guard(
-        state=state,
-        risk_hold=risk_hold,
-        explicit_risk_reason=explicit_risk_reason,
-        required_tools=required_tools,
-        handoff_raw=handoff_raw,
-    )
-    if advisory_health_guard:
-        decision = advisory_health_guard["decision"]
-        stage = advisory_health_guard["stage"]
-        sub_rule_id = advisory_health_guard["sub_rule_id"]
-        conversion_stage = advisory_health_guard["conversion_stage"]
-        customer_type = advisory_health_guard["customer_type"]
-        main_blocker = advisory_health_guard["main_blocker"]
-        next_step = advisory_health_guard["next_step"]
-        planner_reply_messages = advisory_health_guard["reply_messages"]
-        required_tools = advisory_health_guard["required_tools"]
-        executable_tools = []
-        handoff_raw = advisory_health_guard["handoff"]
-        reply_constraints.extend(advisory_health_guard.get("reply_constraints") or [])
-        reply_strategy["current_turn_context_guard"] = advisory_health_guard.get("guard_reason", "")
-    elif not explicit_risk_reason and not is_hard_health_risk_hold(risk_hold):
+    if not explicit_risk_reason and not is_hard_health_risk_hold(risk_hold):
         cleaned_messages, removed_advisory_handoff = _remove_advisory_health_handoff_notices(planner_reply_messages)
         if removed_advisory_handoff:
             planner_reply_messages = cleaned_messages
             handoff_raw = {"needed": False, "reason": ""}
             reply_constraints.append("历史健康风险只作为到店检测提醒；当前消息没有再次提病史/过敏/严重不适时，不输出 human_handoff_notice。")
             reply_strategy["current_turn_context_guard"] = "advisory_health_history_removed_handoff_notice"
+    has_paid_deposit_context = _has_paid_deposit_context(state, payment_state=payment_state)
+    if has_paid_deposit_context and payment_state == "unknown":
+        payment_state = "customer_claimed_paid"
+    if payment_action == "send_now" and _send_now_conflicts_with_current_turn_evidence(state):
+        payment_action = "confirm_next_step"
+        removed_payment = _has_payment_collection(planner_reply_messages)
+        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        if conversion_stage == "deposit_push":
+            conversion_stage = "time_confirm"
+            removed_payment = True
+        if next_step == "send_deposit":
+            next_step = "confirm_time"
+            removed_payment = True
+        if removed_payment:
+            reply_constraints.append("当前消息只是短消息承接，且没有当前发卡/重发/付款证据；不要把历史 payment_collection 自动当成本轮 send_now。")
+            reply_strategy.setdefault("payment_action_guard", "payment_card_removed_without_current_payment_request")
+    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+        removed_payment = _has_payment_collection(planner_reply_messages)
+        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        if conversion_stage == "deposit_push":
+            conversion_stage = "time_confirm"
+            removed_payment = True
+        if next_step == "send_deposit":
+            next_step = "confirm_time"
+            removed_payment = True
+        if removed_payment:
+            reply_constraints.append("payment_action 表示本轮不直接发送预约金入口；不要输出 payment_collection。")
+            reply_strategy.setdefault("payment_action_guard", "payment_card_removed_by_payment_action")
+    if has_paid_deposit_context:
+        removed_payment = _has_payment_collection(planner_reply_messages)
+        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        if conversion_stage == "deposit_push":
+            conversion_stage = "time_confirm"
+            removed_payment = True
+        if next_step == "send_deposit":
+            next_step = "confirm_time"
+            removed_payment = True
+        if removed_payment:
+            reply_constraints.append("payment_state 表示客户已付或结构化支付状态已付；本轮不要重复发送 payment_collection。")
+            reply_strategy.setdefault("current_turn_context_guard", "payment_card_removed_after_model_paid_state")
     planner_reply_messages = _append_required_payment_collection(
         state=state,
         decision=decision,
         conversion_stage=conversion_stage,
         next_step=next_step,
+        payment_state=payment_state,
+        payment_action=payment_action,
         messages=planner_reply_messages,
     )
     handoff = _normalize_handoff(handoff_raw)
@@ -356,6 +392,8 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             decision=decision,
             conversion_stage=conversion_stage,
             next_step=next_step,
+            payment_state=payment_state,
+            payment_action=payment_action,
             messages=planner_reply_messages,
         ),
         *_two_text_rhythm_violations(
@@ -369,7 +407,12 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             decision=decision,
             messages=planner_reply_messages,
         ),
+        *_no_reply_customer_question_violations(
+            state=state,
+            decision=decision,
+        ),
         *_appointment_availability_reply_violations(
+            state=state,
             decision=decision,
             messages=planner_reply_messages,
         ),
@@ -384,6 +427,8 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "customer_type": customer_type,
         "main_blocker": main_blocker,
         "next_step": next_step,
+        "payment_state": payment_state,
+        "payment_action": payment_action,
         "planner_reply_messages": planner_reply_messages,
         "planner_tool_calls": executable_tools,
         "reply_constraints": reply_constraints,
@@ -523,105 +568,6 @@ def _case_search_query(content: str) -> str:
     return "淡斑效果"
 
 
-def _current_turn_context_guard(state: AgentState, *, risk_hold: dict[str, Any]) -> dict[str, Any]:
-    turn_context = _turn_context_for_guard(state)
-    open_task = str(turn_context.get("open_task") or "").strip()
-    if open_task == "post_deposit_store_assignment":
-        return _post_deposit_store_assignment_guard(turn_context, risk_hold=risk_hold)
-    if open_task == "post_deposit_next_step_clarification":
-        return _post_deposit_next_step_guard(turn_context, risk_hold=risk_hold)
-    if open_task == "health_risk_followup":
-        return _health_risk_followup_guard(turn_context, risk_hold=risk_hold)
-    if open_task == "appointment_confirm" and _turn_context_missing_location(turn_context):
-        return _appointment_confirm_missing_location_guard(turn_context, risk_hold=risk_hold, state=state)
-    return {}
-
-
-def _contextual_short_no_reply_guard(
-    *,
-    state: AgentState,
-    decision: str,
-    executable_tools: list[dict[str, Any]],
-) -> dict[str, Any]:
-    if decision != "no_reply" or executable_tools:
-        return {}
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if not is_contextual_short_message(content):
-        return {}
-    turn_context = _turn_context_for_guard(state)
-    open_task = str(turn_context.get("open_task") or "").strip()
-    if not open_task or open_task == "none":
-        return {}
-    return _guard_plan(
-        stage="S4",
-        sub_rule_id="S4_CONTEXTUAL_SHORT_FOLLOWUP",
-        conversion_stage="deposit_push" if open_task == "deposit_push" else "time_confirm",
-        customer_type="high_intent",
-        main_blocker="none",
-        next_step="send_deposit" if open_task == "deposit_push" else "confirm_time",
-        messages=[_text_message(_contextual_short_no_reply_text(turn_context))],
-        handoff=False,
-        handoff_reason="",
-        guard_reason="contextual_short_open_task_no_reply_recovered",
-        constraints=["当前消息是短承接，但 current_turn_context 已有未完成任务；不能 no_reply 空回。"],
-    )
-
-
-def _contextual_short_no_reply_text(turn_context: dict[str, Any]) -> str:
-    anchor = str(turn_context.get("reply_anchor") or "").strip()
-    open_task = str(turn_context.get("open_task") or "").strip()
-    if open_task == "deposit_push" or "预约金" in anchor or "入口" in anchor:
-        return "在的，刚刚预约金入口和到店安排我这边接着，您按入口操作就可以；没收到我再发您。"
-    if "门店" in anchor or "地址" in anchor:
-        return "在的，刚刚这家门店我继续帮您核对，您把要确认的地址或时间发我就行。"
-    return "在的，刚刚这条我接着处理，您继续把要确认的门店、时间或入口发我就行。"
-
-
-def _advisory_health_professional_assist_guard(
-    *,
-    state: AgentState,
-    risk_hold: dict[str, Any],
-    explicit_risk_reason: str,
-    required_tools: list[dict[str, Any]],
-    handoff_raw: Any,
-) -> dict[str, Any]:
-    if explicit_risk_reason or is_hard_health_risk_hold(risk_hold):
-        return {}
-    if not any(isinstance(tool, dict) and str(tool.get("name") or "") == "professional_assist" for tool in required_tools):
-        return {}
-    reason_text = _handoff_and_tool_reason_text(handoff_raw, required_tools)
-    if not _mentions_health_risk_text(reason_text) and str(risk_hold.get("risk_hold") or "") != "health_check_context":
-        return {}
-    turn_context = _turn_context_for_guard(state)
-    open_task = str(turn_context.get("open_task") or "").strip()
-    if open_task == "health_risk_followup":
-        return {}
-    message = _advisory_health_context_message(turn_context, state)
-    return _guard_plan(
-        stage="S3",
-        sub_rule_id="S3_APPOINTMENT_TIME",
-        conversion_stage="time_confirm",
-        customer_type="time",
-        main_blocker="time",
-        next_step="confirm_time",
-        messages=[_text_message(message)],
-        handoff=False,
-        handoff_reason="",
-        guard_reason="advisory_health_history_demoted_from_professional_assist",
-        constraints=["历史健康风险只作为到店检测提醒；当前消息没有再次提病史/过敏/严重不适时，不调用 professional_assist。"],
-    )
-
-
-def _handoff_and_tool_reason_text(handoff_raw: Any, required_tools: list[dict[str, Any]]) -> str:
-    chunks: list[str] = []
-    if isinstance(handoff_raw, dict):
-        chunks.append(str(handoff_raw.get("reason") or ""))
-    for tool in required_tools:
-        if isinstance(tool, dict):
-            chunks.append(str(tool.get("reason") or tool.get("purpose") or ""))
-    return "\n".join(chunk for chunk in chunks if chunk)
-
-
 def _mentions_health_risk_text(text: str) -> bool:
     raw = str(text or "")
     return "健康风险" in raw or any(term in raw for term in HEALTH_RISK_TERMS)
@@ -648,227 +594,12 @@ def _advisory_health_context_message(turn_context: dict[str, Any], state: AgentS
 
 def _turn_context_for_guard(state: AgentState) -> dict[str, Any]:
     existing = state.get("current_turn_context")
-    if isinstance(existing, dict) and existing.get("open_task"):
+    if isinstance(existing, dict) and existing:
         return existing
     try:
         return build_current_turn_context(state, sent_message_summary=sent_message_summary_for_model(state))
     except Exception:
         return {}
-
-
-def _post_deposit_store_assignment_guard(turn_context: dict[str, Any], *, risk_hold: dict[str, Any]) -> dict[str, Any]:
-    appointment = turn_context.get("confirmed_appointment") if isinstance(turn_context.get("confirmed_appointment"), dict) else {}
-    time_text = _appointment_text(appointment)
-    missing_slots = turn_context.get("missing_slots") if isinstance(turn_context.get("missing_slots"), list) else []
-    ask_text = "您现在在哪个城市或区域？我按您这边就近匹配门店和地址。"
-    if "city_or_region" not in missing_slots:
-        ask_text = "您想去哪个门店或哪个区域？我按这个给您核对到店安排。"
-    first = f"可以，{time_text}这边先按到店检测给您接上。" if time_text else "可以，这边先按到店检测给您接上。"
-    messages = [_text_message(first), _text_message(ask_text)]
-    if risk_hold:
-        messages.append(_text_message("有健康或过敏情况的话，到店会先做检测评估，确认适合再安排操作。"))
-    if is_hard_health_risk_hold(risk_hold):
-        messages.append(_handoff_notice_message(risk_hold))
-    return _guard_plan(
-        stage="S3",
-        sub_rule_id="S3_APPOINTMENT_TIME",
-        conversion_stage="time_confirm",
-        customer_type="time",
-        main_blocker="logistics",
-        next_step="lookup_store",
-        messages=messages,
-        handoff=is_hard_health_risk_hold(risk_hold),
-        handoff_reason=_risk_hold_reason(risk_hold),
-        guard_reason="post_deposit_store_assignment_missing_location",
-        constraints=[
-            "客户已付预约金并确认到店时间但缺门店/区域；先补城市/区域或门店，不调用 available_time，不重复发送 payment_collection。"
-        ],
-    )
-
-
-def _post_deposit_next_step_guard(turn_context: dict[str, Any], *, risk_hold: dict[str, Any]) -> dict[str, Any]:
-    missing_slots = turn_context.get("missing_slots") if isinstance(turn_context.get("missing_slots"), list) else []
-    if "city_or_region" in missing_slots:
-        text = "付完后这边先帮您匹配就近门店，到店先做检测评估，确认适合再安排操作。您现在在哪个城市或区域？"
-    else:
-        text = "付完后这边继续帮您核对门店和到店安排，到店先做检测评估，确认适合再安排操作。"
-    messages = [_text_message(text)]
-    if is_hard_health_risk_hold(risk_hold):
-        messages.append(_handoff_notice_message(risk_hold))
-    return _guard_plan(
-        stage="S3",
-        sub_rule_id="S3_PAYMENT_COLLECTION",
-        conversion_stage="time_confirm",
-        customer_type="time",
-        main_blocker="logistics",
-        next_step="lookup_store" if missing_slots else "confirm_time",
-        messages=messages,
-        handoff=is_hard_health_risk_hold(risk_hold),
-        handoff_reason=_risk_hold_reason(risk_hold),
-        guard_reason="post_deposit_next_step_clarification",
-        constraints=["客户已付预约金后询问下一步；解释门店/检测/适配流程，不重复发送 payment_collection。"],
-    )
-
-
-def _health_risk_followup_guard(turn_context: dict[str, Any], *, risk_hold: dict[str, Any]) -> dict[str, Any]:
-    appointment = turn_context.get("confirmed_appointment") if isinstance(turn_context.get("confirmed_appointment"), dict) else {}
-    time_text = _appointment_text(appointment)
-    prefix = f"{time_text}可以先按到店检测评估来接，" if time_text else "在的，这个先按到店检测评估来处理，"
-    text = prefix + "确认适合再安排操作。您把想去的城市或门店发我，我先帮您接上检测安排。"
-    return _guard_plan(
-        stage="S4",
-        sub_rule_id="S4_PROFESSIONAL_ASSIST",
-        conversion_stage="time_confirm",
-        customer_type="risk",
-        main_blocker="risk",
-        next_step="confirm_time",
-        messages=[_text_message(text), _handoff_notice_message(risk_hold)],
-        handoff=True,
-        handoff_reason=_risk_hold_reason(risk_hold),
-        guard_reason="health_risk_followup",
-        constraints=["健康/过敏风险后续轮次先承接检测和到店安排，不发送 payment_collection。"],
-    )
-
-
-def _appointment_confirm_missing_location_guard(
-    turn_context: dict[str, Any], *, risk_hold: dict[str, Any], state: AgentState
-) -> dict[str, Any]:
-    appointment = turn_context.get("confirmed_appointment") if isinstance(turn_context.get("confirmed_appointment"), dict) else {}
-    time_text = _appointment_text(appointment)
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if time_text and "下午" in content and "下午" not in time_text:
-        time_text = f"{time_text}下午"
-    first = f"可以，{time_text}这边先按到店意向记下。" if time_text else "可以，这边先按到店意向记下。"
-    second = "您现在在哪个城市或区域？我按您方便的位置匹配门店和到店时间。"
-    messages = [_text_message(first), _text_message(second)]
-    if is_hard_health_risk_hold(risk_hold):
-        messages.append(_handoff_notice_message(risk_hold))
-    return _guard_plan(
-        stage="S3",
-        sub_rule_id="S3_APPOINTMENT_TIME",
-        conversion_stage="time_confirm",
-        customer_type="time",
-        main_blocker="logistics",
-        next_step="lookup_store",
-        messages=messages,
-        handoff=is_hard_health_risk_hold(risk_hold),
-        handoff_reason=_risk_hold_reason(risk_hold),
-        guard_reason="appointment_confirm_missing_location",
-        constraints=["客户本轮确认到店时间但缺城市/区域/门店；先承接时间，再补问城市/区域或门店，不沿用上一轮失败的门店距离查询。"],
-    )
-
-
-def _turn_context_missing_location(turn_context: dict[str, Any]) -> bool:
-    missing = turn_context.get("missing_slots") if isinstance(turn_context.get("missing_slots"), list) else []
-    return "city_or_region" in missing or "store" in missing
-
-
-def _current_payment_entry_guard(state: AgentState, *, risk_hold: dict[str, Any]) -> dict[str, Any]:
-    if is_hard_health_risk_hold(risk_hold):
-        return {}
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if not _current_message_requests_payment_entry(content):
-        return {}
-    payment_context = payment_collection_context(state=state, messages=[])
-    if payment_context.get("over_limit"):
-        return _guard_plan(
-            stage="S3",
-            sub_rule_id="S3_PAYMENT_COLLECTION",
-            conversion_stage="deposit_push",
-            customer_type="high_intent",
-            main_blocker="none",
-            next_step="confirm_time",
-            messages=[_text_message("可以，多人同行我先帮您确认实际到店人数和名额。您这边一共几位到店？确认后再按人数安排。")],
-            handoff=False,
-            handoff_reason="",
-            guard_reason="payment_entry_over_limit_confirm_participants",
-            constraints=["客户要预约金入口但同行人数超过自动收款上限；先确认人数，不发送 payment_collection。"],
-        )
-    amount = int(payment_context.get("amount") or 10)
-    text = _payment_entry_guard_text(state, amount)
-    messages = [
-        _text_message(text),
-        {
-            "type": "payment_collection",
-            "order": 2,
-            "content": {"amount": amount, "remark": ""},
-        },
-    ]
-    return _guard_plan(
-        stage="S3",
-        sub_rule_id="S3_PAYMENT_COLLECTION",
-        conversion_stage="deposit_push",
-        customer_type="high_intent",
-        main_blocker="none",
-        next_step="send_deposit",
-        messages=messages,
-        handoff=False,
-        handoff_reason="",
-        guard_reason="current_message_requests_payment_entry",
-        constraints=["客户本轮明确要预约金/报名/付款入口；按同行人数补 payment_collection，不让上一轮未完成门店查询覆盖当前发入口诉求。"],
-    )
-
-
-def _current_message_requests_payment_entry(content: str) -> bool:
-    compact = "".join(str(content or "").split())
-    if not compact:
-        return False
-    return any(
-        term in compact
-        for term in (
-            "发入口",
-            "付款入口",
-            "收款入口",
-            "支付入口",
-            "预约金入口",
-            "报名入口",
-            "发预约金",
-            "发报名",
-        )
-    )
-
-
-def _payment_entry_guard_text(state: AgentState, amount: int) -> str:
-    turn_context = _turn_context_for_guard(state)
-    missing_location = _turn_context_missing_location(turn_context)
-    if amount > 10:
-        participants = max(2, amount // 10)
-        prefix = f"可以，{participants}位一共{amount}元预约金入口发您，每位10元用于锁活动名额，到店抵扣，不做退10元。"
-    else:
-        prefix = "可以，10元预约金入口发您，用于锁活动名额，到店抵扣，不做退10元。"
-    if missing_location:
-        return f"{prefix}您再把城市/区域或想去的门店发我，我帮您接上到店安排。"
-    return prefix
-
-
-def _guard_plan(
-    *,
-    stage: str,
-    sub_rule_id: str,
-    conversion_stage: str,
-    customer_type: str,
-    main_blocker: str,
-    next_step: str,
-    messages: list[dict[str, Any]],
-    handoff: bool,
-    handoff_reason: str,
-    guard_reason: str,
-    constraints: list[str],
-) -> dict[str, Any]:
-    return {
-        "decision": "direct_reply",
-        "stage": stage,
-        "sub_rule_id": sub_rule_id,
-        "conversion_stage": conversion_stage,
-        "customer_type": customer_type,
-        "main_blocker": main_blocker,
-        "next_step": next_step,
-        "reply_messages": _renumber_messages(messages),
-        "required_tools": [{"name": "no_tool", "purpose": guard_reason}],
-        "handoff": {"needed": handoff, "reason": handoff_reason} if handoff else {"needed": False, "reason": ""},
-        "reply_constraints": constraints,
-        "guard_reason": guard_reason,
-    }
 
 
 def _text_message(text: str) -> dict[str, Any]:
@@ -1006,6 +737,20 @@ def _generic_store_lookup_guard(required_tools: list[dict[str, Any]], state: Age
         return {}
     if not any(isinstance(tool, dict) and str(tool.get("name") or "") == "customer_store_lookup" for tool in required_tools):
         return {}
+    anchor_query = _generic_store_contextual_anchor_name(state)
+    if anchor_query:
+        return {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_ADDRESS_CONTEXTUAL_ANCHOR",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [_standard_transition_message()],
+            "required_tools": [{"name": "customer_store_lookup", "purpose": "detail", "query": anchor_query}],
+            "guard_reason": "contextual_store_anchor_lookup",
+        }
     return {
         "decision": "direct_reply",
         "stage": "S2",
@@ -1350,6 +1095,25 @@ def _direct_reply_message_violations(*, decision: str, messages: list[dict[str, 
     return []
 
 
+def _no_reply_customer_question_violations(*, state: AgentState, decision: str) -> list[dict[str, str]]:
+    if decision != "no_reply":
+        return []
+    if _current_message_requests_appointment_availability(state):
+        return [
+            {
+                "task_type": "reply_liveness",
+                "subtype": "appointment_availability",
+                "missing": "no_reply_not_allowed_for_appointment_availability_question",
+                "note": (
+                    "The customer is asking whether a concrete appointment time is available. "
+                    "Do not repair by returning no_reply. If store_id and date are available, call available_time; "
+                    "otherwise ask for the missing store/date scope without claiming the time is available, held, or arranged."
+                ),
+            }
+        ]
+    return []
+
+
 def _direct_reply_store_consistency_violations(
     *,
     state: AgentState,
@@ -1666,17 +1430,62 @@ def _generic_store_question_has_allowed_tool_query(required_tools: list[dict[str
 
 def _generic_store_question_can_use_contextual_anchor(state: AgentState, *, query: str = "") -> bool:
     current_text = _compact_text(state.get("normalized_content") or state.get("content") or "")
-    if not current_text or "你们" in current_text:
+    if not current_text:
         return False
-    if current_text not in {"门店在哪", "门店在哪里", "店在哪", "店在哪里", "门店地址", "地址在哪", "地址在哪里"}:
+    if not _is_generic_store_location_question_without_current_scope(current_text, state):
         return False
+    anchor_name = _generic_store_contextual_anchor_name(state)
+    if not anchor_name:
+        return False
+    if not _store_name_query_matches(_compact_text(anchor_name), _compact_text(query)):
+        return False
+    return _query_matches_scope_store_name(query, state)
+
+
+def _generic_store_contextual_anchor_name(state: AgentState) -> str:
     turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
     if not turn_context:
         turn_context = _turn_context_for_guard(state)
-    open_task = str(turn_context.get("open_task") or "").strip()
-    if open_task in {"deposit_push", "appointment_confirm"} and _query_matches_scope_store_name(query, state):
-        return True
-    return False
+    for key in ("current_store_anchor", "confirmed_store"):
+        value = turn_context.get(key)
+        if not isinstance(value, dict):
+            continue
+        if value.get("ambiguous"):
+            return ""
+        source = str(value.get("source") or "").strip()
+        if source in {"customer_profile", "profile", "preferred_store"}:
+            continue
+        name = str(value.get("store_name") or value.get("name") or "").strip()
+        if name and _query_matches_scope_store_name(name, state):
+            return name
+    store_anchor = current_store_anchor_from_state(
+        state,
+        current_known_store=None,
+        allow_profile=False,
+        prefer_recent=True,
+    )
+    if isinstance(store_anchor, dict):
+        if store_anchor.get("ambiguous"):
+            return ""
+        name = str(store_anchor.get("store_name") or store_anchor.get("name") or "").strip()
+        if name and _query_matches_scope_store_name(name, state):
+            return name
+    name = _unique_store_name_from_recent_text(state)
+    if name and _query_matches_scope_store_name(name, state):
+        return name
+    return ""
+
+
+def _unique_store_name_from_recent_text(state: AgentState) -> str:
+    text = _state_text_context(state)
+    if not text:
+        return ""
+    names = _without_subsumed_store_names(
+        _dedupe_names([name for name in [*_known_store_names_for_state(state), *_snapshot_store_names()] if name and name in text])
+    )
+    if len(names) == 1:
+        return names[0]
+    return ""
 
 
 def _is_generic_store_location_question_without_current_scope(text: str, state: AgentState) -> bool:
@@ -1902,15 +1711,60 @@ def _payment_consistency_violations(
     decision: str,
     conversion_stage: str,
     next_step: str,
+    payment_state: str,
+    payment_action: str,
     messages: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     if decision == "no_reply":
+        return []
+    if _has_paid_deposit_context(state, payment_state=payment_state):
+        if _has_payment_collection(messages):
+            return [
+                {
+                    "task_type": "reply_schema_consistency",
+                    "subtype": "payment_collection",
+                    "missing": "payment_collection_blocked_by_paid_deposit_context",
+                    "note": "Customer has stated the deposit is already paid. Do not send payment_collection again; continue with appointment/store/time follow-up.",
+                }
+            ]
+        return []
+    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+        if _has_payment_collection(messages):
+            return [
+                {
+                    "task_type": "reply_schema_consistency",
+                    "subtype": "payment_collection",
+                    "missing": "payment_collection_blocked_by_payment_action",
+                    "note": (
+                        "Planner payment_action says this turn should not send the payment entry. "
+                        "Remove payment_collection or change payment_action to send_now if the customer clearly requested the entry."
+                    ),
+                }
+            ]
+        if _text_mentions_payment_entry(messages):
+            return [
+                {
+                    "task_type": "reply_schema_consistency",
+                    "subtype": "payment_collection",
+                    "missing": "payment_collection_blocked_by_payment_action",
+                    "note": (
+                        "Planner payment_action says this turn should not send the payment entry. "
+                        "Do not mention payment-entry status or ask the customer to reply for a resend in this turn; "
+                        "naturally answer the current message or move to store/time/contact follow-up."
+                    ),
+                }
+            ]
         return []
     if _text_explains_previous_payment_entry(messages):
         return []
     if decision != "direct_reply" and not _text_mentions_payment_entry(messages):
         return []
-    needs_payment = conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)
+    needs_payment = (
+        payment_action == "send_now"
+        or conversion_stage == "deposit_push"
+        or next_step == "send_deposit"
+        or _text_mentions_payment_entry(messages)
+    )
     payment_context = payment_collection_context(state=state, messages=messages)
     if needs_payment and payment_context["over_limit"]:
         return [
@@ -1942,6 +1796,14 @@ def _payment_consistency_violations(
 
 def _has_payment_collection(messages: list[dict[str, Any]]) -> bool:
     return any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict))
+
+
+def _send_now_conflicts_with_current_turn_evidence(state: AgentState) -> bool:
+    turn_context = _turn_context_for_guard(state)
+    if not bool(turn_context.get("is_contextual_short_message")):
+        return False
+    evidence = turn_context.get("payment_evidence") if isinstance(turn_context.get("payment_evidence"), dict) else {}
+    return not str(evidence.get("current_payment_text") or "").strip()
 
 
 def _has_handoff_notice(messages: list[dict[str, Any]]) -> bool:
@@ -1980,15 +1842,27 @@ def _append_required_payment_collection(
     decision: str,
     conversion_stage: str,
     next_step: str,
+    payment_state: str,
+    payment_action: str,
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     if decision != "direct_reply":
         return messages
     if is_hard_health_risk_hold(health_risk_hold(state)):
         return _remove_payment_collection_messages(messages)
+    if _has_paid_deposit_context(state, payment_state=payment_state):
+        return _remove_payment_collection_messages(messages)
+    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+        return _remove_payment_collection_messages(messages)
     if not messages or _has_payment_collection(messages) or _text_explains_previous_payment_entry(messages):
         return messages
-    needs_payment = conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)
+    needs_payment = (
+        payment_action == "send_now"
+        or conversion_stage == "deposit_push"
+        or next_step == "send_deposit"
+        or payment_state in {"resend_requested", "needs_payment"}
+        or _text_mentions_payment_entry(messages)
+    )
     if not needs_payment:
         return messages
     payment_context = payment_collection_context(state=state, messages=messages)
@@ -2002,6 +1876,70 @@ def _append_required_payment_collection(
             "content": {"amount": payment_context["amount"], "remark": ""},
         },
     ]
+
+
+def _has_paid_deposit_context(state: AgentState, *, payment_state: str = "unknown") -> bool:
+    if payment_state == "customer_claimed_paid":
+        return True
+    if payment_state in {"resend_requested", "payment_failed", "needs_payment"}:
+        return False
+    turn_context = _turn_context_for_guard(state)
+    if str(turn_context.get("deposit_state") or "") == "deposit_paid":
+        return True
+    return _has_customer_claimed_paid_evidence(state, turn_context=turn_context)
+
+
+def _has_customer_claimed_paid_evidence(state: AgentState, *, turn_context: dict[str, Any]) -> bool:
+    texts = _payment_evidence_texts(state, turn_context=turn_context)
+    if not any(_has_payment_context_terms(text) for text in texts):
+        return False
+    for text in _customer_side_payment_texts(state, turn_context=turn_context):
+        compact = _compact_text(text)
+        if not compact or any(term in compact for term in PAYMENT_CLAIM_NEGATION_TERMS):
+            continue
+        if any(term in compact for term in CUSTOMER_PAID_CLAIM_TERMS):
+            return True
+    return False
+
+
+def _payment_evidence_texts(state: AgentState, *, turn_context: dict[str, Any]) -> list[str]:
+    texts = [str(state.get("normalized_content") or state.get("content") or "")]
+    evidence = turn_context.get("payment_evidence") if isinstance(turn_context.get("payment_evidence"), dict) else {}
+    for key in ("current_payment_text", "last_assistant_payment_text"):
+        value = evidence.get(key)
+        if value:
+            texts.append(str(value))
+    recent = evidence.get("recent_payment_texts")
+    if isinstance(recent, list):
+        texts.extend(str(item) for item in recent if item)
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    texts.extend(str(item) for item in history[-8:] if item)
+    return texts
+
+
+def _customer_side_payment_texts(state: AgentState, *, turn_context: dict[str, Any]) -> list[str]:
+    texts = [str(state.get("normalized_content") or state.get("content") or "")]
+    evidence = turn_context.get("payment_evidence") if isinstance(turn_context.get("payment_evidence"), dict) else {}
+    current_payment_text = evidence.get("current_payment_text")
+    if current_payment_text:
+        texts.append(str(current_payment_text))
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in history[-8:]:
+        text = str(item or "")
+        stripped = text.lstrip()
+        if stripped.startswith(("小贝:", "小贝：", "客服:", "客服：", "assistant:", "assistant：")):
+            continue
+        texts.append(text)
+    return texts
+
+
+def _has_payment_context_terms(text: str) -> bool:
+    compact = _compact_text(text)
+    return bool(compact and any(term in compact for term in PAYMENT_CONTEXT_TERMS))
+
+
+def _compact_text(text: str) -> str:
+    return "".join(str(text or "").split())
 
 
 def _renumber_reply_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2033,6 +1971,11 @@ def _text_mentions_payment_entry(messages: list[dict[str, Any]]) -> bool:
             "支付入口",
             "预约金入口",
             "报名入口",
+            "入口还在",
+            "入口还有效",
+            "重发",
+            "再发您",
+            "再发你",
             "发报名入口",
             "发送报名入口",
             "现在为您发",
@@ -2112,6 +2055,7 @@ def _pending_lookup_reply_violations(
 
 def _appointment_availability_reply_violations(
     *,
+    state: AgentState,
     decision: str,
     messages: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
@@ -2125,19 +2069,88 @@ def _appointment_availability_reply_violations(
     compact = _compact_text(text)
     if not compact:
         return []
-    if any(term in compact for term in ("可以约", "能约", "可以预约", "能预约", "有空档", "有档期")):
+    if (
+        _current_message_requests_appointment_availability(state)
+        and not _direct_reply_asks_missing_appointment_scope(compact)
+    ) or _direct_reply_claims_appointment_availability_or_hold(compact):
         return [
             {
                 "task_type": "reply_fact_consistency",
                 "subtype": "appointment_availability",
                 "missing": "available_time_required_for_availability_claim",
                 "note": (
-                    "Direct replies must not claim a time can be booked without available_time facts. "
-                    "Ask for the missing store/time field, or call available_time when store_id/date are known."
+                    "Direct replies must not claim a time can be booked, arranged, held, or reserved without available_time "
+                    "or appointment facts. Ask for the missing store/time field, or call available_time when store_id/date are known."
                 ),
             }
         ]
     return []
+
+
+def _direct_reply_claims_appointment_availability_or_hold(compact: str) -> bool:
+    if any(term in compact for term in ("可以约", "能约", "可以预约", "能预约", "有空档", "有档期", "有空位")):
+        return True
+    if any(
+        term in compact
+        for term in (
+            "先留着",
+            "帮你留着",
+            "帮您留着",
+            "给你留着",
+            "给您留着",
+            "留好",
+            "预留",
+            "帮你记上",
+            "帮您记上",
+            "先记上",
+        )
+    ):
+        return True
+    if re.search(r"锁.{0,8}(?:时段|时间|今天|明天|后天|上午|下午|晚上|\d{1,2}点)", compact):
+        return True
+    if _claims_arrangement_without_fit_context(compact):
+        return True
+    if re.search(r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?).{0,8}(?:可以|有空|有时间|有名额|有位置|能约|可约|安排)", compact):
+        return True
+    if re.search(r"(?:有空|有时间|有名额|有位置|能约|可约|安排).{0,8}(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?)", compact):
+        return True
+    return False
+
+
+def _current_message_requests_appointment_availability(state: AgentState) -> bool:
+    compact = _compact_text(str(state.get("normalized_content") or state.get("content") or ""))
+    if not compact:
+        return False
+    has_time = bool(re.search(r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?)", compact))
+    has_availability_question = any(
+        term in compact
+        for term in (
+            "有空",
+            "有时间",
+            "有档期",
+            "有名额",
+            "有位置",
+            "能约",
+            "可约",
+            "可以吗",
+            "可以吧",
+            "行吗",
+            "方便吗",
+        )
+    )
+    return has_time and has_availability_question
+
+
+def _direct_reply_asks_missing_appointment_scope(compact: str) -> bool:
+    return any(term in compact for term in ("哪家门店", "哪个门店", "哪个区", "哪个城市", "城市", "区域", "门店"))
+
+
+def _claims_arrangement_without_fit_context(compact: str) -> bool:
+    if "安排" not in compact:
+        return False
+    if any(term in compact for term in ("适合再安排", "确认适合再安排", "检测评估", "皮肤状态")):
+        return False
+    return bool(re.search(r"按.{0,12}安排", compact) or re.search(r"帮[你您]按.{0,12}安排", compact))
 
 
 def _looks_like_answer_with_next_step(text: str) -> bool:

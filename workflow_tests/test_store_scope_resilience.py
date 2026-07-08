@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import time
 
+from app.graph.nodes import action_nodes
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
+from app.graph.nodes.action_nodes import _customer_store_lookup
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 
 
@@ -16,6 +19,27 @@ class _FlakyPlatformClient:
         if self.fail:
             raise TimeoutError("store index timeout")
         return [{"id": "101"}]
+
+
+class _RecoveringCustomerInfoPlatformClient:
+    available = True
+
+    def __init__(self) -> None:
+        self.info_calls = 0
+
+    def get_customer_info(self, **_: object) -> dict[str, object]:
+        self.info_calls += 1
+        if self.info_calls == 1:
+            raise RuntimeError("temporary customer info error")
+        return {"id": "p1", "customer_add_wechat_id": "a1"}
+
+    def list_stores(self, **_: object) -> list[dict[str, object]]:
+        return [{"id": "101"}]
+
+
+class _FakeCoze:
+    class settings:
+        geocode_workflow_id = ""
 
 
 class _Snapshot:
@@ -66,6 +90,105 @@ def test_store_scope_uses_stale_cache_when_platform_store_index_fails() -> None:
     assert second["source"] == "platform_agent.store_index_stale_cache+store_snapshot"
     assert second["cache"]["store_scope_status"] == "stale_on_error"
     assert "store index timeout" in second["store_scope_error"]
+
+
+def test_store_scope_retries_customer_info_business_error() -> None:
+    platform = _RecoveringCustomerInfoPlatformClient()
+    service = CustomerStoreKnowledgeService(platform, _Snapshot())  # type: ignore[arg-type]
+
+    output = service.load(
+        request_context={
+            "corp_id": "corp",
+            "customer_id": "input-id",
+            "external_userid": "external-1",
+            "user_id": "u1",
+            "wechat": "w1",
+        },
+        customer_context={},
+    )
+
+    assert platform.info_calls == 2
+    assert output["customer_id"] == "p1"
+    assert output["customer_add_wechat_id"] == "a1"
+    assert output["store_count"] == 1
+
+
+def test_store_lookup_uses_snapshot_region_fallback_when_scope_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(
+        action_nodes,
+        "_STORE_SNAPSHOT_CACHE",
+        {
+            "stores_by_id": {
+                "201": {
+                    "store_id": "201",
+                    "store_name": "厦门思明店",
+                    "province": "福建省",
+                    "city": "厦门市",
+                    "district": "思明区",
+                    "store_address": "厦门市思明区厦禾路1222号国骏大厦",
+                },
+                "202": {
+                    "store_id": "202",
+                    "store_name": "厦门百星湖里店",
+                    "province": "福建省",
+                    "city": "厦门市",
+                    "district": "湖里区",
+                    "store_address": "福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
+                },
+                "203": {
+                    "store_id": "203",
+                    "store_name": "厦门二店（停业中）",
+                    "province": "福建省",
+                    "city": "厦门市",
+                    "district": "湖里区",
+                    "store_address": "厦门市湖里区某地址",
+                },
+            }
+        },
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "厦门", "purpose": "existence"},
+            {"customer_store_knowledge": {"source": "missing_customer_store_scope", "stores": [], "error": "temporary"}},
+            _FakeCoze(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["source"] == "store_snapshot_region_fallback"
+    assert [item["store_name"] for item in output["stores"]] == ["厦门思明店", "厦门百星湖里店"]
+
+
+def test_store_lookup_does_not_use_snapshot_region_fallback_for_generic_question(monkeypatch) -> None:
+    monkeypatch.setattr(
+        action_nodes,
+        "_STORE_SNAPSHOT_CACHE",
+        {
+            "stores_by_id": {
+                "201": {
+                    "store_id": "201",
+                    "store_name": "厦门思明店",
+                    "province": "福建省",
+                    "city": "厦门市",
+                    "district": "思明区",
+                    "store_address": "厦门市思明区厦禾路1222号国骏大厦",
+                }
+            }
+        },
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "你们门店在哪里", "purpose": "existence"},
+            {"customer_store_knowledge": {"source": "missing_customer_store_scope", "stores": [], "error": "temporary"}},
+            _FakeCoze(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "no_match"
+    assert output["source"] == "store_snapshot_exact_name"
+    assert output["missing"] == ["store_scope_unavailable"]
 
 
 def test_store_tool_facts_keep_detail_fields_for_reply_model() -> None:

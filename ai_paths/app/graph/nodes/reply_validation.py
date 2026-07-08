@@ -139,8 +139,8 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_store_address_message_facts(messages, state)
     _validate_store_address_card_consistency(messages, state)
     _validate_generic_store_question_does_not_use_context_store(messages, state)
-    _validate_appointment_time_facts(messages, state)
     _validate_appointment_lookup_promise(messages, state)
+    _validate_appointment_time_facts(messages, state)
     _validate_appointment_time_option_count(messages, state)
     _validate_appointment_confirmation_facts(messages, state)
     _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
@@ -196,12 +196,24 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
     has_payment = any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict))
     if is_hard_health_risk_hold(health_risk_hold(state)):
         return
+    payment_action = str(state.get("payment_action") or "")
+    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+        if has_payment:
+            raise ValueError("payment_collection_blocked_by_payment_action")
+        if _promises_payment_entry(_combined_text(messages)):
+            raise ValueError("payment_collection_blocked_by_payment_action")
+        return
+    if _paid_deposit_context(state):
+        if has_payment:
+            raise ValueError("payment_collection_blocked_by_paid_deposit_context")
+        return
     text = _combined_text(messages)
     payment_context = payment_collection_context(state=state, messages=messages)
     needs_payment = False
     if not _explains_previous_payment_entry(text):
         needs_payment = (
-            str(state.get("conversion_stage") or "") == "deposit_push"
+            payment_action == "send_now"
+            or str(state.get("conversion_stage") or "") == "deposit_push"
             or str(state.get("next_step") or "") == "send_deposit"
             or _promises_payment_entry(text)
         )
@@ -215,6 +227,15 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         return
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
+
+
+def _paid_deposit_context(state: dict[str, Any]) -> bool:
+    if str(state.get("payment_state") or "") == "customer_claimed_paid":
+        return True
+    turn_context = state.get("current_turn_context")
+    if not isinstance(turn_context, dict):
+        return False
+    return str(turn_context.get("deposit_state") or "") == "deposit_paid"
 
 
 def _validate_payment_not_during_health_risk_hold(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -297,14 +318,20 @@ def _validate_effect_absolute_safety_claims(messages: list[dict[str, Any]], stat
         "绝不会反黑",
         "不会做坏",
         "不会越做越差",
+        "一般不会",
+        "通常不会",
+        "基本不会",
         "一定有效",
         "一次一定",
         "保证效果",
         "包效果",
     )
-    if any(term in text for term in banned):
+    risk_terms = ("反黑", "留疤", "留痕", "伤肤", "伤皮肤", "做坏", "越做越差")
+    state_text = re.sub(r"\s+", "", str(state.get("normalized_content") or state.get("content") or ""))
+    risk_scope = f"{text}{state_text}"
+    if any(term in text for term in banned) and any(term in risk_scope for term in risk_terms):
         raise ValueError("effect_absolute_safety_claim")
-    if re.search(r"不会[^，。！？,.!?]{0,6}反黑", text):
+    if re.search(r"不会[^，。！？,.!?]{0,8}(反黑|留疤|留痕|伤肤|伤皮肤|做坏|越做越差)", text):
         raise ValueError("effect_absolute_safety_claim")
 
 
@@ -353,14 +380,16 @@ def _validate_appointment_time_facts(messages: list[dict[str, Any]], state: dict
     text = _combined_text(messages)
     if not text or not _asserts_time_available(text):
         return
+    if _has_appointment_confirmation_fact(state):
+        return
     appointment_facts = _structured_facts(state).get("appointment_facts")
     if not isinstance(appointment_facts, list):
-        return
+        raise ValueError("available_time_fact_required")
     available_time_facts = [
         item for item in appointment_facts if isinstance(item, dict) and str(item.get("type") or "") == "available_time"
     ]
     if not available_time_facts:
-        return
+        raise ValueError("available_time_fact_required")
     if not any(_available_time_fact_supports_availability(item) for item in available_time_facts):
         raise ValueError("available_time_fact_required")
 
@@ -801,7 +830,13 @@ def _store_like_names_from_text(text: str) -> list[str]:
 
 
 def _asserts_time_available(text: str) -> bool:
-    return any(term in text for term in ("有空", "有时间", "可以约", "能约", "可以预约", "能预约", "有名额", "有位置"))
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if any(term in compact for term in ("可以约", "能约", "可以预约", "能预约", "有空档", "有档期", "有空位")):
+        return True
+    return bool(
+        re.search(r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?).{0,8}(?:可以|有空|有时间|有名额|有位置|能约|可约|安排)", compact)
+        or re.search(r"(?:有空|有时间|有名额|有位置|能约|可约|安排).{0,8}(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?)", compact)
+    )
 
 
 def _available_time_fact_supports_availability(item: dict[str, Any]) -> bool:
@@ -825,7 +860,38 @@ def _available_time_fact_supports_availability(item: dict[str, Any]) -> bool:
 
 def _asserts_appointment_confirmed(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
-    return any(term in compact for term in ("已为您锁定", "已经为您锁定", "已锁定", "已安排好", "安排好了", "预约好了", "准时等您"))
+    matched = any(
+        term in compact
+        for term in (
+            "已为您锁定",
+            "已经为您锁定",
+            "已锁定",
+            "已安排好",
+            "安排好了",
+            "预约好了",
+            "准时等您",
+            "先留着",
+            "帮你留着",
+            "帮您留着",
+            "给你留着",
+            "给您留着",
+            "留好",
+            "预留",
+            "帮你记上",
+            "帮您记上",
+            "先记上",
+            "记着",
+        )
+    )
+    if matched:
+        return True
+    if "安排" in compact and not any(term in compact for term in ("适合再安排", "确认适合再安排", "检测评估", "皮肤状态")):
+        if re.search(r"按.{0,12}安排", compact) or re.search(r"帮[你您]按.{0,12}安排", compact):
+            return True
+    time_token = r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}(?:[:：]\d{2}|点(?:半)?))"
+    if re.search(rf"(?:能帮[你您]?|可以帮[你您]?|帮[你您]?|给[你您]?).{{0,4}}留(?:下|住)?{time_token}", compact):
+        return True
+    return bool(re.search(r"锁.{0,8}(?:时段|时间|今天|明天|后天|上午|下午|晚上|\d{1,2}点)", compact))
 
 
 def _has_appointment_confirmation_fact(state: dict[str, Any]) -> bool:
@@ -857,6 +923,11 @@ def _promises_payment_entry(text: str) -> bool:
             "支付入口",
             "预约金入口",
             "报名入口",
+            "入口还在",
+            "入口还有效",
+            "重发",
+            "再发您",
+            "再发你",
             "发报名入口",
             "发送报名入口",
             "现在为您发",

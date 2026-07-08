@@ -68,6 +68,8 @@ def create_planner_brain_node(
                 "customer_type": plan.get("customer_type", "unknown"),
                 "main_blocker": plan.get("main_blocker", "none"),
                 "next_step": plan.get("next_step", "no_action"),
+                "payment_state": plan.get("payment_state", "unknown"),
+                "payment_action": plan.get("payment_action", "unknown"),
                 "planner_reply_messages": plan.get("planner_reply_messages", []),
                 "planner_tool_calls": plan.get("planner_tool_calls", []),
                 "reply_constraints": plan.get("reply_constraints", []),

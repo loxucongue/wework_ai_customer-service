@@ -9,6 +9,10 @@ from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_snapshot_service import StoreSnapshotService
 
 
+_PLATFORM_BUSINESS_RETRY_ATTEMPTS = 2
+_PLATFORM_BUSINESS_RETRY_BACKOFF_SECONDS = 0.4
+
+
 class CustomerStoreKnowledgeService:
     def __init__(
         self,
@@ -58,7 +62,8 @@ class CustomerStoreKnowledgeService:
         customer_info_error = ""
         if not (platform_customer_id and customer_add_wechat_id) and ctx.get("external_userid"):
             try:
-                info = self._platform_client.get_customer_info(
+                info = self._call_platform_with_retry(
+                    self._platform_client.get_customer_info,
                     user_id=ctx.get("user_id"),
                     corp_id=ctx.get("corp_id"),
                     wechat=ctx.get("wechat"),
@@ -188,7 +193,8 @@ class CustomerStoreKnowledgeService:
         if cached_ids is not None:
             return [{"id": store_id, "store_id": store_id} for store_id in cached_ids], True, "", "fresh"
         try:
-            rows = self._platform_client.list_stores(
+            rows = self._call_platform_with_retry(
+                self._platform_client.list_stores,
                 customer_id=platform_customer_id,
                 customer_add_wechat_id=customer_add_wechat_id,
                 request_context=request_context,
@@ -210,6 +216,21 @@ class CustomerStoreKnowledgeService:
         ]
         self._set_cached_scope_ids(key, list(dict.fromkeys(ids)))
         return rows, False, "", "refreshed"
+
+    @staticmethod
+    def _call_platform_with_retry(func: Any, **kwargs: Any) -> Any:
+        last_exc: Exception | None = None
+        for attempt in range(_PLATFORM_BUSINESS_RETRY_ATTEMPTS):
+            try:
+                return func(**kwargs)
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= _PLATFORM_BUSINESS_RETRY_ATTEMPTS - 1 or _is_non_retryable_platform_error(exc):
+                    raise
+                time.sleep(_PLATFORM_BUSINESS_RETRY_BACKOFF_SECONDS * (attempt + 1))
+        if last_exc:
+            raise last_exc
+        return None
 
     def _get_cached_scope_ids(self, key: str) -> list[str] | None:
         if not key:
@@ -303,3 +324,19 @@ class CustomerStoreKnowledgeService:
             if isinstance(order, dict) and order.get("store_id") not in (None, ""):
                 ids.append(str(order.get("store_id")))
         return list(dict.fromkeys(ids))[:8]
+
+
+def _is_non_retryable_platform_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(
+        marker in text
+        for marker in (
+            "missing parameter",
+            "required parameter",
+            "invalid parameter",
+            "参数缺失",
+            "缺少参数",
+            "参数错误",
+            "不能为空",
+        )
+    )
