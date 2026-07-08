@@ -58,6 +58,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "客户可见回复只说哪家更近，不说公里、分钟、车程",
         "旧健康风险、旧门店、旧预约任务只有在客户当前明确延续时才主导本轮",
         "客户给出明确城市、区域或地标并问门店/附近/地址/停车/营业时间/导航时，输出 need_tools",
+        "已筛选后的斑点改善意向客户",
+        "不要让客户先发照片给你线上诊断",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
@@ -69,7 +71,9 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         assert marker in REPLY_SYSTEM_PROMPT
 
     for business_rule in [
-        "先肯定对应需求可以做、这类大多数客户改善反馈不错",
+        "先肯定对应需求大多数可以做",
+        "已经筛选后的斑点改善意向客户",
+        "不要引导客户发照片给你做线上诊断",
         "到店抵扣，不做退10元",
         "10/20/30/40",
         "human_handoff_notice",
