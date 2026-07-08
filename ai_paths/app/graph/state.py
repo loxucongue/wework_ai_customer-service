@@ -68,6 +68,7 @@ class AgentState(TypedDict, total=False):
     reply_constraints: list[str]
     primary_task: dict[str, Any]
     secondary_tasks: list[dict[str, Any]]
+    turn_evidence: dict[str, Any]
     required_tools: list[dict[str, Any]]
     tool_policy_violations: list[dict[str, Any]]
     reply_strategy: dict[str, Any]

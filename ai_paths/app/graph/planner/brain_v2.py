@@ -155,6 +155,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
         "current_known_store": current_known_store,
         "current_turn_context": current_turn_context,
+        "turn_evidence": current_turn_context.get("turn_evidence") if isinstance(current_turn_context, dict) else {},
         "risk_hold": risk_hold,
         "store_scope_summary": _store_scope_summary(state.get("customer_store_knowledge") or {}),
         "sent_message_summary": sent_message_summary,

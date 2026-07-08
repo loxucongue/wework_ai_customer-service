@@ -4,6 +4,11 @@ import re
 from typing import Any
 
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
+from app.graph.nodes.turn_evidence_appointment import build_appointment_evidence
+from app.graph.nodes.turn_evidence_history import build_history_evidence
+from app.graph.nodes.turn_evidence_payment import build_payment_turn_evidence
+from app.graph.nodes.turn_evidence_risk import build_risk_evidence
+from app.graph.nodes.turn_evidence_store import build_store_evidence
 from app.policies.constants import (
     KNOWN_STORE_NAMES,
     STORE_CONTEXT_FACT_TERMS,
@@ -139,6 +144,25 @@ def build_current_turn_context(
         output["missing_slots"] = visible_missing_slots
     if blocked_actions:
         output["blocked_actions"] = blocked_actions
+    turn_evidence = _turn_evidence(
+        history=history,
+        is_short=is_short,
+        is_reference=is_reference,
+        binding_source=binding_source,
+        last_assistant_action=last_action,
+        last_assistant=last_assistant,
+        store_anchor=store_anchor,
+        appointment=appointment,
+        visible_missing_slots=visible_missing_slots,
+        blocked_actions=blocked_actions,
+        current_time_confirmed=current_time_confirmed,
+        next_step_clarification=next_step_clarification,
+        deposit_state=deposit_state,
+        payment_evidence=payment_evidence,
+        risk_hold=risk_hold,
+    )
+    if turn_evidence:
+        output["turn_evidence"] = turn_evidence
     evidence_summary = _evidence_summary(
         context_hints=context_hints,
         store_anchor=store_anchor,
@@ -153,6 +177,68 @@ def build_current_turn_context(
     if evidence_summary:
         output["evidence_summary"] = evidence_summary
     return _drop_empty(output)
+
+
+def _turn_evidence(
+    *,
+    history: list[Any],
+    is_short: bool,
+    is_reference: bool,
+    binding_source: str,
+    last_assistant_action: str,
+    last_assistant: str,
+    store_anchor: dict[str, Any],
+    appointment: dict[str, Any],
+    visible_missing_slots: list[str],
+    blocked_actions: list[str],
+    current_time_confirmed: bool,
+    next_step_clarification: bool,
+    deposit_state: str,
+    payment_evidence: dict[str, Any],
+    risk_hold: dict[str, Any],
+) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "history_evidence": build_history_evidence(
+                is_short_message=is_short,
+                is_reference_message=is_reference,
+                binding_source=binding_source,
+                last_assistant_action=last_assistant_action,
+                last_assistant_text=last_assistant,
+                history=history,
+            ),
+            "store_evidence": build_store_evidence(store_anchor),
+            "appointment_evidence": build_appointment_evidence(
+                appointment=appointment,
+                missing_slots=visible_missing_slots,
+                blocked_actions=blocked_actions,
+                current_time_confirmed=current_time_confirmed,
+                next_step_clarification=next_step_clarification,
+            ),
+            "payment_evidence": build_payment_turn_evidence(
+                deposit_state=deposit_state,
+                payment_evidence=payment_evidence,
+                blocked_actions=blocked_actions,
+            ),
+            "risk_evidence": build_risk_evidence(risk_hold),
+            "evidence_conflicts": _evidence_conflicts(store_anchor=store_anchor),
+            "source_policy": "evidence_only_planner_decides_business_action",
+        }
+    )
+
+
+def _evidence_conflicts(*, store_anchor: dict[str, Any]) -> list[dict[str, Any]]:
+    if isinstance(store_anchor, dict) and store_anchor.get("ambiguous"):
+        return [
+            _drop_empty(
+                {
+                    "type": "store_ambiguous",
+                    "source": store_anchor.get("source"),
+                    "matched_store_names": store_anchor.get("matched_store_names") or [],
+                }
+            )
+        ]
+    return []
 
 
 def current_store_anchor_from_state(

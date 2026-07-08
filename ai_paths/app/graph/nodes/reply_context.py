@@ -77,6 +77,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "current_turn_context": current_turn_context,
+        "turn_evidence": current_turn_context.get("turn_evidence") if isinstance(current_turn_context, dict) else {},
         "risk_hold": risk_hold,
         "store_scope_summary": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
         "sent_message_summary": sent_message_summary,

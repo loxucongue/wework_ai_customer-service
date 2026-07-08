@@ -88,6 +88,10 @@ def test_current_turn_context_binds_renne_to_deposit_push() -> None:
     assert context["confirmed_appointment"]["time"] == "11:00"
     assert "evidence_summary" in context
     assert "reply_anchor" not in context
+    assert context["turn_evidence"]["source_policy"] == "evidence_only_planner_decides_business_action"
+    assert context["turn_evidence"]["history_evidence"]["is_short_message"] is True
+    assert context["turn_evidence"]["payment_evidence"]["link_sent_evidence"] is True
+    assert "reply_anchor" not in context["turn_evidence"]
 
 
 def test_contextual_short_open_task_recovers_planner_no_reply() -> None:
@@ -350,6 +354,8 @@ def test_planner_payload_keeps_context_for_low_information_message() -> None:
     assert payload["current_turn_context"]["binding_source"] in {"last_assistant", "none"}
     assert "payment_context_available" in payload["current_turn_context"]["context_hints"]
     assert payload["current_turn_context"]["confirmed_store"]["store_name"] == "广州白云三店"
+    assert payload["turn_evidence"]["source_policy"] == "evidence_only_planner_decides_business_action"
+    assert payload["turn_evidence"]["store_evidence"]["candidates"]
 
 
 def test_planner_payload_does_not_send_long_sales_strategy_to_planner() -> None:
@@ -369,6 +375,20 @@ def test_planner_payload_does_not_send_long_sales_strategy_to_planner() -> None:
     assert payload["customer_profile"]["decision_stage"] == "预约推进"
     assert payload["customer_profile"]["deposit_state"] == "已支付"
     assert "next_sales_strategy" not in payload["customer_profile"]
+
+
+def test_reply_payload_exposes_turn_evidence_without_dropping_current_turn_context() -> None:
+    payload = reply_user_payload_for_model(
+        {
+            "normalized_content": "这家地址发我",
+            "conversation_history": ["小贝: 给您推荐广州白云三店 门店ID=562"],
+            "customer_store_knowledge": {"stores": [{"store_id": "562", "store_name": "广州白云三店"}]},
+        }
+    )
+
+    assert payload["current_turn_context"]["current_store_anchor"]["store_id"] == "562"
+    assert payload["turn_evidence"]["store_evidence"]["unique_recent_store"]["store_id"] == "562"
+    assert payload["turn_evidence"]["source_policy"] == "evidence_only_planner_decides_business_action"
 
 
 def test_planner_tool_policy_flags_post_deposit_time_confirmation_missing_store() -> None:
