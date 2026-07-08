@@ -2304,8 +2304,14 @@ def test_history_health_context_does_not_hijack_current_time_change() -> None:
     )
 
     assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_tool_calls"][0]["name"] == "professional_assist"
-    assert plan["handoff"]["needed"] is True
+    assert plan["planner_tool_calls"] == []
+    assert plan["required_tools"][0]["name"] == "no_tool"
+    assert plan["handoff"]["needed"] is False
+    assert plan["reply_strategy"]["current_turn_context_guard"] == "advisory_health_history_removed_professional_assist_tool"
+    assert any(
+        item.get("missing") == "professional_assist_from_advisory_health_context"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_history_health_context_removes_direct_reply_handoff_notice() -> None:

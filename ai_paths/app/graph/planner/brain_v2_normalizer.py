@@ -94,6 +94,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
 
     primary_task: dict[str, Any] = {}
     secondary_tasks: list[dict[str, Any]] = []
+    normalizer_policy_violations: list[dict[str, str]] = []
 
     reply_strategy: dict[str, Any] = {}
     if risk_hold:
@@ -212,6 +213,31 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools = effect_case_guard["required_tools"]
         executable_tools = required_tools
         reply_constraints.append(effect_case_guard["reply_constraint"])
+    required_tools, removed_advisory_health_tool = _remove_advisory_health_professional_assist_tools(
+        required_tools=required_tools,
+        risk_hold=risk_hold,
+        explicit_risk_reason=explicit_risk_reason,
+    )
+    if removed_advisory_health_tool:
+        executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
+        planner_reply_messages, _ = _remove_advisory_health_handoff_notices(planner_reply_messages)
+        if handoff_raw and isinstance(handoff_raw, dict) and _mentions_health_risk_text(str(handoff_raw.get("reason") or "")):
+            handoff_raw = {"needed": False, "reason": ""}
+        normalizer_policy_violations.append(
+            {
+                "task_type": "tool_argument",
+                "subtype": "professional_assist",
+                "missing": "professional_assist_from_advisory_health_context",
+                "note": (
+                    "Recent health risk is advisory evidence only. The current message does not explicitly raise a "
+                    "health, dispute, severe discomfort, or human-assist request, so do not call professional_assist "
+                    "or output human_handoff_notice solely from stale history. Repair by answering the current customer "
+                    "question with available facts/tools."
+                ),
+            }
+        )
+        reply_constraints.append("历史健康风险只作为背景证据；当前消息没有再次提出健康/投诉/人工诉求时，不调用 professional_assist。")
+        reply_strategy["current_turn_context_guard"] = "advisory_health_history_removed_professional_assist_tool"
     if executable_tools and decision == "direct_reply":
         decision = "need_tools"
     if decision == "need_tools":
@@ -291,6 +317,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     )
     handoff = _normalize_handoff(handoff_raw)
     tool_policy_violations = [
+        *normalizer_policy_violations,
         *_rejected_tool_violations(model_payload.get("tool_calls") if isinstance(model_payload, dict) else []),
         *_tool_policy_violations(required_tools, state),
         *_store_detail_tool_violations(
@@ -843,6 +870,7 @@ def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
         if query:
             tool["query"] = query
         for key in (
+            "reason",
             "origin",
             "candidate_store_ids",
             "candidate_source",
@@ -1691,6 +1719,45 @@ def _remove_advisory_health_handoff_notices(messages: list[dict[str, Any]]) -> t
             continue
         output.append(item)
     return _renumber_reply_messages(output), removed
+
+
+def _remove_advisory_health_professional_assist_tools(
+    *,
+    required_tools: list[dict[str, Any]],
+    risk_hold: dict[str, Any] | None,
+    explicit_risk_reason: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    if explicit_risk_reason or is_hard_health_risk_hold(risk_hold) or not _is_advisory_health_risk_hold(risk_hold):
+        return required_tools, False
+    output: list[dict[str, Any]] = []
+    removed = False
+    for tool in required_tools:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name") or "").strip()
+        reason = " ".join(
+            str(value or "")
+            for value in (
+                tool.get("reason"),
+                tool.get("purpose"),
+                tool.get("query"),
+            )
+        )
+        if name == "professional_assist" and _mentions_health_risk_text(reason):
+            removed = True
+            continue
+        output.append(tool)
+    if not removed:
+        return required_tools, False
+    if not any(isinstance(tool, dict) and str(tool.get("name") or "").strip() != "no_tool" for tool in output):
+        output = [{"name": "no_tool", "purpose": "Advisory health history is not a current professional_assist request"}]
+    return output, True
+
+
+def _is_advisory_health_risk_hold(value: dict[str, Any] | None) -> bool:
+    if not isinstance(value, dict):
+        return False
+    return str(value.get("risk_hold") or "") == "health_check_context" or str(value.get("severity") or "") == "advisory"
 
 
 def _append_required_payment_collection(

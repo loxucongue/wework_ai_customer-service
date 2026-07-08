@@ -204,6 +204,8 @@ def _invalid_tool_policy_by_name(state: AgentState) -> dict[str, dict[str, Any]]
             "store_lookup_query_over_anchors_history",
         }:
             output["customer_store_lookup"] = item
+        if subtype == "professional_assist" and missing == "professional_assist_from_advisory_health_context":
+            output["professional_assist"] = item
     return output
 
 
