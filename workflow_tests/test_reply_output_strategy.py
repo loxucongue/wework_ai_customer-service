@@ -387,6 +387,9 @@ def test_reply_payload_exposes_turn_evidence_without_dropping_current_turn_conte
     )
 
     assert payload["current_turn_context"]["current_store_anchor"]["store_id"] == "562"
+    assert "open_task" not in payload["current_turn_context"]
+    assert "evidence_summary" not in payload["current_turn_context"]
+    assert payload["current_turn_context"]["source_policy"] == "reply_evidence_only_planner_decides_business_action"
     assert payload["turn_evidence"]["store_evidence"]["unique_recent_store"]["store_id"] == "562"
     assert payload["turn_evidence"]["source_policy"] == "evidence_only_planner_decides_business_action"
 
@@ -3231,10 +3234,11 @@ def test_reply_payload_keeps_context_for_low_information_message() -> None:
     assert payload["customer_basic_info"]["preferred_store_name"] == "广州白云三店"
     assert payload["history_events"]
     assert payload["fact_envelope"]["structured_facts"]["appointment_facts"]
-    assert payload["current_turn_context"]["open_task"] == "none"
     assert payload["current_turn_context"]["binding_source"] in {"last_assistant", "none"}
     assert "payment_context_available" in payload["current_turn_context"]["context_hints"]
     assert payload["current_turn_context"]["confirmed_store"]["store_name"] == "广州白云三店"
+    assert "open_task" not in payload["current_turn_context"]
+    assert "evidence_summary" not in payload["current_turn_context"]
 
 
 def test_planner_prompt_treats_payment_sent_as_context_not_hard_dedupe() -> None:

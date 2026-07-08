@@ -41,10 +41,11 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         sent_message_summary=sent_message_summary,
         fact_envelope=state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else fact_envelope,
     )
-    current_turn_context = {} if suppress_profile_memory else build_current_turn_context(
+    raw_current_turn_context = {} if suppress_profile_memory else build_current_turn_context(
         state,
         sent_message_summary=sent_message_summary,
     )
+    current_turn_context = _current_turn_context_for_reply(raw_current_turn_context)
     risk_hold = {} if suppress_profile_memory else health_risk_hold(state)
     reply_mode = str(sop_progress.get("recommended_reply_mode") or "normal_answer").strip() or "normal_answer"
     return {
@@ -77,7 +78,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "current_turn_context": current_turn_context,
-        "turn_evidence": current_turn_context.get("turn_evidence") if isinstance(current_turn_context, dict) else {},
+        "turn_evidence": raw_current_turn_context.get("turn_evidence") if isinstance(raw_current_turn_context, dict) else {},
         "risk_hold": risk_hold,
         "store_scope_summary": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
         "sent_message_summary": sent_message_summary,
@@ -94,6 +95,31 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
             sent_message_summary=sent_message_summary,
         ),
     }
+
+
+def _current_turn_context_for_reply(value: dict[str, Any]) -> dict[str, Any]:
+    """Expose current-turn evidence to reply model without legacy task conclusions."""
+    if not isinstance(value, dict):
+        return {}
+    allowed_keys = {
+        "is_contextual_short_message",
+        "is_context_reference_message",
+        "binding_source",
+        "context_hints",
+        "last_assistant_action",
+        "confirmed_store",
+        "current_store_anchor",
+        "confirmed_appointment",
+        "deposit_state",
+        "payment_evidence",
+        "resolved_slots",
+        "missing_slots",
+        "blocked_actions",
+    }
+    output = {key: value[key] for key in allowed_keys if key in value and value[key] not in ({}, [], "", None)}
+    if output:
+        output["source_policy"] = "reply_evidence_only_planner_decides_business_action"
+    return output
 
 
 def _sop_progress_for_reply(
