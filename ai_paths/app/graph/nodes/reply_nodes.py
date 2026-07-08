@@ -267,13 +267,14 @@ def _maybe_build_case_facts_fallback(state: AgentState, exc: Exception) -> list[
     image_urls = _case_image_urls(state)
     if not image_urls:
         return None
+    image_url = sorted(image_urls)[0]
     return [
         {
             "type": "text",
             "order": 1,
             "content": "可以，这类斑点大多数客户都可以看改善，反馈也不错。",
         },
-        {"type": "image", "order": 2, "content": {"url": image_urls[0]}},
+        {"type": "image", "order": 2, "content": {"url": image_url}},
         {
             "type": "text",
             "order": 3,
