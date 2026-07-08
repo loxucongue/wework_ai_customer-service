@@ -95,6 +95,7 @@ async def run_planner_brain_v2(
                 "main_blocker": plan.get("main_blocker", ""),
                 "next_step": plan.get("next_step", ""),
                 "payment_action": plan.get("payment_action", ""),
+                "payment_decision": plan.get("payment_decision", {}),
                 "tool_calls": len(plan.get("planner_tool_calls", [])),
                 "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
             }
@@ -117,6 +118,7 @@ async def run_planner_brain_v2(
             "main_blocker": plan.get("main_blocker", ""),
             "next_step": plan.get("next_step", ""),
             "payment_action": plan.get("payment_action", ""),
+            "payment_decision": plan.get("payment_decision", {}),
             "reply_messages": len(plan.get("planner_reply_messages", [])),
             "tool_calls": len(plan.get("planner_tool_calls", [])),
             "tool_policy_violations": len(plan.get("tool_policy_violations", [])),

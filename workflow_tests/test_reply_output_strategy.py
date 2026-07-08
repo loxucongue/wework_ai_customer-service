@@ -452,11 +452,12 @@ def test_planner_removes_payment_collection_after_customer_says_paid() -> None:
     assert plan["conversion_stage"] == "time_confirm"
     assert plan["next_step"] == "confirm_time"
     assert plan["payment_state"] == "customer_claimed_paid"
+    assert plan["payment_decision"]["action"] == "after_paid_next_step"
     assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
-    assert plan["reply_strategy"]["current_turn_context_guard"] == "payment_card_removed_after_model_paid_state"
+    assert plan["reply_strategy"]["payment_action_guard"] == "payment_card_removed_by_payment_action"
 
 
-def test_planner_does_not_infer_paid_context_when_model_omits_state() -> None:
+def test_planner_legacy_card_payload_becomes_send_now_decision_when_model_omits_state() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "付完然后呢",
@@ -483,7 +484,10 @@ def test_planner_does_not_infer_paid_context_when_model_omits_state() -> None:
         },
     )
 
-    assert plan["payment_state"] == "unknown"
+    assert plan["payment_state"] == "needs_payment"
+    assert plan["payment_action"] == "send_now"
+    assert plan["payment_decision"]["action"] == "send_now"
+    assert plan["payment_decision"]["amount"] == 20
     assert plan["conversion_stage"] == "deposit_push"
     assert plan["next_step"] == "send_deposit"
     assert any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
@@ -521,6 +525,7 @@ def test_planner_removes_payment_collection_after_structured_paid_state() -> Non
     )
 
     assert plan["payment_state"] == "customer_claimed_paid"
+    assert plan["payment_decision"]["action"] == "after_paid_next_step"
     assert plan["conversion_stage"] == "time_confirm"
     assert plan["next_step"] == "confirm_time"
     assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
@@ -615,6 +620,7 @@ def test_planner_payment_action_offer_resend_removes_same_turn_payment_card() ->
     )
 
     assert plan["payment_action"] == "offer_resend"
+    assert plan["payment_decision"]["action"] == "none"
     assert plan["conversion_stage"] == "time_confirm"
     assert plan["next_step"] == "confirm_time"
     assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
@@ -783,7 +789,7 @@ def test_deposit_push_without_payment_action_does_not_auto_append_payment_collec
         },
     )
     assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
-    assert any(item.get("missing") == "payment_collection_required" for item in plan["tool_policy_violations"])
+    assert any(item.get("missing") == "payment_decision_required" for item in plan["tool_policy_violations"])
 
 
 def test_payment_entry_phrase_without_card_reports_structure_violation_without_action() -> None:
@@ -811,7 +817,7 @@ def test_payment_entry_phrase_without_card_reports_structure_violation_without_a
         },
     )
     assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
-    assert any(item.get("missing") == "payment_collection_required" for item in plan["tool_policy_violations"])
+    assert any(item.get("missing") == "payment_decision_required" for item in plan["tool_policy_violations"])
 
 
 def test_previous_payment_entry_explanation_does_not_auto_append_payment_collection() -> None:
@@ -890,6 +896,150 @@ def test_payment_collection_amount_follows_participant_count(content: str, expec
     )
     payment = [item for item in plan["planner_reply_messages"] if item["type"] == "payment_collection"][0]
     assert payment["content"]["amount"] == expected_amount
+
+
+def test_payment_decision_single_registration_overrides_noisy_history_amount() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "那我报名",
+            "conversation_history": ["用户: 想淡斑", "小贝: 明天方便到店看一下吗？"],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "high_intent",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_decision": {
+                "action": "send_now",
+                "party_size": 1,
+                "amount": 10,
+                "source": "current_message",
+                "confidence": "high",
+                "basis": ["客户当前只说自己报名"],
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "报名可以，我把10元预约金入口发您，到店抵扣。"}}],
+            "tool_calls": [],
+        },
+    )
+    payment = [item for item in plan["planner_reply_messages"] if item["type"] == "payment_collection"][0]
+    assert plan["payment_decision"]["action"] == "send_now"
+    assert plan["payment_decision"]["party_size"] == 1
+    assert payment["content"]["amount"] == 10
+
+
+def test_payment_decision_friend_together_auto_appends_twenty_yuan_card() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "我朋友也一起过去"},
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "accompany",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_decision": {
+                "action": "send_now",
+                "party_size": 2,
+                "amount": 20,
+                "source": "current_message",
+                "confidence": "high",
+                "basis": ["客户当前说朋友一起"],
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "可以，2位一共20元预约金，每位10元，到店抵扣。"}}],
+            "tool_calls": [],
+        },
+    )
+    payment = [item for item in plan["planner_reply_messages"] if item["type"] == "payment_collection"][0]
+    assert payment["content"]["amount"] == 20
+
+
+def test_payment_decision_two_friends_auto_appends_thirty_yuan_card() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "我带两个朋友一起"},
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "accompany",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_decision": {
+                "action": "send_now",
+                "party_size": 3,
+                "amount": 30,
+                "source": "current_message",
+                "confidence": "high",
+                "basis": ["客户当前说带两个朋友，本人加两位朋友"],
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "可以，3位一共30元预约金，每位10元，到店抵扣。"}}],
+            "tool_calls": [],
+        },
+    )
+    payment = [item for item in plan["planner_reply_messages"] if item["type"] == "payment_collection"][0]
+    assert payment["content"]["amount"] == 30
+
+
+def test_payment_decision_after_paid_next_step_removes_card() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "付完然后呢"},
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_DEPOSIT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "unknown",
+            "main_blocker": "none",
+            "next_step": "confirm_time",
+            "payment_decision": {
+                "action": "after_paid_next_step",
+                "source": "current_message",
+                "confidence": "high",
+                "basis": ["客户声称已付后询问下一步"],
+            },
+            "reply_messages": [
+                {"type": "text", "content": {"text": "我继续帮您确认到店安排。"}},
+                {"type": "payment_collection", "content": {"amount": 20}},
+            ],
+            "tool_calls": [],
+        },
+    )
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    assert plan["payment_decision"]["action"] == "after_paid_next_step"
+
+
+def test_payment_decision_resend_inherits_last_payment_amount() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "没收到，再发一下",
+            "conversation_history": ["小贝: 2位一共20元预约金入口已发", "小贝: payment_collection amount=20"],
+            "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 20}}],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "high_intent",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_decision": {
+                "action": "resend",
+                "source": "last_payment_collection",
+                "confidence": "high",
+                "basis": ["客户当前要求重发入口"],
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "我再发您一次，2位一共20元预约金，每位10元，到店抵扣。"}}],
+            "tool_calls": [],
+        },
+    )
+    payment = [item for item in plan["planner_reply_messages"] if item["type"] == "payment_collection"][0]
+    assert plan["payment_decision"]["action"] == "resend"
+    assert payment["content"]["amount"] == 20
 
 
 def test_payment_collection_amount_inherits_recent_twenty_yuan_context() -> None:

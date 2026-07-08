@@ -21,8 +21,10 @@ from app.graph.state import AgentState
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
     normalize_deposit_refund_policy_text,
+    payment_amount_for_party_size,
     payment_collection_content,
     payment_collection_context,
+    payment_party_size_for_amount,
 )
 from app.services.risk_hold import HEALTH_RISK_TERMS, explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
 
@@ -45,6 +47,15 @@ ALLOWED_PAYMENT_ACTIONS = (
     "explain_existing",
     "confirm_next_step",
 )
+ALLOWED_PAYMENT_DECISION_ACTIONS = (
+    "none",
+    "explain",
+    "send_now",
+    "resend",
+    "after_paid_next_step",
+    "ask_party_size",
+)
+ALLOWED_PAYMENT_DECISION_CONFIDENCE = ("high", "medium", "low")
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -91,6 +102,24 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     reply_constraints = _clean_str_list(model_payload.get("reply_constraints") if isinstance(model_payload, dict) else [])
     handoff_raw = model_payload.get("handoff") if isinstance(model_payload, dict) else {}
     memory_update_raw = model_payload.get("memory_update_hint") if isinstance(model_payload, dict) else {}
+    payment_decision = _normalize_payment_decision(
+        model_payload.get("payment_decision") if isinstance(model_payload, dict) else {},
+        state=state,
+        payment_state=payment_state,
+        payment_action=payment_action,
+        messages=planner_reply_messages,
+    )
+    payment_state, payment_action = _payment_fields_from_decision(
+        payment_decision=payment_decision,
+        payment_state=payment_state,
+        payment_action=payment_action,
+    )
+    state_for_payment = {**state, "payment_decision": payment_decision}
+    planner_reply_messages = _normalize_payment_collection_messages_for_decision(
+        planner_reply_messages,
+        state=state_for_payment,
+        payment_decision=payment_decision,
+    )
 
     primary_task: dict[str, Any] = {}
     secondary_tasks: list[dict[str, Any]] = []
@@ -176,6 +205,14 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         reply_constraints.append("当前消息是门店地址/导航/停车/位置详情查询，本轮只查门店事实；不要保留 deposit_push/send_deposit。")
     if is_hard_health_risk_hold(risk_hold) and not explicit_risk_reason:
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        payment_decision = _with_payment_decision_action(
+            payment_decision,
+            "none",
+            source="health_risk_hold",
+            confidence="high",
+            basis="健康/过敏高风险未检测前不发送预约金卡",
+        )
+        state_for_payment = {**state, "payment_decision": payment_decision}
         if conversion_stage == "deposit_push":
             conversion_stage = "time_confirm"
         if next_step == "send_deposit":
@@ -191,6 +228,14 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     has_paid_deposit_context = _has_paid_deposit_context(state, payment_state=payment_state)
     if has_paid_deposit_context and payment_state == "unknown":
         payment_state = "customer_claimed_paid"
+        payment_decision = _with_payment_decision_action(
+            payment_decision,
+            "after_paid_next_step",
+            source="structured_paid_context",
+            confidence="high",
+            basis="结构化证据或 planner payment_state 表示客户已付",
+        )
+        state_for_payment = {**state, "payment_decision": payment_decision}
     if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
@@ -216,12 +261,13 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             reply_constraints.append("payment_state 表示客户已付或结构化支付状态已付；本轮不要重复发送 payment_collection。")
             reply_strategy.setdefault("current_turn_context_guard", "payment_card_removed_after_model_paid_state")
     planner_reply_messages = _append_required_payment_collection(
-        state=state,
+        state=state_for_payment,
         decision=decision,
         conversion_stage=conversion_stage,
         next_step=next_step,
         payment_state=payment_state,
         payment_action=payment_action,
+        payment_decision=payment_decision,
         messages=planner_reply_messages,
     )
     handoff = _normalize_handoff(handoff_raw)
@@ -260,6 +306,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             next_step=next_step,
             payment_state=payment_state,
             payment_action=payment_action,
+            payment_decision=payment_decision,
             messages=planner_reply_messages,
         ),
         *_two_text_rhythm_violations(
@@ -295,6 +342,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "next_step": next_step,
         "payment_state": payment_state,
         "payment_action": payment_action,
+        "payment_decision": payment_decision,
         "planner_reply_messages": planner_reply_messages,
         "planner_tool_calls": executable_tools,
         "reply_constraints": reply_constraints,
@@ -757,6 +805,181 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                 )
 
     return violations
+
+
+def _normalize_payment_decision(
+    value: Any,
+    *,
+    state: AgentState,
+    payment_state: str,
+    payment_action: str,
+    messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    action = _normalize_enum(str(raw.get("action") or ""), ALLOWED_PAYMENT_DECISION_ACTIONS, "")
+    legacy_action = _payment_decision_action_from_legacy(payment_state=payment_state, payment_action=payment_action)
+    if not action:
+        action = legacy_action
+    if payment_state == "customer_claimed_paid" or _has_paid_deposit_context(state, payment_state=payment_state):
+        action = "after_paid_next_step"
+    elif (
+        action == "none"
+        and _has_payment_collection(messages)
+        and payment_action not in {"none", "offer_resend", "explain_existing", "confirm_next_step"}
+    ):
+        action = "resend" if payment_state in {"resend_requested", "payment_failed"} else "send_now"
+
+    party_size = _coerce_party_size(raw.get("party_size"))
+    raw_amount = _coerce_payment_amount(raw.get("amount"))
+    if party_size is None and raw_amount:
+        party_size = payment_party_size_for_amount(raw_amount)
+
+    context = payment_collection_context(state=state, messages=messages)
+    if action in {"send_now", "resend"}:
+        if party_size is None:
+            party_size = int(context.get("participants") or 1)
+        if party_size > 4:
+            action = "ask_party_size"
+        amount = payment_amount_for_party_size(party_size) if action in {"send_now", "resend"} else None
+    else:
+        amount = raw_amount
+
+    source = str(raw.get("source") or "").strip()
+    if not source:
+        if isinstance(value, dict):
+            source = "planner"
+        elif action in {"send_now", "resend"}:
+            source = "legacy_payment_action"
+        else:
+            source = "legacy_fields"
+    confidence = _normalize_enum(
+        str(raw.get("confidence") or ""),
+        ALLOWED_PAYMENT_DECISION_CONFIDENCE,
+        "medium" if isinstance(value, dict) else "low",
+    )
+    basis = _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])
+    if not basis and legacy_action != "none":
+        basis = [f"legacy payment_state={payment_state or 'unknown'} payment_action={payment_action or 'unknown'}"]
+
+    output: dict[str, Any] = {
+        "action": action,
+        "source": source,
+        "confidence": confidence,
+    }
+    if party_size is not None:
+        output["party_size"] = party_size
+    if amount:
+        output["amount"] = amount
+    if basis:
+        output["basis"] = basis[:5]
+    return output
+
+
+def _payment_decision_action_from_legacy(*, payment_state: str, payment_action: str) -> str:
+    if payment_state == "customer_claimed_paid":
+        return "after_paid_next_step"
+    if payment_action == "send_now":
+        return "resend" if payment_state in {"resend_requested", "payment_failed"} else "send_now"
+    if payment_action == "explain_existing":
+        return "explain"
+    if payment_action == "confirm_next_step":
+        return "after_paid_next_step" if payment_state == "customer_claimed_paid" else "none"
+    if payment_action in {"none", "offer_resend"}:
+        return "none"
+    return "none"
+
+
+def _payment_fields_from_decision(
+    *,
+    payment_decision: dict[str, Any],
+    payment_state: str,
+    payment_action: str,
+) -> tuple[str, str]:
+    action = str(payment_decision.get("action") or "")
+    if action == "send_now":
+        return ("needs_payment" if payment_state == "unknown" else payment_state, "send_now")
+    if action == "resend":
+        return ("resend_requested" if payment_state == "unknown" else payment_state, "send_now")
+    if action == "after_paid_next_step":
+        return ("customer_claimed_paid", "confirm_next_step")
+    if action == "explain":
+        return (payment_state if payment_state != "unknown" else "link_sent", "explain_existing")
+    if action == "ask_party_size":
+        return (payment_state, "none")
+    if action == "none":
+        return (payment_state, payment_action)
+    return payment_state, payment_action
+
+
+def _coerce_party_size(value: Any) -> int | None:
+    try:
+        participants = int(float(str(value or "").strip()))
+    except (TypeError, ValueError):
+        return None
+    if participants < 1:
+        return None
+    return participants
+
+
+def _coerce_payment_amount(value: Any) -> int | None:
+    try:
+        amount = int(float(str(value or "").strip()))
+    except (TypeError, ValueError):
+        return None
+    if amount not in {10, 20, 30, 40}:
+        return None
+    return amount
+
+
+def _normalize_payment_collection_messages_for_decision(
+    messages: list[dict[str, Any]],
+    *,
+    state: AgentState,
+    payment_decision: dict[str, Any],
+) -> list[dict[str, Any]]:
+    action = str(payment_decision.get("action") or "")
+    if action not in {"send_now", "resend"}:
+        return messages
+    amount = _coerce_payment_amount(payment_decision.get("amount"))
+    if not amount:
+        return messages
+    output: list[dict[str, Any]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "") == "payment_collection":
+            output.append(
+                {
+                    **item,
+                    "content": payment_collection_content({"amount": amount}, state=state, messages=messages),
+                }
+            )
+            continue
+        output.append(item)
+    return _renumber_reply_messages(output)
+
+
+def _with_payment_decision_action(
+    payment_decision: dict[str, Any],
+    action: str,
+    *,
+    source: str,
+    confidence: str,
+    basis: str,
+) -> dict[str, Any]:
+    output = dict(payment_decision) if isinstance(payment_decision, dict) else {}
+    output["action"] = _normalize_enum(action, ALLOWED_PAYMENT_DECISION_ACTIONS, "none")
+    output["source"] = source
+    output["confidence"] = _normalize_enum(confidence, ALLOWED_PAYMENT_DECISION_CONFIDENCE, "high")
+    basis_list = _clean_str_list(output.get("basis") if isinstance(output.get("basis"), list) else [])
+    if basis:
+        basis_list.append(basis)
+    if basis_list:
+        output["basis"] = basis_list[:5]
+    if output["action"] not in {"send_now", "resend"}:
+        output.pop("amount", None)
+        output.pop("party_size", None)
+    return output
 
 
 def _case_studies_tool_violations(
@@ -1446,10 +1669,12 @@ def _payment_consistency_violations(
     next_step: str,
     payment_state: str,
     payment_action: str,
+    payment_decision: dict[str, Any],
     messages: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     if decision == "no_reply":
         return []
+    decision_action = str(payment_decision.get("action") or "")
     if _has_paid_deposit_context(state, payment_state=payment_state):
         if _has_payment_collection(messages):
             return [
@@ -1461,7 +1686,35 @@ def _payment_consistency_violations(
                 }
             ]
         return []
-    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+    payment_context = payment_collection_context(state={**state, "payment_decision": payment_decision}, messages=messages)
+    if (conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)) and payment_context["over_limit"]:
+        return [
+            {
+                "task_type": "reply_schema_consistency",
+                "subtype": "payment_collection",
+                "missing": "payment_participant_count_confirm_required",
+                "note": (
+                    "The current message implies more than 4 participants. Do not auto-send payment_collection. "
+                    "Reply with text to confirm the number of participants or ask store staff to handle group booking."
+                ),
+            }
+        ]
+    if decision_action in {"none", ""} and (
+        conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)
+    ):
+        return [
+            {
+                "task_type": "reply_schema_consistency",
+                "subtype": "payment_collection",
+                "missing": "payment_decision_required",
+                "note": (
+                    "This turn is trying to send or promise a payment entry, but payment_decision.action is not send_now/resend. "
+                    "If the customer should pay now, set payment_decision.action=send_now/resend with party_size and amount; "
+                    "otherwise remove payment-entry wording and downgrade conversion_stage/next_step."
+                ),
+            }
+        ]
+    if decision_action in {"none", "explain", "after_paid_next_step", "ask_party_size"} or payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
         if _has_payment_collection(messages):
             return [
                 {
@@ -1481,7 +1734,7 @@ def _payment_consistency_violations(
                     "subtype": "payment_collection",
                     "missing": "payment_collection_blocked_by_payment_action",
                     "note": (
-                        "Planner payment_action says this turn should not send the payment entry. "
+                        "Planner payment_decision/payment_action says this turn should not send the payment entry. "
                         "Do not mention payment-entry status or ask the customer to reply for a resend in this turn; "
                         "naturally answer the current message or move to store/time/contact follow-up."
                     ),
@@ -1492,8 +1745,7 @@ def _payment_consistency_violations(
         return []
     if decision != "direct_reply" and not _text_mentions_payment_entry(messages):
         return []
-    needs_payment = payment_action == "send_now" or _text_mentions_payment_entry(messages)
-    payment_context = payment_collection_context(state=state, messages=messages)
+    needs_payment = decision_action in {"send_now", "resend"} or payment_action == "send_now" or _text_mentions_payment_entry(messages)
     if needs_payment and payment_context["over_limit"]:
         return [
             {
@@ -1508,6 +1760,20 @@ def _payment_consistency_violations(
         ]
     if not needs_payment or _has_payment_collection(messages):
         return []
+    if str(payment_decision.get("action") or "") not in {"send_now", "resend"} and (
+        conversion_stage == "deposit_push" or next_step == "send_deposit"
+    ):
+        return [
+            {
+                "task_type": "reply_schema_consistency",
+                "subtype": "payment_collection",
+                "missing": "payment_decision_required",
+                "note": (
+                    "Deposit push/send_deposit must be backed by payment_decision.action=send_now or resend. "
+                    "If the turn should not send a payment card, change conversion_stage/next_step and remove payment-entry wording."
+                ),
+            }
+        ]
     return [
         {
             "task_type": "reply_schema_consistency",
@@ -1603,19 +1869,23 @@ def _append_required_payment_collection(
     next_step: str,
     payment_state: str,
     payment_action: str,
+    payment_decision: dict[str, Any],
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     if decision != "direct_reply":
         return messages
+    decision_action = str(payment_decision.get("action") or "")
     if is_hard_health_risk_hold(health_risk_hold(state)):
         return _remove_payment_collection_messages(messages)
     if _has_paid_deposit_context(state, payment_state=payment_state):
         return _remove_payment_collection_messages(messages)
-    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+    if decision_action in {"none", "explain", "after_paid_next_step", "ask_party_size"}:
+        return _remove_payment_collection_messages(messages)
+    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"} and decision_action not in {"send_now", "resend"}:
         return _remove_payment_collection_messages(messages)
     if not messages or _has_payment_collection(messages) or _text_explains_previous_payment_entry(messages):
         return messages
-    if payment_action != "send_now":
+    if decision_action not in {"send_now", "resend"} and payment_action != "send_now":
         return messages
     payment_context = payment_collection_context(state=state, messages=messages)
     if payment_context["over_limit"]:

@@ -345,6 +345,12 @@ def _messages_have_payment_collection(messages: list[dict[str, Any]]) -> bool:
 
 
 def _state_requires_payment_collection(state: AgentState) -> bool:
+    payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
+    decision_action = str(payment_decision.get("action") or "")
+    if decision_action in {"send_now", "resend"}:
+        return True
+    if decision_action in {"none", "explain", "after_paid_next_step", "ask_party_size"}:
+        return False
     payment_action = str(state.get("payment_action") or "")
     if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
         return False
@@ -363,6 +369,9 @@ def _state_requires_payment_collection(state: AgentState) -> bool:
 
 
 def _state_has_paid_deposit_context(state: AgentState) -> bool:
+    payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
+    if str(payment_decision.get("action") or "") == "after_paid_next_step":
+        return True
     if str(state.get("payment_state") or "") == "customer_claimed_paid":
         return True
     current_turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}

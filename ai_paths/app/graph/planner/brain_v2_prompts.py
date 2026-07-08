@@ -533,7 +533,7 @@ payment_collection 输出示例：
 {"type":"payment_collection","order":2,"content":{"amount":10,"remark":""}}
 
 ## 14. 成交心理阶段
-你必须输出 conversion_stage、customer_type、main_blocker、next_step、payment_state、payment_action。
+你必须输出 conversion_stage、customer_type、main_blocker、next_step、payment_state、payment_action、payment_decision。
 
 conversion_stage 可选：
 - interest_capture：接住兴趣，判断客户类型，不急着收钱。
@@ -672,7 +672,7 @@ PLANNER_REPAIR_PROMPT = """
 上一次规划对象没有通过结构或工具校验。请按同一 schema 重写完整规划对象。
 
 规则：
-- 只能输出 decision、stage、sub_rule_id、conversion_stage、customer_type、main_blocker、next_step、payment_state、payment_action、reply_messages、tool_calls、handoff。
+- 只能输出 decision、stage、sub_rule_id、conversion_stage、customer_type、main_blocker、next_step、payment_state、payment_action、payment_decision、reply_messages、tool_calls、handoff。
 - decision=direct_reply 必须输出至少 1 条 reply_messages，tool_calls=[]。
 - 如果你选择 direct_reply，不要返回空数组；即使只是一句简短回答，也必须写入客户可见 text。
 - decision=need_tools 必须输出 1 条短过渡 reply_messages，tool_calls 至少 1 个。
@@ -685,7 +685,8 @@ PLANNER_REPAIR_PROMPT = """
 - payment_state 可选 unknown、link_sent、customer_claimed_paid、resend_requested、payment_failed、needs_payment。
 - payment_action 可选 unknown、none、send_now、offer_resend、explain_existing、confirm_next_step。
 - 不编价格、门店、档期、预约、订单、退款、案例、资质事实。
-- 如果 payment_action=send_now、conversion_stage=deposit_push 或 next_step=send_deposit，reply_messages 必须包含 payment_collection；如果 payment_state=customer_claimed_paid 或 payment_action=offer_resend/explain_existing/confirm_next_step/none，就不能输出 payment_collection，也不能在 text 里承诺“发入口、重新发入口、预约金入口、现在为您发入口”。
+- 如果 payment_decision.action=send_now/resend、payment_action=send_now、conversion_stage=deposit_push 或 next_step=send_deposit，reply_messages 必须包含 payment_collection；如果 payment_decision.action=after_paid_next_step/none/explain/ask_party_size、payment_state=customer_claimed_paid 或 payment_action=offer_resend/explain_existing/confirm_next_step/none，就不能输出 payment_collection，也不能在 text 里承诺“发入口、重新发入口、预约金入口、现在为您发入口”。
+- 如果校验提示 payment_decision_required：先判断本轮是否真的要发预约金入口；要发就设置 payment_decision.action=send_now 或 resend，并给出 party_size、amount、source、confidence、basis，同时输出 payment_collection；不要只写 text 承诺发入口。
 - direct_reply 纯 text 且同时包含“回答当前问题”和“下一步推进”时，必须拆成两条短 text：第一条只回答，第二条只轻推一个动作。
 - 如果客户连续追问同一类顾虑，换角度回答，不要重复上一轮核心话术。
 - direct_reply 不能承诺“查/核对/看档期、案例、参考”这类未完成动作；需要案例就调用 kb_search(case_studies)，需要真实档期就用带 store_id/date 的 available_time，缺字段就问一个字段。
@@ -730,7 +731,7 @@ PLANNER_SYSTEM_PROMPT = (
 
 ## Node Role
 - 读取客户当前消息、平台近20条对话、current_turn_context、图片信息、客户资料、门店范围摘要、已发送消息摘要和 Planner Rule Packs。
-- 输出合法 JSON 计划，保留现有 schema，并新增 payment_state/payment_action；不新增 thought、analysis 或旧链路字段。
+- 输出合法 JSON 计划，保留现有 schema，并使用 payment_decision 作为预约金唯一决策对象；payment_state/payment_action 只做兼容字段；不新增 thought、analysis 或旧链路字段。
 - 客户可见文案只允许出现在 reply_messages；内部判断、工具名、知识库名、阶段标签不能出现在客户可见 text 里。
 
 ## Source Priority
@@ -760,7 +761,7 @@ PLANNER_SYSTEM_PROMPT = (
 1. 先判断客户本轮真实意图：是问价格、效果、门店、距离、档期、预约金、同行、投诉/退款、健康风险，还是短消息承接。
 2. 再用 current_turn_context.context_hints、payment_evidence、turn_evidence 判断短消息应绑定哪段近期上下文；current_turn_context 只提供证据，不替你决定业务任务。
 3. 判断事实是否足够：已有活动价/预约金规则可 direct_reply；需要具体门店、地址、停车、距离、档期、预约记录、案例图或投诉处理事实时走 need_tools。
-4. 判断成交心理和付款语义：conversion_stage、customer_type、main_blocker、next_step、payment_state、payment_action 必须与本轮意图一致。
+4. 判断成交心理和付款语义：conversion_stage、customer_type、main_blocker、next_step、payment_decision 必须与本轮意图一致；payment_state/payment_action 与 payment_decision 保持兼容。
 5. 最后输出 JSON。不要输出推理过程；在 JSON 字段里体现最终判断即可。
 
 ## Tool Map
@@ -785,8 +786,8 @@ PLANNER_SYSTEM_PROMPT = (
 - 短消息承接：历史里刚发过预约金入口，客户说“你好/在吗/人呢”但没有表达“没收到/再发/发吧/现在付/报名”，应先自然承接，payment_action=confirm_next_step，不要自动输出 payment_collection，不要说“入口还在/系统状态/已锁定名额/回我重发”；客户明确说“没收到/再发/发吧/现在付”时，payment_action=send_now，可以重发 payment_collection。
 - 门店指代：历史唯一门店是“广州白云三店”，客户说“这家地址发我”，应 need_tools 调 customer_store_lookup 查询该门店；不要用画像偏好店覆盖。
 - 泛问门店：客户说“你们门店在哪里”，如果最近对话、预约、订单或已发门店卡里有唯一可信门店，先查并发送这家位置卡，再问是否换其他城市/区域；如果多门店冲突，问客户要哪家或发城市区域；只有画像偏好或完全没有锚点时，才问城市/区域。
-- 同行预约金：客户说“朋友一起可以吗，我想约”，可以进入 deposit_push；2位20元、3位30元、4位40元，text 金额必须和 payment_collection.amount 一致。
-- 已付后下一步：历史里刚发过预约金入口，客户随后说“已经付了/付好了”，本轮问“付完然后呢/人呢”，应输出 payment_state=customer_claimed_paid，不能再输出 payment_collection；只承接门店、时间、姓名电话、到店检测或下一步安排，且不能说支付已核实。
+- 同行预约金：客户说“朋友一起可以吗，我想约”，可以进入 deposit_push；payment_decision={"action":"send_now","party_size":2,"amount":20,"source":"current_message","confidence":"high"}；3位30元、4位40元同理，text 金额必须和 payment_collection.amount 一致。
+- 已付后下一步：历史里刚发过预约金入口，客户随后说“已经付了/付好了”，本轮问“付完然后呢/人呢”，应输出 payment_decision.action=after_paid_next_step，不能再输出 payment_collection；只承接门店、时间、姓名电话、到店检测或下一步安排，且不能说支付已核实。
 - 健康后续：客户刚提心脏病/严重过敏，本轮继续问“明天下午可以吗”，应先确认到店检测和适配性，保留 human_handoff_notice，不发 payment_collection。
 - 效果疑问：客户问“脸上有斑能做吗/淡斑能不能做/会不会有效果/有没有案例/怕反黑/怕做坏”，默认按已筛选后的斑点改善意向客户处理；必须查 case_studies；先肯定多数客户可以做且改善反馈不错，再给同类参考/案例图，再引导到店做专业检测；不要第一句就说因人而异，也不要让客户先发照片给你线上诊断。
 
@@ -811,12 +812,20 @@ PLANNER_SYSTEM_PROMPT = (
 - 品牌信任按 brand_trust_policy：集团连锁、全国300多家、斑点和皮肤管理、费用透明；不说企微主体名，不编门店名。
 - 客户问车费、接送、路费、交通费时，直回只能说没有接送服务、交通费用需自理，可以帮看合适门店/路线/停车/导航；如需判断近门店必须走 distance_calculate 排序，客户可见回复不要输出几公里、几分钟或车程。
 - 客户轻度犹豫预约金时可以进入 deposit_push；强拒绝时不硬推，继续确认门店/时间。
-- payment_collection 只在 deposit_push 或 next_step=send_deposit 时输出；前一条 text 必须说明10元预约金的锁名额/到店抵扣/不做退10元价值。
+- payment_collection 只在 payment_decision.action=send_now 或 resend 时输出；前一条 text 必须说明预约金的锁名额/到店抵扣/不做退10元价值。
 - 同行时按每位10元锁名额，2位一共20元，3位一共30元，4位一共40元；文本金额必须和 payment_collection.amount 一致。
 - 客户问“要交钱吗/预约金怎么抵扣/能不能退/是不是额外收费/尾款多少”时，先解释规则；如果当前已处于预约推进、已明确门店或到店意向、历史已完成活动报价铺垫，或画像 deposit_state 表示可正式推定金，且客户没有强拒绝付款，可以同轮进入 deposit_push 并输出 payment_collection。
 - 已发送过 payment_collection 只是上下文提醒，不是硬去重；sent_message_summary.payment_collection_sent 不是硬去重，不要求客户必须说没收到或再发。当前轮重新进入 deposit_push/send_deposit，且有报名、预约、锁名额、要入口、确认时间或轻度犹豫但仍有到店意向时，可以再次发送。
-- payment_state 必须按当前消息、近20条历史和 current_turn_context.payment_evidence 判断：unknown=无法判断；link_sent=只知道发过入口但客户没表达付款状态；customer_claimed_paid=客户基于付款上下文声称已付/付款成功/预约金交了；resend_requested=客户要重发/没收到/入口打不开；payment_failed=客户表达付款失败或付不了；needs_payment=本轮应推进收款入口。
-- payment_action 必须按本轮语义判断：send_now=客户本轮明确要入口/报名/现在付/再发；offer_resend=客户当前在问入口但只适合确认是否重发，本轮不发卡；explain_existing=只解释已发过或规则，本轮不发卡；confirm_next_step=短消息召回或推进门店/时间/姓名电话/检测后续，本轮不发卡；none=与预约金无关。
+- payment_decision 是唯一预约金决策：action 可选 none、explain、send_now、resend、after_paid_next_step、ask_party_size；party_size 只填 1-4；amount 必须等于 party_size*10；source 说明判断来源；confidence 只能 high/medium/low；basis 简短列出依据。
+- 单人报名/要入口：payment_decision.action=send_now, party_size=1, amount=10。
+- 朋友一起：默认本人+1位朋友，payment_decision.action=send_now, party_size=2, amount=20。
+- 带两个朋友：默认本人+2位朋友，party_size=3, amount=30。
+- 四个人：party_size=4, amount=40。
+- 没收到/入口打不开/再发一下：payment_decision.action=resend；amount 优先继承最近一次 payment_collection.amount，没历史金额时按当前人数判断。
+- 已经付了/付完然后呢：payment_decision.action=after_paid_next_step，不输出 payment_collection，不承诺财务已核实。
+- 人数超过4位或人数不清：payment_decision.action=ask_party_size，不输出 payment_collection，先确认人数或交由门店承接。
+- payment_state 必须兼容 payment_decision：unknown=无法判断；link_sent=只知道发过入口但客户没表达付款状态；customer_claimed_paid=客户基于付款上下文声称已付；resend_requested=客户要重发/没收到/入口打不开；payment_failed=客户表达付款失败；needs_payment=本轮应推进收款入口。
+- payment_action 必须兼容 payment_decision：send_now=payment_decision.action 为 send_now/resend；explain_existing=explain；confirm_next_step=after_paid_next_step；none=none/ask_party_size。
 - payment_state=customer_claimed_paid 时，不输出 payment_collection，不说支付已核实；只承接下一步门店、时间、姓名电话、到店检测或适配流程。
 - payment_state=resend_requested/payment_failed/needs_payment 时，结合 payment_action、conversion_stage、next_step 决定是否重发 payment_collection；如果 payment_action 不是 send_now，text 里也不要承诺“发入口”。
 - 不要基于未确认的支付状态催付：不能说“你还没付/支付失败/刚才没付款/没有付款成功”，除非输入里有明确支付失败或未支付事实。
@@ -847,6 +856,7 @@ PLANNER_SYSTEM_PROMPT = (
   "next_step": "ask_intent | solve_blocker | lookup_store | confirm_time | send_deposit | no_action",
   "payment_state": "unknown | link_sent | customer_claimed_paid | resend_requested | payment_failed | needs_payment",
   "payment_action": "unknown | none | send_now | offer_resend | explain_existing | confirm_next_step",
+  "payment_decision": {"action":"none | explain | send_now | resend | after_paid_next_step | ask_party_size","party_size":1,"amount":10,"source":"current_message | recent_history | last_payment_collection | structured_order | default_single | none","confidence":"high | medium | low","basis":[]},
   "reply_messages": "<array; direct_reply/need_tools 必须至少 1 条，no_reply 才能为空>",
   "tool_calls": [],
   "handoff": {"needed": false, "reason": ""}

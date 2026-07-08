@@ -70,6 +70,7 @@ def create_planner_brain_node(
                 "next_step": plan.get("next_step", "no_action"),
                 "payment_state": plan.get("payment_state", "unknown"),
                 "payment_action": plan.get("payment_action", "unknown"),
+                "payment_decision": plan.get("payment_decision", {}),
                 "planner_reply_messages": plan.get("planner_reply_messages", []),
                 "planner_tool_calls": plan.get("planner_tool_calls", []),
                 "reply_constraints": plan.get("reply_constraints", []),

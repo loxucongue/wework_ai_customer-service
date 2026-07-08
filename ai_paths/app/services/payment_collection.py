@@ -41,6 +41,9 @@ def payment_collection_amount(
 ) -> int:
     if state is None and messages is None:
         return _normalize_amount(fallback_amount)
+    decision_amount = _amount_from_payment_decision(state)
+    if decision_amount:
+        return decision_amount
     context = payment_collection_context(state=state, messages=messages)
     if context["over_limit"]:
         return _normalize_amount(fallback_amount)
@@ -53,6 +56,9 @@ def payment_collection_context(
     state: dict[str, Any] | None = None,
     messages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    decision_context = _context_from_payment_decision(state)
+    if decision_context:
+        return decision_context
     text = _state_payment_text(state, messages)
     participants, over_limit = payment_participants_from_text(text)
     return {
@@ -60,6 +66,26 @@ def payment_collection_context(
         "amount": participants * PAYMENT_COLLECTION_UNIT_AMOUNT,
         "over_limit": over_limit,
     }
+
+
+def payment_amount_for_party_size(party_size: int | str | None) -> int | None:
+    try:
+        participants = int(float(str(party_size or "").strip()))
+    except (TypeError, ValueError):
+        return None
+    if participants < 1 or participants > PAYMENT_COLLECTION_MAX_AUTO_PARTICIPANTS:
+        return None
+    return participants * PAYMENT_COLLECTION_UNIT_AMOUNT
+
+
+def payment_party_size_for_amount(amount: int | str | None) -> int | None:
+    try:
+        value = int(float(str(amount or "").strip()))
+    except (TypeError, ValueError):
+        return None
+    if value not in PAYMENT_COLLECTION_ALLOWED_AMOUNTS:
+        return None
+    return value // PAYMENT_COLLECTION_UNIT_AMOUNT
 
 
 def payment_participants_from_text(text: str) -> tuple[int, bool]:
@@ -170,6 +196,36 @@ def _amount_from_content(content: Any) -> int | None:
         return int(float(str(content.get("amount") or "").strip()))
     except (TypeError, ValueError):
         return None
+
+
+def _amount_from_payment_decision(state: dict[str, Any] | None) -> int | None:
+    if not isinstance(state, dict):
+        return None
+    decision = state.get("payment_decision")
+    if not isinstance(decision, dict):
+        return None
+    action = str(decision.get("action") or "").strip()
+    if action not in {"send_now", "resend"}:
+        return None
+    party_amount = payment_amount_for_party_size(decision.get("party_size"))
+    if party_amount:
+        return party_amount
+    try:
+        amount = int(float(str(decision.get("amount") or "").strip()))
+    except (TypeError, ValueError):
+        return None
+    return amount if amount in PAYMENT_COLLECTION_ALLOWED_AMOUNTS else None
+
+
+def _context_from_payment_decision(state: dict[str, Any] | None) -> dict[str, Any]:
+    amount = _amount_from_payment_decision(state)
+    if not amount:
+        return {}
+    return {
+        "participants": amount // PAYMENT_COLLECTION_UNIT_AMOUNT,
+        "amount": amount,
+        "over_limit": False,
+    }
 
 
 def _normalize_amount(value: int | None) -> int:

@@ -216,7 +216,12 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
     if is_hard_health_risk_hold(health_risk_hold(state)):
         return
     payment_action = str(state.get("payment_action") or "")
-    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+    payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
+    decision_action = str(payment_decision.get("action") or "")
+    if decision_action in {"none", "explain", "after_paid_next_step", "ask_party_size"} or (
+        decision_action not in {"send_now", "resend"}
+        and payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}
+    ):
         if has_payment:
             raise ValueError("payment_collection_blocked_by_payment_action")
         if _promises_payment_entry(_combined_text(messages)):
@@ -231,7 +236,8 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
     needs_payment = False
     if not _explains_previous_payment_entry(text):
         needs_payment = (
-            payment_action == "send_now"
+            decision_action in {"send_now", "resend"}
+            or payment_action == "send_now"
             or str(state.get("conversion_stage") or "") == "deposit_push"
             or str(state.get("next_step") or "") == "send_deposit"
             or _promises_payment_entry(text)
@@ -249,6 +255,9 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
 
 
 def _paid_deposit_context(state: dict[str, Any]) -> bool:
+    payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
+    if str(payment_decision.get("action") or "") == "after_paid_next_step":
+        return True
     if str(state.get("payment_state") or "") == "customer_claimed_paid":
         return True
     turn_context = state.get("current_turn_context")
