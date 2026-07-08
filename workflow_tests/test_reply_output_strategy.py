@@ -1255,7 +1255,7 @@ def test_contextual_store_question_with_payment_task_forces_lookup_when_model_di
     ]
 
 
-def test_generic_store_question_with_profile_only_asks_for_scope() -> None:
+def test_generic_store_question_with_profile_only_flags_tool_for_repair() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": _u(r"\u95e8\u5e97\u5728\u54ea"),
@@ -1284,9 +1284,18 @@ def test_generic_store_question_with_profile_only_asks_for_scope() -> None:
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["planner_tool_calls"] == []
-    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {
+            "name": "customer_store_lookup",
+            "purpose": "detail",
+            "query": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
+        }
+    ]
+    assert any(
+        item.get("missing") == "store_lookup_query_over_anchors_history"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_current_preferred_store_overrides_old_appointment_store() -> None:
@@ -1404,9 +1413,14 @@ def test_generic_store_lookup_query_requires_city_or_store_name() -> None:
             "tool_calls": [{"name": "customer_store_lookup", "query": _u(r"\u95e8\u5e97\u5728\u54ea\u91cc"), "purpose": "existence"}],
         },
     )
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["planner_tool_calls"] == []
-    assert plan["required_tools"][0]["purpose"] == "generic_store_location_needs_city_or_region"
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "existence", "query": _u(r"\u95e8\u5e97\u5728\u54ea\u91cc")}
+    ]
+    assert any(
+        item.get("missing") == "location_query_missing_city_or_region"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_generic_store_lookup_rewrites_noncanonical_history_query_to_anchor() -> None:
@@ -1432,7 +1446,11 @@ def test_generic_store_lookup_rewrites_noncanonical_history_query_to_anchor() ->
         },
     )
     assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "detail", "query": "广州白云三店"}]
+    assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "detail", "query": "广州市白云区白云三店"}]
+    assert any(
+        item.get("missing") == "store_lookup_query_over_anchors_history"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_scoped_city_store_question_uses_store_lookup_instead_of_reasking_city() -> None:

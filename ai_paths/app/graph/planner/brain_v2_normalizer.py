@@ -112,19 +112,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools = scoped_store_lookup_plan["required_tools"]
         reply_strategy["current_turn_context_guard"] = scoped_store_lookup_plan["guard_reason"]
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
-    generic_store_guard = _generic_store_lookup_guard(required_tools, state)
-    if generic_store_guard:
-        decision = generic_store_guard["decision"]
-        stage = generic_store_guard["stage"]
-        sub_rule_id = generic_store_guard["sub_rule_id"]
-        conversion_stage = generic_store_guard["conversion_stage"]
-        customer_type = generic_store_guard["customer_type"]
-        main_blocker = generic_store_guard["main_blocker"]
-        next_step = generic_store_guard["next_step"]
-        planner_reply_messages = generic_store_guard["reply_messages"]
-        required_tools = generic_store_guard["required_tools"]
-        executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
-        reply_strategy["current_turn_context_guard"] = generic_store_guard["guard_reason"]
     generic_store_direct_guard = _generic_store_no_scope_direct_guard(state, executable_tools=executable_tools)
     if generic_store_direct_guard:
         decision = generic_store_direct_guard["decision"]
@@ -687,42 +674,6 @@ def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]]
         else:
             rewritten.append(tool)
     return rewritten
-
-
-def _generic_store_lookup_guard(required_tools: list[dict[str, Any]], state: AgentState) -> dict[str, Any]:
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if not _is_generic_store_location_question_without_current_scope(content, state):
-        return {}
-    if _generic_store_question_has_allowed_tool_query(required_tools, state):
-        return {}
-    if not any(isinstance(tool, dict) and str(tool.get("name") or "") == "customer_store_lookup" for tool in required_tools):
-        return {}
-    anchor_query = _generic_store_contextual_anchor_name(state)
-    if anchor_query:
-        return {
-            "decision": "need_tools",
-            "stage": "S2",
-            "sub_rule_id": "S2_STORE_ADDRESS_CONTEXTUAL_ANCHOR",
-            "conversion_stage": "store_match",
-            "customer_type": "distance",
-            "main_blocker": "logistics",
-            "next_step": "lookup_store",
-            "reply_messages": [_standard_transition_message()],
-            "required_tools": [{"name": "customer_store_lookup", "purpose": "detail", "query": anchor_query}],
-            "guard_reason": "contextual_store_anchor_lookup",
-        }
-    return {
-        "decision": "direct_reply",
-        "stage": "S2",
-        "sub_rule_id": "S2_STORE_LOCATION_NEEDS_SCOPE",
-        "conversion_stage": "store_match",
-        "customer_type": "distance",
-        "main_blocker": "logistics",
-        "next_step": "lookup_store",
-        "reply_messages": [_text_message("您想看哪个城市或区域的门店？发我城市或区名，我给您匹配附近门店。")],
-        "required_tools": [{"name": "no_tool", "purpose": "generic_store_location_needs_city_or_region"}],
-        "guard_reason": "generic_store_question_needs_current_scope",
-    }
 
 
 def _generic_store_no_scope_direct_guard(state: AgentState, *, executable_tools: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1377,15 +1328,6 @@ def _generic_store_question_uses_history_query(query: str, state: AgentState) ->
     query_compact = _compact_text(query)
     current_compact = _compact_text(current_text)
     return bool(query_compact and query_compact != current_compact)
-
-
-def _generic_store_question_has_allowed_tool_query(required_tools: list[dict[str, Any]], state: AgentState) -> bool:
-    for tool in required_tools:
-        if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
-            continue
-        if _generic_store_question_can_use_contextual_anchor(state, query=str(tool.get("query") or "")):
-            return True
-    return False
 
 
 def _generic_store_question_can_use_contextual_anchor(state: AgentState, *, query: str = "") -> bool:
