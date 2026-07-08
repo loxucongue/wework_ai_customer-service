@@ -229,6 +229,14 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         *normalizer_policy_violations,
         *_rejected_tool_violations(model_payload.get("tool_calls") if isinstance(model_payload, dict) else []),
         *_tool_policy_violations(required_tools, state),
+        *_case_studies_tool_violations(
+            state=state,
+            decision=decision,
+            required_tools=required_tools,
+            customer_type=customer_type,
+            main_blocker=main_blocker,
+            sub_rule_id=sub_rule_id,
+        ),
         *_store_detail_tool_violations(
             decision=decision,
             messages=planner_reply_messages,
@@ -749,6 +757,73 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                 )
 
     return violations
+
+
+def _case_studies_tool_violations(
+    *,
+    state: AgentState,
+    decision: str,
+    required_tools: list[dict[str, Any]],
+    customer_type: str,
+    main_blocker: str,
+    sub_rule_id: str,
+) -> list[dict[str, str]]:
+    if decision == "no_reply":
+        return []
+    if _has_case_studies_tool(required_tools):
+        return []
+    if not _current_turn_needs_case_facts(
+        state=state,
+        customer_type=customer_type,
+        main_blocker=main_blocker,
+        sub_rule_id=sub_rule_id,
+    ):
+        return []
+    return [
+        {
+            "task_type": "tool_required",
+            "subtype": "kb_search",
+            "missing": "case_studies_required_for_effect_turn",
+            "note": (
+                "The current turn is an effect/case concern. Do not answer from text only or ask for online photo diagnosis; "
+                "repair by switching to need_tools and calling kb_search(case_studies) so the final reply can use real case image facts."
+            ),
+        }
+    ]
+
+
+def _has_case_studies_tool(required_tools: list[dict[str, Any]]) -> bool:
+    for tool in required_tools:
+        if not isinstance(tool, dict):
+            continue
+        if str(tool.get("name") or "").strip() != "kb_search":
+            continue
+        if str(tool.get("kb_name") or "").strip() == "case_studies":
+            return True
+    return False
+
+
+def _current_turn_needs_case_facts(
+    *,
+    state: AgentState,
+    customer_type: str,
+    main_blocker: str,
+    sub_rule_id: str,
+) -> bool:
+    if customer_type == "effect" or main_blocker == "effect":
+        return True
+    if "CASE" in str(sub_rule_id or "").upper():
+        return True
+    text = _compact_text(str(state.get("normalized_content") or state.get("content") or ""))
+    if not text:
+        return False
+    effect_patterns = (
+        r"(效果图|案例图|案例|参考图|做完效果|改善参考)",
+        r"(没效果|没有效果|怕没效果|会不会没效果|效果怎么样|效果好吗|做完明显吗|一次有没有效果)",
+        r"(怕反黑|会不会反黑|反黑怎么办|做坏|留疤|伤肤)",
+        r"(脸上有斑|斑点|淡斑|黑色素).{0,12}(能做|可以做|能弄|可以弄|改善|淡|有效果|好吗)",
+    )
+    return any(re.search(pattern, text) for pattern in effect_patterns)
 
 
 def _direct_reply_message_violations(*, decision: str, messages: list[dict[str, Any]]) -> list[dict[str, str]]:

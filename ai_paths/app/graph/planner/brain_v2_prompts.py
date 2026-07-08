@@ -694,6 +694,7 @@ PLANNER_REPAIR_PROMPT = """
 - 活动名只能是“周年庆活动”，不得生成其他活动名。
 - 项目基础解释优先使用四阶段规则，不调用 sales_talk_qa。
 - 案例诉求使用 kb_search(case_studies)。
+- 如果校验提示 case_studies_required_for_effect_turn：不要 direct_reply 只用文字回答，也不要让客户先发照片做线上判断；必须改成 need_tools，并调用 kb_search(case_studies)，让最终回复基于真实案例图回答。
 - 门店覆盖概览使用 store_scope_summary；具体门店事实使用 customer_store_lookup；需要最近排序时先 customer_store_lookup 再 distance_calculate。
 - 如果校验提示 store_detail_tool_required：不要在 direct_reply 里用文本说地址、定位、导航、路线或“已发地址”；必须改成 need_tools，并调用 customer_store_lookup 获取真实门店详情。若 current_known_store 只有 1 家明确门店，用该门店名作为 query；若 current_known_store.ambiguous=true，改为 direct_reply 询问客户说的是哪家。
 - 如果校验提示 distance_calculate_required：不要只调用 customer_store_lookup；必须追加 distance_calculate，且 candidate_source=customer_store_lookup。若客户位置缺城市/区域，改为 direct_reply 只问城市或区域。

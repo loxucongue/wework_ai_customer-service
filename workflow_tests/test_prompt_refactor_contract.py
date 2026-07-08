@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.graph.nodes.image_info import build_vision_prompt
+from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import PLANNER_SYSTEM_PROMPT
 from app.prompts.global_contract import GLOBAL_REPLY_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.prompts.profile_analyzer import PROFILE_ANALYZER_SYSTEM_PROMPT
@@ -84,6 +85,31 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
     assert GLOBAL_REPLY_CONTRACT in REPLY_SYSTEM_PROMPT
+
+
+def test_effect_concern_without_case_tool_gets_planner_repair_violation() -> None:
+    text = "\u4f1a\u4e0d\u4f1a\u53cd\u9ed1\u554a"
+    plan = build_planner_plan_v2(
+        {"content": text, "normalized_content": text},
+        {
+            "decision": "direct_reply",
+            "stage": "S1",
+            "customer_type": "unknown",
+            "main_blocker": "none",
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "\u5230\u5e97\u5148\u8bc4\u4f30\u76ae\u80a4\u72b6\u6001\u3002"},
+                }
+            ],
+            "tool_calls": [],
+        },
+    )
+    assert any(
+        item.get("missing") == "case_studies_required_for_effect_turn"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_profile_prompt_downgrades_stale_history_without_dropping_facts() -> None:
