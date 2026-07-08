@@ -1503,6 +1503,139 @@ def test_recent_store_address_message_sets_current_known_store() -> None:
     assert known["store_name"] == "重庆百星渝中店"
 
 
+def test_multi_store_recent_conversation_marks_current_known_store_ambiguous() -> None:
+    known = _current_known_store_for_planner(
+        {
+            "normalized_content": "这家地址发我",
+            "conversation_history": [
+                "用户: 厦门思明店可以吗",
+                "小贝: 可以。",
+                "用户: 厦门湖里店也行吗",
+                "小贝: 湖里店也可以。",
+            ],
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市"},
+                    {"store_id": "126", "store_name": "厦门百星湖里店", "city": "厦门市"},
+                ]
+            },
+        }
+    )
+
+    assert known["ambiguous"] is True
+    assert set(known["matched_store_names"]) == {"厦门思明店", "厦门百星湖里店"}
+    assert known["source"] == "recent_conversation"
+
+
+def test_ambiguous_store_reference_rejects_single_store_lookup_tool() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "这家地址发我",
+            "conversation_history": [
+                "用户: 厦门思明店可以吗",
+                "小贝: 可以。",
+                "用户: 厦门湖里店也行吗",
+                "小贝: 湖里店也可以。",
+            ],
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市"},
+                    {"store_id": "126", "store_name": "厦门百星湖里店", "city": "厦门市"},
+                ]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_ADDRESS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "payment_decision": {"action": "none", "source": "none", "confidence": "low"},
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [{"name": "customer_store_lookup", "purpose": "detail", "query": "厦门思明店"}],
+            "handoff": {"needed": False, "reason": ""},
+        },
+    )
+
+    assert any(
+        item.get("missing") == "store_lookup_query_over_ambiguous_reference"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_explicit_current_store_address_allows_lookup_over_ambiguous_history() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "厦门思明店地址发我",
+            "conversation_history": [
+                "用户: 厦门思明店可以吗",
+                "小贝: 可以。",
+                "用户: 厦门湖里店也行吗",
+                "小贝: 湖里店也可以。",
+            ],
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市"},
+                    {"store_id": "126", "store_name": "厦门百星湖里店", "city": "厦门市"},
+                ]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_ADDRESS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "payment_decision": {"action": "none", "source": "none", "confidence": "low"},
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [{"name": "customer_store_lookup", "purpose": "detail", "query": "厦门思明店"}],
+            "handoff": {"needed": False, "reason": ""},
+        },
+    )
+
+    assert not any(
+        item.get("missing") == "store_lookup_query_over_ambiguous_reference"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_payment_entry_request_does_not_trigger_ambiguous_store_lookup_guard() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "预约金入口发我",
+            "conversation_history": ["用户: 厦门思明店明天上午可以", "小贝: 可以先锁名额。"],
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市"},
+                    {"store_id": "126", "store_name": "厦门百星湖里店", "city": "厦门市"},
+                ]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_ADDRESS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "payment_decision": {"action": "send_now", "source": "model", "confidence": "high"},
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [{"name": "customer_store_lookup", "purpose": "detail", "query": "厦门思明店"}],
+            "handoff": {"needed": False, "reason": ""},
+        },
+    )
+
+    assert not any(
+        item.get("missing") == "store_lookup_query_over_ambiguous_reference"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_generic_store_question_does_not_inherit_recent_store_card() -> None:
     known = _current_known_store_for_planner(
         {

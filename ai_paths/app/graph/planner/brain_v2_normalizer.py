@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
-from app.graph.nodes.current_turn_context import build_current_turn_context, current_store_anchor_from_state
+from app.graph.nodes.current_turn_context import (
+    build_current_turn_context,
+    current_store_anchor_from_state,
+    is_context_reference_message,
+)
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.planner.planner_contract import (
     ALLOWED_CONVERSION_STAGES,
@@ -362,17 +366,17 @@ def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailabl
         state,
         {
             "decision": "direct_reply",
-            "stage": "S4",
-            "sub_rule_id": "HUMAN_HANDOFF_SYSTEM_UNAVAILABLE",
-            "conversion_stage": "objection_resolution",
+            "stage": "S1",
+            "sub_rule_id": "PLANNER_SYSTEM_UNAVAILABLE",
+            "conversion_stage": "interest_capture",
             "customer_type": "unknown",
-            "main_blocker": "trust",
-            "next_step": "solve_blocker",
+            "main_blocker": "none",
+            "next_step": "no_action",
             "reply_messages": [
                 {
                     "type": "text",
                     "order": 1,
-                    "content": {"text": "这边先帮您把情况记录清楚，按实际情况核对后再处理。"},
+                    "content": {"text": "我在，继续帮您处理。"},
                 },
                 {
                     "type": "human_handoff_notice",
@@ -740,7 +744,20 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                 )
             continue
         if name == "customer_store_lookup":
-            if _generic_store_question_uses_history_query(query, state):
+            if _ambiguous_reference_store_lookup_query(query, state):
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "customer_store_lookup",
+                        "missing": "store_lookup_query_over_ambiguous_reference",
+                        "note": (
+                            "The current message refers to a store by context, but recent evidence contains multiple "
+                            "possible stores. Do not choose one store for customer_store_lookup. Repair to direct_reply "
+                            "and ask the customer which store they mean, or ask for city/district."
+                        ),
+                    }
+                )
+            elif _generic_store_question_uses_history_query(query, state):
                 violations.append(
                     {
                         "task_type": "tool_argument",
@@ -805,6 +822,74 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                 )
 
     return violations
+
+
+def _ambiguous_reference_store_lookup_query(query: str, state: AgentState) -> bool:
+    if not query:
+        return False
+    content = str(state.get("normalized_content") or state.get("content") or "")
+    if _looks_like_payment_entry_request(content):
+        return False
+    if _query_matches_current_message_store_name(query, state):
+        return False
+    if not is_context_reference_message(content):
+        return False
+    names = _ambiguous_store_names_from_context(state)
+    if not names:
+        return False
+    compact_query = _compact_text(query)
+    return any(_store_name_query_matches(_compact_text(name), compact_query) for name in names)
+
+
+def _looks_like_payment_entry_request(content: str) -> bool:
+    text = _compact_text(content)
+    if not text:
+        return False
+    payment_markers = ("预约金", "付款入口", "收款入口", "报名入口", "支付入口", "入口发", "发入口")
+    return any(marker in text for marker in payment_markers)
+
+
+def _query_matches_current_message_store_name(query: str, state: AgentState) -> bool:
+    content = _compact_text(state.get("normalized_content") or state.get("content") or "")
+    compact_query = _compact_text(query)
+    if not content or not compact_query:
+        return False
+
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    names: list[str] = []
+    for store in stores:
+        if not isinstance(store, dict):
+            continue
+        names.extend(str(store.get(key) or "").strip() for key in ("store_name", "name"))
+    names.extend(_snapshot_store_names())
+
+    for name in names:
+        compact_name = _compact_text(name)
+        if not compact_name:
+            continue
+        if _store_name_query_matches(compact_name, content) and _store_name_query_matches(compact_name, compact_query):
+            return True
+    return False
+
+
+def _ambiguous_store_names_from_context(state: AgentState) -> list[str]:
+    turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
+    if not turn_context:
+        turn_context = _turn_context_for_guard(state)
+    for key in ("current_store_anchor", "confirmed_store"):
+        value = turn_context.get(key)
+        if isinstance(value, dict) and value.get("ambiguous"):
+            return [str(name or "").strip() for name in value.get("matched_store_names") or [] if str(name or "").strip()]
+    store_anchor = current_store_anchor_from_state(
+        state,
+        current_known_store=None,
+        allow_profile=False,
+        prefer_recent=True,
+    )
+    if isinstance(store_anchor, dict) and store_anchor.get("ambiguous"):
+        return [str(name or "").strip() for name in store_anchor.get("matched_store_names") or [] if str(name or "").strip()]
+    return []
 
 
 def _normalize_payment_decision(
@@ -1529,7 +1614,7 @@ def _store_name_query_matches(name: str, text: str) -> bool:
 
 
 def _normalize_store_name_for_match(value: str) -> str:
-    return _compact_text(value).replace("市", "")
+    return _compact_text(value).replace("市", "").replace("百星", "")
 
 
 def _snapshot_store_names() -> list[str]:

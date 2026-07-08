@@ -801,7 +801,7 @@ def _store_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _stores_matching_text(text: str, stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    matched = [store for store in stores if _store_name(store) and _store_name(store) in str(text or "")]
+    matched = [store for store in stores if _store_name_matches_text(_store_name(store), str(text or ""))]
     return _without_subsumed_stores(_dedupe_stores(matched))
 
 
@@ -1004,6 +1004,24 @@ def _conversation_item_text(item: Any) -> str:
 
 def _store_name(store: dict[str, Any]) -> str:
     return str(store.get("store_name") or store.get("name") or "").strip()
+
+
+def _store_name_matches_text(name: str, text: str) -> bool:
+    raw_name = str(name or "").strip()
+    raw_text = str(text or "").strip()
+    if raw_name and raw_text and (raw_name in raw_text or (len(raw_text) >= 4 and raw_text in raw_name)):
+        return True
+    normalized_name = _normalize_store_name_for_match(raw_name)
+    normalized_text = _normalize_store_name_for_match(raw_text)
+    return bool(
+        normalized_name
+        and normalized_text
+        and (normalized_name in normalized_text or (len(normalized_text) >= 4 and normalized_text in normalized_name))
+    )
+
+
+def _normalize_store_name_for_match(value: str) -> str:
+    return re.sub(r"[，,。？?！!\s]", "", str(value or "")).replace("市", "").replace("百星", "")
 
 
 def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:

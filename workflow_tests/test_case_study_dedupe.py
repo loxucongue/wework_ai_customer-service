@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import unittest
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from app.chat_runtime import _activity_intro_image_record_plan, _case_image_send_record
 from app.config import Settings
+from app.graph.nodes import action_module_outputs
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_nodes import _filter_case_studies_by_sent_documents
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
@@ -38,6 +40,35 @@ class CaseStudyDedupeTests(unittest.TestCase):
         self.assertEqual(tool_results["case_studies"]["case_studies_filter"]["filtered_document_ids"], ["doc-a"])
         self.assertEqual(case_facts[0]["document_id"], "doc-b")
         self.assertEqual(case_facts[0]["image_url"], "https://example.com/b.png")
+
+    def test_empty_case_studies_use_configured_case_image_pool(self) -> None:
+        tool_results = {
+            "case_studies": {
+                "items": [],
+                "case_studies_filter": {"filtered_document_ids": []},
+            }
+        }
+        state = {"customer_profile": {"sent_case_document_ids": ["configured_case_image_1"]}}
+
+        with patch.object(
+            action_module_outputs,
+            "load_business_rules",
+            return_value={
+                "offer": {
+                    "case_image_fallback_urls": [
+                        "https://example.com/case-a.jpg",
+                        "https://example.com/case-b.jpg",
+                    ]
+                }
+            },
+        ):
+            fact_output = build_planner_fact_output(tool_results, state)
+
+        case_facts = fact_output["fact_envelope"]["structured_facts"]["case_facts"]
+        self.assertEqual(case_facts[0]["source"], "configured_case_image_pool")
+        self.assertEqual(case_facts[0]["status"], "fallback_case_image")
+        self.assertEqual(case_facts[0]["document_id"], "configured_case_image_2")
+        self.assertEqual(case_facts[0]["image_url"], "https://example.com/case-b.jpg")
 
     def test_final_image_message_maps_back_to_case_document_id(self) -> None:
         state = {

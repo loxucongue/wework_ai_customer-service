@@ -44,6 +44,7 @@ def reply_business_rules_for_model(*, stage: str = "", sub_rule_id: str = "") ->
             "quota": offer.get("quota"),
             "payment_message_type": offer.get("payment_message_type"),
             "activity_intro_image_url": offer.get("activity_intro_image_url"),
+            "case_image_fallback_urls": offer.get("case_image_fallback_urls") or [],
             "activity_intro_image_policy": offer.get("activity_intro_image_policy") or {},
         },
         "conversion_psychology": {
@@ -138,6 +139,7 @@ def _planner_rule_packs(rules: dict[str, Any]) -> dict[str, Any]:
             "includes": offer.get("includes") or [],
             "payment_message_type": offer.get("payment_message_type"),
             "activity_intro_image_url": offer.get("activity_intro_image_url"),
+            "case_image_fallback_urls": offer.get("case_image_fallback_urls") or [],
             "activity_intro_image_policy": offer.get("activity_intro_image_policy") or {},
         },
         "brand_trust_policy": rules.get("brand_trust_policy") or {},

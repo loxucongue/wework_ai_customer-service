@@ -279,7 +279,7 @@ def _stores_matching_text_for_planner(state: AgentState, text: str) -> list[dict
     matched: list[dict[str, Any]] = []
     for store in _known_store_candidates_for_planner(state):
         name = _store_name_for_planner(store)
-        if name and name in text:
+        if _store_name_matches_text_for_planner(name, text):
             matched.append(store)
     return _without_subsumed_store_matches(_dedupe_store_matches(matched))
 
@@ -369,16 +369,18 @@ def _store_from_recent_conversation(state: AgentState) -> dict[str, Any]:
         match = re.search(r"(?:store_id|门店ID)\s*[=:：]\s*(\d+)", chunk, flags=re.IGNORECASE)
         if match and match.group(1) in store_by_id:
             return {**_compact_store_for_planner(store_by_id[match.group(1)]), "source": "recent_store_address_message"}
-    for chunk in reversed(chunks):
-        matched = [store for store in stores if _store_name_for_planner(store) and _store_name_for_planner(store) in chunk]
-        if len(matched) == 1:
-            return {**_compact_store_for_planner(matched[0]), "source": "recent_conversation"}
-        if len(matched) > 1:
-            return {
-                "ambiguous": True,
-                "matched_store_names": [_store_name_for_planner(store) for store in matched[:5]],
-                "source": "recent_conversation",
-            }
+    matched_overall: list[dict[str, Any]] = []
+    for chunk in chunks:
+        matched_overall.extend(store for store in stores if _store_name_matches_text_for_planner(_store_name_for_planner(store), chunk))
+    matched_overall = _without_subsumed_store_matches(_dedupe_store_matches(matched_overall))
+    if len(matched_overall) == 1:
+        return {**_compact_store_for_planner(matched_overall[0]), "source": "recent_conversation"}
+    if len(matched_overall) > 1:
+        return {
+            "ambiguous": True,
+            "matched_store_names": [_store_name_for_planner(store) for store in matched_overall[:5]],
+            "source": "recent_conversation",
+        }
     return {}
 
 
@@ -390,6 +392,24 @@ def _customer_scope_stores_for_planner(state: AgentState) -> list[dict[str, Any]
 
 def _store_name_for_planner(store: dict[str, Any]) -> str:
     return str(store.get("store_name") or store.get("name") or "").strip()
+
+
+def _store_name_matches_text_for_planner(name: str, text: str) -> bool:
+    raw_name = str(name or "").strip()
+    raw_text = str(text or "").strip()
+    if raw_name and raw_text and (raw_name in raw_text or (len(raw_text) >= 4 and raw_text in raw_name)):
+        return True
+    normalized_name = _normalize_store_name_for_planner_match(raw_name)
+    normalized_text = _normalize_store_name_for_planner_match(raw_text)
+    return bool(
+        normalized_name
+        and normalized_text
+        and (normalized_name in normalized_text or (len(normalized_text) >= 4 and normalized_text in normalized_name))
+    )
+
+
+def _normalize_store_name_for_planner_match(value: str) -> str:
+    return re.sub(r"[，,。？?！!\s]", "", str(value or "")).replace("市", "").replace("百星", "")
 
 
 def _compact_store_for_planner(store: dict[str, Any]) -> dict[str, Any]:

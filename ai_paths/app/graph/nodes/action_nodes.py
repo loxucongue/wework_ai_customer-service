@@ -202,6 +202,7 @@ def _invalid_tool_policy_by_name(state: AgentState) -> dict[str, dict[str, Any]]
         if subtype == "customer_store_lookup" and missing in {
             "location_query_missing_city_or_region",
             "store_lookup_query_over_anchors_history",
+            "store_lookup_query_over_ambiguous_reference",
         }:
             output["customer_store_lookup"] = item
         if subtype == "professional_assist" and missing == "professional_assist_from_advisory_health_context":
@@ -883,7 +884,7 @@ def _snapshot_store_name_matches_query(name: str, text: str) -> bool:
 
 
 def _normalize_store_name_for_match(value: str) -> str:
-    return str(value or "").replace("市", "").strip()
+    return str(value or "").replace("市", "").replace("百星", "").strip()
 
 
 def _snapshot_store_values() -> list[dict[str, Any]]:

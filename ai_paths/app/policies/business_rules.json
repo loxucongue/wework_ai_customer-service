@@ -32,6 +32,13 @@
     "quota": "限30名，名额满恢复原价1980",
     "payment_message_type": "payment_collection",
     "activity_intro_image_url": "https://test.by4dev.4ba.cn/assets/activity/anniversary-268.jpg",
+    "case_image_fallback_urls": [
+      "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f52d53829c1fc73e-1329752764320508_1780495764839841063_EURwtgbwZf.png",
+      "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/47715b170aba6133-1329752764320508_1780495757690203274_fX4YTfxiDH.png",
+      "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/0a6b56f5b46105e8-1329752764320508_1780495762081910231_hroUm72iti.png",
+      "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/972ba51fb3eb0fed-1329752764320508_1780495762650549425_IPXfQYnsyV.png",
+      "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f39ca4ff98754506-63c3c33d9f8777431fea56e4-f39ca4ff98754506472880e.jpg"
+    ],
     "activity_intro_image_policy": {
       "send_once": true,
       "sub_rule_ids": ["S3_PRICE", "S3_AD_PRICE"],

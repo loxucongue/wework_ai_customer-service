@@ -6,6 +6,7 @@ from typing import Any
 
 from app.graph.nodes.appointment_time_utils import summarize_available_slots, target_time_status
 from app.graph.state import AgentState
+from app.policies.business_rules import load_business_rules
 
 
 def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
@@ -180,14 +181,19 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
 
         items = value.get("items") or []
         if key == "case_studies" and not items and isinstance(value.get("case_studies_filter"), dict):
-            structured_facts["case_facts"].append(
-                {
-                    "source": key,
-                    "status": "no_new_case_image",
-                    "filtered_document_ids": value["case_studies_filter"].get("filtered_document_ids", []),
-                }
-            )
-            facts.append("case_studies: no_new_case_image")
+            fallback_fact = _configured_case_image_fallback_fact(state)
+            if fallback_fact:
+                structured_facts["case_facts"].append(fallback_fact)
+                facts.append("case_studies: fallback_case_image=configured_case_image_pool")
+            else:
+                structured_facts["case_facts"].append(
+                    {
+                        "source": key,
+                        "status": "no_new_case_image",
+                        "filtered_document_ids": value["case_studies_filter"].get("filtered_document_ids", []),
+                    }
+                )
+                facts.append("case_studies: no_new_case_image")
             continue
         if items:
             target = "case_facts" if key == "case_studies" else "knowledge_facts"
@@ -282,3 +288,34 @@ def _description_from_case_content(content: str) -> str:
     if text.lower().startswith("description:"):
         return text.split(":", 1)[1].strip()
     return text[:300]
+
+
+def _configured_case_image_fallback_fact(state: AgentState) -> dict[str, Any]:
+    offer = load_business_rules().get("offer")
+    urls = offer.get("case_image_fallback_urls") if isinstance(offer, dict) else []
+    if not isinstance(urls, list):
+        return {}
+
+    sent_ids = _sent_case_document_ids(state)
+    for index, raw_url in enumerate(urls, start=1):
+        url = str(raw_url or "").strip()
+        if not url:
+            continue
+        document_id = f"configured_case_image_{index}"
+        if document_id in sent_ids:
+            continue
+        return {
+            "source": "configured_case_image_pool",
+            "status": "fallback_case_image",
+            "document_id": document_id,
+            "title": "configured case image",
+            "image_url": url,
+            "description": "同类改善参考图",
+        }
+    return {}
+
+
+def _sent_case_document_ids(state: AgentState) -> set[str]:
+    profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
+    raw = profile.get("sent_case_document_ids") if isinstance(profile.get("sent_case_document_ids"), list) else []
+    return {str(item).strip() for item in raw if str(item).strip()}
