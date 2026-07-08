@@ -93,7 +93,11 @@ def create_synthesize_reply_node(
                             validate_reply_consistency(messages, state)
                         except Exception as retry_exc:
                             retry_validation_exc = retry_exc
-                            required_payment_fallback = _maybe_build_required_payment_collection_fallback(state, retry_validation_exc)
+                            required_payment_fallback = _maybe_build_required_payment_collection_fallback(
+                                state,
+                                retry_validation_exc,
+                                messages=messages,
+                            )
                             if required_payment_fallback is not None:
                                 messages = required_payment_fallback
                                 validate_reply_consistency(messages, state)
@@ -123,7 +127,11 @@ def create_synthesize_reply_node(
             except Exception as exc:
                 model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
                 primary_error = f"{type(exc).__name__}: {exc}"
-                required_payment_fallback = _maybe_build_required_payment_collection_fallback(state, exc)
+                required_payment_fallback = _maybe_build_required_payment_collection_fallback(
+                    state,
+                    exc,
+                    messages=messages or planner_messages,
+                )
                 if required_payment_fallback is not None:
                     messages = required_payment_fallback
                     validate_reply_consistency(messages, state)
@@ -240,8 +248,16 @@ def _maybe_append_required_store_address(
     return _renumber([*messages, {"type": "store_address", "content": {"store_id": store_id}}])
 
 
-def _maybe_build_required_payment_collection_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
-    if "payment_collection_required" not in str(exc):
+def _maybe_build_required_payment_collection_fallback(
+    state: AgentState,
+    exc: Exception,
+    *,
+    messages: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]] | None:
+    if "payment_collection_required_when_reply_promises_payment_entry" not in str(exc):
+        return None
+    source_messages = [item for item in (messages or []) if isinstance(item, dict)]
+    if not source_messages or _messages_have_payment_collection(source_messages):
         return None
     if is_hard_health_risk_hold(health_risk_hold(state)):
         return None
@@ -253,16 +269,20 @@ def _maybe_build_required_payment_collection_fallback(state: AgentState, exc: Ex
     if context.get("over_limit"):
         return None
     amount = int(context.get("amount") or 10)
-    text = _required_payment_collection_fallback_text(state, amount)
-    messages = [
-        {"type": "text", "order": 1, "content": {"text": text}},
-        {
-            "type": "payment_collection",
-            "order": 2,
-            "content": payment_collection_content({"amount": amount}, state=state, messages=[]),
-        },
-    ]
-    return _renumber(messages)
+    return _renumber(
+        [
+            *source_messages,
+            {
+                "type": "payment_collection",
+                "order": len(source_messages) + 1,
+                "content": payment_collection_content({"amount": amount}, state=state, messages=source_messages),
+            },
+        ]
+    )
+
+
+def _messages_have_payment_collection(messages: list[dict[str, Any]]) -> bool:
+    return any(isinstance(item, dict) and str(item.get("type") or "") == "payment_collection" for item in messages)
 
 
 def _state_requires_payment_collection(state: AgentState) -> bool:
@@ -288,32 +308,6 @@ def _state_has_paid_deposit_context(state: AgentState) -> bool:
         return True
     current_turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
     return str(current_turn_context.get("deposit_state") or "") == "deposit_paid"
-
-
-def _required_payment_collection_fallback_text(state: AgentState, amount: int) -> str:
-    store_name = _current_turn_store_name(state)
-    prefix = f"好的，按{store_name}这边，" if store_name else "好的，"
-    if amount > 10:
-        participants = max(2, amount // 10)
-        return (
-            f"{prefix}我把{participants}位一共{amount}元预约金入口发您，"
-            "每位10元用于锁活动名额，到店抵扣，不做退10元；到店前会先做检测评估，确认适合再安排。"
-        )
-    return f"{prefix}我把10元预约金入口发您，用于锁活动名额，到店抵扣，不做退10元；到店前会先做检测评估，确认适合再安排。"
-
-
-def _current_turn_store_name(state: AgentState) -> str:
-    current_turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
-    confirmed_store = current_turn_context.get("confirmed_store") if isinstance(current_turn_context.get("confirmed_store"), dict) else {}
-    for value in (
-        confirmed_store.get("store_name"),
-        state.get("confirmed_store_name"),
-        state.get("store_name"),
-    ):
-        text = str(value or "").strip()
-        if text:
-            return text
-    return ""
 
 
 def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:

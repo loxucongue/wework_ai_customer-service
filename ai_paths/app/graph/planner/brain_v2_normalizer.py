@@ -102,18 +102,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = _dedupe_tools(planner_tool_calls)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
-    scoped_store_lookup_plan = _scoped_store_lookup_plan_from_current_message(state)
-    if scoped_store_lookup_plan and (decision == "direct_reply" or _has_tool(required_tools, "customer_store_lookup")):
-        decision = scoped_store_lookup_plan["decision"]
-        stage = scoped_store_lookup_plan["stage"]
-        sub_rule_id = scoped_store_lookup_plan["sub_rule_id"]
-        conversion_stage = scoped_store_lookup_plan["conversion_stage"]
-        customer_type = scoped_store_lookup_plan["customer_type"]
-        main_blocker = scoped_store_lookup_plan["main_blocker"]
-        next_step = scoped_store_lookup_plan["next_step"]
-        planner_reply_messages = scoped_store_lookup_plan["reply_messages"]
-        required_tools = scoped_store_lookup_plan["required_tools"]
-        reply_strategy["current_turn_context_guard"] = scoped_store_lookup_plan["guard_reason"]
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
     if (
         explicit_risk_reason
@@ -147,72 +135,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools = [{"name": "professional_assist", "reason": explicit_risk_reason}]
         executable_tools = required_tools
         handoff_raw = {"needed": True, "reason": explicit_risk_reason}
-    elif _has_store_address_message(planner_reply_messages) and not executable_tools:
-        lookup_query = _store_lookup_query_from_state(state)
-        planner_reply_messages = [_standard_transition_message()]
-        required_tools = [
-            {
-                "name": "customer_store_lookup",
-                "purpose": "detail",
-                "query": lookup_query,
-            }
-        ]
-        executable_tools = required_tools
-        decision = "need_tools"
-    elif (
-        decision == "direct_reply"
-        and not executable_tools
-        and _current_message_requests_store_detail(str(state.get("normalized_content") or state.get("content") or ""))
-    ):
-        lookup_query = _store_lookup_query_from_state(state)
-        planner_reply_messages = [_standard_transition_message()]
-        required_tools = [
-            {
-                "name": "customer_store_lookup",
-                "purpose": "detail",
-                "query": lookup_query,
-            }
-        ]
-        executable_tools = required_tools
-        decision = "need_tools"
-    scoped_store_lookup_guard = _scoped_store_lookup_request_guard(
-        state=state,
-        decision=decision,
-        executable_tools=executable_tools,
-    )
-    if scoped_store_lookup_guard:
-        decision = scoped_store_lookup_guard["decision"]
-        stage = scoped_store_lookup_guard["stage"]
-        sub_rule_id = scoped_store_lookup_guard["sub_rule_id"]
-        conversion_stage = scoped_store_lookup_guard["conversion_stage"]
-        customer_type = scoped_store_lookup_guard["customer_type"]
-        main_blocker = scoped_store_lookup_guard["main_blocker"]
-        next_step = scoped_store_lookup_guard["next_step"]
-        planner_reply_messages = scoped_store_lookup_guard["reply_messages"]
-        required_tools = scoped_store_lookup_guard["required_tools"]
-        executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
-        reply_strategy["current_turn_context_guard"] = scoped_store_lookup_guard["guard_reason"]
-    effect_case_guard = _effect_case_tool_guard(
-        state=state,
-        required_tools=required_tools,
-        sub_rule_id=sub_rule_id,
-        customer_type=customer_type,
-        main_blocker=main_blocker,
-        explicit_risk_reason=explicit_risk_reason,
-        risk_hold=risk_hold,
-    )
-    if effect_case_guard:
-        decision = effect_case_guard["decision"]
-        stage = effect_case_guard["stage"]
-        sub_rule_id = effect_case_guard["sub_rule_id"]
-        conversion_stage = effect_case_guard["conversion_stage"]
-        customer_type = effect_case_guard["customer_type"]
-        main_blocker = effect_case_guard["main_blocker"]
-        next_step = effect_case_guard["next_step"]
-        planner_reply_messages = effect_case_guard["reply_messages"]
-        required_tools = effect_case_guard["required_tools"]
-        executable_tools = required_tools
-        reply_constraints.append(effect_case_guard["reply_constraint"])
     required_tools, removed_advisory_health_tool = _remove_advisory_health_professional_assist_tools(
         required_tools=required_tools,
         risk_hold=risk_hold,
@@ -269,19 +191,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     has_paid_deposit_context = _has_paid_deposit_context(state, payment_state=payment_state)
     if has_paid_deposit_context and payment_state == "unknown":
         payment_state = "customer_claimed_paid"
-    if payment_action == "send_now" and _send_now_conflicts_with_current_turn_evidence(state):
-        payment_action = "confirm_next_step"
-        removed_payment = _has_payment_collection(planner_reply_messages)
-        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
-        if conversion_stage == "deposit_push":
-            conversion_stage = "time_confirm"
-            removed_payment = True
-        if next_step == "send_deposit":
-            next_step = "confirm_time"
-            removed_payment = True
-        if removed_payment:
-            reply_constraints.append("当前消息只是短消息承接，且没有当前发卡/重发/付款证据；不要把历史 payment_collection 自动当成本轮 send_now。")
-            reply_strategy.setdefault("payment_action_guard", "payment_card_removed_without_current_payment_request")
     if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
@@ -449,59 +358,6 @@ def _should_force_store_detail_stage(state: AgentState, required_tools: list[dic
     )
 
 
-def _effect_case_tool_guard(
-    *,
-    state: AgentState,
-    required_tools: list[dict[str, Any]],
-    sub_rule_id: str,
-    customer_type: str,
-    main_blocker: str,
-    explicit_risk_reason: str,
-    risk_hold: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if explicit_risk_reason or is_hard_health_risk_hold(risk_hold):
-        return {}
-    if any(isinstance(tool, dict) and str(tool.get("name") or "") == "kb_search" for tool in required_tools):
-        return {}
-    if not _planner_marked_effect_or_case_need(
-        sub_rule_id=sub_rule_id,
-        customer_type=customer_type,
-        main_blocker=main_blocker,
-    ):
-        return {}
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    return {
-        "decision": "need_tools",
-        "stage": "S1",
-        "sub_rule_id": "S1_CASE_REQUEST",
-        "conversion_stage": "objection_resolution",
-        "customer_type": "effect",
-        "main_blocker": "effect",
-        "next_step": "solve_blocker",
-        "reply_messages": [_standard_transition_message()],
-        "required_tools": [{"name": "kb_search", "kb_name": "case_studies", "query": _case_search_query(content)}],
-        "reply_constraint": "效果疑问必须先查 case_studies 获取真实案例图；最终回复先肯定改善方向，再发案例图，再引导到店检测。",
-    }
-
-
-def _planner_marked_effect_or_case_need(*, sub_rule_id: str, customer_type: str, main_blocker: str) -> bool:
-    sub_rule = str(sub_rule_id or "").upper()
-    return (
-        customer_type == "effect"
-        or main_blocker == "effect"
-        or "CASE" in sub_rule
-        or "EFFECT" in sub_rule
-    )
-
-
-def _case_search_query(content: str) -> str:
-    text = str(content or "")
-    for marker in ("雀斑", "晒斑", "老年斑", "黑色素", "色沉", "痘印", "黄褐斑", "遗传斑"):
-        if marker in text:
-            return f"{marker}淡斑效果"
-    return "淡斑效果"
-
-
 def _mentions_health_risk_text(text: str) -> bool:
     raw = str(text or "")
     return "健康风险" in raw or any(term in raw for term in HEALTH_RISK_TERMS)
@@ -636,13 +492,6 @@ def _has_store_address_message(messages: list[dict[str, Any]]) -> bool:
     return any(str(item.get("type") or "") == "store_address" for item in messages if isinstance(item, dict))
 
 
-def _store_lookup_query_from_state(state: AgentState) -> str:
-    recent_store_name = _recent_store_name_from_context(state)
-    if recent_store_name:
-        return recent_store_name
-    return str(state.get("normalized_content") or state.get("content") or "").strip()
-
-
 def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]], state: AgentState) -> list[dict[str, Any]]:
     content = str(state.get("normalized_content") or state.get("content") or "")
     if not _current_message_requests_store_detail(content):
@@ -661,82 +510,6 @@ def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]]
         else:
             rewritten.append(tool)
     return rewritten
-
-
-def _scoped_store_lookup_request_guard(
-    *,
-    state: AgentState,
-    decision: str,
-    executable_tools: list[dict[str, Any]],
-) -> dict[str, Any]:
-    if decision != "direct_reply" or executable_tools:
-        return {}
-    return _scoped_store_lookup_plan_from_current_message(state)
-
-
-def _scoped_store_lookup_plan_from_current_message(state: AgentState) -> dict[str, Any]:
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if not _current_message_requests_store_lookup(content):
-        return {}
-    if _is_generic_store_location_question_without_current_scope(content, state):
-        return {}
-    if not (_location_query_has_current_message_scope(content, state) or _query_matches_scope_store_name(content, state)):
-        return {}
-    query = _scoped_store_lookup_query_from_current_message(state)
-    if not query:
-        return {}
-    purpose = _store_lookup_purpose_from_current_message(content)
-    tools: list[dict[str, Any]] = [{"name": "customer_store_lookup", "purpose": purpose, "query": query}]
-    if purpose == "nearby_candidates":
-        tools.append({"name": "distance_calculate", "origin": query, "candidate_source": "customer_store_lookup"})
-    return {
-        "decision": "need_tools",
-        "stage": "S2",
-        "sub_rule_id": "S2_STORE_LOOKUP_SCOPED_CURRENT_MESSAGE",
-        "conversion_stage": "store_match",
-        "customer_type": "distance",
-        "main_blocker": "logistics",
-        "next_step": "lookup_store",
-        "reply_messages": [_standard_transition_message()],
-        "required_tools": tools,
-        "guard_reason": "scoped_current_message_store_lookup",
-    }
-
-
-def _current_message_requests_store_lookup(text: str) -> bool:
-    compact = _compact_text(text)
-    if not compact:
-        return False
-    if _current_message_requests_store_detail(compact):
-        return True
-    if any(term in compact for term in ("门店", "店", "附近", "最近", "近一点", "近点", "地址", "位置", "导航", "停车", "营业时间", "几点下班")):
-        return True
-    return False
-
-
-def _store_lookup_purpose_from_current_message(text: str) -> str:
-    compact = _compact_text(text)
-    if _current_message_requests_store_detail(compact) or any(
-        term in compact for term in ("地址", "位置", "导航", "停车", "营业时间", "几点下班", "几点关门")
-    ):
-        return "detail"
-    if any(term in compact for term in ("附近", "最近", "更近", "近一点", "近点", "离")):
-        return "nearby_candidates"
-    return "existence"
-
-
-def _scoped_store_lookup_query_from_current_message(state: AgentState) -> str:
-    content = str(state.get("normalized_content") or state.get("content") or "").strip()
-    matched_stores = _store_names_matching_text(state, content)
-    if len(matched_stores) == 1:
-        return matched_stores[0]
-    cleaned = _clean_scoped_location_query(content)
-    if cleaned and (_location_query_has_current_message_scope(cleaned, state) or _query_matches_scope_store_name(cleaned, state)):
-        return cleaned
-    region_tokens = _matching_current_message_region_tokens(content, state)
-    if region_tokens:
-        return "".join(region_tokens[:3])
-    return content
 
 
 def _clean_scoped_location_query(value: str) -> str:
@@ -1644,12 +1417,7 @@ def _payment_consistency_violations(
         return []
     if decision != "direct_reply" and not _text_mentions_payment_entry(messages):
         return []
-    needs_payment = (
-        payment_action == "send_now"
-        or conversion_stage == "deposit_push"
-        or next_step == "send_deposit"
-        or _text_mentions_payment_entry(messages)
-    )
+    needs_payment = payment_action == "send_now" or _text_mentions_payment_entry(messages)
     payment_context = payment_collection_context(state=state, messages=messages)
     if needs_payment and payment_context["over_limit"]:
         return [
@@ -1681,14 +1449,6 @@ def _payment_consistency_violations(
 
 def _has_payment_collection(messages: list[dict[str, Any]]) -> bool:
     return any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict))
-
-
-def _send_now_conflicts_with_current_turn_evidence(state: AgentState) -> bool:
-    turn_context = _turn_context_for_guard(state)
-    if not bool(turn_context.get("is_contextual_short_message")):
-        return False
-    evidence = turn_context.get("payment_evidence") if isinstance(turn_context.get("payment_evidence"), dict) else {}
-    return not str(evidence.get("current_payment_text") or "").strip()
 
 
 def _has_handoff_notice(messages: list[dict[str, Any]]) -> bool:
@@ -1780,14 +1540,7 @@ def _append_required_payment_collection(
         return _remove_payment_collection_messages(messages)
     if not messages or _has_payment_collection(messages) or _text_explains_previous_payment_entry(messages):
         return messages
-    needs_payment = (
-        payment_action == "send_now"
-        or conversion_stage == "deposit_push"
-        or next_step == "send_deposit"
-        or payment_state in {"resend_requested", "needs_payment"}
-        or _text_mentions_payment_entry(messages)
-    )
-    if not needs_payment:
+    if payment_action != "send_now":
         return messages
     payment_context = payment_collection_context(state=state, messages=messages)
     if payment_context["over_limit"]:

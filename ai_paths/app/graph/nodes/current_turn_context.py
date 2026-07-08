@@ -115,7 +115,6 @@ def build_current_turn_context(
     output: dict[str, Any] = {
         "is_contextual_short_message": is_short,
         "binding_source": binding_source,
-        "open_task": "none",
     }
     if context_hints:
         output["context_hints"] = context_hints
@@ -163,19 +162,6 @@ def build_current_turn_context(
     )
     if turn_evidence:
         output["turn_evidence"] = turn_evidence
-    evidence_summary = _evidence_summary(
-        context_hints=context_hints,
-        store_anchor=store_anchor,
-        appointment=appointment,
-        deposit_state=deposit_state,
-        last_assistant=last_assistant,
-        binding_source=binding_source,
-        payment_evidence=payment_evidence,
-        location_missing=visible_missing_slots,
-        risk_hold=risk_hold,
-    )
-    if evidence_summary:
-        output["evidence_summary"] = evidence_summary
     return _drop_empty(output)
 
 
@@ -659,45 +645,6 @@ def _visible_missing_slots(
     if is_reference or _has_store_fact_request(content) or appointment:
         return location_missing
     return []
-
-
-def _evidence_summary(
-    *,
-    context_hints: list[str],
-    store_anchor: dict[str, Any],
-    appointment: dict[str, Any],
-    deposit_state: str,
-    last_assistant: str,
-    binding_source: str,
-    payment_evidence: dict[str, Any],
-    location_missing: list[str],
-    risk_hold: dict[str, Any],
-) -> str:
-    store_name = str(store_anchor.get("store_name") or store_anchor.get("name") or "").strip() if isinstance(store_anchor, dict) else ""
-    appointment_bits = []
-    if appointment.get("date"):
-        appointment_bits.append(str(appointment.get("date")))
-    if appointment.get("time"):
-        appointment_bits.append(str(appointment.get("time")))
-    appointment_text = " ".join(appointment_bits)
-    parts: list[str] = []
-    if context_hints:
-        parts.append("hints=" + ",".join(context_hints[:8]))
-    if store_name:
-        parts.append(f"store={store_name}")
-    if appointment_text:
-        parts.append(f"appointment={appointment_text}")
-    if deposit_state != "unknown":
-        parts.append(f"structured_deposit_state={deposit_state}")
-    if payment_evidence:
-        parts.append("payment_evidence_available=true")
-    if location_missing:
-        parts.append("missing=" + ",".join(location_missing))
-    if risk_hold:
-        parts.append("risk_hold=" + str(risk_hold.get("risk_hold") or "context"))
-    if binding_source == "last_assistant" and last_assistant:
-        parts.append(f"last_assistant={last_assistant[:80]}")
-    return "；".join(parts)
 
 
 def _store_from_request(state: dict[str, Any]) -> dict[str, Any]:
