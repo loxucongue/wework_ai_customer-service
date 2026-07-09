@@ -993,7 +993,11 @@ def _consume_task_result(task: asyncio.Task[Any]) -> None:
 
 
 def _should_run_async_finalize(state: AgentState) -> bool:
-    if str(state.get("planner_decision") or "").strip() != "need_tools":
+    planner_decision = str(state.get("planner_decision") or "").strip()
+    if planner_decision == "direct_reply":
+        violations = state.get("tool_policy_violations") if isinstance(state.get("tool_policy_violations"), list) else []
+        return bool(violations)
+    if planner_decision != "need_tools":
         return False
     tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
     tool_names = [str(tool.get("name") or "").strip() for tool in tools if isinstance(tool, dict)]

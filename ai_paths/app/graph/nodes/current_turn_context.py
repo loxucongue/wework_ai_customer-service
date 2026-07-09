@@ -696,9 +696,6 @@ def _appointment_mapping_low_confidence(state: dict[str, Any], mapping: Any) -> 
     recent_store = _store_from_recent_conversation(state)
     if _stores_conflict(appointment_store, recent_store):
         return True
-    profile_store = _store_from_profile(state)
-    if _stores_conflict(appointment_store, profile_store):
-        return True
     return False
 
 

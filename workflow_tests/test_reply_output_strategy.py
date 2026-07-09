@@ -1636,6 +1636,66 @@ def test_payment_entry_request_does_not_trigger_ambiguous_store_lookup_guard() -
     )
 
 
+def test_store_detail_direct_reply_with_appointment_anchor_becomes_lookup_tool() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "我昨天没去，你把门店地址发我一下",
+            "appointment_cache": {"store_id": "369", "store_name": "银川兴庆店", "status": "pending"},
+            "customer_basic_info": {"preferred_store_id": "467", "preferred_store_name": "重庆百星渝中店"},
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "369", "store_name": "银川兴庆店", "city": "银川市"},
+                    {"store_id": "467", "store_name": "重庆百星渝中店", "city": "重庆市"},
+                ]
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_ADDRESS_PARKING_HOURS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "payment_decision": {"action": "none", "source": "none", "confidence": "high"},
+            "reply_messages": [
+                {"type": "text", "content": {"text": "你说的是重庆渝中那家店对吗？"}},
+                {"type": "text", "content": {"text": "我可以再发地址和导航给你"}},
+            ],
+            "tool_calls": [],
+            "handoff": {"needed": False, "reason": ""},
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "detail", "query": "银川兴庆店"}
+    ]
+    assert not any(item.get("missing") == "store_detail_tool_required" for item in plan["tool_policy_violations"])
+
+
+def test_store_detail_clarification_without_anchor_can_direct_reply() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "门店地址发我一下", "customer_store_knowledge": {"stores": []}},
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_ADDRESS_PARKING_HOURS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "payment_decision": {"action": "none", "source": "none", "confidence": "low"},
+            "reply_messages": [{"type": "text", "content": {"text": "您说的是哪家门店？"}}],
+            "tool_calls": [],
+            "handoff": {"needed": False, "reason": ""},
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert not any(item.get("missing") == "store_detail_tool_required" for item in plan["tool_policy_violations"])
+
+
 def test_generic_store_question_does_not_inherit_recent_store_card() -> None:
     known = _current_known_store_for_planner(
         {

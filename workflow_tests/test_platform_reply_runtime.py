@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 from typing import Any
 
-from app.chat_runtime import ChatRuntime, _planner_sync_reply_messages
+from app.chat_runtime import ChatRuntime, _planner_sync_reply_messages, _should_run_async_finalize
 from app.config import Settings
 from app.schemas import ChatRequest
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
@@ -51,6 +51,20 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
             messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
 
         self.assertEqual(messages, [{"type": "text", "order": 1, "content": {"text": "稍等哈"}}])
+
+    async def test_rejected_direct_reply_schedules_async_finalize(self) -> None:
+        state = {
+            "planner_decision": "direct_reply",
+            "tool_policy_violations": [
+                {
+                    "task_type": "tool_required",
+                    "subtype": "customer_store_lookup",
+                    "missing": "store_detail_tool_required",
+                }
+            ],
+        }
+
+        self.assertTrue(_should_run_async_finalize(state))
 
     async def test_professional_assist_need_tools_returns_notice_sync_reply(self) -> None:
         with patch("app.chat_runtime.random.random", return_value=0.9), patch(

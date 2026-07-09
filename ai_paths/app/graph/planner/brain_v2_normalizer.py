@@ -135,6 +135,16 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = _dedupe_tools(planner_tool_calls)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
+    forced_store_lookup = _store_detail_lookup_tool_from_context(
+        decision=decision,
+        messages=planner_reply_messages,
+        required_tools=required_tools,
+        state=state,
+    )
+    if forced_store_lookup:
+        decision = "need_tools"
+        required_tools = _dedupe_tools([forced_store_lookup])
+        planner_reply_messages = [_standard_transition_message()]
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
     if (
         explicit_risk_reason
@@ -1280,6 +1290,12 @@ def _store_detail_tool_violations(
     current_text = str(state.get("normalized_content") or state.get("content") or "")
     if not (_direct_text_requires_store_detail_tool(text) or _current_message_requests_store_detail(current_text)):
         return []
+    if (
+        _current_message_requests_store_detail(current_text)
+        and _direct_text_is_store_scope_clarification(text)
+        and not _direct_text_requires_store_detail_tool(text)
+    ):
+        return []
     return [
         {
             "task_type": "tool_required",
@@ -1292,6 +1308,40 @@ def _store_detail_tool_violations(
             ),
         }
     ]
+
+
+def _store_detail_lookup_tool_from_context(
+    *,
+    decision: str,
+    messages: list[dict[str, Any]],
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+) -> dict[str, Any]:
+    if decision != "direct_reply" or _has_tool(required_tools, "customer_store_lookup"):
+        return {}
+    text = " ".join(
+        _message_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    current_text = str(state.get("normalized_content") or state.get("content") or "")
+    if not (_direct_text_requires_store_detail_tool(text) or _current_message_requests_store_detail(current_text)):
+        return {}
+    anchor = current_store_anchor_from_state(
+        state,
+        current_known_store=None,
+        allow_profile=False,
+        prefer_recent=True,
+    )
+    if not isinstance(anchor, dict) or anchor.get("ambiguous"):
+        return {}
+    query = str(anchor.get("store_name") or anchor.get("name") or anchor.get("store_id") or "").strip()
+    if not query:
+        return {}
+    source = str(anchor.get("source") or "").strip()
+    if source in {"customer_profile", "profile", "preferred_store"}:
+        return {}
+    return {"name": "customer_store_lookup", "purpose": "detail", "query": query}
 
 
 def _distance_tool_violations(required_tools: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -1343,12 +1393,26 @@ def _direct_text_requires_store_detail_tool(text: str) -> bool:
             "直接导航",
             "发您地址",
             "发你地址",
+            "再发地址",
+            "重发地址",
+            "发您导航",
+            "发你导航",
+            "再发导航",
+            "重发导航",
             "已发地址",
             "发过地址",
             "地址发您",
             "地址发你",
         )
     )
+
+
+def _direct_text_is_store_scope_clarification(text: str) -> bool:
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    ask_terms = ("哪家", "哪个店", "哪边", "哪个门店", "哪一个门店", "哪座城市", "哪个城市", "哪个区域")
+    return any(term in compact for term in ask_terms)
 
 
 def _current_message_requests_store_detail(text: str) -> bool:
