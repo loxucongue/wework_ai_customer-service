@@ -76,7 +76,9 @@ def create_synthesize_reply_node(
                         raise RuntimeError("reply_synthesizer_model_required")
                     model_call = {"name": "reply_synthesizer_model", "input": {"tier": "reply", "required": True}}
                     model_messages = reply_messages_for_model(state)
+                    model_call["input"]["messages"] = model_messages
                     payload = await model_client.chat_json(model_messages, tier="reply")
+                    model_call["raw_json_output"] = payload
                     model_call["usage"] = model_usage_snapshot(model_client)
                     try:
                         messages = validated_model_messages(payload, state)
@@ -86,6 +88,8 @@ def create_synthesize_reply_node(
                         retry_payload = await model_client.chat_json(retry_messages, tier="reply")
                         model_call["retry"] = {
                             "reason": f"{type(validation_exc).__name__}: {validation_exc}",
+                            "messages": retry_messages,
+                            "raw_json_output": retry_payload,
                             "usage": model_usage_snapshot(model_client),
                         }
                         try:

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertCircle, ArrowLeft, Clock, Database, RefreshCw, Search, Send } from "lucide-react";
+import { AlertCircle, ArrowLeft, Bot, Clock, Database, RefreshCw, Search, Send } from "lucide-react";
 
 type JsonValue = unknown;
 
@@ -12,7 +12,7 @@ type RunItem = {
   customer_id?: string;
   input_snapshot?: Record<string, JsonValue>;
   output_snapshot?: Record<string, JsonValue>;
-  intents?: string[];
+  intents?: JsonValue[];
   tags?: string[];
   duration_ms?: number;
   token_usage?: Record<string, JsonValue>;
@@ -42,6 +42,20 @@ type Filters = {
   customer_id: string;
   conversation_id: string;
   has_error: string;
+};
+
+type ModelCallView = {
+  id: string;
+  node: string;
+  name: string;
+  tier: string;
+  model: string;
+  durationMs: number | null;
+  totalTokens: number;
+  input: JsonValue;
+  output: JsonValue;
+  usage: JsonValue;
+  error: string;
 };
 
 const DEFAULT_FILTERS: Filters = {
@@ -79,7 +93,7 @@ export function RunLogViewer() {
       if (!response.ok) {
         throw new Error(errorMessage(data, "加载日志失败"));
       }
-      const items = Array.isArray(data?.items) ? data.items : [];
+      const items = Array.isArray(data?.items) ? (data.items as RunItem[]) : [];
       setRuns(items);
       setSelectedId((current) => current || items[0]?.request_id || "");
     } catch (err) {
@@ -101,7 +115,7 @@ export function RunLogViewer() {
       if (!response.ok) {
         throw new Error(errorMessage(data, "加载详情失败"));
       }
-      setDetail(data);
+      setDetail(data as RunDetail);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载详情失败");
     } finally {
@@ -124,17 +138,11 @@ export function RunLogViewer() {
       <aside className="flex w-[420px] min-w-[360px] flex-col border-r bg-white">
         <header className="border-b p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
-            <Link
-              href="/"
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50"
-            >
+            <Link href="/" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
               <ArrowLeft className="h-4 w-4" />
               返回对话
             </Link>
-            <Link
-              href="/logs/sop"
-              className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50"
-            >
+            <Link href="/logs/sop" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
               <Send className="h-4 w-4" />
               SOP
             </Link>
@@ -152,7 +160,7 @@ export function RunLogViewer() {
             <Database className="h-5 w-5" />
             运行日志
           </h1>
-          <p className="mt-1 text-sm text-slate-500">查看每轮请求、节点耗时、工具调用和回复快照。</p>
+          <p className="mt-1 text-sm text-slate-500">重点查看单次大模型调用的耗时、输入 messages 和 JSON 输出。</p>
         </header>
 
         <section className="border-b p-4">
@@ -244,12 +252,7 @@ export function RunLogViewer() {
 
       <section className="min-w-0 flex-1 overflow-y-auto p-6">
         {selectedRun ? (
-          <RunDetailPanel
-            run={selectedRun}
-            traces={detail?.node_traces || []}
-            loading={detailLoading}
-            rawLog={detail?.raw_log}
-          />
+          <RunDetailPanel run={selectedRun} traces={detail?.node_traces || []} loading={detailLoading} rawLog={detail?.raw_log} />
         ) : (
           <div className="rounded-lg border bg-white p-8 text-sm text-slate-500">请选择一条运行日志。</div>
         )}
@@ -269,6 +272,10 @@ function RunDetailPanel({
   loading: boolean;
   rawLog?: JsonValue;
 }) {
+  const modelCalls = useMemo(() => collectModelCalls(traces), [traces]);
+  const modelTotalMs = modelCalls.reduce((sum, item) => sum + (item.durationMs || 0), 0);
+  const modelTokens = modelCalls.reduce((sum, item) => sum + item.totalTokens, 0);
+
   return (
     <div className="space-y-5">
       <section className="rounded-lg border bg-white p-5">
@@ -279,28 +286,54 @@ function RunDetailPanel({
               customer: {run.customer_id || "-"} / conversation: {run.conversation_id || "-"}
             </p>
           </div>
-          <div className="flex items-center gap-2 text-sm text-slate-600">
+          <div className="flex flex-wrap items-center gap-2 text-sm text-slate-600">
             <Clock className="h-4 w-4" />
-            {run.duration_ms ?? "-"}ms
+            总耗时 {run.duration_ms ?? "-"}ms
             <span className="text-slate-300">|</span>
-            token {stringField(run.token_usage?.total_tokens) || "0"}
+            模型 {modelCalls.length} 次 / {modelTotalMs || 0}ms
+            <span className="text-slate-300">|</span>
+            token {modelTokens || stringField(run.token_usage?.total_tokens) || "0"}
           </div>
         </div>
         {run.error ? (
           <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
             <div className="mb-1 font-medium">运行错误</div>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed">
-              {prettyError(run.error)}
-            </pre>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed">{prettyError(run.error)}</pre>
           </div>
         ) : null}
         <div className="mt-4 grid gap-4 lg:grid-cols-2">
           <Snapshot title="客户输入（含历史）" value={inputSnapshotForDisplay(run, rawLog)} />
           <Snapshot title="最终输出（HTTP 响应体）" value={httpResponseForDisplay(run)} />
         </div>
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-          <Snapshot title="回复控制" value={replyControlForDisplay(run)} />
-          <Snapshot title="异步主动发送" value={asyncFinalForDisplay(run)} />
+      </section>
+
+      <section className="rounded-lg border bg-white p-5">
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="flex items-center gap-2 font-semibold">
+            <Bot className="h-4 w-4" />
+            模型调用
+          </h3>
+          <span className="text-sm text-slate-500">{loading ? "加载中..." : `${modelCalls.length} 次模型调用`}</span>
+        </div>
+        <div className="space-y-3">
+          {modelCalls.map((call, index) => (
+            <details key={call.id} open={index === 0 || Boolean(call.error)}>
+              <summary className="cursor-pointer rounded-md border bg-slate-50 px-3 py-2 text-sm font-medium">
+                {index + 1}. {call.node} / {call.name}
+                {call.model ? <span className="ml-3 text-slate-500">{call.model}</span> : null}
+                {call.tier ? <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-xs text-slate-700">{call.tier}</span> : null}
+                <span className="ml-3 text-slate-500">{call.durationMs ?? "-"}ms</span>
+                {call.totalTokens ? <span className="ml-3 text-slate-500">token {call.totalTokens}</span> : null}
+                {call.error ? <span className="ml-3 text-red-600">error</span> : null}
+              </summary>
+              <div className="mt-2 grid gap-3 xl:grid-cols-3">
+                <Snapshot title="输入 messages / prompt" value={call.input || {}} tall />
+                <Snapshot title="输出 JSON" value={call.output || {}} tall />
+                <Snapshot title="耗时 / usage / error" value={{ usage: call.usage, error: call.error }} tall />
+              </div>
+            </details>
+          ))}
+          {!loading && modelCalls.length === 0 ? <div className="text-sm text-slate-500">没有记录到模型调用。</div> : null}
         </div>
       </section>
 
@@ -317,13 +350,11 @@ function RunDetailPanel({
                 <span className="ml-3 text-slate-500">{trace.duration_ms ?? "-"}ms</span>
                 {trace.error ? <span className="ml-3 text-red-600">error</span> : null}
                 {trace.tool_calls?.length ? <span className="ml-3 text-blue-600">tool x{trace.tool_calls.length}</span> : null}
-                {failedToolCount(trace) ? (
-                  <span className="ml-3 text-red-600">failed tool x{failedToolCount(trace)}</span>
-                ) : null}
+                {failedToolCount(trace) ? <span className="ml-3 text-red-600">failed tool x{failedToolCount(trace)}</span> : null}
               </summary>
               <div className="mt-2 grid gap-3 lg:grid-cols-3">
                 <Snapshot title="输入快照" value={trace.input_snapshot} />
-                <Snapshot title="工具调用" value={trace.tool_calls || []} />
+                <Snapshot title="工具/模型调用原始记录" value={trace.tool_calls || []} />
                 <Snapshot title="输出快照" value={trace.output_snapshot} />
               </div>
             </details>
@@ -336,7 +367,7 @@ function RunDetailPanel({
         <details>
           <summary className="cursor-pointer text-sm font-semibold">完整日志 JSON</summary>
           <div className="mt-3">
-            <Snapshot title="raw_log" value={rawLog || {}} />
+            <Snapshot title="raw_log" value={rawLog || {}} tall />
           </div>
         </details>
       </section>
@@ -344,15 +375,84 @@ function RunDetailPanel({
   );
 }
 
-function Snapshot({ title, value }: { title: string; value: JsonValue }) {
+function Snapshot({ title, value, tall = false }: { title: string; value: JsonValue; tall?: boolean }) {
   return (
     <div className="min-w-0 rounded-md border">
       <div className="border-b bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">{title}</div>
-      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words p-3 text-xs leading-relaxed text-slate-700">
+      <pre
+        className={`overflow-auto whitespace-pre-wrap break-words p-3 text-xs leading-relaxed text-slate-700 ${
+          tall ? "max-h-[620px]" : "max-h-80"
+        }`}
+      >
         {formatJson(value)}
       </pre>
     </div>
   );
+}
+
+function collectModelCalls(traces: NodeTrace[]) {
+  const output: ModelCallView[] = [];
+  traces.forEach((trace, traceIndex) => {
+    const node = trace.node_name || trace.node || "unknown";
+    const calls = Array.isArray(trace.tool_calls) ? trace.tool_calls : [];
+    calls.forEach((call, callIndex) => {
+      collectModelCallValue(call, {
+        node,
+        idPrefix: `${traceIndex}-${callIndex}`,
+        output,
+      });
+    });
+  });
+  return output;
+}
+
+function collectModelCallValue(
+  value: JsonValue,
+  context: { node: string; idPrefix: string; output: ModelCallView[] }
+) {
+  if (!isRecord(value)) return;
+  if (isModelCall(value)) {
+    context.output.push(toModelCallView(value, context.node, context.idPrefix));
+  }
+  const nested = value.nested_calls;
+  if (Array.isArray(nested)) {
+    nested.forEach((item, index) =>
+      collectModelCallValue(item, {
+        node: context.node,
+        idPrefix: `${context.idPrefix}-nested-${index}`,
+        output: context.output,
+      })
+    );
+  }
+  if (isRecord(value.retry)) {
+    context.output.push(toModelCallView(value.retry, context.node, `${context.idPrefix}-retry`, `${stringField(value.name) || "model"}_retry`));
+  }
+}
+
+function isModelCall(value: Record<string, JsonValue>) {
+  const name = stringField(value.name).toLowerCase();
+  if (isRecord(value.usage)) return true;
+  if (value.raw_json_output !== undefined) return true;
+  return /model|planner|reply_synthesizer|profile_analyzer|vision/.test(name);
+}
+
+function toModelCallView(value: Record<string, JsonValue>, node: string, id: string, fallbackName = ""): ModelCallView {
+  const usage = isRecord(value.usage) ? value.usage : {};
+  const input = isRecord(value.input) && value.input.messages !== undefined ? value.input.messages : value.input || {};
+  const output = value.raw_json_output !== undefined ? value.raw_json_output : value.output || {};
+  return {
+    id,
+    node,
+    name: stringField(value.name) || fallbackName || "model_call",
+    tier: stringField(usage.tier) || stringField(isRecord(value.input) ? value.input.tier : ""),
+    model: stringField(usage.model),
+    durationMs: numberField(usage.duration_ms) ?? numberField(value.duration_ms),
+    totalTokens: numberField(usage.total_tokens) ?? 0,
+    input,
+    output,
+    usage,
+    error: stringField(value.error),
+  };
 }
 
 function contentSnippet(run: RunItem) {
@@ -379,7 +479,7 @@ async function readJsonResponse(response: Response, fallbackMessage: string) {
 function replySnippet(run: RunItem) {
   const messages = run.output_snapshot?.http_response_reply_messages || run.output_snapshot?.reply_messages;
   if (!Array.isArray(messages)) return "";
-  return messages.map((item) => stringField((item as Record<string, JsonValue>).content)).filter(Boolean).join(" / ");
+  return messages.map((item) => stringField(isRecord(item) ? item.content : "")).filter(Boolean).join(" / ");
 }
 
 function formatTime(value?: string) {
@@ -431,18 +531,6 @@ function httpResponseForDisplay(run: RunItem) {
   return run.output_snapshot?.http_response_body || run.output_snapshot || {};
 }
 
-function replyControlForDisplay(run: RunItem) {
-  return run.output_snapshot?.reply_control || {};
-}
-
-function asyncFinalForDisplay(run: RunItem) {
-  const control = run.output_snapshot?.reply_control;
-  if (isRecord(control) && isRecord(control.async_final)) {
-    return control.async_final;
-  }
-  return run.output_snapshot?.async_final_reply || {};
-}
-
 function prettyError(value: string) {
   if (!value) return "";
   try {
@@ -454,10 +542,7 @@ function prettyError(value: string) {
 
 function failedToolCount(trace: NodeTrace) {
   const calls = Array.isArray(trace.tool_calls) ? trace.tool_calls : [];
-  return calls.filter((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-    return Boolean((item as Record<string, JsonValue>).error);
-  }).length;
+  return calls.filter((item) => isRecord(item) && Boolean(item.error)).length;
 }
 
 function isRecord(value: JsonValue): value is Record<string, JsonValue> {
@@ -469,4 +554,13 @@ function stringField(value: JsonValue) {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   return "";
+}
+
+function numberField(value: JsonValue) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }

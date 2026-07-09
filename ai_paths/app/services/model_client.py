@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import time
 from typing import Any, Literal
 
 import httpx
@@ -138,6 +139,7 @@ class ModelClient:
         }
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         client = self._http_client()
+        started = time.perf_counter()
         response = await client.post(url, headers=headers, content=body)
         try:
             response.raise_for_status()
@@ -145,12 +147,14 @@ class ModelClient:
             detail = response.text[:800]
             raise RuntimeError(f"Model HTTP {response.status_code}: {detail}") from exc
         raw = response.json()
+        duration_ms = int((time.perf_counter() - started) * 1000)
         self.last_usage = {
             "provider": self.settings.model_provider,
             "model": payload.get("model"),
             "tier": tier,
             "fallback_index": fallback_index,
             "fallback_errors": list(errors),
+            "duration_ms": duration_ms,
             "usage": raw.get("usage") or {},
         }
         return raw
@@ -173,6 +177,7 @@ class ModelClient:
         anthropic_payload = self._anthropic_messages_payload(payload)
         body = json.dumps(anthropic_payload, ensure_ascii=False).encode("utf-8")
         client = self._http_client()
+        started = time.perf_counter()
         response = await client.post(url, headers=headers, content=body)
         try:
             response.raise_for_status()
@@ -180,6 +185,7 @@ class ModelClient:
             detail = response.text[:800]
             raise RuntimeError(f"Model HTTP {response.status_code}: {detail}") from exc
         raw = self._normalize_anthropic_response(response.json())
+        duration_ms = int((time.perf_counter() - started) * 1000)
         self.last_usage = {
             "provider": self.settings.model_provider,
             "protocol": "anthropic",
@@ -187,6 +193,7 @@ class ModelClient:
             "tier": tier,
             "fallback_index": fallback_index,
             "fallback_errors": list(errors),
+            "duration_ms": duration_ms,
             "usage": raw.get("usage") or {},
         }
         return raw

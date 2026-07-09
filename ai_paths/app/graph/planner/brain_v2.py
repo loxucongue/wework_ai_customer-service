@@ -62,7 +62,8 @@ async def run_planner_brain_v2(
     model_client: ModelClient,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     tier = planner_v2_model_tier(state)
-    payload = await model_client.chat_json(planner_v2_messages_for_model(state), tier=tier, temperature=0.1)
+    initial_messages = planner_v2_messages_for_model(state)
+    payload = await model_client.chat_json(initial_messages, tier=tier, temperature=0.1)
     plan = build_planner_plan_v2(state, payload)
     initial_usage = model_usage_snapshot(model_client)
     nested_calls: list[dict[str, Any]] = []
@@ -75,17 +76,16 @@ async def run_planner_brain_v2(
             "input": {"tier": tier, "attempt": repair_attempt, "violations": violations},
         }
         try:
-            repaired_payload = await model_client.chat_json(
-                planner_v2_repair_messages_for_model(
-                    state,
-                    original_plan=plan,
-                    violations=violations,
-                ),
-                tier=tier,
-                temperature=0.0,
+            repair_messages = planner_v2_repair_messages_for_model(
+                state,
+                original_plan=plan,
+                violations=violations,
             )
+            repair_call["input"]["messages"] = repair_messages
+            repaired_payload = await model_client.chat_json(repair_messages, tier=tier, temperature=0.0)
             repaired_plan = build_planner_plan_v2(state, repaired_payload)
             plan = repaired_plan
+            repair_call["raw_json_output"] = repaired_payload
             repair_call["output"] = {
                 "decision": plan.get("planner_decision", ""),
                 "stage": plan.get("planner_stage", ""),
@@ -108,7 +108,8 @@ async def run_planner_brain_v2(
         nested_calls.append(repair_call)
     model_call = {
         "name": "planner_brain_v2",
-        "input": {"tier": tier},
+        "input": {"tier": tier, "messages": initial_messages},
+        "raw_json_output": payload,
         "output": {
             "decision": plan.get("planner_decision", ""),
             "stage": plan.get("planner_stage", ""),

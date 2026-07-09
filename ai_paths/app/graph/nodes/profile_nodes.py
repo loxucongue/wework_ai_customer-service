@@ -53,12 +53,14 @@ def create_profile_event_extractor_node(
                     "input": {"tier": "fast", "conversation_fetch": conversation_fetch},
                 }
                 try:
-                    llm_update = await _profile_update_from_model(
+                    profile_messages = _profile_messages_for_model(
                         state,
-                        model_client,
                         conversation_history=conversation_history,
                     )
+                    llm_profile_call["input"]["messages"] = profile_messages
+                    llm_update = await _profile_update_from_model(model_client, messages=profile_messages)
                     llm_profile_call["usage"] = model_usage_snapshot(model_client)
+                    llm_profile_call["raw_json_output"] = llm_update
                     llm_profile_call["output"] = clean_model_value(llm_update, max_string_chars=600)
                     profile_update = _normalize_profile_update(llm_update.get("profile_update", {}))
                     event_updates = _normalize_llm_events(state, llm_update.get("event_updates", []))
@@ -96,12 +98,11 @@ def _memory_persistence_allowed(state: AgentState) -> bool:
     return bool(request_context.get("memory_persist_allowed"))
 
 
-async def _profile_update_from_model(
+def _profile_messages_for_model(
     state: AgentState,
-    model_client: ModelClient,
     *,
     conversation_history: list[str] | None = None,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     payload = {
         "content": state.get("normalized_content"),
         "conversation_history": conversation_history if conversation_history is not None else state.get("conversation_history", [])[-50:],
@@ -116,8 +117,16 @@ async def _profile_update_from_model(
         "fact_envelope": state.get("fact_envelope", {}),
         "tool_results": state.get("tool_results", {}),
     }
+    return build_profile_analyzer_messages(payload, json_dumps=json_dumps)
+
+
+async def _profile_update_from_model(
+    model_client: ModelClient,
+    *,
+    messages: list[dict[str, Any]],
+) -> dict[str, Any]:
     result = await model_client.chat_json(
-        build_profile_analyzer_messages(payload, json_dumps=json_dumps),
+        messages,
         tier="fast",
         temperature=0.2,
     )

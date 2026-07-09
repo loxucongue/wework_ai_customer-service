@@ -54,13 +54,29 @@ async def _understand_image(state: dict[str, Any], model_client: ModelClient | N
     model_call: dict[str, Any] | None = None
     if has_image and model_client and model_client.available:
         try:
-            model_call = {"name": "vision_model", "input": {"tier": "vision"}}
+            prompt = build_vision_prompt(state)
+            model_call = {
+                "name": "vision_model",
+                "input": {
+                    "tier": "vision",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url", "image_url": {"url": str(state.get("file_image"))}},
+                            ],
+                        }
+                    ],
+                },
+            }
             payload = await model_client.vision_json(
-                prompt=build_vision_prompt(state),
+                prompt=prompt,
                 image_url=str(state.get("file_image")),
                 tier="vision",
             )
             image_info = validated_image_info(payload, has_image=True)
+            model_call["raw_json_output"] = payload
             model_call["output"] = {
                 "image_type": image_info.get("image_type"),
                 "confidence": image_info.get("confidence"),

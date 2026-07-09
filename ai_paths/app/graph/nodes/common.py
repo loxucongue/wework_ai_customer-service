@@ -134,6 +134,7 @@ def model_usage_snapshot(model_client: Any | None) -> dict[str, Any]:
         "tier": usage.get("tier", ""),
         "fallback_index": usage.get("fallback_index", 0),
         "fallback_errors": usage.get("fallback_errors", []),
+        "duration_ms": usage.get("duration_ms", 0),
         "prompt_tokens": raw_usage.get("prompt_tokens", 0),
         "completion_tokens": raw_usage.get("completion_tokens", 0),
         "total_tokens": raw_usage.get("total_tokens", 0),
