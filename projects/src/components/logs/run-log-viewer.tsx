@@ -326,8 +326,8 @@ function RunDetailPanel({
                 {call.totalTokens ? <span className="ml-3 text-slate-500">token {call.totalTokens}</span> : null}
                 {call.error ? <span className="ml-3 text-red-600">error</span> : null}
               </summary>
-              <div className="mt-2 grid gap-3 xl:grid-cols-3">
-                <Snapshot title="输入 messages / prompt" value={call.input || {}} tall />
+              <div className="mt-2 grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(260px,0.65fr)]">
+                <ModelInputMessages value={call.input || {}} />
                 <Snapshot title="输出 JSON" value={call.output || {}} tall />
                 <Snapshot title="耗时 / usage / error" value={{ usage: call.usage, error: call.error }} tall />
               </div>
@@ -388,6 +388,111 @@ function Snapshot({ title, value, tall = false }: { title: string; value: JsonVa
       </pre>
     </div>
   );
+}
+
+function ModelInputMessages({ value }: { value: JsonValue }) {
+  const messages = Array.isArray(value) ? value : [];
+  if (!messages.length) {
+    return <Snapshot title="输入 messages / prompt" value={value} tall />;
+  }
+
+  return (
+    <div className="min-w-0 rounded-md border">
+      <div className="flex items-center justify-between border-b bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600">
+        <span>输入 messages / prompt</span>
+        <span>{messages.length} 条</span>
+      </div>
+      <div className="max-h-[620px] space-y-3 overflow-auto p-3">
+        {messages.map((message, index) => (
+          <ModelMessageCard key={index} message={message} index={index} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ModelMessageCard({ message, index }: { message: JsonValue; index: number }) {
+  if (!isRecord(message)) {
+    return (
+      <div className="rounded-md border bg-white">
+        <MessageHeader index={index} role="unknown" content={message} />
+        <pre className="whitespace-pre-wrap break-words p-3 text-xs leading-relaxed text-slate-700">{formatJson(message)}</pre>
+      </div>
+    );
+  }
+
+  const role = stringField(message.role) || "unknown";
+  const content = message.content;
+  return (
+    <div className="rounded-md border bg-white">
+      <MessageHeader index={index} role={role} content={content} />
+      <div className="p-3">
+        <MessageContent value={content} role={role} />
+      </div>
+    </div>
+  );
+}
+
+function MessageHeader({ index, role, content }: { index: number; role: string; content: JsonValue }) {
+  const tone = roleClassName(role);
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 border-b bg-white px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-xs text-slate-400">#{index + 1}</span>
+        <span className={`rounded px-2 py-0.5 text-xs font-semibold ${tone}`}>{role || "unknown"}</span>
+        {contentKind(content) ? <span className="text-xs text-slate-500">{contentKind(content)}</span> : null}
+      </div>
+      <span className="text-xs text-slate-400">{contentLength(content)} chars</span>
+    </div>
+  );
+}
+
+function MessageContent({ value, role }: { value: JsonValue; role: string }) {
+  if (typeof value === "string") {
+    const parsed = parseJsonString(value);
+    if (parsed.ok) {
+      return (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-slate-500">JSON payload</div>
+          <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
+            {JSON.stringify(parsed.value, null, 2)}
+          </pre>
+        </div>
+      );
+    }
+    return (
+      <pre
+        className={`max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded p-3 text-xs leading-relaxed ${
+          role === "system" ? "bg-amber-50 text-slate-900" : "bg-slate-50 text-slate-800"
+        }`}
+      >
+        {value}
+      </pre>
+    );
+  }
+
+  if (Array.isArray(value)) {
+    return (
+      <div className="space-y-2">
+        {value.map((item, index) => (
+          <div key={index} className="rounded border bg-slate-50 p-2">
+            <div className="mb-1 text-xs font-medium text-slate-500">content[{index}]</div>
+            <MessageContent value={item} role={role} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (isRecord(value)) {
+    return (
+      <pre className="max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded bg-slate-950 p-3 text-xs leading-relaxed text-slate-100">
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    );
+  }
+
+  return <pre className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-700">{formatJson(value)}</pre>;
 }
 
 function collectModelCalls(traces: NodeTrace[]) {
@@ -453,6 +558,46 @@ function toModelCallView(value: Record<string, JsonValue>, node: string, id: str
     usage,
     error: stringField(value.error),
   };
+}
+
+function roleClassName(role: string) {
+  const normalized = role.toLowerCase();
+  if (normalized === "system") return "bg-amber-100 text-amber-800";
+  if (normalized === "user") return "bg-blue-100 text-blue-800";
+  if (normalized === "assistant") return "bg-emerald-100 text-emerald-800";
+  if (normalized === "tool") return "bg-purple-100 text-purple-800";
+  return "bg-slate-200 text-slate-700";
+}
+
+function contentKind(value: JsonValue) {
+  if (typeof value === "string") {
+    return parseJsonString(value).ok ? "json string" : "text";
+  }
+  if (Array.isArray(value)) return "multi-part";
+  if (isRecord(value)) return "object";
+  if (value === null || value === undefined) return "";
+  return typeof value;
+}
+
+function contentLength(value: JsonValue) {
+  if (typeof value === "string") return value.length;
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return 0;
+  }
+}
+
+function parseJsonString(value: string): { ok: true; value: JsonValue } | { ok: false; value: null } {
+  const text = value.trim();
+  if (!text || !/^[\[{]/.test(text)) {
+    return { ok: false, value: null };
+  }
+  try {
+    return { ok: true, value: JSON.parse(text) as JsonValue };
+  } catch {
+    return { ok: false, value: null };
+  }
 }
 
 function contentSnippet(run: RunItem) {
