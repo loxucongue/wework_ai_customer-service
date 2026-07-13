@@ -375,7 +375,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "processed")
         messages = repo.tasks[0]["reply_messages"]
-        self.assertEqual(messages[0]["content"]["text"], "可以，3位一共30元预约金，每位10元，用来锁活动名额，到店抵扣，不做退10元。")
+        self.assertEqual(
+            messages[0]["content"]["text"],
+            "可以，3位一共30元预约金，每位10元，用来锁活动名额，到店抵扣；未做或不满意可退，实际按付款记录核对。",
+        )
         self.assertEqual(messages[1]["content"]["amount"], 30)
 
     async def test_event_payment_collection_over_four_people_asks_confirmation(self) -> None:

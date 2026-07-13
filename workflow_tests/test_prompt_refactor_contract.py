@@ -78,7 +78,9 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     for business_rule in [
         "已发送过 payment_collection 只是频率证据，不是硬去重",
         "历史累计次数都不能单独决定发或不发",
-        "到店抵扣，不做退10元",
+        "到店抵扣，未做或不满意可退",
+        "实际按付款记录核对",
+        "预约金只锁活动名额、到店时间按客户方便安排",
         "2位一共20元，3位一共30元，4位一共40元",
         "客户可见回复只说哪家更近，不说公里、分钟、车程",
         "旧健康风险、旧门店、旧预约任务只有在客户当前明确延续时才主导本轮",
@@ -98,6 +100,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "manual_transfer",
         "收款卡是当前最自然的下一步",
         "已有同城 store_facts",
+        "requested_district_stores",
         "不要问“要不要了解/要不要看/是否需要/要不要我发”",
         "不要每轮复读",
         "今天发送次数",
@@ -122,7 +125,8 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "已经筛选后的斑点改善意向客户",
         "不要引导客户发照片给你做线上诊断",
         "发我正面清晰照",
-        "到店抵扣，不做退10元",
+        "到店抵扣，未做或不满意可退",
+        "实际按付款记录核对",
         "10/20/30/40",
         "human_handoff_notice",
         "旧画像健康风险、旧门店、旧预约任务不得覆盖客户当前普通问题",
@@ -135,6 +139,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "小程序收款卡片/收款码",
         "转账、截图和备注登记",
         "manual_transfer",
+        "requested_district_stores",
         "不要问客户“要不要了解活动/要不要我给您看/是否需要/您看下吗”",
         "不要每次复读同一句",
         "不是必须照抄的客户文案",
@@ -147,6 +152,17 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert GLOBAL_BUSINESS_RHYTHM_CONTRACT in REPLY_SYSTEM_PROMPT
     assert "store_candidate" in REPLY_SYSTEM_PROMPT
     assert "appointment_decision" in REPLY_SYSTEM_PROMPT
+
+
+def test_runtime_prompts_no_longer_carry_legacy_non_refund_policy() -> None:
+    for path in [
+        ROOT / "ai_paths/app/prompts/global_contract.py",
+        ROOT / "ai_paths/app/graph/planner/brain_v2_prompts.py",
+        ROOT / "ai_paths/app/prompts/reply_synthesizer.py",
+        ROOT / "ai_paths/app/prompts/profile_analyzer.py",
+        ROOT / "ai_paths/app/services/outreach_prompts.py",
+    ]:
+        assert "不做退10元" not in path.read_text(encoding="utf-8")
 
 
 def test_project_constitution_documents_define_two_reply_test_modes() -> None:
@@ -182,6 +198,7 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
         "planner_sop_objection_resolved_active_card",
         "planner_ack_after_payment_explanation_frequency",
         "planner_historical_six_today_zero_high_intent",
+        "planner_practical_delay_keeps_activity_slot",
         "planner_card_entry_single_person",
         "planner_card_entry_friend_party",
         "planner_paid_next_step_no_card",
@@ -202,6 +219,7 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
         "reply_sop_objection_resolved_active_card",
         "reply_ack_after_payment_explanation_frequency",
         "reply_historical_six_today_zero_high_intent",
+        "reply_practical_delay_keeps_activity_slot",
         "reply_card_entry_single_person",
         "reply_card_entry_friend_party",
         "reply_paid_next_step_no_card",
@@ -231,9 +249,9 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
         assert "message_types" in item["expected"]
 
     planner_card_case = next(item for item in planner_cases if item["id"] == "planner_card_entry_friend_party")
-    assert planner_card_case["expected_decision"]["payment_action"] == "send_now"
-    assert planner_card_case["expected_decision"]["payment_amount"] == 20
-    assert "payment_collection" in planner_card_case["expected_decision"]["expected_message_types"]
+    assert set(planner_card_case["expected_decision"]["allowed_payment_actions"]) == {"none", "explain_existing"}
+    assert "payment_collection" in planner_card_case["expected_decision"]["must_not_message_types"]
+    assert "有效订单" in planner_card_case["expected_decision"]["notes"]
 
     planner_transfer_case = next(item for item in planner_cases if item["id"] == "planner_transfer_payment_method")
     assert planner_transfer_case["expected_decision"]["payment_action"] == "manual_transfer"
@@ -245,8 +263,8 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
     assert "payment_collection" not in reply_transfer_case["expected"]["message_types"]
 
     planner_options_case = next(item for item in planner_cases if item["id"] == "planner_payment_options_send_card")
-    assert planner_options_case["expected_decision"]["payment_action"] == "send_now"
-    assert "payment_collection" in planner_options_case["expected_decision"]["expected_message_types"]
+    assert set(planner_options_case["expected_decision"]["allowed_payment_actions"]) == {"none", "explain_existing"}
+    assert "payment_collection" in planner_options_case["expected_decision"]["must_not_message_types"]
 
     planner_ack_case = next(
         item for item in planner_cases if item["id"] == "planner_ack_after_payment_explanation_frequency"
@@ -256,6 +274,14 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
     assert frequency["prior_count"] == 6
     assert frequency["total_count"] == 6
     assert set(planner_ack_case["expected_decision"]["allowed_payment_actions"]) == {
+        "explain_existing",
+        "send_now",
+    }
+
+    planner_practical_delay_case = next(
+        item for item in planner_cases if item["id"] == "planner_practical_delay_keeps_activity_slot"
+    )
+    assert set(planner_practical_delay_case["expected_decision"]["allowed_payment_actions"]) == {
         "explain_existing",
         "send_now",
     }
@@ -270,6 +296,12 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
     )
     active_order_facts = reply_active_card_case["input_payload"]["fact_envelope"]["structured_facts"]["order_facts"]
     assert active_order_facts[0]["status"] == "reused"
+
+    reply_practical_delay_case = next(
+        item for item in reply_cases if item["id"] == "reply_practical_delay_keeps_activity_slot"
+    )
+    assert "payment_collection" in reply_practical_delay_case["expected"]["message_types"]
+    assert "到店时间不用现在定" in " ".join(reply_practical_delay_case["expected"]["must_include_semantics"])
 
     for prompt_or_fixture in [
         PLANNER_SYSTEM_PROMPT,

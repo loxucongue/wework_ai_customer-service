@@ -52,7 +52,7 @@ PROFILE_ANALYZER_SYSTEM_PROMPT = (
 
 # Customer Type Tags
 只能从下面标签中选择，可多选，最多 3 个：
-- 价格型：关注价格、优惠、是否额外收费、预约金抵扣/不做退10元、对比其他价格
+- 价格型：关注价格、优惠、是否额外收费、预约金抵扣/可退规则、对比其他价格
 - 效果型：关注能不能改善、做完效果、案例图、几次见效、做过没效果
 - 距离/门店型：关注附近门店、地址、路线、停车、距离
 - 时间型：关注什么时候能去、档期、改约、没时间
@@ -102,7 +102,7 @@ PROFILE_ANALYZER_SYSTEM_PROMPT = (
 - image 且 URL 包含 anniversary-268.jpg：event_type=activity_intro_image_sent，facts 写 image_url；summary 写“已发送活动宣传图”。
 - human_handoff_notice：event_type=handoff_requested，facts 写 handoff_reason；summary 写“已记录需要内部关注的高风险/人工诉求”。
 - text 中明确解释周年庆活动价、268、做付258、报名规则：event_type=offer_explained。
-- text 中明确解释10元预约金、抵扣、不做退10元：event_type=deposit_explained。
+- text 中明确解释预约金、抵扣或可退规则：event_type=deposit_explained。
 
 如果本轮同时有心理变化和系统动作，可以分别记录；event_updates 最多 4 条。
 

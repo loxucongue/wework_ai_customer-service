@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from typing import Any
 
@@ -308,7 +308,7 @@ def _sop_next_candidates(
             {
                 "category": "deposit_push",
                 "purpose": "客户已有到店或报名意向时，推进10元预约金锁名额。",
-                "how_to_push": "说明10元用于锁活动名额，到店抵扣，不做退10元。",
+                "how_to_push": "说明每位10元用于锁活动名额，到店抵扣；客户关心时说明未做或不满意可退，实际按付款记录核对。",
             }
         )
     return _dedupe_candidate_categories(candidates)

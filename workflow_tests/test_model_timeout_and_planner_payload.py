@@ -50,6 +50,12 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(model_names(settings, "reply"), ["qwen-plus"])
 
+    def test_planner_uses_a_longer_quality_first_hedge_delay(self) -> None:
+        client = ModelClient(_settings(model_hedge_delay_seconds=0.01, model_planner_hedge_delay_seconds=0.02))
+
+        self.assertEqual(client._hedge_delay_for_tier("planner"), 0.02)
+        self.assertEqual(client._hedge_delay_for_tier("reply"), 0.01)
+
     async def test_model_client_hedges_slow_primary_with_fallback(self) -> None:
         class HedgeModelClient(ModelClient):
             def __init__(self, settings: Settings) -> None:
@@ -120,6 +126,44 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(usage.get("hedge_started"))
         self.assertEqual(usage.get("total_timeout_seconds"), 1.0)
         self.assertIn("TimeoutError", str(usage.get("error")))
+
+    async def test_model_client_retries_transient_invalid_json_once(self) -> None:
+        class RetryJsonClient(ModelClient):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.calls = 0
+
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                self.calls += 1
+                content = "not-json" if self.calls == 1 else '{"ok": true}'
+                return {"choices": [{"message": {"content": content}}]}
+
+        client = RetryJsonClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_fast="json-model",
+                model_fast_fallbacks="",
+                model_hedge_max_parallel=1,
+                model_request_retry_attempts=2,
+                model_request_retry_delay_seconds=0,
+            )
+        )
+
+        result = await client.chat_json([{"role": "user", "content": "Return JSON."}], tier="fast")
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(client.calls, 2)
+        usage = client.last_usage or {}
+        self.assertEqual(usage.get("request_attempt"), 2)
+        self.assertEqual(len(usage.get("request_retry_errors") or []), 1)
 
     async def test_planner_timeout_uses_compact_fast_retry(self) -> None:
         class RetryPlannerClient:

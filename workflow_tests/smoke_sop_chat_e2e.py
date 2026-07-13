@@ -169,7 +169,7 @@ class FixtureSopPackService:
                     "send_once": True,
                     "reply_messages": [
                         {"type": "text", "order": 1, "content": {"text": "现在做的是周年活动，活动价268。"}},
-                        {"type": "text", "order": 2, "content": {"text": "线上先交10元预约金，是帮您锁活动名额，到店直接抵扣，不做退10元。"}},
+                        {"type": "text", "order": 2, "content": {"text": "线上先交10元预约金，是帮您锁活动名额，到店直接抵扣，未做或不满意可退。"}},
                         {"type": "image", "order": 3, "content": {"url": "https://example.com/activity.jpg"}},
                     ],
                 },
@@ -257,7 +257,7 @@ class OutreachClient:
 def _ai_reply_for(content: str) -> list[dict[str, Any]]:
     if "多少钱" in content or "价格" in content:
         return [
-            {"type": "text", "order": 1, "content": {"text": "活动价是268，先付10元锁活动名额，到店抵扣，做付258，不做退10元。"}},
+            {"type": "text", "order": 1, "content": {"text": "活动价是268，先付10元锁活动名额，到店抵扣，做付258，未做或不满意可退。"}},
             {"type": "text", "order": 2, "content": {"text": "您现在方便的话，我先帮您把名额留住。"}},
         ]
     if "乱收费" in content or "骗人" in content or "真的" in content:

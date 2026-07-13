@@ -21,6 +21,7 @@ from app.graph.planner.brain_v2_prompts import (
     PLANNER_RISK_PATCH_PROMPT,
     PLANNER_SYSTEM_PROMPT,
     PLANNER_TRANSACTION_PATCH_PROMPT,
+    PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT,
 )
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, planner_unavailable_fallback_plan, safety_fallback_plan
 from app.graph.state import AgentState
@@ -73,9 +74,10 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
         {"role": "system", "content": "# Planner Rule Packs\n" + planner_business_rules_prompt_section()},
+        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
+        {"role": "system", "content": PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT},
     ]
 
 
@@ -93,10 +95,11 @@ def planner_v2_repair_messages_for_model(
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
         {"role": "system", "content": "# Planner Rule Packs\n" + planner_business_rules_prompt_section()},
+        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
+        {"role": "system", "content": PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT},
     ]
 
 
@@ -121,7 +124,7 @@ async def run_planner_brain_v2(
     nested_calls: list[dict[str, Any]] = []
     initial_error = ""
     try:
-        payload = await model_client.chat_json(initial_messages, tier=tier, temperature=0.1)
+        payload = await model_client.chat_json(initial_messages, tier=tier, temperature=0.0)
         plan = build_planner_plan_v2(state, payload)
         initial_usage = model_usage_snapshot(model_client)
     except Exception as exc:
@@ -245,6 +248,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "customer_profile": {} if suppress_memory else _compact_customer_profile_for_planner(state.get("customer_profile") or {}),
         "history_events": [] if suppress_memory else (state.get("history_events") or [])[-8:],
         "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
+        "transaction_facts": {} if suppress_memory else _transaction_facts_for_planner(state),
         "current_known_store": current_known_store,
         "store_candidate": store_candidate,
         "current_turn_context": current_turn_context,
@@ -661,6 +665,55 @@ def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
     if compact_orders:
         output["orders"] = compact_orders
     return output
+
+
+def _transaction_facts_for_planner(state: AgentState) -> dict[str, Any]:
+    """Expose normalized order facts without deciding the customer's sales action."""
+
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    orders = context.get("orders") if isinstance(context.get("orders"), list) else []
+    unpaid_orders: list[dict[str, Any]] = []
+    paid_orders: list[dict[str, Any]] = []
+    for raw in orders[:8]:
+        if not isinstance(raw, dict):
+            continue
+        order_id = str(raw.get("id") or raw.get("order_id") or raw.get("order_no") or "").strip()
+        if not order_id:
+            continue
+        required = raw.get("prepay_required")
+        if required in (None, ""):
+            required = raw.get("fee_required")
+        paid = raw.get("prepay_paid")
+        if paid in (None, ""):
+            paid = raw.get("fee_paid")
+        deposit_state = str(raw.get("deposit_state") or "").strip()
+        if not deposit_state:
+            deposit_state = "paid_by_order" if _numeric_order_amount(paid) > 0 else (
+                "required_unpaid" if _numeric_order_amount(required) > 0 else "unknown"
+            )
+        item = {
+            "order_id": order_id,
+            "store_id": str(raw.get("store_id") or "").strip(),
+            "prepay_required": required,
+            "prepay_paid": paid,
+            "deposit_state": deposit_state,
+        }
+        if deposit_state == "paid_by_order" or _numeric_order_amount(paid) > 0:
+            paid_orders.append(item)
+        elif deposit_state == "required_unpaid" and _numeric_order_amount(required) > 0:
+            unpaid_orders.append(item)
+    return {
+        "has_unpaid_order": bool(unpaid_orders),
+        "unpaid_orders": unpaid_orders,
+        "paid_orders": paid_orders,
+    }
+
+
+def _numeric_order_amount(value: Any) -> int:
+    try:
+        return int(float(str(value or "0").strip()))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _compact_image_info(raw: dict[str, Any]) -> dict[str, Any]:

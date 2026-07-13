@@ -29,7 +29,7 @@
           "offer_facts": {
             "activity_price": 268,
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       }
@@ -144,7 +144,7 @@
     },
     "expected": {
       "must_include_semantics": ["平台同城投放或展示定位", "厦门有真实门店", "思明和湖里", "服务和检测流程一致"],
-      "must_not_include": ["广告错了", "骗您的", "集美没有所以发不了", "投诉"],
+      "must_not_include": ["广告错了", "骗您的", "集美没有所以发不了", "投诉", "更顺路", "更近", "离您近"],
       "message_types": ["text"],
       "style": ["解释自然", "不甩锅生硬"]
     }
@@ -170,7 +170,7 @@
             "activity_price": 268,
             "deposit_per_person": 10,
             "tail_payment_single": 258,
-            "refund_policy": "不做退10元",
+            "refund_policy": "未做或不满意可退",
             "original_price": 1980
           }
         }
@@ -229,13 +229,25 @@
       "planner_decision": {
         "decision": "direct_reply",
         "payment_action": "send_now",
+        "payment_decision": {"action": "send_now", "party_size": 1, "amount": 10},
+        "order_decision": {"action": "use_existing", "order_id": "order-registration-10", "store_id": "562", "amount": 10},
         "payment_amount": 10
       },
       "fact_envelope": {
         "structured_facts": {
+          "order_facts": [
+            {
+              "type": "work_order",
+              "status": "reused",
+              "order_id": "order-registration-10",
+              "store_id": "562",
+              "prepay_required": 10,
+              "deposit_state": "required_unpaid"
+            }
+          ],
           "offer_facts": {
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       }
@@ -266,7 +278,7 @@
         "structured_facts": {
           "offer_facts": {
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       }
@@ -291,14 +303,37 @@
       "planner_decision": {
         "decision": "direct_reply",
         "payment_action": "send_now",
-        "payment_amount": 10
+        "payment_amount": 10,
+        "payment_decision": {
+          "action": "send_now",
+          "party_size": 1,
+          "amount": 10,
+          "source": "current_message",
+          "confidence": "high"
+        },
+        "order_decision": {
+          "action": "use_existing",
+          "order_id": "order-single-entry-1",
+          "store_id": "227",
+          "amount": 10
+        }
       },
       "fact_envelope": {
         "structured_facts": {
           "offer_facts": {
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
-          }
+            "refund_policy": "未做或不满意可退"
+          },
+          "order_facts": [
+            {
+              "type": "work_order",
+              "status": "reused",
+              "order_id": "order-single-entry-1",
+              "store_id": "227",
+              "prepay_required": 10,
+              "deposit_state": "required_unpaid"
+            }
+          ]
         }
       }
     },
@@ -329,7 +364,7 @@
         "structured_facts": {
           "offer_facts": {
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       }
@@ -465,7 +500,7 @@
           "offer_facts": {
             "limited_quota": true,
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       }
@@ -495,7 +530,7 @@
       },
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"deposit_per_person": 10, "refund_policy": "不做退10元"}
+          "offer_facts": {"deposit_per_person": 10, "refund_policy": "未做或不满意可退"}
         }
       }
     },
@@ -514,7 +549,7 @@
     "input_payload": {
       "current_message": "这个到店抵扣对吧",
       "conversation_history": [
-        "小贝: 10元预约金到店抵扣，不做退10元。",
+        "小贝: 10元预约金到店抵扣，未做或不满意可退。",
         "小贝: 我把小程序收款卡发您了。"
       ],
       "planner_decision": {
@@ -529,7 +564,7 @@
       },
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"deposit_per_person": 10, "refund_policy": "不做退10元"}
+          "offer_facts": {"deposit_per_person": 10, "refund_policy": "未做或不满意可退"}
         }
       }
     },
@@ -568,7 +603,7 @@
               "deposit_state": "required_unpaid"
             }
           ],
-          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元"}
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "未做或不满意可退"}
         }
       }
     },
@@ -597,8 +632,9 @@
         "decision": "direct_reply",
         "conversion_stage": "objection_resolution",
         "next_step": "solve_blocker",
-        "payment_action": "explain_existing",
-        "payment_decision": {"action": "explain", "source": "current_acceptance+frequency_evidence", "confidence": "medium"}
+        "payment_action": "send_now",
+        "payment_decision": {"action": "send_now", "party_size": 1, "amount": 10, "source": "current_acceptance+frequency_evidence", "confidence": "medium"},
+        "order_decision": {"action": "use_existing", "order_id": "order-frequency-1", "store_id": "227", "amount": 10, "source": "structured_order"}
       },
       "sop_progress": {
         "sent_categories": ["effect_case", "activity_price", "store_intro", "deposit_explained"],
@@ -612,14 +648,16 @@
       },
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元", "limited_quota": true}
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "未做或不满意可退", "limited_quota": true},
+          "order_facts": [{"type": "work_order", "status": "reused", "order_id": "order-frequency-1", "store_id": "227", "prepay_required": 10, "deposit_state": "required_unpaid"}]
         }
       }
     },
     "expected": {
       "must_include_semantics": ["自然确认客户已理解", "小程序收款卡或转账的付款选择", "只用一个活动或名额理由"],
-      "must_not_include": ["安排下一步", "继续处理", "温馨提醒", "尊敬的客户", "完整复述268、10元、258和退款四项规则", "payment_collection"],
-      "message_types": ["text"],
+      "must_not_include": ["安排下一步", "继续处理", "温馨提醒", "尊敬的客户", "完整复述268、10元、258和退款四项规则"],
+      "message_types": ["text", "payment_collection"],
+      "payment_amount": 10,
       "style": ["亲切微信销售", "不复读", "明确推动决策"]
     }
   },
@@ -647,7 +685,7 @@
       },
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元", "limited_quota": true},
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "未做或不满意可退", "limited_quota": true},
           "order_facts": [{"type": "work_order", "status": "reused", "order_id": "order-frequency-2", "store_id": "227", "prepay_required": 10, "deposit_state": "required_unpaid"}]
         }
       }
@@ -658,6 +696,48 @@
       "message_types": ["text", "payment_collection"],
       "payment_amount": 10,
       "style": ["直接自然", "不机械复读"]
+    }
+  },
+  {
+    "id": "reply_practical_delay_keeps_activity_slot",
+    "node": "reply",
+    "current_message": "天气太热了，我晚点再过去吧",
+    "input_payload": {
+      "current_message": "天气太热了，我晚点再过去吧",
+      "conversation_history": [
+        "小贝: 同类改善参考和厦门门店信息已经发您了。",
+        "小贝: 这次活动价268，线上10元是先保留活动资格，到店抵扣。",
+        "用户: 天气太热了，我晚点再过去吧"
+      ],
+      "planner_decision": {
+        "decision": "direct_reply",
+        "conversion_stage": "deposit_push",
+        "next_step": "send_deposit",
+        "payment_action": "send_now",
+        "payment_decision": {"action": "send_now", "party_size": 1, "amount": 10, "source": "semantic_practical_friction+active_order", "confidence": "high"}
+      },
+      "sop_progress": {
+        "sent_categories": ["effect_case", "activity_price", "store_intro", "deposit_explained"],
+        "stage_goal": "先解决到店时机顾虑，再保留活动资格"
+      },
+      "sent_message_summary": {
+        "payment_collection_sent": true,
+        "payment_collection_count": 6,
+        "payment_collection": {"today_count": 1, "prior_count": 5, "total_count": 6, "last_sent_at": "2026-07-13T10:20:00+08:00", "last_amount": 10, "customer_turns_since_last_card": 3, "count_confidence": "high"}
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "未做或不满意可退", "limited_quota": true},
+          "order_facts": [{"type": "work_order", "status": "reused", "order_id": "order-practical-delay-1", "store_id": "227", "prepay_required": 10, "deposit_state": "required_unpaid"}]
+        }
+      }
+    },
+    "expected": {
+      "must_include_semantics": ["理解天气热的实际不便", "到店时间不用现在定", "10元保留活动资格", "小程序收款卡"],
+      "must_not_include": ["名额先不急", "等您想去的时候再定", "尊敬的客户", "温馨提醒"],
+      "message_types": ["text", "payment_collection"],
+      "payment_amount": 10,
+      "style": ["像真人微信销售", "承接实际顾虑后自然成交", "不催客户立刻到店"]
     }
   }
 ]

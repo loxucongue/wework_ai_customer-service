@@ -3,12 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.services.payment_collection import (
-    has_forbidden_deposit_refund_policy_text,
-    normalize_deposit_refund_policy_text,
-    payment_collection_content,
-    payment_collection_context,
-)
+from app.services.payment_collection import payment_collection_content, payment_collection_context
 
 
 PAYMENT_TEXT_TERMS = ("预约金", "订金", "定金", "付款", "付完", "收款", "报名入口", "付款入口", "10元", "10 元")
@@ -41,8 +36,6 @@ def sanitize_sop_reply_messages(
             text = str(item["content"].get("text") or "")
             if has_payment and index == first_payment_index - 1 and payment_amount > 10:
                 text = _payment_intro_text(payment_amount)
-            else:
-                text = normalize_deposit_refund_text(text)
             if not text.strip():
                 continue
             item["content"] = {"text": text}
@@ -106,14 +99,6 @@ def apply_sop_text_adjustments(
         "applied_orders": applied_orders,
         "rejected": rejected,
     }
-
-
-def normalize_deposit_refund_text(text: str) -> str:
-    return normalize_deposit_refund_policy_text(text)
-
-
-def has_forbidden_deposit_refund_text(text: str) -> bool:
-    return has_forbidden_deposit_refund_policy_text(text)
 
 
 def _normalize_message(message: dict[str, Any], index: int) -> dict[str, Any]:
@@ -224,7 +209,10 @@ def _first_payment_index(messages: list[dict[str, Any]]) -> int:
 
 def _payment_intro_text(amount: int) -> str:
     participants = max(1, amount // 10)
-    return f"可以，{participants}位一共{amount}元预约金，每位10元，用来锁活动名额，到店抵扣，不做退10元。"
+    return (
+        f"可以，{participants}位一共{amount}元预约金，每位10元，用来锁活动名额，到店抵扣；"
+        "未做或不满意可退，实际按付款记录核对。"
+    )
 
 
 def _renumber_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

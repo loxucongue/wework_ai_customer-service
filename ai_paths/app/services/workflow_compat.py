@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.schemas import ChatRequest, ChatResponse
-from app.services.payment_collection import normalize_deposit_refund_policy_text, payment_collection_content
+from app.services.payment_collection import payment_collection_content
 
 
 def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
@@ -139,7 +139,7 @@ def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
         return {"type": "payment_collection", "order": order, "content": _payment_collection_content(raw_content)}
     if message_type == "store_address":
         return {"type": "store_address", "order": order, "content": _store_address_content(raw_content)}
-    content = normalize_deposit_refund_policy_text(_message_content_value(raw_content, "text"))
+    content = _message_content_value(raw_content, "text")
     return {"type": "text", "order": order, "content": {"text": content}}
 
 

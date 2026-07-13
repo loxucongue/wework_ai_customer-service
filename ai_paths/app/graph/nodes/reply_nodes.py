@@ -7,7 +7,7 @@ from app.graph.nodes.common import model_usage_snapshot
 from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
-    normalize_deposit_refund_policy_text,
+    has_matching_active_work_order,
     normalize_payment_amount_text,
     payment_collection_content,
     payment_collection_context,
@@ -149,9 +149,7 @@ def create_synthesize_reply_node(
                     messages = _filter_unsupported_images(messages, state, warnings)
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
-                messages = _normalize_payment_amount_text_messages(
-                    _normalize_deposit_refund_policy_messages(append_activity_intro_image(messages, state, warnings))
-                )
+                messages = _normalize_payment_amount_text_messages(append_activity_intro_image(messages, state, warnings))
                 for warning in warnings:
                     if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
                         warning.setdefault("node", "synthesize_reply")
@@ -493,6 +491,8 @@ def _messages_have_payment_collection(messages: list[dict[str, Any]]) -> bool:
 
 
 def _state_requires_payment_collection(state: AgentState) -> bool:
+    if not has_matching_active_work_order(state):
+        return False
     payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
     decision_action = str(payment_decision.get("action") or "")
     if decision_action in {"send_now", "resend"}:
@@ -506,13 +506,6 @@ def _state_requires_payment_collection(state: AgentState) -> bool:
         return True
     if str(state.get("payment_state") or "") == "customer_claimed_paid":
         return False
-    if str(state.get("conversion_stage") or "") == "deposit_push":
-        return True
-    if str(state.get("next_step") or "") == "send_deposit":
-        return True
-    for item in state.get("planner_reply_messages") or []:
-        if isinstance(item, dict) and str(item.get("type") or "") == "payment_collection":
-            return True
     return False
 
 
@@ -805,8 +798,8 @@ def _reply_repair_hint(error: str) -> str:
         return "客户同行人数超过4位时不要发送 payment_collection；改成 text 确认一共几位到店，或说明多人同行先由门店承接确认。"
     if "human_handoff_notice" in error:
         return "需要内部关注时，先用客户可见 text 正面回答和引导到店检测或核对事实，再追加 human_handoff_notice；text 不要说转人工、转同事、专业同事、稍等一下哈。"
-    if "ambiguous_deposit_refund_wording" in error:
-        return "预约金退款口径统一说“到店抵扣，不做退10元”。不要说“退还10元/退还20元/全额退款/一分不少退还/不满意退”，避免同客户口径冲突。"
+    if "ambiguous_deposit_refund_wording" in error or "legacy_deposit_refund_policy" in error:
+        return "预约金口径统一为“每位10元锁活动名额，到店抵扣；未做或不满意可退，实际按付款记录核对”。不要承诺自动退款、即时到账、具体退款金额或处理时效。"
     if "case_context_must_not_use_activity_intro_image" in error:
         return "本轮客户在问效果或案例，且已有 case_facts 案例图片事实。必须回答效果顾虑，并且如输出 image，只能使用 case_facts 里的 image_url；不要输出活动宣传图。"
     if "case_image_required_for_effect_turn" in error:
@@ -919,7 +912,6 @@ def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = 
                 text = str(content.get("text") or "").strip()
             else:
                 text = str(content or item.get("text") or "").strip()
-            text = normalize_deposit_refund_policy_text(text)
             if text:
                 messages.append({"type": "text", "order": int(item.get("order") or index), "content": {"text": text}})
             continue
@@ -942,23 +934,6 @@ def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = 
             if store_id:
                 messages.append({"type": "store_address", "order": int(item.get("order") or index), "content": {"store_id": store_id}})
     return _normalize_payment_amount_text_messages(messages)
-
-
-def _normalize_deposit_refund_policy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    output: list[dict[str, Any]] = []
-    for item in messages:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("type") or "") != "text":
-            output.append(item)
-            continue
-        content = item.get("content")
-        if isinstance(content, dict):
-            text = normalize_deposit_refund_policy_text(str(content.get("text") or ""))
-            output.append({**item, "content": {**content, "text": text}})
-        else:
-            output.append({**item, "content": normalize_deposit_refund_policy_text(str(content or ""))})
-    return _renumber(output)
 
 
 def _normalize_payment_amount_text_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

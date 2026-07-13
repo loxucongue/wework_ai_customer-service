@@ -52,12 +52,14 @@ class ModelClient:
         async def consume(raw: dict[str, Any]) -> str:
             return self._extract_text(raw)
 
-        return await self._run_model_candidates(
-            models,
-            tier=tier,
-            build_payload=build_payload,
-            consume=consume,
-            failure_label="All model candidates failed",
+        return await self._run_with_transient_retries(
+            lambda: self._run_model_candidates(
+                models,
+                tier=tier,
+                build_payload=build_payload,
+                consume=consume,
+                failure_label="All model candidates failed",
+            )
         )
 
     async def chat_json(
@@ -88,12 +90,14 @@ class ModelClient:
         async def consume(raw: dict[str, Any]) -> dict[str, Any]:
             return self._parse_json(self._extract_text(raw))
 
-        return await self._run_model_candidates(
-            models,
-            tier=tier,
-            build_payload=build_payload,
-            consume=consume,
-            failure_label="All JSON model candidates failed",
+        return await self._run_with_transient_retries(
+            lambda: self._run_model_candidates(
+                models,
+                tier=tier,
+                build_payload=build_payload,
+                consume=consume,
+                failure_label="All JSON model candidates failed",
+            )
         )
 
     async def vision_json(
@@ -130,13 +134,52 @@ class ModelClient:
         async def consume(raw: dict[str, Any]) -> dict[str, Any]:
             return self._parse_json(self._extract_text(raw))
 
-        return await self._run_model_candidates(
-            models,
-            tier=tier,
-            build_payload=build_payload,
-            consume=consume,
-            failure_label="All vision model candidates failed",
+        return await self._run_with_transient_retries(
+            lambda: self._run_model_candidates(
+                models,
+                tier=tier,
+                build_payload=build_payload,
+                consume=consume,
+                failure_label="All vision model candidates failed",
+            )
         )
+
+    async def _run_with_transient_retries(self, invoke: Callable[[], Awaitable[T]]) -> T:
+        """Retry provider and format failures without changing business decisions."""
+        attempts = max(1, int(self.settings.model_request_retry_attempts or 1))
+        retry_delay = max(0.0, float(self.settings.model_request_retry_delay_seconds or 0.0))
+        retry_errors: list[str] = []
+
+        for attempt in range(1, attempts + 1):
+            try:
+                result = await invoke()
+            except Exception as exc:
+                retry_errors.append(f"{type(exc).__name__}: {exc}")
+                usage = self.last_usage if isinstance(self.last_usage, dict) else {}
+                usage.update(
+                    {
+                        "request_attempt": attempt,
+                        "request_retry_errors": list(retry_errors),
+                    }
+                )
+                self.last_usage = usage
+                if attempt >= attempts or not self._is_retryable_request_error(exc):
+                    raise
+                if retry_delay:
+                    await asyncio.sleep(retry_delay)
+                continue
+
+            usage = self.last_usage if isinstance(self.last_usage, dict) else {}
+            usage.update(
+                {
+                    "request_attempt": attempt,
+                    "request_retry_errors": list(retry_errors),
+                }
+            )
+            self.last_usage = usage
+            return result
+
+        raise RuntimeError("model retry loop exited unexpectedly")
 
     async def _run_model_candidates(
         self,
@@ -154,7 +197,7 @@ class ModelClient:
         pending: dict[asyncio.Task[T], tuple[int, str]] = {}
         next_index = 0
         max_parallel = max(1, min(2, int(self.settings.model_hedge_max_parallel or 1)))
-        hedge_delay = max(0.0, float(self.settings.model_hedge_delay_seconds or 0.0))
+        hedge_delay = self._hedge_delay_for_tier(tier)
         total_timeout = self._total_timeout_for_tier(tier)
         started_at = time.perf_counter()
         deadline = started_at + total_timeout
@@ -433,6 +476,11 @@ class ModelClient:
             return max(1.0, float(self.settings.model_reply_total_timeout_seconds or self.settings.model_timeout_seconds))
         return max(1.0, float(self.settings.model_timeout_seconds))
 
+    def _hedge_delay_for_tier(self, tier: ModelTier) -> float:
+        if tier == "planner":
+            return max(0.0, float(self.settings.model_planner_hedge_delay_seconds or 0.0))
+        return max(0.0, float(self.settings.model_hedge_delay_seconds or 0.0))
+
     @staticmethod
     def _anthropic_content_to_text(content: Any) -> str:
         if isinstance(content, str):
@@ -507,6 +555,15 @@ class ModelClient:
     @staticmethod
     def _should_try_next_model(exc: Exception) -> bool:
         return model_selection.should_try_next_model(exc)
+
+    @staticmethod
+    def _is_retryable_request_error(exc: Exception) -> bool:
+        if isinstance(exc, (TimeoutError, json.JSONDecodeError, httpx.TimeoutException, httpx.NetworkError)):
+            return True
+        message = str(exc).lower()
+        if "jsondecodeerror" in message or "total timeout" in message:
+            return True
+        return any(f"http {status}" in message for status in (429, 500, 502, 503, 504))
 
     @staticmethod
     def _extract_text(raw: dict[str, Any]) -> str:

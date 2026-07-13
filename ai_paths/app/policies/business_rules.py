@@ -175,7 +175,7 @@ def _fact_boundary_for_rule(rule_id: str, tools: list[str]) -> str:
     if "professional_assist" in tools:
         return "投诉、退款、严重不适、强人工诉求走 professional_assist，并在客户回复后追加 human_handoff_notice。"
     if rule_id == "S3_PRICE":
-        return "价格可直接使用 offer_facts：268、10、258、不做退10元、原价1980、名额有限。"
+        return "价格可直接使用 offer_facts：268、10、258、未做或不满意可退、原价1980、名额有限。"
     if rule_id == "S1_BRAND_TRUST":
         return "品牌信任只说集团连锁、全国300多家、斑点和皮肤管理、费用透明；不说企微主体，不编门店名。"
     if rule_id == "S2_PRE_VISIT_TRANSPORT_POLICY":

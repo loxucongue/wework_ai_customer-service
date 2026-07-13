@@ -109,6 +109,7 @@ def _relevant_city_summary(
         ],
         "requested_areas": area_hints[:4],
         "exact_area_store_count": len(exact_area_stores),
+        "requested_district_stores": [_compact_store(store) for store in exact_area_stores],
         "stores": [_compact_store(store) for store in city_stores[:12]],
     }
 

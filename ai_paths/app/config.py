@@ -54,9 +54,12 @@ class Settings(BaseSettings):
     model_vision_fallbacks: str = ""
     model_timeout_seconds: int = 45
     model_hedge_delay_seconds: float = 5.0
+    model_planner_hedge_delay_seconds: float = 12.0
     model_hedge_max_parallel: int = 2
     model_planner_total_timeout_seconds: float = 35.0
     model_reply_total_timeout_seconds: float = 45.0
+    model_request_retry_attempts: int = 2
+    model_request_retry_delay_seconds: float = 0.5
     model_json_max_tokens: int = 2048
     model_text_max_tokens: int = 2048
     memory_dir: Path = Path("logs/memory")

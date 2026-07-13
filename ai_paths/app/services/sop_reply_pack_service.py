@@ -8,7 +8,6 @@ from typing import Any
 
 from app.config import Settings
 from app.services.payment_collection import PAYMENT_COLLECTION_ALLOWED_AMOUNTS
-from app.services.sop_message_sanitizer import has_forbidden_deposit_refund_text
 
 
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address", "human_handoff", "human_handoff_notice"}
@@ -217,7 +216,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
         "scope": "event_first_add",
         "sop_category": "price_quote",
         "name": "事件-60分钟报价",
-        "purpose": "客户沉默时补齐活动价、预约金、尾款和不做退10元规则，推进优惠名额。",
+            "purpose": "客户沉默时补齐活动价、预约金、尾款和可退规则，推进优惠名额。",
         "order": 140,
         "send_once": True,
         "event_type": "sop_friend_added_schedule_batch",
@@ -238,7 +237,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
                 "type": "text",
                 "order": 2,
                 "content": {
-                    "text": "到店先看效果和方案，满意再做；线上10元预约金到店抵扣，不做退10元，主要是先帮您保留活动价名额。"
+                    "text": "到店先看效果和方案，满意再做；线上10元预约金到店抵扣，未做或不满意可退，主要是先帮您保留活动价名额。"
                 },
             },
             {
@@ -270,7 +269,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
                 "type": "text",
                 "order": 1,
                 "content": {
-                    "text": "亲，我先给您把优惠名额留住，10元只是预约金，到店直接抵扣，不做退10元。"
+                    "text": "亲，我先给您把优惠名额留住，10元只是预约金，到店直接抵扣；后面不做或不满意可以退，按付款记录核对。"
                 },
             },
             {
@@ -307,7 +306,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
                 "type": "text",
                 "order": 1,
                 "content": {
-                    "text": "您看下这个改善参考，活动名额先锁住更稳，不限到店时间，10元预约金到店抵扣，不做退10元。"
+                    "text": "您看下这个改善参考，活动名额先锁住更稳，到店时间按您方便安排，10元预约金到店抵扣；未做或不满意可退。"
                 },
             },
             {
@@ -557,8 +556,8 @@ def _audit_config(config: dict[str, Any]) -> dict[str, Any]:
                 text = str(content.get("text") or "")
                 if enabled and not text.strip():
                     issues.append(_audit_issue("error", "empty_text", pack_id, "启用包存在空 text 消息。", order=index))
-                if has_forbidden_deposit_refund_text(text):
-                    issues.append(_audit_issue("error", "deposit_refund_conflict", pack_id, "预约金退款口径必须统一为“到店抵扣，不做退10元”。", order=index))
+                if "不做退10元" in text or "不做退还10元" in text:
+                    issues.append(_audit_issue("error", "legacy_deposit_refund_policy", pack_id, "预约金退款口径必须统一为“到店抵扣；未做或不满意可退，实际按付款记录核对”。", order=index))
                 previous_text = text
                 continue
             if message_type in {"image", "video"}:
@@ -573,7 +572,7 @@ def _audit_config(config: dict[str, Any]) -> dict[str, Any]:
                 if amount not in PAYMENT_COLLECTION_ALLOWED_AMOUNTS:
                     issues.append(_audit_issue("error", "invalid_payment_amount", pack_id, "预约金金额只能是 10/20/30/40。", order=index))
                 if enabled and not previous_text:
-                    issues.append(_audit_issue("warning", "payment_without_intro_text", pack_id, "payment_collection 前应有 text 说明锁名额、到店抵扣和不做退10元。", order=index))
+                    issues.append(_audit_issue("warning", "payment_without_intro_text", pack_id, "payment_collection 前应有 text 说明锁名额、到店抵扣和可退规则。", order=index))
 
     _audit_first_add_candidates(packs, issues)
     errors = sum(1 for issue in issues if issue.get("severity") == "error")

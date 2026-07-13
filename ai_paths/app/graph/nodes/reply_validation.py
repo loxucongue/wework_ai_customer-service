@@ -10,8 +10,7 @@ from app.graph.nodes.contextual_short_message import is_contextual_short_message
 from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
-    has_forbidden_deposit_refund_policy_text,
-    normalize_deposit_refund_policy_text,
+    has_matching_active_work_order,
     payment_amount_matches_text,
     payment_collection_content,
     payment_collection_context,
@@ -28,7 +27,7 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
     messages = payload.get("reply_messages")
     if not isinstance(messages, list) or not messages:
         raise ValueError("Model JSON missing reply_messages")
-    max_visible_messages = _max_visible_messages(state or {})
+    max_visible_messages = _max_visible_messages(state or {}, messages)
     result: list[dict[str, Any]] = []
     visible_count = 0
     has_handoff = False
@@ -74,7 +73,7 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
             continue
         if visible_count >= max_visible_messages:
             continue
-        content = normalize_deposit_refund_policy_text(message_content_text(item.get("content")))
+        content = message_content_text(item.get("content"))
         if not content:
             continue
         if msg_type == "text":
@@ -95,8 +94,50 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
     return renumber_messages(result)
 
 
-def _max_visible_messages(state: dict[str, Any]) -> int:
+def _max_visible_messages(state: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> int:
+    if _is_same_district_store_sequence(messages or [], state):
+        return max(MAX_VISIBLE_MESSAGES, _visible_message_count(messages or []))
     return MAX_SOP_SEQUENCE_VISIBLE_MESSAGES if _is_sop_sequence_state(state) else MAX_VISIBLE_MESSAGES
+
+
+def _is_same_district_store_sequence(messages: list[dict[str, Any]], state: dict[str, Any]) -> bool:
+    visible = [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") in VISIBLE_MESSAGE_TYPES]
+    card_ids = {
+        message_content_store_id(item.get("content"))
+        for item in visible
+        if str(item.get("type") or "") == "store_address" and message_content_store_id(item.get("content"))
+    }
+    if len(card_ids) < 2 or any(str(item.get("type") or "") not in {"text", "store_address"} for item in visible):
+        return False
+    text_count = sum(1 for item in visible if str(item.get("type") or "") == "text")
+    if text_count > 1:
+        return False
+    for region in _requested_district_regions(state):
+        if card_ids.issubset(region):
+            return True
+    return False
+
+
+def _visible_message_count(messages: list[dict[str, Any]]) -> int:
+    return sum(1 for item in messages if isinstance(item, dict) and str(item.get("type") or "") in VISIBLE_MESSAGE_TYPES)
+
+
+def _requested_district_regions(state: dict[str, Any]) -> list[set[str]]:
+    summary = state.get("store_scope_summary") if isinstance(state.get("store_scope_summary"), dict) else {}
+    regions = summary.get("relevant_regions") if isinstance(summary.get("relevant_regions"), list) else []
+    output: list[set[str]] = []
+    for region in regions:
+        if not isinstance(region, dict):
+            continue
+        stores = region.get("requested_district_stores") if isinstance(region.get("requested_district_stores"), list) else []
+        ids = {
+            str(store.get("store_id") or store.get("id") or "").strip()
+            for store in stores
+            if isinstance(store, dict) and str(store.get("store_id") or store.get("id") or "").strip()
+        }
+        if ids:
+            output.append(ids)
+    return output
 
 
 def _is_sop_sequence_state(state: dict[str, Any]) -> bool:
@@ -129,15 +170,16 @@ def _move_handoff_notices_after_visible(messages: list[dict[str, Any]]) -> list[
 
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_handoff_notice_text(messages)
+    _validate_deposit_refund_policy(messages)
     _validate_payment_not_during_health_risk_hold(messages, state)
     _validate_payment_collection_consistency(messages, state)
     _validate_payment_collection_amount_text(messages, state)
     _validate_payment_collection_order_fact(messages, state)
     _validate_no_payment_after_current_appointment_created(messages, state)
-    _validate_deposit_refund_wording(messages, state)
     _validate_case_image_priority(messages, state)
     _validate_effect_absolute_safety_claims(messages, state)
     _validate_store_address_message_facts(messages, state)
+    _validate_multi_store_address_same_district(messages, state)
     _validate_store_address_card_consistency(messages, state)
     _validate_appointment_lookup_promise(messages, state)
     _validate_appointment_time_facts(messages, state)
@@ -209,6 +251,13 @@ def _validate_handoff_notice_text(messages: list[dict[str, Any]]) -> None:
         raise ValueError("human_handoff_notice_customer_text_not_resolved")
 
 
+def _validate_deposit_refund_policy(messages: list[dict[str, Any]]) -> None:
+    """Reject only the retired fixed policy; wording repair remains model-led."""
+    text = _combined_text(messages)
+    if re.search(r"不做退(?:还)?\s*\d+\s*元", text):
+        raise ValueError("legacy_deposit_refund_policy")
+
+
 def debug_message_contents(messages: list[dict[str, Any]]) -> list[str]:
     return [message_content_text(message.get("content"))[:240] for message in messages[:4] if isinstance(message, dict)]
 
@@ -254,6 +303,10 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         ):
             raise ValueError("payment_participant_count_confirm_required")
         return
+    if needs_payment and not has_payment and not has_matching_active_work_order(state):
+        if _promises_payment_entry(text):
+            raise ValueError("payment_collection_requires_active_work_order")
+        return
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
 
@@ -263,21 +316,8 @@ def _validate_payment_collection_order_fact(messages: list[dict[str, Any]], stat
         return
     if "order_decision" not in state:
         return
-    structured = _structured_facts(state)
-    order_facts = structured.get("order_facts") if isinstance(structured.get("order_facts"), list) else []
-    if any(
-        isinstance(item, dict)
-        and str(item.get("status") or "") in {"created", "reused"}
-        and str(item.get("order_id") or "").strip()
-        for item in order_facts
-    ):
+    if has_matching_active_work_order(state):
         return
-    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
-    for order in context.get("orders") or []:
-        if not isinstance(order, dict):
-            continue
-        if str(order.get("status") or "") in {"pending", "waiting_schedule", "scheduled"} and str(order.get("id") or order.get("order_id") or "").strip():
-            return
     raise ValueError("payment_collection_requires_active_work_order")
 
 
@@ -326,14 +366,6 @@ def _validate_payment_collection_amount_text(messages: list[dict[str, Any]], sta
         raise ValueError("payment_participant_count_confirm_required")
     if not payment_amount_matches_text(messages):
         raise ValueError("payment_collection_amount_text_mismatch")
-
-
-def _validate_deposit_refund_wording(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    text = _combined_text(messages)
-    if not text:
-        return
-    if "全额退还" in text or "全额退款" in text or has_forbidden_deposit_refund_policy_text(text):
-        raise ValueError("ambiguous_deposit_refund_wording")
 
 
 def _validate_case_image_priority(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -427,6 +459,19 @@ def _validate_store_address_message_facts(messages: list[dict[str, Any]], state:
         raise ValueError("unsupported_store_address_message")
     if _store_address_card_conflicts_with_visible_text(messages, state, store_ids):
         raise ValueError("store_address_text_card_mismatch")
+
+
+def _validate_multi_store_address_same_district(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    store_ids = {
+        message_content_store_id(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
+    }
+    store_ids.discard("")
+    if len(store_ids) < 2:
+        return
+    if not any(store_ids.issubset(region) for region in _requested_district_regions(state)):
+        raise ValueError("multiple_store_address_cards_must_share_requested_district")
 
 
 def _validate_store_address_card_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -753,6 +798,11 @@ def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
             allowed.add(value)
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     allowed.update(store_scope_ids(knowledge))
+    for region in _store_scope_summary_regions(state):
+        for key in ("stores", "requested_district_stores"):
+            for item in region.get(key) or []:
+                if isinstance(item, dict):
+                    _add_store_id(allowed, item)
     return allowed
 
 
@@ -801,6 +851,11 @@ def _known_store_records_for_validation(state: dict[str, Any]) -> list[dict[str,
     for item in knowledge.get("stores") or []:
         if isinstance(item, dict):
             records.append(item)
+    for region in _store_scope_summary_regions(state):
+        for key in ("stores", "requested_district_stores"):
+            for item in region.get(key) or []:
+                if isinstance(item, dict):
+                    records.append(item)
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
     if basic:
         records.append(
@@ -822,6 +877,12 @@ def _known_store_records_for_validation(state: dict[str, Any]) -> list[dict[str,
         seen.add(key)
         output.append(item)
     return output
+
+
+def _store_scope_summary_regions(state: dict[str, Any]) -> list[dict[str, Any]]:
+    summary = state.get("store_scope_summary") if isinstance(state.get("store_scope_summary"), dict) else {}
+    regions = summary.get("relevant_regions") if isinstance(summary.get("relevant_regions"), list) else []
+    return [item for item in regions if isinstance(item, dict)]
 
 
 def _store_record_for_id(records: list[dict[str, Any]], store_id: str) -> dict[str, Any]:

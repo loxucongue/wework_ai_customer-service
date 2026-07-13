@@ -715,7 +715,7 @@ def test_planner_payment_action_offer_resend_removes_same_turn_payment_card() ->
             "normalized_content": "你好",
             "conversation_history": [
                 "用户: 我报名",
-                "小贝: 我把10元预约金入口发您，到店抵扣，不做退10元。",
+                "小贝: 我把10元预约金入口发您，到店抵扣，未做或不满意可退。",
                 "小贝: payment_collection amount=10",
             ],
             "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 10}}],
@@ -760,7 +760,7 @@ def test_planner_payment_action_send_now_auto_appends_payment_card() -> None:
             "next_step": "send_deposit",
             "payment_state": "needs_payment",
             "payment_action": "send_now",
-            "reply_messages": [{"type": "text", "content": {"text": "好的，我给您发10元预约金入口，到店抵扣，不做退10元。"}}],
+            "reply_messages": [{"type": "text", "content": {"text": "好的，我给您发10元预约金入口，到店抵扣，未做或不满意可退。"}}],
             "tool_calls": [],
         },
     )
@@ -775,7 +775,7 @@ def test_planner_send_now_is_not_downgraded_by_short_message_guard() -> None:
             "normalized_content": "你好",
             "conversation_history": [
                 "用户: 我报名",
-                "小贝: 我把10元预约金入口发您，到店抵扣，不做退10元。",
+                "小贝: 我把10元预约金入口发您，到店抵扣，未做或不满意可退。",
                 "小贝: payment_collection amount=10",
             ],
             "current_turn_context": {
@@ -1013,7 +1013,7 @@ def test_accompany_deposit_direct_reply_missing_card_is_repaired() -> None:
                 {
                     "type": "text",
                     "content": {
-                        "text": "我马上为您生成10元预约金入口，锁住明天上午11点的名额，到店直接抵扣，不做退10元"
+                        "text": "我马上为您生成10元预约金入口，锁住明天上午11点的名额，到店直接抵扣，未做或不满意可退"
                     },
                 },
             ],
@@ -1341,7 +1341,7 @@ def test_payment_collection_over_four_people_requires_confirmation() -> None:
     assert any(item.get("missing") == "payment_participant_count_confirm_required" for item in plan["tool_policy_violations"])
 
 
-def test_payment_refund_wording_is_normalized_before_reply_validation() -> None:
+def test_legacy_non_refund_wording_is_repaired_before_customer_delivery() -> None:
     messages = validated_model_messages(
         {
             "reply_messages": [
@@ -1360,9 +1360,9 @@ def test_payment_refund_wording_is_normalized_before_reply_validation() -> None:
     )
 
     text = messages[0]["content"]
-    assert _u(r"\u4e0d\u505a\u900010\u5143") in text
-    assert _u(r"\u9000\u8fd820\u5143") not in text
-    validate_reply_consistency(messages, {"normalized_content": _u(r"\u6211\u548c\u670b\u53cb\u4e24\u4e2a\u4eba\u62a5\u540d")})
+    assert _u(r"\u4e0d\u505a\u9000\u8fd820\u5143") in text
+    with pytest.raises(ValueError, match="legacy_deposit_refund_policy"):
+        validate_reply_consistency(messages, {"normalized_content": _u(r"\u6211\u548c\u670b\u53cb\u4e24\u4e2a\u4eba\u62a5\u540d")})
 
 
 def test_generic_store_question_does_not_inherit_appointment_store() -> None:
@@ -2767,16 +2767,16 @@ def test_no_reply_not_allowed_for_current_availability_question() -> None:
     )
 
 
-def test_reply_validation_requires_payment_when_promising_entry() -> None:
-    with pytest.raises(ValueError, match="payment_collection_required"):
+def test_reply_validation_rejects_payment_promise_without_active_order() -> None:
+    with pytest.raises(ValueError, match="payment_collection_requires_active_work_order"):
         validate_reply_consistency(
             [{"type": "text", "order": 1, "content": {"text": "好的，我重新发您10元预约金入口"}}],
             {"conversion_stage": "deposit_push", "next_step": "send_deposit"},
         )
 
 
-def test_reply_validation_requires_payment_when_promising_signup_entry() -> None:
-    with pytest.raises(ValueError, match="payment_collection_required"):
+def test_reply_validation_rejects_signup_promise_without_active_order() -> None:
+    with pytest.raises(ValueError, match="payment_collection_requires_active_work_order"):
         validate_reply_consistency(
             [
                 {
@@ -2910,7 +2910,7 @@ def test_final_reply_appends_missing_required_handoff_notice() -> None:
 
 def test_final_reply_suppresses_stale_history_health_handoff_notice() -> None:
     messages = [
-        {"type": "text", "order": 1, "content": {"text": "周年庆活动价268元，线上10元预约金锁名额，到店抵扣，不做退10元。"}},
+        {"type": "text", "order": 1, "content": {"text": "周年庆活动价268元，线上10元预约金锁名额，到店抵扣，未做或不满意可退。"}},
         {"type": "text", "order": 2, "content": {"text": "目前您的健康评估正在由专业人员加急处理，结果出来后我会第一时间同步您。"}},
         {"type": "human_handoff_notice", "order": 3, "content": {"handoff_reason": "健康高风险评估未闭环"}},
     ]
@@ -2952,6 +2952,21 @@ def test_required_payment_collection_fallback_adds_missing_card() -> None:
         "normalized_content": _u(r"\u53ef\u4ee5"),
         "conversion_stage": "deposit_push",
         "next_step": "send_deposit",
+        "payment_decision": {"action": "send_now", "party_size": 2, "amount": 20},
+        "order_decision": {"action": "use_existing", "order_id": "order-20", "store_id": "227", "amount": 20},
+        "fact_envelope": {
+            "structured_facts": {
+                "order_facts": [
+                    {
+                        "status": "reused",
+                        "order_id": "order-20",
+                        "store_id": "227",
+                        "prepay_required": 20,
+                        "deposit_state": "required_unpaid",
+                    }
+                ]
+            }
+        },
         "current_turn_context": {
             "confirmed_store": {"store_name": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97")},
             "open_task": "deposit_push",

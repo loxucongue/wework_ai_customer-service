@@ -49,7 +49,7 @@
             "original_price": 1980,
             "deposit_per_person": 10,
             "tail_payment_single": 258,
-            "refund_policy": "不做退10元",
+            "refund_policy": "未做或不满意可退",
             "limited_quota": true
           }
         }
@@ -69,7 +69,10 @@
     "expected_decision": {
       "decision": "direct_reply",
       "customer_need": "解决效果疑虑并推进预约金/登记",
-      "payment_action": "explain_existing",
+      "allowed_payment_actions": [
+        "none",
+        "explain_existing"
+      ],
       "expected_message_types": [
         "text"
       ],
@@ -114,7 +117,7 @@
           "offer_facts": {
             "activity_price": 268,
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       },
@@ -131,7 +134,6 @@
           "purpose": "case_studies"
         }
       ],
-      "payment_action": "explain_existing",
       "allowed_payment_actions": [
         "none",
         "explain_existing",
@@ -173,7 +175,7 @@
           "offer_facts": {
             "activity_price": 268,
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       },
@@ -183,11 +185,14 @@
       ]
     },
     "expected_decision": {
-      "decision": "direct_reply",
+      "decision": "need_tools",
       "customer_need": "怕反黑/伤肤顾虑",
-      "payment_action": "explain_existing",
+      "allowed_payment_actions": ["none", "explain_existing"],
       "expected_message_types": [
         "text"
+      ],
+      "required_tools": [
+        {"name": "kb_search"}
       ],
       "must_not_call_tools": [
         "professional_assist"
@@ -372,7 +377,7 @@
             "activity_price": 268,
             "deposit_per_person": 10,
             "tail_payment_single": 258,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       },
@@ -434,24 +439,23 @@
         }
       },
       "available_tools": [
-        "available_time"
+        "create_work_order"
       ]
     },
     "expected_decision": {
-      "decision": "direct_reply",
-      "payment_action": "none",
-      "allowed_payment_actions": [
-        "none",
-        "confirm_next_step",
-        "explain_existing"
-      ],
+      "decision": "need_tools",
+      "payment_action": "send_now",
+      "payment_amount": 10,
       "expected_message_types": [
         "text"
       ],
-      "must_not_call_tools": [
-        "available_time"
+      "required_tools": [
+        {"name": "create_work_order"}
       ],
-      "notes": "客户说改天看看，不代表给出具体日期；不要查档期，也不要承诺已安排。"
+      "must_not_message_types": [
+        "payment_collection"
+      ],
+      "notes": "客户说改天看看是到店时机阻力，不代表放弃活动。没有有效订单时先开单；本轮不得直回发卡或承诺已安排。"
     }
   },
   {
@@ -485,7 +489,7 @@
           "offer_facts": {
             "activity_price": 268,
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       },
@@ -493,13 +497,17 @@
     },
     "expected_decision": {
       "decision": "direct_reply",
-      "payment_action": "send_now",
-      "payment_amount": 10,
+      "allowed_payment_actions": [
+        "none",
+        "explain_existing"
+      ],
       "expected_message_types": [
-        "text",
+        "text"
+      ],
+      "must_not_message_types": [
         "payment_collection"
       ],
-      "notes": "客户已按要求给姓名电话，属于高意向，可以发预约金入口。"
+      "notes": "客户已给姓名电话但尚无确认门店、有效订单或开单工具；只能先说明资料已收并补门店，不能发无法关联订单的卡。"
     }
   },
   {
@@ -528,7 +536,7 @@
         "structured_facts": {
           "offer_facts": {
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       },
@@ -573,7 +581,7 @@
         "structured_facts": {
           "offer_facts": {
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       },
@@ -581,13 +589,17 @@
     },
     "expected_decision": {
       "decision": "direct_reply",
-      "payment_action": "send_now",
-      "payment_amount": 10,
+      "allowed_payment_actions": [
+        "none",
+        "explain_existing"
+      ],
       "expected_message_types": [
-        "text",
+        "text"
+      ],
+      "must_not_message_types": [
         "payment_collection"
       ],
-      "notes": "明确要卡片时必须带 payment_collection。"
+      "notes": "客户明确要卡片但尚无确认门店、有效订单或开单工具；先补门店，不能发送无法关联订单的卡。"
     }
   },
   {
@@ -617,7 +629,7 @@
         "structured_facts": {
           "offer_facts": {
             "deposit_per_person": 10,
-            "refund_policy": "不做退10元"
+            "refund_policy": "未做或不满意可退"
           }
         }
       },
@@ -625,13 +637,17 @@
     },
     "expected_decision": {
       "decision": "direct_reply",
-      "payment_action": "send_now",
-      "payment_amount": 20,
+      "allowed_payment_actions": [
+        "none",
+        "explain_existing"
+      ],
       "expected_message_types": [
-        "text",
+        "text"
+      ],
+      "must_not_message_types": [
         "payment_collection"
       ],
-      "notes": "本人和朋友一起默认2位，共20元。"
+      "notes": "本人和朋友一起金额应为20元，但尚无确认门店、有效订单或开单工具；先补门店，不能发送无法关联订单的卡。"
     }
   },
   {
@@ -714,7 +730,6 @@
     },
     "expected_decision": {
       "decision": "direct_reply",
-      "payment_action": "explain_existing",
       "allowed_payment_actions": [
         "none",
         "explain_existing"
@@ -770,7 +785,6 @@
     },
     "expected_decision": {
       "decision": "direct_reply",
-      "payment_action": "explain_existing",
       "allowed_payment_actions": [
         "none",
         "explain_existing"
@@ -803,17 +817,17 @@
       },
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"deposit_per_person": 10, "refund_policy": "不做退10元"}
+          "offer_facts": {"deposit_per_person": 10, "refund_policy": "未做或不满意可退"}
         }
       },
       "available_tools": []
     },
     "expected_decision": {
       "decision": "direct_reply",
-      "payment_action": "send_now",
-      "payment_amount": 10,
-      "expected_message_types": ["text", "payment_collection"],
-      "notes": "已进入收款阶段并询问支付方式，说明小程序收款卡或转账，主动附卡。"
+      "allowed_payment_actions": ["none", "explain_existing"],
+      "expected_message_types": ["text"],
+      "must_not_message_types": ["payment_collection"],
+      "notes": "客户已问支付方式，但尚无确认门店、有效订单或开单工具；可说明小程序收款卡或转账，先补门店后再发卡。"
     }
   },
   {
@@ -823,7 +837,7 @@
     "input_payload": {
       "current_message": "这个到店抵扣对吧",
       "conversation_history": [
-        "小贝: 10元预约金到店抵扣，不做退10元。",
+        "小贝: 10元预约金到店抵扣，未做或不满意可退。",
         "小贝: 我把小程序收款卡发您了。"
       ],
       "sop_progress": {
@@ -843,7 +857,7 @@
       },
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"deposit_per_person": 10, "refund_policy": "不做退10元"}
+          "offer_facts": {"deposit_per_person": 10, "refund_policy": "未做或不满意可退"}
         }
       },
       "available_tools": []
@@ -875,16 +889,15 @@
       },
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元"}
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "未做或不满意可退"}
         }
       },
       "available_tools": []
     },
     "expected_decision": {
       "decision": "direct_reply",
-      "payment_action": "send_now",
-      "payment_amount": 10,
-      "expected_message_types": ["text", "payment_collection"],
+      "allowed_payment_actions": ["explain_existing", "send_now"],
+      "expected_message_types": ["text"],
       "notes": "SOP 主要铺垫完成、顾虑已解决且意向上升，可主动发小程序收款卡。"
     }
   },
@@ -939,7 +952,7 @@
       "current_known_store": {"store_id": "227", "store_name": "厦门百星湖里店", "source": "recent_store_fact"},
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元", "limited_quota": true},
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "未做或不满意可退", "limited_quota": true},
           "order_facts": [{"type": "work_order", "status": "reused", "order_id": "order-frequency-1", "store_id": "227", "prepay_required": 10, "deposit_state": "required_unpaid"}]
         }
       },
@@ -981,7 +994,7 @@
       "current_known_store": {"store_id": "227", "store_name": "厦门百星湖里店", "source": "recent_store_fact"},
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元", "limited_quota": true},
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "未做或不满意可退", "limited_quota": true},
           "order_facts": [{"type": "work_order", "status": "reused", "order_id": "order-frequency-2", "store_id": "227", "prepay_required": 10, "deposit_state": "required_unpaid"}]
         }
       },
@@ -993,6 +1006,63 @@
       "payment_amount": 10,
       "expected_message_types": ["text", "payment_collection"],
       "notes": "历史累计6次且今天0次不应阻止明确高意向客户付款。"
+    }
+  },
+  {
+    "id": "planner_practical_delay_keeps_activity_slot",
+    "node": "planner",
+    "current_message": "天气太热了，我晚点再过去吧",
+    "input_payload": {
+      "current_message": "天气太热了，我晚点再过去吧",
+      "conversation_history": [
+        "小贝: 同类改善参考和厦门门店信息已经发您了。",
+        "小贝: 这次活动价268，线上10元是先保留活动资格，到店抵扣。",
+        "用户: 天气太热了，我晚点再过去吧"
+      ],
+      "sop_progress": {
+        "sent_categories": ["effect_case", "activity_price", "store_intro", "deposit_explained"],
+        "stage_goal": "客户只是暂时不便到店，应把活动资格与到店日期拆开推进"
+      },
+      "turn_evidence": {
+        "payment_evidence": {
+          "payment_collection_frequency": {
+            "today_count": 1,
+            "prior_count": 5,
+            "total_count": 6,
+            "last_sent_at": "2026-07-13T10:20:00+08:00",
+            "customer_turns_since_last_card": 3,
+            "count_confidence": "high"
+          }
+        }
+      },
+      "sent_message_summary": {
+        "payment_collection_sent": true,
+        "payment_collection_count": 6,
+        "payment_collection": {
+          "today_count": 1,
+          "prior_count": 5,
+          "total_count": 6,
+          "last_sent_at": "2026-07-13T10:20:00+08:00",
+          "last_amount": 10,
+          "customer_turns_since_last_card": 3,
+          "count_confidence": "high"
+        }
+      },
+      "current_known_store": {"store_id": "227", "store_name": "厦门百星湖里店", "source": "recent_store_fact"},
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "未做或不满意可退", "limited_quota": true},
+          "order_facts": [{"type": "work_order", "status": "reused", "order_id": "order-practical-delay-1", "store_id": "227", "prepay_required": 10, "deposit_state": "required_unpaid"}]
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "allowed_payment_actions": ["explain_existing", "send_now"],
+      "expected_message_types": ["text"],
+      "must_not_include": ["名额先不急", "等您想去的时候再定", "等你想去再定"],
+      "notes": "天气只构成到店时机阻力；有效未支付订单和已完成 SOP 表明本轮应保留活动资格，而不是替客户释放名额。模型可自然重发卡，也可先说明活动资格可保留。"
     }
   }
 ]

@@ -26,7 +26,6 @@ from app.graph.planner.planner_contract import (
 from app.graph.state import AgentState
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
-    normalize_deposit_refund_policy_text,
     payment_amount_for_party_size,
     payment_collection_content,
     payment_collection_context,
@@ -554,7 +553,7 @@ def _turn_context_for_guard(state: AgentState) -> dict[str, Any]:
 
 
 def _text_message(text: str) -> dict[str, Any]:
-    return {"type": "text", "order": 1, "content": {"text": normalize_deposit_refund_policy_text(text)}}
+    return {"type": "text", "order": 1, "content": {"text": text}}
 
 
 def _handoff_notice_message(risk_hold: dict[str, Any]) -> dict[str, Any]:
@@ -592,9 +591,9 @@ def _normalize_reply_messages(value: Any, *, state: AgentState | None = None) ->
     if not isinstance(value, list):
         return []
     output: list[dict[str, Any]] = []
-    for item in value[:4]:
+    for item in value[:_reply_message_limit(value, state)]:
         if isinstance(item, str):
-            text = normalize_deposit_refund_policy_text(item.strip())
+            text = item.strip()
             if text:
                 output.append({"type": "text", "order": len(output) + 1, "content": {"text": text}})
             continue
@@ -627,11 +626,46 @@ def _normalize_reply_messages(value: Any, *, state: AgentState | None = None) ->
             if store_id:
                 output.append({"type": "store_address", "order": len(output) + 1, "content": {"store_id": store_id}})
             continue
-        text = normalize_deposit_refund_policy_text(_message_text(content))
+        text = _message_text(content)
         if text:
             key = "handoff_reason" if msg_type == "human_handoff_notice" else ("url" if msg_type == "image" else "text")
             output.append({"type": msg_type, "order": len(output) + 1, "content": {key: text}})
     return output
+
+
+def _reply_message_limit(value: list[Any], state: AgentState | None) -> int:
+    """Only lift the normal cap for a fact-backed same-district card sequence."""
+    if not isinstance(state, dict) or not value:
+        return 4
+    visible: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return 4
+        message_type = str(item.get("type") or "text").strip()
+        if message_type not in {"text", "store_address"}:
+            return 4
+        visible.append(item)
+    text_count = sum(1 for item in visible if str(item.get("type") or "text").strip() == "text")
+    card_ids = {
+        _store_address_id(item.get("content"))
+        for item in visible
+        if str(item.get("type") or "").strip() == "store_address" and _store_address_id(item.get("content"))
+    }
+    if text_count > 1 or len(card_ids) < 2:
+        return 4
+    summary = state.get("store_scope_summary") if isinstance(state.get("store_scope_summary"), dict) else {}
+    regions = summary.get("relevant_regions") if isinstance(summary.get("relevant_regions"), list) else []
+    for region in regions:
+        if not isinstance(region, dict):
+            continue
+        expected = {
+            str(store.get("store_id") or store.get("id") or "").strip()
+            for store in region.get("requested_district_stores") or []
+            if isinstance(store, dict) and str(store.get("store_id") or store.get("id") or "").strip()
+        }
+        if card_ids and card_ids.issubset(expected):
+            return len(value)
+    return 4
 
 
 def _message_text(content: Any) -> str:
