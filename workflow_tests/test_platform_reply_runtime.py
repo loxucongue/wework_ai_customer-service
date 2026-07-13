@@ -192,6 +192,29 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["reply_source"], "planner_direct_reply")
         self.assertEqual(saved["reply_control"]["sync_return"]["type"], "direct_reply")
 
+    async def test_async_finalize_exception_is_recovered_and_sent(self) -> None:
+        repository = _Repository()
+        outreach = _OutreachSendClient()
+        runtime = ChatRuntime(
+            full_graph=_NeedToolsPlannerGraph(),
+            planner_graph=_NeedToolsPlannerGraph(),
+            finalize_graph=_ErrorGraph(),
+            trace_logger=_TraceLogger(),
+            repository=repository,
+            outreach_send_client=outreach,
+        )
+
+        with patch("app.chat_runtime.random.random", return_value=0.2):
+            response = await runtime.run_platform_reply(_request("集美附近门店帮我看下"))
+
+        self.assertEqual(response.reply_messages, [])
+        await asyncio.wait_for(outreach.sent.wait(), timeout=2)
+        self.assertEqual(outreach.reply_messages[0]["type"], "text")
+        await asyncio.sleep(0)
+        recovered = [state for state in repository.saved_states if state.get("reply_source") == "deterministic_async_exception_fallback"]
+        self.assertTrue(recovered)
+        self.assertEqual(recovered[-1]["async_final_reply"]["status"], "sent")
+
 
 class _SlowPlannerGraph:
     def __init__(self) -> None:

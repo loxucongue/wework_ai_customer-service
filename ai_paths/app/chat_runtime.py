@@ -358,10 +358,13 @@ class ChatRuntime:
                 self._save_state(conversation_id, final_state)
             except Exception as exc:
                 error = {"scheduled": True, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
-                final_state["async_final_reply"] = error
-                _set_async_final_control(final_state, error)
                 final_state.setdefault("errors", []).append({"node": "async_final_reply", "message": "async_final_reply_failed", "detail": error["error"]})
-                _append_async_send_trace(final_state, error)
+                await self._recover_async_exception_and_send(
+                    request=request,
+                    conversation_id=conversation_id,
+                    state=final_state,
+                    original_error=error,
+                )
                 self._save_state(conversation_id, final_state)
             finally:
                 if self._platform_reply_coordinator:
@@ -449,10 +452,13 @@ class ChatRuntime:
                 self._save_state(conversation_id, final_state)
             except Exception as exc:
                 error = {"scheduled": True, "status": "error", "error": f"{type(exc).__name__}: {exc}"}
-                async_state["async_final_reply"] = error
-                _set_async_final_control(async_state, error)
                 async_state.setdefault("errors", []).append({"node": "sop_gate_async_ai_reply", "message": "sop_gate_async_ai_failed", "detail": error["error"]})
-                _append_async_send_trace(async_state, error)
+                await self._recover_async_exception_and_send(
+                    request=request,
+                    conversation_id=conversation_id,
+                    state=async_state,
+                    original_error=error,
+                )
                 self._save_state(conversation_id, async_state)
             finally:
                 if self._platform_reply_coordinator:
@@ -478,6 +484,40 @@ class ChatRuntime:
         )
         result["scheduled"] = True
         return result
+
+    async def _recover_async_exception_and_send(
+        self,
+        *,
+        request: ChatRequest,
+        conversation_id: str,
+        state: AgentState,
+        original_error: dict[str, Any],
+    ) -> None:
+        messages = _deterministic_final_fallback_messages(state)
+        state["reply_messages"] = messages
+        state["reply_source"] = "deterministic_async_exception_fallback"
+        try:
+            send_result = await self._send_async_reply(request, state, messages)
+            send_result["reply_messages"] = messages
+            send_result["recovered_from"] = original_error.get("error", "")
+        except Exception as send_exc:
+            send_result = {
+                **original_error,
+                "scheduled": True,
+                "status": "error",
+                "send_error": f"{type(send_exc).__name__}: {send_exc}",
+                "reply_messages": messages,
+            }
+        state["async_final_reply"] = send_result
+        _set_async_final_control(state, send_result)
+        _append_async_send_trace(state, send_result)
+        if send_result.get("status") == "sent" and not bool(state.get("test_isolated")):
+            safe_repository_call(
+                self._repository.add_assistant_message,
+                conversation_id=conversation_id,
+                request_id=f"{state.get('request_id')}:async_fallback",
+                reply_messages=messages,
+            )
 
     def _schedule_background_profile_update(
         self,
