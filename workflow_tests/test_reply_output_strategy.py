@@ -2816,6 +2816,24 @@ def test_reply_validation_rejects_payment_promise_without_active_order() -> None
         )
 
 
+def test_reply_validation_allows_order_check_text_after_work_order_rejection() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "这家门店的预约入口还在核对中。"}}],
+        {
+            "conversion_stage": "deposit_push",
+            "next_step": "send_deposit",
+            "payment_action": "send_now",
+            "payment_decision": {"action": "send_now", "amount": 10},
+            "order_decision": {"action": "create_work", "store_id": "386"},
+            "fact_envelope": {
+                "structured_facts": {
+                    "order_facts": [{"type": "work_order", "status": "rejected"}],
+                }
+            },
+        },
+    )
+
+
 def test_reply_validation_rejects_signup_promise_without_active_order() -> None:
     with pytest.raises(ValueError, match="payment_collection_requires_active_work_order"):
         validate_reply_consistency(

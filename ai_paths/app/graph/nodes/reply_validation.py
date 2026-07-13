@@ -304,6 +304,8 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
             raise ValueError("payment_participant_count_confirm_required")
         return
     if needs_payment and not has_payment and not has_matching_active_work_order(state):
+        if _work_order_unavailable(state):
+            return
         if _promises_payment_entry(text):
             raise ValueError("payment_collection_requires_active_work_order")
         return
@@ -319,6 +321,20 @@ def _validate_payment_collection_order_fact(messages: list[dict[str, Any]], stat
     if has_matching_active_work_order(state):
         return
     raise ValueError("payment_collection_requires_active_work_order")
+
+
+def _work_order_unavailable(state: dict[str, Any]) -> bool:
+    """Return whether this turn's order action conclusively failed before payment."""
+
+    structured = _structured_facts(state)
+    for fact in structured.get("order_facts") or []:
+        if not isinstance(fact, dict):
+            continue
+        if str(fact.get("type") or "").strip().lower() != "work_order":
+            continue
+        if str(fact.get("status") or "").strip().lower() in {"rejected", "error", "invalid"}:
+            return True
+    return False
 
 
 def _paid_deposit_context(state: dict[str, Any]) -> bool:
