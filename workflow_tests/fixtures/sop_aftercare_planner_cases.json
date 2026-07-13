@@ -831,9 +831,16 @@
         "stage_goal": "解答抵扣规则，不重复催付"
       },
       "turn_evidence": {
-        "payment_evidence": {"link_sent": true, "payment_collection_count": 1}
+        "payment_evidence": {
+          "link_sent": true,
+          "payment_collection_frequency": {"today_count": 1, "prior_count": 6, "total_count": 7, "customer_turns_since_last_card": 1, "count_confidence": "high"}
+        }
       },
-      "sent_message_summary": {"payment_collection_sent": true, "payment_collection_count": 1},
+      "sent_message_summary": {
+        "payment_collection_sent": true,
+        "payment_collection_count": 7,
+        "payment_collection": {"today_count": 1, "prior_count": 6, "total_count": 7, "last_sent_at": "2026-07-13T10:20:00+08:00", "last_amount": 10, "customer_turns_since_last_card": 1, "count_confidence": "high"}
+      },
       "fact_envelope": {
         "structured_facts": {
           "offer_facts": {"deposit_per_person": 10, "refund_policy": "不做退10元"}
@@ -843,7 +850,7 @@
     },
     "expected_decision": {
       "decision": "direct_reply",
-      "allowed_payment_actions": ["none", "explain_existing"],
+      "payment_action": "explain_existing",
       "must_not_message_types": ["payment_collection"],
       "notes": "刚发过卡且客户只确认规则，没有新的成交推进，不重复发卡。"
     }
@@ -879,6 +886,113 @@
       "payment_amount": 10,
       "expected_message_types": ["text", "payment_collection"],
       "notes": "SOP 主要铺垫完成、顾虑已解决且意向上升，可主动发小程序收款卡。"
+    }
+  },
+  {
+    "id": "planner_ack_after_payment_explanation_frequency",
+    "node": "planner",
+    "current_message": "嗯",
+    "input_payload": {
+      "current_message": "嗯",
+      "conversation_history": [
+        "小贝: 这类斑点大多数客户改善反馈都不错。",
+        "小贝: 厦门门店和同类效果参考已经发您了。",
+        "用户: 还要付定金吗？",
+        "小贝: 预约金10元，到店直接抵扣，不是另外加收。",
+        "用户: 嗯"
+      ],
+      "short_message_context": {
+        "is_contextual_short_message": true,
+        "last_reply_summary": "预约金10元，到店直接抵扣，不是另外加收。"
+      },
+      "sop_progress": {
+        "sent_categories": ["effect_case", "activity_price", "store_intro", "deposit_explained"],
+        "stage_goal": "客户已理解预约金规则，自然推动付款选择"
+      },
+      "turn_evidence": {
+        "history_evidence": {"is_short_message": true, "recent_assistant_action": "text_reply"},
+        "payment_evidence": {
+          "link_sent_evidence": true,
+          "payment_collection_frequency": {
+            "today_count": 0,
+            "prior_count": 6,
+            "total_count": 6,
+            "last_sent_at": "2026-07-10T10:00:00+08:00",
+            "customer_turns_since_last_card": 4,
+            "count_confidence": "high"
+          }
+        }
+      },
+      "sent_message_summary": {
+        "payment_collection_sent": true,
+        "payment_collection_count": 6,
+        "payment_collection": {
+          "today_count": 0,
+          "prior_count": 6,
+          "total_count": 6,
+          "last_sent_at": "2026-07-10T10:00:00+08:00",
+          "last_amount": 10,
+          "customer_turns_since_last_card": 4,
+          "count_confidence": "high"
+        }
+      },
+      "current_known_store": {"store_id": "227", "store_name": "厦门百星湖里店", "source": "recent_store_fact"},
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元", "limited_quota": true},
+          "order_facts": [{"type": "work_order", "status": "reused", "order_id": "order-frequency-1", "store_id": "227", "prepay_required": 10, "deposit_state": "required_unpaid"}]
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "allowed_payment_actions": ["explain_existing", "send_now"],
+      "must_not_include": ["安排下一步", "继续处理", "温馨提醒", "尊敬的客户"],
+      "notes": "不复读整套规则；历史6次只是弱证据，应给付款选择和一个压单理由。"
+    }
+  },
+  {
+    "id": "planner_historical_six_today_zero_high_intent",
+    "node": "planner",
+    "current_message": "那就参加吧，直接发我",
+    "input_payload": {
+      "current_message": "那就参加吧，直接发我",
+      "conversation_history": [
+        "小贝: 效果、活动和门店信息已经给您介绍过了。",
+        "用户: 我考虑一下",
+        "小贝: 可以的，线上活动名额可以先保留。",
+        "用户: 那就参加吧，直接发我"
+      ],
+      "sop_progress": {
+        "sent_categories": ["effect_case", "activity_price", "store_intro", "deposit_explained"],
+        "stage_goal": "客户明确接受，发送收款卡"
+      },
+      "turn_evidence": {
+        "payment_evidence": {
+          "payment_collection_frequency": {"today_count": 0, "prior_count": 6, "total_count": 6, "customer_turns_since_last_card": 5, "count_confidence": "high"}
+        }
+      },
+      "sent_message_summary": {
+        "payment_collection_sent": true,
+        "payment_collection_count": 6,
+        "payment_collection": {"today_count": 0, "prior_count": 6, "total_count": 6, "customer_turns_since_last_card": 5, "count_confidence": "high"}
+      },
+      "current_known_store": {"store_id": "227", "store_name": "厦门百星湖里店", "source": "recent_store_fact"},
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元", "limited_quota": true},
+          "order_facts": [{"type": "work_order", "status": "reused", "order_id": "order-frequency-2", "store_id": "227", "prepay_required": 10, "deposit_state": "required_unpaid"}]
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "send_now",
+      "payment_amount": 10,
+      "expected_message_types": ["text", "payment_collection"],
+      "notes": "历史累计6次且今天0次不应阻止明确高意向客户付款。"
     }
   }
 ]

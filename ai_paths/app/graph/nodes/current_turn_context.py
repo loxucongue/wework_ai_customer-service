@@ -4,6 +4,7 @@ import re
 from typing import Any
 
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.turn_evidence_appointment import build_appointment_evidence
 from app.graph.nodes.turn_evidence_history import build_history_evidence
 from app.graph.nodes.turn_evidence_payment import build_payment_turn_evidence
@@ -61,7 +62,11 @@ def build_current_turn_context(
     sent_message_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     content = str(state.get("normalized_content") or state.get("content") or "").strip()
-    sent_summary = sent_message_summary if isinstance(sent_message_summary, dict) else {}
+    sent_summary = (
+        sent_message_summary
+        if isinstance(sent_message_summary, dict)
+        else sent_message_summary_for_model(state)
+    )
     history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
     is_short = is_contextual_short_message(content)
     is_reference = is_context_reference_message(content)
@@ -73,7 +78,7 @@ def build_current_turn_context(
         prefer_recent=is_short or is_reference or _has_store_fact_request(content),
     )
     appointment = _merge_appointments(_appointment_from_current_message(content), confirmed_appointment_from_state(state))
-    last_action = _last_assistant_action(last_assistant, sent_summary)
+    last_action = _last_assistant_action(last_assistant)
     deposit_state = _structured_deposit_state(state, sent_summary=sent_summary)
     payment_evidence = _payment_evidence(state, sent_summary=sent_summary, last_assistant=last_assistant)
     risk_hold = health_risk_hold(state)
@@ -413,17 +418,13 @@ def _binding_source(
     return "none"
 
 
-def _last_assistant_action(last_assistant: str, sent_summary: dict[str, Any]) -> str:
+def _last_assistant_action(last_assistant: str) -> str:
     text = str(last_assistant or "")
-    if sent_summary.get("payment_collection_sent") or "payment_collection" in text or "预约金收款" in text:
+    if not text:
+        return "none"
+    if "payment_collection" in text:
         return "sent_payment_collection"
-    if any(term in text for term in ("付款入口", "收款入口", "报名入口", "预约金入口", "交10", "交 10")):
-        return "sent_payment_collection"
-    if any(term in text for term in ("预约金", "到店抵扣", "不做退10", "锁名额")):
-        return "asked_for_payment"
-    if any(term in text for term in ("什么时候", "几点", "时间", "哪家门店", "哪个门店", "哪个区", "城市", "姓名", "电话")):
-        return "asked_for_time_or_store"
-    return "none"
+    return "text_reply"
 
 
 def _structured_deposit_state(state: dict[str, Any], *, sent_summary: dict[str, Any]) -> str:
@@ -455,7 +456,8 @@ def _payment_evidence(state: dict[str, Any], *, sent_summary: dict[str, Any], la
     current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
     history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
     event_count = _payment_collection_sent_count_from_events(state)
-    sent_count = sent_summary.get("payment_collection_count") or event_count or 0
+    frequency = sent_summary.get("payment_collection") if isinstance(sent_summary.get("payment_collection"), dict) else {}
+    sent_count = frequency.get("total_count") or sent_summary.get("payment_collection_count") or event_count or 0
     recent_payment_texts: list[str] = []
     for item in history[-12:]:
         text = _conversation_item_text(item)
@@ -464,6 +466,7 @@ def _payment_evidence(state: dict[str, Any], *, sent_summary: dict[str, Any], la
     evidence = {
         "sent_payment_collection": bool(sent_summary.get("payment_collection_sent") or event_count),
         "payment_collection_count": sent_count,
+        "payment_collection_frequency": frequency,
         "last_assistant_payment_text": last_assistant[:160] if _looks_payment_related(last_assistant) else "",
         "current_payment_text": current_text[:160] if _looks_payment_related(current_text) else "",
         "recent_payment_texts": recent_payment_texts[-6:],

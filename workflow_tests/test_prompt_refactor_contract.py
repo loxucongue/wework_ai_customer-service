@@ -76,8 +76,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         assert marker in PLANNER_SYSTEM_PROMPT
 
     for business_rule in [
-        "payment_collection_sent 不是硬去重",
-        "不要求客户必须说没收到或再发",
+        "已发送过 payment_collection 只是频率证据，不是硬去重",
+        "历史累计次数都不能单独决定发或不发",
         "到店抵扣，不做退10元",
         "2位一共20元，3位一共30元，4位一共40元",
         "客户可见回复只说哪家更近，不说公里、分钟、车程",
@@ -100,6 +100,11 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "已有同城 store_facts",
         "不要问“要不要了解/要不要看/是否需要/要不要我发”",
         "不要每轮复读",
+        "今天发送次数",
+        "普通顾虑被解决后的明确接受也可以进入 send_now",
+        "卡片操作和一个理由放在前面",
+        "不重复卡片",
+        "只用于客户已付后的姓名、电话、门店、日期或排期承接",
         "主任/总监到店",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
@@ -126,12 +131,15 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "发送门店卡",
         "广告错误/骗您的",
         "SOP 三板斧后",
-        "最自然的成交动作",
+        "明确付款选择或成交动作",
         "小程序收款卡片/收款码",
         "转账、截图和备注登记",
         "manual_transfer",
         "不要问客户“要不要了解活动/要不要我给您看/是否需要/您看下吗”",
         "不要每次复读同一句",
+        "不是必须照抄的客户文案",
+        "短确认后的收款动作要像继续聊天",
+        "当前仍是未付状态",
         "主任/总监到店",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
@@ -172,6 +180,8 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
         "planner_payment_options_send_card",
         "planner_recent_card_no_repeat_without_progress",
         "planner_sop_objection_resolved_active_card",
+        "planner_ack_after_payment_explanation_frequency",
+        "planner_historical_six_today_zero_high_intent",
         "planner_card_entry_single_person",
         "planner_card_entry_friend_party",
         "planner_paid_next_step_no_card",
@@ -190,6 +200,8 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
         "reply_payment_options_send_card",
         "reply_recent_card_no_repeat_without_progress",
         "reply_sop_objection_resolved_active_card",
+        "reply_ack_after_payment_explanation_frequency",
+        "reply_historical_six_today_zero_high_intent",
         "reply_card_entry_single_person",
         "reply_card_entry_friend_party",
         "reply_paid_next_step_no_card",
@@ -236,10 +248,28 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
     assert planner_options_case["expected_decision"]["payment_action"] == "send_now"
     assert "payment_collection" in planner_options_case["expected_decision"]["expected_message_types"]
 
+    planner_ack_case = next(
+        item for item in planner_cases if item["id"] == "planner_ack_after_payment_explanation_frequency"
+    )
+    frequency = planner_ack_case["input_payload"]["sent_message_summary"]["payment_collection"]
+    assert frequency["today_count"] == 0
+    assert frequency["prior_count"] == 6
+    assert frequency["total_count"] == 6
+    assert set(planner_ack_case["expected_decision"]["allowed_payment_actions"]) == {
+        "explain_existing",
+        "send_now",
+    }
+
     planner_recent_card_case = next(
         item for item in planner_cases if item["id"] == "planner_recent_card_no_repeat_without_progress"
     )
     assert "payment_collection" in planner_recent_card_case["expected_decision"]["must_not_message_types"]
+
+    reply_active_card_case = next(
+        item for item in reply_cases if item["id"] == "reply_sop_objection_resolved_active_card"
+    )
+    active_order_facts = reply_active_card_case["input_payload"]["fact_envelope"]["structured_facts"]["order_facts"]
+    assert active_order_facts[0]["status"] == "reused"
 
     for prompt_or_fixture in [
         PLANNER_SYSTEM_PROMPT,

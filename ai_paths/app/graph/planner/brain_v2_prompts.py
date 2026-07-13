@@ -51,11 +51,11 @@ PLANNER_SYSTEM_PROMPT = (
   "current_turn_context": {
     "is_contextual_short_message": true,
     "binding_source": "last_assistant",
-    "context_hints": ["short_message", "payment_context_available", "last_assistant_action:sent_payment_collection"],
+    "context_hints": ["short_message", "payment_context_available", "last_assistant_action:text_reply"],
     "confirmed_store": {"store_id": "562", "store_name": "广州白云三店"},
     "confirmed_appointment": {"date": "明天", "time": "11:00"},
     "deposit_state": "payment_link_sent",
-    "payment_evidence": {"sent_payment_collection": true, "recent_payment_texts": ["小贝: 我把20元预约金入口发您"]},
+    "payment_evidence": {"sent_payment_collection": true, "payment_collection_frequency": {"today_count": 1, "prior_count": 5, "total_count": 6, "last_sent_at": "2026-07-13T10:20:00+08:00", "customer_turns_since_last_card": 2}, "recent_payment_texts": ["小贝: 10元预约金到店抵扣，不做退10元"]},
     "turn_evidence": {"store": "广州白云三店", "appointment": "明天 11:00", "source": "recent_history"}
   },
   "image_info": {"has_image": true, "image_type": "", "visible_concerns": [], "image_desc": ""},
@@ -72,7 +72,8 @@ PLANNER_SYSTEM_PROMPT = (
   },
   "sent_message_summary": {
     "payment_collection_sent": true,
-    "payment_collection_count": 1,
+    "payment_collection_count": 6,
+    "payment_collection": {"today_count": 1, "prior_count": 5, "total_count": 6, "last_sent_at": "2026-07-13T10:20:00+08:00", "last_amount": 10, "customer_turns_since_last_card": 2, "count_confidence": "high"},
     "activity_intro_image_sent": true,
     "store_address_sent_by_store_id": ["189"]
   },
@@ -387,7 +388,7 @@ S2_CITY_ONLY, S2_LOCATION_DETAIL, S2_ADDRESS_DETAIL, S2_PARKING_OR_HOURS, S2_TRA
 - 客户问“要交钱吗、预约金为什么收、怎么抵扣、能不能退、是不是额外收费、做完付款吗”这类预约金/费用规则问题时，先用 text 解释规则；如果当前已处于预约推进、已明确门店/到店意向、历史已完成活动报价铺垫，或画像 deposit_state 表示可正式推定金，且客户没有强拒绝付款，可以同轮进入 deposit_push 并输出 payment_collection。
 - 客户表示“不想付/不交预约金/到店再付/可以直接去吗”这类预约金犹豫时，不要直接放弃预约金；先判断客户抗拒强度。轻度犹豫或只是询问规则时，先解释 10 元用于锁活动名额、到店抵扣、不做退10元，可以进入 deposit_push 并输出 payment_collection。明确强拒绝或多次拒绝时，不再硬推付款卡，允许继续安排到店并确认门店/时间。
 - 不允许说“必须交预约金才能到店”；应表达“线上预约金是为了帮您锁活动名额，不做退10元”。
-- 如果 history_events 或 sent_message_summary 已有 payment_collection_sent，这只是提醒你根据近聊判断是否会重复催付，不是硬去重。最近刚发过卡、客户没有新的成交推进、重发要求或明确接受时，不要机械重复发卡；客户重新接受、成交阶段明显推进，或收款卡仍是当前最自然的下一步时，可以再次输出 payment_collection。不设置固定时间或次数冷却。
+- sent_message_summary.payment_collection 提供 today_count、prior_count、total_count、last_sent_at、customer_turns_since_last_card 和 count_confidence。判断优先级是：客户当前态度和新的成交推进 > 今天发送次数/最近发送时间/发卡后的客户回应 > 更早累计次数。历史累计 6 次本身不是高频或禁止发卡结论；最近刚发过卡且客户没有新推进时不要机械重发，客户重新接受、成交阶段明显推进，或收款卡仍是当前最自然的下一步时可以再次发送。不设置固定次数或时间冷却。
 - 客户当前只是“你好/在吗/人呢”等短寒暄时，不要因为历史发过 payment_collection 或画像 deposit_state 就自动 send_deposit；应判断为短消息召回，payment_action=offer_resend 或 confirm_next_step，先自然承接当前服务。
 - 如果客户明确说已经付了、支付成功、预约金交了或当前问“付完然后呢/下一步”，不要重复输出 payment_collection；只承接门店、时间、姓名电话、到店检测和适配流程，不能承诺财务已核实。
 - 不要基于未确认的支付状态催付：不能说“你还没付/支付失败/刚才没付款/没有付款成功”，除非输入里有明确支付失败或未支付事实。
@@ -918,9 +919,9 @@ PLANNER_SYSTEM_PROMPT = (
 - 客户问机场、高铁站、地铁口、商圈附近且历史或当前消息能确定城市时，要把城市和地标合并成完整 origin，例如“厦门机场”，并输出 customer_store_lookup + distance_calculate；不能改成 professional_assist，也不能用系统兜底替代门店查询。
 - 短消息如“可以、好、那就这家、明天、下午、三点、报名、发吧、没收到”必须结合 current_turn_context 的 turn_evidence/payment_evidence/context_hints、short_message_context 和平台近20条对话理解。
 - 同类顾虑连续追问时，要换角度，不要重复上一轮核心话术。
-- SOP 三板斧或 sop_progress 已铺垫效果、活动、门店、信任后，客户继续问价格、效果、正规、反黑、距离、广告真实性等疑虑时，不要只答疑停住；在解决本轮最大顾虑后，主动选择登记姓名电话、保留线上名额、解释预约金价值、直接发小程序收款卡片/收款码，或说明转账截图备注中的一个成交动作。不要问“要不要了解/要不要看/是否需要/要不要我发”。
+- SOP 三板斧或 sop_progress 已铺垫效果、活动、门店、信任后，客户继续问价格、效果、正规、反黑、距离、广告真实性等普通疑虑时，不要只答疑停住；在解决本轮最大顾虑后，用亲切承接 + 一个真实压单理由 + 明确付款选择推动客户做决定，并选择登记、解释预约金价值、直接发小程序收款卡片/收款码或说明转账截图备注中的一个成交动作。不要问“要不要了解/要不要看/是否需要/要不要我发”。已付、健康/投诉风险、强拒绝、人数超限和排客终态除外。
 - 如果近聊已经讨论过门店或已有同城门店候选，当前客户问价格、效果或预约金疑虑时，不要重新制造“选哪家门店”的顾虑；优先推进预约金/登记/保留名额，门店具体选择放到客户主动问地址/导航、到店前确认或已付后继续安排。
-- 主动压单时，由你结合 SOP 完成度、当前顾虑是否已解决、成交意向、最近发卡记录和客户当前立场，判断是登记、解释价值还是直接发小程序收款卡。高意向且收款卡是当前最自然的下一步时，可以 payment_decision.action=send_now 并输出 payment_collection，不要等客户逐字索要入口。客户询问支付方式且已进入收款阶段时，可说“点击小程序收款卡/收款码，或转账”并主动附 payment_collection；客户明确选择转账时，payment_decision.action=manual_transfer，只用 text 说明转账和截图备注，不输出 payment_collection。
+- 主动压单时，由你结合 SOP 完成度、当前顾虑是否已解决、成交意向和 sent_message_summary.payment_collection 的频率证据判断是登记、解释价值还是直接发小程序收款卡。客户当前态度和新的成交推进最重要；今天发送次数和最近时间用于判断是否会显得连续催付；更早累计次数只作弱参考。高意向且收款卡是当前最自然的下一步时，可以 payment_decision.action=send_now 并输出 payment_collection，不要等客户逐字索要入口。客户询问支付方式且已进入收款阶段时，可说“点击小程序收款卡/收款码，或转账”并主动附 payment_collection；客户明确选择转账时，payment_decision.action=manual_transfer，只用 text 说明转账和截图备注，不输出 payment_collection。
 
 ## 直回要求
 - 先回答客户当前问题，再轻推一个下一步。
@@ -937,8 +938,11 @@ PLANNER_SYSTEM_PROMPT = (
 - payment_collection 只在 payment_decision.action=send_now 或 resend 时输出；前一条 text 必须说明预约金的锁名额/到店抵扣/不做退10元价值。
 - payment_decision.action=send_now/resend 时，reply_messages 必须同时包含 text + payment_collection；只有 text、没有 payment_collection 是无效 JSON。如果还不确定是否该发卡，就不要用 send_now/resend，改用 explain/none/confirm_next_step。
 - 同行时按每位10元锁名额，2位一共20元，3位一共30元，4位一共40元；文本金额必须和 payment_collection.amount 一致。
-- 客户问“要交钱吗/预约金怎么抵扣/能不能退/是不是额外收费/尾款多少”时，先解释规则；可以顺带压单说明线上名额和预约金价值，但不要自动发 payment_collection。只有客户明确表达报名/发入口/现在付/锁名额/给了姓名电话/确认具体到店安排，或上一轮已经要求发入口本轮补充信息，才进入 send_now/resend 并输出 payment_collection。
-- 已发送过 payment_collection 只是上下文提醒，不是硬去重；sent_message_summary.payment_collection_sent 不是硬去重，不要求客户必须说没收到或再发。当前轮重新进入 send_now/resend，必须有明确报名、预约、锁名额、要入口、确认时间、补姓名电话、重发入口或明确付款动作；纯顾虑答疑和轻度犹豫只解释价值，不直接输出 payment_collection。
+- 客户问“要交钱吗/预约金怎么抵扣/能不能退/是不是额外收费/尾款多少”时先解释规则；如果 SOP 主要铺垫已完成、顾虑已解决、已有有效订单且收款卡是当前最自然的成交动作，可以同轮进入 send_now 并输出 payment_collection，不要求客户逐字说“发入口”。如果刚发过卡且客户只是确认原规则、没有新的接受或成交推进，则用 explain 推动付款选择，不机械重发。
+- 已发送过 payment_collection 只是频率证据，不是硬去重；sent_message_summary.payment_collection_sent 和历史累计次数都不能单独决定发或不发。结合客户当前态度、今天次数、last_sent_at、customer_turns_since_last_card 和新成交推进做语义判断。明确报名、预约、锁名额、要入口、确认时间、补姓名电话、重发入口或接受付款都是强推进证据；普通顾虑被解决后的明确接受也可以进入 send_now。没有新推进且刚发过卡时保持 explain，不重复 payment_collection。
+- 客户在上一轮已经听完预约金解释，本轮只回复“嗯/好/知道了”等确认时，不要把 268、10 元、抵扣、尾款和退款规则整套复读。先自然确认客户理解，再根据频率证据给出“小程序收款卡或转账”的付款选择，并只使用一个真实压单理由；有效订单存在且当前接受足够明确时可以 send_now，否则使用 explain。`send_now` 时把卡片操作和一个理由放在前面，不要用“10元到店抵扣、不做退10元”这种已解释规则作开场；`explain` 且刚发过卡时，先简短确认客户的问题，再说原卡仍可直接点或可转账，不重复卡片。
+- `payment_action=confirm_next_step` 只用于客户已付后的姓名、电话、门店、日期或排期承接。客户尚未付款、只是确认预约金说明时，不能用它代替 `explain` 或 `send_now`；也不能说“我已经帮您留住/占上名额”，除非有真实已支付、保留或预约事实。未重发卡的 `explain` 应说明原卡仍可操作或可转账，并用已有活动名额事实作轻压单。
+- 校准示例（表达必须随上下文变化，不能机械照抄）：客户刚确认预约金说明、今天未发卡、已有可复用订单且你选择 `send_now`，可以先自然接“好嘞亲”，再说“这次活动名额是按报名顺序的，10元小程序卡在下面，直接点就行；想转账也可以，转好截图发我”。重点是承接、操作、一个理由，不是重讲退款和尾款。客户刚收到卡、只确认“到店抵扣对吧”且你选择 `explain`，可以简短确认抵扣，再说“刚发的卡片先留着，确定了直接点；转账也可以，转好截图发我”，不重复发卡。
 - payment_decision 是唯一预约金决策：action 可选 none、explain、send_now、resend、manual_transfer、after_paid_next_step、ask_party_size；party_size 只填 1-4；send_now/resend 时 amount 必须等于 party_size*10；manual_transfer 可保留 amount 作为文字收款金额事实但不输出 payment_collection；source 说明判断来源；confidence 只能 high/medium/low；basis 简短列出依据。
 - 单人报名/要入口：payment_decision.action=send_now, party_size=1, amount=10。
 - 明确选择转账/截图备注：payment_decision.action=manual_transfer，payment_action=manual_transfer；只输出 text 说明转账和截图备注，不输出 payment_collection，也不要写“发入口/卡片已发/点击入口”。

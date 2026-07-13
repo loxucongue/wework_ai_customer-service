@@ -522,7 +522,11 @@
         "payment_action": "explain_existing",
         "payment_decision": {"action": "explain"}
       },
-      "sent_message_summary": {"payment_collection_sent": true, "payment_collection_count": 1},
+      "sent_message_summary": {
+        "payment_collection_sent": true,
+        "payment_collection_count": 7,
+        "payment_collection": {"today_count": 1, "prior_count": 6, "total_count": 7, "last_sent_at": "2026-07-13T10:20:00+08:00", "last_amount": 10, "customer_turns_since_last_card": 1, "count_confidence": "high"}
+      },
       "fact_envelope": {
         "structured_facts": {
           "offer_facts": {"deposit_per_person": 10, "refund_policy": "不做退10元"}
@@ -530,10 +534,10 @@
       }
     },
     "expected": {
-      "must_include_semantics": ["确认到店抵扣", "不重复催付"],
+      "must_include_semantics": ["确认到店抵扣", "不重复发卡", "自然给付款选择或一个成交动作"],
       "must_not_include": ["payment_collection", "重新发卡", "又发一次入口"],
       "message_types": ["text"],
-      "style": ["简短确认", "不重复压单"]
+      "style": ["简短确认", "不机械重复", "仍有成交推进"]
     }
   },
   {
@@ -554,6 +558,16 @@
       },
       "fact_envelope": {
         "structured_facts": {
+          "order_facts": [
+            {
+              "type": "work_order",
+              "status": "reused",
+              "order_id": "order-sop-objection-1",
+              "store_id": "227",
+              "prepay_required": 10,
+              "deposit_state": "required_unpaid"
+            }
+          ],
           "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元"}
         }
       }
@@ -564,6 +578,86 @@
       "message_types": ["text", "payment_collection"],
       "payment_amount": 10,
       "style": ["顺着客户态度主动推进", "不硬催"]
+    }
+  },
+  {
+    "id": "reply_ack_after_payment_explanation_frequency",
+    "node": "reply",
+    "current_message": "嗯",
+    "input_payload": {
+      "current_message": "嗯",
+      "conversation_history": [
+        "小贝: 这类斑点大多数客户改善反馈都不错。",
+        "小贝: 厦门门店和同类效果参考已经发您了。",
+        "用户: 还要付定金吗？",
+        "小贝: 预约金10元，到店直接抵扣，不是另外加收。",
+        "用户: 嗯"
+      ],
+      "planner_decision": {
+        "decision": "direct_reply",
+        "conversion_stage": "objection_resolution",
+        "next_step": "solve_blocker",
+        "payment_action": "explain_existing",
+        "payment_decision": {"action": "explain", "source": "current_acceptance+frequency_evidence", "confidence": "medium"}
+      },
+      "sop_progress": {
+        "sent_categories": ["effect_case", "activity_price", "store_intro", "deposit_explained"],
+        "next_candidates": ["deposit_push"],
+        "stage_goal": "客户已理解规则，给付款选择并轻压单"
+      },
+      "sent_message_summary": {
+        "payment_collection_sent": true,
+        "payment_collection_count": 6,
+        "payment_collection": {"today_count": 0, "prior_count": 6, "total_count": 6, "last_amount": 10, "customer_turns_since_last_card": 4, "count_confidence": "high"}
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元", "limited_quota": true}
+        }
+      }
+    },
+    "expected": {
+      "must_include_semantics": ["自然确认客户已理解", "小程序收款卡或转账的付款选择", "只用一个活动或名额理由"],
+      "must_not_include": ["安排下一步", "继续处理", "温馨提醒", "尊敬的客户", "完整复述268、10元、258和退款四项规则", "payment_collection"],
+      "message_types": ["text"],
+      "style": ["亲切微信销售", "不复读", "明确推动决策"]
+    }
+  },
+  {
+    "id": "reply_historical_six_today_zero_high_intent",
+    "node": "reply",
+    "current_message": "那就参加吧，直接发我",
+    "input_payload": {
+      "current_message": "那就参加吧，直接发我",
+      "conversation_history": [
+        "小贝: 效果、活动和门店信息已经给您介绍过了。",
+        "用户: 那就参加吧，直接发我"
+      ],
+      "planner_decision": {
+        "decision": "direct_reply",
+        "conversion_stage": "deposit_push",
+        "next_step": "send_deposit",
+        "payment_action": "send_now",
+        "payment_decision": {"action": "send_now", "party_size": 1, "amount": 10, "source": "current_message", "confidence": "high"}
+      },
+      "sent_message_summary": {
+        "payment_collection_sent": true,
+        "payment_collection_count": 6,
+        "payment_collection": {"today_count": 0, "prior_count": 6, "total_count": 6, "customer_turns_since_last_card": 5, "count_confidence": "high"}
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元", "limited_quota": true},
+          "order_facts": [{"type": "work_order", "status": "reused", "order_id": "order-frequency-2", "store_id": "227", "prepay_required": 10, "deposit_state": "required_unpaid"}]
+        }
+      }
+    },
+    "expected": {
+      "must_include_semantics": ["顺着明确参加意向", "一个真实压单理由", "小程序收款卡"],
+      "must_not_include": ["历史发过很多次所以不再发", "尊敬的客户"],
+      "message_types": ["text", "payment_collection"],
+      "payment_amount": 10,
+      "style": ["直接自然", "不机械复读"]
     }
   }
 ]

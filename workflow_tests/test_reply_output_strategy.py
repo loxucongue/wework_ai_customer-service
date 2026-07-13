@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -12,6 +14,7 @@ from app.graph.nodes.conversation_history_fetch import platform_messages_to_hist
 from app.graph.nodes.current_turn_context import build_current_turn_context
 from app.graph.nodes.layer_nodes import create_background_context_layer
 from app.graph.nodes.reply_context import reply_user_payload_for_model
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.appointment_time_utils import normalize_time_text, summarize_available_slots
 from app.graph.nodes.profile_nodes import _profile_conversation_history
 from app.graph.nodes.reply_nodes import (
@@ -91,6 +94,102 @@ def test_current_turn_context_binds_renne_to_deposit_push() -> None:
     assert context["turn_evidence"]["history_evidence"]["is_short_message"] is True
     assert context["turn_evidence"]["payment_evidence"]["link_sent_evidence"] is True
     assert "reply_anchor" not in context["turn_evidence"]
+
+
+def test_sent_message_summary_separates_today_and_prior_without_double_counting() -> None:
+    events = [
+        {
+            "event_id": f"payment-{index}",
+            "event_type": "payment_collection_sent",
+            "event_time": f"2026-07-{index + 1:02d}T02:00:00+00:00",
+            "facts": {"amount": 10},
+        }
+        for index in range(5)
+    ]
+    events.extend(
+        [
+            {
+                "event_id": "payment-today",
+                "event_type": "payment_collection_sent",
+                "event_time": "2026-07-13T02:00:00+00:00",
+                "facts": {"amount": 20},
+            },
+            {
+                "event_id": "payment-today",
+                "event_type": "payment_collection_sent",
+                "event_time": "2026-07-13T02:00:00+00:00",
+                "facts": {"amount": 20},
+            },
+        ]
+    )
+    summary = sent_message_summary_for_model(
+        {
+            "history_events": events,
+            "conversation_history": [
+                "小贝: payment_collection amount=20",
+                "用户: 我看到了",
+                "小贝: 这20元到店抵扣。",
+                "用户: 好",
+            ],
+        },
+        now=datetime(2026, 7, 13, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    frequency = summary["payment_collection"]
+    assert frequency["today_count"] == 1
+    assert frequency["prior_count"] == 5
+    assert frequency["total_count"] == 6
+    assert frequency["last_amount"] == 20
+    assert frequency["customer_turns_since_last_card"] == 2
+    assert frequency["count_confidence"] == "high"
+    assert summary["payment_collection_count"] == 6
+
+
+def test_sent_message_summary_keeps_unknown_time_distinct_from_zero_today() -> None:
+    summary = sent_message_summary_for_model(
+        {
+            "history_events": [
+                {
+                    "event_id": "payment-unknown-time",
+                    "event_type": "payment_collection_sent",
+                    "facts": {"amount": 10},
+                }
+            ]
+        },
+        now=datetime(2026, 7, 13, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    frequency = summary["payment_collection"]
+    assert frequency["today_count"] is None
+    assert frequency["prior_count"] is None
+    assert frequency["total_count"] == 1
+    assert frequency["count_confidence"] == "unknown"
+
+
+def test_current_turn_context_does_not_label_payment_explanation_as_sent_card() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "嗯",
+            "conversation_history": [
+                "小贝: payment_collection amount=10",
+                "用户: 这个到店抵扣对吧",
+                "小贝: 对的，10元到店直接抵扣，不是另外加收。",
+            ],
+            "history_events": [
+                {
+                    "event_id": "payment-yesterday",
+                    "event_type": "payment_collection_sent",
+                    "event_time": "2026-07-12T02:00:00+00:00",
+                    "facts": {"amount": 10},
+                }
+            ],
+        }
+    )
+
+    assert context["last_assistant_action"] == "text_reply"
+    assert "last_assistant_action:text_reply" in context["context_hints"]
+    assert context["payment_evidence"]["sent_payment_collection"] is True
+    assert context["payment_evidence"]["payment_collection_frequency"]["total_count"] == 1
 
 
 def test_contextual_short_open_task_recovers_planner_no_reply() -> None:
@@ -4169,12 +4268,14 @@ def test_reply_payload_keeps_context_for_low_information_message() -> None:
 
 
 def test_planner_prompt_treats_payment_sent_as_context_not_hard_dedupe() -> None:
-    assert "payment_collection_sent 不是硬去重" in PLANNER_SYSTEM_PROMPT
-    assert "不要求客户必须说没收到或再发" in PLANNER_SYSTEM_PROMPT
+    assert "已发送过 payment_collection 只是频率证据，不是硬去重" in PLANNER_SYSTEM_PROMPT
+    assert "历史累计次数都不能单独决定发或不发" in PLANNER_SYSTEM_PROMPT
+    assert "优先看客户当前态度和新的成交推进" in PLANNER_SYSTEM_PROMPT
+    assert "其次看今天发送次数" in PLANNER_SYSTEM_PROMPT
     assert "你还没付/支付失败/刚才没付款" in PLANNER_SYSTEM_PROMPT
     assert "要交钱吗/预约金怎么抵扣/能不能退/是不是额外收费/尾款多少" in PLANNER_SYSTEM_PROMPT
-    assert "不要自动发 payment_collection" in PLANNER_SYSTEM_PROMPT
-    assert "只有客户明确表达报名/发入口/现在付/锁名额" in PLANNER_SYSTEM_PROMPT
+    assert "不要求客户逐字说“发入口”" in PLANNER_SYSTEM_PROMPT
+    assert "普通顾虑被解决后的明确接受也可以进入 send_now" in PLANNER_SYSTEM_PROMPT
     assert "已经发送过 payment_collection 后，只有客户明确说没收到" not in PLANNER_SYSTEM_PROMPT
     assert "只解释规则，不发 payment_collection" not in PLANNER_SYSTEM_PROMPT
 
