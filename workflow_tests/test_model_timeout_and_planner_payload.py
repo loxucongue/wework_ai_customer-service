@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import unittest
 from typing import Any
 
 from app.config import Settings
 from app.graph.nodes.image_info import fallback_image_info
-from app.graph.planner.brain_v2 import _planner_payload_for_model
+from app.graph.planner.brain_v2 import _planner_payload_for_model, run_planner_brain_v2
 from app.services.model_client import ModelClient
 from app.services.model_selection import api_key, base_url, is_claude_model, model_names
 
@@ -27,12 +29,12 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
     def test_planner_retries_primary_once_then_falls_back_to_qwen_turbo(self) -> None:
         settings = _settings(model_planner="qwen-plus", model_planner_fallbacks="")
 
-        self.assertEqual(model_names(settings, "planner"), ["qwen-plus", "qwen-plus", "qwen-turbo"])
+        self.assertEqual(model_names(settings, "planner"), ["qwen-plus", "qwen-turbo"])
 
     def test_planner_keeps_qwen_turbo_after_custom_fallbacks(self) -> None:
         settings = _settings(model_planner="qwen-plus", model_planner_fallbacks="custom-model")
 
-        self.assertEqual(model_names(settings, "planner"), ["qwen-plus", "qwen-plus", "custom-model", "qwen-turbo"])
+        self.assertEqual(model_names(settings, "planner"), ["qwen-plus", "custom-model", "qwen-turbo"])
 
     def test_relay_planner_does_not_append_qwen_turbo(self) -> None:
         settings = _settings(
@@ -41,12 +43,170 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
             model_planner_fallbacks="gpt-5.4",
         )
 
-        self.assertEqual(model_names(settings, "planner"), ["gpt-5.4-mini", "gpt-5.4-mini", "gpt-5.4"])
+        self.assertEqual(model_names(settings, "planner"), ["gpt-5.4-mini", "gpt-5.4"])
 
-    def test_reply_uses_qwen_plus_multiple_times_without_turbo(self) -> None:
+    def test_reply_dedupes_repeated_fallbacks_without_turbo(self) -> None:
         settings = _settings(model_reply="qwen-plus", model_reply_fallbacks="qwen-plus,qwen-plus")
 
-        self.assertEqual(model_names(settings, "reply"), ["qwen-plus", "qwen-plus", "qwen-plus"])
+        self.assertEqual(model_names(settings, "reply"), ["qwen-plus"])
+
+    async def test_model_client_hedges_slow_primary_with_fallback(self) -> None:
+        class HedgeModelClient(ModelClient):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.models: list[str] = []
+
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                self.models.append(str(payload.get("model") or ""))
+                if fallback_index == 0:
+                    await asyncio.sleep(0.2)
+                    return {"choices": [{"message": {"content": "slow"}}]}
+                return {"choices": [{"message": {"content": "fast"}}]}
+
+        client = HedgeModelClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_fast="slow-model",
+                model_fast_fallbacks="fast-model",
+                model_hedge_delay_seconds=0.01,
+                model_timeout_seconds=1,
+            )
+        )
+
+        result = await client.chat_text([{"role": "user", "content": "hi"}], tier="fast")
+
+        self.assertEqual(result, "fast")
+        self.assertEqual(client.models[:2], ["slow-model", "fast-model"])
+
+    async def test_model_client_records_timeout_candidate_and_hedge_metadata(self) -> None:
+        class TimeoutModelClient(ModelClient):
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                await asyncio.sleep(2)
+                return {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+
+        client = TimeoutModelClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_fast="slow-primary",
+                model_fast_fallbacks="slow-fallback",
+                model_hedge_delay_seconds=0.01,
+                model_timeout_seconds=1,
+            )
+        )
+
+        with self.assertRaises(TimeoutError):
+            await client.chat_json([{"role": "user", "content": "Return JSON."}], tier="fast")
+
+        usage = client.last_usage or {}
+        self.assertEqual(usage.get("candidate_models"), ["slow-primary", "slow-fallback"])
+        self.assertEqual(usage.get("started_models"), ["slow-primary", "slow-fallback"])
+        self.assertEqual(usage.get("pending_models"), ["slow-primary", "slow-fallback"])
+        self.assertTrue(usage.get("hedge_started"))
+        self.assertEqual(usage.get("total_timeout_seconds"), 1.0)
+        self.assertIn("TimeoutError", str(usage.get("error")))
+
+    async def test_planner_timeout_uses_compact_fast_retry(self) -> None:
+        class RetryPlannerClient:
+            available = True
+
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+                self.last_usage: dict[str, Any] = {}
+
+            async def chat_json(self, messages: list[dict[str, Any]], *, tier: str, temperature: float = 0.1) -> dict[str, Any]:
+                self.calls.append({"tier": tier, "messages": messages, "temperature": temperature})
+                self.last_usage = {
+                    "provider": "test",
+                    "model": f"model-{tier}",
+                    "tier": tier,
+                    "candidate_models": [f"model-{tier}"],
+                    "started_models": [f"model-{tier}"],
+                    "hedge_started": False,
+                    "usage": {},
+                }
+                if len(self.calls) == 1:
+                    self.last_usage["error"] = "TimeoutError: total timeout 35.0s"
+                    raise TimeoutError("total timeout 35.0s")
+                return {
+                    "decision": "direct_reply",
+                    "stage": "S1",
+                    "sub_rule_id": "S1_CONTEXT",
+                    "conversion_stage": "interest_capture",
+                    "customer_type": "unknown",
+                    "main_blocker": "none",
+                    "next_step": "no_action",
+                    "payment_action": "none",
+                    "payment_decision": {"action": "none", "source": "planner"},
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "在的，我继续帮您处理。"}}],
+                    "tool_calls": [],
+                }
+
+        client = RetryPlannerClient()
+        plan, model_call = await run_planner_brain_v2(
+            {"normalized_content": "？", "conversation_history": ["用户: 还在吗"]},
+            client,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual([call["tier"] for call in client.calls], ["planner", "fast"])
+        retry_user_payload = client.calls[1]["messages"][-1]["content"]
+        self.assertIn("timeout_recovery", retry_user_payload)
+        self.assertEqual(len(client.calls[1]["messages"]), 2)
+        self.assertIn("Planner Timeout Recovery", client.calls[1]["messages"][0]["content"])
+        self.assertNotIn("Planner Rule Packs", json.dumps(client.calls[1]["messages"], ensure_ascii=False))
+        self.assertEqual(plan["planner_decision"], "direct_reply")
+        self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text"])
+        self.assertEqual(model_call["nested_calls"][0]["name"], "planner_brain_timeout_retry")
+        self.assertIn("TimeoutError", model_call.get("initial_error", ""))
+
+    async def test_planner_timeout_fallback_does_not_emit_handoff_notice(self) -> None:
+        class FailingPlannerClient:
+            available = True
+
+            def __init__(self) -> None:
+                self.calls = 0
+                self.last_usage: dict[str, Any] = {}
+
+            async def chat_json(self, messages: list[dict[str, Any]], *, tier: str, temperature: float = 0.1) -> dict[str, Any]:
+                self.calls += 1
+                self.last_usage = {
+                    "provider": "test",
+                    "model": f"model-{tier}",
+                    "tier": tier,
+                    "candidate_models": [f"model-{tier}"],
+                    "started_models": [f"model-{tier}"],
+                    "hedge_started": False,
+                    "error": f"TimeoutError: {tier}",
+                    "usage": {},
+                }
+                raise TimeoutError(f"{tier} timeout")
+
+        client = FailingPlannerClient()
+        plan, model_call = await run_planner_brain_v2(
+            {"normalized_content": "？", "conversation_history": ["用户: 还在吗"]},
+            client,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(plan["planner_sub_rule_id"], "PLANNER_SYSTEM_UNAVAILABLE")
+        self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text"])
+        self.assertNotIn("human_handoff_notice", [item["type"] for item in plan["planner_reply_messages"]])
+        self.assertIn("timeout_retry_failed", model_call.get("error", ""))
 
     def test_relay_provider_uses_relay_credentials(self) -> None:
         settings = _settings(
@@ -165,6 +325,7 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(client.payload)
         self.assertNotIn("response_format", client.payload or {})
         self.assertEqual((client.payload or {}).get("reasoning"), {"enabled": False})
+        self.assertEqual((client.payload or {}).get("max_tokens"), 2048)
 
     async def test_model_client_uses_json_mode_and_disables_reasoning_for_claude_model(self) -> None:
         class CaptureModelClient(ModelClient):

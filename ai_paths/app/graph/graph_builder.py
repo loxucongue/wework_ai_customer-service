@@ -27,6 +27,7 @@ from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
 from app.services.outreach_send_client import OutreachSendClient
+from app.services.platform_agent_client import PlatformAgentClient
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -60,6 +61,7 @@ def build_graph(
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None = None,
     store_service: StoreService | None = None,
     outreach_send_client: OutreachSendClient | None = None,
+    platform_agent_client: PlatformAgentClient | None = None,
 ):
     return build_reply_graphs(
         coze_client,
@@ -70,6 +72,7 @@ def build_graph(
         customer_store_knowledge_service,
         store_service,
         outreach_send_client,
+        platform_agent_client,
     ).full_graph
 
 
@@ -82,6 +85,7 @@ def build_reply_graphs(
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None = None,
     store_service: StoreService | None = None,
     outreach_send_client: OutreachSendClient | None = None,
+    platform_agent_client: PlatformAgentClient | None = None,
 ) -> ReplyGraphs:
     nodes = _build_nodes(
         coze_client=coze_client,
@@ -92,6 +96,7 @@ def build_reply_graphs(
         customer_store_knowledge_service=customer_store_knowledge_service,
         store_service=store_service,
         outreach_send_client=outreach_send_client,
+        platform_agent_client=platform_agent_client,
     )
     return ReplyGraphs(
         full_graph=_compile_full_graph(nodes),
@@ -111,6 +116,7 @@ def _build_nodes(
     customer_store_knowledge_service: CustomerStoreKnowledgeService | None,
     store_service: StoreService | None,
     outreach_send_client: OutreachSendClient | None,
+    platform_agent_client: PlatformAgentClient | None,
 ) -> dict[str, Any]:
     layer_1_input_normalization = create_input_normalization_layer(
         trace_logger=trace_logger,
@@ -132,6 +138,7 @@ def _build_nodes(
         coze_client=coze_client,
         trace_logger=trace_logger,
         store_service=store_service,
+        platform_agent_client=platform_agent_client,
         appointment_query_from_state=lambda content, store_lookup, state: appointment_query_from_state(
             content,
             store_lookup,

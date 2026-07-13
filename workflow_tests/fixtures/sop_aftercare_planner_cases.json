@@ -1,0 +1,884 @@
+[
+  {
+    "id": "planner_effect_objection_after_case_sent",
+    "node": "planner",
+    "current_message": "我还是怕没效果",
+    "input_payload": {
+      "current_message": "我还是怕没效果",
+      "conversation_history": [
+        "用户: 脸上有斑，想淡一点",
+        "小贝: 可以做的，脸上的斑一般会先看肤况再定方案。",
+        "小贝: 这个是同类淡斑改善参考，很多客户反馈都挺明显。",
+        "用户: 价格呢",
+        "小贝: 现在活动价是268，到店检测合适再做。"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "opening",
+          "effect_case",
+          "activity_price"
+        ],
+        "stage_goal": "答疑后推进登记或预约金，帮助客户做决策"
+      },
+      "turn_evidence": {
+        "is_short_message": false,
+        "store_evidence": {
+          "confirmed_store": null,
+          "candidates": []
+        },
+        "payment_evidence": {
+          "link_sent": false,
+          "customer_claimed_paid": false,
+          "resend_requested": false
+        },
+        "risk_evidence": {
+          "current_high_risk": false
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "case_facts": [
+            {
+              "case_id": "case-light-spot-01",
+              "summary": "同类淡斑改善参考",
+              "image_url": "https://test.by4dev.4ba.cn/cases/light-spot-01.jpg"
+            }
+          ],
+          "offer_facts": {
+            "activity_price": 268,
+            "original_price": 1980,
+            "deposit_per_person": 10,
+            "tail_payment_single": 258,
+            "refund_policy": "不做退10元",
+            "limited_quota": true
+          }
+        }
+      },
+      "sent_message_summary": {
+        "image_sent": true,
+        "store_address_sent": false,
+        "payment_collection_sent": false
+      },
+      "available_tools": [
+        "kb_search",
+        "customer_store_lookup",
+        "distance_calculate",
+        "available_time"
+      ]
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "customer_need": "解决效果疑虑并推进预约金/登记",
+      "payment_action": "explain_existing",
+      "expected_message_types": [
+        "text"
+      ],
+      "must_not_call_tools": [
+        "professional_assist"
+      ],
+      "must_not_message_types": [
+        "human_handoff_notice"
+      ],
+      "notes": "历史已发同类效果图时，优先承接顾虑和压单，不要重复冷启动问项目。"
+    }
+  },
+  {
+    "id": "planner_effect_objection_without_case_fact",
+    "node": "planner",
+    "current_message": "有真实效果图吗，我怕没用",
+    "input_payload": {
+      "current_message": "有真实效果图吗，我怕没用",
+      "conversation_history": [
+        "用户: 我想淡斑",
+        "小贝: 可以的，活动现在做得比较划算。"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "opening",
+          "activity_price"
+        ],
+        "stage_goal": "补足效果证据，再推进到店检测和预约金"
+      },
+      "turn_evidence": {
+        "payment_evidence": {
+          "link_sent": false
+        },
+        "store_evidence": {
+          "confirmed_store": null,
+          "candidates": []
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "case_facts": [],
+          "offer_facts": {
+            "activity_price": 268,
+            "deposit_per_person": 10,
+            "refund_policy": "不做退10元"
+          }
+        }
+      },
+      "available_tools": [
+        "kb_search",
+        "customer_store_lookup"
+      ]
+    },
+    "expected_decision": {
+      "decision": "need_tools",
+      "required_tools": [
+        {
+          "name": "kb_search",
+          "purpose": "case_studies"
+        }
+      ],
+      "payment_action": "explain_existing",
+      "allowed_payment_actions": [
+        "none",
+        "explain_existing",
+        "unknown"
+      ],
+      "expected_message_types": [],
+      "notes": "没有案例事实时，planner 应主动查案例库，而不是只用文字规避。"
+    }
+  },
+  {
+    "id": "planner_rebound_objection_after_sop",
+    "node": "planner",
+    "current_message": "会不会反黑啊",
+    "input_payload": {
+      "current_message": "会不会反黑啊",
+      "conversation_history": [
+        "用户: 想做淡斑",
+        "小贝: 我先给您看下同类改善参考。",
+        "小贝: 现在活动价268，名额有限。"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "effect_case",
+          "activity_price"
+        ],
+        "stage_goal": "解决反黑顾虑后推进到店检测和保留名额"
+      },
+      "turn_evidence": {
+        "risk_evidence": {
+          "current_high_risk": false,
+          "concern_type": "effect_safety_objection"
+        },
+        "payment_evidence": {
+          "link_sent": false
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {
+            "activity_price": 268,
+            "deposit_per_person": 10,
+            "refund_policy": "不做退10元"
+          }
+        }
+      },
+      "available_tools": [
+        "kb_search",
+        "professional_assist"
+      ]
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "customer_need": "怕反黑/伤肤顾虑",
+      "payment_action": "explain_existing",
+      "expected_message_types": [
+        "text"
+      ],
+      "must_not_call_tools": [
+        "professional_assist"
+      ],
+      "must_not_message_types": [
+        "human_handoff_notice",
+        "payment_collection"
+      ],
+      "notes": "反黑是普通效果安全顾虑，不是健康高风险；先给信心，再说到店检测评估。"
+    }
+  },
+  {
+    "id": "planner_distance_objection_after_store_discussed",
+    "node": "planner",
+    "current_message": "都有点远啊",
+    "input_payload": {
+      "current_message": "都有点远啊",
+      "conversation_history": [
+        "用户: 我在集美",
+        "小贝: 您看思明或湖里，哪家过去更方便？",
+        "小贝: 我先发湖里这家地址给您看下。",
+        "小贝: 活动和检测服务都是一样的。"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "store_address",
+          "activity_price"
+        ],
+        "stage_goal": "门店已铺垫后，不重复制造门店顾虑，转向保留名额"
+      },
+      "turn_evidence": {
+        "store_evidence": {
+          "confirmed_store": null,
+          "candidates": [
+            {
+              "store_id": "386",
+              "store_name": "厦门思明店",
+              "source": "recent_history"
+            },
+            {
+              "store_id": "562",
+              "store_name": "厦门百星湖里店",
+              "source": "recent_history"
+            }
+          ]
+        },
+        "payment_evidence": {
+          "link_sent": false
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "store_facts": [
+            {
+              "store_id": "562",
+              "store_name": "厦门百星湖里店",
+              "address": "厦门市湖里区示例地址"
+            }
+          ],
+          "offer_facts": {
+            "activity_price": 268,
+            "deposit_per_person": 10,
+            "limited_quota": true
+          }
+        }
+      },
+      "available_tools": [
+        "distance_calculate",
+        "customer_store_lookup"
+      ]
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "none",
+      "allowed_payment_actions": [
+        "none",
+        "confirm_next_step",
+        "explain_existing"
+      ],
+      "expected_message_types": [
+        "text"
+      ],
+      "must_not_call_tools": [
+        "distance_calculate"
+      ],
+      "must_not_ask_slots": [
+        "重新问客户哪个门店",
+        "重新问城市"
+      ],
+      "notes": "门店已聊过，客户只是距离顾虑，应安抚并推进保留名额；不要输出公里/分钟。"
+    }
+  },
+  {
+    "id": "planner_ad_location_trust_same_city",
+    "node": "planner",
+    "current_message": "我看广告不是说集美有吗",
+    "input_payload": {
+      "current_message": "我看广告不是说集美有吗",
+      "conversation_history": [
+        "用户: 我在厦门集美",
+        "小贝: 您看思明或湖里哪家顺路一些？"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "store_address"
+        ],
+        "stage_goal": "解释平台同城定位误解，落地同城真实门店"
+      },
+      "turn_evidence": {
+        "store_evidence": {
+          "confirmed_store": null,
+          "candidates": [
+            {
+              "store_id": "386",
+              "store_name": "厦门思明店",
+              "source": "store_tool"
+            },
+            {
+              "store_id": "562",
+              "store_name": "厦门百星湖里店",
+              "source": "store_tool"
+            }
+          ]
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "store_facts": [
+            {
+              "store_id": "386",
+              "store_name": "厦门思明店"
+            },
+            {
+              "store_id": "562",
+              "store_name": "厦门百星湖里店"
+            }
+          ]
+        }
+      },
+      "available_tools": [
+        "customer_store_lookup",
+        "distance_calculate"
+      ]
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "customer_need": "广告定位信任顾虑 + 同城门店承接",
+      "payment_action": "none",
+      "expected_message_types": [
+        "text"
+      ],
+      "must_not_call_tools": [
+        "professional_assist"
+      ],
+      "notes": "已有同城门店事实时，不说没有门店；解释平台定位展示并承接真实门店。"
+    }
+  },
+  {
+    "id": "planner_price_all_in_after_sop",
+    "node": "planner",
+    "current_message": "268是全部吗，会不会还有别的收费",
+    "input_payload": {
+      "current_message": "268是全部吗，会不会还有别的收费",
+      "conversation_history": [
+        "小贝: 现在淡斑活动是268。",
+        "小贝: 线上先10元保留名额，到店抵扣。"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "activity_price"
+        ],
+        "stage_goal": "解释费用透明，并自然推进预约金"
+      },
+      "turn_evidence": {
+        "payment_evidence": {
+          "link_sent": false
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {
+            "activity_price": 268,
+            "deposit_per_person": 10,
+            "tail_payment_single": 258,
+            "refund_policy": "不做退10元"
+          }
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "none",
+      "allowed_payment_actions": [
+        "none",
+        "confirm_next_step",
+        "explain_existing"
+      ],
+      "expected_message_types": [
+        "text"
+      ],
+      "must_not_message_types": [
+        "payment_collection"
+      ],
+      "notes": "客户问规则，不是要入口；可解释预约金价值但不自动发卡。"
+    }
+  },
+  {
+    "id": "planner_later_visit_after_store",
+    "node": "planner",
+    "current_message": "那我改天去看看",
+    "input_payload": {
+      "current_message": "那我改天去看看",
+      "conversation_history": [
+        "小贝: 这家湖里店您过去更顺一些，我把地址发您。",
+        "小贝: 活动现在是268，线上名额有限。"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "store_address",
+          "activity_price"
+        ],
+        "stage_goal": "客户愿意到店，推进线上保留活动资格"
+      },
+      "turn_evidence": {
+        "store_evidence": {
+          "confirmed_store": {
+            "store_id": "562",
+            "store_name": "厦门百星湖里店",
+            "source": "recent_store_fact"
+          }
+        },
+        "payment_evidence": {
+          "link_sent": false
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {
+            "activity_price": 268,
+            "deposit_per_person": 10,
+            "limited_quota": true
+          }
+        }
+      },
+      "available_tools": [
+        "available_time"
+      ]
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "none",
+      "allowed_payment_actions": [
+        "none",
+        "confirm_next_step",
+        "explain_existing"
+      ],
+      "expected_message_types": [
+        "text"
+      ],
+      "must_not_call_tools": [
+        "available_time"
+      ],
+      "notes": "客户说改天看看，不代表给出具体日期；不要查档期，也不要承诺已安排。"
+    }
+  },
+  {
+    "id": "planner_registration_info_then_payment",
+    "node": "planner",
+    "current_message": "张三 13800138000",
+    "input_payload": {
+      "current_message": "张三 13800138000",
+      "conversation_history": [
+        "小贝: 您把姓名电话发我，我先给您登记线上活动名额。",
+        "小贝: 名额登记后再把10元预约金入口发您，到店抵扣。"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "activity_price",
+          "registration_prompt"
+        ],
+        "stage_goal": "收齐姓名电话后推进预约金"
+      },
+      "turn_evidence": {
+        "payment_evidence": {
+          "link_sent": false
+        },
+        "identity_evidence": {
+          "name_provided": true,
+          "phone_provided": true
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {
+            "activity_price": 268,
+            "deposit_per_person": 10,
+            "refund_policy": "不做退10元"
+          }
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "send_now",
+      "payment_amount": 10,
+      "expected_message_types": [
+        "text",
+        "payment_collection"
+      ],
+      "notes": "客户已按要求给姓名电话，属于高意向，可以发预约金入口。"
+    }
+  },
+  {
+    "id": "planner_transfer_payment_method",
+    "node": "planner",
+    "current_message": "我就直接转账吧",
+    "input_payload": {
+      "current_message": "我就直接转账吧",
+      "conversation_history": [
+        "小贝: 线上先10元预约金保留名额，到店抵扣。",
+        "用户: 可以，怎么给"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "activity_price"
+        ],
+        "stage_goal": "客户已明确选择转账，说明截图备注"
+      },
+      "turn_evidence": {
+        "payment_evidence": {
+          "link_sent": false,
+          "payment_method_requested": "manual_transfer"
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {
+            "deposit_per_person": 10,
+            "refund_policy": "不做退10元"
+          }
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "manual_transfer",
+      "expected_message_types": [
+        "text"
+      ],
+      "must_not_message_types": [
+        "payment_collection"
+      ],
+      "notes": "客户明确选择转账，用文字说明截图备注，不输出 payment_collection。"
+    }
+  },
+  {
+    "id": "planner_card_entry_single_person",
+    "node": "planner",
+    "current_message": "那发我预约金卡片吧",
+    "input_payload": {
+      "current_message": "那发我预约金卡片吧",
+      "conversation_history": [
+        "小贝: 这10元是保留线上活动名额，到店抵扣。",
+        "用户: 好"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "activity_price",
+          "effect_case"
+        ],
+        "stage_goal": "客户明确要入口，发送卡片"
+      },
+      "turn_evidence": {
+        "payment_evidence": {
+          "link_sent": false,
+          "party_size": 1
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {
+            "deposit_per_person": 10,
+            "refund_policy": "不做退10元"
+          }
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "send_now",
+      "payment_amount": 10,
+      "expected_message_types": [
+        "text",
+        "payment_collection"
+      ],
+      "notes": "明确要卡片时必须带 payment_collection。"
+    }
+  },
+  {
+    "id": "planner_card_entry_friend_party",
+    "node": "planner",
+    "current_message": "我和朋友一起报名，发入口",
+    "input_payload": {
+      "current_message": "我和朋友一起报名，发入口",
+      "conversation_history": [
+        "小贝: 你们可以一起过来，按人数保留活动名额。",
+        "用户: 那就一起报"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "activity_price",
+          "effect_case"
+        ],
+        "stage_goal": "同行人数明确后按人数发预约金"
+      },
+      "turn_evidence": {
+        "payment_evidence": {
+          "link_sent": false,
+          "party_size": 2
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {
+            "deposit_per_person": 10,
+            "refund_policy": "不做退10元"
+          }
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "send_now",
+      "payment_amount": 20,
+      "expected_message_types": [
+        "text",
+        "payment_collection"
+      ],
+      "notes": "本人和朋友一起默认2位，共20元。"
+    }
+  },
+  {
+    "id": "planner_paid_next_step_no_card",
+    "node": "planner",
+    "current_message": "付完然后呢",
+    "input_payload": {
+      "current_message": "付完然后呢",
+      "conversation_history": [
+        "小贝: 2位一共20元预约金入口发您，到店抵扣。",
+        "用户: 已经付了"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "payment_collection"
+        ],
+        "stage_goal": "已付声明后推进门店、时间、姓名电话、到店检测闭环"
+      },
+      "turn_evidence": {
+        "payment_evidence": {
+          "link_sent": true,
+          "last_payment_amount": 20,
+          "customer_claimed_paid": true,
+          "resend_requested": false
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {
+            "deposit_per_person": 10
+          }
+        }
+      },
+      "available_tools": [
+        "customer_store_lookup",
+        "available_time"
+      ]
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "confirm_next_step",
+      "payment_state": "customer_claimed_paid",
+      "expected_message_types": [
+        "text"
+      ],
+      "must_not_message_types": [
+        "payment_collection"
+      ],
+      "notes": "客户声称已付后不能重复发收款卡，只承接下一步。"
+    }
+  },
+  {
+    "id": "planner_director_pressure_without_fact",
+    "node": "planner",
+    "current_message": "有没有厉害点的老师做啊，别给我随便弄",
+    "input_payload": {
+      "current_message": "有没有厉害点的老师做啊，别给我随便弄",
+      "conversation_history": [
+        "小贝: 到店会先做检测，适合再安排。",
+        "小贝: 线上名额现在比较划算。"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "effect_case",
+          "activity_price"
+        ],
+        "stage_goal": "解决专业度顾虑并推进保留名额"
+      },
+      "turn_evidence": {
+        "risk_evidence": {
+          "current_high_risk": false
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "operator_facts": []
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "explain_existing",
+      "allowed_payment_actions": [
+        "none",
+        "explain_existing"
+      ],
+      "expected_message_types": [
+        "text"
+      ],
+      "must_not_include": [
+        "主任",
+        "总监"
+      ],
+      "notes": "没有主任/总监事实时，只能说门店专业检测和按肤况操作，不能编操作者。"
+    }
+  },
+  {
+    "id": "planner_director_pressure_with_fact",
+    "node": "planner",
+    "current_message": "有没有厉害点的老师做啊，别给我随便弄",
+    "input_payload": {
+      "current_message": "有没有厉害点的老师做啊，别给我随便弄",
+      "conversation_history": [
+        "小贝: 湖里店这周活动名额比较紧。",
+        "小贝: 到店会先检测。"
+      ],
+      "sop_progress": {
+        "sent_categories": [
+          "effect_case",
+          "activity_price"
+        ],
+        "stage_goal": "使用真实操作者事实压单"
+      },
+      "turn_evidence": {
+        "store_evidence": {
+          "confirmed_store": {
+            "store_id": "562",
+            "store_name": "厦门百星湖里店",
+            "source": "recent_store_fact"
+          }
+        }
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "operator_facts": [
+            {
+              "store_id": "562",
+              "store_name": "厦门百星湖里店",
+              "fact": "本周有主任到店操作"
+            }
+          ]
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "explain_existing",
+      "allowed_payment_actions": [
+        "none",
+        "explain_existing"
+      ],
+      "expected_message_types": [
+        "text"
+      ],
+      "may_include": [
+        "主任到店"
+      ],
+      "notes": "只有上下文有明确操作者事实时，才允许把主任到店作为压单点。"
+    }
+  },
+  {
+    "id": "planner_payment_options_send_card",
+    "node": "planner",
+    "current_message": "怎么付啊，有什么方式",
+    "input_payload": {
+      "current_message": "怎么付啊，有什么方式",
+      "conversation_history": [
+        "小贝: 效果、活动和到店流程都给您说清楚了。",
+        "用户: 那我先留一个名额"
+      ],
+      "sop_progress": {
+        "sent_categories": ["effect_case", "activity_price", "store_intro"],
+        "stage_goal": "客户进入收款阶段，说明小程序收款卡或转账并主动附卡"
+      },
+      "turn_evidence": {
+        "payment_evidence": {"link_sent": false, "party_size": 1}
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {"deposit_per_person": 10, "refund_policy": "不做退10元"}
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "send_now",
+      "payment_amount": 10,
+      "expected_message_types": ["text", "payment_collection"],
+      "notes": "已进入收款阶段并询问支付方式，说明小程序收款卡或转账，主动附卡。"
+    }
+  },
+  {
+    "id": "planner_recent_card_no_repeat_without_progress",
+    "node": "planner",
+    "current_message": "这个到店抵扣对吧",
+    "input_payload": {
+      "current_message": "这个到店抵扣对吧",
+      "conversation_history": [
+        "小贝: 10元预约金到店抵扣，不做退10元。",
+        "小贝: 我把小程序收款卡发您了。"
+      ],
+      "sop_progress": {
+        "sent_categories": ["effect_case", "activity_price", "deposit_push"],
+        "stage_goal": "解答抵扣规则，不重复催付"
+      },
+      "turn_evidence": {
+        "payment_evidence": {"link_sent": true, "payment_collection_count": 1}
+      },
+      "sent_message_summary": {"payment_collection_sent": true, "payment_collection_count": 1},
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {"deposit_per_person": 10, "refund_policy": "不做退10元"}
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "allowed_payment_actions": ["none", "explain_existing"],
+      "must_not_message_types": ["payment_collection"],
+      "notes": "刚发过卡且客户只确认规则，没有新的成交推进，不重复发卡。"
+    }
+  },
+  {
+    "id": "planner_sop_objection_resolved_active_card",
+    "node": "planner",
+    "current_message": "那这样我就放心了",
+    "input_payload": {
+      "current_message": "那这样我就放心了",
+      "conversation_history": [
+        "用户: 我怕做了没效果",
+        "小贝: 绝大多数客户改善反馈都不错，到店会先检测。",
+        "小贝: 活动价268，门店和到店流程也给您发过了。"
+      ],
+      "sop_progress": {
+        "sent_categories": ["effect_case", "activity_price", "store_intro"],
+        "stage_goal": "顾虑已解决，主动用预约金保留活动名额"
+      },
+      "turn_evidence": {
+        "payment_evidence": {"link_sent": false, "party_size": 1}
+      },
+      "fact_envelope": {
+        "structured_facts": {
+          "offer_facts": {"activity_price": 268, "deposit_per_person": 10, "refund_policy": "不做退10元"}
+        }
+      },
+      "available_tools": []
+    },
+    "expected_decision": {
+      "decision": "direct_reply",
+      "payment_action": "send_now",
+      "payment_amount": 10,
+      "expected_message_types": ["text", "payment_collection"],
+      "notes": "SOP 主要铺垫完成、顾虑已解决且意向上升，可主动发小程序收款卡。"
+    }
+  }
+]

@@ -7,6 +7,7 @@ from typing import Any
 from app.graph.nodes.appointment_time_utils import summarize_available_slots, target_time_status
 from app.graph.state import AgentState
 from app.policies.business_rules import load_business_rules
+from app.services.customer_payment_state import resolved_payment_fact
 
 
 def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
@@ -22,10 +23,21 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "case_facts": [],
         "knowledge_facts": [],
         "appointment_facts": [],
+        "order_facts": [],
+        "payment_facts": [],
+        "registration_facts": [],
         "professional_assist": {},
         "tool_errors": [],
     }
     unsupported_claims: list[str] = []
+
+    payment_fact = _payment_fact_from_state(state)
+    if payment_fact:
+        structured_facts["payment_facts"].append(payment_fact)
+        facts.append(
+            f"payment: state={payment_fact.get('deposit_state') or ''}; source={payment_fact.get('source') or ''}; "
+            f"order_id={payment_fact.get('order_id') or ''}"
+        )
 
     for key, value in tool_results.items():
         if not isinstance(value, dict):
@@ -135,12 +147,67 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "nearby_times": slot_summary.get("nearby_times") or [],
             }
             structured_facts["appointment_facts"].append(appointment_fact)
+            target_note = ""
+            if appointment_fact["target_time"]:
+                target_note = (
+                    f"; target={appointment_fact['target_time']}; "
+                    f"target_available={appointment_fact['target_time_available']}"
+                )
             facts.append(
                 f"available_time: store={appointment_fact['store']}; "
                 f"date={appointment_fact['date']}; recommended={appointment_fact['recommended_slot']}; "
-                f"backup={appointment_fact['backup_slots']}; slot_count={appointment_fact['slot_count']}"
+                f"backup={appointment_fact['backup_slots']}; slot_count={appointment_fact['slot_count']}{target_note}"
             )
             missing_slots.extend(str(item) for item in appointment_fact["missing"][:4])
+            continue
+
+        if key == "create_work_order":
+            order_fact = {
+                "type": "work_order",
+                "status": str(value.get("status") or ""),
+                "order_id": str(value.get("order_id") or ""),
+                "order_no": str(value.get("order_no") or ""),
+                "store_id": str(value.get("store_id") or ""),
+                "category_id": str(value.get("category_id") or ""),
+                "prepay_required": value.get("prepay_required"),
+                "prepay_paid": value.get("prepay_paid"),
+                "deposit_state": str(value.get("deposit_state") or ""),
+                "source": str(value.get("source") or ""),
+            }
+            structured_facts["order_facts"].append(order_fact)
+            facts.append(
+                f"create_work_order: status={order_fact['status']}; order_id={order_fact['order_id']}; "
+                f"store_id={order_fact['store_id']}; prepay={order_fact['prepay_required']}"
+            )
+            continue
+
+        if key == "add_customer_mobile":
+            registration_fact = {
+                "type": "customer_mobile_sync",
+                "status": str(value.get("status") or ""),
+                "mobile": str(value.get("mobile") or ""),
+                "source": str(value.get("source") or ""),
+            }
+            structured_facts["registration_facts"].append(registration_fact)
+            facts.append(f"add_customer_mobile: status={registration_fact['status']}")
+            continue
+
+        if key == "create_order_plan":
+            appointment_fact = {
+                "type": "appointment_created" if value.get("status") in {"created", "reused"} else "appointment_create_failed",
+                "status": str(value.get("status") or ""),
+                "appointment_id": str(value.get("appointment_id") or value.get("order_id") or ""),
+                "order_id": str(value.get("order_id") or ""),
+                "store_id": str(value.get("store_id") or ""),
+                "store_name": str(value.get("store_name") or ""),
+                "appointment_time": str(value.get("appointment_time") or ""),
+                "source": str(value.get("source") or ""),
+            }
+            structured_facts["appointment_facts"].append(appointment_fact)
+            facts.append(
+                f"create_order_plan: status={appointment_fact['status']}; order_id={appointment_fact['order_id']}; "
+                f"appointment_time={appointment_fact['appointment_time']}"
+            )
             continue
 
         if key == "appointment_record_query":
@@ -236,6 +303,26 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
         "suggested_next_step": "",
         "confidence": 0.9,
     }
+
+
+def _payment_fact_from_state(state: AgentState) -> dict[str, Any]:
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    orders = customer_context.get("orders") if isinstance(customer_context.get("orders"), list) else []
+    basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    stored = basic_info.get("deposit_state")
+    if isinstance(stored, dict):
+        existing_state = str(stored.get("status") or stored.get("deposit_state") or "")
+        existing_source = str(stored.get("source") or "")
+    else:
+        existing_state = str(stored or "")
+        existing_source = "customer_memory" if existing_state else ""
+    return resolved_payment_fact(
+        orders=orders,
+        image_info=state.get("image_info"),
+        existing_state=existing_state,
+        existing_source=existing_source,
+        existing_fact=stored,
+    )
 
 
 def _store_fact_from_lookup_item(item: dict[str, Any]) -> dict[str, Any]:

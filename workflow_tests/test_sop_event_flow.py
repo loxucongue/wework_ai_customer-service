@@ -7,9 +7,10 @@ from typing import Any
 from tempfile import TemporaryDirectory
 
 from app.schemas import ChatRequest
+from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.services.sop_event_service import SopEventService
-from app.services.sop_execution_service import SopExecutionService, is_platform_auto_opening_message
-from app.services.sop_message_sanitizer import sanitize_sop_reply_messages
+from app.services.sop_execution_service import SOP_EVENT_SYSTEM_PROMPT, SopExecutionService, is_platform_auto_opening_message
+from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage import AppRepository, SQLiteStore
 
@@ -171,6 +172,120 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.tasks[0]["send_payload"]["conversation_fetch"]["status"], "fallback_empty")
         self.assertEqual(selector.calls[0]["conversation_messages"], [])
 
+    async def test_event_skips_inactive_customer_during_quiet_hours(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            messages=[
+                {
+                    "direction": "customer",
+                    "content": "我晚点再看",
+                    "msgtime": "2026-07-10T17:29:00+00:00",
+                }
+            ]
+        )
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_quiet_inactive",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-10T18:00:00+00:00",
+            sop={"delay_minutes": 3},
+            customers=[{"first_added_event": {"trace_id": "trace_quiet_inactive"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_quiet_inactive")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "skipped_quiet_hours_inactive")
+        self.assertEqual(repo.tasks[0]["send_payload"]["quiet_hours"]["inactivity_minutes"], 31)
+        self.assertEqual(repo.tasks[0]["send_payload"]["quiet_hours"]["timezone"], "Asia/Shanghai")
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(client.send_calls, [])
+
+    async def test_event_allows_recent_customer_message_during_quiet_hours(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            messages=[
+                {
+                    "direction": "customer",
+                    "content": "我还在看",
+                    "msgtime": "2026-07-10T17:31:00+00:00",
+                }
+            ]
+        )
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "recent customer active"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_quiet_active",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-10T18:00:00+00:00",
+            sop={"delay_minutes": 3},
+            customers=[{"first_added_event": {"trace_id": "trace_quiet_active"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_quiet_active")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(len(selector.calls), 1)
+
+    async def test_event_allows_inactive_customer_outside_quiet_hours(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            messages=[
+                {
+                    "direction": "customer",
+                    "content": "我晚点再看",
+                    "msgtime": "2026-07-11T00:00:00+00:00",
+                }
+            ]
+        )
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "daytime followup"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_daytime_inactive",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
+            sop={"delay_minutes": 3},
+            customers=[{"first_added_event": {"trace_id": "trace_daytime_inactive"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_daytime_inactive")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(len(selector.calls), 1)
+
+    async def test_event_applies_model_text_adjustment_before_sending(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        selector = _Selector(
+            {
+                "send_sop": True,
+                "sop_pack_id": "opening",
+                "reason": "opening wording adjusted for the current context",
+                "text_adjustments": [{"order": 1, "text": "您好，刚加上您，我简单和您说下这次活动。"}],
+            }
+        )
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_text_adjustment",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
+            sop={"delay_minutes": 3},
+            customers=[{"first_added_event": {"trace_id": "trace_text_adjustment"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_text_adjustment")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["reply_messages"][0]["content"]["text"], "您好，刚加上您，我简单和您说下这次活动。")
+        self.assertEqual(repo.tasks[0]["send_payload"]["message_adjustment"]["applied_orders"], [1])
+
     async def test_first_added_event_ignores_conversation_before_first_add_time(self) -> None:
         repo = _Repo()
         client = _OutreachClient(
@@ -299,6 +414,33 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["payment_suppressed"], "over_limit_participants")
         self.assertTrue(all(item["type"] != "payment_collection" for item in messages))
         self.assertTrue(any("\u4e00\u5171\u51e0\u4f4d\u5230\u5e97" in item["content"]["text"] for item in messages))
+
+    def test_sop_text_adjustment_only_rewrites_existing_text_with_same_numeric_facts(self) -> None:
+        messages, summary = apply_sop_text_adjustments(
+            [
+                {"type": "text", "order": 1, "content": {"text": "活动268元，先付10元预约金。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+            [
+                {"order": 1, "text": "这次活动是268元，10元先把名额留住。"},
+                {"order": 2, "text": "不能改卡片"},
+            ],
+        )
+
+        self.assertEqual(messages[0]["content"]["text"], "这次活动是268元，10元先把名额留住。")
+        self.assertEqual(messages[1]["type"], "payment_collection")
+        self.assertEqual(summary["applied_orders"], [1])
+        self.assertEqual(summary["rejected"][0]["reason"], "not_existing_text_message")
+
+    def test_sop_text_adjustment_rejects_changed_numeric_facts(self) -> None:
+        messages, summary = apply_sop_text_adjustments(
+            [{"type": "text", "order": 1, "content": {"text": "活动268元，先付10元预约金。"}}],
+            [{"order": 1, "text": "活动198元，先付20元预约金。"}],
+        )
+
+        self.assertEqual(messages[0]["content"]["text"], "活动268元，先付10元预约金。")
+        self.assertEqual(summary["applied_orders"], [])
+        self.assertEqual(summary["rejected"][0]["reason"], "numeric_facts_changed")
 
     async def test_platform_task_only_judges_and_sends_platform_actions(self) -> None:
         repo = _Repo()
@@ -544,6 +686,65 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(opening["delay_minutes"], 0)
 
     async def test_event_judge_prompt_defaults_to_platform_sop_unless_conflict_or_overlap(self) -> None:
+        model = _PromptCaptureModel(
+            {
+                "send_sop": True,
+                "sop_pack_id": "effect_followup",
+                "need_ai_reply": False,
+                "reason": "ok",
+                "text_adjustments": [{"order": 1, "text": "更自然的效果铺垫"}],
+            }
+        )
+        service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_PackService(), model_client=model)
+
+        result = await service.evaluate_event_suggestion(
+            payload={"event_type": "sop_friend_added_schedule_batch"},
+            customer={},
+            identity={"customer_id": "customer", "external_userid": "external"},
+            event_type="sop_friend_added_schedule_batch",
+            conversation_messages=[{"direction": "staff", "content": "前序破冰"}],
+            candidate_packs=[
+                {
+                    "id": "effect_followup",
+                    "sop_category": "effect_case",
+                    "reply_messages": [
+                        {
+                            "type": "text",
+                            "order": 1,
+                            "content": {"text": "这是完整的效果案例铺垫原文，用于确认模型不会只根据截断摘要改写。"},
+                        },
+                        {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+                    ],
+                }
+            ],
+        )
+
+        self.assertTrue(result["send_sop"])
+        self.assertEqual(result["text_adjustments"], [{"order": 1, "text": "更自然的效果铺垫"}])
+        system_prompt = str(model.messages[0]["content"])
+        user_prompt = str(model.messages[1]["content"])
+        self.assertEqual(system_prompt, SOP_EVENT_SYSTEM_PROMPT)
+        self.assertIn(GLOBAL_STRUCTURED_NODE_CONTRACT, system_prompt)
+        self.assertIn(GLOBAL_BUSINESS_RHYTHM_CONTRACT, system_prompt)
+        self.assertIn("先做拒发审查", system_prompt)
+        self.assertIn("客户当前立场与候选包的核心行动相反", system_prompt)
+        self.assertIn("阶段目标 + 核心事实 + 行动目标", system_prompt)
+        self.assertIn("企业微信一对一聊天", system_prompt)
+        self.assertIn("尊敬的客户/尊敬的顾客", system_prompt)
+        self.assertIn("您好，温馨提醒", system_prompt)
+        self.assertIn("销冠正在连续承接", system_prompt)
+        self.assertIn("冲突", system_prompt)
+        self.assertIn("严重重合", system_prompt)
+        self.assertIn("客户未回复、只有 staff 消息", system_prompt)
+        self.assertIn("text_adjustments", system_prompt)
+        self.assertIn("payment_collection`、`store_address`、`image`、`video`", system_prompt)
+        self.assertIn("editable_text_messages", system_prompt)
+        self.assertIn("readonly_messages", system_prompt)
+        self.assertIn("这是完整的效果案例铺垫原文，用于确认模型不会只根据截断摘要改写。", user_prompt)
+        self.assertIn('"amount":10', user_prompt)
+        self.assertNotIn("不因为事件时间到了就机械发送", system_prompt)
+
+    async def test_event_judge_keeps_selector_contract_for_direct_prompt_inspection(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "effect_followup", "need_ai_reply": False, "reason": "ok"})
         service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_PackService(), model_client=model)
 
@@ -560,12 +761,18 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["send_sop"])
         system_prompt = str(model.messages[0]["content"])
-        self.assertIn("默认按照平台 SOP 全流程发送", system_prompt)
-        self.assertIn("明确拒发理由只有四类", system_prompt)
-        self.assertIn("正在和销冠连续对话", system_prompt)
+        self.assertIn("先做拒发审查", system_prompt)
+        self.assertIn("客户当前立场与候选包的核心行动相反", system_prompt)
+        self.assertIn("阶段目标 + 核心事实 + 行动目标", system_prompt)
+        self.assertIn("企业微信一对一聊天", system_prompt)
+        self.assertIn("尊敬的客户/尊敬的顾客", system_prompt)
+        self.assertIn("您好，温馨提醒", system_prompt)
+        self.assertIn("销冠正在连续承接", system_prompt)
         self.assertIn("冲突", system_prompt)
         self.assertIn("严重重合", system_prompt)
-        self.assertIn("客户未回复、staff-only 连续 SOP 消息", system_prompt)
+        self.assertIn("客户未回复、只有 staff 消息", system_prompt)
+        self.assertIn("text_adjustments", system_prompt)
+        self.assertIn("payment_collection`、`store_address`、`image`、`video`", system_prompt)
         self.assertNotIn("不因为事件时间到了就机械发送", system_prompt)
 
     async def test_chat_gate_ignores_platform_auto_opening_before_model(self) -> None:

@@ -4,6 +4,7 @@ from typing import Any
 
 from app.services.platform_agent_client import unix_to_text
 from app.services.customer_appointment_context import empty_appointment
+from app.services.customer_payment_state import normalize_prepay_facts
 
 
 def appointment_from_orders(orders: list[dict[str, Any]]) -> dict[str, Any]:
@@ -42,11 +43,14 @@ def compact_order(order: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": order.get("id"),
         "order_no": order.get("order_no"),
+        "category_id": order.get("category_id"),
+        "category_name": order.get("category_name"),
         "status": order_status_text(order.get("status")),
         "fee_origin": order.get("fee_origin"),
         "fee_required": order.get("fee_required"),
         "fee_paid": order.get("fee_paid"),
         "fee_paid_total": order.get("fee_paid_total"),
+        **normalize_prepay_facts(order),
         "store_id": order.get("store_id"),
         "store_name": order.get("store_name"),
         "appointment_time": unix_to_text(order.get("plan_at")),

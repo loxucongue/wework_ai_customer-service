@@ -26,6 +26,7 @@ def build_vision_prompt(state: dict[str, Any]) -> str:
 - 面部皮肤图：描述可见部位、分布、颜色深浅、均匀度、泛红、痘印、痘坑、毛孔、干燥油光等表层表现。
 - 前后对比案例图：分别概括前后可见差异，并写明只能作为同类改善参考。
 - 截图、报价、海报、地图、付款、报告：提取关键文字，不输出完整手机号、身份证、银行卡号。
+- 付款截图仅根据图片可见状态填写 payment_result：明确显示支付/转账成功为 success；处理中为 pending；明确失败为 failed；看不清为 unclear。不要根据聊天历史猜测。
 - visible_concerns 只放短标签，例如点状斑点、片状色沉、肤色不均、泛红、痘印、毛孔明显。
 
 # Do Not
@@ -36,7 +37,7 @@ def build_vision_prompt(state: dict[str, Any]) -> str:
 
 # Output Schema
 只输出合法 JSON：
-{{"info":{{"has_image":true,"image_desc":"","image_type":"face_skin|eye_area|face_shape|body_skin|case_reference|post_treatment|competitor_quote|chat_screenshot|product_package|payment_proof|store_location|document_report|campaign_poster|qr_code|unrelated|unclear","image_intent":"face_consult|case_reference|after_sales|competitor_compare|price_inquiry|campaign_inquiry|store_inquiry|trust_issue|human_request|general_image|unrelated","body_part":"","visible_concerns":[],"risk_signals":[],"extracted_text":[],"text_clues":[],"confidence":0}}}}
+{{"info":{{"has_image":true,"image_desc":"","image_type":"face_skin|eye_area|face_shape|body_skin|case_reference|post_treatment|competitor_quote|chat_screenshot|product_package|payment_proof|store_location|document_report|campaign_poster|qr_code|unrelated|unclear","image_intent":"face_consult|case_reference|after_sales|competitor_compare|price_inquiry|campaign_inquiry|store_inquiry|trust_issue|human_request|general_image|unrelated","body_part":"","visible_concerns":[],"risk_signals":[],"extracted_text":[],"text_clues":[],"payment_result":"success|pending|failed|unclear","payment_amount":null,"payment_order_no":"","confidence":0}}}}
 
 # Context
 {json.dumps(context, ensure_ascii=False, default=str)}
@@ -54,6 +55,9 @@ def fallback_image_info(*, has_image: bool) -> dict[str, Any]:
         "risk_signals": [],
         "extracted_text": [],
         "text_clues": [],
+        "payment_result": "unclear",
+        "payment_amount": None,
+        "payment_order_no": "",
         "confidence": 0.25 if has_image else 0,
     }
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 
-STRUCTURED_PAYMENT_STATES = {"deposit_paid", "payment_failed"}
+STRUCTURED_PAYMENT_STATES = {"deposit_paid", "required_unpaid", "payment_failed"}
 
 
 def build_payment_turn_evidence(

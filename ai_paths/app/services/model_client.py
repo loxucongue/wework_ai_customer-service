@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import asyncio
 import time
-from typing import Any, Literal
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal, TypeVar
 
 import httpx
 
@@ -12,6 +13,7 @@ from app.services import model_response, model_selection
 
 
 ModelTier = Literal["fast", "planner", "balanced", "strong", "reply", "vision"]
+T = TypeVar("T")
 
 
 class ModelClient:
@@ -35,22 +37,28 @@ class ModelClient:
     ) -> str:
         if not self.available:
             raise RuntimeError("No model API key configured")
-        errors: list[str] = []
-        for index, model in enumerate(self._model_names(tier)):
+        models = self._model_names(tier)
+
+        def build_payload(model: str) -> dict[str, Any]:
             payload = {
                 "model": model,
                 "messages": messages,
                 "temperature": temperature,
             }
+            self._apply_max_tokens(payload, json_mode=False)
             self._apply_relay_reasoning(payload, json_mode=False)
-            try:
-                raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
-                return self._extract_text(raw)
-            except Exception as exc:
-                errors.append(f"{model}: {type(exc).__name__}: {exc}")
-                if not self._should_try_next_model(exc):
-                    break
-        raise RuntimeError("All model candidates failed: " + " | ".join(errors))
+            return payload
+
+        async def consume(raw: dict[str, Any]) -> str:
+            return self._extract_text(raw)
+
+        return await self._run_model_candidates(
+            models,
+            tier=tier,
+            build_payload=build_payload,
+            consume=consume,
+            failure_label="All model candidates failed",
+        )
 
     async def chat_json(
         self,
@@ -61,28 +69,32 @@ class ModelClient:
     ) -> dict[str, Any]:
         if not self.available:
             raise RuntimeError("No model API key configured")
-        errors: list[str] = []
-        for index, model in enumerate(self._model_names(tier)):
+        models = self._model_names(tier)
+
+        def build_payload(model: str) -> dict[str, Any]:
             payload = {
                 "model": model,
                 "messages": self._ensure_json_marker(messages),
                 "temperature": temperature,
             }
+            self._apply_max_tokens(payload, json_mode=True)
             if self.settings.model_response_format_enabled:
                 payload["response_format"] = {"type": "json_object"}
             self._apply_relay_reasoning(payload, json_mode=True)
             if self.settings.model_provider.lower() == "aliyun":
                 payload["enable_thinking"] = False
-            try:
-                raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
-                return self._parse_json(self._extract_text(raw))
-            except Exception as exc:
-                errors.append(f"{model}: {type(exc).__name__}: {exc}")
-                if isinstance(exc, json.JSONDecodeError):
-                    continue
-                if not self._should_try_next_model(exc):
-                    break
-        raise RuntimeError("All JSON model candidates failed: " + " | ".join(errors))
+            return payload
+
+        async def consume(raw: dict[str, Any]) -> dict[str, Any]:
+            return self._parse_json(self._extract_text(raw))
+
+        return await self._run_model_candidates(
+            models,
+            tier=tier,
+            build_payload=build_payload,
+            consume=consume,
+            failure_label="All JSON model candidates failed",
+        )
 
     async def vision_json(
         self,
@@ -103,23 +115,155 @@ class ModelClient:
                 ],
             }
         ]
-        payload = {
-            "model": self._model_names(tier)[0],
-            "messages": messages,
-            "temperature": temperature,
-        }
-        errors: list[str] = []
-        for index, model in enumerate(self._model_names(tier)):
-            payload["model"] = model
+        models = self._model_names(tier)
+
+        def build_payload(model: str) -> dict[str, Any]:
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+            }
+            self._apply_max_tokens(payload, json_mode=True)
             self._apply_relay_reasoning(payload, json_mode=True)
-            try:
-                raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=errors)
-                return self._parse_json(self._extract_text(raw))
-            except Exception as exc:
-                errors.append(f"{model}: {type(exc).__name__}: {exc}")
-                if not self._should_try_next_model(exc):
-                    break
-        raise RuntimeError("All vision model candidates failed: " + " | ".join(errors))
+            return payload
+
+        async def consume(raw: dict[str, Any]) -> dict[str, Any]:
+            return self._parse_json(self._extract_text(raw))
+
+        return await self._run_model_candidates(
+            models,
+            tier=tier,
+            build_payload=build_payload,
+            consume=consume,
+            failure_label="All vision model candidates failed",
+        )
+
+    async def _run_model_candidates(
+        self,
+        models: list[str],
+        *,
+        tier: ModelTier,
+        build_payload: Callable[[str], dict[str, Any]],
+        consume: Callable[[dict[str, Any]], Awaitable[T]],
+        failure_label: str,
+    ) -> T:
+        if not models:
+            raise RuntimeError(f"{failure_label}: no model candidates")
+        self.last_usage = None
+        errors: list[str] = []
+        pending: dict[asyncio.Task[T], tuple[int, str]] = {}
+        next_index = 0
+        max_parallel = max(1, min(2, int(self.settings.model_hedge_max_parallel or 1)))
+        hedge_delay = max(0.0, float(self.settings.model_hedge_delay_seconds or 0.0))
+        total_timeout = self._total_timeout_for_tier(tier)
+        started_at = time.perf_counter()
+        deadline = started_at + total_timeout
+        candidate_models = list(models)
+        started_models: list[str] = []
+        hedge_started = False
+
+        def enrich_last_usage() -> None:
+            usage = self.last_usage if isinstance(self.last_usage, dict) else {}
+            usage.update(
+                {
+                    "candidate_models": candidate_models,
+                    "started_models": list(started_models),
+                    "hedge_started": bool(hedge_started),
+                    "total_timeout_seconds": total_timeout,
+                    "overall_duration_ms": int((time.perf_counter() - started_at) * 1000),
+                }
+            )
+            self.last_usage = usage
+
+        def record_failure(error: str) -> None:
+            pending_models = [
+                model
+                for task, (_, model) in pending.items()
+                if not task.done()
+            ]
+            self.last_usage = {
+                "provider": self.settings.model_provider,
+                "model": started_models[-1] if started_models else candidate_models[0],
+                "tier": tier,
+                "fallback_index": max(0, len(started_models) - 1),
+                "fallback_errors": list(errors),
+                "duration_ms": int((time.perf_counter() - started_at) * 1000),
+                "overall_duration_ms": int((time.perf_counter() - started_at) * 1000),
+                "usage": {},
+                "candidate_models": candidate_models,
+                "started_models": list(started_models),
+                "pending_models": pending_models,
+                "hedge_started": bool(hedge_started),
+                "total_timeout_seconds": total_timeout,
+                "error": error,
+            }
+
+        async def run_one(index: int, model: str) -> T:
+            payload = build_payload(model)
+            raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=list(errors))
+            return await consume(raw)
+
+        def launch() -> None:
+            nonlocal next_index, hedge_started
+            if next_index >= len(models):
+                return
+            model = models[next_index]
+            started_models.append(model)
+            if len(started_models) > 1:
+                hedge_started = True
+            task = asyncio.create_task(run_one(next_index, model))
+            pending[task] = (next_index, model)
+            next_index += 1
+
+        launch()
+        last_launch_at = time.perf_counter()
+        try:
+            while pending:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0:
+                    error = f"TimeoutError: total timeout {total_timeout:.1f}s"
+                    record_failure(error)
+                    raise TimeoutError(f"total timeout {total_timeout:.1f}s")
+                should_hedge = next_index < len(models) and len(pending) < max_parallel
+                wait_timeout = remaining
+                if should_hedge:
+                    elapsed = time.perf_counter() - last_launch_at
+                    wait_timeout = min(wait_timeout, max(0.0, hedge_delay - elapsed))
+                done, _ = await asyncio.wait(pending.keys(), timeout=wait_timeout, return_when=asyncio.FIRST_COMPLETED)
+                if not done:
+                    if should_hedge:
+                        launch()
+                        last_launch_at = time.perf_counter()
+                    continue
+                for task in done:
+                    index, model = pending.pop(task)
+                    try:
+                        result = await task
+                    except Exception as exc:
+                        errors.append(f"{model}: {type(exc).__name__}: {exc}")
+                        if not self._should_try_next_model(exc):
+                            record_failure(f"{type(exc).__name__}: {exc}")
+                            raise RuntimeError(f"{failure_label}: " + " | ".join(errors)) from exc
+                        while next_index < len(models) and len(pending) < max_parallel:
+                            launch()
+                            last_launch_at = time.perf_counter()
+                        continue
+                    for other in pending:
+                        other.cancel()
+                    if pending:
+                        await asyncio.gather(*pending.keys(), return_exceptions=True)
+                    enrich_last_usage()
+                    return result
+            record_failure(f"{failure_label}: " + " | ".join(errors))
+            raise RuntimeError(f"{failure_label}: " + " | ".join(errors))
+        except Exception:
+            if not isinstance(self.last_usage, dict):
+                record_failure(f"{failure_label}: " + " | ".join(errors))
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending.keys(), return_exceptions=True)
+            raise
 
     async def _post_chat(
         self,
@@ -273,6 +417,21 @@ class ModelClient:
             if max_tokens > 0:
                 reasoning["max_tokens"] = max_tokens
             payload["reasoning"] = reasoning
+
+    def _apply_max_tokens(self, payload: dict[str, Any], *, json_mode: bool) -> None:
+        if json_mode:
+            max_tokens = int(self.settings.model_json_max_tokens or self.settings.model_max_tokens or 0)
+        else:
+            max_tokens = int(self.settings.model_text_max_tokens or self.settings.model_max_tokens or 0)
+        if max_tokens > 0:
+            payload["max_tokens"] = max_tokens
+
+    def _total_timeout_for_tier(self, tier: ModelTier) -> float:
+        if tier == "planner":
+            return max(1.0, float(self.settings.model_planner_total_timeout_seconds or self.settings.model_timeout_seconds))
+        if tier in {"reply", "strong"}:
+            return max(1.0, float(self.settings.model_reply_total_timeout_seconds or self.settings.model_timeout_seconds))
+        return max(1.0, float(self.settings.model_timeout_seconds))
 
     @staticmethod
     def _anthropic_content_to_text(content: Any) -> str:

@@ -64,6 +64,12 @@ class AgentState(TypedDict, total=False):
     payment_state: str
     payment_action: str
     payment_decision: dict[str, Any]
+    order_decision: dict[str, Any]
+    order_state: dict[str, Any]
+    deposit_state: dict[str, Any]
+    registration_state: dict[str, Any]
+    appointment_state: dict[str, Any]
+    appointment_decision: dict[str, Any]
     planner_reply_messages: list[dict[str, Any]]
     planner_tool_calls: list[dict[str, Any]]
     reply_constraints: list[str]

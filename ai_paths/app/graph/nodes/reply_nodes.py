@@ -5,6 +5,7 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency
+from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
     normalize_deposit_refund_policy_text,
     normalize_payment_amount_text,
@@ -44,6 +45,11 @@ def create_synthesize_reply_node(
                 planner_decision = str(state.get("planner_decision") or "").strip()
                 planner_messages = _normalize_planner_reply_messages(state.get("planner_reply_messages"), state=state)
                 planner_direct_valid = False
+                model_reply_ready = bool(
+                    model_client
+                    and model_client.available
+                    and should_use_model_reply(state)
+                )
                 if planner_decision == "direct_reply" and planner_messages and not state.get("tool_policy_violations"):
                     try:
                         validate_reply_consistency(planner_messages, state)
@@ -63,21 +69,26 @@ def create_synthesize_reply_node(
                         "input": {"decision": planner_decision, "messages": 0},
                         "output": {"messages": 0},
                     }
-                elif planner_direct_valid:
+                elif planner_direct_valid and not model_reply_ready:
                     messages = planner_messages
-                    reply_source = "planner_direct_reply"
+                    reply_source = "planner_direct_reply_model_unavailable_fallback"
                     model_call = {
                         "name": "planner_direct_reply",
-                        "input": {"decision": planner_decision, "messages": len(planner_messages)},
+                        "input": {
+                            "decision": planner_decision,
+                            "messages": len(planner_messages),
+                            "reason": "reply_model_unavailable",
+                        },
                         "output": {"messages": len(messages)},
                     }
                 else:
-                    if not (model_client and model_client.available and should_use_model_reply(state)):
+                    if not model_reply_ready:
                         raise RuntimeError("reply_synthesizer_model_required")
-                    model_call = {"name": "reply_synthesizer_model", "input": {"tier": "reply", "required": True}}
+                    reply_tier = _reply_model_tier(state)
+                    model_call = {"name": "reply_synthesizer_model", "input": {"tier": reply_tier, "required": True}}
                     model_messages = reply_messages_for_model(state)
                     model_call["input"]["messages"] = model_messages
-                    payload = await model_client.chat_json(model_messages, tier="reply")
+                    payload = await model_client.chat_json(model_messages, tier=reply_tier)
                     model_call["raw_json_output"] = payload
                     model_call["usage"] = model_usage_snapshot(model_client)
                     try:
@@ -85,7 +96,7 @@ def create_synthesize_reply_node(
                         validate_reply_consistency(messages, state)
                     except Exception as validation_exc:
                         retry_messages = _reply_retry_messages(model_messages, validation_exc)
-                        retry_payload = await model_client.chat_json(retry_messages, tier="reply")
+                        retry_payload = await model_client.chat_json(retry_messages, tier=reply_tier)
                         model_call["retry"] = {
                             "reason": f"{type(validation_exc).__name__}: {validation_exc}",
                             "messages": retry_messages,
@@ -111,12 +122,23 @@ def create_synthesize_reply_node(
                                     messages = case_facts_fallback
                                     validate_reply_consistency(messages, state)
                                 else:
-                                    repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
-                                    if repaired_messages is not None:
-                                        messages = repaired_messages
+                                    appointment_fallback = _maybe_build_unavailable_appointment_fallback(state, retry_validation_exc)
+                                    if appointment_fallback is not None:
+                                        messages = appointment_fallback
                                         validate_reply_consistency(messages, state)
+                                        reply_source = "deterministic_unavailable_appointment_fallback"
+                                        model_call["fallback"] = {
+                                            "reason": f"{type(retry_validation_exc).__name__}: {retry_validation_exc}",
+                                            "strategy": "deterministic_unavailable_appointment",
+                                        }
+                                        model_call["output"] = {"messages": len(messages)}
                                     else:
-                                        raise
+                                        repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
+                                        if repaired_messages is not None:
+                                            messages = repaired_messages
+                                            validate_reply_consistency(messages, state)
+                                        else:
+                                            raise
                         else:
                             retry_validation_exc = None
                         if retry_validation_exc is not None and _messages_have_handoff_notice(messages):
@@ -173,15 +195,26 @@ def create_synthesize_reply_node(
                             }
                             model_call["output"] = {"messages": len(messages)}
                         else:
-                            model_call["error"] = primary_error
-                            errors.append(
-                                {
-                                    "node": "synthesize_reply",
-                                    "message": "final_reply_failed",
-                                    "detail": primary_error,
+                            appointment_fallback = _maybe_build_unavailable_appointment_fallback(state, exc)
+                            if appointment_fallback is not None:
+                                messages = appointment_fallback
+                                validate_reply_consistency(messages, state)
+                                reply_source = "deterministic_unavailable_appointment_fallback"
+                                model_call["fallback"] = {
+                                    "reason": primary_error,
+                                    "strategy": "deterministic_unavailable_appointment",
                                 }
-                            )
-                            messages = []
+                                model_call["output"] = {"messages": len(messages)}
+                            else:
+                                model_call["error"] = primary_error
+                                errors.append(
+                                    {
+                                        "node": "synthesize_reply",
+                                        "message": "final_reply_failed",
+                                        "detail": primary_error,
+                                    }
+                                )
+                                messages = []
 
             messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
             if handoff_notice_appended:
@@ -249,6 +282,33 @@ def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> lis
     return [*messages, {"role": "user", "content": retry_instruction}]
 
 
+def _reply_model_tier(state: AgentState) -> str:
+    if _needs_strong_reply_model(state):
+        return "strong"
+    return "reply"
+
+
+def _needs_strong_reply_model(state: AgentState) -> bool:
+    handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
+    if handoff.get("needed"):
+        return True
+    for tool in state.get("required_tools") or []:
+        if isinstance(tool, dict) and str(tool.get("name") or "") == "professional_assist":
+            return True
+    structured = _structured_facts(state)
+    professional_assist = structured.get("professional_assist")
+    if isinstance(professional_assist, dict) and str(professional_assist.get("status") or ""):
+        return True
+    risk_hold_state = health_risk_hold(state)
+    if is_hard_health_risk_hold(risk_hold_state):
+        return True
+    for key in ("planner_stage", "conversion_stage", "main_blocker", "sub_rule_id", "customer_type"):
+        value = str(state.get(key) or "").lower()
+        if any(marker in value for marker in ("complaint", "refund", "payment_exception", "risk", "handoff")):
+            return True
+    return False
+
+
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
     return [{"type": "text", "order": 1, "content": "我在，继续帮您处理。"}]
 
@@ -287,6 +347,88 @@ def _maybe_build_case_facts_fallback(state: AgentState, exc: Exception) -> list[
     ]
 
 
+def _maybe_build_unavailable_appointment_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
+    error = str(exc)
+    if not any(
+        marker in error
+        for marker in (
+            "available_time_fact_required",
+            "unfinished_appointment_lookup_promise",
+            "appointment_confirmation_fact_required",
+        )
+    ):
+        return None
+    if not _has_unavailable_available_time_fact(state):
+        return None
+    store_name = _first_available_time_store_name(state)
+    date_label = _first_available_time_date_label(state)
+    prefix = f"{date_label}的实时空档这边暂时没拿到"
+    if store_name:
+        first = f"{prefix}，我先按{store_name}到店检测方向继续处理。"
+    else:
+        first = f"{prefix}，我先按到店检测方向继续处理。"
+    return [
+        {"type": "text", "order": 1, "content": first},
+        {"type": "text", "order": 2, "content": "您把大概到店时段发我，我再接着确认。"},
+    ]
+
+
+def _has_unavailable_available_time_fact(state: AgentState) -> bool:
+    facts = _available_time_facts(state)
+    if not facts:
+        return False
+    for item in facts:
+        if _available_time_fact_has_slot(item):
+            return False
+    return True
+
+
+def _available_time_facts(state: AgentState) -> list[dict[str, Any]]:
+    structured = _structured_facts(state)
+    appointment_facts = structured.get("appointment_facts")
+    if not isinstance(appointment_facts, list):
+        return []
+    return [
+        item
+        for item in appointment_facts
+        if isinstance(item, dict) and str(item.get("type") or "") == "available_time"
+    ]
+
+
+def _available_time_fact_has_slot(item: dict[str, Any]) -> bool:
+    if str(item.get("recommended_slot") or "").strip():
+        return True
+    backup_slots = item.get("backup_slots")
+    if isinstance(backup_slots, list) and any(str(slot or "").strip() for slot in backup_slots):
+        return True
+    if item.get("target_time_available") is True:
+        return True
+    nearby = item.get("nearby_times")
+    if isinstance(nearby, list) and bool(nearby):
+        return True
+    return False
+
+
+def _first_available_time_store_name(state: AgentState) -> str:
+    for item in _available_time_facts(state):
+        store = str(item.get("store") or item.get("store_name") or "").strip()
+        if store:
+            return store
+    return ""
+
+
+def _first_available_time_date_label(state: AgentState) -> str:
+    current_text = str(state.get("normalized_content") or state.get("content") or "")
+    for label in ("今天", "明天", "后天"):
+        if label in current_text:
+            return label
+    for item in _available_time_facts(state):
+        date = str(item.get("date") or "").strip()
+        if date:
+            return date
+    return "您说的时间"
+
+
 def _state_requested_case_studies(state: AgentState) -> bool:
     for item in state.get("required_tools") or []:
         if not isinstance(item, dict):
@@ -307,6 +449,8 @@ def _maybe_append_required_store_address(
     if not store_id:
         return None
     if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
+        return None
+    if _store_address_card_conflicts_with_visible_text(messages, state, store_id):
         return None
     return _renumber([*messages, {"type": "store_address", "content": {"store_id": store_id}}])
 
@@ -353,10 +497,10 @@ def _state_requires_payment_collection(state: AgentState) -> bool:
     decision_action = str(payment_decision.get("action") or "")
     if decision_action in {"send_now", "resend"}:
         return True
-    if decision_action in {"none", "explain", "after_paid_next_step", "ask_party_size"}:
+    if decision_action in {"none", "explain", "manual_transfer", "after_paid_next_step", "ask_party_size"}:
         return False
     payment_action = str(state.get("payment_action") or "")
-    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+    if payment_action in {"none", "manual_transfer", "offer_resend", "explain_existing", "confirm_next_step"}:
         return False
     if payment_action == "send_now":
         return True
@@ -534,6 +678,120 @@ def _single_store_fact_id(state: AgentState) -> str:
     return ids[0] if len(ids) == 1 else ""
 
 
+def _store_address_card_conflicts_with_visible_text(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+    store_id: str,
+) -> bool:
+    text = _combined_visible_text(messages)
+    if not text:
+        return False
+    target = _store_record_for_id(state, store_id)
+    if not target:
+        return False
+    target_names = _store_record_names(target)
+    target_tokens = {_compact_text(item) for item in [*target_names, *_store_record_regions(target)] if _compact_text(item)}
+    for record in _known_store_records(state):
+        if str(record.get("store_id") or record.get("id") or "").strip() == store_id:
+            continue
+        for name in _store_record_names(record):
+            if name and name in text and name not in target_names:
+                return True
+        other_region_hit = any(_compact_text(region) in _compact_text(text) for region in _store_record_regions(record))
+        if other_region_hit and target_tokens and not any(token and token in _compact_text(text) for token in target_tokens):
+            return True
+    for name in KNOWN_STORE_NAMES:
+        store_name = str(name or "").strip()
+        if store_name and store_name in text and store_name not in target_names:
+            return True
+    return False
+
+
+def _combined_visible_text(messages: list[dict[str, Any]]) -> str:
+    return " ".join(
+        _message_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+
+
+def _store_record_for_id(state: AgentState, store_id: str) -> dict[str, Any]:
+    for record in _known_store_records(state):
+        if str(record.get("store_id") or record.get("id") or "").strip() == store_id:
+            return record
+    return {}
+
+
+def _known_store_records(state: AgentState) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    structured = _structured_facts(state)
+    for key in ("store_facts", "appointment_facts"):
+        for item in structured.get(key) or []:
+            if isinstance(item, dict):
+                records.append(item)
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        records.append(recommended)
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    for item in knowledge.get("stores") or []:
+        if isinstance(item, dict):
+            records.append(item)
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    if basic:
+        records.append(
+            {
+                "store_id": basic.get("preferred_store_id") or basic.get("store_id"),
+                "store_name": basic.get("preferred_store_name") or basic.get("store_name"),
+                "city": basic.get("city") or basic.get("current_city"),
+                "district": basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),
+            }
+        )
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in records:
+        store_id = str(item.get("store_id") or item.get("id") or "").strip()
+        store_name = str(item.get("store_name") or item.get("name") or "").strip()
+        key = (store_id, store_name)
+        if not (store_id or store_name) or key in seen:
+            continue
+        seen.add(key)
+        output.append(item)
+    return output
+
+
+def _store_record_names(record: dict[str, Any]) -> list[str]:
+    values = [str(record.get(key) or "").strip() for key in ("store_name", "name")]
+    return [item for item in dict.fromkeys(values) if item]
+
+
+def _store_record_regions(record: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("province", "city", "district", "area", "region", "address_region"):
+        value = str(record.get(key) or "").strip()
+        if value:
+            values.append(value)
+    address = str(record.get("address") or record.get("store_address") or "").strip()
+    if address:
+        values.extend(_known_region_tokens_in_text(address))
+    return [item for item in dict.fromkeys(values) if len(_compact_text(item)) >= 2]
+
+
+def _known_region_tokens_in_text(text: str) -> list[str]:
+    tokens: list[str] = []
+    for suffix in ("省", "市", "区", "县", "镇", "乡", "旗", "州", "盟", "新区"):
+        for part in str(text or "").replace("，", " ").replace(",", " ").split():
+            if suffix in part:
+                index = part.find(suffix)
+                token = part[: index + len(suffix)]
+                if token:
+                    tokens.append(token)
+    return tokens
+
+
+def _compact_text(value: Any) -> str:
+    return "".join(str(value or "").split()).lower()
+
+
 def _reply_repair_hint(error: str) -> str:
     if "payment_collection_blocked_by_health_risk_hold" in error:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
@@ -556,7 +814,7 @@ def _reply_repair_hint(error: str) -> str:
     if "effect_reply_confidence_order_required" in error:
         return "效果疑问要先肯定对应需求可以做、大多数客户改善反馈不错，再补到店检测更准确；不要第一句就说因人而异、不保证或具体看个人情况。"
     if "effect_absolute_safety_claim" in error:
-        return "效果和安全顾虑可以积极承接，但不要说不会反黑、不会做坏、一般不会、通常不会、一定有效、保证效果或包效果；改成先给多数客户反馈正常/改善不错的信心，再说到店检测评估、按皮肤状态操作、适合再安排。"
+        return "效果和安全顾虑可以积极承接，允许‘一般不会反黑’这类非绝对信心表达，但不要说绝对不会、保证不会、100%不会、一定有效、保证效果或包效果；同时要给多数客户反馈正常/改善不错的信心，再说到店检测评估、按皮肤状态操作、适合再安排。"
     if "reply_too_similar" in error:
         return "客户在重复追问同类问题，请换一个角度回答，不要复用上一轮核心话术。"
     if "two_text_required" in error:
@@ -578,7 +836,7 @@ def _reply_repair_hint(error: str) -> str:
     if "available_time_fact_required" in error:
         return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“多数可以看改善 + 发送 case_facts.image_url + 到店专业检测更准”。"
     if "appointment_confirmation_fact_required" in error:
-        return "available_time 只表示看到可约时段，不代表已经留位、锁定或安排成功。请改成“这个时间可以看/推荐这个时间/您看这个时间方便吗”，不要说帮您留、锁定、安排、记上或预约成功。"
+        return "available_time 只表示目标时段目前可选，不代表已经留位、改约或安排成功。普通预约可问“这个时间方便吗”；已有旧预约的改约场景只输出一条：“这个时间目前可以，您确认要改到这个时间吗？”。删除其他“继续核对/先按这个时间/帮您改过去/帮您留/锁定/安排/记上/预约成功”表达。"
     if "too_many_appointment_time_options" in error:
         return "档期回复最多只能给 1 个推荐时间和 1 个备选时间。请基于 recommended_slot 和 backup_slots 重写，不要列完整时间表。"
     if "unfinished_appointment_lookup_promise" in error:

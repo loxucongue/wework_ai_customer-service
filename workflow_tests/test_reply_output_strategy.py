@@ -172,6 +172,26 @@ def test_current_turn_context_marks_ambiguous_recent_stores() -> None:
     assert set(context["current_store_anchor"]["matched_store_names"]) == {"广州白云三店", "广州天河店"}
 
 
+def test_current_turn_context_ignores_overbroad_store_alias_when_recent_store_is_specific() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "这家地址发我一下",
+            "conversation_history": ["用户: 厦门思明附近有门店吗", "小贝: 厦门思明店更方便。"],
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市"},
+                    {"store_id": "126", "store_name": "厦门百星湖里店", "city": "厦门市"},
+                ]
+            },
+        }
+    )
+
+    assert "open_task" not in context
+    assert context["current_store_anchor"]["store_name"] == "厦门思明店"
+    assert context["current_store_anchor"]["source"] == "recent_conversation"
+    assert not context["current_store_anchor"].get("ambiguous")
+
+
 def test_platform_history_sorts_by_timestamp_before_taking_latest() -> None:
     history = platform_messages_to_history(
         [
@@ -792,7 +812,7 @@ def test_deposit_push_without_payment_action_does_not_auto_append_payment_collec
     assert any(item.get("missing") == "payment_decision_required" for item in plan["tool_policy_violations"])
 
 
-def test_payment_entry_phrase_without_card_reports_structure_violation_without_action() -> None:
+def test_payment_entry_phrase_without_structured_action_stays_model_semantics() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "怎么交预约金"},
         {
@@ -817,7 +837,45 @@ def test_payment_entry_phrase_without_card_reports_structure_violation_without_a
         },
     )
     assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
-    assert any(item.get("missing") == "payment_decision_required" for item in plan["tool_policy_violations"])
+    assert not any(item.get("missing") == "payment_decision_required" for item in plan["tool_policy_violations"])
+
+
+def test_future_payment_entry_after_store_confirmation_is_not_current_send_action() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "我想报名"},
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "conversion_stage": "store_match",
+            "next_step": "lookup_store",
+            "payment_action": "confirm_next_step",
+            "payment_decision": {"action": "none"},
+            "reply_messages": [
+                {"type": "text", "content": {"text": "先确认您想去的门店，确认后我再给您安排报名入口。"}}
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert not any(item.get("missing") == "payment_decision_required" for item in plan["tool_policy_violations"])
+
+
+def test_resending_store_card_is_not_treated_as_payment_entry() -> None:
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": {"text": "银川兴庆店地址我再发您卡片。"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "369"}},
+        ],
+        {
+            "payment_action": "confirm_next_step",
+            "payment_decision": {"action": "after_paid_next_step"},
+            "fact_envelope": {
+                "structured_facts": {
+                    "store_facts": [{"store_id": "369", "store_name": "银川兴庆店", "address": "测试路1号"}]
+                }
+            },
+        },
+    )
 
 
 def test_previous_payment_entry_explanation_does_not_auto_append_payment_collection() -> None:
@@ -1471,20 +1529,22 @@ def test_generic_store_question_with_profile_only_flags_tool_for_repair() -> Non
     )
 
 
-def test_current_preferred_store_overrides_old_appointment_store() -> None:
-    known = _current_known_store_for_planner(
-        {
-            "normalized_content": _u(r"\u898110\uff1a30\u5de6\u53f3\u5427"),
-            "customer_basic_info": {
-                "city": _u(r"\u5e7f\u5dde\u5e02"),
-                "preferred_store_id": "562",
-                "preferred_store_name": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"),
-            },
-            "customer_context": {"appointment": {"store_id": "458", "store_name": _u(r"\u897f\u5b89\u5357\u95e8\u5e97")}},
-        }
-    )
-    assert known["store_id"] == "562"
-    assert known["source"] == "customer_profile"
+def test_preferred_store_is_candidate_not_current_known_store() -> None:
+    state = {
+        "normalized_content": _u(r"\u660e\u5929\u53ef\u4ee5\u53bb\u5417"),
+        "customer_basic_info": {
+            "city": _u(r"\u5e7f\u5dde\u5e02"),
+            "preferred_store_id": "562",
+            "preferred_store_name": _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"),
+        },
+    }
+    known = _current_known_store_for_planner(state)
+    payload = _planner_payload_for_model(state)
+
+    assert known == {}
+    assert payload["store_candidate"]["store_id"] == "562"
+    assert payload["store_candidate"]["source"] == "customer_profile"
+    assert "confirmed_store" not in payload.get("current_turn_context", {})
 
 
 def test_recent_store_address_message_sets_current_known_store() -> None:
@@ -1527,7 +1587,7 @@ def test_multi_store_recent_conversation_marks_current_known_store_ambiguous() -
     assert known["source"] == "recent_conversation"
 
 
-def test_ambiguous_store_reference_rejects_single_store_lookup_tool() -> None:
+def test_ambiguous_store_reference_allows_unique_real_store_lookup_tool() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "这家地址发我",
@@ -1559,7 +1619,7 @@ def test_ambiguous_store_reference_rejects_single_store_lookup_tool() -> None:
         },
     )
 
-    assert any(
+    assert not any(
         item.get("missing") == "store_lookup_query_over_ambiguous_reference"
         for item in plan["tool_policy_violations"]
     )
@@ -1672,6 +1732,51 @@ def test_store_detail_direct_reply_with_appointment_anchor_becomes_lookup_tool()
         {"name": "customer_store_lookup", "purpose": "detail", "query": "银川兴庆店"}
     ]
     assert not any(item.get("missing") == "store_detail_tool_required" for item in plan["tool_policy_violations"])
+
+
+def test_current_scoped_store_lookup_query_is_not_overwritten_by_old_appointment_anchor() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "渝中区门店地址给我发一下",
+            "appointment_cache": {"store_id": "369", "store_name": "银川兴庆店", "status": "pending"},
+            "customer_basic_info": {
+                "preferred_store_id": "467",
+                "preferred_store_name": "重庆百星渝中店",
+                "city": "重庆市",
+                "area_or_landmark": "渝中区",
+            },
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "369", "store_name": "银川兴庆店", "city": "银川市", "district": "兴庆区"},
+                    {"store_id": "467", "store_name": "重庆百星渝中店", "city": "重庆市", "district": "渝中区"},
+                ]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_ADDRESS_PARKING_HOURS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "payment_decision": {"action": "none", "source": "none", "confidence": "high"},
+            "reply_messages": [{"type": "text", "content": {"text": "我先帮您看一下"}}],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "detail",
+                    "query": "重庆市渝中区 重庆百星渝中店",
+                }
+            ],
+            "handoff": {"needed": False, "reason": ""},
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "detail", "query": "重庆市渝中区 重庆百星渝中店"}
+    ]
 
 
 def test_store_detail_clarification_without_anchor_can_direct_reply() -> None:
@@ -2121,6 +2226,27 @@ def test_available_time_rejects_scope_only_store_id() -> None:
     assert any(item.get("missing") == "available_time_invalid_store_id" for item in plan["tool_policy_violations"])
 
 
+def test_available_time_rejects_preferred_store_candidate_id() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "appointment tomorrow afternoon",
+            "customer_basic_info": {"preferred_store_id": "227", "preferred_store_name": "store-b"},
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S3",
+            "sub_rule_id": "S3_APPOINTMENT_TIME",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "confirm_time",
+            "reply_messages": [{"type": "text", "content": {"text": "ok"}}],
+            "tool_calls": [{"name": "available_time", "store_id": "227", "date": "2026-07-02"}],
+        },
+    )
+    assert any(item.get("missing") == "available_time_invalid_store_id" for item in plan["tool_policy_violations"])
+
+
 def test_available_time_allows_request_store_id() -> None:
     plan = build_planner_plan_v2(
         {
@@ -2163,6 +2289,60 @@ def test_available_time_allows_recent_store_address_id() -> None:
     assert not any(item.get("missing") == "available_time_invalid_store_id" for item in plan["tool_policy_violations"])
 
 
+def test_available_time_allows_store_id_from_structured_active_order() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "明天下午有哪些时间",
+            "current_date": "2026-07-12",
+            "current_known_store": {"store_id": "369", "store_name": "银川兴庆店", "source": "appointment_context"},
+            "customer_context": {
+                "orders": [{"id": "order-101", "status": "pending", "store_id": "369"}]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S3",
+            "conversion_stage": "time_confirm",
+            "next_step": "confirm_time",
+            "reply_messages": [{"type": "text", "content": {"text": "我看一下。"}}],
+            "tool_calls": [{"name": "available_time", "store_id": "369", "date": "2026-07-13"}],
+        },
+    )
+
+    assert not any(item.get("missing") == "available_time_invalid_store_id" for item in plan["tool_policy_violations"])
+
+
+def test_create_work_order_tool_keeps_transaction_arguments_after_dedupe() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "我朋友也一起，发卡吧",
+            "confirmed_store_id": "369",
+        },
+        {
+            "decision": "need_tools",
+            "payment_decision": {"action": "send_now", "party_size": 2, "amount": 20},
+            "order_decision": {"action": "create_work", "store_id": "369", "amount": 20},
+            "reply_messages": [{"type": "text", "content": {"text": "我先给您开单。"}}],
+            "tool_calls": [
+                {
+                    "name": "create_work_order",
+                    "store_id": "369",
+                    "category_id": "819",
+                    "prepay": 20,
+                    "store_confirmation_source": "current_message",
+                }
+            ],
+        },
+    )
+
+    tool = next(item for item in plan["planner_tool_calls"] if item.get("name") == "create_work_order")
+    assert tool["prepay"] == 20
+    assert tool["store_confirmation_source"] == "current_message"
+    assert not any(item.get("missing", "").startswith("create_work_order_missing") for item in plan["tool_policy_violations"])
+    assert not any(item.get("missing") == "payment_collection_required" for item in plan["tool_policy_violations"])
+    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
+
+
 def test_direct_reply_answer_with_next_step_marks_two_text_violation() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "可以带朋友一起去吗"},
@@ -2201,6 +2381,187 @@ def test_direct_reply_time_availability_claim_requires_available_time_tool() -> 
 
     assert any(
         item.get("missing") == "available_time_required_for_availability_claim"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_available_time_inherits_recent_relative_date_and_need_tools_uses_standard_transition() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "current_date": "2026-07-12",
+            "normalized_content": "下午有哪些时间",
+            "conversation_history": ["小贝: 明天可以帮您看档期。"],
+            "customer_context": {
+                "orders": [
+                    {
+                        "id": "order-101",
+                        "status": "waiting_schedule",
+                        "store_id": "369",
+                        "prepay_required": 10,
+                        "prepay_paid": 10,
+                    }
+                ]
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "confirm_time",
+            "payment_state": "customer_claimed_paid",
+            "payment_action": "confirm_next_step",
+            "appointment_decision": {
+                "action": "check_availability",
+                "commitment_level": "tentative",
+                "basis": ["查询明天下午档期"],
+            },
+            "reply_messages": [
+                {"type": "text", "content": {"text": "好的，我给您定明天下午。"}}
+            ],
+            "tool_calls": [
+                {"name": "available_time", "store_id": "369", "date": "2026-07-12"}
+            ],
+        },
+    )
+
+    available_time = next(
+        item for item in plan["planner_tool_calls"] if item.get("name") == "available_time"
+    )
+    assert available_time["date"] == "2026-07-13"
+    assert plan["planner_reply_messages"] == [
+        {"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}
+    ]
+
+
+def test_case_confidence_across_two_messages_is_not_misread_as_pending_lookup() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "我就怕做了没效果"},
+        {
+            "decision": "direct_reply",
+            "stage": "S1",
+            "sub_rule_id": "S1_CASE_OR_IMAGE",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "effect",
+            "main_blocker": "effect",
+            "next_step": "solve_blocker",
+            "payment_state": "unknown",
+            "payment_action": "none",
+            "reply_messages": [
+                {"type": "text", "content": {"text": "这类通常是能看到改善的。"}},
+                {"type": "text", "content": {"text": "我先把案例和到店检测流程接上。"}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert not any(
+        item.get("missing") == "direct_reply_promises_unfinished_lookup"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_direct_reply_cannot_say_customer_can_go_before_store_and_schedule_are_known() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "明天去可以吗"},
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "confirm_time",
+            "payment_state": "customer_claimed_paid",
+            "payment_action": "confirm_next_step",
+            "appointment_decision": {
+                "action": "ask_store",
+                "commitment_level": "none",
+                "basis": ["门店未确认"],
+            },
+            "reply_messages": [
+                {"type": "text", "content": {"text": "可以先去，不过要先确认门店。"}}
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "available_time_required_for_availability_claim"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_confirmed_appointment_decision_requires_real_appointment_fact() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "明天可以去吗",
+            "customer_basic_info": {"preferred_store_id": "12", "preferred_store_name": "厦门思明店"},
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "none",
+            "next_step": "confirm_time",
+            "payment_state": "customer_claimed_paid",
+            "payment_action": "confirm_next_step",
+            "payment_decision": {"action": "after_paid_next_step", "source": "recent_history", "confidence": "high"},
+            "appointment_decision": {
+                "action": "confirm_existing",
+                "commitment_level": "confirmed",
+                "basis": ["preferred_store_12", "tomorrow"],
+            },
+            "reply_messages": [
+                {"type": "text", "content": {"text": "可以，明天能去厦门思明店。"}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["appointment_decision"]["commitment_level"] == "confirmed"
+    assert any(
+        item.get("missing") == "available_time_required_for_confirmed_appointment_decision"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_confirmed_appointment_decision_allows_request_confirmed_appointment_fact() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "明天可以去吗",
+            "confirmed_store_id": "12",
+            "appointment_time": "2026-07-10 11:00",
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "time_confirm",
+            "customer_type": "time",
+            "main_blocker": "none",
+            "next_step": "confirm_time",
+            "payment_state": "customer_claimed_paid",
+            "payment_action": "confirm_next_step",
+            "payment_decision": {"action": "after_paid_next_step", "source": "recent_history", "confidence": "high"},
+            "appointment_decision": {
+                "action": "confirm_existing",
+                "commitment_level": "confirmed",
+                "basis": ["request_confirmed_appointment"],
+            },
+            "reply_messages": [
+                {"type": "text", "content": {"text": "可以，明天11点这个到店安排我这边看到了。"}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert not any(
+        item.get("missing") == "available_time_required_for_confirmed_appointment_decision"
         for item in plan["tool_policy_violations"]
     )
 
@@ -3063,6 +3424,60 @@ def test_reply_validation_allows_store_address_from_store_fact() -> None:
     )
 
 
+def test_reply_validation_merges_same_store_id_facts_before_card_consistency_check() -> None:
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": {"text": "厦门百星湖里店地址和停车信息在这里。"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "386"}},
+        ],
+        {
+            "fact_envelope": {
+                "structured_facts": {
+                    "appointment_facts": [{"type": "appointment_created", "store_id": "386"}],
+                    "store_facts": [
+                        {
+                            "store_id": "386",
+                            "store_name": "厦门百星湖里店",
+                            "city": "厦门市",
+                            "district": "湖里区",
+                            "parking": "商场停车场",
+                        }
+                    ],
+                }
+            }
+        },
+    )
+
+
+def test_reply_validation_rejects_store_address_card_conflicting_with_visible_store_text() -> None:
+    with pytest.raises(ValueError, match="store_address_text_card_mismatch"):
+        validate_reply_consistency(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "渝中区这家是重庆百星渝中店，地址是重庆市渝中区瑞天路10号嘉陵中心A馆。"},
+                },
+                {"type": "store_address", "order": 2, "content": {"store_id": "369"}},
+            ],
+            {
+                "customer_store_knowledge": {
+                    "stores": [
+                        {"store_id": "369", "store_name": "银川兴庆店", "city": "银川市", "district": "兴庆区"},
+                        {"store_id": "467", "store_name": "重庆百星渝中店", "city": "重庆市", "district": "渝中区"},
+                    ]
+                },
+                "fact_envelope": {
+                    "structured_facts": {
+                        "store_facts": [
+                            {"store_id": "369", "store_name": "银川兴庆店", "city": "银川市", "district": "兴庆区"}
+                        ]
+                    }
+                },
+            },
+        )
+
+
 def test_distance_fact_output_hides_customer_visible_numbers() -> None:
     output = build_planner_fact_output(
         {
@@ -3202,6 +3617,136 @@ def test_reply_validation_rejects_confirmed_appointment_without_fact() -> None:
             [{"type": "text", "order": 1, "content": {"text": "已为您锁定西安南门店，明天9:30准时等您。"}}],
             {"fact_envelope": {"structured_facts": {"appointment_facts": []}}},
         )
+
+
+def test_reply_validation_rejects_new_time_confirmation_based_only_on_old_appointment() -> None:
+    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "可以，给您改到3点了，时间已经安排好。"}}],
+            {
+                "appointment_decision": {"action": "check_availability", "commitment_level": "tentative"},
+                "fact_envelope": {
+                    "structured_facts": {
+                        "appointment_facts": [
+                            {"type": "appointment_created", "appointment_id": "old-1", "appointment_time": "2026-07-13 14:30:00"}
+                        ]
+                    }
+                },
+            },
+        )
+
+
+def test_reply_validation_rejects_implicit_reschedule_confirmation_without_new_plan_fact() -> None:
+    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "好的，改到15:00，您按这个时间到店就行。"}}],
+            {
+                "appointment_decision": {"action": "check_availability", "commitment_level": "tentative"},
+                "fact_envelope": {
+                    "structured_facts": {
+                        "appointment_facts": [
+                            {
+                                "type": "appointment_created",
+                                "appointment_id": "old-1",
+                                "appointment_time": "2026-07-13 14:30:00",
+                            },
+                            {
+                                "type": "available_time",
+                                "date": "2026-07-13",
+                                "target_time": "15:00",
+                                "target_time_available": True,
+                            },
+                        ]
+                    }
+                },
+            },
+        )
+
+
+def test_reply_validation_rejects_change_execution_wording_with_only_available_time() -> None:
+    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "14:30可以，我给您按这个时间改过去。"}}],
+            {
+                "appointment_decision": {"action": "check_availability", "commitment_level": "tentative"},
+                "fact_envelope": {
+                    "structured_facts": {
+                        "appointment_facts": [
+                            {
+                                "type": "available_time",
+                                "target_time": "14:30",
+                                "target_time_available": True,
+                            }
+                        ]
+                    }
+                },
+            },
+        )
+
+
+def test_reply_validation_allows_reschedule_confirmation_question_with_available_time() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "可以，这个时间目前可以，您确认要改到14:30吗？"}}],
+        {
+            "appointment_decision": {"action": "check_availability", "commitment_level": "tentative"},
+            "fact_envelope": {
+                "structured_facts": {
+                    "appointment_facts": [
+                        {
+                            "type": "available_time",
+                            "target_time": "14:30",
+                            "target_time_available": True,
+                        }
+                    ]
+                }
+            },
+        },
+    )
+
+
+def test_reply_payload_lifts_current_mobile_sync_fact() -> None:
+    payload = reply_user_payload_for_model(
+        {
+            "normalized_content": "13800138000",
+            "customer_basic_info": {"customer_name": "陈雨桐", "phone": "13800138000"},
+            "fact_envelope": {
+                "structured_facts": {
+                    "registration_facts": [
+                        {
+                            "type": "customer_mobile_sync",
+                            "status": "synced",
+                            "source": "platform_agent.customer.add_mobile",
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    assert payload["current_turn_context"]["registration_evidence"]["phone_collected"] is True
+    assert payload["transaction_facts"]["registration"][0]["status"] == "synced"
+
+
+def test_reply_validation_rejects_claimed_registration_without_order_fact() -> None:
+    with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "可以，先给您报上。"}}],
+            {"fact_envelope": {"structured_facts": {"appointment_facts": []}}},
+        )
+
+
+def test_reply_validation_allows_claimed_registration_with_created_order_fact() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "可以，先给您报上。"}}],
+        {
+            "fact_envelope": {
+                "structured_facts": {
+                    "order_facts": [{"status": "created", "order_id": "order-1"}],
+                    "appointment_facts": [],
+                }
+            }
+        },
+    )
 
 
 def test_full_width_colon_time_is_detected_as_available_target() -> None:
@@ -3374,11 +3919,27 @@ def test_reply_validation_rejects_effect_absolute_safety_claim() -> None:
         )
 
 
-def test_reply_validation_rejects_soft_absolute_safety_claim() -> None:
+def test_reply_validation_allows_non_absolute_safety_confidence() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {
+                    "text": "一般不会反黑，我们绝大多数客户反馈都比较正常，到店会先检测评估。"
+                },
+            }
+        ],
+        {"normalized_content": "会不会反黑"},
+    )
+
+
+@pytest.mark.parametrize("绝对表达", ["绝对不会反黑", "保证不会反黑", "100%不会反黑"])
+def test_reply_validation_rejects_absolute_safety_guarantees(绝对表达: str) -> None:
     with pytest.raises(ValueError, match="effect_absolute_safety_claim"):
         validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "一般不会，咱们会先看皮肤状态再做。"}}],
-            {"normalized_content": "会不会留疤或者伤皮肤"},
+            [{"type": "text", "order": 1, "content": {"text": f"{绝对表达}，可以放心做。"}}],
+            {"normalized_content": "会不会反黑"},
         )
 
 
@@ -3612,7 +4173,8 @@ def test_planner_prompt_treats_payment_sent_as_context_not_hard_dedupe() -> None
     assert "不要求客户必须说没收到或再发" in PLANNER_SYSTEM_PROMPT
     assert "你还没付/支付失败/刚才没付款" in PLANNER_SYSTEM_PROMPT
     assert "要交钱吗/预约金怎么抵扣/能不能退/是不是额外收费/尾款多少" in PLANNER_SYSTEM_PROMPT
-    assert "可以同轮进入 deposit_push 并输出 payment_collection" in PLANNER_SYSTEM_PROMPT
+    assert "不要自动发 payment_collection" in PLANNER_SYSTEM_PROMPT
+    assert "只有客户明确表达报名/发入口/现在付/锁名额" in PLANNER_SYSTEM_PROMPT
     assert "已经发送过 payment_collection 后，只有客户明确说没收到" not in PLANNER_SYSTEM_PROMPT
     assert "只解释规则，不发 payment_collection" not in PLANNER_SYSTEM_PROMPT
 

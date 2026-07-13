@@ -1,15 +1,100 @@
 from __future__ import annotations
 
+import json
 import re
 import time
 from typing import Any
 
+from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.schemas import ChatRequest
 from app.services.model_client import ModelClient
 from app.services.sop_message_sanitizer import sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
+
+
+SOP_EVENT_SYSTEM_PROMPT = f"""
+# Node Role
+你是企业微信主动 SOP 事件的发送前判断与受限话术润色节点，不是自由客服回复模型。
+你不调用工具，不补业务事实，不重新设计 SOP，也不生成独立的客户回复。
+
+{GLOBAL_STRUCTURED_NODE_CONTRACT}
+
+# Narrow Output Exception
+本节点唯一可以包含客户可见文本的位置是 `text_adjustments`：它只能改写输入中已有 text 消息的同一个 order。
+这不是自由生成回复，也不能新增、删除、拆分、合并或重排任何消息。
+
+# Business Background And Goal
+客户是通过企业微信进入的活动新客。平台已经按时间和客户阶段触发 SOP；你的目标是让已配置 SOP 按销售节奏自然发送，建立信任、解决阶段顾虑，并逐步推进到真实门店、登记、预约金和到店。
+平台触达默认应继续既定 SOP；只有确实会打断当前真实对话、与当前诉求冲突或已严重重合时才拒发。
+
+{GLOBAL_BUSINESS_RHYTHM_CONTRACT}
+
+# Input
+你会收到：
+- `mode`：`first_add_flow` 或 `platform_actions`。
+- `event`：触发事件、延迟、阶段和客户状态。
+- `recent_conversation`：最近 30 条已发生聊天摘要。
+- `candidate_sops`：可选的新客 SOP；每个包有阶段目的、完整 `editable_text_messages` 与只读 `readonly_messages`。
+- `platform_actions`：平台任务中的完整可编辑 text 与只读结构消息。
+- `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
+
+`editable_text_messages` 是唯一可改写的原文。`readonly_messages` 中的图片、视频、预约金卡、门店卡和内部 notice 都是结构事实，不能修改。
+
+# Task
+1. 理解事件触发的 SOP 阶段、最近聊天和候选包的阶段目的。
+2. 判断是否发送：`first_add_flow` 只能选择一个 `candidate_sops.id`；`platform_actions` 只能决定平台 actions 是否发送。
+3. 如果发送内容与当前对话的称呼、语气或承接明显不自然，才针对对应已有 text 输出小幅 `text_adjustments`；正常时输出空数组。
+
+# Decision Policy
+- 先做拒发审查，通过后才考虑“默认按 SOP 全流程发送”；不能用流程目标覆盖客户当前明确立场。
+- 拒发审查按以下顺序：销冠正在连续承接且会被打断；客户当前立场与候选包的核心行动相反；候选包与当前真实诉求冲突；同阶段的目标、核心事实和行动已被完整覆盖；同包或同类已经完成。
+- 判断重复时比较“阶段目标 + 核心事实 + 行动目标”，不要因为句子换了说法就当作没发过；但只是同一活动主题或只发过普通图片不等于完整覆盖。
+- 话术像公告、通知或机器人，只是润色理由，不是拒发理由。如果阶段和内容本身可以发，必须 `send_sop=true` 并通过 `text_adjustments` 改成自然聊天；不能因为原文生硬就选择不发。
+- 客户未回复、只有 staff 消息、前序 SOP 已正常发送、同一活动主题或仅发过普通图片，都不构成拒发。
+- `first_add_flow` 按破冰/介绍 -> 需求与门店 -> 效果案例 -> 活动报价 -> 登记与预约金的阶段推进；优先选择与 event 的 delay 和 stage 适配的候选，不倒退补发更早阶段，除非它是唯一合理候选。
+- 客户刚提出一个问题并不当然拒发。只有销售正在实时处理该问题，或本包会明显答非所问、硬打断时才拒发。
+- 不把活动图、门店图、品牌图当成效果案例；不把“同一活动”误判为严重重合。
+- 平台自动加好友开场不是有效客户咨询；没有后续客户消息时，仍按未回复的 SOP 跟进判断。
+
+# Few-Shot Calibration
+- 客户明确表示想到店再付、暂时不交预约金，候选包的核心行动是立即发收款卡：客户立场与核心行动相反，拒发，不通过润色继续推卡。
+- 近聊已完整说明活动价、预约金、到店抵扣、尾款和保留名额，候选包又是同一活动介绍与同一行动：阶段语义已完整覆盖，拒发。
+- 前序只发过破冰和门店铺垫，客户未回复，候选包用于发同类效果参考：属于正常下一阶段，发送。
+
+# Text Adjustment Policy
+- 由你语义判断是否需要润色，不按关键词机械判断。
+- 润色目的仅限于让既有 SOP 更像真人顺着当前聊天自然发出：可调整称呼、语气、连接句和表达顺序。
+- 这是企业微信一对一聊天，不是群发公告、短信通知或机构宣传稿。称呼可以用“您”或“亲”，也可以直接接上文；不要用“尊敬的客户/尊敬的顾客”这类式称呼。
+- 如果原文像系统通知或公告，不能只换一两个词；要在不改事实和阶段目标的前提下，改成销售正在微信里接着聊的短句。避免“您好，温馨提醒”“请及时参与”“本机构现隆重开展”“诚邀您参与”等通知体。
+- 聊天口吻应该是短、直接、有上下文：先顺着客户刚才的问题或前序阶段，再说本包要推进的内容。不要写“温馨提醒、及时参与、感谢您的关注”这类客服模板句。
+- 只有 `send_sop=true` 时才能输出 `text_adjustments`；润色不能把拒发冲突改写成可发。
+- 必须保留该文本的阶段目标、已有价格、金额、优惠、退款口径、门店、日期时间、支付方式及承诺边界。
+- 不能编造新事实，不能把普通答疑改成另一阶段的强推销，不能新增催付、预约承诺、门店事实或效果承诺。
+- `payment_collection`、`store_address`、`image`、`video`、`human_handoff_notice` 永远保持原样；若 text 与这些只读消息有关，润色不得改变其事实含义。
+
+# Text Style Calibration
+- 原文：“尊敬的顾客您好，本机构现隆重开展淡斑活动，诚邀您参与。”客户刚说自己脸上有斑：改成类似“亲，您是想了解淡斑对吧，我简单跟您说下这次活动。”
+- 原文：“您好，温馨提醒您及时参与本次活动。”前面已介绍过活动：改成类似“亲，前面和您说的活动还可以参加，有哪里不清楚您直接问我就行。”
+- 上面只校准口吻和改写幅度，不是要求复读固定句子。根据输入上下文自然改写。
+
+# Do Not
+- 不输出普通 AI 回复；`need_ai_reply` 必须为 false。
+- 不补门店、价格、档期、案例、订单或客户事实。
+- 不因为客户未回复、前序 SOP 已发或最近只有 staff 消息而拒发后续阶段。
+- 不输出内部分析、markdown 或 schema 之外的字段。
+
+# Output Schema
+只输出 JSON：
+{{
+  "send_sop": true,
+  "sop_pack_id": "first_add_flow 时必须来自 candidate_sops；platform_actions 时为空字符串",
+  "need_ai_reply": false,
+  "reason": "一句内部判断原因",
+  "text_adjustments": [{{"order": 1, "text": "仅改写已有 text 的润色结果"}}]
+}}
+""".strip()
 
 
 class SopExecutionService:
@@ -266,6 +351,7 @@ class SopExecutionService:
             "need_ai_reply": False,
             "reason": "",
             "completed_sop_pack_ids": [],
+            "text_adjustments": [],
             "model_usage": {},
             "error": "",
         }
@@ -279,19 +365,21 @@ class SopExecutionService:
             completed_categories = _sent_categories(self.repository, identity, sent_before=sent_before)
             result["completed_sop_pack_ids"] = completed_ids
             result["completed_sop_categories"] = completed_categories
-            selector_input = {
-                "mode": "platform_actions" if event_type == "sop_platform_task" else "first_add_flow",
-                "event": _event_summary(payload, customer),
-                "recent_conversation": _conversation_context(conversation_messages),
-                "candidate_sops": [_sop_summary(pack) for pack in candidate_packs],
-                "platform_actions_summary": _messages_summary(actions_reply_messages),
-                "completed_sop_pack_ids": completed_ids,
-                "completed_sop_categories": completed_categories,
-            }
+            selector_input = _event_selector_input(
+                payload=payload,
+                customer=customer,
+                event_type=event_type,
+                conversation_messages=conversation_messages,
+                candidate_packs=candidate_packs,
+                actions_reply_messages=actions_reply_messages,
+                completed_sop_pack_ids=completed_ids,
+                completed_sop_categories=completed_categories,
+            )
             result["selector_input"] = compact(selector_input, max_chars=6000)
             selector_output = await self._judge_event_sop(selector_input)
             result["selector_output"] = selector_output
             result["model_usage"] = dict(self.model_client.last_usage or {})
+            result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
 
             if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}:
                 selected = _selected_pack(selector_output, candidate_packs)
@@ -334,59 +422,13 @@ class SopExecutionService:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "# SOP Event Role\n"
-                    "你是企业微信 SOP 事件判断器，不是客服回复模型。\n"
-                    "你只判断平台主动触发的 SOP 事件现在该不该发送；你不能生成客户可见文案，不能改写平台 actions，不能调用工具。\n\n"
-                    "# Event Modes\n"
-                    "1. first_add_flow：首次加微后的定时提醒。你只能从 candidate_sops 中选择一个当前应该发送的事件专用 SOP，或选择不发。\n"
-                    "2. platform_actions：公司业务群发任务。你只能判断 platform_actions 当前是否适合发送，不能换成新客 SOP，不能改写内容。\n\n"
-                    "# Input\n"
-                    "你会收到：事件字段、最近 30 条聊天摘要、candidate_sops、platform_actions_summary、completed_sop_pack_ids、completed_sop_categories。\n"
-                    "candidate_sops 已经按同客户已发送包 ID 和同类目做过预过滤，但你仍要结合最近聊天判断是否正在对话、冲突或严重重合。\n\n"
-                    "# Decision Policy\n"
-                    "- 平台已经按 SOP 规则判断到了定时触达节点；你的职责不是重新设计流程，而是做发送前闸门。\n"
-                    "- 默认按照平台 SOP 全流程发送候选话术包。只有出现明确拒发理由时才 send_sop=false。\n"
-                    "- 明确拒发理由只有四类：客户当前正在和销冠连续对话且候选包会打断；候选包和客户当前问题/诉求冲突；候选包内容与最近聊天严重重合；completed_sop_pack_ids 或 completed_sop_categories 已显示同包/同类完成。\n"
-                    "- first_add_flow 是销冠式分阶段主动触达：破冰/介绍 -> 问地址 -> 效果铺垫 -> 报价 -> 通单/收款。客户未回复、staff-only 连续 SOP 消息、或上一阶段正常铺垫，都不是拒发理由。\n"
-                    "- 客户的自动加微开场（如“我已经添加了你，现在可以开始聊天了”）不算有效主动咨询；如果之后没有新的 customer 消息，应按未回复跟进处理。\n"
-                    "- 判断重复时，只看候选 SOP 自己的 pack id 和 sop_category：completed_sop_pack_ids 包含候选 id，或 completed_sop_categories 包含候选 sop_category，才算已完成同类。opening/store_prompt/activity_intro 不等于 effect_case，不能阻断 30 分钟效果铺垫。\n"
-                    "- 不要把任何图片都当成效果图。普通活动图、破冰图、门店/品牌素材、上一阶段配图，不等于“效果铺垫已完成”；只有最近聊天已经明确发过同类效果案例/对比图/效果预期话术，才可拒发 effect_case/effect_warmup。\n"
-                    "- 对定时 first_add_flow，如果多个候选可选，优先选择与当前 delay_minutes 和阶段目的最匹配的候选，不要回头补发更早阶段，除非更早阶段是当前唯一合理候选。\n"
-                    "- 客户刚刚提出明确问题不必然拒发；只有该问题正在被销冠承接、或候选包会明显打断/答非所问时才拒发。\n"
-                    "- first_add_flow 只能选择 candidate_sops 里的 sop_pack_id。\n"
-                    "- platform_actions 也遵循同一闸门：平台已给出 actions，你只判断最近聊天是否正在进行、冲突或严重重合；send_sop=true 时 sop_pack_id 为空即可。\n\n"
-                    "# Negative Cases\n"
-                    "- 客户未回复、只有 staff-only 连续铺垫、或上一阶段正常完成后等待下一阶段：不是拒发理由。\n"
-                    "- 最近发过活动破冰图，不代表效果案例已经完成；不要把普通图片当效果图。\n"
-                    "- 最近只聊过活动价格，不代表门店地址、效果铺垫、预约金价值都已严重重合。\n"
-                    "- 客户正在实时投诉、退款、付款异常、严重不适、强人工诉求，或销冠已经在连续承接同一问题时，才应拒发当前定时包。\n\n"
-                    "# Few-Shot Calibration\n"
-                    "- 30分钟效果铺垫到点，客户一直未回复，opening/store_prompt 已发但 effect_case 未发：send_sop=true。\n"
-                    "- 候选是收款铺垫，最近客户刚明确说“到店再付不想交”：如果包会硬催收款，send_sop=false。\n"
-                    "- 候选是活动介绍，最近两轮已发完整活动介绍和同一张活动图：send_sop=false，reason 写严重重合。\n"
-                    "- platform_actions 已给出内容，最近聊天没有冲突也没有同内容覆盖：send_sop=true。\n\n"
-                    "# Do Not\n"
-                    "- 不追加普通 AI 回复，need_ai_reply 必须是 false。\n"
-                    "- 不补门店、价格、档期、案例或客户事实。\n"
-                    "- 不因为前序 SOP 已发、客户未回复或最近只有 staff 消息就拒发后续阶段。\n"
-                    "- 不把轻微相关或同一活动主题当作严重重合；只有同阶段核心内容已覆盖才算严重重合。\n"
-                    "- 不输出多余字段或内部长分析。\n\n"
-                    "# Output\n"
-                    "只能输出 JSON，字段必须是 send_sop、sop_pack_id、need_ai_reply、reason。"
-                ),
+                "content": SOP_EVENT_SYSTEM_PROMPT,
             },
             {
                 "role": "user",
                 "content": (
-                    "请根据以下输入返回 JSON：\n"
-                    "{\n"
-                    '  "send_sop": true/false,\n'
-                    '  "sop_pack_id": "first_add_flow 模式下来自 candidate_sops 的 id；platform_actions 模式下为空",\n'
-                    '  "need_ai_reply": false,\n'
-                    '  "reason": "一句内部原因"\n'
-                    "}\n"
-                    f"输入：{selector_input}"
+                    "根据系统提示词和以下 JSON 输入，返回严格 JSON。\n"
+                    + json.dumps(selector_input, ensure_ascii=False, separators=(",", ":"))
                 ),
             },
         ]
@@ -576,6 +618,7 @@ def _recent_history(history: Any) -> list[str]:
 
 
 def _sop_summary(pack: dict[str, Any]) -> dict[str, Any]:
+    messages = _pack_messages(pack)
     return {
         "id": str(pack.get("id") or ""),
         "scope": _pack_scope(pack),
@@ -588,7 +631,8 @@ def _sop_summary(pack: dict[str, Any]) -> dict[str, Any]:
         "event_type": str(pack.get("event_type") or ""),
         "delay_minutes": int(pack.get("delay_minutes") or 0),
         "stage_tag": str(pack.get("stage_tag") or ""),
-        "reply_messages_summary": _messages_summary(_pack_messages(pack)),
+        "reply_messages_summary": _messages_summary(messages),
+        **_message_editing_context(messages),
     }
 
 
@@ -603,6 +647,97 @@ def _messages_summary(messages: list[dict[str, Any]]) -> list[str]:
             output.append(message_type + ":" + str(content.get("url") or content.get("key") or "")[:80])
         else:
             output.append(message_type)
+    return output
+
+
+def _event_selector_input(
+    *,
+    payload: dict[str, Any],
+    customer: dict[str, Any],
+    event_type: str,
+    conversation_messages: list[dict[str, Any]],
+    candidate_packs: list[dict[str, Any]],
+    actions_reply_messages: list[dict[str, Any]],
+    completed_sop_pack_ids: list[str],
+    completed_sop_categories: list[str],
+) -> dict[str, Any]:
+    return {
+        "mode": "platform_actions" if event_type == "sop_platform_task" else "first_add_flow",
+        "event": _event_summary(payload, customer),
+        "recent_conversation": _conversation_context(conversation_messages),
+        "candidate_sops": [_sop_summary(pack) for pack in candidate_packs],
+        "platform_actions_summary": _messages_summary(actions_reply_messages),
+        "platform_actions": _message_editing_context(actions_reply_messages),
+        "completed_sop_pack_ids": completed_sop_pack_ids,
+        "completed_sop_categories": completed_sop_categories,
+    }
+
+
+def _message_editing_context(messages: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    editable_text_messages: list[dict[str, Any]] = []
+    readonly_messages: list[dict[str, Any]] = []
+    for index, message in enumerate(messages, start=1):
+        if not isinstance(message, dict):
+            continue
+        order = int(message.get("order") or index)
+        message_type = _string(message.get("type")) or "text"
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        if message_type == "text":
+            text = _string(content.get("text"))
+            if text:
+                if len(text) <= 600:
+                    editable_text_messages.append({"order": order, "text": text})
+                else:
+                    readonly_messages.append(
+                        {
+                            "order": order,
+                            "type": "text",
+                            "facts": {"editable": False, "reason": "text_too_long_to_safely_rewrite"},
+                        }
+                    )
+            continue
+        readonly_messages.append(
+            {
+                "order": order,
+                "type": message_type,
+                "facts": _readonly_message_facts(message_type, content),
+            }
+        )
+    return {
+        "editable_text_messages": editable_text_messages,
+        "readonly_messages": readonly_messages,
+    }
+
+
+def _readonly_message_facts(message_type: str, content: dict[str, Any]) -> dict[str, Any]:
+    if message_type == "payment_collection":
+        return {"amount": content.get("amount"), "remark": _string(content.get("remark"))}
+    if message_type == "store_address":
+        return {"store_id": _string(content.get("store_id") or content.get("id"))}
+    if message_type == "human_handoff_notice":
+        return {"handoff_reason": _string(content.get("handoff_reason"))}
+    if message_type in {"image", "video"}:
+        return {"asset": "configured"}
+    return {}
+
+
+def _text_adjustments(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    output: list[dict[str, Any]] = []
+    seen_orders: set[int] = set()
+    for item in value[:8]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            order = int(item.get("order") or 0)
+        except (TypeError, ValueError):
+            continue
+        text = _string(item.get("text"))
+        if order <= 0 or not text or len(text) > 360 or order in seen_orders:
+            continue
+        seen_orders.add(order)
+        output.append({"order": order, "text": text})
     return output
 
 

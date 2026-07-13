@@ -8,6 +8,7 @@ from app.graph.nodes.memory_usage_policy import order_session_state
 from app.graph.state import AgentState
 from app.prompts.profile_analyzer import build_profile_analyzer_messages
 from app.services.memory_store import CustomerMemoryStore
+from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
 
@@ -66,6 +67,9 @@ def create_profile_event_extractor_node(
                     event_updates = _normalize_llm_events(state, llm_update.get("event_updates", []))
                 except Exception as exc:
                     llm_profile_call["error"] = f"{type(exc).__name__}: {exc}"
+            deterministic_update, deterministic_events = _deterministic_customer_state_updates(state, profile_update)
+            profile_update = _merge_profile_updates(profile_update, deterministic_update)
+            event_updates = [*event_updates, *deterministic_events]
             memory_error = None
             saved_memory = {}
             if memory_store:
@@ -185,6 +189,149 @@ def _allowed_portrait_update(value: Any) -> dict[str, Any]:
     return result
 
 
+def _deterministic_customer_state_updates(
+    state: AgentState,
+    model_update: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    orders = customer_context.get("orders") if isinstance(customer_context.get("orders"), list) else []
+    existing_basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    stored = existing_basic.get("deposit_state")
+    if isinstance(stored, dict):
+        existing_state = str(stored.get("status") or stored.get("deposit_state") or "")
+        existing_source = str(stored.get("source") or "")
+    else:
+        existing_state = str(stored or "")
+        existing_source = "customer_memory" if existing_state else ""
+    payment = resolved_payment_fact(
+        orders=orders,
+        image_info=state.get("image_info"),
+        existing_state=existing_state,
+        existing_source=existing_source,
+        existing_fact=stored,
+    )
+    existing_order_state = existing_basic.get("order_state") if isinstance(existing_basic.get("order_state"), dict) else {}
+    if payment and not payment.get("order_id") and existing_order_state.get("order_id"):
+        payment["order_id"] = existing_order_state.get("order_id")
+        payment["order_no"] = existing_order_state.get("order_no")
+        payment["store_id"] = existing_order_state.get("store_id")
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    order_result = tool_results.get("create_work_order") if isinstance(tool_results.get("create_work_order"), dict) else {}
+    mobile_result = tool_results.get("add_customer_mobile") if isinstance(tool_results.get("add_customer_mobile"), dict) else {}
+    plan_result = tool_results.get("create_order_plan") if isinstance(tool_results.get("create_order_plan"), dict) else {}
+    model_basic = model_update.get("basic_info") if isinstance(model_update.get("basic_info"), dict) else {}
+    customer_name = str(model_basic.get("customer_name") or existing_basic.get("customer_name") or "").strip()
+    phone = str(model_basic.get("phone") or existing_basic.get("phone") or "").strip()
+
+    basic_info: dict[str, Any] = {}
+    portrait: dict[str, Any] = {}
+    events: list[dict[str, Any]] = []
+    if payment:
+        basic_info["deposit_state"] = {
+            "status": payment.get("deposit_state"),
+            "source": payment.get("source"),
+            "amount": payment.get("amount") or payment.get("prepay_paid"),
+            "order_id": payment.get("order_id"),
+            "order_no": payment.get("order_no"),
+            "updated_at": payment.get("updated_at"),
+        }
+        if is_paid_deposit_state(payment.get("deposit_state")):
+            portrait["deposit_state"] = "deposit_paid"
+        if is_paid_deposit_state(payment.get("deposit_state")) and not is_paid_deposit_state(existing_state):
+            events.append(
+                _state_event(
+                    state,
+                    event_type="deposit_payment_confirmed",
+                    summary="预约金支付状态已确认",
+                    facts={
+                        "deposit_state": payment.get("deposit_state"),
+                        "source": payment.get("source"),
+                        "amount": payment.get("amount") or payment.get("prepay_paid"),
+                        "order_id": payment.get("order_id"),
+                    },
+                )
+            )
+
+    if order_result:
+        basic_info["order_state"] = {
+            "status": order_result.get("status"),
+            "order_id": order_result.get("order_id"),
+            "order_no": order_result.get("order_no"),
+            "store_id": order_result.get("store_id"),
+            "category_id": order_result.get("category_id"),
+            "prepay_required": order_result.get("prepay_required"),
+            "source": order_result.get("source"),
+        }
+    if customer_name or phone or mobile_result:
+        basic_info["registration_state"] = {
+            "customer_name_collected": bool(customer_name),
+            "phone_collected": bool(phone),
+            "mobile_sync_status": mobile_result.get("status") or "not_requested",
+            "updated_at": payment.get("updated_at") if payment else "",
+        }
+    if plan_result:
+        basic_info["appointment_state"] = {
+            "status": "confirmed" if plan_result.get("status") in {"created", "reused"} else str(plan_result.get("status") or "unknown"),
+            "order_id": plan_result.get("order_id"),
+            "store_id": plan_result.get("store_id"),
+            "store_name": plan_result.get("store_name"),
+            "appointment_time": plan_result.get("appointment_time"),
+            "source": plan_result.get("source"),
+        }
+        if plan_result.get("status") in {"created", "reused"}:
+            events.append(
+                _state_event(
+                    state,
+                    event_type="appointment_confirmed",
+                    summary="客户到店排期已创建",
+                    facts={
+                        "order_id": plan_result.get("order_id"),
+                        "store_id": plan_result.get("store_id"),
+                        "store_name": plan_result.get("store_name"),
+                        "appointment_time": plan_result.get("appointment_time"),
+                        "source": plan_result.get("source"),
+                    },
+                )
+            )
+    update = {"basic_info": _drop_empty_mapping(basic_info), "portrait": _drop_empty_mapping(portrait)}
+    return _drop_empty_mapping(update), events
+
+
+def _merge_profile_updates(base: dict[str, Any], authoritative: dict[str, Any]) -> dict[str, Any]:
+    output = dict(base) if isinstance(base, dict) else {}
+    for section in ("portrait", "basic_info"):
+        incoming = authoritative.get(section) if isinstance(authoritative.get(section), dict) else {}
+        if incoming:
+            current = output.get(section) if isinstance(output.get(section), dict) else {}
+            output[section] = {**current, **incoming}
+    if authoritative.get("lifecycle_stage"):
+        output["lifecycle_stage"] = authoritative["lifecycle_stage"]
+    return output
+
+
+def _state_event(
+    state: AgentState,
+    *,
+    event_type: str,
+    summary: str,
+    facts: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "event_id": f"evt_{state.get('request_id', 'unknown')}_{event_type}",
+        "event_time": "",
+        "event_type": event_type,
+        "stage": str(state.get("sop_stage") or ""),
+        "summary": summary,
+        "facts": _drop_empty_mapping(facts),
+        "impact": "后续按结构化支付、订单和预约事实推进，不重复收款或编造预约结果。",
+        "confidence": 1.0,
+    }
+
+
+def _drop_empty_mapping(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
+
+
 def _allowed_basic_update(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
@@ -198,6 +345,9 @@ def _allowed_basic_update(value: Any) -> dict[str, Any]:
         "customer_name",
         "phone",
         "deposit_state",
+        "order_state",
+        "registration_state",
+        "appointment_state",
     }
     result: dict[str, Any] = {}
     for key in allowed_keys:

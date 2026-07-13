@@ -75,6 +75,8 @@ class PlatformAgentClient:
         )
         if isinstance(data, dict):
             rows = data.get("list") or data.get("data") or []
+            if isinstance(rows, dict):
+                rows = rows.get("list") or rows.get("rows") or rows.get("data") or []
         else:
             rows = data
         return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []

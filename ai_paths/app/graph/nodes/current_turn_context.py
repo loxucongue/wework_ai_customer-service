@@ -9,6 +9,7 @@ from app.graph.nodes.turn_evidence_history import build_history_evidence
 from app.graph.nodes.turn_evidence_payment import build_payment_turn_evidence
 from app.graph.nodes.turn_evidence_risk import build_risk_evidence
 from app.graph.nodes.turn_evidence_store import build_store_evidence
+from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.policies.constants import (
     KNOWN_STORE_NAMES,
     STORE_CONTEXT_FACT_TERMS,
@@ -68,7 +69,7 @@ def build_current_turn_context(
     store_anchor = current_store_anchor_from_state(
         state,
         current_known_store=current_known_store,
-        allow_profile=True,
+        allow_profile=False,
         prefer_recent=is_short or is_reference or _has_store_fact_request(content),
     )
     appointment = _merge_appointments(_appointment_from_current_message(content), confirmed_appointment_from_state(state))
@@ -86,6 +87,7 @@ def build_current_turn_context(
     )
     current_time_confirmed = _is_current_turn_time_confirmation(content, appointment)
     next_step_clarification = _is_next_step_clarification(content)
+    registration_evidence = _registration_evidence(state)
     context_hints = _context_hints(
         content=content,
         is_short=is_short,
@@ -131,6 +133,8 @@ def build_current_turn_context(
         output["deposit_state"] = deposit_state
     if payment_evidence:
         output["payment_evidence"] = payment_evidence
+    if registration_evidence:
+        output["registration_evidence"] = registration_evidence
     if resolved_slots:
         output["resolved_slots"] = resolved_slots
     visible_missing_slots = _visible_missing_slots(
@@ -158,6 +162,7 @@ def build_current_turn_context(
         next_step_clarification=next_step_clarification,
         deposit_state=deposit_state,
         payment_evidence=payment_evidence,
+        registration_evidence=registration_evidence,
         risk_hold=risk_hold,
     )
     if turn_evidence:
@@ -181,6 +186,7 @@ def _turn_evidence(
     next_step_clarification: bool,
     deposit_state: str,
     payment_evidence: dict[str, Any],
+    registration_evidence: dict[str, Any],
     risk_hold: dict[str, Any],
 ) -> dict[str, Any]:
     return _drop_empty(
@@ -206,11 +212,29 @@ def _turn_evidence(
                 payment_evidence=payment_evidence,
                 blocked_actions=blocked_actions,
             ),
+            "registration_evidence": registration_evidence,
             "risk_evidence": build_risk_evidence(risk_hold),
             "evidence_conflicts": _evidence_conflicts(store_anchor=store_anchor),
             "source_policy": "evidence_only_planner_decides_business_action",
         }
     )
+
+
+def _registration_evidence(state: dict[str, Any]) -> dict[str, Any]:
+    return _registration_evidence_from_basic(state)
+
+
+def _registration_evidence_from_basic(state: dict[str, Any]) -> dict[str, Any]:
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    registration = basic.get("registration_state") if isinstance(basic.get("registration_state"), dict) else {}
+    name = str(basic.get("customer_name") or "").strip()
+    phone = re.sub(r"\D", "", str(basic.get("phone") or ""))
+    output = {
+        "customer_name_collected": bool(name) or bool(registration.get("customer_name_collected")),
+        "phone_collected": len(phone) == 11 or bool(registration.get("phone_collected")),
+        "mobile_sync_status": str(registration.get("mobile_sync_status") or ""),
+    }
+    return _drop_empty(output)
 
 
 def _evidence_conflicts(*, store_anchor: dict[str, Any]) -> list[dict[str, Any]]:
@@ -403,6 +427,11 @@ def _last_assistant_action(last_assistant: str, sent_summary: dict[str, Any]) ->
 
 
 def _structured_deposit_state(state: dict[str, Any], *, sent_summary: dict[str, Any]) -> str:
+    resolved = _resolved_payment_fact_for_state(state)
+    if is_paid_deposit_state(resolved.get("deposit_state")):
+        return "deposit_paid"
+    if resolved.get("deposit_state") == "required_unpaid":
+        return "required_unpaid"
     for mapping in _deposit_signal_mappings(state):
         for key, value in mapping.items():
             key_text = str(key or "").lower()
@@ -439,8 +468,29 @@ def _payment_evidence(state: dict[str, Any], *, sent_summary: dict[str, Any], la
         "current_payment_text": current_text[:160] if _looks_payment_related(current_text) else "",
         "recent_payment_texts": recent_payment_texts[-6:],
         "source_policy": "evidence_only_planner_decides_payment_state",
+        "structured_payment_fact": _resolved_payment_fact_for_state(state),
     }
     return _drop_empty(evidence)
+
+
+def _resolved_payment_fact_for_state(state: dict[str, Any]) -> dict[str, Any]:
+    customer_context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    orders = customer_context.get("orders") if isinstance(customer_context.get("orders"), list) else []
+    basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    stored = basic_info.get("deposit_state")
+    if isinstance(stored, dict):
+        existing_state = str(stored.get("status") or stored.get("deposit_state") or "")
+        existing_source = str(stored.get("source") or "")
+    else:
+        existing_state = str(stored or "")
+        existing_source = "customer_memory" if existing_state else ""
+    return resolved_payment_fact(
+        orders=orders,
+        image_info=state.get("image_info"),
+        existing_state=existing_state,
+        existing_source=existing_source,
+        existing_fact=stored,
+    )
 
 
 def _payment_collection_sent_from_events(state: dict[str, Any]) -> bool:
@@ -785,11 +835,10 @@ def _store_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
     stores = [store for store in knowledge.get("stores", []) if isinstance(store, dict)] if isinstance(knowledge.get("stores"), list) else []
     seen = {_store_name(store) for store in stores if _store_name(store)}
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    for key in ("confirmed_store_name", "preferred_store_name"):
-        name = str(basic.get(key) or "").strip()
-        if name and name not in seen:
-            stores.append({"store_name": name, "store_id": basic.get("confirmed_store_id") or basic.get("preferred_store_id")})
-            seen.add(name)
+    name = str(basic.get("confirmed_store_name") or "").strip()
+    if name and name not in seen:
+        stores.append({"store_name": name, "store_id": basic.get("confirmed_store_id")})
+        seen.add(name)
     for name in KNOWN_STORE_NAMES:
         if name and name not in seen:
             stores.append({"store_name": name})
@@ -828,8 +877,8 @@ def _store_from_profile(state: dict[str, Any]) -> dict[str, Any]:
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
     return _compact_store(
         {
-            "store_id": basic.get("preferred_store_id") or basic.get("confirmed_store_id"),
-            "store_name": basic.get("preferred_store_name") or basic.get("confirmed_store_name"),
+            "store_id": basic.get("confirmed_store_id"),
+            "store_name": basic.get("confirmed_store_name"),
             "city": basic.get("city") or basic.get("current_city"),
         },
         source="customer_profile",
@@ -1013,6 +1062,7 @@ def _store_name_matches_text(name: str, text: str) -> bool:
     return bool(
         normalized_name
         and normalized_text
+        and len(normalized_name) >= 4
         and (normalized_name in normalized_text or (len(normalized_text) >= 4 and normalized_text in normalized_name))
     )
 

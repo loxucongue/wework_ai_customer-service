@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from app.graph.nodes.common import model_usage_snapshot
-from app.graph.planner.brain_v2 import run_planner_brain_v2, safety_fallback_plan
+from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_planner_brain_v2, safety_fallback_plan
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
@@ -39,7 +39,7 @@ def create_planner_brain_node(
                 elif model_client and model_client.available:
                     plan, planner_call = await run_planner_brain_v2(state, model_client)
                 else:
-                    plan = safety_fallback_plan(state, reason="No model API key configured")
+                    plan = planner_unavailable_fallback_plan(state, reason="No model API key configured")
                     planner_call = {
                         "name": "planner_brain_model_unavailable_fallback",
                         "input": {},
@@ -51,7 +51,7 @@ def create_planner_brain_node(
                     }
             except Exception as exc:
                 error_detail = f"{type(exc).__name__}: {exc}"
-                plan = safety_fallback_plan(state, reason=error_detail)
+                plan = planner_unavailable_fallback_plan(state, reason=error_detail)
                 planner_call = planner_call or {"name": "planner_brain_v2", "input": {}}
                 planner_call["error"] = error_detail
                 if model_client and model_client.available:
@@ -71,6 +71,8 @@ def create_planner_brain_node(
                 "payment_state": plan.get("payment_state", "unknown"),
                 "payment_action": plan.get("payment_action", "unknown"),
                 "payment_decision": plan.get("payment_decision", {}),
+                "order_decision": plan.get("order_decision", {}),
+                "appointment_decision": plan.get("appointment_decision", {}),
                 "planner_reply_messages": plan.get("planner_reply_messages", []),
                 "planner_tool_calls": plan.get("planner_tool_calls", []),
                 "reply_constraints": plan.get("reply_constraints", []),

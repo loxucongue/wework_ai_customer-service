@@ -4,6 +4,21 @@ import re
 import unicodedata
 from typing import Any
 
+_CHINESE_DIGITS = {
+    "零": 0,
+    "〇": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+
 
 def available_time_values(slots: dict[str, Any]) -> list[str]:
     result: list[str] = []
@@ -47,21 +62,83 @@ def normalize_time_text(value: str) -> str:
     if exact:
         return f"{int(exact.group(1)):02d}:{exact.group(2)}"
 
-    match = re.search(r"(上午|早上|中午|下午|晚上)?\s*(\d{1,2})\s*[点时](?:\s*(半|\d{1,2}分?))?", text)
+    chinese_match = re.search(
+        r"(上午|早上|中午|下午|晚上)?\s*([零〇一二两三四五六七八九十]{1,3})\s*[点时](?!点)"
+        r"(?:\s*(半|一刻|三刻|\d{1,2}分?|[零〇一二两三四五六七八九十]{1,3}分?))?",
+        text,
+    )
+    if chinese_match:
+        period = chinese_match.group(1) or ""
+        hour = _parse_chinese_number(chinese_match.group(2))
+        minute_text = chinese_match.group(3) or ""
+        minute = _parse_time_minute(minute_text)
+        if hour is None or minute is None:
+            return ""
+        return _format_time(hour, minute, period)
+
+    match = re.search(
+        r"(上午|早上|中午|下午|晚上)?\s*(\d{1,2})\s*[点时](?!点)"
+        r"(?:\s*(半|一刻|三刻|\d{1,2}分?|[零〇一二两三四五六七八九十]{1,3}分?))?",
+        text,
+    )
     if not match:
         return ""
     period = match.group(1) or ""
     hour = int(match.group(2))
     minute_text = match.group(3) or ""
-    minute = 30 if minute_text == "半" else 0
-    if minute_text and minute_text != "半":
-        minute_match = re.search(r"\d{1,2}", minute_text)
-        minute = int(minute_match.group(0)) if minute_match else 0
+    minute = _parse_time_minute(minute_text)
+    if minute is None:
+        return ""
+    return _format_time(hour, minute, period)
+
+
+def _format_time(hour: int, minute: int, period: str) -> str:
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return ""
     if period in {"下午", "晚上"} and hour < 12:
         hour += 12
     if period == "中午" and hour < 11:
         hour += 12
     return f"{hour:02d}:{minute:02d}"
+
+
+def _parse_time_minute(value: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    if text == "半":
+        return 30
+    if text == "一刻":
+        return 15
+    if text == "三刻":
+        return 45
+    digit_match = re.search(r"\d{1,2}", text)
+    if digit_match:
+        minute = int(digit_match.group(0))
+        return minute if 0 <= minute <= 59 else None
+    text = text.removesuffix("分钟").removesuffix("分")
+    minute = _parse_chinese_number(text)
+    if minute is None:
+        return None
+    return minute if 0 <= minute <= 59 else None
+
+
+def _parse_chinese_number(value: str) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    if "十" in text:
+        left, _, right = text.partition("十")
+        tens = _CHINESE_DIGITS.get(left, 1) if left else 1
+        ones = _CHINESE_DIGITS.get(right, 0) if right else 0
+        return tens * 10 + ones
+    if len(text) == 1:
+        return _CHINESE_DIGITS.get(text)
+    if text[0] in {"零", "〇"} and len(text) == 2:
+        return _CHINESE_DIGITS.get(text[1])
+    return None
 
 
 def target_time_status(slots: dict[str, Any], target_time: str, query: str = "") -> dict[str, Any]:

@@ -58,17 +58,29 @@ def model_names(settings: Settings, tier: ModelTier) -> list[str]:
         fallback_text = settings.model_vision_fallbacks
     else:
         fallback_text = settings.model_balanced_fallbacks
-    models = [primary, primary] if tier == "planner" else [primary]
+    models = [primary]
     for name in split_models(fallback_text):
         if name:
             models.append(name)
     if tier == "planner" and settings.model_provider.lower() == "aliyun" and "qwen-turbo" not in models:
         models.append("qwen-turbo")
-    return models
+    return _dedupe_models(models)
 
 
 def split_models(value: str) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
+def _dedupe_models(models: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for item in models:
+        name = str(item or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        output.append(name)
+    return output
 
 
 def is_claude_model(model: str | None) -> bool:

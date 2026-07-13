@@ -15,13 +15,53 @@ from app.graph.nodes.current_turn_context import (
 )
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
-from app.graph.planner.brain_v2_prompts import PLANNER_REPAIR_PROMPT, PLANNER_RISK_PATCH_PROMPT, PLANNER_SYSTEM_PROMPT
-from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, safety_fallback_plan
+from app.graph.planner.brain_v2_prompts import (
+    PLANNER_REPAIR_PROMPT,
+    PLANNER_RISK_PATCH_PROMPT,
+    PLANNER_SYSTEM_PROMPT,
+    PLANNER_TRANSACTION_PATCH_PROMPT,
+)
+from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, planner_unavailable_fallback_plan, safety_fallback_plan
 from app.graph.state import AgentState
 from app.policies.business_rules import planner_business_rules_prompt_section
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.model_client import ModelClient
 from app.services.risk_hold import HEALTH_RISK_TERMS, health_risk_hold
+
+PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
+你是企业微信线上活动接待的应急 planner。上一轮完整 planner 超时，本轮只用精简事实输出合法 JSON。
+
+# Principles
+- 当前消息优先；近聊、turn_evidence、customer_context 只作证据，不替你决定业务动作。
+- 不把技术超时理解成客户高风险；除非客户当前消息本身明确健康高风险、投诉退款、付款异常、严重不适或强人工诉求，否则不要输出 human_handoff_notice。
+- 不编造门店、地址、停车、营业时间、距离、档期、案例图、价格、支付状态、订单状态或医疗结论。
+- 需要具体门店/地址/停车/营业时间/导航/附近候选时，用 customer_store_lookup。
+- 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；客户可见不要输出公里、分钟、车程。
+- 需要真实可约时间时，必须有真实 store_id 和 date 才能用 available_time；没有工具事实不能承诺能约、已安排或已留位。
+- 效果、怕没效果、怕反黑、要效果图时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。
+- 预约金由 payment_decision 决定；客户声称已付时不再发 payment_collection，只推进下一步且不能说支付已核实。
+
+# Output JSON Schema
+只输出 JSON：
+{
+  "decision": "direct_reply | need_tools | no_reply",
+  "stage": "S1 | S2 | S3 | S4",
+  "sub_rule_id": "",
+  "conversion_stage": "interest_capture | objection_resolution | store_match | time_confirm | deposit_push",
+  "customer_type": "price | effect | distance | time | risk | accompany | unknown",
+  "main_blocker": "price | effect | distance | time | risk | trust | logistics | none",
+  "next_step": "ask_intent | solve_blocker | lookup_store | confirm_time | send_deposit | no_action",
+  "payment_state": "unknown | link_sent | customer_claimed_paid | resend_requested | payment_failed | needs_payment",
+  "payment_action": "unknown | none | send_now | offer_resend | explain_existing | confirm_next_step",
+  "payment_decision": {"action":"none | explain | send_now | resend | after_paid_next_step | ask_party_size","party_size":1,"amount":10,"source":"","confidence":"high | medium | low","basis":[]},
+  "order_decision": {"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
+  "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
+  "reply_messages": [],
+  "tool_calls": [],
+  "handoff": {"needed": false, "reason": ""}
+}
+"""
+
 
 def planner_v2_model_tier(state: AgentState) -> str:
     return "planner"
@@ -32,6 +72,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
+        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
         {"role": "system", "content": "# Planner Rule Packs\n" + planner_business_rules_prompt_section()},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
@@ -51,8 +92,21 @@ def planner_v2_repair_messages_for_model(
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
+        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
         {"role": "system", "content": "# Planner Rule Packs\n" + planner_business_rules_prompt_section()},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
+    ]
+
+
+def planner_v2_timeout_retry_messages_for_model(
+    state: AgentState,
+    *,
+    previous_error: str,
+) -> list[dict[str, Any]]:
+    payload = _compact_timeout_retry_payload_for_model(state, previous_error=previous_error)
+    return [
+        {"role": "system", "content": PLANNER_TIMEOUT_RECOVERY_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
 
@@ -63,11 +117,48 @@ async def run_planner_brain_v2(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     tier = planner_v2_model_tier(state)
     initial_messages = planner_v2_messages_for_model(state)
-    payload = await model_client.chat_json(initial_messages, tier=tier, temperature=0.1)
-    plan = build_planner_plan_v2(state, payload)
-    initial_usage = model_usage_snapshot(model_client)
     nested_calls: list[dict[str, Any]] = []
-    for repair_attempt in range(1, 3):
+    initial_error = ""
+    try:
+        payload = await model_client.chat_json(initial_messages, tier=tier, temperature=0.1)
+        plan = build_planner_plan_v2(state, payload)
+        initial_usage = model_usage_snapshot(model_client)
+    except Exception as exc:
+        initial_error = f"{type(exc).__name__}: {exc}"
+        initial_usage = model_usage_snapshot(model_client)
+        retry_call: dict[str, Any] = {
+            "name": "planner_brain_timeout_retry",
+            "input": {"tier": "fast", "previous_error": initial_error},
+        }
+        retry_messages = planner_v2_timeout_retry_messages_for_model(state, previous_error=initial_error)
+        retry_call["input"]["messages"] = retry_messages
+        try:
+            payload = await model_client.chat_json(retry_messages, tier="fast", temperature=0.0)
+            plan = build_planner_plan_v2(state, payload)
+            retry_call["raw_json_output"] = payload
+            retry_call["output"] = _planner_call_output(plan)
+            retry_call["usage"] = model_usage_snapshot(model_client)
+        except Exception as retry_exc:
+            retry_error = f"{type(retry_exc).__name__}: {retry_exc}"
+            retry_call["error"] = retry_error
+            retry_call["usage"] = model_usage_snapshot(model_client)
+            nested_calls.append(retry_call)
+            plan = planner_unavailable_fallback_plan(
+                state,
+                reason=f"{initial_error}; timeout_retry_failed={retry_error}",
+            )
+            model_call = {
+                "name": "planner_brain_v2",
+                "input": {"tier": tier, "messages": initial_messages},
+                "error": f"{initial_error}; timeout_retry_failed={retry_error}",
+                "raw_json_output": {},
+                "output": _planner_call_output(plan),
+                "usage": initial_usage,
+                "nested_calls": nested_calls,
+            }
+            return plan, model_call
+        nested_calls.append(retry_call)
+    for repair_attempt in range(1, 4):
         violations = list(plan.get("tool_policy_violations", []))
         if not violations:
             break
@@ -86,19 +177,7 @@ async def run_planner_brain_v2(
             repaired_plan = build_planner_plan_v2(state, repaired_payload)
             plan = repaired_plan
             repair_call["raw_json_output"] = repaired_payload
-            repair_call["output"] = {
-                "decision": plan.get("planner_decision", ""),
-                "stage": plan.get("planner_stage", ""),
-                "sub_rule_id": plan.get("planner_sub_rule_id", ""),
-                "conversion_stage": plan.get("conversion_stage", ""),
-                "customer_type": plan.get("customer_type", ""),
-                "main_blocker": plan.get("main_blocker", ""),
-                "next_step": plan.get("next_step", ""),
-                "payment_action": plan.get("payment_action", ""),
-                "payment_decision": plan.get("payment_decision", {}),
-                "tool_calls": len(plan.get("planner_tool_calls", [])),
-                "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
-            }
+            repair_call["output"] = _planner_call_output(plan)
             repair_call["usage"] = model_usage_snapshot(model_client)
         except Exception as exc:
             repair_call["error"] = f"{type(exc).__name__}: {exc}"
@@ -110,31 +189,40 @@ async def run_planner_brain_v2(
         "name": "planner_brain_v2",
         "input": {"tier": tier, "messages": initial_messages},
         "raw_json_output": payload,
-        "output": {
-            "decision": plan.get("planner_decision", ""),
-            "stage": plan.get("planner_stage", ""),
-            "sub_rule_id": plan.get("planner_sub_rule_id", ""),
-            "conversion_stage": plan.get("conversion_stage", ""),
-            "customer_type": plan.get("customer_type", ""),
-            "main_blocker": plan.get("main_blocker", ""),
-            "next_step": plan.get("next_step", ""),
-            "payment_action": plan.get("payment_action", ""),
-            "payment_decision": plan.get("payment_decision", {}),
-            "reply_messages": len(plan.get("planner_reply_messages", [])),
-            "tool_calls": len(plan.get("planner_tool_calls", [])),
-            "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
-        },
+        "output": _planner_call_output(plan),
         "usage": initial_usage,
     }
+    if initial_error:
+        model_call["initial_error"] = initial_error
     if nested_calls:
         model_call["nested_calls"] = nested_calls
     return plan, model_call
+
+
+def _planner_call_output(plan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "decision": plan.get("planner_decision", ""),
+        "stage": plan.get("planner_stage", ""),
+        "sub_rule_id": plan.get("planner_sub_rule_id", ""),
+        "conversion_stage": plan.get("conversion_stage", ""),
+        "customer_type": plan.get("customer_type", ""),
+        "main_blocker": plan.get("main_blocker", ""),
+        "next_step": plan.get("next_step", ""),
+        "payment_action": plan.get("payment_action", ""),
+        "payment_decision": plan.get("payment_decision", {}),
+        "order_decision": plan.get("order_decision", {}),
+        "appointment_decision": plan.get("appointment_decision", {}),
+        "reply_messages": len(plan.get("planner_reply_messages", [])),
+        "tool_calls": len(plan.get("planner_tool_calls", [])),
+        "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
+    }
 
 
 def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
     suppress_memory = False
     sent_message_summary = {} if suppress_memory else sent_message_summary_for_model(state)
     current_known_store = _current_known_store_for_planner(state)
+    store_candidate = _store_candidate_for_planner(state)
     current_turn_context = {} if suppress_memory else build_current_turn_context(
         state,
         current_known_store=current_known_store,
@@ -157,12 +245,40 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "history_events": [] if suppress_memory else (state.get("history_events") or [])[-8:],
         "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
         "current_known_store": current_known_store,
+        "store_candidate": store_candidate,
         "current_turn_context": current_turn_context,
         "turn_evidence": current_turn_context.get("turn_evidence") if isinstance(current_turn_context, dict) else {},
         "risk_hold": risk_hold,
         "store_scope_summary": _store_scope_summary(state.get("customer_store_knowledge") or {}),
         "sent_message_summary": sent_message_summary,
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
+    }
+    return _drop_empty(payload)
+
+
+def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_error: str) -> dict[str, Any]:
+    base = _planner_payload_for_model(state)
+    payload = {
+        "current_date": base.get("current_date"),
+        "timezone": base.get("timezone"),
+        "current_message": base.get("current_message"),
+        "conversation_history": (base.get("conversation_history") or [])[-8:],
+        "short_message_context": base.get("short_message_context"),
+        "image_info": base.get("image_info"),
+        "category_id": base.get("category_id"),
+        "customer_profile": base.get("customer_profile"),
+        "customer_context": base.get("customer_context"),
+        "current_known_store": base.get("current_known_store"),
+        "store_candidate": base.get("store_candidate"),
+        "current_turn_context": base.get("current_turn_context"),
+        "turn_evidence": base.get("turn_evidence"),
+        "risk_hold": base.get("risk_hold"),
+        "sent_message_summary": base.get("sent_message_summary"),
+        "available_tools": base.get("available_tools"),
+        "timeout_recovery": {
+            "previous_error": str(previous_error or "")[:240],
+            "goal": "use_compact_context_to_return_valid_planner_json",
+        },
     }
     return _drop_empty(payload)
 
@@ -245,9 +361,16 @@ def _current_known_store_for_planner(state: AgentState) -> dict[str, Any]:
         store_name = str(appointment.get("store_name") or "").strip()
         return _drop_empty({"store_id": store_id, "store_name": store_name, "source": "appointment_context"})
 
+    return {}
+
+
+def _store_candidate_for_planner(state: AgentState) -> dict[str, Any]:
     basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
     preferred = _store_from_basic_info(basic_info)
     if preferred:
+        preferred["candidate_type"] = "preferred_store"
+        preferred["confidence"] = "low"
+        preferred["usage"] = "candidate_only_lookup_or_confirm_before_customer_visible_fact"
         return preferred
     return {}
 
@@ -469,6 +592,8 @@ def _compact_plan_for_repair(plan: dict[str, Any]) -> dict[str, Any]:
             "next_step": plan.get("next_step", ""),
             "payment_state": plan.get("payment_state", ""),
             "payment_action": plan.get("payment_action", ""),
+            "payment_decision": plan.get("payment_decision", {}),
+            "appointment_decision": plan.get("appointment_decision", {}),
             "reply_messages": plan.get("planner_reply_messages", []),
             "tool_calls": plan.get("planner_tool_calls", []),
             "handoff": plan.get("handoff", {}),
@@ -502,18 +627,43 @@ def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
         "has_upcoming_appointment",
         "latest_store_candidates",
     )
-    return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
+    output = {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
+    appointment = raw.get("appointment") if isinstance(raw.get("appointment"), dict) else {}
+    if appointment:
+        output["appointment"] = appointment
+    orders = raw.get("orders") if isinstance(raw.get("orders"), list) else []
+    compact_orders = []
+    for order in orders[:5]:
+        if not isinstance(order, dict):
+            continue
+        compact_orders.append(
+            {
+                key: order.get(key)
+                for key in (
+                    "id",
+                    "order_no",
+                    "status",
+                    "category_id",
+                    "store_id",
+                    "store_name",
+                    "prepay_required",
+                    "prepay_paid",
+                    "deposit_state",
+                    "appointment_time",
+                )
+                if order.get(key) not in (None, "", [], {})
+            }
+        )
+    if compact_orders:
+        output["orders"] = compact_orders
+    return output
 
 
 def _compact_image_info(raw: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
     has_image = bool(raw.get("has_image"))
-    has_signal = any(
-        raw.get(key) not in (None, "", [], {})
-        for key in ("image_desc", "visible_concerns", "risk_signals", "extracted_text", "text_clues")
-    )
-    if not has_image and not has_signal:
+    if not has_image:
         return {}
     keys = (
         "has_image",
@@ -525,6 +675,9 @@ def _compact_image_info(raw: dict[str, Any]) -> dict[str, Any]:
         "extracted_text",
         "text_clues",
         "image_desc",
+        "payment_result",
+        "payment_amount",
+        "payment_order_no",
         "confidence",
     )
     return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}

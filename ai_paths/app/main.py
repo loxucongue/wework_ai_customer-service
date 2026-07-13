@@ -71,6 +71,7 @@ reply_graphs = build_reply_graphs(
     customer_store_knowledge_service,
     store_service,
     outreach_send_client,
+    platform_agent_client,
 )
 compiled_graph = reply_graphs.full_graph
 chat_runtime = ChatRuntime(

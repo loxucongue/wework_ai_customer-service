@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.payment_collection import (
@@ -59,6 +60,51 @@ def sanitize_sop_reply_messages(
         "payment_context": payment_context,
         "payment_adjusted": bool(has_payment and payment_amount),
         "message_count": len(output),
+    }
+
+
+def apply_sop_text_adjustments(
+    messages: list[dict[str, Any]],
+    adjustments: Any,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Apply model-proposed wording changes without changing the SOP message structure."""
+
+    normalized = [_normalize_message(message, index) for index, message in enumerate(messages, start=1)]
+    normalized = [message for message in normalized if message]
+    text_by_order = {
+        int(message.get("order") or 0): str(_content_dict(message.get("content")).get("text") or "").strip()
+        for message in normalized
+        if str(message.get("type") or "") == "text"
+    }
+    requested = adjustments if isinstance(adjustments, list) else []
+    applied_orders: list[int] = []
+    rejected: list[dict[str, Any]] = []
+
+    for item in requested[:8]:
+        if not isinstance(item, dict):
+            continue
+        order = _positive_int(item.get("order"), 0)
+        text = str(item.get("text") or "").strip()
+        original = text_by_order.get(order, "")
+        if not original:
+            rejected.append({"order": order, "reason": "not_existing_text_message"})
+            continue
+        if not text or len(text) > 360:
+            rejected.append({"order": order, "reason": "invalid_text_length"})
+            continue
+        if _numeric_tokens(text) != _numeric_tokens(original):
+            rejected.append({"order": order, "reason": "numeric_facts_changed"})
+            continue
+        for message in normalized:
+            if int(message.get("order") or 0) == order and str(message.get("type") or "") == "text":
+                message["content"] = {"text": text}
+                applied_orders.append(order)
+                break
+
+    return normalized, {
+        "requested_count": len(requested),
+        "applied_orders": applied_orders,
+        "rejected": rejected,
     }
 
 
@@ -192,6 +238,10 @@ def _renumber_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _mentions_deposit(text: str) -> bool:
     return any(term in str(text or "") for term in ("预约金", "订金", "定金", "10元", "10 元"))
+
+
+def _numeric_tokens(text: str) -> list[str]:
+    return sorted(re.findall(r"\d+(?:\.\d+)?", str(text or "")))
 
 
 def _positive_int(value: Any, default: int) -> int:

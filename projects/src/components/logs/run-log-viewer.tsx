@@ -301,9 +301,10 @@ function RunDetailPanel({
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed">{prettyError(run.error)}</pre>
           </div>
         ) : null}
-        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div className="mt-4 grid gap-4 xl:grid-cols-3">
           <Snapshot title="客户输入（含历史）" value={inputSnapshotForDisplay(run, rawLog)} />
           <Snapshot title="最终输出（HTTP 响应体）" value={httpResponseForDisplay(run)} />
+          <Snapshot title="客户最终收到（异步）" value={asyncFinalForDisplay(run, traces, rawLog)} />
         </div>
       </section>
 
@@ -622,7 +623,7 @@ async function readJsonResponse(response: Response, fallbackMessage: string) {
 }
 
 function replySnippet(run: RunItem) {
-  const messages = run.output_snapshot?.http_response_reply_messages || run.output_snapshot?.reply_messages;
+  const messages = replyMessagesForDisplay(run.output_snapshot);
   if (!Array.isArray(messages)) return "";
   return messages.map((item) => stringField(isRecord(item) ? item.content : "")).filter(Boolean).join(" / ");
 }
@@ -674,6 +675,53 @@ function inputSnapshotForDisplay(run: RunItem, rawLog?: JsonValue) {
 
 function httpResponseForDisplay(run: RunItem) {
   return run.output_snapshot?.http_response_body || run.output_snapshot || {};
+}
+
+function asyncFinalForDisplay(run: RunItem, traces: NodeTrace[], rawLog?: JsonValue) {
+  const outputSnapshot = run.output_snapshot || {};
+  const rawRecord = isRecord(rawLog) ? rawLog : {};
+  const traceOutput = asyncFinalTraceOutput(traces);
+  const replyMessages =
+    replyMessagesForDisplay(outputSnapshot, { asyncOnly: true }) ||
+    replyMessagesForDisplay(rawRecord, { asyncOnly: true }) ||
+    replyMessagesForDisplay(traceOutput, { asyncOnly: true }) ||
+    [];
+  return {
+    reply_messages: replyMessages,
+    reply_control_async_final: pathValue(outputSnapshot, ["reply_control", "async_final"]) || pathValue(rawRecord, ["reply_control", "async_final"]) || {},
+    async_final_reply: pathValue(outputSnapshot, ["async_final_reply"]) || pathValue(rawRecord, ["async_final_reply"]) || {},
+    async_trace_output: traceOutput || {},
+  };
+}
+
+function asyncFinalTraceOutput(traces: NodeTrace[]) {
+  const trace = traces.find((item) => /async.*final|final.*send|send_reply/i.test(String(item.node_name || item.node || "")));
+  return trace?.output_snapshot || {};
+}
+
+function replyMessagesForDisplay(record?: Record<string, JsonValue>, options?: { asyncOnly?: boolean }) {
+  if (!record) return null;
+  const asyncPaths = [
+    ["reply_control", "async_final", "reply_messages"],
+    ["async_final", "reply_messages"],
+    ["async_final_reply", "reply_messages"],
+    ["async_final_reply_messages"],
+  ];
+  const syncPaths = [["reply_messages"], ["http_response_reply_messages"], ["http_response_body", "reply_messages"]];
+  for (const path of options?.asyncOnly ? asyncPaths : [...asyncPaths, ...syncPaths]) {
+    const value = pathValue(record, path);
+    if (Array.isArray(value)) return value;
+  }
+  return null;
+}
+
+function pathValue(value: JsonValue, path: string[]) {
+  let current: JsonValue = value;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  return current;
 }
 
 function prettyError(value: string) {

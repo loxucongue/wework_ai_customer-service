@@ -74,12 +74,16 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "payment_state": state.get("payment_state", ""),
         "payment_action": state.get("payment_action", ""),
         "payment_decision": state.get("payment_decision", {}),
+        "order_decision": state.get("order_decision", {}),
+        "appointment_decision": state.get("appointment_decision", {}),
         "reply_constraints": state.get("reply_constraints", []),
         "planner_tool_policy_violations": _compact_planner_violations(state.get("tool_policy_violations", [])),
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "current_turn_context": current_turn_context,
         "turn_evidence": raw_current_turn_context.get("turn_evidence") if isinstance(raw_current_turn_context, dict) else {},
+        "transaction_facts": _transaction_facts_for_reply(fact_envelope),
+        "store_candidate": _store_candidate_for_reply(state),
         "risk_hold": risk_hold,
         "store_scope_summary": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
         "sent_message_summary": sent_message_summary,
@@ -113,6 +117,7 @@ def _current_turn_context_for_reply(value: dict[str, Any]) -> dict[str, Any]:
         "confirmed_appointment",
         "deposit_state",
         "payment_evidence",
+        "registration_evidence",
         "resolved_slots",
         "missing_slots",
         "blocked_actions",
@@ -121,6 +126,87 @@ def _current_turn_context_for_reply(value: dict[str, Any]) -> dict[str, Any]:
     if output:
         output["source_policy"] = "reply_evidence_only_planner_decides_business_action"
     return output
+
+
+def _transaction_facts_for_reply(fact_envelope: dict[str, Any]) -> dict[str, Any]:
+    """Lift current-turn transaction results out of the large fact envelope."""
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope, dict) else {}
+    if not isinstance(structured, dict):
+        return {}
+
+    registration = [
+        _drop_empty(
+            {
+                "type": item.get("type"),
+                "status": item.get("status"),
+                "source": item.get("source"),
+            }
+        )
+        for item in (structured.get("registration_facts") or [])
+        if isinstance(item, dict)
+    ]
+    orders = [
+        _drop_empty(
+            {
+                "type": item.get("type"),
+                "status": item.get("status"),
+                "order_id": item.get("order_id"),
+                "store_id": item.get("store_id"),
+                "deposit_state": item.get("deposit_state"),
+            }
+        )
+        for item in (structured.get("order_facts") or [])
+        if isinstance(item, dict)
+    ]
+    appointments = [
+        _drop_empty(
+            {
+                "type": item.get("type"),
+                "status": item.get("status"),
+                "store_id": item.get("store_id") or item.get("store"),
+                "store_name": item.get("store_name"),
+                "date": item.get("date"),
+                "appointment_time": item.get("appointment_time"),
+                "recommended_slot": item.get("recommended_slot"),
+                "backup_slots": item.get("backup_slots"),
+                "target_time": item.get("target_time"),
+                "target_time_available": item.get("target_time_available"),
+            }
+        )
+        for item in (structured.get("appointment_facts") or [])
+        if isinstance(item, dict)
+    ]
+    return _drop_empty(
+        {
+            "registration": registration[-2:],
+            "orders": orders[-2:],
+            "appointments": appointments[-3:],
+            "source_policy": "current_turn_tool_facts_are_authoritative",
+        }
+    )
+
+
+def _store_candidate_for_reply(state: AgentState) -> dict[str, Any]:
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    store_id = str(basic.get("preferred_store_id") or "").strip()
+    store_name = str(basic.get("preferred_store_name") or "").strip()
+    if not (store_id or store_name):
+        return {}
+    return _drop_empty(
+        {
+            "store_id": store_id,
+            "store_name": store_name,
+            "city": str(basic.get("city") or "").strip(),
+            "source": "customer_profile",
+            "candidate_type": "preferred_store",
+            "confidence": "low",
+            "usage": "candidate_only_lookup_or_confirm_before_customer_visible_fact",
+        }
+    )
+
+
+def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
 def _sop_progress_for_reply(

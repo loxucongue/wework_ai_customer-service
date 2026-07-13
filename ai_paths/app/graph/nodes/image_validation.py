@@ -45,6 +45,14 @@ def validated_image_info(payload: dict[str, Any], *, has_image: bool) -> dict[st
         confidence_float = float(confidence)
     except (TypeError, ValueError):
         confidence_float = 0.5
+    payment_result = str(info.get("payment_result") or "unclear").strip().lower()
+    if payment_result not in {"success", "pending", "failed", "unclear"}:
+        payment_result = "unclear"
+    payment_amount = info.get("payment_amount")
+    try:
+        payment_amount = float(payment_amount) if payment_amount not in (None, "") else None
+    except (TypeError, ValueError):
+        payment_amount = None
     return {
         "has_image": has_image,
         "image_desc": str(info.get("image_desc") or "")[:500],
@@ -55,6 +63,9 @@ def validated_image_info(payload: dict[str, Any], *, has_image: bool) -> dict[st
         "risk_signals": list_of_strings(info.get("risk_signals")),
         "extracted_text": list_of_strings(info.get("extracted_text")),
         "text_clues": list_of_strings(info.get("text_clues")),
+        "payment_result": payment_result if image_type == "payment_proof" else "unclear",
+        "payment_amount": payment_amount if image_type == "payment_proof" else None,
+        "payment_order_no": str(info.get("payment_order_no") or "")[:80] if image_type == "payment_proof" else "",
         "confidence": max(0.0, min(1.0, confidence_float)),
     }
 

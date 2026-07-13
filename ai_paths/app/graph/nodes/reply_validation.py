@@ -131,6 +131,8 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_payment_not_during_health_risk_hold(messages, state)
     _validate_payment_collection_consistency(messages, state)
     _validate_payment_collection_amount_text(messages, state)
+    _validate_payment_collection_order_fact(messages, state)
+    _validate_no_payment_after_current_appointment_created(messages, state)
     _validate_deposit_refund_wording(messages, state)
     _validate_case_image_priority(messages, state)
     _validate_effect_absolute_safety_claims(messages, state)
@@ -139,6 +141,7 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_appointment_lookup_promise(messages, state)
     _validate_appointment_time_facts(messages, state)
     _validate_appointment_time_option_count(messages, state)
+    _validate_registration_confirmation_facts(messages, state)
     _validate_appointment_confirmation_facts(messages, state)
     _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
     _validate_fact_boundaries(messages, state)
@@ -218,9 +221,9 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
     payment_action = str(state.get("payment_action") or "")
     payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
     decision_action = str(payment_decision.get("action") or "")
-    if decision_action in {"none", "explain", "after_paid_next_step", "ask_party_size"} or (
+    if decision_action in {"none", "explain", "manual_transfer", "after_paid_next_step", "ask_party_size"} or (
         decision_action not in {"send_now", "resend"}
-        and payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}
+        and payment_action in {"none", "manual_transfer", "offer_resend", "explain_existing", "confirm_next_step"}
     ):
         if has_payment:
             raise ValueError("payment_collection_blocked_by_payment_action")
@@ -254,6 +257,29 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
 
 
+def _validate_payment_collection_order_fact(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if not any(isinstance(item, dict) and str(item.get("type") or "") == "payment_collection" for item in messages):
+        return
+    if "order_decision" not in state:
+        return
+    structured = _structured_facts(state)
+    order_facts = structured.get("order_facts") if isinstance(structured.get("order_facts"), list) else []
+    if any(
+        isinstance(item, dict)
+        and str(item.get("status") or "") in {"created", "reused"}
+        and str(item.get("order_id") or "").strip()
+        for item in order_facts
+    ):
+        return
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    for order in context.get("orders") or []:
+        if not isinstance(order, dict):
+            continue
+        if str(order.get("status") or "") in {"pending", "waiting_schedule", "scheduled"} and str(order.get("id") or order.get("order_id") or "").strip():
+            return
+    raise ValueError("payment_collection_requires_active_work_order")
+
+
 def _paid_deposit_context(state: dict[str, Any]) -> bool:
     payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
     if str(payment_decision.get("action") or "") == "after_paid_next_step":
@@ -264,6 +290,22 @@ def _paid_deposit_context(state: dict[str, Any]) -> bool:
     if not isinstance(turn_context, dict):
         return False
     return str(turn_context.get("deposit_state") or "") == "deposit_paid"
+
+
+def _validate_no_payment_after_current_appointment_created(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> None:
+    if not any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict)):
+        return
+    structured = _structured_facts(state)
+    for fact in structured.get("appointment_facts") or []:
+        if not isinstance(fact, dict):
+            continue
+        if str(fact.get("type") or "") != "appointment_created":
+            continue
+        if str(fact.get("status") or "") in {"created", "reused", "confirmed"}:
+            raise ValueError("payment_collection_after_appointment_created")
 
 
 def _validate_payment_not_during_health_risk_hold(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -344,11 +386,12 @@ def _validate_effect_absolute_safety_claims(messages: list[dict[str, Any]], stat
         return
     banned = (
         "绝不会反黑",
+        "保证不会反黑",
+        "肯定不会反黑",
+        "100%不会反黑",
+        "百分百不会反黑",
         "不会做坏",
         "不会越做越差",
-        "一般不会",
-        "通常不会",
-        "基本不会",
         "一定有效",
         "一次一定",
         "保证效果",
@@ -359,7 +402,12 @@ def _validate_effect_absolute_safety_claims(messages: list[dict[str, Any]], stat
     risk_scope = f"{text}{state_text}"
     if any(term in text for term in banned) and any(term in risk_scope for term in risk_terms):
         raise ValueError("effect_absolute_safety_claim")
-    if re.search(r"不会[^，。！？,.!?]{0,8}(反黑|留疤|留痕|伤肤|伤皮肤|做坏|越做越差)", text):
+    if re.search(
+        r"(?<!一般)(?<!通常)(?<!基本)不会[^，。！？,.!?]{0,8}(反黑|留疤|留痕|伤肤|伤皮肤|做坏|越做越差)",
+        text,
+    ):
+        raise ValueError("effect_absolute_safety_claim")
+    if re.search(r"(绝对|绝对|保证|肯定|100%|百分百)[^，。！？,.!?]{0,8}不会[^，。！？,.!?]{0,8}(反黑|留疤|留痕|伤肤|伤皮肤|做坏|越做越差)", text):
         raise ValueError("effect_absolute_safety_claim")
 
 
@@ -376,6 +424,8 @@ def _validate_store_address_message_facts(messages: list[dict[str, Any]], state:
     missing_ids = [store_id for store_id in store_ids if store_id not in allowed_ids]
     if missing_ids:
         raise ValueError("unsupported_store_address_message")
+    if _store_address_card_conflicts_with_visible_text(messages, state, store_ids):
+        raise ValueError("store_address_text_card_mismatch")
 
 
 def _validate_store_address_card_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -456,9 +506,33 @@ def _validate_appointment_confirmation_facts(messages: list[dict[str, Any]], sta
     text = _combined_text(messages)
     if not text or not _asserts_appointment_confirmed(text):
         return
+    appointment_decision = state.get("appointment_decision") if isinstance(state.get("appointment_decision"), dict) else {}
+    if str(appointment_decision.get("action") or "") in {
+        "ask_store",
+        "ask_time",
+        "lookup_store",
+        "check_availability",
+        "tentative_arrange",
+    }:
+        raise ValueError("appointment_confirmation_fact_required")
     if _has_appointment_confirmation_fact(state):
         return
     raise ValueError("appointment_confirmation_fact_required")
+
+
+def _validate_registration_confirmation_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    text = _combined_text(messages)
+    if not text or not _asserts_registration_confirmed(text):
+        return
+    structured = _structured_facts(state)
+    for fact in structured.get("order_facts") or []:
+        if not isinstance(fact, dict):
+            continue
+        if str(fact.get("status") or "").lower() in {"created", "reused", "pending", "waiting_schedule", "scheduled"} and str(
+            fact.get("order_id") or fact.get("id") or ""
+        ).strip():
+            return
+    raise ValueError("registration_confirmation_fact_required")
 
 
 def _validate_finished_tool_turn_does_not_promise_pending_work(
@@ -679,6 +753,134 @@ def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
     return allowed
 
 
+def _store_address_card_conflicts_with_visible_text(
+    messages: list[dict[str, Any]],
+    state: dict[str, Any],
+    store_ids: list[str],
+) -> bool:
+    text = _combined_text(messages)
+    if not text:
+        return False
+    records = _known_store_records_for_validation(state)
+    for store_id in store_ids:
+        target = _store_record_for_id(records, store_id)
+        if not target:
+            continue
+        target_names = _store_record_names(target)
+        target_tokens = {_compact_text(item) for item in [*target_names, *_store_record_regions(target)] if _compact_text(item)}
+        for record in records:
+            if str(record.get("store_id") or record.get("id") or "").strip() == store_id:
+                continue
+            for name in _store_record_names(record):
+                if name and name in text and not _store_name_matches_target(name, target_names):
+                    return True
+            other_region_hit = any(_compact_text(region) in _compact_text(text) for region in _store_record_regions(record))
+            if other_region_hit and target_tokens and not any(token and token in _compact_text(text) for token in target_tokens):
+                return True
+        for name in KNOWN_STORE_NAMES:
+            store_name = str(name or "").strip()
+            if store_name and store_name in text and not _store_name_matches_target(store_name, target_names):
+                return True
+    return False
+
+
+def _known_store_records_for_validation(state: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    structured = _structured_facts(state)
+    for key in ("store_facts", "appointment_facts"):
+        for item in structured.get(key) or []:
+            if isinstance(item, dict):
+                records.append(item)
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        records.append(recommended)
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    for item in knowledge.get("stores") or []:
+        if isinstance(item, dict):
+            records.append(item)
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    if basic:
+        records.append(
+            {
+                "store_id": basic.get("preferred_store_id") or basic.get("store_id"),
+                "store_name": basic.get("preferred_store_name") or basic.get("store_name"),
+                "city": basic.get("city") or basic.get("current_city"),
+                "district": basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),
+            }
+        )
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in records:
+        store_id = str(item.get("store_id") or item.get("id") or "").strip()
+        store_name = str(item.get("store_name") or item.get("name") or "").strip()
+        key = (store_id, store_name)
+        if not (store_id or store_name) or key in seen:
+            continue
+        seen.add(key)
+        output.append(item)
+    return output
+
+
+def _store_record_for_id(records: list[dict[str, Any]], store_id: str) -> dict[str, Any]:
+    matches = [
+        record
+        for record in records
+        if str(record.get("store_id") or record.get("id") or "").strip() == store_id
+    ]
+    if not matches:
+        return {}
+    merged: dict[str, Any] = {}
+    for record in matches:
+        for key, value in record.items():
+            if value not in (None, "", [], {}) and merged.get(key) in (None, "", [], {}):
+                merged[key] = value
+    return merged
+
+
+def _store_record_names(record: dict[str, Any]) -> list[str]:
+    values = [str(record.get(key) or "").strip() for key in ("store_name", "name")]
+    return [item for item in dict.fromkeys(values) if item]
+
+
+def _store_name_matches_target(name: str, target_names: list[str]) -> bool:
+    candidate = _compact_text(name)
+    if not candidate:
+        return False
+    for target in target_names:
+        target_value = _compact_text(target)
+        if target_value and (candidate == target_value or candidate in target_value or target_value in candidate):
+            return True
+    return False
+
+
+def _store_record_regions(record: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("province", "city", "district", "area", "region", "address_region"):
+        value = str(record.get(key) or "").strip()
+        if value:
+            values.append(value)
+    address = str(record.get("address") or record.get("store_address") or "").strip()
+    if address:
+        values.extend(_known_region_tokens_in_text(address))
+    return [item for item in dict.fromkeys(values) if len(_compact_text(item)) >= 2]
+
+
+def _known_region_tokens_in_text(text: str) -> list[str]:
+    tokens: list[str] = []
+    for suffix in ("省", "市", "区", "县", "镇", "乡", "旗", "州", "盟", "新区"):
+        for part in str(text or "").replace("，", " ").replace(",", " ").split():
+            if suffix in part:
+                index = part.find(suffix)
+                token = part[: index + len(suffix)]
+                if token:
+                    tokens.append(token)
+    return tokens
+
+
+def _compact_text(value: Any) -> str:
+    return "".join(str(value or "").split()).lower()
+
+
 def _add_store_id(target: set[str], item: dict[str, Any]) -> None:
     for key in ("store_id", "id"):
         value = str(item.get(key) or "").strip()
@@ -859,7 +1061,23 @@ def _store_like_names_from_text(text: str) -> list[str]:
 
 def _asserts_time_available(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
-    if any(term in compact for term in ("可以约", "能约", "可以预约", "能预约", "有空档", "有档期", "有空位")):
+    if any(
+        term in compact
+        for term in (
+            "可以约",
+            "能约",
+            "可以预约",
+            "能预约",
+            "可以先去",
+            "可以过去",
+            "可以到店",
+            "能过去",
+            "能到店",
+            "有空档",
+            "有档期",
+            "有空位",
+        )
+    ):
         return True
     return bool(
         re.search(r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?).{0,8}(?:可以|有空|有时间|有名额|有位置|能约|可约|安排)", compact)
@@ -895,6 +1113,7 @@ def _asserts_appointment_confirmed(text: str) -> bool:
             "已经为您锁定",
             "已锁定",
             "已安排好",
+            "已经安排好",
             "安排好了",
             "预约好了",
             "准时等您",
@@ -913,13 +1132,41 @@ def _asserts_appointment_confirmed(text: str) -> bool:
     )
     if matched:
         return True
+    if re.search(r"(?:给|帮)?[你您]?.{0,4}改到.{0,10}(?:了|安排好)", compact):
+        return True
+    if re.search(r"(?:我)?(?:给|帮)[你您]?.{0,6}(?:按.{0,8})?(?:改|调|换)(?:到|成|过去)", compact) and not any(
+        term in compact for term in ("确认后", "您确认", "你确认", "要改吗", "是否改", "可以帮")
+    ):
+        return True
+    time_token = r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}(?:[:：]\d{2}|点(?:半)?))"
+    change_match = re.search(rf"(?:改|调|换)(?:成|到)?{time_token}", compact)
+    if change_match and any(term in compact for term in ("可以", "好的", "行", "到店", "过来", "就行", "没问题")):
+        local_context = compact[max(0, change_match.start() - 6) : change_match.end() + 6]
+        if not any(term in local_context for term in ("确认要", "是否", "要不要", "吗", "？", "?")):
+            return True
+    if re.search(rf"按{time_token}(?:到店|过来|来店|来就行)", compact):
+        return True
     if "安排" in compact and not any(term in compact for term in ("适合再安排", "确认适合再安排", "检测评估", "皮肤状态")):
         if re.search(r"按.{0,12}安排", compact) or re.search(r"帮[你您]按.{0,12}安排", compact):
             return True
-    time_token = r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}(?:[:：]\d{2}|点(?:半)?))"
     if re.search(rf"(?:能帮[你您]?|可以帮[你您]?|帮[你您]?|给[你您]?).{{0,4}}留(?:下|住)?{time_token}", compact):
         return True
     return bool(re.search(r"锁.{0,8}(?:时段|时间|今天|明天|后天|上午|下午|晚上|\d{1,2}点)", compact))
+
+
+def _asserts_registration_confirmed(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return any(
+        term in compact
+        for term in (
+            "已经报名",
+            "报名好了",
+            "给您报上",
+            "帮您报上",
+            "先给您报名",
+            "先帮您报名",
+        )
+    )
 
 
 def _has_appointment_confirmation_fact(state: dict[str, Any]) -> bool:
@@ -954,8 +1201,6 @@ def _promises_payment_entry(text: str) -> bool:
             "入口还在",
             "入口还有效",
             "重发",
-            "再发您",
-            "再发你",
             "发报名入口",
             "发送报名入口",
             "现在为您发",

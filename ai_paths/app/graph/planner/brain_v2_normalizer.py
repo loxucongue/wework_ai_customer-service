@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 import re
 from pathlib import Path
 from typing import Any
 
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
+from app.graph.nodes.appointment_time_utils import normalize_time_text
 from app.graph.nodes.current_turn_context import (
     build_current_turn_context,
     current_store_anchor_from_state,
@@ -47,6 +48,7 @@ ALLOWED_PAYMENT_ACTIONS = (
     "unknown",
     "none",
     "send_now",
+    "manual_transfer",
     "offer_resend",
     "explain_existing",
     "confirm_next_step",
@@ -56,10 +58,23 @@ ALLOWED_PAYMENT_DECISION_ACTIONS = (
     "explain",
     "send_now",
     "resend",
+    "manual_transfer",
     "after_paid_next_step",
     "ask_party_size",
 )
 ALLOWED_PAYMENT_DECISION_CONFIDENCE = ("high", "medium", "low")
+ALLOWED_APPOINTMENT_DECISION_ACTIONS = (
+    "none",
+    "ask_store",
+    "ask_time",
+    "lookup_store",
+    "check_availability",
+    "confirm_existing",
+    "tentative_arrange",
+    "create_plan",
+)
+ALLOWED_APPOINTMENT_COMMITMENT_LEVELS = ("none", "tentative", "confirmed")
+ALLOWED_ORDER_DECISION_ACTIONS = ("none", "create_work", "use_existing")
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -113,6 +128,17 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         payment_action=payment_action,
         messages=planner_reply_messages,
     )
+    appointment_decision = _normalize_appointment_decision(
+        model_payload.get("appointment_decision") if isinstance(model_payload, dict) else {},
+    )
+    order_decision = _normalize_order_decision(
+        model_payload.get("order_decision") if isinstance(model_payload, dict) else {},
+    )
+    payment_decision = _reconcile_paid_payment_decision(
+        payment_decision=payment_decision,
+        order_decision=order_decision,
+        state=state,
+    )
     payment_state, payment_action = _payment_fields_from_decision(
         payment_decision=payment_decision,
         payment_state=payment_state,
@@ -135,6 +161,13 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = _dedupe_tools(planner_tool_calls)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
+    required_tools = _normalize_available_time_dates_from_context(required_tools, state)
+    order_decision, required_tools = _reconcile_existing_order_for_payment(
+        state=state,
+        payment_decision=payment_decision,
+        order_decision=order_decision,
+        required_tools=required_tools,
+    )
     forced_store_lookup = _store_detail_lookup_tool_from_context(
         decision=decision,
         messages=planner_reply_messages,
@@ -146,6 +179,8 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools = _dedupe_tools([forced_store_lookup])
         planner_reply_messages = [_standard_transition_message()]
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
+    if decision == "need_tools" and executable_tools:
+        planner_reply_messages = [_standard_transition_message()]
     if (
         explicit_risk_reason
         and decision == "direct_reply"
@@ -250,7 +285,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             basis="结构化证据或 planner payment_state 表示客户已付",
         )
         state_for_payment = {**state, "payment_decision": payment_decision}
-    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+    if payment_action in {"none", "manual_transfer", "offer_resend", "explain_existing", "confirm_next_step"}:
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
         if conversion_stage == "deposit_push":
@@ -308,6 +343,10 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             decision=decision,
             messages=planner_reply_messages,
         ),
+        *_need_tools_without_tool_violations(
+            decision=decision,
+            required_tools=required_tools,
+        ),
         *_direct_reply_store_consistency_violations(
             state=state,
             decision=decision,
@@ -323,6 +362,12 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             payment_decision=payment_decision,
             messages=planner_reply_messages,
         ),
+        *_payment_order_violations(
+            state=state,
+            payment_decision=payment_decision,
+            order_decision=order_decision,
+            required_tools=required_tools,
+        ),
         *_two_text_rhythm_violations(
             state=state,
             decision=decision,
@@ -332,6 +377,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         ),
         *_pending_lookup_reply_violations(
             decision=decision,
+            appointment_decision=appointment_decision,
             messages=planner_reply_messages,
         ),
         *_no_reply_customer_question_violations(
@@ -341,7 +387,22 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         *_appointment_availability_reply_violations(
             state=state,
             decision=decision,
+            appointment_decision=appointment_decision,
             messages=planner_reply_messages,
+        ),
+        *_appointment_create_tool_violations(
+            appointment_decision=appointment_decision,
+            required_tools=required_tools,
+        ),
+        *_registration_before_appointment_violations(
+            state=state,
+            payment_decision=payment_decision,
+            appointment_decision=appointment_decision,
+        ),
+        *_appointment_change_fact_violations(
+            state=state,
+            appointment_decision=appointment_decision,
+            required_tools=required_tools,
         ),
     ]
     memory_update_hint = _normalize_memory_hint(memory_update_raw)
@@ -357,6 +418,8 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "payment_state": payment_state,
         "payment_action": payment_action,
         "payment_decision": payment_decision,
+        "order_decision": order_decision,
+        "appointment_decision": appointment_decision,
         "planner_reply_messages": planner_reply_messages,
         "planner_tool_calls": executable_tools,
         "reply_constraints": reply_constraints,
@@ -396,6 +459,33 @@ def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailabl
             ],
             "tool_calls": [],
             "handoff": {"needed": True, "reason": reason or "Planner unavailable"},
+        },
+    )
+
+
+def planner_unavailable_fallback_plan(state: AgentState, *, reason: str = "Planner unavailable") -> dict[str, Any]:
+    return build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "stage": "S1",
+            "sub_rule_id": "PLANNER_SYSTEM_UNAVAILABLE",
+            "conversion_stage": "interest_capture",
+            "customer_type": "unknown",
+            "main_blocker": "none",
+            "next_step": "no_action",
+            "payment_state": "unknown",
+            "payment_action": "none",
+            "payment_decision": {"action": "none", "source": "planner_unavailable", "confidence": "low"},
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "我在，继续帮您处理。"},
+                }
+            ],
+            "tool_calls": [],
+            "handoff": {"needed": False, "reason": reason or "Planner unavailable"},
         },
     )
 
@@ -564,9 +654,7 @@ def _has_store_address_message(messages: list[dict[str, Any]]) -> bool:
 
 def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]], state: AgentState) -> list[dict[str, Any]]:
     content = str(state.get("normalized_content") or state.get("content") or "")
-    if not _current_message_requests_store_detail(content):
-        return required_tools
-    if not any(term in content for term in ("这家", "那家", "刚刚", "地址", "位置", "定位", "导航")):
+    if not _should_rewrite_store_lookup_with_context_anchor(content, state):
         return required_tools
     anchor = _recent_store_name_from_context(state)
     if not anchor:
@@ -574,12 +662,44 @@ def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]]
     rewritten: list[dict[str, Any]] = []
     for tool in required_tools:
         if isinstance(tool, dict) and str(tool.get("name") or "") == "customer_store_lookup":
+            query = str(tool.get("query") or "").strip()
+            if _store_lookup_query_has_explicit_scope(query, state):
+                rewritten.append(tool)
+                continue
             updated = dict(tool)
             updated["query"] = anchor
             rewritten.append(updated)
         else:
             rewritten.append(tool)
     return rewritten
+
+
+def _should_rewrite_store_lookup_with_context_anchor(content: str, state: AgentState) -> bool:
+    if not _current_message_requests_store_detail(content):
+        return False
+    if not is_context_reference_message(content):
+        return False
+    if _current_message_has_explicit_store_or_location_scope(content, state):
+        return False
+    return True
+
+
+def _current_message_has_explicit_store_or_location_scope(content: str, state: AgentState) -> bool:
+    if _store_names_matching_text(state, content):
+        return True
+    return _location_query_has_current_message_scope(content, state)
+
+
+def _store_lookup_query_has_explicit_scope(query: str, state: AgentState) -> bool:
+    if not str(query or "").strip():
+        return False
+    if _query_matches_current_message_store_name(query, state):
+        return True
+    if _query_is_unique_real_store_name(query, state):
+        return True
+    if _query_matches_scope_store_name(query, state):
+        return True
+    return False
 
 
 def _clean_scoped_location_query(value: str) -> str:
@@ -693,6 +813,75 @@ def _state_text_context(state: AgentState) -> str:
     return "\n".join(chunks)
 
 
+def _normalize_available_time_dates_from_context(
+    tools: list[dict[str, Any]],
+    state: AgentState,
+) -> list[dict[str, Any]]:
+    inferred_date = _contextual_appointment_date(state)
+    if not inferred_date:
+        return tools
+    normalized: list[dict[str, Any]] = []
+    for item in tools:
+        tool = dict(item)
+        if str(tool.get("name") or "") == "available_time":
+            tool["date"] = inferred_date
+        normalized.append(tool)
+    return normalized
+
+
+def _contextual_appointment_date(state: AgentState) -> str:
+    base_date = _state_current_date(state)
+    current = str(state.get("normalized_content") or state.get("content") or "")
+    resolved = _date_reference_from_text(current, base_date=base_date)
+    if resolved:
+        return resolved
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in reversed(history[-8:]):
+        if isinstance(item, dict):
+            content = item.get("content")
+            text = str(content.get("text") if isinstance(content, dict) else content or "")
+        else:
+            text = str(item or "")
+        resolved = _date_reference_from_text(text, base_date=base_date)
+        if resolved:
+            return resolved
+    return ""
+
+
+def _state_current_date(state: AgentState) -> date:
+    raw = str(state.get("current_date") or "").strip()
+    try:
+        return date.fromisoformat(raw) if raw else date.today()
+    except ValueError:
+        return date.today()
+
+
+def _date_reference_from_text(text: str, *, base_date: date) -> str:
+    value = str(text or "")
+    iso_match = re.search(r"\b(20\d{2}-\d{1,2}-\d{1,2})\b", value)
+    if iso_match:
+        try:
+            return date.fromisoformat(iso_match.group(1)).isoformat()
+        except ValueError:
+            pass
+    month_day = re.search(r"(?<!\d)(\d{1,2})月(\d{1,2})日", value)
+    if month_day:
+        try:
+            candidate = date(base_date.year, int(month_day.group(1)), int(month_day.group(2)))
+            if candidate < base_date:
+                candidate = date(base_date.year + 1, candidate.month, candidate.day)
+            return candidate.isoformat()
+        except ValueError:
+            pass
+    if "后天" in value:
+        return (base_date + timedelta(days=2)).isoformat()
+    if "明天" in value:
+        return (base_date + timedelta(days=1)).isoformat()
+    if "今天" in value or "今日" in value:
+        return base_date.isoformat()
+    return ""
+
+
 def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
     tools: list[dict[str, Any]] = []
     if not isinstance(raw_tools, list):
@@ -719,9 +908,23 @@ def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
             "candidate_source",
             "store_id",
             "date",
+            "target_time",
+            "time",
+            "appointment_time",
             "scope",
             "need_fields",
             "for_distance",
+            "order_id",
+            "category_id",
+            "prepay",
+            "amount",
+            "mobile",
+            "customer_name",
+            "user_id",
+            "teacher_id",
+            "seat_check",
+            "store_confirmation_source",
+            "availability_source",
         ):
             if key in item:
                 tool[key] = item[key]
@@ -830,6 +1033,82 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                         "note": "available_time.date must be today or a future date based on current_date. Do not use old example dates.",
                     }
                 )
+            continue
+        if name == "create_work_order":
+            store_id = str(tool.get("store_id") or "").strip()
+            amount = str(tool.get("prepay") or tool.get("amount") or "").strip()
+            confirmation_source = str(tool.get("store_confirmation_source") or "").strip()
+            missing_args = [
+                key
+                for key, value in (("store_id", store_id), ("prepay", amount), ("store_confirmation_source", confirmation_source))
+                if not value
+            ]
+            if missing_args:
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "create_work_order",
+                        "missing": "create_work_order_missing_" + "_".join(missing_args),
+                        "note": "create_work_order requires a confirmed real store_id and a 10/20/30/40 prepay amount.",
+                    }
+                )
+            elif confirmation_source not in {"request_confirmed", "current_message", "recent_explicit_choice", "appointment_context"}:
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "create_work_order",
+                        "missing": "create_work_order_store_confirmation_invalid",
+                        "note": "A profile preference or unconfirmed lookup candidate cannot authorize order creation.",
+                    }
+                )
+            elif not _is_known_numeric_store_id(store_id, state):
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "create_work_order",
+                        "missing": "create_work_order_store_id_not_confirmed",
+                        "note": "Confirm a real current store before creating the work order; profile preferred_store is not confirmation.",
+                    }
+                )
+            continue
+        if name == "add_customer_mobile":
+            mobile = re.sub(r"\D", "", str(tool.get("mobile") or ""))
+            if len(mobile) != 11:
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "add_customer_mobile",
+                        "missing": "add_customer_mobile_invalid_mobile",
+                        "note": "add_customer_mobile requires an 11-digit phone number from current customer facts; ask the customer to provide the complete number instead of calling the tool.",
+                    }
+                )
+            else:
+                tool["mobile"] = mobile
+            continue
+        if name == "create_order_plan":
+            missing_args = [
+                key
+                for key, value in (("store_id", tool.get("store_id")), ("date", tool.get("date") or tool.get("appointment_time")))
+                if value in (None, "")
+            ]
+            if not tool.get("order_id") and not _has_paid_order_id(state):
+                missing_args.append("order_id")
+            if not tool.get("customer_name") and not _has_registration_field(state, "customer_name"):
+                missing_args.append("customer_name")
+            if not tool.get("mobile") and not _has_registration_field(state, "phone"):
+                missing_args.append("mobile")
+            if not _has_paid_deposit_context(state, payment_state=str(state.get("payment_state") or "unknown")):
+                missing_args.append("paid_deposit")
+            if missing_args:
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "create_order_plan",
+                        "missing": "create_order_plan_missing_" + "_".join(missing_args),
+                        "note": "create_order_plan requires a paid order_id, real store_id, and the exact customer-confirmed available datetime.",
+                    }
+                )
+            continue
 
     return violations
 
@@ -842,6 +1121,8 @@ def _ambiguous_reference_store_lookup_query(query: str, state: AgentState) -> bo
         return False
     if _query_matches_current_message_store_name(query, state):
         return False
+    if _query_is_unique_real_store_name(query, state):
+        return False
     if not is_context_reference_message(content):
         return False
     names = _ambiguous_store_names_from_context(state)
@@ -849,6 +1130,28 @@ def _ambiguous_reference_store_lookup_query(query: str, state: AgentState) -> bo
         return False
     compact_query = _compact_text(query)
     return any(_store_name_query_matches(_compact_text(name), compact_query) for name in names)
+
+
+def _query_is_unique_real_store_name(query: str, state: AgentState) -> bool:
+    compact_query = _compact_text(query)
+    if not compact_query:
+        return False
+    all_names = [*_known_store_names_for_state(state), *_snapshot_store_names()]
+    exact_names = _without_subsumed_store_names(
+        _dedupe_names([name for name in all_names if name and _compact_text(name) == compact_query])
+    )
+    if len(exact_names) == 1:
+        return True
+    names = _without_subsumed_store_names(
+        _dedupe_names(
+            [
+                name
+                for name in all_names
+                if name and _store_name_query_matches(_compact_text(name), compact_query)
+            ]
+        )
+    )
+    return len(names) == 1
 
 
 def _looks_like_payment_entry_request(content: str) -> bool:
@@ -970,11 +1273,388 @@ def _normalize_payment_decision(
     return output
 
 
+def _normalize_appointment_decision(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    action = _normalize_enum(
+        str(raw.get("action") or ""),
+        ALLOWED_APPOINTMENT_DECISION_ACTIONS,
+        "none",
+    )
+    commitment_level = _normalize_enum(
+        str(raw.get("commitment_level") or ""),
+        ALLOWED_APPOINTMENT_COMMITMENT_LEVELS,
+        "none",
+    )
+    output: dict[str, Any] = {
+        "action": action,
+        "commitment_level": commitment_level,
+    }
+    source = str(raw.get("source") or "").strip()
+    if source:
+        output["source"] = source[:80]
+    basis = _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])
+    if basis:
+        output["basis"] = basis[:6]
+    return output
+
+
+def _normalize_order_decision(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    action = _normalize_enum(str(raw.get("action") or ""), ALLOWED_ORDER_DECISION_ACTIONS, "none")
+    output: dict[str, Any] = {"action": action}
+    for key in ("order_id", "store_id", "category_id", "source"):
+        text = str(raw.get(key) or "").strip()
+        if text:
+            output[key] = text[:120]
+    try:
+        amount = int(float(raw.get("amount") or raw.get("prepay") or 0))
+    except (TypeError, ValueError):
+        amount = 0
+    if amount in {10, 20, 30, 40}:
+        output["amount"] = amount
+    basis = _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])
+    if basis:
+        output["basis"] = basis[:6]
+    return output
+
+
+def _reconcile_paid_payment_decision(
+    *,
+    payment_decision: dict[str, Any],
+    order_decision: dict[str, Any],
+    state: AgentState,
+) -> dict[str, Any]:
+    if str(payment_decision.get("action") or "") != "after_paid_next_step":
+        return payment_decision
+    amount = _numeric_payment_amount(order_decision.get("amount"))
+    if not amount:
+        context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+        for order in reversed(context.get("orders") or []):
+            if not isinstance(order, dict):
+                continue
+            paid = _numeric_payment_amount(order.get("prepay_paid") or order.get("fee_paid"))
+            required = _numeric_payment_amount(order.get("prepay_required") or order.get("fee_required"))
+            if paid or str(order.get("deposit_state") or "") in {"paid_by_order", "paid_by_screenshot", "paid"}:
+                amount = paid or required
+                if amount:
+                    break
+    if not amount:
+        return payment_decision
+    return {
+        **payment_decision,
+        "party_size": payment_party_size_for_amount(amount),
+        "amount": amount,
+    }
+
+
+def _appointment_create_tool_violations(
+    *,
+    appointment_decision: dict[str, Any],
+    required_tools: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if str(appointment_decision.get("action") or "") != "create_plan":
+        return []
+    if any(str(item.get("name") or "") == "create_order_plan" for item in required_tools if isinstance(item, dict)):
+        return []
+    return [
+        {
+            "task_type": "tool_argument",
+            "subtype": "create_order_plan",
+            "missing": "create_order_plan_tool_required",
+            "note": (
+                "appointment_decision.action=create_plan must use decision=need_tools and call create_order_plan. "
+                "Do not directly tell the customer the appointment is arranged before that tool succeeds."
+            ),
+        }
+    ]
+
+
+def _registration_before_appointment_violations(
+    *,
+    state: AgentState,
+    payment_decision: dict[str, Any],
+    appointment_decision: dict[str, Any],
+) -> list[dict[str, str]]:
+    if str(payment_decision.get("action") or "") != "after_paid_next_step":
+        return []
+    action = str(appointment_decision.get("action") or "")
+    if action == "none":
+        return []
+    current = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
+    registration = current.get("registration_evidence") if isinstance(current.get("registration_evidence"), dict) else {}
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    name_collected = bool(registration.get("customer_name_collected")) or bool(str(basic.get("customer_name") or "").strip())
+    phone = re.sub(r"\D", "", str(basic.get("phone") or ""))
+    phone_collected = bool(registration.get("phone_collected")) or len(phone) == 11
+    if name_collected and phone_collected:
+        return []
+    missing = [name for name, present in (("customer_name", name_collected), ("phone", phone_collected)) if not present]
+    return [
+        {
+            "task_type": "transaction_precondition",
+            "subtype": "registration",
+            "missing": "registration_required_before_appointment_decision",
+            "note": (
+                "The paid-order flow must finish customer name and phone registration before appointment decisions. "
+                f"Missing registration facts: {missing}. Set appointment_decision.action=none and collect only the missing registration fields."
+            ),
+        }
+    ]
+
+
+def _appointment_change_fact_violations(
+    *,
+    state: AgentState,
+    appointment_decision: dict[str, Any],
+    required_tools: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if str(appointment_decision.get("action") or "") != "confirm_existing":
+        return []
+    requested_time = _requested_appointment_time_for_validation(state)
+    existing_time = _existing_appointment_time_for_validation(state)
+    if not requested_time or not existing_time or requested_time == existing_time:
+        return []
+    tools = {str(item.get("name") or "") for item in required_tools if isinstance(item, dict)}
+    target_supported = requested_time in _available_appointment_times_for_validation(state)
+    repair_direction = (
+        "The target time is already supported by available_time facts, so use create_plan and call create_order_plan now."
+        if target_supported
+        else "Use check_availability with appointment_record_query/available_time before asking the customer to confirm."
+    )
+    return [
+        {
+            "task_type": "reply_fact_consistency",
+            "subtype": "appointment_change",
+            "missing": "appointment_change_requires_verification",
+            "note": (
+                f"The current target time {requested_time} differs from the existing appointment time {existing_time}. "
+                "Do not use confirm_existing or treat the old appointment as the changed result. "
+                f"{repair_direction} "
+                f"Current executable tools: {sorted(tool for tool in tools if tool and tool != 'no_tool')}."
+            ),
+        }
+    ]
+
+
+def _existing_appointment_time_for_validation(state: AgentState) -> str:
+    candidates: list[Any] = []
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    for key in ("appointment", "appointment_info", "appointment_info_v2"):
+        if isinstance(context.get(key), dict):
+            candidates.append(context[key].get("appointment_time") or context[key].get("time"))
+    cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    candidates.append(cache.get("appointment_time") or cache.get("time"))
+    envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
+    for fact in structured.get("appointment_facts") or []:
+        if not isinstance(fact, dict):
+            continue
+        if str(fact.get("type") or "") in {"appointment_created", "appointment_confirmed", "appointment_record"}:
+            candidates.append(fact.get("appointment_time") or fact.get("time"))
+    for value in candidates:
+        normalized = normalize_time_text(str(value or ""))
+        if normalized:
+            return normalized
+    return ""
+
+
+def _requested_appointment_time_for_validation(state: AgentState) -> str:
+    requested = normalize_time_text(str(state.get("normalized_content") or state.get("content") or ""))
+    if not requested:
+        return ""
+    available = _available_appointment_times_for_validation(state)
+    if requested in available:
+        return requested
+    try:
+        hour, minute = (int(part) for part in requested.split(":", 1))
+    except (TypeError, ValueError):
+        return requested
+    if hour < 12:
+        afternoon = f"{hour + 12:02d}:{minute:02d}"
+        if afternoon in available:
+            return afternoon
+    return requested
+
+
+def _available_appointment_times_for_validation(state: AgentState) -> set[str]:
+    values: set[str] = set()
+    envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
+    for fact in structured.get("appointment_facts") or []:
+        if not isinstance(fact, dict) or str(fact.get("type") or "") != "available_time":
+            continue
+        candidates: list[Any] = [fact.get("recommended_slot")]
+        candidates.extend(fact.get("backup_slots") or [])
+        if fact.get("target_time_available") is True:
+            candidates.append(fact.get("target_time"))
+        slots = fact.get("slots")
+        if isinstance(slots, dict):
+            for group in slots.values():
+                candidates.extend(group if isinstance(group, list) else [group])
+        elif isinstance(slots, list):
+            candidates.extend(slots)
+        for candidate in candidates:
+            normalized = normalize_time_text(str(candidate or ""))
+            if normalized:
+                values.add(normalized)
+    turn_evidence = state.get("turn_evidence") if isinstance(state.get("turn_evidence"), dict) else {}
+    appointment = turn_evidence.get("appointment_evidence") if isinstance(turn_evidence.get("appointment_evidence"), dict) else {}
+    for candidate in appointment.get("available_slots") or []:
+        normalized = normalize_time_text(str(candidate or ""))
+        if normalized:
+            values.add(normalized)
+    return values
+
+
+def _payment_order_violations(
+    *,
+    state: AgentState,
+    payment_decision: dict[str, Any],
+    order_decision: dict[str, Any],
+    required_tools: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if str(payment_decision.get("action") or "") not in {"send_now", "resend"}:
+        return []
+    if _matching_active_order_for_payment(
+        state,
+        store_id=str(order_decision.get("store_id") or state.get("confirmed_store_id") or ""),
+        amount=_payment_decision_amount(payment_decision),
+    ):
+        return []
+    order_action = str(order_decision.get("action") or "")
+    tool_names = {str(item.get("name") or "") for item in required_tools if isinstance(item, dict)}
+    if order_action == "create_work" and "create_work_order" in tool_names:
+        return []
+    return [
+        {
+            "task_type": "fact_consistency",
+            "subtype": "payment_order",
+            "missing": "work_order_required_before_payment_collection",
+            "note": (
+                "Before sending payment_collection, use an existing active order or set order_decision.action=create_work "
+                "and call create_work_order after the customer confirms a real store. If the store is not confirmed, ask/lookup it first."
+            ),
+        }
+    ]
+
+
+def _has_active_order_id(state: AgentState) -> bool:
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    for order in context.get("orders") or []:
+        if not isinstance(order, dict):
+            continue
+        if str(order.get("status") or "") in {"pending", "waiting_schedule", "scheduled"} and str(order.get("id") or order.get("order_id") or "").strip():
+            return True
+    return False
+
+
+def _reconcile_existing_order_for_payment(
+    *,
+    state: AgentState,
+    payment_decision: dict[str, Any],
+    order_decision: dict[str, Any],
+    required_tools: list[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if str(payment_decision.get("action") or "") not in {"send_now", "resend"}:
+        return order_decision, required_tools
+    create_tool = next(
+        (item for item in required_tools if isinstance(item, dict) and str(item.get("name") or "") == "create_work_order"),
+        {},
+    )
+    store_id = str(
+        order_decision.get("store_id")
+        or create_tool.get("store_id")
+        or state.get("confirmed_store_id")
+        or state.get("store_id")
+        or ""
+    ).strip()
+    order = _matching_active_order_for_payment(
+        state,
+        store_id=store_id,
+        amount=_payment_decision_amount(payment_decision),
+    )
+    if not order:
+        return order_decision, required_tools
+    normalized = {
+        "action": "use_existing",
+        "order_id": str(order.get("id") or order.get("order_id") or ""),
+        "store_id": str(order.get("store_id") or store_id),
+        "source": "structured_order",
+        "basis": ["已有匹配的进行中预约金订单，无需重复开单"],
+    }
+    amount = _payment_decision_amount(payment_decision)
+    if amount:
+        normalized["amount"] = amount
+    tools = [item for item in required_tools if str(item.get("name") or "") != "create_work_order"]
+    return normalized, tools or [{"name": "no_tool", "purpose": "Reused matching active work order"}]
+
+
+def _matching_active_order_for_payment(
+    state: AgentState,
+    *,
+    store_id: str,
+    amount: int,
+) -> dict[str, Any]:
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    candidates: list[dict[str, Any]] = []
+    for order in context.get("orders") or []:
+        if not isinstance(order, dict):
+            continue
+        status = str(order.get("status") or "").strip().lower()
+        if status not in {"1", "pending", "waiting_schedule", "scheduled"}:
+            continue
+        order_id = str(order.get("id") or order.get("order_id") or "").strip()
+        if not order_id:
+            continue
+        order_store_id = str(order.get("store_id") or "").strip()
+        if store_id and order_store_id != store_id:
+            continue
+        required_amount = _numeric_payment_amount(order.get("prepay_required") or order.get("fee_required"))
+        if amount and required_amount and required_amount != amount:
+            continue
+        candidates.append(order)
+    if store_id:
+        return candidates[0] if candidates else {}
+    return candidates[0] if len(candidates) == 1 else {}
+
+
+def _payment_decision_amount(payment_decision: dict[str, Any]) -> int:
+    return _numeric_payment_amount(payment_decision.get("amount"))
+
+
+def _numeric_payment_amount(value: Any) -> int:
+    try:
+        amount = int(float(value or 0))
+    except (TypeError, ValueError):
+        return 0
+    return amount if amount in {10, 20, 30, 40} else 0
+
+
+def _has_paid_order_id(state: AgentState) -> bool:
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    for order in context.get("orders") or []:
+        if not isinstance(order, dict):
+            continue
+        if str(order.get("deposit_state") or "") == "paid_by_order" and str(order.get("id") or order.get("order_id") or "").strip():
+            return True
+    return False
+
+
+def _has_registration_field(state: AgentState, field: str) -> bool:
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    value = str(basic.get(field) or "").strip()
+    if field == "phone":
+        return len(re.sub(r"\D", "", value)) == 11
+    return bool(value)
+
+
 def _payment_decision_action_from_legacy(*, payment_state: str, payment_action: str) -> str:
     if payment_state == "customer_claimed_paid":
         return "after_paid_next_step"
     if payment_action == "send_now":
         return "resend" if payment_state in {"resend_requested", "payment_failed"} else "send_now"
+    if payment_action == "manual_transfer":
+        return "manual_transfer"
     if payment_action == "explain_existing":
         return "explain"
     if payment_action == "confirm_next_step":
@@ -999,6 +1679,8 @@ def _payment_fields_from_decision(
         return ("customer_claimed_paid", "confirm_next_step")
     if action == "explain":
         return (payment_state if payment_state != "unknown" else "link_sent", "explain_existing")
+    if action == "manual_transfer":
+        return (payment_state if payment_state != "unknown" else "needs_payment", "manual_transfer")
     if action == "ask_party_size":
         return (payment_state, "none")
     if action == "none":
@@ -1090,6 +1772,8 @@ def _case_studies_tool_violations(
         return []
     if _has_case_studies_tool(required_tools):
         return []
+    if _has_existing_case_facts_or_sent_case(state):
+        return []
     if not _current_turn_needs_case_facts(
         state=state,
         customer_type=customer_type,
@@ -1118,6 +1802,18 @@ def _has_case_studies_tool(required_tools: list[dict[str, Any]]) -> bool:
             continue
         if str(tool.get("kb_name") or "").strip() == "case_studies":
             return True
+    return False
+
+
+def _has_existing_case_facts_or_sent_case(state: AgentState) -> bool:
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    case_facts = structured.get("case_facts") if isinstance(structured.get("case_facts"), list) else []
+    if any(isinstance(item, dict) and (item.get("image_url") or item.get("document_id") or item.get("summary")) for item in case_facts):
+        return True
+    sent_summary = state.get("sent_message_summary") if isinstance(state.get("sent_message_summary"), dict) else {}
+    if sent_summary.get("case_image_sent") or sent_summary.get("effect_case_sent") or sent_summary.get("image_sent"):
+        return True
     return False
 
 
@@ -1153,6 +1849,32 @@ def _direct_reply_message_violations(*, decision: str, messages: list[dict[str, 
             }
         ]
     return []
+
+
+def _need_tools_without_tool_violations(
+    *,
+    decision: str,
+    required_tools: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    if decision != "need_tools":
+        return []
+    if any(
+        str(item.get("name") or "").strip() not in {"", "no_tool"}
+        for item in required_tools
+        if isinstance(item, dict)
+    ):
+        return []
+    return [
+        {
+            "task_type": "tool_structure",
+            "subtype": "need_tools",
+            "missing": "need_tools_requires_executable_tool",
+            "note": (
+                "decision=need_tools must include at least one executable tool_call. "
+                "Repair by adding the required tool, or switch to a complete direct_reply."
+            ),
+        }
+    ]
 
 
 def _no_reply_customer_question_violations(*, state: AgentState, decision: str) -> list[dict[str, str]]:
@@ -1288,7 +2010,11 @@ def _store_detail_tool_violations(
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     )
     current_text = str(state.get("normalized_content") or state.get("content") or "")
-    if not (_direct_text_requires_store_detail_tool(text) or _current_message_requests_store_detail(current_text)):
+    if not (
+        _has_store_address_message(messages)
+        or _direct_text_requires_store_detail_tool(text)
+        or _current_message_requests_store_detail(current_text)
+    ):
         return []
     if (
         _current_message_requests_store_detail(current_text)
@@ -1325,7 +2051,8 @@ def _store_detail_lookup_tool_from_context(
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     )
     current_text = str(state.get("normalized_content") or state.get("content") or "")
-    if not (_direct_text_requires_store_detail_tool(text) or _current_message_requests_store_detail(current_text)):
+    has_store_address_card = _has_store_address_message(messages)
+    if not (has_store_address_card or _direct_text_requires_store_detail_tool(text) or _current_message_requests_store_detail(current_text)):
         return {}
     anchor = current_store_anchor_from_state(
         state,
@@ -1333,12 +2060,18 @@ def _store_detail_lookup_tool_from_context(
         allow_profile=False,
         prefer_recent=True,
     )
-    if not isinstance(anchor, dict) or anchor.get("ambiguous"):
-        return {}
-    query = str(anchor.get("store_name") or anchor.get("name") or anchor.get("store_id") or "").strip()
+    query = ""
+    if isinstance(anchor, dict) and not anchor.get("ambiguous"):
+        query = str(anchor.get("store_name") or anchor.get("name") or anchor.get("store_id") or "").strip()
+    if not query and has_store_address_card:
+        matched_names = _store_names_matching_text(state, text)
+        if len(matched_names) == 1:
+            query = matched_names[0]
+    if not query and has_store_address_card:
+        query = _clean_scoped_location_query(current_text) or _clean_scoped_location_query(text)
     if not query:
         return {}
-    source = str(anchor.get("source") or "").strip()
+    source = str(anchor.get("source") or "").strip() if isinstance(anchor, dict) else ""
     if source in {"customer_profile", "profile", "preferred_store"}:
         return {}
     return {"name": "customer_store_lookup", "purpose": "detail", "query": query}
@@ -1466,6 +2199,17 @@ def _known_store_ids(state: AgentState) -> set[str]:
     value = str(appointment.get("store_id") or "").strip()
     if value and value != "0":
         ids.add(value)
+    current_known_store = state.get("current_known_store") if isinstance(state.get("current_known_store"), dict) else {}
+    for key in ("store_id", "id"):
+        value = str(current_known_store.get(key) or "").strip()
+        if value and value != "0":
+            ids.add(value)
+    for order in customer_context.get("orders") or []:
+        if not isinstance(order, dict):
+            continue
+        value = str(order.get("store_id") or "").strip()
+        if value and value != "0":
+            ids.add(value)
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
     recommended = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
@@ -1487,10 +2231,6 @@ def _known_store_ids(state: AgentState) -> set[str]:
 
 def _recent_explicit_store_ids(state: AgentState) -> set[str]:
     ids: set[str] = set()
-    basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    preferred_id = str(basic_info.get("preferred_store_id") or "").strip()
-    if preferred_id and preferred_id != "0":
-        ids.add(preferred_id)
     events = state.get("history_events") if isinstance(state.get("history_events"), list) else []
     for event in events[-20:]:
         if not isinstance(event, dict):
@@ -1849,7 +2589,7 @@ def _payment_consistency_violations(
             }
         ]
     if decision_action in {"none", ""} and (
-        conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)
+        conversion_stage == "deposit_push" or next_step == "send_deposit"
     ):
         return [
             {
@@ -1863,7 +2603,7 @@ def _payment_consistency_violations(
                 ),
             }
         ]
-    if decision_action in {"none", "explain", "after_paid_next_step", "ask_party_size"} or payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"}:
+    if decision_action in {"none", "explain", "manual_transfer", "after_paid_next_step", "ask_party_size"} or payment_action in {"none", "manual_transfer", "offer_resend", "explain_existing", "confirm_next_step"}:
         if _has_payment_collection(messages):
             return [
                 {
@@ -1876,25 +2616,12 @@ def _payment_consistency_violations(
                     ),
                 }
             ]
-        if _text_mentions_payment_entry(messages):
-            return [
-                {
-                    "task_type": "reply_schema_consistency",
-                    "subtype": "payment_collection",
-                    "missing": "payment_collection_blocked_by_payment_action",
-                    "note": (
-                        "Planner payment_decision/payment_action says this turn should not send the payment entry. "
-                        "Do not mention payment-entry status or ask the customer to reply for a resend in this turn; "
-                        "naturally answer the current message or move to store/time/contact follow-up."
-                    ),
-                }
-            ]
         return []
     if _text_explains_previous_payment_entry(messages):
         return []
-    if decision != "direct_reply" and not _text_mentions_payment_entry(messages):
+    if decision != "direct_reply":
         return []
-    needs_payment = decision_action in {"send_now", "resend"} or payment_action == "send_now" or _text_mentions_payment_entry(messages)
+    needs_payment = decision_action in {"send_now", "resend"} or payment_action == "send_now"
     if needs_payment and payment_context["over_limit"]:
         return [
             {
@@ -1909,7 +2636,7 @@ def _payment_consistency_violations(
         ]
     if not needs_payment or _has_payment_collection(messages):
         return []
-    if str(payment_decision.get("action") or "") not in {"send_now", "resend"} and (
+    if str(payment_decision.get("action") or "") not in {"send_now", "resend", "manual_transfer"} and (
         conversion_stage == "deposit_push" or next_step == "send_deposit"
     ):
         return [
@@ -2028,9 +2755,9 @@ def _append_required_payment_collection(
         return _remove_payment_collection_messages(messages)
     if _has_paid_deposit_context(state, payment_state=payment_state):
         return _remove_payment_collection_messages(messages)
-    if decision_action in {"none", "explain", "after_paid_next_step", "ask_party_size"}:
+    if decision_action in {"none", "explain", "manual_transfer", "after_paid_next_step", "ask_party_size"}:
         return _remove_payment_collection_messages(messages)
-    if payment_action in {"none", "offer_resend", "explain_existing", "confirm_next_step"} and decision_action not in {"send_now", "resend"}:
+    if payment_action in {"none", "manual_transfer", "offer_resend", "explain_existing", "confirm_next_step"} and decision_action not in {"send_now", "resend"}:
         return _remove_payment_collection_messages(messages)
     if not messages or _has_payment_collection(messages) or _text_explains_previous_payment_entry(messages):
         return messages
@@ -2098,8 +2825,6 @@ def _text_mentions_payment_entry(messages: list[dict[str, Any]]) -> bool:
             "入口还在",
             "入口还有效",
             "重发",
-            "再发您",
-            "再发你",
             "发报名入口",
             "发送报名入口",
             "现在为您发",
@@ -2150,19 +2875,27 @@ def _two_text_rhythm_violations(
 def _pending_lookup_reply_violations(
     *,
     decision: str,
+    appointment_decision: dict[str, Any],
     messages: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     if decision != "direct_reply":
         return []
-    text = " ".join(
+    if str(appointment_decision.get("action") or "") in {"ask_store", "ask_time"}:
+        return []
+    texts = [
         _message_text(item.get("content"))
         for item in messages
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    ]
+    pending_lookup = any(
+        re.search(
+            r"(?:帮|给|我先|这边)?(?:您|你)?(?:查一下|查询|核对一下|核对|找一下|看看|看一下|看下).{0,8}(?:档期|案例|参考)",
+            _compact_text(text),
+        )
+        for text in texts
+        if _compact_text(text)
     )
-    compact = _compact_text(text)
-    if not compact:
-        return []
-    if re.search(r"(查|核对|看).{0,12}(档期|案例|参考)", compact):
+    if pending_lookup:
         return [
             {
                 "task_type": "reply_fact_consistency",
@@ -2181,10 +2914,29 @@ def _appointment_availability_reply_violations(
     *,
     state: AgentState,
     decision: str,
+    appointment_decision: dict[str, Any],
     messages: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     if decision != "direct_reply":
         return []
+    if (
+        isinstance(appointment_decision, dict)
+        and appointment_decision.get("commitment_level") == "confirmed"
+        and not _has_confirmed_appointment_or_available_time_fact(state)
+    ):
+        return [
+            {
+                "task_type": "reply_fact_consistency",
+                "subtype": "appointment_availability",
+                "missing": "available_time_required_for_confirmed_appointment_decision",
+                "note": (
+                    "Planner appointment_decision.commitment_level=confirmed requires available_time, appointment_record, "
+                    "or explicit request confirmed appointment facts. If store_id/date are known, switch to need_tools "
+                    "and call available_time; if only a store candidate is known, lookup/confirm the store first; otherwise "
+                    "use a tentative reply without promising the visit is confirmed."
+                ),
+            }
+        ]
     text = " ".join(
         _message_text(item.get("content"))
         for item in messages
@@ -2211,8 +2963,61 @@ def _appointment_availability_reply_violations(
     return []
 
 
+def _has_confirmed_appointment_or_available_time_fact(state: AgentState) -> bool:
+    for source in (
+        state,
+        state.get("request_context") if isinstance(state.get("request_context"), dict) else {},
+    ):
+        if not isinstance(source, dict):
+            continue
+        if str(source.get("appointment_id") or "").strip():
+            return True
+        if str(source.get("confirmed_appointment_id") or "").strip():
+            return True
+        if str(source.get("appointment_time") or "").strip() and (
+            str(source.get("confirmed_store_id") or source.get("store_id") or "").strip()
+        ):
+            return True
+    appointment_cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
+    if str(appointment_cache.get("status") or "").strip() in {"confirmed", "booked", "scheduled", "已预约", "已确认"}:
+        return True
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    appointment_facts = structured.get("appointment_facts") if isinstance(structured.get("appointment_facts"), list) else []
+    for item in appointment_facts:
+        if not isinstance(item, dict):
+            continue
+        fact_type = str(item.get("type") or "").strip()
+        if fact_type in {"appointment_record", "appointment_confirmed", "appointment_created"}:
+            return True
+        if fact_type == "available_time" and (
+            item.get("slots")
+            or str(item.get("recommended_slot") or "").strip()
+            or item.get("backup_slots")
+            or item.get("target_time_available") is True
+        ):
+            return True
+    return False
+
+
 def _direct_reply_claims_appointment_availability_or_hold(compact: str) -> bool:
-    if any(term in compact for term in ("可以约", "能约", "可以预约", "能预约", "有空档", "有档期", "有空位")):
+    if any(
+        term in compact
+        for term in (
+            "可以约",
+            "能约",
+            "可以预约",
+            "能预约",
+            "可以先去",
+            "可以过去",
+            "可以到店",
+            "能过去",
+            "能到店",
+            "有空档",
+            "有档期",
+            "有空位",
+        )
+    ):
         return True
     if any(
         term in compact
@@ -2324,14 +3129,22 @@ def _normalize_memory_hint(raw: Any) -> dict[str, Any]:
 
 def _dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     unique: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, ...]] = set()
     for item in raw_tools:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "").strip()
         kb_name = str(item.get("kb_name") or "").strip()
         query = str(item.get("query") or "").strip()
-        key = (name, kb_name, query)
+        key = (
+            name,
+            kb_name,
+            query,
+            str(item.get("store_id") or ""),
+            str(item.get("date") or item.get("appointment_time") or ""),
+            str(item.get("order_id") or ""),
+            str(item.get("prepay") or item.get("amount") or ""),
+        )
         if name not in ALLOWED_TOOLS or key in seen:
             continue
         seen.add(key)
@@ -2354,6 +3167,19 @@ def _dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "scope",
             "need_fields",
             "for_distance",
+            "order_id",
+            "category_id",
+            "prepay",
+            "amount",
+            "mobile",
+            "customer_name",
+            "user_id",
+            "teacher_id",
+            "seat_check",
+            "store_confirmation_source",
+            "availability_source",
+            "target_time",
+            "appointment_time",
         ):
             if extra_key in item:
                 normalized[extra_key] = item.get(extra_key)

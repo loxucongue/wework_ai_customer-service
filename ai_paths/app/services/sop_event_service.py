@@ -4,18 +4,23 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks
 
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs
-from app.services.sop_message_sanitizer import sanitize_sop_reply_messages
+from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import ALLOWED_MESSAGE_TYPES, SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
 
 
 FIRST_ADD_EVENT_TYPES = {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}
+SOP_QUIET_TIMEZONE = ZoneInfo("Asia/Shanghai")
+SOP_QUIET_START_HOUR = 1
+SOP_QUIET_END_HOUR = 7
+SOP_QUIET_INACTIVITY_MINUTES = 30
 
 
 class SopEventService:
@@ -146,6 +151,24 @@ class SopEventService:
                 )
 
         conversation_messages = conversation_fetch.get("messages") if isinstance(conversation_fetch.get("messages"), list) else []
+        quiet_hours = _quiet_hours_summary(payload, conversation_messages)
+        if quiet_hours["skip"]:
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id=base_pack_id,
+                sop_pack_name=base_pack_name,
+                reply_messages=[],
+                status="skipped_quiet_hours_inactive",
+                error="",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "quiet_hours": quiet_hours,
+                },
+            )
         if event_type in FIRST_ADD_EVENT_TYPES:
             return await self._create_first_add_task(
                 payload,
@@ -294,8 +317,12 @@ class SopEventService:
                 send_response={"event_decision": decision},
             )
 
-        messages, sanitize_summary = sanitize_sop_reply_messages(
+        adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
             _pack_messages(selected),
+            decision.get("text_adjustments"),
+        )
+        messages, sanitize_summary = sanitize_sop_reply_messages(
+            adjusted_messages,
             conversation_messages=event_conversation_messages,
         )
         if not messages:
@@ -315,6 +342,7 @@ class SopEventService:
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_filter": conversation_filter,
                     "message_sanitize": sanitize_summary,
+                    "message_adjustment": adjustment_summary,
                     "event_decision_input": decision.get("selector_input", {}),
                 },
                 send_response={"event_decision": decision},
@@ -336,6 +364,7 @@ class SopEventService:
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                 "conversation_filter": conversation_filter,
                 "message_sanitize": sanitize_summary,
+                "message_adjustment": adjustment_summary,
                 "event_decision_input": decision.get("selector_input", {}),
             },
             send_response={"event_decision": decision},
@@ -406,6 +435,14 @@ class SopEventService:
                 send_response={"event_decision": decision},
             )
 
+        adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
+            messages,
+            decision.get("text_adjustments"),
+        )
+        messages, sanitize_summary = sanitize_sop_reply_messages(
+            adjusted_messages,
+            conversation_messages=conversation_messages,
+        )
         return self._create_task_record(
             payload,
             customer,
@@ -421,6 +458,7 @@ class SopEventService:
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                 "message_sanitize": sanitize_summary,
+                "message_adjustment": adjustment_summary,
                 "event_decision_input": decision.get("selector_input", {}),
             },
             send_response={"event_decision": decision},
@@ -755,6 +793,43 @@ def _conversation_fetch_summary(conversation_fetch: dict[str, Any]) -> dict[str,
 def _event_created_at(payload: dict[str, Any]) -> str:
     parsed = _parse_time(payload.get("created_at") or payload.get("upstream_created_at"))
     return parsed.isoformat() if parsed else ""
+
+
+def _quiet_hours_summary(payload: dict[str, Any], messages: list[dict[str, Any]]) -> dict[str, Any]:
+    event_at = _parse_time(payload.get("created_at") or payload.get("upstream_created_at")) or datetime.now(timezone.utc)
+    local_event_at = event_at.astimezone(SOP_QUIET_TIMEZONE)
+    latest_customer_at = _latest_customer_message_at(messages, before=event_at)
+    inactivity_minutes: int | None = None
+    if latest_customer_at:
+        inactivity_minutes = max(0, int((event_at - latest_customer_at).total_seconds() // 60))
+    in_quiet_window = SOP_QUIET_START_HOUR <= local_event_at.hour < SOP_QUIET_END_HOUR
+    inactive = latest_customer_at is None or (inactivity_minutes is not None and inactivity_minutes >= SOP_QUIET_INACTIVITY_MINUTES)
+    return {
+        "timezone": "Asia/Shanghai",
+        "event_at": event_at.isoformat(),
+        "local_event_at": local_event_at.isoformat(),
+        "window": f"{SOP_QUIET_START_HOUR:02d}:00-{SOP_QUIET_END_HOUR:02d}:00",
+        "latest_customer_message_at": latest_customer_at.isoformat() if latest_customer_at else "",
+        "inactivity_minutes": inactivity_minutes,
+        "skip": bool(in_quiet_window and inactive),
+        "reason": "quiet_hours_customer_inactive" if in_quiet_window and inactive else "",
+    }
+
+
+def _latest_customer_message_at(messages: list[dict[str, Any]], *, before: datetime) -> datetime | None:
+    candidates: list[datetime] = []
+    for message in messages:
+        if not _is_customer_message(message):
+            continue
+        message_at = _message_time(message)
+        if message_at and message_at <= before:
+            candidates.append(message_at)
+    return max(candidates) if candidates else None
+
+
+def _is_customer_message(message: dict[str, Any]) -> bool:
+    direction = _string(message.get("direction") or message.get("from") or message.get("sender_type") or message.get("role")).lower()
+    return direction in {"customer", "user", "external"}
 
 
 def _first_add_conversation_messages(

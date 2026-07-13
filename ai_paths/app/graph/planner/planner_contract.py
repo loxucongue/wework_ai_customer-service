@@ -7,6 +7,9 @@ ALLOWED_TOOLS = (
     "distance_calculate",
     "available_time",
     "appointment_record_query",
+    "create_work_order",
+    "add_customer_mobile",
+    "create_order_plan",
     "professional_assist",
     "no_tool",
 )

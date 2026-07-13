@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     model_reply_fallbacks: str = "qwen-plus,qwen-plus,qwen-turbo"
     model_vision_fallbacks: str = ""
     model_timeout_seconds: int = 45
+    model_hedge_delay_seconds: float = 5.0
+    model_hedge_max_parallel: int = 2
+    model_planner_total_timeout_seconds: float = 35.0
+    model_reply_total_timeout_seconds: float = 45.0
+    model_json_max_tokens: int = 2048
+    model_text_max_tokens: int = 2048
     memory_dir: Path = Path("logs/memory")
     db_path: Path = Field(default=Path("data/ai_paths.db"), alias="AI_PATHS_DB_PATH")
     platform_agent_base_url: str = "https://www.henm.cn"

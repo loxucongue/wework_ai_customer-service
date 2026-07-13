@@ -16,9 +16,11 @@ class FakeRetryModelClient:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.tiers: list[str] = []
 
     async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
         self.calls += 1
+        self.tiers.append(tier)
         if self.calls == 1:
             return {"message": "missing schema"}
         return {
@@ -33,9 +35,11 @@ class FakeBadHandoffModelClient:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.tiers: list[str] = []
 
     async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
         self.calls += 1
+        self.tiers.append(tier)
         return {
             "reply_messages": [
                 {
@@ -55,7 +59,11 @@ class FakeBadHandoffModelClient:
 class FakePaymentExceptionModelClient:
     available = True
 
+    def __init__(self) -> None:
+        self.tiers: list[str] = []
+
     async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
+        self.tiers.append(tier)
         return {
             "reply_messages": [
                 {
@@ -67,7 +75,78 @@ class FakePaymentExceptionModelClient:
         }
 
 
+class FakeUnavailableAppointmentModelClient:
+    available = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "可以按明天到店检测来安排，厦门思明店这边先以门店现场确认为准。"}},
+                    {"type": "text", "order": 2, "content": {"text": "您明天想上午还是下午去？"}},
+                ]
+            }
+        return {
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "明天去可以先安排到店检测，不过这边暂时没查到实时档期。"}},
+                {"type": "text", "order": 2, "content": {"text": "您明天想上午去还是下午去？"}},
+            ]
+        }
+
+
+class FakeFinalReplyModelClient:
+    available = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
+        self.calls += 1
+        return {
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "这是最终回复模型生成的成品。"}}
+            ]
+        }
+
+
 class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_valid_planner_direct_reply_still_uses_final_reply_model_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = FakeFinalReplyModelClient()
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=model,
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-direct-final-model",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "planner_decision": "direct_reply",
+                "planner_reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "这是 Planner 草稿。"}}
+                ],
+                "fact_envelope": {},
+                "required_tools": [],
+            }
+
+            output = await node(state)
+
+        self.assertEqual(model.calls, 1)
+        self.assertEqual(output["reply_source"], "main_model")
+        self.assertEqual(output["reply_messages"][0]["content"], "这是最终回复模型生成的成品。")
+
     async def test_reply_synth_retries_once_when_json_missing_reply_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             model = FakeRetryModelClient()
@@ -95,6 +174,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             output = await node(state)
 
         self.assertEqual(model.calls, 2)
+        self.assertEqual(model.tiers, ["reply", "reply"])
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_messages"][0]["content"], "我帮您核对一下更方便的门店。")
         retry_info = state["trace"][0]["tool_calls"][0].get("retry")
@@ -135,6 +215,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             output = await node(state)
 
         self.assertEqual(model.calls, 2)
+        self.assertEqual(model.tiers, ["strong", "strong"])
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
@@ -237,9 +318,10 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_current_professional_assist_notice_is_not_removed_as_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
+            model = FakePaymentExceptionModelClient()
             node = create_synthesize_reply_node(
                 trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
-                model_client=FakePaymentExceptionModelClient(),
+                model_client=model,
                 debug_message_contents=debug_message_contents,
                 reply_messages_for_model=lambda _state: [
                     {"role": "system", "content": "output json"},
@@ -277,9 +359,60 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             output = await node(state)
 
         self.assertEqual(output["errors"], [])
+        self.assertEqual(model.tiers, ["strong"])
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
         self.assertTrue(any(item.get("message") == "handoff_notice_appended" for item in output["warnings"]))
         self.assertFalse(any(item.get("message") == "stale_handoff_notice_removed" for item in output["warnings"]))
+
+    async def test_unavailable_available_time_gets_visible_fact_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = FakeUnavailableAppointmentModelClient()
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=model,
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-unavailable-time-fallback",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "明天可以去吗",
+                "normalized_content": "明天可以去吗",
+                "planner_decision": "need_tools",
+                "required_tools": [{"name": "available_time", "store_id": "12", "date": "2026-07-10"}],
+                "fact_envelope": {
+                    "structured_facts": {
+                        "appointment_facts": [
+                            {
+                                "type": "available_time",
+                                "store": "厦门思明店",
+                                "date": "2026-07-10",
+                                "recommended_slot": "",
+                                "backup_slots": [],
+                                "slot_count": 0,
+                            }
+                        ],
+                        "tool_errors": [{"tool": "available_time", "error": "platform error"}],
+                    }
+                },
+            }
+
+            output = await node(state)
+
+        self.assertEqual(model.calls, 2)
+        self.assertEqual(output["errors"], [])
+        self.assertEqual(output["reply_source"], "deterministic_unavailable_appointment_fallback")
+        text = "\n".join(item["content"] for item in output["reply_messages"] if item["type"] == "text")
+        self.assertIn("明天的实时空档这边暂时没拿到", text)
+        self.assertNotIn("可以约", text)
+        self.assertNotIn("安排好", text)
 
 
 if __name__ == "__main__":

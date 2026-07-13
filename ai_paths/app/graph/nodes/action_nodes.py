@@ -9,6 +9,7 @@ from typing import Any, Callable
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_task_results import ActionToolTask, merge_action_task_results
+from app.graph.nodes.appointment_time_utils import normalize_time_text
 from app.graph.planner.runtime_plan import (
     planner_primary_task,
     planner_required_tools,
@@ -16,6 +17,9 @@ from app.graph.planner.runtime_plan import (
 )
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
+from app.services.platform_agent_client import PlatformAgentClient
+from app.services.customer_payment_state import is_paid_deposit_state, normalize_prepay_facts
+from app.services.customer_order_context import order_status_text
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -29,6 +33,7 @@ def create_execute_actions_node(
     trace_logger: TraceLogger,
     store_service: StoreService | None,
     appointment_query_from_state: Callable[[str, dict[str, Any], AgentState], dict[str, Any]],
+    platform_agent_client: PlatformAgentClient | None = None,
 ) -> Callable[[AgentState], Any]:
     async def execute_actions(state: AgentState) -> dict[str, Any]:
         required_tools = planner_required_tools(state)
@@ -48,6 +53,7 @@ def create_execute_actions_node(
             planned_tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
             if planned_tools:
                 required_tools = [tool for tool in planned_tools if isinstance(tool, dict)]
+            required_tools = _dedupe_planned_tools(required_tools)
             required_tools = _filter_invalid_planned_tools(required_tools, state, tool_results, tool_calls)
 
             for tool in required_tools:
@@ -99,6 +105,15 @@ def create_execute_actions_node(
                     }
                 )
 
+            if platform_agent_client:
+                _execute_platform_order_tools(
+                    required_tools=required_tools,
+                    state=state,
+                    platform_client=platform_agent_client,
+                    tool_results=tool_results,
+                    tool_calls=tool_calls,
+                )
+
             if _needs_appointment_lookup(required_tools) and store_service:
                 try:
                     appointment_query = _appointment_query_from_planner(required_tools, state)
@@ -111,6 +126,7 @@ def create_execute_actions_node(
                             )
                             available["store_name"] = appointment_query.get("store_name", "")
                             available["date"] = appointment_query.get("date", "")
+                            available["target_time"] = appointment_query.get("target_time", "")
                             tool_results["available_time"] = available
                             tool_calls.append(
                                 {
@@ -161,6 +177,457 @@ def create_execute_actions_node(
     return execute_actions
 
 
+def _execute_platform_order_tools(
+    *,
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+    platform_client: PlatformAgentClient,
+    tool_results: dict[str, Any],
+    tool_calls: list[dict[str, Any]],
+) -> None:
+    for name in ("create_work_order", "add_customer_mobile", "create_order_plan"):
+        tool = _explicit_planned_tool(required_tools, name)
+        if not tool:
+            continue
+        try:
+            if name == "create_work_order":
+                result = _create_or_reuse_work_order(tool, state, platform_client, tool_results)
+                logged_input = {key: value for key, value in tool.items() if key != "mobile"}
+            elif name == "add_customer_mobile":
+                result = _sync_customer_mobile(tool, state, platform_client)
+                logged_input = {**tool, "mobile": _mask_mobile(str(tool.get("mobile") or ""))}
+            else:
+                result = _create_or_reuse_order_plan(tool, state, platform_client)
+                logged_input = dict(tool)
+        except Exception as exc:
+            result = _tool_execution_error_result(tool_name=name, tool=tool, state=state, exc=exc)
+            logged_input = {key: value for key, value in tool.items() if key != "mobile"}
+            if name == "add_customer_mobile":
+                logged_input["mobile"] = _mask_mobile(str(tool.get("mobile") or ""))
+        tool_results[name] = result
+        tool_calls.append({"name": name, "input": logged_input, "output": result})
+
+
+def _create_or_reuse_work_order(
+    tool: dict[str, Any],
+    state: AgentState,
+    platform_client: PlatformAgentClient,
+    tool_results: dict[str, Any],
+) -> dict[str, Any]:
+    store_id = str(tool.get("store_id") or "").strip()
+    amount = _coerce_deposit_amount(tool.get("prepay") or tool.get("amount"))
+    category_id = str(tool.get("category_id") or _request_context(state).get("category_id") or _customer_fact(state, "category_id") or "").strip()
+    confirmation_source = str(tool.get("store_confirmation_source") or "").strip()
+    if not store_id or not amount:
+        return {"status": "invalid_arguments", "missing": [key for key, value in (("store_id", store_id), ("prepay", amount)) if not value]}
+    if store_id not in _known_store_ids(state, tool_results):
+        return {"status": "rejected", "error": "store_id_not_backed_by_store_fact", "store_id": store_id}
+    if confirmation_source not in {"request_confirmed", "current_message", "recent_explicit_choice", "appointment_context"}:
+        return {"status": "rejected", "error": "store_confirmation_required_before_work_order", "store_id": store_id}
+
+    fresh_orders = platform_client.list_orders(
+        customer_id=_platform_customer_id(state),
+        page=1,
+        limit=10,
+        request_context=_request_context(state),
+    )
+    existing = _reusable_raw_order(fresh_orders, store_id=store_id, category_id=category_id)
+    if not existing:
+        existing = _reusable_order(state, store_id=store_id, category_id=category_id)
+    if existing:
+        existing_amount = _numeric_amount(existing.get("prepay_required"))
+        if existing.get("deposit_state") == "paid_by_order":
+            return {"status": "reused", "source": "platform_agent.order_index", **existing}
+        if existing_amount != amount:
+            user_id = _request_context(state).get("user_id") or state.get("user_id")
+            modified = platform_client.modify_work_order(
+                order_id=existing.get("order_id"),
+                store_id=store_id,
+                user_id=user_id,
+                amount=amount,
+                category_id=category_id or None,
+                request_context=_request_context(state),
+            )
+            if _platform_explicitly_rejected(modified):
+                return {
+                    "status": "rejected",
+                    "error": "existing_work_order_amount_update_failed",
+                    "order_id": existing.get("order_id"),
+                    "result": _compact_platform_result(modified),
+                }
+            existing["prepay_required"] = amount
+            existing["amount_updated"] = True
+        return {"status": "reused", "source": "platform_agent.order_index", **existing}
+
+    customer_id = _platform_customer_id(state)
+    customer_add_wechat_id = _customer_add_wechat_id(state)
+    user_id = _request_context(state).get("user_id") or state.get("user_id")
+    customer_kind = _customer_fact(state, "kind") or _request_context(state).get("kind")
+    if not customer_add_wechat_id or customer_kind in (None, "") or not category_id:
+        request_context = _request_context(state)
+        customer_info = platform_client.get_customer_info(
+            user_id=user_id,
+            corp_id=request_context.get("corp_id"),
+            wechat=request_context.get("wechat"),
+            external_userid=request_context.get("external_userid"),
+        )
+        customer_add_wechat_id = str(customer_add_wechat_id or customer_info.get("customer_add_wechat_id") or "").strip()
+        customer_kind = customer_kind if customer_kind not in (None, "") else customer_info.get("kind")
+        category_id = str(category_id or customer_info.get("category_id") or "").strip()
+    missing = [
+        key
+        for key, value in (
+            ("customer_id", customer_id),
+            ("customer_add_wechat_id", customer_add_wechat_id),
+            ("user_id", user_id),
+            ("kind", customer_kind),
+        )
+        if value in (None, "")
+    ]
+    if missing:
+        return {"status": "invalid_arguments", "missing": missing}
+
+    check = platform_client.check_customer(
+        customer_id=customer_id,
+        kind=customer_kind,
+        request_context=_request_context(state),
+    )
+    if _check_customer_rejected(check):
+        return {"status": "rejected", "source": "platform_agent.order.check_customer", "check_customer": _compact_platform_result(check)}
+
+    created = platform_client.create_work_order(
+        customer_id=customer_id,
+        store_id=store_id,
+        user_id=user_id,
+        prepay=amount,
+        customer_add_wechat_id=customer_add_wechat_id,
+        category_id=category_id or None,
+        remark="AI客服预约金开单",
+        request_context=_request_context(state),
+    )
+    order_id = _result_identifier(created, "order_id", "id")
+    if not order_id:
+        return {
+            "status": "error",
+            "error": "create_work_order_missing_order_id",
+            "source": "platform_agent.order.create_work",
+            "result": _compact_platform_result(created),
+        }
+    return {
+        "status": "created",
+        "source": "platform_agent.order.create_work",
+        "order_id": order_id,
+        "store_id": store_id,
+        "category_id": category_id,
+        "prepay_required": amount,
+        "deposit_state": "required_unpaid",
+    }
+
+
+def _sync_customer_mobile(tool: dict[str, Any], state: AgentState, platform_client: PlatformAgentClient) -> dict[str, Any]:
+    mobile = re.sub(r"\D", "", str(tool.get("mobile") or ""))
+    customer_id = _platform_customer_id(state)
+    if len(mobile) != 11 or not customer_id:
+        return {"status": "invalid_arguments", "missing": ["mobile" if len(mobile) != 11 else "customer_id"]}
+    result = platform_client.add_customer_mobile(
+        customer_id=customer_id,
+        mobile=mobile,
+        request_context=_request_context(state),
+    )
+    return {
+        "status": "synced" if not _platform_explicitly_rejected(result) else "rejected",
+        "source": "platform_agent.customer.add_mobile",
+        "mobile": _mask_mobile(mobile),
+        "result": _compact_platform_result(result),
+    }
+
+
+def _create_or_reuse_order_plan(
+    tool: dict[str, Any],
+    state: AgentState,
+    platform_client: PlatformAgentClient,
+) -> dict[str, Any]:
+    order_id = str(tool.get("order_id") or "").strip()
+    store_id = str(tool.get("store_id") or "").strip()
+    date = str(tool.get("date") or tool.get("appointment_time") or "").strip()
+    user_id = tool.get("user_id") or _request_context(state).get("user_id") or state.get("user_id")
+    customer_name, mobile = _registration_values(state, tool)
+    if not order_id:
+        paid_order = _latest_paid_order(state)
+        order_id = str(paid_order.get("order_id") or paid_order.get("id") or "")
+        store_id = store_id or str(paid_order.get("store_id") or "")
+    missing = [
+        key
+        for key, value in (
+            ("order_id", order_id),
+            ("store_id", store_id),
+            ("date", date),
+            ("user_id", user_id),
+            ("customer_name", customer_name),
+            ("mobile", mobile if len(mobile) == 11 else ""),
+        )
+        if value in (None, "")
+    ]
+    if missing:
+        return {"status": "invalid_arguments", "missing": missing}
+    if not _state_has_paid_deposit(state):
+        return {"status": "rejected", "error": "paid_deposit_required_before_order_plan", "order_id": order_id}
+    existing = _existing_plan(state, order_id=order_id, date=date)
+    if existing:
+        return {"status": "reused", "source": "platform_agent.order_index", **existing}
+    result = platform_client.create_order_plan(
+        store_id=store_id,
+        date=date,
+        order_id=order_id,
+        user_id=user_id,
+        teacher_id=tool.get("teacher_id"),
+        seat_check=tool.get("seat_check"),
+        note="AI客服确认到店排期",
+        request_context=_request_context(state),
+    )
+    if _platform_explicitly_rejected(result):
+        return {"status": "rejected", "source": "platform_agent.order.schedule.order_plan", "result": _compact_platform_result(result)}
+    return {
+        "status": "created",
+        "source": "platform_agent.order.schedule.order_plan",
+        "order_id": order_id,
+        "store_id": store_id,
+        "store_name": _store_name_for_id(state, store_id),
+        "appointment_time": date,
+        "result": _compact_platform_result(result),
+    }
+
+
+def _request_context(state: AgentState) -> dict[str, Any]:
+    return state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+
+
+def _platform_customer_id(state: AgentState) -> str:
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    return str(context.get("platform_customer_id") or context.get("customer_id") or state.get("customer_id") or "").strip()
+
+
+def _customer_add_wechat_id(state: AgentState) -> str:
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    identity = context.get("identity") if isinstance(context.get("identity"), dict) else {}
+    return str(
+        state.get("customer_add_wechat_id")
+        or context.get("customer_add_wechat_id")
+        or identity.get("customer_add_wechat_id")
+        or ""
+    ).strip()
+
+
+def _customer_fact(state: AgentState, key: str) -> Any:
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    customer = context.get("customer") if isinstance(context.get("customer"), dict) else {}
+    return customer.get(key)
+
+
+def _context_orders(state: AgentState) -> list[dict[str, Any]]:
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    return [item for item in context.get("orders") or [] if isinstance(item, dict)]
+
+
+def _reusable_order(state: AgentState, *, store_id: str, category_id: str) -> dict[str, Any]:
+    for order in _context_orders(state):
+        if str(order.get("status") or "") not in {"pending", "waiting_schedule", "scheduled"}:
+            continue
+        if str(order.get("store_id") or "") != store_id:
+            continue
+        order_category = str(order.get("category_id") or "")
+        if not _categories_compatible(category_id, order_category):
+            continue
+        return {
+            "order_id": str(order.get("id") or order.get("order_id") or ""),
+            "order_no": str(order.get("order_no") or ""),
+            "store_id": store_id,
+            "category_id": order_category,
+            "prepay_required": order.get("prepay_required"),
+            "prepay_paid": order.get("prepay_paid"),
+            "deposit_state": order.get("deposit_state") or "unknown",
+        }
+    return {}
+
+
+def _reusable_raw_order(orders: list[dict[str, Any]], *, store_id: str, category_id: str) -> dict[str, Any]:
+    for order in orders:
+        if order_status_text(order.get("status")) not in {"pending", "waiting_schedule", "scheduled"}:
+            continue
+        if str(order.get("store_id") or "") != store_id:
+            continue
+        order_category = str(order.get("category_id") or "")
+        if not _categories_compatible(category_id, order_category):
+            continue
+        payment = normalize_prepay_facts(order)
+        return {
+            "order_id": str(order.get("id") or order.get("order_id") or ""),
+            "order_no": str(order.get("order_no") or ""),
+            "store_id": store_id,
+            "category_id": order_category,
+            "prepay_required": payment.get("prepay_required"),
+            "prepay_paid": payment.get("prepay_paid"),
+            "deposit_state": payment.get("deposit_state") or "unknown",
+        }
+    return {}
+
+
+def _latest_paid_order(state: AgentState) -> dict[str, Any]:
+    for order in _context_orders(state):
+        if str(order.get("deposit_state") or "") == "paid_by_order":
+            return order
+    image_info = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
+    if image_info.get("image_type") == "payment_proof" and image_info.get("payment_result") == "success":
+        for order in _context_orders(state):
+            if str(order.get("status") or "") in {"pending", "waiting_schedule", "scheduled"}:
+                return order
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    deposit = basic.get("deposit_state") if isinstance(basic.get("deposit_state"), dict) else {}
+    order_state = basic.get("order_state") if isinstance(basic.get("order_state"), dict) else {}
+    if is_paid_deposit_state(deposit.get("status") or deposit.get("deposit_state")):
+        return {
+            "order_id": deposit.get("order_id") or order_state.get("order_id"),
+            "order_no": deposit.get("order_no") or order_state.get("order_no"),
+            "store_id": order_state.get("store_id"),
+            "deposit_state": deposit.get("status") or deposit.get("deposit_state"),
+        }
+    return {}
+
+
+def _state_has_paid_deposit(state: AgentState) -> bool:
+    image_info = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
+    if image_info.get("image_type") == "payment_proof" and image_info.get("payment_result") == "success":
+        return True
+    for order in _context_orders(state):
+        if is_paid_deposit_state(order.get("deposit_state")):
+            return True
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    stored = basic.get("deposit_state")
+    if isinstance(stored, dict):
+        return is_paid_deposit_state(stored.get("status") or stored.get("deposit_state"))
+    return is_paid_deposit_state(stored)
+
+
+def _registration_values(state: AgentState, tool: dict[str, Any]) -> tuple[str, str]:
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    name = str(tool.get("customer_name") or basic.get("customer_name") or "").strip()
+    mobile = re.sub(r"\D", "", str(tool.get("mobile") or basic.get("phone") or ""))
+    return name, mobile
+
+
+def _existing_plan(state: AgentState, *, order_id: str, date: str) -> dict[str, Any]:
+    for order in _context_orders(state):
+        if str(order.get("id") or order.get("order_id") or "") != order_id:
+            continue
+        appointment_time = str(order.get("appointment_time") or "")
+        if str(order.get("status") or "") == "scheduled" and appointment_time and appointment_time == date:
+            return {"order_id": order_id, "store_id": str(order.get("store_id") or ""), "appointment_time": appointment_time}
+    return {}
+
+
+def _known_store_ids(state: AgentState, tool_results: dict[str, Any]) -> set[str]:
+    ids = {
+        str(state.get("confirmed_store_id") or "").strip(),
+        str(state.get("store_id") or "").strip(),
+    }
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    appointment = context.get("appointment") if isinstance(context.get("appointment"), dict) else {}
+    ids.add(str(appointment.get("store_id") or "").strip())
+    lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results.get("customer_store_lookup"), dict) else {}
+    for store in lookup.get("stores") or []:
+        if isinstance(store, dict):
+            ids.add(str(store.get("store_id") or store.get("id") or "").strip())
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    for store in knowledge.get("stores") or []:
+        if isinstance(store, dict):
+            ids.add(str(store.get("store_id") or store.get("id") or "").strip())
+    return {item for item in ids if item}
+
+
+def _store_name_for_id(state: AgentState, store_id: str) -> str:
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    for source in (
+        context.get("orders") or [],
+        (state.get("customer_store_knowledge") or {}).get("stores") or [],
+    ):
+        for store in source if isinstance(source, list) else []:
+            if not isinstance(store, dict):
+                continue
+            if str(store.get("store_id") or store.get("id") or "") == str(store_id):
+                name = str(store.get("store_name") or store.get("name") or "").strip()
+                if name:
+                    return name
+    return ""
+
+
+def _coerce_deposit_amount(value: Any) -> int | None:
+    try:
+        amount = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return amount if amount in {10, 20, 30, 40} else None
+
+
+def _numeric_amount(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _platform_explicitly_rejected(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if value.get("success") is False or value.get("allowed") is False or value.get("can_create") is False:
+        return True
+    status = str(value.get("status") or value.get("code") or "").strip().lower()
+    return status in {"failed", "failure", "error", "rejected", "forbidden", "false"}
+
+
+def _check_customer_rejected(value: Any) -> bool:
+    if _platform_explicitly_rejected(value):
+        return True
+    if not isinstance(value, dict):
+        return False
+    return value.get("result") in {0, "0", False}
+
+
+def _categories_compatible(expected: str, actual: str) -> bool:
+    unspecified = {"", "0", "none", "null"}
+    expected_value = str(expected or "").strip().lower()
+    actual_value = str(actual or "").strip().lower()
+    return expected_value in unspecified or actual_value in unspecified or expected_value == actual_value
+
+
+def _result_identifier(value: Any, *keys: str) -> str:
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    while pending:
+        current, depth = pending.pop(0)
+        if not isinstance(current, dict):
+            continue
+        for key in keys:
+            if current.get(key) not in (None, ""):
+                return str(current[key])
+        if depth >= 3:
+            continue
+        for nested in current.values():
+            if isinstance(nested, dict):
+                pending.append((nested, depth + 1))
+    return ""
+
+
+def _compact_platform_result(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"value": str(value)[:160]}
+    allowed = ("success", "status", "code", "message", "msg", "allowed", "can_create", "id", "order_id")
+    return {key: value.get(key) for key in allowed if value.get(key) not in (None, "")}
+
+
+def _mask_mobile(value: str) -> str:
+    digits = re.sub(r"\D", "", value)
+    return f"{digits[:3]}****{digits[-4:]}" if len(digits) == 11 else "***"
+
+
 def _filter_invalid_planned_tools(
     required_tools: list[dict[str, Any]],
     state: AgentState,
@@ -189,6 +656,64 @@ def _filter_invalid_planned_tools(
     return filtered
 
 
+def _dedupe_planned_tools(required_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for tool in required_tools:
+        if not isinstance(tool, dict):
+            continue
+        key = _planned_tool_dedupe_key(tool)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(tool)
+    return output
+
+
+def _planned_tool_dedupe_key(tool: dict[str, Any]) -> tuple[Any, ...]:
+    name = str(tool.get("name") or "").strip()
+    purpose = str(tool.get("purpose") or "").strip()
+    if name == "customer_store_lookup":
+        return (
+            name,
+            purpose,
+            str(tool.get("query") or "").strip(),
+            str(tool.get("store_id") or "").strip(),
+            str(tool.get("store_name") or "").strip(),
+        )
+    if name == "distance_calculate":
+        candidate_ids = tool.get("candidate_store_ids")
+        if isinstance(candidate_ids, list):
+            normalized_ids = tuple(str(item or "").strip() for item in candidate_ids)
+        else:
+            normalized_ids = ()
+        return (
+            name,
+            purpose,
+            str(tool.get("origin") or "").strip(),
+            str(tool.get("query") or "").strip(),
+            str(tool.get("candidate_source") or "").strip(),
+            normalized_ids,
+        )
+    if name == "available_time":
+        return (
+            name,
+            purpose,
+            str(tool.get("store_id") or "").strip(),
+            str(tool.get("store_name") or "").strip(),
+            str(tool.get("date") or "").strip(),
+            str(tool.get("target_time") or tool.get("time") or tool.get("appointment_time") or "").strip(),
+        )
+    if name == "kb_search":
+        return (
+            name,
+            purpose,
+            str(tool.get("kb_name") or "").strip(),
+            str(tool.get("query") or "").strip(),
+        )
+    return (name, purpose, str(tool.get("query") or "").strip())
+
+
 def _invalid_tool_policy_by_name(state: AgentState) -> dict[str, dict[str, Any]]:
     output: dict[str, dict[str, Any]] = {}
     violations = state.get("tool_policy_violations") if isinstance(state.get("tool_policy_violations"), list) else []
@@ -207,6 +732,8 @@ def _invalid_tool_policy_by_name(state: AgentState) -> dict[str, dict[str, Any]]
             output["customer_store_lookup"] = item
         if subtype == "professional_assist" and missing == "professional_assist_from_advisory_health_context":
             output["professional_assist"] = item
+        if subtype in {"create_work_order", "add_customer_mobile", "create_order_plan"}:
+            output[subtype] = item
     return output
 
 
@@ -413,17 +940,29 @@ def _planned_tool(required_tools: list[dict[str, Any]], tool_name: str) -> dict[
     return {"name": tool_name}
 
 
+def _explicit_planned_tool(required_tools: list[dict[str, Any]], tool_name: str) -> dict[str, Any]:
+    for item in required_tools:
+        if isinstance(item, dict) and str(item.get("name") or "").strip() == tool_name:
+            return item
+    return {}
+
+
 def _appointment_query_from_planner(required_tools: list[dict[str, Any]], state: AgentState) -> dict[str, Any]:
     tool = _planned_tool(required_tools, "available_time")
     store_id = str(tool.get("store_id") or state.get("confirmed_store_id") or state.get("store_id") or "").strip()
     date = str(tool.get("date") or "").strip()
     store_name = str(tool.get("store_name") or state.get("confirmed_store_name") or state.get("store_name") or "").strip()
+    target_time = str(tool.get("target_time") or tool.get("time") or tool.get("appointment_time") or "").strip()
+    if target_time:
+        target_time = normalize_time_text(target_time) or target_time
+    if not target_time:
+        target_time = normalize_time_text(str(state.get("normalized_content") or state.get("content") or ""))
     missing = []
     if not store_id:
         missing.append("store_id")
     if not date:
         missing.append("date")
-    return {"store_id": store_id, "store_name": store_name, "date": date, "missing": missing}
+    return {"store_id": store_id, "store_name": store_name, "date": date, "target_time": target_time, "missing": missing}
 
 
 async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_client: CozeClient) -> dict[str, Any]:
