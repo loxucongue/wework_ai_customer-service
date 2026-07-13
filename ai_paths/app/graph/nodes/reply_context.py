@@ -627,6 +627,7 @@ def _store_scope_location_hints_for_reply(state: AgentState) -> list[str]:
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
     values = [
         state.get("normalized_content") or state.get("content"),
+        *[str(item or "").strip() for item in (state.get("conversation_history") or [])[-6:]],
         basic.get("province"),
         basic.get("city") or basic.get("current_city"),
         basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),

@@ -696,6 +696,7 @@ def _store_scope_location_hints(
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     values = [
         state.get("normalized_content") or state.get("content"),
+        *[_conversation_item_text(item) for item in (state.get("conversation_history") or [])[-6:]],
         basic.get("province"),
         basic.get("city") or basic.get("current_city"),
         basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),

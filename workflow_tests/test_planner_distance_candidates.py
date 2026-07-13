@@ -265,6 +265,25 @@ class PlannerModelOwnershipTests(unittest.TestCase):
         self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text", "store_address"])
         self.assertFalse(plan["tool_policy_violations"])
 
+    def test_recent_history_city_selects_relevant_region_without_profile_memory(self) -> None:
+        payload = _planner_payload_for_model(
+            {
+                "normalized_content": "不是说集美就有吗，我看广告",
+                "conversation_history": ["用户: 我在厦门集美"],
+                "customer_store_knowledge": {
+                    "store_count": 2,
+                    "stores": [
+                        {"store_id": "227", "store_name": "厦门百星湖里店", "province": "福建省", "city": "厦门市", "district": "湖里区"},
+                        {"store_id": "386", "store_name": "厦门思明店", "province": "福建省", "city": "厦门市", "district": "思明区"},
+                    ],
+                },
+            }
+        )
+
+        summary = payload["store_scope_summary"]
+        self.assertEqual(summary["city_counts"], [{"province": "福建省", "city": "厦门市", "store_count": 2}])
+        self.assertEqual(summary["relevant_regions"][0]["city"], "厦门市")
+
     def test_reply_payload_includes_conversion_psychology_fields(self) -> None:
         payload = reply_user_payload_for_model(
             {
