@@ -284,6 +284,24 @@ class PlannerModelOwnershipTests(unittest.TestCase):
         self.assertEqual(summary["city_counts"], [{"province": "福建省", "city": "厦门市", "store_count": 2}])
         self.assertEqual(summary["relevant_regions"][0]["city"], "厦门市")
 
+    def test_specific_city_hint_does_not_expand_every_city_in_same_province(self) -> None:
+        payload = _planner_payload_for_model(
+            {
+                "normalized_content": "我在厦门集美",
+                "customer_basic_info": {"province": "福建省"},
+                "customer_store_knowledge": {
+                    "stores": [
+                        {"store_id": "227", "store_name": "厦门湖里店", "province": "福建省", "city": "厦门市", "district": "湖里区"},
+                        {"store_id": "128", "store_name": "泉州晋江店", "province": "福建省", "city": "泉州市", "district": "晋江市"},
+                    ]
+                },
+            }
+        )
+
+        summary = payload["store_scope_summary"]
+        self.assertEqual([item["city"] for item in summary["city_counts"]], ["厦门市"])
+        self.assertEqual([item["city"] for item in summary["relevant_regions"]], ["厦门市"])
+
     def test_reply_payload_includes_conversion_psychology_fields(self) -> None:
         payload = reply_user_payload_for_model(
             {

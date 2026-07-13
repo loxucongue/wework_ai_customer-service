@@ -114,20 +114,20 @@ def _relevant_city_summary(
 
 
 def _relevant_city_keys(stores: list[dict[str, Any]], hints: list[str]) -> list[tuple[str, str]]:
-    matches: list[tuple[str, str]] = []
+    specific_matches: list[tuple[str, str]] = []
+    province_matches: list[tuple[str, str]] = []
     for store in stores:
         province = _region_value(store.get("province"), fallback="未识别省份")
         city = _region_value(store.get("city"), fallback="未识别城市")
         district = _region_value(store.get("district"), fallback="未识别区域")
-        if any(
-            _region_matches_hint(value, hint)
-            for value in (province, city, district)
-            for hint in hints
-        ):
-            key = (province, city)
-            if key not in matches:
-                matches.append(key)
-    return matches
+        key = (province, city)
+        if any(_region_matches_hint(value, hint) for value in (city, district) for hint in hints):
+            if key not in specific_matches:
+                specific_matches.append(key)
+            continue
+        if any(_region_matches_hint(province, hint) for hint in hints) and key not in province_matches:
+            province_matches.append(key)
+    return specific_matches or province_matches
 
 
 def _location_hints(values: Iterable[Any]) -> list[str]:
