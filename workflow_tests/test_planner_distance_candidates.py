@@ -187,14 +187,16 @@ class PlannerModelOwnershipTests(unittest.TestCase):
         self.assertEqual(payload["history_events"], [{"event_type": "old"}])
         self.assertEqual(payload["conversation_history"], ["用户: 之前的历史"])
 
-    def test_planner_store_scope_payload_only_contains_province_counts(self) -> None:
+    def test_planner_store_scope_payload_contains_city_district_counts_and_relevant_stores(self) -> None:
         payload = _planner_payload_for_model(
             {
-                "normalized_content": "厦门机场附近哪家近",
+                "normalized_content": "不是说集美就有吗，我看广告",
+                "customer_basic_info": {"city": "厦门市", "area_or_landmark": "集美区"},
                 "customer_store_knowledge": {
-                    "store_count": 2,
+                    "store_count": 3,
                     "stores": [
                         {"store_id": "227", "store_name": "厦门湖里店", "province": "福建省", "city": "厦门市", "district": "湖里区"},
+                        {"store_id": "386", "store_name": "厦门思明店", "province": "福建省", "city": "厦门市", "district": "思明区"},
                         {"store_id": "467", "store_name": "重庆渝中店", "province": "重庆市", "city": "重庆市", "district": "渝中区"},
                     ],
                     "missing_snapshot_store_ids": [],
@@ -204,10 +206,64 @@ class PlannerModelOwnershipTests(unittest.TestCase):
 
         self.assertNotIn("customer_store_knowledge", payload)
         summary = payload["store_scope_summary"]
-        self.assertEqual(summary["store_count"], 2)
-        self.assertEqual(summary["province_counts"], [{"province": "福建省", "store_count": 1}, {"province": "重庆市", "store_count": 1}])
-        self.assertNotIn("regions", summary)
+        self.assertEqual(summary["store_count"], 3)
+        self.assertEqual(summary["province_counts"][0], {"province": "福建省", "store_count": 2})
+        self.assertIn({"province": "福建省", "city": "厦门市", "store_count": 2}, summary["city_counts"])
+        self.assertIn(
+            {"province": "福建省", "city": "厦门市", "district": "湖里区", "store_count": 1},
+            summary["district_counts"],
+        )
+        relevant = summary["relevant_regions"][0]
+        self.assertEqual(relevant["city"], "厦门市")
+        self.assertEqual(relevant["store_count"], 2)
+        self.assertEqual(relevant["exact_area_store_count"], 0)
+        self.assertEqual([item["store_id"] for item in relevant["stores"]], ["227", "386"])
         self.assertNotIn("stores", summary)
+
+    def test_scope_backed_store_card_stays_direct_reply_without_forced_lookup(self) -> None:
+        state = {
+            "normalized_content": "不是说集美就有吗，我看广告",
+            "customer_basic_info": {
+                "city": "厦门市",
+                "area_or_landmark": "集美区",
+                "preferred_store_id": "227",
+                "preferred_store_name": "厦门百星湖里店",
+            },
+            "customer_store_knowledge": {
+                "stores": [
+                    {
+                        "store_id": "227",
+                        "store_name": "厦门百星湖里店",
+                        "province": "福建省",
+                        "city": "厦门市",
+                        "district": "湖里区",
+                    }
+                ]
+            },
+        }
+        plan = build_planner_plan_v2(
+            state,
+            {
+                "decision": "direct_reply",
+                "stage": "S2",
+                "sub_rule_id": "S2_LOCATION_DETAIL",
+                "conversion_stage": "store_match",
+                "customer_type": "distance",
+                "main_blocker": "distance",
+                "next_step": "confirm_store",
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "这个是平台同城展示定位，不代表每个区都有门店哈。厦门这边有真实门店，活动和到店检测服务都是一样的，我先把湖里这家发您看下顺不顺路。"}},
+                    {"type": "store_address", "order": 2, "content": {"store_id": "227"}},
+                ],
+                "tool_calls": [],
+                "handoff": {"needed": False, "reason": ""},
+            },
+        )
+
+        self.assertEqual(plan["planner_decision"], "direct_reply")
+        self.assertEqual(plan["planner_tool_calls"], [])
+        self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text", "store_address"])
+        self.assertFalse(plan["tool_policy_violations"])
 
     def test_reply_payload_includes_conversion_psychology_fields(self) -> None:
         payload = reply_user_payload_for_model(

@@ -65,7 +65,10 @@ PLANNER_SYSTEM_PROMPT = (
   "customer_context": {"appointment": {}, "orders_summary": {}, "confirmed_store": {}},
   "store_scope_summary": {
     "store_count": 216,
-    "province_counts": [{"province": "重庆市", "store_count": 12}]
+    "province_counts": [{"province": "福建省", "store_count": 12}],
+    "city_counts": [{"province": "福建省", "city": "厦门市", "store_count": 2}],
+    "district_counts": [{"province": "福建省", "city": "厦门市", "district": "湖里区", "store_count": 1}],
+    "relevant_regions": [{"province": "福建省", "city": "厦门市", "store_count": 2, "exact_area_store_count": 0, "stores": [{"store_id": "227", "store_name": "厦门百星湖里店", "district": "湖里区"}]}]
   },
   "sent_message_summary": {
     "payment_collection_sent": true,
@@ -120,8 +123,9 @@ sales_talk_qa 当前暂停使用，不允许调用。
 - 如果客户分多轮表达位置，要把上下文合并到 query：例如上一轮“我在厦门”，本轮“机场附近”，query 应输出“厦门市机场”；上一轮“我朋友在重庆”，本轮“渝中这边”，query 应输出“重庆市渝中区”。
 - 如果客户说“刚刚那家/这家/地图发我/位置发我”，且最近上下文已有明确门店名，query 应输出明确门店名，例如“南昌高新店”，不要输出“刚刚那家”。
 - 如果无法从当前消息、最近对话或客户画像判断城市，且客户只说“机场/万达/高铁站”等全国多地重名地标，先 direct_reply 问城市或区域，不要调用 customer_store_lookup 或 distance_calculate。
-- store_scope_summary 的省份数量只是覆盖概览，不能当作客户所在城市或地标上下文；不能因为门店范围里有福建省/重庆市，就把“机场附近”补成“福建省机场/重庆市机场”。
-- 省份覆盖概览只能说明大致范围；具体城市、区域、门店名、地址、停车、营业时间必须先调用 customer_store_lookup。
+- store_scope_summary 的 province_counts/city_counts/district_counts 是该客户可见门店范围的覆盖事实；relevant_regions 是按当前消息和结构化城市/区域提示筛出的同城门店事实。不能因为省份统计里有福建省/重庆市，就把“机场附近”补成“福建省机场/重庆市机场”。
+- relevant_regions 中的城市、区域数量、真实门店名和 store_id 可以直接用于覆盖说明、同城广告定位解释和发送 store_address 卡；门牌地址、停车、营业时间、导航详情仍必须调用 customer_store_lookup。最近/最方便排序仍必须来自 distance_calculate。
+- store_candidate.store_id 如果同时存在于 relevant_regions.stores，说明它既是当前候选又属于客户可见同城真实门店；广告定位质疑场景可以优先用它承接并发送这一个 store_address，但只能说“优先看这家/先发这家看顺不顺路”，不能说“最近/离您很近”。
 - 如果 store_scope_summary.store_scope_error 非空且 store_count=0，表示门店范围接口失败，不代表客户没有门店；不要回答“没有门店”，应先用短过渡或让客户提供城市/区域后继续核对。
 - 如果 store_scope_summary.cache.store_scope_status=stale_on_error，表示本轮使用了该客户最近一次成功的门店范围缓存，可以继续基于工具事实回答，但不要声称这是实时全量范围。
 - 客户问附近、最近、离某地近时，先调用 customer_store_lookup，purpose 填 nearby_candidates。
@@ -835,7 +839,7 @@ PLANNER_SYSTEM_PROMPT = (
 - customer_profile / history_events / customer_context：客户画像、历史事件、订单预约摘要，低于当前轮上下文。
 - current_known_store：高置信当前门店，只能来自 request 显式门店、当前消息真实门店名、真实预约上下文、近轮明确门店或工具事实；如果有数字 store_id，档期工具可以使用它。
 - store_candidate：低置信候选门店，通常来自画像 preferred_store；只能用于 customer_store_lookup 查询或向客户确认，不能直接作为门店详情、地址、档期或预约成功事实。
-- store_scope_summary：该客户范围门店省份数量摘要，不含具体门店详情。
+- store_scope_summary：该客户可见门店范围的省、市、区数量摘要；relevant_regions 还包含与本轮位置事实相关的真实门店名和 store_id，但不包含可编写的地址、停车、营业时间或距离排序。
 - sent_message_summary：payment_collection、store_address、活动图等是否发过，用于控制重复和语气，不代表支付状态。
 - available_tools：当前允许工具；不得返回列表外工具。
 - Planner Rule Packs：scene_catalog、direct_reply_rule_pack、tool_rule_pack、offer_facts、brand_trust_policy、conversion_psychology。
@@ -865,7 +869,7 @@ PLANNER_SYSTEM_PROMPT = (
 - 泛问“你们门店在哪里”且没有城市/区域时，不要机械冷启动。若最近对话、预约/订单上下文、已发门店卡或 current_known_store 里有唯一可信门店锚点，应先按该门店调用 customer_store_lookup 查询详情，回复里发送位置卡，同时问客户是否要换其他城市/区域；只有 store_candidate/preferred_store 或完全没有锚点时，先查询/确认是否还是这家或问城市区域，不能直接把候选当确认门店。
 - 泛问门店且完全没有门店锚点、城市、区域或地标时必须 direct_reply 询问城市/区域；禁止用“门店在哪里/附近门店”作为 customer_store_lookup.query 发起无范围查询。正确示例：`您在哪个城市或区域？我给您匹配门店。`
 - 客户已经给出城市、区域、地标或真实门店名并询问门店/附近/地址/停车/营业时间/导航时，不要再反问城市，必须 need_tools 调 customer_store_lookup。
-- 客户因自媒体广告或平台定位展示质疑“不是说附近/某区有吗”“都有点远”时，不要否认客户，也不要把它当成投诉；这是同城定位误解 + 门店距离顾虑 + 信任顾虑。若 fact_envelope 已有同城 store_facts 或近轮已经发过同城门店事实，优先 direct_reply 用这些事实解释平台同城展示、承接真实门店和活动价值，不重复查门店或距离。只有没有门店事实，或客户明确要求“重新找最近/哪家更近/换一家近点”，才 need_tools 查 customer_store_lookup；需要重新排序时再追加 distance_calculate。
+- 客户因自媒体广告或平台定位展示质疑“不是说附近/某区有吗”“都有点远”时，不要否认客户，也不要把它当成投诉；这是同城定位误解 + 门店距离顾虑 + 信任顾虑。若 fact_envelope 已有同城 store_facts、近轮已经发过同城门店事实，或 store_scope_summary.relevant_regions 已提供同城真实门店，优先 direct_reply：解释平台同城展示不代表每个区都有店，明确同城门店数量和实际覆盖区域，强调活动与到店检测服务一致，并用 relevant_regions 中的真实 store_id 发送合适门店卡。只有没有同城门店事实，或客户明确要求“重新找最近/哪家更近/换一家近点”，才 need_tools 查 customer_store_lookup；需要最近排序时再追加 distance_calculate。
 - 即使 store_scope_summary 或 customer_store_knowledge 暂时为空，只要客户当前消息已有城市、区域、地标或真实门店名，也先调用 customer_store_lookup；工具会返回 no_match、缺客户范围或候选门店，不要由 planner 直接反问已给出的城市。
 - 画像 preferred_store / store_candidate 不能覆盖当前消息里的真实门店，也不能覆盖最近预约/付款任务里的唯一门店；它只能用于 customer_store_lookup 的候选查询或向客户确认。
 - 客户只是问价格、效果、正规、隐形消费或普通顾虑时，不要直接发 payment_collection；先答问题，再轻推到门店、时间或锁名额。
@@ -887,7 +891,14 @@ PLANNER_SYSTEM_PROMPT = (
 - 门店指代：历史唯一门店是“广州白云三店”，客户说“这家地址发我”，应 need_tools 调 customer_store_lookup 查询该门店；不要用画像偏好店覆盖。
 - 门店指代冲突：历史近轮出现多家门店，且最后一轮没有明确唯一选择时，客户说“这家/刚刚那家/那个店”不要擅自选择；先 direct_reply 问客户要哪家，或让客户发城市/区域。
 - 泛问门店：客户说“你们门店在哪里”，如果最近对话、预约、订单或已发门店卡里有唯一可信门店，先查并发送这家位置卡，再问是否换其他城市/区域；如果多门店冲突，问客户要哪家或发城市区域；只有画像偏好时，它只是 store_candidate，先查/确认是否还是这家，不要直接当已确认门店；完全没有锚点时才问城市/区域。
-- 同城广告定位质疑：历史里已经推荐过同城门店，或 fact_envelope 已有同城 store_facts，客户说“广告不是说某区有吗/不是附近吗/都有点远”，应 direct_reply 解释平台同城投放或展示定位，不说广告错误；用已有同城真实门店承接，顺带强调活动和到店检测价值。只有没有可用门店事实，或客户明确要求重新匹配最近门店时，才查 customer_store_lookup / distance_calculate。
+- 同城广告定位质疑：历史里已经推荐过同城门店、fact_envelope 已有同城 store_facts，或 store_scope_summary.relevant_regions 已提供同城门店时，客户说“广告不是说某区有吗/不是附近吗/都有点远”，应 direct_reply 解释平台同城投放或展示定位，不说广告错误；说明同城真实门店数量和覆盖区域，顺带强调活动与到店检测服务一致，并发送合适门店卡。没有 distance_calculate 时只能说“优先看/相对顺一些/先发这家看顺不顺路”，不能说“最近/离您很近”。
+- 同城广告定位 direct_reply 说“我把门店发您/先发这家”时，reply_messages 必须实际包含对应的 store_address；不要只在 text 里承诺发送。通常选择一个与 store_candidate 或最近推荐一致、且确实存在于 relevant_regions.stores 的门店卡，不要同轮连续发送多家门店卡让客户重新做选择。
+- 同城广告定位 direct_reply 要完整覆盖四件事：解释平台同城展示定位、说明该城市真实门店数量和覆盖区域、说明同城门店的活动与到店检测服务一致、最后推荐一个事实门店并实际发送门店卡。不要只解释“该区没有店”后结束，也不要省略价值承接。
+
+### 同城广告定位 direct_reply 示例
+已知：客户在厦门集美；relevant_regions 显示厦门市 2 家，湖里区和思明区各 1 家，集美区 0 家；store_candidate 是 store_id=227 的厦门百星湖里店。
+输出：
+{"decision":"direct_reply","stage":"S2","sub_rule_id":"S2_LOCATION_DETAIL","conversion_stage":"store_match","customer_type":"distance","main_blocker":"distance","next_step":"confirm_store","payment_state":"unknown","payment_action":"none","payment_decision":{"action":"none","party_size":1,"amount":10,"source":"none","confidence":"high","basis":[]},"order_decision":{"action":"none","order_id":"","store_id":"","amount":10,"source":"none","basis":[]},"appointment_decision":{"action":"lookup_store","commitment_level":"none","basis":["同城门店 scope 已提供真实门店"]},"reply_messages":[{"type":"text","order":1,"content":{"text":"这个是平台同城展示定位，不代表每个区都会有门店哈。厦门这边有湖里和思明两家，活动和到店检测服务都是一样的。"}},{"type":"text","order":2,"content":{"text":"您在集美这边可以先看湖里这家，我把门店卡发您看下顺不顺路。"}},{"type":"store_address","order":3,"content":{"store_id":"227"}}],"tool_calls":[],"handoff":{"needed":false,"reason":""}}
 - 同行预约金：客户说“朋友一起可以吗，我想约”，或近轮已确认门店/时间/到店意向后又说“我朋友也一起过去”，应进入 deposit_push；payment_decision={"action":"send_now","party_size":2,"amount":20,"source":"current_message+recent_history","confidence":"high"}；3位30元、4位40元同理，text 金额必须和 payment_collection.amount 一致。不要重复问历史里已有的门店或时间。
 - 已付后下一步：历史里刚发过预约金入口，客户随后说“已经付了/付好了”，本轮问“付完然后呢/人呢”，应输出 payment_decision.action=after_paid_next_step，不能再输出 payment_collection；只承接门店、时间、姓名电话、到店检测或下一步安排，且不能说支付已核实。
 - 健康后续：客户刚提心脏病/严重过敏，本轮继续问“明天下午可以吗”，应先确认到店检测和适配性，保留 human_handoff_notice，不发 payment_collection。
@@ -899,7 +910,7 @@ PLANNER_SYSTEM_PROMPT = (
 - 案例图、具体门店、地址停车营业时间、最近距离、真实档期、预约记录、投诉退款等必须按工具规则包调用工具；没有工具事实不能编。
 - 客户只给省份或全国性模糊范围时，可以基于 store_scope_summary 做概览承接并问城市/区/地标，但不能报具体门店。
 - 客户给出明确城市、区域或地标并问门店/附近/地址/停车/营业时间/导航时，输出 need_tools，调用 customer_store_lookup；不要直回“您想看哪个城市或区域”。
-- 客户基于广告定位质疑附近门店真实性或距离时，如果已有同城门店事实或近轮工具结果，先 direct_reply 承接广告定位误解和门店价值，不重复查工具；如果没有门店事实但能从当前消息或近聊确定城市/区域，输出 need_tools 调 customer_store_lookup；只有客户明确要重新找最近/更近/换一家近点时，才追加 distance_calculate。不要只解释广告定位后停住，要落到真实门店或下一步。
+- 客户基于广告定位质疑附近门店真实性或距离时，如果已有同城门店事实、近轮工具结果或 store_scope_summary.relevant_regions，先 direct_reply 承接广告定位误解和门店价值，不重复查工具；如果 relevant_regions.exact_area_store_count=0，要如实说明平台定位不代表该区一定设店，再落到同城真实门店。只有没有同城事实时才调 customer_store_lookup；客户明确要重新找最近/更近/换一家近点时，才追加 distance_calculate。
 - store_scope_summary.store_count=0 或 customer_store_knowledge.store_count=0 不等于客户没给位置；如果 current_message 已有城市/区域/地标，仍要调用 customer_store_lookup，让工具判断是否有候选或 no_match。
 - 客户问“明天能约吗/今天能去吗/什么时候可以预约/怎么预约”，必须先区分门店事实：有 current_known_store.store_id + 日期时，appointment_decision.action=check_availability 并调用 available_time；只有 store_candidate/preferred_store 时，appointment_decision.action=lookup_store 或 tentative_arrange，先 customer_store_lookup 或保守确认上午/下午，不能说“明天能去/可以约/已安排”；没有门店时问城市、区域或想约哪家门店。
 - 客户只有预约意向但缺门店时，本轮目标是把预约意向落到门店/区域，不要把预约直接等同于查档期。

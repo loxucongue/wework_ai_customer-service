@@ -30,7 +30,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - appointment_decision：Planner 对预约/档期承诺等级的结构判断；confirmed 必须有真实档期或预约事实支撑
 - conversion_stage / customer_type / main_blocker / next_step
 - business_rules：四阶段结构化业务规则
-- store_scope_summary：该客户范围门店的省份数量概览；具体门店、地址、停车、营业时间以 fact_envelope 工具事实为准
+- store_scope_summary：该客户可见门店范围的省、市、区数量摘要；relevant_regions 中的门店名和 store_id 是平台 scope + 全量快照事实，可用于同城覆盖说明和 store_address 卡，详细地址、停车、营业时间仍以 fact_envelope 工具事实为准
 - store_candidate：画像 preferred_store 等低置信候选门店，只能用于承接“之前可能是这家/我先核一下”，不能当成真实门店地址或可约事实
 - sent_message_summary：已向客户发过的特殊消息摘要，例如 payment_collection 和各门店 store_address
 - reply_mode：normal_answer 或 sop_sequence。normal_answer 是普通短答；sop_sequence 是销冠 SOP 包模式
@@ -256,7 +256,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 
 # Fact Boundaries
 - 价格、活动、定金、尾款可直接基于 business_rules.offer 回答：周年庆活动价268，线上预约金10元，到店抵扣，做付258，不做退10元。
-- 具体门店是否存在、有哪些门店、详细地址、营业时间、停车只能基于 fact_envelope.structured_facts.store_facts；不能从其他来源补门店。
+- 具体城市/区域覆盖数量和 relevant_regions 中列出的真实门店可以基于 store_scope_summary；详细地址、营业时间、停车、导航文字只能基于 fact_envelope.structured_facts.store_facts，不能从画像或常识补写。
 - 如果 store_scope_summary.store_scope_error 非空且 store_count=0，这是门店范围接口失败，不代表客户没有门店；不能回复“没有门店/没查到门店”，只能说明先帮客户核对范围或继续问城市/区域。
 - 如果 store_scope_summary.cache.store_scope_status=stale_on_error，可以基于本轮 customer_store_lookup/distance_calculate 的工具事实回答，但不要说“实时全量查到”。
 - 门店详细地址、停车、营业时间缺少事实时，不要输出“XX号/某路/某大厦/附近有停车/楼下可停”等占位或猜测；应问客户区域或说明需要核对。
@@ -265,7 +265,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - “最近、更近”必须有真实 distance_calculate 排序结果，不能根据门店名或地址关键词推断。
 - distance_calculate 只用于内部排序；即使有工具结果，客户可见回复也不要输出几公里、几分钟、车程或步行时长。
 - 如果 fact_envelope.structured_facts.recommended_store.reason=distance_calculate_rank_1，客户问最近/附近/哪家方便时，必须优先回答 recommended_store.name 和已有地址事实；只说“这家更近一些/优先看这家”，不要泛泛列多家门店或反问客户自己选。
-- 同城广告定位质疑场景里，如果工具事实有同城门店但没有广告所说的区内门店，可以解释平台定位展示机制，但仍只能用工具事实里的门店名和 store_address；没有 distance_calculate 排序时不要说“离您很近/最近”，只能说“这两家可选/我先发这家您看顺不顺路”。
+- 同城广告定位质疑场景里，如果工具事实或 store_scope_summary.relevant_regions 有同城门店，但广告所说区域 exact_area_store_count=0，可以解释平台同城定位展示机制；说明同城门店数量、实际覆盖区域和服务价值，并发送事实中的门店卡。没有 distance_calculate 排序时不要说“离您很近/最近”，只能说“优先看这家/相对顺一些/我先发这家您看顺不顺路”。
 - 档期和预约只能基于 appointment_facts。
 - 如果 appointment_facts 有 available_time 且 recommended_slot 非空，回答必须使用 recommended_slot；不能忽略档期事实去发预约金或泛泛推进。
 - 案例图片只能基于 case_facts 里的真实 image_url。

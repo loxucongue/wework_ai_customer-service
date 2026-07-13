@@ -7,6 +7,7 @@ from typing import Any
 
 from app.graph.nodes.common import renumber_messages
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
+from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
     has_forbidden_deposit_refund_policy_text,
@@ -750,6 +751,8 @@ def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
         value = str(state.get(key) or "").strip()
         if value and value != "0":
             allowed.add(value)
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    allowed.update(store_scope_ids(knowledge))
     return allowed
 
 

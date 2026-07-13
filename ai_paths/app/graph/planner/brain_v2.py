@@ -14,6 +14,7 @@ from app.graph.nodes.current_turn_context import (
     current_store_anchor_from_state,
 )
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
+from app.graph.nodes.store_scope_summary import build_store_scope_summary
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
 from app.graph.planner.brain_v2_prompts import (
     PLANNER_REPAIR_PROMPT,
@@ -249,7 +250,10 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "current_turn_context": current_turn_context,
         "turn_evidence": current_turn_context.get("turn_evidence") if isinstance(current_turn_context, dict) else {},
         "risk_hold": risk_hold,
-        "store_scope_summary": _store_scope_summary(state.get("customer_store_knowledge") or {}),
+        "store_scope_summary": build_store_scope_summary(
+            state.get("customer_store_knowledge") or {},
+            location_hints=_store_scope_location_hints(state, current_known_store, store_candidate),
+        ),
         "sent_message_summary": sent_message_summary,
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
@@ -683,32 +687,29 @@ def _compact_image_info(raw: dict[str, Any]) -> dict[str, Any]:
     return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
 
 
-def _store_scope_summary(raw: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(raw, dict) or not raw:
-        return {}
-    stores = raw.get("stores") if isinstance(raw.get("stores"), list) else []
-    return {
-        "source": raw.get("source"),
-        "store_count": raw.get("store_count", len(stores)),
-        "snapshot_generated_at": raw.get("snapshot_generated_at"),
-        "store_scope_error": raw.get("store_scope_error") or raw.get("error") or "",
-        "cache": raw.get("cache") if isinstance(raw.get("cache"), dict) else {},
-        "missing_snapshot_store_ids": raw.get("missing_snapshot_store_ids", []),
-        "province_counts": _province_counts(stores),
-    }
-
-
-def _province_counts(stores: list[Any]) -> list[dict[str, Any]]:
-    counts: dict[str, int] = {}
-    for store in stores:
-        if not isinstance(store, dict):
-            continue
-        province = str(store.get("province") or "").strip() or "未识别省份"
-        counts[province] = counts.get(province, 0) + 1
-    return [
-        {"province": province, "store_count": count}
-        for province, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+def _store_scope_location_hints(
+    state: AgentState,
+    current_known_store: dict[str, Any],
+    store_candidate: dict[str, Any],
+) -> list[str]:
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    values = [
+        state.get("normalized_content") or state.get("content"),
+        basic.get("province"),
+        basic.get("city") or basic.get("current_city"),
+        basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),
+        request_context.get("province"),
+        request_context.get("city"),
+        request_context.get("district") or request_context.get("area_or_landmark"),
+        current_known_store.get("province"),
+        current_known_store.get("city"),
+        current_known_store.get("district"),
+        store_candidate.get("province"),
+        store_candidate.get("city"),
+        store_candidate.get("district"),
     ]
+    return [str(value).strip() for value in values if str(value or "").strip()]
 
 
 def _drop_empty(value: Any) -> Any:

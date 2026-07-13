@@ -7,6 +7,7 @@ from app.graph.nodes.appointment_time_utils import available_time_values, filter
 from app.graph.nodes.contextual_short_message import short_message_context_for_model
 from app.graph.nodes.current_turn_context import build_current_turn_context
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
+from app.graph.nodes.store_scope_summary import build_store_scope_summary
 from app.graph.nodes.memory_usage_policy import (
     memory_usage_policy_for_reply,
 )
@@ -85,7 +86,12 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "transaction_facts": _transaction_facts_for_reply(fact_envelope),
         "store_candidate": _store_candidate_for_reply(state),
         "risk_hold": risk_hold,
-        "store_scope_summary": _sanitize_planner_context_for_reply(_compact_store_knowledge(state.get("customer_store_knowledge") or {})),
+        "store_scope_summary": _sanitize_planner_context_for_reply(
+            build_store_scope_summary(
+                state.get("customer_store_knowledge") or {},
+                location_hints=_store_scope_location_hints_for_reply(state),
+            )
+        ),
         "sent_message_summary": sent_message_summary,
         "reply_mode": reply_mode,
         "sop_progress": sop_progress,
@@ -617,29 +623,13 @@ def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:
     return context
 
 
-def _compact_store_knowledge(raw: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(raw, dict):
-        return {}
-    stores = raw.get("stores") if isinstance(raw.get("stores"), list) else []
-    return {
-        "source": raw.get("source"),
-        "store_count": raw.get("store_count", len(stores)),
-        "snapshot_generated_at": raw.get("snapshot_generated_at"),
-        "store_scope_error": raw.get("store_scope_error") or raw.get("error") or "",
-        "cache": raw.get("cache") if isinstance(raw.get("cache"), dict) else {},
-        "missing_snapshot_store_ids": raw.get("missing_snapshot_store_ids", []),
-        "province_counts": _province_counts(stores),
-    }
-
-
-def _province_counts(stores: list[Any]) -> list[dict[str, Any]]:
-    counts: dict[str, int] = {}
-    for store in stores:
-        if not isinstance(store, dict):
-            continue
-        province = str(store.get("province") or "").strip() or "未识别省份"
-        counts[province] = counts.get(province, 0) + 1
-    return [
-        {"province": province, "store_count": count}
-        for province, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+def _store_scope_location_hints_for_reply(state: AgentState) -> list[str]:
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    values = [
+        state.get("normalized_content") or state.get("content"),
+        basic.get("province"),
+        basic.get("city") or basic.get("current_city"),
+        basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),
+        state.get("confirmed_store_name") or state.get("store_name"),
     ]
+    return [str(value).strip() for value in values if str(value or "").strip()]

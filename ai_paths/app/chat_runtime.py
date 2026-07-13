@@ -317,15 +317,12 @@ class ChatRuntime:
                     self._save_state(conversation_id, final_state)
                     return
                 if not messages:
-                    final_state["async_final_reply"] = {
-                        "scheduled": True,
-                        "status": "skipped",
-                        "reason": "empty_final_reply_messages",
-                    }
-                    _set_async_final_control(final_state, final_state["async_final_reply"])
-                    _append_async_send_trace(final_state, final_state["async_final_reply"])
-                    self._save_state(conversation_id, final_state)
-                    return
+                    messages = _deterministic_final_fallback_messages(final_state)
+                    final_state["reply_messages"] = messages
+                    final_state["reply_source"] = "deterministic_async_empty_reply_fallback"
+                    final_state.setdefault("warnings", []).append(
+                        {"node": "async_final_reply", "message": "empty_final_reply_recovered_before_send"}
+                    )
                 send_result = await self._send_async_reply(request, final_state, messages)
                 send_result["reply_messages"] = messages
                 final_state["async_final_reply"] = send_result
@@ -411,15 +408,12 @@ class ChatRuntime:
                     self._save_state(conversation_id, final_state)
                     return
                 if not messages:
-                    final_state["async_final_reply"] = {
-                        "scheduled": True,
-                        "status": "skipped",
-                        "reason": "empty_full_ai_reply_messages",
-                    }
-                    _set_async_final_control(final_state, final_state["async_final_reply"])
-                    _append_async_send_trace(final_state, final_state["async_final_reply"])
-                    self._save_state(conversation_id, final_state)
-                    return
+                    messages = _deterministic_final_fallback_messages(final_state)
+                    final_state["reply_messages"] = messages
+                    final_state["reply_source"] = "deterministic_async_empty_reply_fallback"
+                    final_state.setdefault("warnings", []).append(
+                        {"node": "sop_gate_async_ai_reply", "message": "empty_full_ai_reply_recovered_before_send"}
+                    )
                 send_result = await self._send_async_reply(request, final_state, messages)
                 send_result["reply_messages"] = messages
                 final_state["async_final_reply"] = send_result

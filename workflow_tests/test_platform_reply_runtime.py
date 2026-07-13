@@ -12,6 +12,7 @@ from app.chat_runtime import ChatRuntime, _planner_sync_reply_messages, _should_
 from app.config import Settings
 from app.schemas import ChatRequest
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
+from app.services.trace_logger import TraceLogger as FileTraceLogger
 from app.services.workflow_compat import workflow_response_from_chat
 
 
@@ -145,6 +146,52 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workflow_body["code"], 0)
         self.assertEqual(workflow_body["data"]["reply_messages"], [])
 
+    async def test_async_finalize_empty_reply_is_recovered_and_sent(self) -> None:
+        repository = _Repository()
+        outreach = _OutreachSendClient()
+        runtime = ChatRuntime(
+            full_graph=_NeedToolsPlannerGraph(),
+            planner_graph=_NeedToolsPlannerGraph(),
+            finalize_graph=_EmptyReplyGraph(),
+            trace_logger=_TraceLogger(),
+            repository=repository,
+            outreach_send_client=outreach,
+        )
+
+        with patch("app.chat_runtime.random.random", return_value=0.2):
+            response = await runtime.run_platform_reply(_request("集美附近门店帮我看下"))
+
+        self.assertEqual(response.reply_messages, [])
+        await asyncio.wait_for(outreach.sent.wait(), timeout=2)
+        self.assertEqual(len(outreach.reply_messages), 1)
+        self.assertEqual(outreach.reply_messages[0]["type"], "text")
+        self.assertIn("继续帮您", str(outreach.reply_messages[0]["content"]))
+        await asyncio.sleep(0)
+        async_states = [state for state in repository.saved_states if state.get("async_final_reply", {}).get("status") == "sent"]
+        self.assertTrue(async_states)
+        self.assertEqual(async_states[-1]["reply_source"], "deterministic_async_empty_reply_fallback")
+
+    async def test_trace_file_preserves_terminal_reply_fields_after_top_level_compaction(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            logger = FileTraceLogger(Settings(log_dir=Path(directory)))
+            state = {f"leading_{index}": index for index in range(30)}
+            state.update(
+                {
+                    "request_id": "trace-terminal-fields",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "已经回复"}}],
+                    "reply_source": "planner_direct_reply",
+                    "reply_control": {"sync_return": {"type": "direct_reply"}},
+                    "trace": [],
+                }
+            )
+
+            path = logger.write_run(state)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["reply_messages"][0]["content"]["text"], "已经回复")
+        self.assertEqual(saved["reply_source"], "planner_direct_reply")
+        self.assertEqual(saved["reply_control"]["sync_return"]["type"], "direct_reply")
+
 
 class _SlowPlannerGraph:
     def __init__(self) -> None:
@@ -184,6 +231,25 @@ class _EmptyReplyGraph:
                 "planner_decision": "direct_reply",
                 "planner_stage": "S1",
                 "planner_sub_rule_id": "S1_EMPTY",
+                "reply_messages": [],
+                "trace": [],
+                "errors": [],
+            }
+        )
+        return output
+
+
+class _NeedToolsPlannerGraph:
+    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        output = dict(state)
+        output.update(
+            {
+                "planner_decision": "need_tools",
+                "planner_stage": "S2",
+                "planner_sub_rule_id": "S2_LOCATION_DETAIL",
+                "planner_reply_messages": [],
+                "planner_tool_calls": [{"name": "customer_store_lookup", "query": "厦门集美", "purpose": "existence"}],
+                "required_tools": [{"name": "customer_store_lookup", "query": "厦门集美", "purpose": "existence"}],
                 "reply_messages": [],
                 "trace": [],
                 "errors": [],
@@ -243,6 +309,17 @@ class _Repository:
 
     def save_run(self, *, conversation_id: str, final_state: dict[str, Any], token_usage: dict[str, Any]) -> None:
         self.saved_states.append(dict(final_state))
+
+
+class _OutreachSendClient:
+    def __init__(self) -> None:
+        self.sent = asyncio.Event()
+        self.reply_messages: list[dict[str, Any]] = []
+
+    async def send_reply_messages(self, **kwargs: Any) -> dict[str, Any]:
+        self.reply_messages = list(kwargs.get("reply_messages") or [])
+        self.sent.set()
+        return {"status": "sent"}
 
 
 def _request(content: str) -> ChatRequest:

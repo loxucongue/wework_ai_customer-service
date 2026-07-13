@@ -15,6 +15,21 @@ RUN_OBSERVABILITY_KEYS = (
     "policy_version",
 )
 
+RUN_TERMINAL_KEYS = (
+    "reply_messages",
+    "reply_source",
+    "reply_control",
+    "async_final_reply",
+    "planner_decision",
+    "planner_stage",
+    "planner_sub_rule_id",
+    "planner_reply_messages",
+    "planner_tool_calls",
+    "tool_policy_violations",
+    "errors",
+    "warnings",
+)
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -77,7 +92,7 @@ class TraceLogger:
         serializable = compact(state, max_chars=50000)
         if isinstance(serializable, dict) and isinstance(state.get("trace"), list):
             serializable["trace"] = [compact(entry, max_chars=20000) for entry in state.get("trace", [])]
-            for key in RUN_OBSERVABILITY_KEYS:
+            for key in (*RUN_OBSERVABILITY_KEYS, *RUN_TERMINAL_KEYS):
                 if key in state:
                     serializable[key] = compact(state.get(key), max_chars=20000)
         path.write_text(json.dumps(serializable, ensure_ascii=False, indent=2), encoding="utf-8")

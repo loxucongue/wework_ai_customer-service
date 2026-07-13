@@ -14,6 +14,7 @@ from app.graph.nodes.current_turn_context import (
     is_context_reference_message,
 )
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
+from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.graph.planner.planner_contract import (
     ALLOWED_CONVERSION_STAGES,
     ALLOWED_CUSTOMER_TYPES,
@@ -2010,6 +2011,12 @@ def _store_detail_tool_violations(
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     )
     current_text = str(state.get("normalized_content") or state.get("content") or "")
+    if (
+        _has_store_address_message(messages)
+        and _store_address_messages_are_scope_backed(messages, state)
+        and not _asserts_store_address_detail(text)
+    ):
+        return []
     if not (
         _has_store_address_message(messages)
         or _direct_text_requires_store_detail_tool(text)
@@ -2052,6 +2059,8 @@ def _store_detail_lookup_tool_from_context(
     )
     current_text = str(state.get("normalized_content") or state.get("content") or "")
     has_store_address_card = _has_store_address_message(messages)
+    if has_store_address_card and _store_address_messages_are_scope_backed(messages, state) and not _asserts_store_address_detail(text):
+        return {}
     if not (has_store_address_card or _direct_text_requires_store_detail_tool(text) or _current_message_requests_store_detail(current_text)):
         return {}
     anchor = current_store_anchor_from_state(
@@ -2075,6 +2084,58 @@ def _store_detail_lookup_tool_from_context(
     if source in {"customer_profile", "profile", "preferred_store"}:
         return {}
     return {"name": "customer_store_lookup", "purpose": "detail", "query": query}
+
+
+def _store_address_messages_are_scope_backed(messages: list[dict[str, Any]], state: AgentState) -> bool:
+    message_ids = {
+        _store_address_id(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
+    }
+    message_ids.discard("")
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    if not message_ids or not message_ids.issubset(store_scope_ids(knowledge)):
+        return False
+    stores = [item for item in knowledge.get("stores") or [] if isinstance(item, dict)]
+    records = {
+        str(item.get("store_id") or item.get("id") or "").strip(): item
+        for item in stores
+        if str(item.get("store_id") or item.get("id") or "").strip()
+    }
+    evidence_text = " ".join(
+        [
+            str(state.get("normalized_content") or state.get("content") or ""),
+            *[_history_item_text(item) for item in (state.get("conversation_history") or [])[-6:]],
+        ]
+    )
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    preferred_store_id = str(basic.get("preferred_store_id") or basic.get("store_id") or "").strip()
+    location_evidence = " ".join(
+        str(value or "").strip()
+        for value in (
+            evidence_text,
+            basic.get("province"),
+            basic.get("city") or basic.get("current_city"),
+            basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),
+            basic.get("preferred_store_name") or basic.get("store_name"),
+        )
+        if str(value or "").strip()
+    )
+    for store_id in message_ids:
+        record = records.get(store_id) or {}
+        if store_id == preferred_store_id:
+            continue
+        if not any(
+            value and _normalize_store_name_for_match(value) in _normalize_store_name_for_match(location_evidence)
+            for value in (
+                str(record.get("store_name") or record.get("name") or "").strip(),
+                str(record.get("province") or "").strip(),
+                str(record.get("city") or "").strip(),
+                str(record.get("district") or "").strip(),
+            )
+        ):
+            return False
+    return True
 
 
 def _distance_tool_violations(required_tools: list[dict[str, Any]]) -> list[dict[str, str]]:
