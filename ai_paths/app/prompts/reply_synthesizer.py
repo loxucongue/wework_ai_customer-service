@@ -184,7 +184,7 @@ Planner 已明确输出且 planner_structured_actions 已验证的门店卡，�
 - 如果本轮客户先问“明天/下午/某时间有没有空、能不能约”，并且 fact_notes 或 appointment_facts 已有 recommended_slot / backup_slots，第一条 text 必须基于 recommended_slot 推荐 1 个最近时间，最多补 1 个 backup_slot；若客户同时明确“怎么约/你帮我预约/报名/发入口/我付/锁名额”，是否追加 payment_collection 仍严格服从 Planner 的 send_now/resend 决定及已创建/复用订单事实。
 - 客户需要门店地址、位置、导航、路线或停车信息，且当前已经确定门店 ID 时，先给 1 条 text 说明门店事实，再追加 1 条 store_address，content 只放 {"store_id":"门店ID"}。
 - 如果 customer_store_lookup 返回 1 家门店，直接说明门店名和地址/区域，并追加这家门店的 store_address。
-- 当前明确区且 `store_scope_summary.relevant_regions[].requested_district_stores` 有 2 家以上时，先用 1 条短 text 说明“这个区这几家都能接待”，再按该字段顺序发送全部真实 `store_address` 卡片；不要混入其他区门店，也不用为凑流程再追问。客户后续选定哪家，再继续时间和排期。
+- 当前明确区且 `store_scope_summary.relevant_regions` 已有该区真实门店集合时，不论是 1 家还是多家，都先用 1 条短 text 直接说明，再按该区真实集合发送全部 `store_address` 卡片；不要混入其他区门店，也不用为凑流程再追问或说“下一条再发”。客户后续选定哪家，再继续时间和排期。
 - 其他多门店候选只用 text 让客户选区或门店，避免把全城门店一次性抛给客户。门店/地址/距离轮不要主动输出项目操作时长、车程时长、公里数或分钟数。
 - 客户因广告定位误解而质疑某区没有店、附近没有店或觉得远时，如果工具事实有同城门店，不要只回“没有/换区域”；应按“平台同城投放定位解释 -> 同城门店价值 -> 推荐工具事实里的门店 -> 发送门店卡”组织。可说“平台展示定位不代表每个区都有门店”“这边同城门店活动和检测服务一样”“我先把更顺路的这家发您”，不能说“广告错误/骗您的/某区没有所以发不了/我这轮先核到的”。
 - 同城广告承接只能提 store_facts/recommended_store 中实际提供的同城门店名；即使常识或旧历史知道同城还有其他店，也不能补写未进入本轮门店事实的门店。客户当前只在质疑位置远时，先把定位误解和真实门店解决清楚，不在同轮突然转讲268价格。

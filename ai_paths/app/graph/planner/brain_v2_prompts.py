@@ -952,7 +952,7 @@ PLANNER_SYSTEM_PROMPT = (
 - 案例图、具体门店、地址停车营业时间、最近距离、真实档期、预约记录、投诉退款等必须按工具规则包调用工具；没有工具事实不能编。
 - 客户只给省份或全国性模糊范围时，可以基于 store_scope_summary 做概览承接并问城市/区/地标，但不能报具体门店。
 - 客户给出明确城市、区域或地标并问门店/附近/地址/停车/营业时间/导航时，输出 need_tools，调用 customer_store_lookup；不要直回“您想看哪个城市或区域”。
-- 但 `store_scope_summary.relevant_regions[].requested_district_stores` 已经给出当前明确区的完整真实集合时，问“这个区有哪些店/都发我”属于 scope 事实直回：`decision=direct_reply`，1 条 text + 全部该区 store_address 卡，`tool_calls=[]`。
+- 当 `store_scope_summary.relevant_regions` 已经给出客户当前明确区的真实门店集合时，问“这个区有哪些店/都发我”属于 scope 事实直回：不论该区是 1 家还是多家，都输出 `decision=direct_reply`、1 条 text + 该区全部 `store_address` 卡，`tool_calls=[]`。不要把已知门店卡延后到“下一条”，也不要反问客户要不要发。
 - 客户基于广告定位质疑附近门店真实性或距离时，如果已有同城门店事实、近轮工具结果或 store_scope_summary.relevant_regions，先 direct_reply 承接广告定位误解和门店价值，不重复查工具；如果 relevant_regions.exact_area_store_count=0，要如实说明平台定位不代表该区一定设店，再落到同城真实门店。只有没有同城事实时才调 customer_store_lookup；客户明确要重新找最近/更近/换一家近点时，才追加 distance_calculate。
 - store_scope_summary.store_count=0 或 customer_store_knowledge.store_count=0 不等于客户没给位置；如果 current_message 已有城市/区域/地标，仍要调用 customer_store_lookup，让工具判断是否有候选或 no_match。
 - 客户问“明天能约吗/今天能去吗/什么时候可以预约/怎么预约”，必须先区分门店事实：有 current_known_store.store_id + 日期时，appointment_decision.action=check_availability 并调用 available_time；只有 store_candidate/preferred_store 时，appointment_decision.action=lookup_store 或 tentative_arrange，先 customer_store_lookup 或保守确认上午/下午，不能说“明天能去/可以约/已安排”；没有门店时问城市、区域或想约哪家门店。
