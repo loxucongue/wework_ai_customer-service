@@ -148,6 +148,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "短确认后的收款动作要像继续聊天",
         "当前仍是未付状态",
         "没有可关联的真实收款订单",
+        "门店已明确时不要再反问“还是这家吗”",
         "主任/总监到店",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
