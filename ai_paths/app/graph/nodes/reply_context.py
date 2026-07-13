@@ -49,6 +49,12 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     current_turn_context = _current_turn_context_for_reply(raw_current_turn_context)
     risk_hold = {} if suppress_profile_memory else health_risk_hold(state)
     reply_mode = str(sop_progress.get("recommended_reply_mode") or "normal_answer").strip() or "normal_answer"
+    store_scope_summary = _sanitize_planner_context_for_reply(
+        build_store_scope_summary(
+            state.get("customer_store_knowledge") or {},
+            location_hints=_store_scope_location_hints_for_reply(state),
+        )
+    )
     return {
         "content": state.get("normalized_content"),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-20:],
@@ -86,11 +92,10 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "transaction_facts": _transaction_facts_for_reply(fact_envelope),
         "store_candidate": _store_candidate_for_reply(state),
         "risk_hold": risk_hold,
-        "store_scope_summary": _sanitize_planner_context_for_reply(
-            build_store_scope_summary(
-                state.get("customer_store_knowledge") or {},
-                location_hints=_store_scope_location_hints_for_reply(state),
-            )
+        "store_scope_summary": store_scope_summary,
+        "planner_structured_actions": _planner_structured_actions_for_reply(
+            state,
+            store_scope_summary=store_scope_summary,
         ),
         "sent_message_summary": sent_message_summary,
         "reply_mode": reply_mode,
@@ -106,6 +111,36 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
             sent_message_summary=sent_message_summary,
         ),
     }
+
+
+def _planner_structured_actions_for_reply(
+    state: AgentState,
+    *,
+    store_scope_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Expose only Planner-approved, scope-backed non-text actions to Reply."""
+    known_store_ids = {
+        str(store.get("store_id") or store.get("id") or "").strip()
+        for region in (store_scope_summary.get("relevant_regions") or [])
+        if isinstance(region, dict)
+        for store in (region.get("stores") or [])
+        if isinstance(store, dict)
+    }
+    actions: list[dict[str, Any]] = []
+    for message in state.get("planner_reply_messages") or []:
+        if not isinstance(message, dict) or str(message.get("type") or "") != "store_address":
+            continue
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        store_id = str(content.get("store_id") or "").strip()
+        if store_id and store_id in known_store_ids:
+            actions.append(
+                {
+                    "type": "store_address",
+                    "content": {"store_id": store_id},
+                    "source": "planner_scope_verified",
+                }
+            )
+    return actions
 
 
 def _current_turn_context_for_reply(value: dict[str, Any]) -> dict[str, Any]:

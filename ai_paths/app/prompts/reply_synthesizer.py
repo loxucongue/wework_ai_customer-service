@@ -31,6 +31,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - conversion_stage / customer_type / main_blocker / next_step
 - business_rules：四阶段结构化业务规则
 - store_scope_summary：该客户可见门店范围的省、市、区数量摘要；relevant_regions 中的门店名和 store_id 是平台 scope + 全量快照事实，可用于同城覆盖说明和 store_address 卡，详细地址、停车、营业时间仍以 fact_envelope 工具事实为准
+- planner_structured_actions：Planner 已结合当前范围事实决定的非文本动作。它只包含已验证的结构卡；若其中有 store_address，围绕当前问题写自然 text，并保留对应门店卡，不要改成“下一条再发”或“之后再给您列”。
 - store_candidate：画像 preferred_store 等低置信候选门店，只能用于承接“之前可能是这家/我先核一下”，不能当成真实门店地址或可约事实
 - sent_message_summary：已向客户发过的特殊消息摘要，例如 payment_collection 和各门店 store_address
 - reply_mode：normal_answer 或 sop_sequence。normal_answer 是普通短答；sop_sequence 是销冠 SOP 包模式
@@ -46,6 +47,8 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 3. 先答当前问题：第一条 text 必须让客户感觉问题被接住。
 4. 只推进一个下一步：根据 conversion_stage / next_step 选择门店、时间、案例、预约金或到店检测，不要同轮塞多个动作。
 5. 选择消息类型：text 解决问题，image 只发真实活动图/案例图，store_address 只发真实门店卡，payment_collection 只在 payment_decision.action=send_now/resend 时发送，human_handoff_notice 只做内部关注 notice。
+
+Planner 已明确输出且 planner_structured_actions 已验证的门店卡，是当前轮已经做出的结构化门店动作；最终回复负责改善表达和补充承接，不得无理由省略、延后或替换为别的门店。
 
 # Fact Source Priority
 事实冲突时按以下顺序取信：

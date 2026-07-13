@@ -619,7 +619,7 @@ def _result_identifier(value: Any, *keys: str) -> str:
 def _compact_platform_result(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {"value": str(value)[:160]}
-    allowed = ("success", "status", "code", "message", "msg", "allowed", "can_create", "id", "order_id")
+    allowed = ("success", "status", "code", "message", "msg", "result", "allowed", "can_create", "id", "order_id")
     return {key: value.get(key) for key in allowed if value.get(key) not in (None, "")}
 
 

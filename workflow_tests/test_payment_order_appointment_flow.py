@@ -563,6 +563,7 @@ def test_check_customer_result_zero_prevents_duplicate_work_order() -> None:
         }))
 
     assert output["tool_results"]["create_work_order"]["status"] == "rejected"
+    assert output["tool_results"]["create_work_order"]["check_customer"] == {"result": 0}
     assert platform.created_work == []
 
 

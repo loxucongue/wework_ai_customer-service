@@ -21,6 +21,7 @@ from app.graph.nodes.reply_nodes import (
     _ensure_required_handoff_notice,
     _maybe_build_required_payment_collection_fallback,
     _normalize_planner_reply_messages,
+    _preserve_planner_store_address_actions,
     _suppress_stale_handoff_notice,
 )
 from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency, validated_model_messages
@@ -34,6 +35,46 @@ from app.services.workflow_compat import workflow_response_from_chat
 def test_contextual_short_message_keeps_planner_history() -> None:
     assert _should_suppress_planner_memory({"normalized_content": "可以"}) is False
     assert _should_suppress_planner_memory({"normalized_content": "人呢"}) is False
+
+
+def test_reply_payload_and_postprocess_preserve_planner_scope_verified_store_card() -> None:
+    state = {
+        "normalized_content": "厦门思明区都有哪些店？",
+        "planner_decision": "direct_reply",
+        "planner_reply_messages": [
+            {"type": "text", "order": 1, "content": {"text": "思明区这边目前有1家门店。"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "12"}},
+        ],
+        "customer_store_knowledge": {
+            "source": "platform_scope",
+            "stores": [
+                {
+                    "store_id": "12",
+                    "store_name": "厦门思明店",
+                    "province": "福建省",
+                    "city": "厦门市",
+                    "district": "思明区",
+                }
+            ],
+        },
+    }
+
+    payload = reply_user_payload_for_model(state)
+    assert payload["planner_structured_actions"] == [
+        {
+            "type": "store_address",
+            "content": {"store_id": "12"},
+            "source": "planner_scope_verified",
+        }
+    ]
+
+    messages, preserved = _preserve_planner_store_address_actions(
+        [{"type": "text", "order": 1, "content": "思明区这边目前有1家门店。"}],
+        state,
+    )
+
+    assert preserved is True
+    assert messages[-1] == {"type": "store_address", "order": 2, "content": {"store_id": "12"}}
 
 
 def test_short_message_context_marks_renne_as_contextual() -> None:

@@ -150,6 +150,14 @@ def create_synthesize_reply_node(
                     model_call["draft_messages"] = debug_message_contents(messages)
                     model_call["output"] = {"messages": len(messages)}
                 messages = _normalize_payment_amount_text_messages(append_activity_intro_image(messages, state, warnings))
+                messages, planner_store_cards_preserved = _preserve_planner_store_address_actions(messages, state)
+                if planner_store_cards_preserved:
+                    warnings.append(
+                        {
+                            "node": "synthesize_reply",
+                            "message": "planner_store_address_action_preserved",
+                        }
+                    )
                 for warning in warnings:
                     if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
                         warning.setdefault("node", "synthesize_reply")
@@ -954,6 +962,40 @@ def _normalize_payment_amount_text_messages(messages: list[dict[str, Any]]) -> l
         else:
             output.append({**item, "content": normalize_payment_amount_text(str(content or ""), amount)})
     return _renumber(output)
+
+
+def _preserve_planner_store_address_actions(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Keep Planner-approved, fact-validated store cards from being lost by Reply."""
+    if str(state.get("planner_decision") or "") != "direct_reply":
+        return messages, False
+    planner_messages = _normalize_planner_reply_messages(state.get("planner_reply_messages"), state=state)
+    planned_cards = [item for item in planner_messages if str(item.get("type") or "") == "store_address"]
+    if not planned_cards:
+        return messages, False
+
+    existing_ids = {
+        _store_id_from_message(item)
+        for item in messages
+        if str(item.get("type") or "") == "store_address"
+    }
+    additions = [item for item in planned_cards if _store_id_from_message(item) and _store_id_from_message(item) not in existing_ids]
+    if not additions:
+        return messages, False
+
+    candidate = _renumber([*messages, *additions])
+    try:
+        validate_reply_consistency(candidate, state)
+    except Exception:
+        return messages, False
+    return candidate, True
+
+
+def _store_id_from_message(message: dict[str, Any]) -> str:
+    content = message.get("content") if isinstance(message.get("content"), dict) else {}
+    return str(content.get("store_id") or "").strip()
 
 
 def _first_payment_collection_amount(messages: list[dict[str, Any]]) -> int:
