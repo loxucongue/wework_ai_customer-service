@@ -64,7 +64,7 @@ Planner 已明确输出且 planner_structured_actions 已验证的门店卡，�
 - text：回答、解释、轻推下一步。普通直回最多 2 条 text。
 - image：只用于真实活动图或真实案例图 URL；不能编图片或用宣传图替代效果图。
 - store_address：只用于已有真实 store_id 的门店卡；文本门店和卡片 store_id 必须一致。
-- payment_collection：只用于 planner payment_decision.action=send_now/resend，且 fact_envelope 已有成功创建或复用的预约金订单；金额按 payment_decision.amount 10/20/30/40，前置 text 金额必须一致。满足这两个事实时必须实际输出 payment_collection，不能因历史发过卡、担心客户嫌催或自行改成纯 text 而二次否决 Planner；发送频率和客户立场已由 Planner 判断。只有本轮存在已付、订单失效或健康/投诉等硬事实冲突时，才按硬事实停止发卡。
+- payment_collection：只用于 planner payment_decision.action=send_now/resend，且 fact_envelope 已有成功创建或复用的预约金订单；金额按 payment_decision.amount 10/20/30/40，前置 text 金额必须一致。满足这两个事实时必须实际输出 payment_collection，不能因历史发过卡、担心客户嫌催或自行改成纯 text 而二次否决 Planner；发送频率和客户立场已由 Planner 判断。工具执行后的订单事实优先于 Planner 的原始付款动作：只有本轮存在已付、订单失效、开单拒绝/失败或健康/投诉等硬事实冲突时，才按硬事实停止发卡并重新组织自然回复。
 - 如果本轮 `create_work_order` 或订单复用事实是 rejected/error/invalid，说明当前没有可关联的真实收款订单：不要发 `payment_collection`，也不要提供转账、收款码或“先付10元”的操作指引。自然说明这家门店的预约入口还在核对，继续承接客户当前确认的门店，不假称已开单或已安排；门店已明确时不要再反问“还是这家吗”。
 - human_handoff_notice：只作为内部关注消息；客户可见 text 必须正面承接，不说转人工/转同事。
 

@@ -98,6 +98,34 @@ class FakeUnavailableAppointmentModelClient:
         }
 
 
+class FakeRejectedOrderRepairModelClient:
+    available = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.retry_messages: list[dict[str, Any]] = []
+
+    async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
+        self.calls += 1
+        if self.calls == 1:
+            return {
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "付款卡我再发您。"}},
+                    {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+                ]
+            }
+        self.retry_messages = messages
+        return {
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "可以的，您先订机票，这边按厦门百星湖里店继续给您核对预约入口。"},
+                }
+            ]
+        }
+
+
 class FakeFinalReplyModelClient:
     available = True
 
@@ -180,6 +208,49 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         retry_info = state["trace"][0]["tool_calls"][0].get("retry")
         self.assertIsInstance(retry_info, dict)
         self.assertIn("Model JSON missing reply_messages", retry_info.get("reason", ""))
+
+    async def test_reply_synth_repairs_payment_card_after_work_order_rejection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = FakeRejectedOrderRepairModelClient()
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=model,
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-order-rejected-repair",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "付款卡再发我一下",
+                "normalized_content": "付款卡再发我一下",
+                "planner_decision": "need_tools",
+                "payment_action": "send_now",
+                "payment_decision": {"action": "send_now", "amount": 10},
+                "order_decision": {"action": "create_work", "store_id": "386"},
+                "current_known_store": {"store_id": "386", "store_name": "厦门百星湖里店"},
+                "fact_envelope": {
+                    "structured_facts": {
+                        "order_facts": [{"type": "work_order", "status": "rejected", "source": "platform_agent.order.check_customer"}],
+                    }
+                },
+                "required_tools": [{"name": "create_work_order", "store_id": "386"}],
+            }
+
+            output = await node(state)
+
+        self.assertEqual(model.calls, 2)
+        self.assertEqual(output["errors"], [])
+        self.assertEqual(output["reply_source"], "main_model")
+        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text"])
+        self.assertIn("当前确认门店", str(model.retry_messages[-1].get("content") or ""))
+        self.assertIn("不要输出 payment_collection", str(model.retry_messages[-1].get("content") or ""))
 
     async def test_reply_synth_uses_handoff_notice_fallback_after_bad_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

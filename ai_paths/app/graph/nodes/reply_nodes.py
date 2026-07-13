@@ -794,6 +794,12 @@ def _compact_text(value: Any) -> str:
 
 
 def _reply_repair_hint(error: str) -> str:
+    if "payment_collection_requires_active_work_order" in error:
+        return (
+            "本轮没有成功创建或复用与当前确认门店匹配的预约金订单，"
+            "工具事实已推翻 Planner 原本的发卡计划。不要输出 payment_collection，也不要写付款卡、收款码、转账或先付预约金的操作说明。"
+            "请只基于当前客户问题和已确认门店，自然说明预约入口仍在核对；不要假称已开单、已安排，也不要重复追问已经确认的门店。"
+        )
     if "payment_collection_blocked_by_health_risk_hold" in error:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_blocked_by_payment_action" in error:
