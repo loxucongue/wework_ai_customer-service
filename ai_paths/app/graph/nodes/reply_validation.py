@@ -1207,7 +1207,6 @@ def _asserts_appointment_confirmed(text: str) -> bool:
             "帮你记上",
             "帮您记上",
             "先记上",
-            "记着",
         )
     )
     if matched:

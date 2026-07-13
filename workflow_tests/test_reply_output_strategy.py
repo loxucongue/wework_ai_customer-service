@@ -2834,6 +2834,16 @@ def test_reply_validation_allows_order_check_text_after_work_order_rejection() -
     )
 
 
+def test_reply_validation_allows_confirmed_store_reference_without_appointment_commitment() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "门店已经按厦门百星湖里店记着了。"}}],
+        {
+            "appointment_decision": {"action": "none", "commitment_level": "none"},
+            "fact_envelope": {"structured_facts": {"appointment_facts": []}},
+        },
+    )
+
+
 def test_reply_validation_rejects_signup_promise_without_active_order() -> None:
     with pytest.raises(ValueError, match="payment_collection_requires_active_work_order"):
         validate_reply_consistency(
