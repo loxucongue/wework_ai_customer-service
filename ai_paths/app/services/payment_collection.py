@@ -19,29 +19,6 @@ DEPOSIT_REFUND_CONTEXT_TERMS = (
 )
 
 
-def has_matching_active_work_order(state: dict[str, Any] | None) -> bool:
-    """Return whether payment-card output has a real matching unpaid work order."""
-
-    if not isinstance(state, dict):
-        return False
-
-    expected_order_id, expected_store_id, expected_amount = _expected_work_order(state)
-    for order in _work_order_facts(state):
-        order_id = _order_identifier(order)
-        if not order_id or not _is_active_unpaid_work_order(order):
-            continue
-        if expected_order_id and order_id != expected_order_id:
-            continue
-        store_id = str(order.get("store_id") or "").strip()
-        if expected_store_id and store_id and store_id != expected_store_id:
-            continue
-        required_amount = _order_prepay_amount(order)
-        if expected_amount and required_amount and required_amount != expected_amount:
-            continue
-        return True
-    return False
-
-
 def payment_collection_content(
     content: Any,
     *,
@@ -180,50 +157,6 @@ def _amount_from_content(content: Any) -> int | None:
         return int(float(str(content.get("amount") or "").strip()))
     except (TypeError, ValueError):
         return None
-
-
-def _expected_work_order(state: dict[str, Any]) -> tuple[str, str, int | None]:
-    order_decision = state.get("order_decision") if isinstance(state.get("order_decision"), dict) else {}
-    payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
-    expected_order_id = str(order_decision.get("order_id") or "").strip()
-    expected_store_id = str(order_decision.get("store_id") or "").strip()
-    expected_amount = _amount_from_payment_decision(state)
-    return expected_order_id, expected_store_id, expected_amount
-
-
-def _work_order_facts(state: dict[str, Any]) -> list[dict[str, Any]]:
-    values: list[dict[str, Any]] = []
-    envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
-    structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
-    values.extend(item for item in (structured.get("order_facts") or []) if isinstance(item, dict))
-    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
-    values.extend(item for item in (context.get("orders") or []) if isinstance(item, dict))
-    return values
-
-
-def _order_identifier(order: dict[str, Any]) -> str:
-    return str(order.get("order_id") or order.get("id") or order.get("order_no") or "").strip()
-
-
-def _is_active_unpaid_work_order(order: dict[str, Any]) -> bool:
-    status = str(order.get("status") or "").strip().lower()
-    if status not in {"created", "reused", "pending", "waiting_schedule", "scheduled"}:
-        return False
-    deposit_state = str(order.get("deposit_state") or "").strip().lower()
-    if deposit_state in {"paid_by_order", "paid_by_screenshot", "deposit_paid"}:
-        return False
-    return not bool(order.get("prepay_paid"))
-
-
-def _order_prepay_amount(order: dict[str, Any]) -> int | None:
-    for key in ("prepay_required", "prepay", "amount"):
-        try:
-            value = int(float(str(order.get(key) or "").strip()))
-        except (TypeError, ValueError):
-            continue
-        if value > 0:
-            return value
-    return None
 
 
 def _amount_from_payment_decision(state: dict[str, Any] | None) -> int | None:

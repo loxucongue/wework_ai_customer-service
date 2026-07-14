@@ -44,11 +44,12 @@ def test_prompt_files_do_not_contain_common_encoding_damage() -> None:
             assert marker not in text, f"{path} contains possible encoding damage: {marker}"
 
 
-def test_transaction_prompts_keep_order_payment_and_appointment_sequence() -> None:
+def test_transaction_prompts_separate_payment_card_from_order_and_keep_appointment_sequence() -> None:
     assert "create_work_order" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "payment_result=success" in PLANNER_TRANSACTION_PATCH_PROMPT
-    assert "没有成功 order_id 时不发卡" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "缺少成功 order_id 或开单失败都不得取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "不要求先确认门店、先有订单或开单成功" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不再让客户补登记" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "本次交易终态" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "感谢和欢迎到店" in PLANNER_TRANSACTION_PATCH_PROMPT
@@ -149,8 +150,8 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "不是必须照抄的客户文案",
         "短确认后的收款动作要像继续聊天",
         "当前仍是未付状态",
-        "没有可关联的真实收款订单",
-        "门店已明确时不要再反问“还是这家吗”",
+        "Reply 不得因为缺门店、缺订单、开单失败",
+        "不得退回去重问城市或门店",
         "主任/总监到店",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT

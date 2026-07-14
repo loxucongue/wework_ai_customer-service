@@ -23,3 +23,10 @@ Both modes are required for reply-quality changes. Single-node tests answer “i
   Prevention rule: 是否避免重复发案例图只能参考 `sent_message_summary.case_image_delivery` 或紧邻对话中的真实图片发送事实；SOP 完成、画像阶段、旧话题和“我给您看案例”文字承诺都不能替代图片证据。
   Fix strategy: 将案例图发送时间和数量作为 evidence 提供给 Planner；无权威近期图片证据的效果疑问由 Planner 调用 `kb_search(case_studies)`，最终 Reply 只使用真实 `case_facts` 输出图片。
   Regression check: 所有 SOP 均已完成但没有近期图片发送证据时，“效果怎么样”必须规划 `kb_search(case_studies)` 并在全链路输出真实 image；上一轮确实刚发图后的评价续问允许不重复查询。
+
+- Phenomenon: 客户明确问“怎么预约/发付款卡”，Planner 已决定 `send_now`，但开单接口拒绝或当前订单门店不匹配后，最终回复只剩文字，没有 `payment_collection`。
+  Root cause: Planner 事务补丁、normalizer 和 Reply 质量门把匹配有效订单或开单成功当成发预约金卡的结构前置，覆盖了模型的成交决策。
+  Trigger condition: `payment_decision.action=send_now/resend`，但 `create_work_order` 返回 rejected/error、缺少 order_id，或只有其他门店的未付订单。
+  Prevention rule: 发卡动作与后台订单闭环必须解耦；订单和门店事实只决定能否声称已开单、是否可继续排客，不得否决 Planner 的 send_now/resend。发送频率由模型结合当天、历史和最近进展判断。
+  Fix strategy: 删除 active-order 发卡校验和订单 violation；事务 prompt 明确 send_now/resend 必须输出 text + payment_collection，开单失败只记录后台事实。
+  Regression check: `work_order.status=rejected/tool_error + payment_decision.action=send_now` 必须保留 10/20/30/40 元卡；已付、当前健康硬风险等安全终态仍不得发卡。

@@ -10,7 +10,6 @@ from app.graph.nodes.contextual_short_message import is_contextual_short_message
 from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
-    has_matching_active_work_order,
     payment_amount_matches_text,
     payment_collection_content,
     payment_collection_context,
@@ -174,7 +173,6 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_payment_not_during_health_risk_hold(messages, state)
     _validate_payment_collection_consistency(messages, state)
     _validate_payment_collection_amount_text(messages, state)
-    _validate_payment_collection_order_fact(messages, state)
     _validate_no_payment_after_current_appointment_created(messages, state)
     _validate_case_image_priority(messages, state)
     _validate_effect_absolute_safety_claims(messages, state)
@@ -303,38 +301,8 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         ):
             raise ValueError("payment_participant_count_confirm_required")
         return
-    if needs_payment and not has_payment and not has_matching_active_work_order(state):
-        if _work_order_unavailable(state):
-            return
-        if _promises_payment_entry(text):
-            raise ValueError("payment_collection_requires_active_work_order")
-        return
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
-
-
-def _validate_payment_collection_order_fact(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    if not any(isinstance(item, dict) and str(item.get("type") or "") == "payment_collection" for item in messages):
-        return
-    if "order_decision" not in state:
-        return
-    if has_matching_active_work_order(state):
-        return
-    raise ValueError("payment_collection_requires_active_work_order")
-
-
-def _work_order_unavailable(state: dict[str, Any]) -> bool:
-    """Return whether this turn's order action conclusively failed before payment."""
-
-    structured = _structured_facts(state)
-    for fact in structured.get("order_facts") or []:
-        if not isinstance(fact, dict):
-            continue
-        if str(fact.get("type") or "").strip().lower() != "work_order":
-            continue
-        if str(fact.get("status") or "").strip().lower() in {"rejected", "error", "invalid", "tool_error"}:
-            return True
-    return False
 
 
 def _paid_deposit_context(state: dict[str, Any]) -> bool:

@@ -2939,17 +2939,39 @@ def test_no_reply_not_allowed_for_current_availability_question() -> None:
     )
 
 
-def test_reply_validation_rejects_payment_promise_without_active_order() -> None:
-    with pytest.raises(ValueError, match="payment_collection_requires_active_work_order"):
+def test_reply_validation_requires_card_for_payment_promise_without_order() -> None:
+    with pytest.raises(ValueError, match="payment_collection_required_when_reply_promises_payment_entry"):
         validate_reply_consistency(
             [{"type": "text", "order": 1, "content": {"text": "好的，我重新发您10元预约金入口"}}],
             {"conversion_stage": "deposit_push", "next_step": "send_deposit"},
         )
 
 
-def test_reply_validation_allows_order_check_text_after_work_order_rejection() -> None:
+def test_reply_validation_still_requires_card_after_work_order_rejection() -> None:
+    with pytest.raises(ValueError, match="payment_collection_required_when_reply_promises_payment_entry"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "这家门店的预约入口还在核对中。"}}],
+            {
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+                "payment_action": "send_now",
+                "payment_decision": {"action": "send_now", "amount": 10},
+                "order_decision": {"action": "create_work", "store_id": "386"},
+                "fact_envelope": {
+                    "structured_facts": {
+                        "order_facts": [{"type": "work_order", "status": "rejected"}],
+                    }
+                }
+            },
+        )
+
+
+def test_reply_validation_allows_card_after_work_order_rejection() -> None:
     validate_reply_consistency(
-        [{"type": "text", "order": 1, "content": {"text": "这家门店的预约入口还在核对中。"}}],
+        [
+            {"type": "text", "order": 1, "content": {"text": "10元小程序收款卡发您了，到店会抵扣。"}},
+            {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+        ],
         {
             "conversion_stage": "deposit_push",
             "next_step": "send_deposit",
@@ -2965,22 +2987,23 @@ def test_reply_validation_allows_order_check_text_after_work_order_rejection() -
     )
 
 
-def test_reply_validation_allows_order_check_text_after_work_order_tool_error() -> None:
-    validate_reply_consistency(
-        [{"type": "text", "order": 1, "content": {"text": "这家门店的预约入口还在核对中。"}}],
-        {
-            "conversion_stage": "deposit_push",
-            "next_step": "send_deposit",
-            "payment_action": "send_now",
-            "payment_decision": {"action": "send_now", "amount": 10},
-            "order_decision": {"action": "create_work", "store_id": "386"},
-            "fact_envelope": {
-                "structured_facts": {
-                    "order_facts": [{"type": "work_order", "status": "tool_error"}],
+def test_reply_validation_still_requires_card_after_work_order_tool_error() -> None:
+    with pytest.raises(ValueError, match="payment_collection_required_when_reply_promises_payment_entry"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "这家门店的预约入口还在核对中。"}}],
+            {
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+                "payment_action": "send_now",
+                "payment_decision": {"action": "send_now", "amount": 10},
+                "order_decision": {"action": "create_work", "store_id": "386"},
+                "fact_envelope": {
+                    "structured_facts": {
+                        "order_facts": [{"type": "work_order", "status": "tool_error"}],
+                    }
                 }
             },
-        },
-    )
+        )
 
 
 def test_reply_validation_allows_confirmed_store_reference_without_appointment_commitment() -> None:
@@ -2993,8 +3016,8 @@ def test_reply_validation_allows_confirmed_store_reference_without_appointment_c
     )
 
 
-def test_reply_validation_rejects_signup_promise_without_active_order() -> None:
-    with pytest.raises(ValueError, match="payment_collection_requires_active_work_order"):
+def test_reply_validation_requires_card_for_signup_promise_without_order() -> None:
+    with pytest.raises(ValueError, match="payment_collection_required_when_reply_promises_payment_entry"):
         validate_reply_consistency(
             [
                 {

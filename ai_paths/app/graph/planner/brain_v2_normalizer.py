@@ -386,12 +386,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             payment_decision=payment_decision,
             messages=planner_reply_messages,
         ),
-        *_payment_order_violations(
-            state=state,
-            payment_decision=payment_decision,
-            order_decision=order_decision,
-            required_tools=required_tools,
-        ),
         *_two_text_rhythm_violations(
             state=state,
             decision=decision,
@@ -1608,38 +1602,6 @@ def _available_appointment_times_for_validation(state: AgentState) -> set[str]:
         if normalized:
             values.add(normalized)
     return values
-
-
-def _payment_order_violations(
-    *,
-    state: AgentState,
-    payment_decision: dict[str, Any],
-    order_decision: dict[str, Any],
-    required_tools: list[dict[str, Any]],
-) -> list[dict[str, str]]:
-    if str(payment_decision.get("action") or "") not in {"send_now", "resend"}:
-        return []
-    if _matching_active_order_for_payment(
-        state,
-        store_id=str(order_decision.get("store_id") or state.get("confirmed_store_id") or ""),
-        amount=_payment_decision_amount(payment_decision),
-    ):
-        return []
-    order_action = str(order_decision.get("action") or "")
-    tool_names = {str(item.get("name") or "") for item in required_tools if isinstance(item, dict)}
-    if order_action == "create_work" and "create_work_order" in tool_names:
-        return []
-    return [
-        {
-            "task_type": "fact_consistency",
-            "subtype": "payment_order",
-            "missing": "work_order_required_before_payment_collection",
-            "note": (
-                "Before sending payment_collection, use an existing active order or set order_decision.action=create_work "
-                "and call create_work_order after the customer confirms a real store. If the store is not confirmed, ask/lookup it first."
-            ),
-        }
-    ]
 
 
 def _has_active_order_id(state: AgentState) -> bool:

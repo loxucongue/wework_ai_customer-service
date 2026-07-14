@@ -7,7 +7,6 @@ from app.graph.nodes.common import model_usage_snapshot
 from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
-    has_matching_active_work_order,
     normalize_payment_amount_text,
     payment_collection_content,
     payment_collection_context,
@@ -499,8 +498,6 @@ def _messages_have_payment_collection(messages: list[dict[str, Any]]) -> bool:
 
 
 def _state_requires_payment_collection(state: AgentState) -> bool:
-    if not has_matching_active_work_order(state):
-        return False
     payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
     decision_action = str(payment_decision.get("action") or "")
     if decision_action in {"send_now", "resend"}:
@@ -794,12 +791,6 @@ def _compact_text(value: Any) -> str:
 
 
 def _reply_repair_hint(error: str) -> str:
-    if "payment_collection_requires_active_work_order" in error:
-        return (
-            "本轮没有成功创建或复用与当前确认门店匹配的预约金订单，"
-            "工具事实已推翻 Planner 原本的发卡计划。不要输出 payment_collection，也不要写付款卡、收款码、转账或先付预约金的操作说明。"
-            "请只基于当前客户问题和已确认门店，自然说明预约入口仍在核对；不要假称已开单、已安排，也不要重复追问已经确认的门店。"
-        )
     if "payment_collection_blocked_by_health_risk_hold" in error:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_blocked_by_payment_action" in error:
