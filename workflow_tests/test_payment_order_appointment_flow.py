@@ -433,6 +433,40 @@ def test_create_work_order_then_exposes_order_fact() -> None:
     assert order_facts[0]["status"] == "created"
 
 
+def test_create_work_order_accepts_shared_current_known_store_fact() -> None:
+    platform = _PlatformClient()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        node = create_execute_actions_node(
+            coze_client=object(),
+            trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+            store_service=None,
+            platform_agent_client=platform,
+            appointment_query_from_state=lambda _content, _store_lookup, _state: {},
+        )
+        state = {
+            **_base_state(),
+            "customer_store_knowledge": {"stores": []},
+            "current_known_store": {
+                "store_id": "12",
+                "store_name": "厦门思明店",
+                "source": "recent_conversation",
+            },
+            "planner_tool_calls": [
+                {
+                    "name": "create_work_order",
+                    "store_id": "12",
+                    "category_id": "10",
+                    "prepay": 10,
+                    "store_confirmation_source": "recent_explicit_choice",
+                }
+            ],
+        }
+        output = asyncio.run(node(state))
+
+    assert output["tool_results"]["create_work_order"]["status"] == "created"
+    assert output["tool_results"]["create_work_order"]["store_id"] == "12"
+
+
 def test_no_tool_does_not_execute_platform_transaction_placeholders() -> None:
     platform = _PlatformClient()
     with tempfile.TemporaryDirectory() as tmpdir:

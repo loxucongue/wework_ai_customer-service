@@ -267,6 +267,7 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.calls, 1)
         self.assertFalse(plan["tool_policy_violations"])
         self.assertEqual(plan["planner_tool_calls"][0]["store_id"], "12")
+        self.assertEqual(plan["current_known_store"]["store_id"], "12")
 
     async def test_planner_timeout_fallback_does_not_emit_handoff_notice(self) -> None:
         class FailingPlannerClient:

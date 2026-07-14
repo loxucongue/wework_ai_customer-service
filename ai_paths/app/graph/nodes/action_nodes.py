@@ -533,6 +533,8 @@ def _known_store_ids(state: AgentState, tool_results: dict[str, Any]) -> set[str
     context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
     appointment = context.get("appointment") if isinstance(context.get("appointment"), dict) else {}
     ids.add(str(appointment.get("store_id") or "").strip())
+    current_known_store = state.get("current_known_store") if isinstance(state.get("current_known_store"), dict) else {}
+    ids.add(str(current_known_store.get("store_id") or current_known_store.get("id") or "").strip())
     lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results.get("customer_store_lookup"), dict) else {}
     for store in lookup.get("stores") or []:
         if isinstance(store, dict):
@@ -545,6 +547,11 @@ def _known_store_ids(state: AgentState, tool_results: dict[str, Any]) -> set[str
 
 
 def _store_name_for_id(state: AgentState, store_id: str) -> str:
+    current_known_store = state.get("current_known_store") if isinstance(state.get("current_known_store"), dict) else {}
+    if str(current_known_store.get("store_id") or current_known_store.get("id") or "") == str(store_id):
+        name = str(current_known_store.get("store_name") or current_known_store.get("name") or "").strip()
+        if name:
+            return name
     context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
     for source in (
         context.get("orders") or [],

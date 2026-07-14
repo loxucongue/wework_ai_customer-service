@@ -70,6 +70,8 @@ class AgentState(TypedDict, total=False):
     registration_state: dict[str, Any]
     appointment_state: dict[str, Any]
     appointment_decision: dict[str, Any]
+    current_known_store: dict[str, Any]
+    store_candidate: dict[str, Any]
     planner_reply_messages: list[dict[str, Any]]
     planner_tool_calls: list[dict[str, Any]]
     reply_constraints: list[str]

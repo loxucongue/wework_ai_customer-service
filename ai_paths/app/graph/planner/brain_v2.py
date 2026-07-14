@@ -153,6 +153,7 @@ async def run_planner_brain_v2(
                 planner_state,
                 reason=f"{initial_error}; timeout_retry_failed={retry_error}",
             )
+            _attach_derived_planner_facts(plan, planner_state)
             model_call = {
                 "name": "planner_brain_v2",
                 "input": {"tier": tier, "messages": initial_messages},
@@ -202,6 +203,7 @@ async def run_planner_brain_v2(
         model_call["initial_error"] = initial_error
     if nested_calls:
         model_call["nested_calls"] = nested_calls
+    _attach_derived_planner_facts(plan, planner_state)
     return plan, model_call
 
 
@@ -215,6 +217,13 @@ def _planner_state_with_derived_facts(state: AgentState) -> AgentState:
     if store_candidate:
         output["store_candidate"] = store_candidate
     return output
+
+
+def _attach_derived_planner_facts(plan: dict[str, Any], planner_state: AgentState) -> None:
+    for key in ("current_known_store", "store_candidate"):
+        value = planner_state.get(key)
+        if isinstance(value, dict) and value:
+            plan[key] = dict(value)
 
 
 def _planner_call_output(plan: dict[str, Any]) -> dict[str, Any]:
