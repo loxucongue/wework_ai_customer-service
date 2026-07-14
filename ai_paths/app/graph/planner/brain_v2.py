@@ -120,13 +120,14 @@ async def run_planner_brain_v2(
     state: AgentState,
     model_client: ModelClient,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    tier = planner_v2_model_tier(state)
-    initial_messages = planner_v2_messages_for_model(state)
+    planner_state = _planner_state_with_derived_facts(state)
+    tier = planner_v2_model_tier(planner_state)
+    initial_messages = planner_v2_messages_for_model(planner_state)
     nested_calls: list[dict[str, Any]] = []
     initial_error = ""
     try:
         payload = await model_client.chat_json(initial_messages, tier=tier, temperature=0.0)
-        plan = build_planner_plan_v2(state, payload)
+        plan = build_planner_plan_v2(planner_state, payload)
         initial_usage = model_usage_snapshot(model_client)
     except Exception as exc:
         initial_error = f"{type(exc).__name__}: {exc}"
@@ -135,11 +136,11 @@ async def run_planner_brain_v2(
             "name": "planner_brain_timeout_retry",
             "input": {"tier": "fast", "previous_error": initial_error},
         }
-        retry_messages = planner_v2_timeout_retry_messages_for_model(state, previous_error=initial_error)
+        retry_messages = planner_v2_timeout_retry_messages_for_model(planner_state, previous_error=initial_error)
         retry_call["input"]["messages"] = retry_messages
         try:
             payload = await model_client.chat_json(retry_messages, tier="fast", temperature=0.0)
-            plan = build_planner_plan_v2(state, payload)
+            plan = build_planner_plan_v2(planner_state, payload)
             retry_call["raw_json_output"] = payload
             retry_call["output"] = _planner_call_output(plan)
             retry_call["usage"] = model_usage_snapshot(model_client)
@@ -149,7 +150,7 @@ async def run_planner_brain_v2(
             retry_call["usage"] = model_usage_snapshot(model_client)
             nested_calls.append(retry_call)
             plan = planner_unavailable_fallback_plan(
-                state,
+                planner_state,
                 reason=f"{initial_error}; timeout_retry_failed={retry_error}",
             )
             model_call = {
@@ -173,13 +174,13 @@ async def run_planner_brain_v2(
         }
         try:
             repair_messages = planner_v2_repair_messages_for_model(
-                state,
+                planner_state,
                 original_plan=plan,
                 violations=violations,
             )
             repair_call["input"]["messages"] = repair_messages
             repaired_payload = await model_client.chat_json(repair_messages, tier=tier, temperature=0.0)
-            repaired_plan = build_planner_plan_v2(state, repaired_payload)
+            repaired_plan = build_planner_plan_v2(planner_state, repaired_payload)
             plan = repaired_plan
             repair_call["raw_json_output"] = repaired_payload
             repair_call["output"] = _planner_call_output(plan)
@@ -202,6 +203,18 @@ async def run_planner_brain_v2(
     if nested_calls:
         model_call["nested_calls"] = nested_calls
     return plan, model_call
+
+
+def _planner_state_with_derived_facts(state: AgentState) -> AgentState:
+    """Share the same authoritative store evidence with the model and normalizer."""
+    output: AgentState = dict(state)
+    current_known_store = _current_known_store_for_planner(state)
+    if current_known_store:
+        output["current_known_store"] = current_known_store
+    store_candidate = _store_candidate_for_planner(state)
+    if store_candidate:
+        output["store_candidate"] = store_candidate
+    return output
 
 
 def _planner_call_output(plan: dict[str, Any]) -> dict[str, Any]:

@@ -2408,6 +2408,30 @@ def test_direct_store_lookup_action_requires_tool_or_verified_store_card() -> No
     )
 
 
+def test_direct_store_lookup_next_step_requires_tool_or_verified_store_card() -> None:
+    plan = build_planner_plan_v2(
+        {"content": "广告不是说集美有吗", "normalized_content": "广告不是说集美有吗"},
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "appointment_decision": {"action": "none", "commitment_level": "none"},
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "这是平台同城展示定位，我先给您看厦门实际门店。"}}
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "store_lookup_action_requires_tool_or_store_card"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_available_time_rejects_scope_only_store_id() -> None:
     plan = build_planner_plan_v2(
         {

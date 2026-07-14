@@ -370,6 +370,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         ),
         *_pending_lookup_reply_violations(
             decision=decision,
+            next_step=next_step,
             appointment_decision=appointment_decision,
             messages=planner_reply_messages,
         ),
@@ -2946,12 +2947,16 @@ def _two_text_rhythm_violations(
 def _pending_lookup_reply_violations(
     *,
     decision: str,
+    next_step: str,
     appointment_decision: dict[str, Any],
     messages: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     if decision != "direct_reply":
         return []
-    if str(appointment_decision.get("action") or "") == "lookup_store" and not any(
+    store_lookup_pending = (
+        str(appointment_decision.get("action") or "") == "lookup_store" or next_step == "lookup_store"
+    )
+    if store_lookup_pending and not any(
         isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages
     ):
         return [
@@ -2960,7 +2965,7 @@ def _pending_lookup_reply_violations(
                 "subtype": "store_lookup_action",
                 "missing": "store_lookup_action_requires_tool_or_store_card",
                 "note": (
-                    "appointment_decision.action=lookup_store cannot end as a direct reply without a verified store card. "
+                    "A planner result that still requires store lookup cannot end as a direct reply without a verified store card. "
                     "Use need_tools + customer_store_lookup when store facts are missing, or include store_address from the "
                     "authoritative store facts and change the appointment action to the actual next step."
                 ),

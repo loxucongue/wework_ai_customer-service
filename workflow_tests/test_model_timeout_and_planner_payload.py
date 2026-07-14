@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
+from datetime import date, timedelta
 from typing import Any
 
 from app.config import Settings
@@ -217,6 +218,55 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text"])
         self.assertEqual(model_call["nested_calls"][0]["name"], "planner_brain_timeout_retry")
         self.assertIn("TimeoutError", model_call.get("initial_error", ""))
+
+    async def test_planner_normalizer_accepts_exact_snapshot_store_from_shared_evidence(self) -> None:
+        target_date = (date.today() + timedelta(days=1)).isoformat()
+
+        class StorePlannerClient:
+            available = True
+
+            def __init__(self) -> None:
+                self.calls = 0
+                self.last_usage: dict[str, Any] = {}
+
+            async def chat_json(
+                self,
+                messages: list[dict[str, Any]],
+                *,
+                tier: str,
+                temperature: float = 0.1,
+            ) -> dict[str, Any]:
+                self.calls += 1
+                return {
+                    "decision": "need_tools",
+                    "stage": "S3",
+                    "sub_rule_id": "S3_APPOINTMENT_TIME",
+                    "conversion_stage": "time_confirm",
+                    "customer_type": "time",
+                    "main_blocker": "time",
+                    "next_step": "confirm_time",
+                    "payment_action": "none",
+                    "payment_decision": {"action": "none", "source": "none"},
+                    "appointment_decision": {"action": "check_availability", "commitment_level": "tentative"},
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "我看下明天下午的时间。"}}],
+                    "tool_calls": [{"name": "available_time", "store_id": "12", "date": target_date}],
+                }
+
+        client = StorePlannerClient()
+        plan, _ = await run_planner_brain_v2(
+            {
+                "normalized_content": "明天下午三点可以吗？",
+                "conversation_history": [
+                    "用户: 我想去厦门思明店。",
+                    "小贝: 好的，厦门思明店可以继续看时间。",
+                ],
+            },
+            client,  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(client.calls, 1)
+        self.assertFalse(plan["tool_policy_violations"])
+        self.assertEqual(plan["planner_tool_calls"][0]["store_id"], "12")
 
     async def test_planner_timeout_fallback_does_not_emit_handoff_notice(self) -> None:
         class FailingPlannerClient:

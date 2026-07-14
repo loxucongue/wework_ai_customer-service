@@ -354,6 +354,7 @@ def test_effect_concern_without_case_tool_remains_a_model_decision() -> None:
     )
     assert not any(item.get("subtype") == "kb_search" for item in plan["tool_policy_violations"])
     assert "近期对话已展示案例" in PLANNER_SYSTEM_PROMPT
+    assert "这是继续消除同一顾虑，不是索要新图" in PLANNER_SYSTEM_PROMPT
 
 
 def test_profile_prompt_downgrades_stale_history_without_dropping_facts() -> None:
