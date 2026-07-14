@@ -115,6 +115,29 @@ class ChatRuntime:
         _append_sop_gate_trace(initial_state, sop_gate)
         if sop_gate.get("send_sop"):
             sop_state = self._sop_reply_state(initial_state, sop_gate)
+            if sop_gate.get("need_ai_reply"):
+                final_state = await self._run_sop_ai_reply_sync(
+                    request=effective_request,
+                    conversation_id=conversation_id,
+                    initial_state=initial_state,
+                    sop_state=sop_state,
+                    control_record=control_record,
+                )
+                return self._persist_and_build_response(
+                    request=request,
+                    request_id=request_id,
+                    conversation_id=conversation_id,
+                    final_state=final_state,
+                    allow_empty_reply=False,
+                )
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            self._schedule_background_profile_update(
+                conversation_id=conversation_id,
+                state=sop_state,
+                background_tasks=background_tasks,
+                reason="sop_gate_sync_reply",
+            )
             response = self._persist_and_build_response(
                 request=request,
                 request_id=request_id,
@@ -122,23 +145,6 @@ class ChatRuntime:
                 final_state=sop_state,
                 allow_empty_reply=True,
             )
-            if sop_gate.get("need_ai_reply"):
-                self._schedule_async_full_ai_and_send(
-                    request=effective_request,
-                    conversation_id=conversation_id,
-                    initial_state=initial_state,
-                    control_record=control_record,
-                    background_tasks=background_tasks,
-                )
-            elif self._platform_reply_coordinator:
-                await self._platform_reply_coordinator.complete(control_record)
-            if not sop_gate.get("need_ai_reply"):
-                self._schedule_background_profile_update(
-                    conversation_id=conversation_id,
-                    state=sop_state,
-                    background_tasks=background_tasks,
-                    reason="sop_gate_sync_reply",
-                )
             return response
         if _sop_gate_terminal_no_reply(sop_gate):
             terminal_state = dict(initial_state)
@@ -186,30 +192,36 @@ class ChatRuntime:
         planner_state["sync_reply_messages"] = sync_messages
         planner_state["reply_source"] = _platform_reply_source(planner_state)
         should_finalize = _should_run_async_finalize(planner_state)
-        planner_state["async_final_reply"] = {
-            "scheduled": should_finalize,
-            "status": "scheduled" if should_finalize else "not_required",
-        }
         _set_sync_return(planner_state, _sync_return_type(planner_state), sync_messages)
-
+        if should_finalize:
+            final_state = await self._run_finalize_sync(
+                request=request,
+                conversation_id=conversation_id,
+                planner_state=planner_state,
+                control_record=control_record,
+            )
+            return self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=final_state,
+                allow_empty_reply=False,
+            )
+        planner_state["async_final_reply"] = {
+            "scheduled": False,
+            "status": "not_required",
+        }
+        _set_async_final_control(planner_state, planner_state["async_final_reply"])
         response = self._persist_and_build_response(
             request=request,
             request_id=request_id,
             conversation_id=conversation_id,
             final_state=planner_state,
-            allow_empty_reply=True,
+            allow_empty_reply=False,
         )
-        if should_finalize:
-            self._schedule_async_finalize_and_send(
-                request=request,
-                conversation_id=conversation_id,
-                planner_state=planner_state,
-                control_record=control_record,
-                background_tasks=background_tasks,
-            )
-        elif self._platform_reply_coordinator:
+        if self._platform_reply_coordinator:
             await self._platform_reply_coordinator.complete(control_record)
-        if not should_finalize and sync_messages:
+        if sync_messages:
             self._schedule_background_profile_update(
                 conversation_id=conversation_id,
                 state=planner_state,
@@ -280,6 +292,150 @@ class ChatRuntime:
             state["reply_control"] = self._platform_reply_coordinator.control_for_superseded(control_record)
         _set_sync_return(state, "empty", [])
         return state
+
+    async def _run_finalize_sync(
+        self,
+        *,
+        request: ChatRequest,
+        conversation_id: str,
+        planner_state: AgentState,
+        control_record: PlatformReplyRecord | None = None,
+    ) -> AgentState:
+        if not self._finalize_graph:
+            planner_state["async_final_reply"] = {"scheduled": False, "status": "skipped", "reason": "finalize_graph_missing"}
+            _set_async_final_control(planner_state, planner_state["async_final_reply"])
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            return planner_state
+
+        final_state: AgentState = dict(planner_state)
+        final_state["trace"] = list(planner_state.get("trace") or [])
+        final_state["errors"] = list(planner_state.get("errors") or [])
+        try:
+            if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                state = self._superseded_state(planner_state, control_record) if control_record else final_state
+                if self._platform_reply_coordinator:
+                    await self._platform_reply_coordinator.complete(control_record)
+                return state
+            final_state = await self._finalize_graph.ainvoke(final_state)
+            _preserve_reply_control(final_state, planner_state)
+            messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
+            if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                state = self._superseded_state(planner_state, control_record) if control_record else final_state
+                if self._platform_reply_coordinator:
+                    await self._platform_reply_coordinator.complete(control_record)
+                return state
+            if not messages:
+                messages = _deterministic_final_fallback_messages(final_state)
+                final_state["reply_messages"] = messages
+                final_state["reply_source"] = "deterministic_sync_empty_reply_fallback"
+                final_state.setdefault("warnings", []).append(
+                    {"node": "sync_final_reply", "message": "empty_final_reply_recovered_before_return"}
+                )
+            result = {
+                "scheduled": False,
+                "status": "completed_sync",
+                "reason": "platform_sync_final_reply",
+                "reply_messages": messages,
+            }
+            final_state["async_final_reply"] = result
+            _set_sync_return(final_state, "final_reply", messages)
+            _set_async_final_control(final_state, result)
+            _append_sync_final_trace(final_state, result)
+            return final_state
+        except Exception as exc:
+            final_state.setdefault("errors", []).append(
+                {"node": "sync_final_reply", "message": "sync_final_reply_failed", "detail": f"{type(exc).__name__}: {exc}"}
+            )
+            recovered = self._handle_graph_exception(final_state, exc)
+            _preserve_reply_control(recovered, final_state)
+            result = {
+                "scheduled": False,
+                "status": "error_recovered_sync",
+                "error": f"{type(exc).__name__}: {exc}",
+                "reply_messages": recovered.get("reply_messages", []),
+            }
+            recovered["async_final_reply"] = result
+            _set_sync_return(recovered, "final_reply", recovered.get("reply_messages", []))
+            _set_async_final_control(recovered, result)
+            _append_sync_final_trace(recovered, result)
+            return recovered
+        finally:
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+
+    async def _run_sop_ai_reply_sync(
+        self,
+        *,
+        request: ChatRequest,
+        conversation_id: str,
+        initial_state: AgentState,
+        sop_state: AgentState,
+        control_record: PlatformReplyRecord | None = None,
+    ) -> AgentState:
+        async_state: AgentState = dict(initial_state)
+        async_state["trace"] = list(initial_state.get("trace") or [])
+        async_state["errors"] = list(initial_state.get("errors") or [])
+        async_context = dict(async_state.get("request_context") if isinstance(async_state.get("request_context"), dict) else {})
+        async_context["skip_sop_gate"] = True
+        async_context["async_origin"] = "sop_gate_ai_reply"
+        async_context["sync_final_mode"] = True
+        async_state["request_context"] = async_context
+        sop_messages = sop_state.get("reply_messages") if isinstance(sop_state.get("reply_messages"), list) else []
+        try:
+            if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                state = self._superseded_state(initial_state, control_record) if control_record else async_state
+                if self._platform_reply_coordinator:
+                    await self._platform_reply_coordinator.complete(control_record)
+                return state
+            final_state: AgentState = await self._full_graph.ainvoke(async_state)
+            _preserve_reply_control(final_state, initial_state)
+            ai_messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
+            if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                state = self._superseded_state(initial_state, control_record) if control_record else final_state
+                if self._platform_reply_coordinator:
+                    await self._platform_reply_coordinator.complete(control_record)
+                return state
+            if not ai_messages:
+                ai_messages = _deterministic_final_fallback_messages(final_state)
+                final_state["reply_source"] = "deterministic_sop_sync_empty_ai_reply_fallback"
+                final_state.setdefault("warnings", []).append(
+                    {"node": "sop_gate_sync_ai_reply", "message": "empty_full_ai_reply_recovered_before_return"}
+                )
+            messages = _merge_reply_message_groups(sop_messages, ai_messages)
+            final_state["reply_messages"] = messages
+            result = {
+                "scheduled": False,
+                "status": "completed_sync",
+                "reason": "sop_gate_ai_reply_returned_with_response",
+                "reply_messages": messages,
+            }
+            final_state["async_final_reply"] = result
+            _set_sync_return(final_state, "sop_reply_with_ai", messages)
+            _set_async_final_control(final_state, result)
+            _append_sync_final_trace(final_state, result)
+            return final_state
+        except Exception as exc:
+            async_state.setdefault("errors", []).append(
+                {"node": "sop_gate_sync_ai_reply", "message": "sop_gate_sync_ai_failed", "detail": f"{type(exc).__name__}: {exc}"}
+            )
+            fallback_messages = _merge_reply_message_groups(sop_messages, _deterministic_final_fallback_messages(async_state))
+            async_state["reply_messages"] = fallback_messages
+            async_state["reply_source"] = "deterministic_sop_sync_exception_fallback"
+            result = {
+                "scheduled": False,
+                "status": "error_recovered_sync",
+                "error": f"{type(exc).__name__}: {exc}",
+                "reply_messages": fallback_messages,
+            }
+            async_state["async_final_reply"] = result
+            _set_sync_return(async_state, "sop_reply_with_ai", fallback_messages)
+            _set_async_final_control(async_state, result)
+            _append_sync_final_trace(async_state, result)
+            return async_state
+        finally:
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
 
     def _schedule_async_finalize_and_send(
         self,
@@ -1059,6 +1215,38 @@ def _append_async_send_trace(state: AgentState, result: dict[str, Any]) -> None:
     entry["finished_at"] = utc_now_iso()
     entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
     state.setdefault("trace", []).append(entry)
+
+
+def _append_sync_final_trace(state: AgentState, result: dict[str, Any]) -> None:
+    started = time.perf_counter()
+    entry = {
+        "node": "sync_final_reply_return",
+        "started_at": utc_now_iso(),
+        "input_snapshot": compact(
+            {
+                "reply_messages": len(state.get("reply_messages") or []),
+                "request_id": state.get("request_id", ""),
+            }
+        ),
+        "tool_calls": [],
+        "error": result.get("error"),
+        "output_snapshot": compact(result),
+    }
+    entry["finished_at"] = utc_now_iso()
+    entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
+    state.setdefault("trace", []).append(entry)
+
+
+def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for group in groups:
+        for message in group:
+            if not isinstance(message, dict):
+                continue
+            copied = dict(message)
+            copied["order"] = len(messages) + 1
+            messages.append(copied)
+    return messages
 
 
 def _record_sent_case_images(

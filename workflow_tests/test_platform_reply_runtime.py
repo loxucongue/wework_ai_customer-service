@@ -147,7 +147,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workflow_body["code"], 0)
         self.assertEqual(len(workflow_body["data"]["reply_messages"]), 1)
 
-    async def test_async_finalize_empty_reply_is_recovered_and_sent(self) -> None:
+    async def test_finalize_empty_reply_is_recovered_and_returned_synchronously(self) -> None:
         repository = _Repository()
         outreach = _OutreachSendClient()
         runtime = ChatRuntime(
@@ -162,15 +162,13 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.chat_runtime.random.random", return_value=0.2):
             response = await runtime.run_platform_reply(_request("集美附近门店帮我看下"))
 
-        self.assertEqual(response.reply_messages, [])
-        await asyncio.wait_for(outreach.sent.wait(), timeout=2)
-        self.assertEqual(len(outreach.reply_messages), 1)
-        self.assertEqual(outreach.reply_messages[0]["type"], "text")
-        self.assertIn("继续帮您", str(outreach.reply_messages[0]["content"]))
-        await asyncio.sleep(0)
-        async_states = [state for state in repository.saved_states if state.get("async_final_reply", {}).get("status") == "sent"]
-        self.assertTrue(async_states)
-        self.assertEqual(async_states[-1]["reply_source"], "deterministic_async_empty_reply_fallback")
+        self.assertEqual(len(response.reply_messages), 1)
+        self.assertEqual(response.reply_messages[0].type, "text")
+        self.assertFalse(outreach.sent.is_set())
+        saved = repository.saved_states[-1]
+        self.assertEqual(saved["async_final_reply"]["status"], "completed_sync")
+        self.assertEqual(saved["reply_control"]["sync_return"]["type"], "final_reply")
+        self.assertEqual(saved["reply_source"], "deterministic_sync_empty_reply_fallback")
 
     async def test_trace_file_preserves_terminal_reply_fields_after_top_level_compaction(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -193,7 +191,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["reply_source"], "planner_direct_reply")
         self.assertEqual(saved["reply_control"]["sync_return"]["type"], "direct_reply")
 
-    async def test_async_finalize_exception_is_recovered_and_sent(self) -> None:
+    async def test_finalize_exception_is_recovered_and_returned_synchronously(self) -> None:
         repository = _Repository()
         outreach = _OutreachSendClient()
         runtime = ChatRuntime(
@@ -208,13 +206,12 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with patch("app.chat_runtime.random.random", return_value=0.2):
             response = await runtime.run_platform_reply(_request("集美附近门店帮我看下"))
 
-        self.assertEqual(response.reply_messages, [])
-        await asyncio.wait_for(outreach.sent.wait(), timeout=2)
-        self.assertEqual(outreach.reply_messages[0]["type"], "text")
-        await asyncio.sleep(0)
-        recovered = [state for state in repository.saved_states if state.get("reply_source") == "deterministic_async_exception_fallback"]
+        self.assertEqual(len(response.reply_messages), 1)
+        self.assertEqual(response.reply_messages[0].type, "text")
+        self.assertFalse(outreach.sent.is_set())
+        recovered = [state for state in repository.saved_states if state.get("reply_source") == "deterministic_runtime_exception_fallback"]
         self.assertTrue(recovered)
-        self.assertEqual(recovered[-1]["async_final_reply"]["status"], "sent")
+        self.assertEqual(recovered[-1]["async_final_reply"]["status"], "error_recovered_sync")
 
 
 class _SlowPlannerGraph:
