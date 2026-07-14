@@ -922,6 +922,68 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("收费与预约金顾虑处理", user_prompt)
         self.assertIn("payment_collection", user_prompt)
 
+    async def test_chat_gate_hands_project_content_doubt_to_ai_instead_of_case_pack(self) -> None:
+        class _CasePackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_need_and_case",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "s10_need_and_case",
+                            "name": "需求与效果承接",
+                            "purpose": (
+                                "客户第一次问斑点、效果或是否能做时，承接需求并准备案例参考。"
+                                "客户追问活动价是否只包含检测/清洁/洗脸、是否真正包含斑点改善时不适用，"
+                                "应交给普通 AI 解释项目内容与费用包含后继续推进。"
+                            ),
+                            "order": 20,
+                            "triggers": ["first_need", "first_effect_question"],
+                            "reply_messages": [
+                                {
+                                    "type": "text",
+                                    "order": 1,
+                                    "content": {"text": "斑点、色沉都可以操作，效果很好的。"},
+                                },
+                                {
+                                    "type": "image",
+                                    "order": 2,
+                                    "content": {"url": "https://test.by4dev.4ba.cn/example-case.png"},
+                                },
+                            ],
+                        }
+                    ]
+                }
+
+        repository = _Repo()
+        model = _PromptCaptureModel(
+            {"send_sop": False, "sop_pack_id": "", "need_ai_reply": True, "reason": "案例包不解释项目内容"}
+        )
+        service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=_CasePackService(),
+            model_client=model,
+        )
+        request = ChatRequest(
+            content="应该只是检测和洗脸，没有去斑的吧",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+            conversation_history=["小贝: 线上预付10到店再付款258共268，明码标价哈亲放心"],
+        )
+
+        result = await service.evaluate_chat_gate(request, request_id="req_project_content_doubt", request_context={})
+
+        self.assertEqual(result["mode"], "no_sop_selected")
+        self.assertTrue(result["need_ai_reply"])
+        system_prompt = model.messages[0]["content"]
+        user_prompt = model.messages[1]["content"]
+        self.assertIn("是否只是检测/清洁/洗脸", system_prompt)
+        self.assertIn("检测清洁是前置步骤、不是全部项目", system_prompt)
+        self.assertIn("s10_need_and_case", user_prompt)
+        self.assertIn("不适用", user_prompt)
+
     def test_objection_resolution_pack_metadata_excludes_effect_objection(self) -> None:
         import json
 

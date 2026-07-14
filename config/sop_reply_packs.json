@@ -53,7 +53,7 @@
       "scope": "chat_gate",
       "sop_category": "s10_need_and_case",
       "name": "需求与效果承接",
-      "purpose": "客户第一次问斑点、效果或是否能做时，承接需求并准备案例参考。",
+      "purpose": "客户第一次问斑点、效果或是否能做时，承接需求并准备案例参考。客户追问活动价是否只包含检测/清洁/洗脸、是否真正包含斑点改善时不适用，应交给普通 AI 解释项目内容与费用包含后继续推进。",
       "order": 20,
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",

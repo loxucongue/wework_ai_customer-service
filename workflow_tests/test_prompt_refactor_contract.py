@@ -208,6 +208,27 @@ def test_sop_gate_hands_location_slot_completion_to_ai() -> None:
         assert marker in source
 
 
+def test_sop_gate_does_not_use_case_pack_for_project_content_or_cleaning_doubt() -> None:
+    source = (ROOT / "ai_paths/app/services/sop_execution_service.py").read_text(encoding="utf-8")
+    for marker in [
+        "项目内容、费用包含",
+        "是否只是检测/清洁/洗脸",
+        "真正包含斑点改善",
+        "泛效果案例包不能覆盖",
+        "检测清洁是前置步骤、不是全部项目",
+        "客户问“应该只是检测和洗脸，没有去斑吧？”",
+    ]:
+        assert marker in source
+
+    import json
+
+    payload = json.loads((ROOT / "config/sop_reply_packs.json").read_text(encoding="utf-8"))
+    pack = next(item for item in payload["packs"] if item["id"] == "s10_need_and_case")
+    assert "检测/清洁/洗脸" in pack["purpose"]
+    assert "项目内容与费用包含" in pack["purpose"]
+    assert "不适用" in pack["purpose"]
+
+
 def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> None:
     import json
 
