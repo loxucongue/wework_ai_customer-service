@@ -332,7 +332,7 @@ def _work_order_unavailable(state: dict[str, Any]) -> bool:
             continue
         if str(fact.get("type") or "").strip().lower() != "work_order":
             continue
-        if str(fact.get("status") or "").strip().lower() in {"rejected", "error", "invalid"}:
+        if str(fact.get("status") or "").strip().lower() in {"rejected", "error", "invalid", "tool_error"}:
             return True
     return False
 

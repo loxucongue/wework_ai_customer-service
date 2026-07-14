@@ -2938,6 +2938,24 @@ def test_reply_validation_allows_order_check_text_after_work_order_rejection() -
     )
 
 
+def test_reply_validation_allows_order_check_text_after_work_order_tool_error() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "这家门店的预约入口还在核对中。"}}],
+        {
+            "conversion_stage": "deposit_push",
+            "next_step": "send_deposit",
+            "payment_action": "send_now",
+            "payment_decision": {"action": "send_now", "amount": 10},
+            "order_decision": {"action": "create_work", "store_id": "386"},
+            "fact_envelope": {
+                "structured_facts": {
+                    "order_facts": [{"type": "work_order", "status": "tool_error"}],
+                }
+            },
+        },
+    )
+
+
 def test_reply_validation_allows_confirmed_store_reference_without_appointment_commitment() -> None:
     validate_reply_consistency(
         [{"type": "text", "order": 1, "content": {"text": "门店已经按厦门百星湖里店记着了。"}}],
