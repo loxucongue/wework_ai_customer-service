@@ -4558,8 +4558,6 @@ def test_planner_preserves_model_owned_sales_progression_without_business_templa
         item.get("missing") == "sales_progression_required"
         for item in plan["tool_policy_violations"]
     )
-
-
 def test_planner_keeps_store_card_backed_by_current_fact_envelope() -> None:
     plan = build_planner_plan_v2(
         {
