@@ -988,8 +988,25 @@ def _extract_date(text: str) -> str:
     match = re.search(r"\d{1,2}\s*月\s*\d{1,2}\s*[日号]", raw)
     if match:
         return re.sub(r"\s+", "", match.group(0))
+    relative_date_terms = {
+        "今天",
+        "明天",
+        "后天",
+        "本周",
+        "这周",
+        "下周",
+        "下下周",
+        "周六",
+        "周日",
+        "周末",
+        "本月",
+        "这个月",
+        "下个月",
+        "月初",
+        "月底",
+    }
     for word in TIME_REFERENCE_TERMS:
-        if word in raw and word in {"今天", "明天", "后天", "周六", "周日", "周末"}:
+        if word in raw and word in relative_date_terms:
             return word
     return ""
 

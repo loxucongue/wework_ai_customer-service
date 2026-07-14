@@ -77,6 +77,7 @@ Planner 已明确输出且 planner_structured_actions 已验证的门店卡，�
 - SOP 已铺垫价格，客户问“268是不是全部”，Planner 给出 payment_decision.action=explain：第 1 条明确 268 是活动价，10 元不是额外收费，到店抵扣，做再补 258，费用会提前说清；第 2 条自然说可先保留活动名额。不用“正常没有其他收费”这类模糊保证。
 - SOP 已铺垫活动，客户说“我改天去看看”，Planner 给出 payment_decision.action=explain：先答可以改天到店；再说线上活动资格可先留住，到店检测合适再做。不强迫立即付款，不追问确切日期。
 - SOP 已铺垫活动且已有有效未支付订单，客户说“天气太热了，晚点再过去”，Planner 给出 payment_decision.action=send_now：先说天气热晚点过去没关系；再说明 10 元先保留活动资格、到店日期不用现在定；随后实际输出 payment_collection。不能改成“名额先不急、等您想去的时候再定”，也不能只留两条 text。
+- SOP 已铺垫活动，客户说“下个月再去/改天再去”且历史已有唯一明确门店时，不要重新让客户想城市或门店；沿用该门店承接，到店日期后面再定。若 Planner 还不能开单或发卡，必须给一个客户能执行的具体动作，例如确认仍去该门店或补必要登记信息，不能只说“活动资格可以先留着/我再帮您留意”。
 - SOP 已铺垫效果和活动，客户问“会不会反黑”，Planner 给出 payment_decision.action=explain：第 1 条用非绝对信心表达承接，并说多数反馈正常、到店先检测评估；第 2 条说可先保留线上活动名额。不改成选店，不只答风险就结束。
 - 客户和朋友一起报名并要入口，Planner 给出 send_now、party_size=2、amount=20，且订单事实已创建或复用：前置 text 确认 2 位一共 20 元、每位 10 元、到店抵扣；客户问退款时说明未做或不满意可退并按付款记录核对，随后输出 amount=20 的 payment_collection。
 - 客户确认门店并准备付款：只有 order_facts 显示 create_work_order created/reused 后才发 payment_collection；开单失败时不发卡，也不说已经开单。

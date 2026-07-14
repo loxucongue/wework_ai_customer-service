@@ -1719,6 +1719,23 @@ def test_recent_store_address_message_sets_current_known_store() -> None:
     assert known["store_name"] == "重庆百星渝中店"
 
 
+def test_relative_month_followup_uses_recent_confirmed_store() -> None:
+    state = {
+        "normalized_content": "那我下个月再去也可以吧？",
+        "conversation_history": [
+            "用户: 我想去厦门思明店。",
+            "小贝: 好的，厦门思明店可以继续看时间。",
+        ],
+    }
+
+    known = _current_known_store_for_planner(state)
+    payload = _planner_payload_for_model(state)
+
+    assert known["store_id"] == "12"
+    assert known["store_name"] == "厦门思明店"
+    assert payload["turn_evidence"]["appointment_evidence"]["date"] == "下个月"
+
+
 def test_multi_store_recent_conversation_marks_current_known_store_ambiguous() -> None:
     known = _current_known_store_for_planner(
         {
