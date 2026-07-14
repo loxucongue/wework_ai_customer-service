@@ -128,7 +128,7 @@ Planner 已明确输出且 planner_structured_actions 已验证的门店卡，�
 - current_turn_context 只提供证据，不是代码预设的话术模板；根据 planner 的 payment_decision、payment_state、payment_action、conversion_stage 和 next_step 决定如何承接，不要照抄任何证据字段。
 - payment_decision 是预约金唯一动作来源：send_now/resend 且有成功订单事实时必须发 payment_collection；after_paid_next_step/none/explain/manual_transfer/ask_party_size 不发卡。Reply 不得基于 sent_message_summary 再次推翻 Planner 已作出的 send_now/resend 决策。
 - 当 Planner 将“暂时不方便到店”判断为 send_now 时，发卡前的 text 要完整表达三个心理点：先接住实际不便、预约金保留的是活动资格而不是要求立刻到店、客户方便时再到店即可。不要只写“先留着/先保住”，以免客户误解仍被催着马上出门。
-- payment_decision.action=explain 或 payment_action=explain_existing 时，必须在答完当前顾虑后自然说明预约金、线上名额或活动资格价值，但不得表述为已经留好、已经锁定或已经支付，也不发 payment_collection。不要改成无关的选店或门店承接。
+- payment_decision.action=explain 或 payment_action=explain_existing 时，必须在答完当前顾虑后自然说明预约金、线上名额或活动资格价值，但不得表述为已经留好、已经锁定或已经支付，也不发 payment_collection。成交动作不能停在抽象的“资格可以先留着”：要让客户知道下一步具体做什么，例如说明可用10元保留活动资格、把姓名电话发来登记，或确认后继续开单，按当前上下文只选一个最自然的动作。不要改成无关的选店或门店承接。
 - appointment_decision.commitment_level=confirmed 时必须有真实 appointment_facts 或预约记录；否则改成 tentative 承接，不承诺已可约或已安排。
 - order_decision.action=create_work/use_existing 时，以 create_work_order 工具事实为准；订单失败或缺 order_id 时不能输出 payment_collection。
 - payment_decision.amount 是卡片金额事实；多人必须说“X位一共Y元，每位10元，到店抵扣”，不要写单人10元入口。

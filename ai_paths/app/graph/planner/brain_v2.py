@@ -29,6 +29,7 @@ from app.policies.business_rules import planner_business_rules_prompt_section
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.model_client import ModelClient
 from app.services.risk_hold import HEALTH_RISK_TERMS, health_risk_hold
+from app.services.store_snapshot_service import store_snapshot_rows
 
 PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 你是企业微信线上活动接待的应急 planner。上一轮完整 planner 超时，本轮只用精简事实输出合法 JSON。
@@ -419,6 +420,11 @@ def _stores_matching_text_for_planner(state: AgentState, text: str) -> list[dict
 def _known_store_candidates_for_planner(state: AgentState) -> list[dict[str, Any]]:
     candidates = list(_customer_scope_stores_for_planner(state))
     seen_names = {_store_name_for_planner(store) for store in candidates if _store_name_for_planner(store)}
+    for store in store_snapshot_rows():
+        name = _store_name_for_planner(store)
+        if name and name not in seen_names:
+            candidates.append(store)
+            seen_names.add(name)
     for name in KNOWN_STORE_NAMES:
         if name and name not in seen_names:
             candidates.append({"store_name": name})

@@ -11,6 +11,7 @@ from app.graph.nodes.turn_evidence_payment import build_payment_turn_evidence
 from app.graph.nodes.turn_evidence_risk import build_risk_evidence
 from app.graph.nodes.turn_evidence_store import build_store_evidence
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
+from app.services.store_snapshot_service import store_snapshot_rows
 from app.policies.constants import (
     KNOWN_STORE_NAMES,
     STORE_CONTEXT_FACT_TERMS,
@@ -355,6 +356,8 @@ def can_use_contextual_store_for_message(content: str, state: dict[str, Any]) ->
     if is_contextual_short_message(text) and _recent_history_has_context_task(state):
         return True
     if is_context_reference_message(text):
+        return True
+    if _appointment_from_current_message(text) and _recent_history_has_context_task(state):
         return True
     if any(term in text for term in ("预约", "改约", "取消", "档期", "已约", "约过", "预约记录")):
         return True
@@ -842,6 +845,11 @@ def _store_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
     if name and name not in seen:
         stores.append({"store_name": name, "store_id": basic.get("confirmed_store_id")})
         seen.add(name)
+    for store in store_snapshot_rows():
+        name = _store_name(store)
+        if name and name not in seen:
+            stores.append(store)
+            seen.add(name)
     for name in KNOWN_STORE_NAMES:
         if name and name not in seen:
             stores.append({"store_name": name})

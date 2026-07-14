@@ -565,8 +565,12 @@ def _validate_appointment_time_option_count(messages: list[dict[str, Any]], stat
 
 
 def _validate_appointment_confirmation_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    text = _combined_text(messages)
-    if not text or not _asserts_appointment_confirmed(text):
+    text_items = [
+        message_content_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    ]
+    if not any(text and _asserts_appointment_confirmed(text) for text in text_items):
         return
     appointment_decision = state.get("appointment_decision") if isinstance(state.get("appointment_decision"), dict) else {}
     if str(appointment_decision.get("action") or "") in {
@@ -1186,6 +1190,7 @@ def _available_time_fact_supports_availability(item: dict[str, Any]) -> bool:
 
 def _asserts_appointment_confirmed(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
+    time_token = r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}(?:[:：]\d{2}|点(?:半)?))"
     matched = any(
         term in compact
         for term in (
@@ -1197,19 +1202,14 @@ def _asserts_appointment_confirmed(text: str) -> bool:
             "安排好了",
             "预约好了",
             "准时等您",
-            "先留着",
-            "帮你留着",
-            "帮您留着",
-            "给你留着",
-            "给您留着",
-            "留好",
-            "预留",
-            "帮你记上",
-            "帮您记上",
-            "先记上",
         )
     )
     if matched:
+        return True
+    hold_terms = ("先留着", "帮你留着", "帮您留着", "给你留着", "给您留着", "留好", "预留", "帮你记上", "帮您记上", "先记上")
+    if any(term in compact for term in hold_terms) and (
+        re.search(time_token, compact) or any(term in compact for term in ("时段", "档期", "到店时间"))
+    ):
         return True
     if re.search(r"(?:给|帮)?[你您]?.{0,4}改到.{0,10}(?:了|安排好)", compact):
         return True
@@ -1217,7 +1217,6 @@ def _asserts_appointment_confirmed(text: str) -> bool:
         term in compact for term in ("确认后", "您确认", "你确认", "要改吗", "是否改", "可以帮")
     ):
         return True
-    time_token = r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}(?:[:：]\d{2}|点(?:半)?))"
     change_match = re.search(rf"(?:改|调|换)(?:成|到)?{time_token}", compact)
     if change_match and any(term in compact for term in ("可以", "好的", "行", "到店", "过来", "就行", "没问题")):
         local_context = compact[max(0, change_match.start() - 6) : change_match.end() + 6]
@@ -1226,7 +1225,7 @@ def _asserts_appointment_confirmed(text: str) -> bool:
     if re.search(rf"按{time_token}(?:到店|过来|来店|来就行)", compact):
         return True
     if "安排" in compact and not any(term in compact for term in ("适合再安排", "确认适合再安排", "检测评估", "皮肤状态")):
-        if re.search(r"按.{0,12}安排", compact) or re.search(r"帮[你您]按.{0,12}安排", compact):
+        if re.search(r"(?:我)?(?:帮|给)[你您]?.{0,4}按.{0,12}安排", compact):
             return True
     if re.search(rf"(?:能帮[你您]?|可以帮[你您]?|帮[你您]?|给[你您]?).{{0,4}}留(?:下|住)?{time_token}", compact):
         return True

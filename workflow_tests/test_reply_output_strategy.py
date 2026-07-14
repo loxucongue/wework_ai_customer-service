@@ -37,6 +37,22 @@ def test_contextual_short_message_keeps_planner_history() -> None:
     assert _should_suppress_planner_memory({"normalized_content": "人呢"}) is False
 
 
+def test_recent_exact_snapshot_store_name_hydrates_store_id_for_appointment_turn() -> None:
+    store = _current_known_store_for_planner(
+        {
+            "normalized_content": "明天下午三点可以吗？",
+            "conversation_history": [
+                "用户: 我想去厦门思明店。",
+                "小贝: 好的，厦门思明店可以继续看时间。",
+            ],
+        }
+    )
+
+    assert store["store_id"] == "12"
+    assert store["store_name"] == "厦门思明店"
+    assert store["source"] == "recent_conversation"
+
+
 def test_reply_payload_and_postprocess_preserve_planner_scope_verified_store_card() -> None:
     state = {
         "normalized_content": "厦门思明区都有哪些店？",
@@ -2345,6 +2361,53 @@ def test_nearby_store_lookup_with_distance_calculate_passes_distance_policy() ->
     assert not any(item.get("missing") == "distance_calculate_required" for item in plan["tool_policy_violations"])
 
 
+def test_distance_calculate_rejects_bare_city_origin() -> None:
+    plan = build_planner_plan_v2(
+        {"content": "厦门哪家方便", "normalized_content": "厦门哪家方便"},
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "tool_calls": [
+                {"name": "customer_store_lookup", "query": "厦门"},
+                {"name": "distance_calculate", "origin": "厦门", "candidate_source": "customer_store_lookup"},
+            ],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "distance_origin_too_broad_for_ranking"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_direct_store_lookup_action_requires_tool_or_verified_store_card() -> None:
+    plan = build_planner_plan_v2(
+        {"content": "广告不是说集美有吗", "normalized_content": "广告不是说集美有吗"},
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "appointment_decision": {"action": "lookup_store", "commitment_level": "none"},
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "这是平台同城展示定位，我先给您看厦门实际门店。"}}
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "store_lookup_action_requires_tool_or_store_card"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_available_time_rejects_scope_only_store_id() -> None:
     plan = build_planner_plan_v2(
         {
@@ -3800,6 +3863,19 @@ def test_reply_validation_rejects_confirmed_appointment_without_fact() -> None:
             [{"type": "text", "order": 1, "content": {"text": "已为您锁定西安南门店，明天9:30准时等您。"}}],
             {"fact_envelope": {"structured_facts": {"appointment_facts": []}}},
         )
+
+
+def test_reply_validation_allows_flexible_future_visit_without_confirming_a_slot() -> None:
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": {"text": "可以的，下个月去也行，到店时间按您方便安排。"}},
+            {"type": "text", "order": 2, "content": {"text": "活动资格可以先留着，等您方便时再定门店时间。"}},
+        ],
+        {
+            "appointment_decision": {"action": "tentative_arrange", "commitment_level": "tentative"},
+            "fact_envelope": {"structured_facts": {"appointment_facts": []}},
+        },
+    )
 
 
 def test_reply_validation_rejects_new_time_confirmation_based_only_on_old_appointment() -> None:

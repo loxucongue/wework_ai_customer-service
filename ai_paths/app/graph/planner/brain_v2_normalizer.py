@@ -36,6 +36,7 @@ from app.services.risk_hold import HEALTH_RISK_TERMS, explicit_professional_assi
 
 _STORE_SNAPSHOT_NAME_CACHE: list[str] | None = None
 _STORE_SNAPSHOT_REGION_TOKEN_CACHE: set[str] | None = None
+_STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE: set[str] | None = None
 ALLOWED_PAYMENT_STATES = (
     "unknown",
     "link_sent",
@@ -324,14 +325,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         *normalizer_policy_violations,
         *_rejected_tool_violations(model_payload.get("tool_calls") if isinstance(model_payload, dict) else []),
         *_tool_policy_violations(required_tools, state),
-        *_case_studies_tool_violations(
-            state=state,
-            decision=decision,
-            required_tools=required_tools,
-            customer_type=customer_type,
-            main_blocker=main_blocker,
-            sub_rule_id=sub_rule_id,
-        ),
         *_store_detail_tool_violations(
             decision=decision,
             messages=planner_reply_messages,
@@ -1026,6 +1019,19 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
             origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or "").strip()
             if not _location_query_has_scope_region(origin, state):
                 violations.append(_ambiguous_location_tool_violation("distance_calculate"))
+            elif _distance_origin_is_broad_region_only(origin, state):
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "distance_calculate",
+                        "missing": "distance_origin_too_broad_for_ranking",
+                        "note": (
+                            "distance_calculate needs a district, landmark, address, or customer location. A bare city/province "
+                            "cannot support a nearest-store ranking. Use customer_store_lookup for the city list or ask for one "
+                            "more precise location; do not claim a store is nearer from a city-only origin."
+                        ),
+                    }
+                )
             continue
         if name == "available_time":
             missing_args: list[str] = []
@@ -1794,87 +1800,6 @@ def _with_payment_decision_action(
     return output
 
 
-def _case_studies_tool_violations(
-    *,
-    state: AgentState,
-    decision: str,
-    required_tools: list[dict[str, Any]],
-    customer_type: str,
-    main_blocker: str,
-    sub_rule_id: str,
-) -> list[dict[str, str]]:
-    if decision == "no_reply":
-        return []
-    if _has_case_studies_tool(required_tools):
-        return []
-    if _has_existing_case_facts_or_sent_case(state):
-        return []
-    if not _current_turn_needs_case_facts(
-        state=state,
-        customer_type=customer_type,
-        main_blocker=main_blocker,
-        sub_rule_id=sub_rule_id,
-    ):
-        return []
-    return [
-        {
-            "task_type": "tool_required",
-            "subtype": "kb_search",
-            "missing": "case_studies_required_for_effect_turn",
-            "note": (
-                "The current turn is an effect/case concern. Do not answer from text only or ask for online photo diagnosis; "
-                "repair by switching to need_tools and calling kb_search(case_studies) so the final reply can use real case image facts."
-            ),
-        }
-    ]
-
-
-def _has_case_studies_tool(required_tools: list[dict[str, Any]]) -> bool:
-    for tool in required_tools:
-        if not isinstance(tool, dict):
-            continue
-        if str(tool.get("name") or "").strip() != "kb_search":
-            continue
-        if str(tool.get("kb_name") or "").strip() == "case_studies":
-            return True
-    return False
-
-
-def _has_existing_case_facts_or_sent_case(state: AgentState) -> bool:
-    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
-    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
-    case_facts = structured.get("case_facts") if isinstance(structured.get("case_facts"), list) else []
-    if any(isinstance(item, dict) and (item.get("image_url") or item.get("document_id") or item.get("summary")) for item in case_facts):
-        return True
-    sent_summary = state.get("sent_message_summary") if isinstance(state.get("sent_message_summary"), dict) else {}
-    if sent_summary.get("case_image_sent") or sent_summary.get("effect_case_sent") or sent_summary.get("image_sent"):
-        return True
-    return False
-
-
-def _current_turn_needs_case_facts(
-    *,
-    state: AgentState,
-    customer_type: str,
-    main_blocker: str,
-    sub_rule_id: str,
-) -> bool:
-    if customer_type == "effect" or main_blocker == "effect":
-        return True
-    if "CASE" in str(sub_rule_id or "").upper():
-        return True
-    text = _compact_text(str(state.get("normalized_content") or state.get("content") or ""))
-    if not text:
-        return False
-    effect_patterns = (
-        r"(效果图|案例图|案例|参考图|做完效果|改善参考)",
-        r"(没效果|没有效果|怕没效果|会不会没效果|效果怎么样|效果好吗|做完明显吗|一次有没有效果)",
-        r"(怕反黑|会不会反黑|反黑怎么办|做坏|留疤|伤肤)",
-        r"(脸上有斑|斑点|淡斑|黑色素).{0,12}(能做|可以做|能弄|可以弄|改善|淡|有效果|好吗)",
-    )
-    return any(re.search(pattern, text) for pattern in effect_patterns)
-
-
 def _direct_reply_message_violations(*, decision: str, messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     if decision == "direct_reply" and not messages:
         return [
@@ -2566,6 +2491,57 @@ def _snapshot_region_tokens() -> set[str]:
     return _STORE_SNAPSHOT_REGION_TOKEN_CACHE
 
 
+def _distance_origin_is_broad_region_only(value: str, state: AgentState) -> bool:
+    text = _compact_text(value)
+    if not text or _query_matches_scope_store_name(value, state):
+        return False
+    broad_tokens = set(_snapshot_broad_region_tokens())
+    for mapping in (
+        state,
+        state.get("request_context") if isinstance(state.get("request_context"), dict) else {},
+        state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {},
+        state.get("current_known_store") if isinstance(state.get("current_known_store"), dict) else {},
+    ):
+        if not isinstance(mapping, dict):
+            continue
+        for key in ("province", "city", "current_city"):
+            broad_tokens.update(_region_token_variants(mapping.get(key)))
+    return text in {_compact_text(token) for token in broad_tokens if token}
+
+
+def _snapshot_broad_region_tokens() -> set[str]:
+    global _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
+    if _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE is not None:
+        return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
+    path = Path("data/store_snapshot.json")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE = set()
+        return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
+    stores_by_id = data.get("stores_by_id") if isinstance(data, dict) else {}
+    tokens: set[str] = set()
+    if isinstance(stores_by_id, dict):
+        for store in stores_by_id.values():
+            if not isinstance(store, dict):
+                continue
+            for key in ("province", "city"):
+                tokens.update(_region_token_variants(store.get(key)))
+    _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE = {token for token in tokens if len(_compact_text(token)) >= 2}
+    return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
+
+
+def _region_token_variants(value: Any) -> set[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return set()
+    output = {raw}
+    for suffix in ("省", "市", "自治区", "特别行政区"):
+        if raw.endswith(suffix) and len(raw) > len(suffix):
+            output.add(raw[: -len(suffix)])
+    return output
+
+
 def _matching_current_message_region_tokens(value: str, state: AgentState) -> list[str]:
     text = _compact_text(value)
     if not text:
@@ -2975,6 +2951,21 @@ def _pending_lookup_reply_violations(
 ) -> list[dict[str, str]]:
     if decision != "direct_reply":
         return []
+    if str(appointment_decision.get("action") or "") == "lookup_store" and not any(
+        isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages
+    ):
+        return [
+            {
+                "task_type": "reply_fact_consistency",
+                "subtype": "store_lookup_action",
+                "missing": "store_lookup_action_requires_tool_or_store_card",
+                "note": (
+                    "appointment_decision.action=lookup_store cannot end as a direct reply without a verified store card. "
+                    "Use need_tools + customer_store_lookup when store facts are missing, or include store_address from the "
+                    "authoritative store facts and change the appointment action to the actual next step."
+                ),
+            }
+        ]
     if str(appointment_decision.get("action") or "") in {"ask_store", "ask_time"}:
         return []
     texts = [

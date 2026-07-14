@@ -90,7 +90,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "不说广告错误",
         "已筛选后的斑点改善意向客户",
         "不要让客户先发照片给你线上诊断",
-        "斑点能不能做、淡斑效果、怕没效果、怕反黑、要效果图属于案例/效果链路",
+        "普通效果顾虑由你结合近期是否已经展示案例决定查图还是直接答疑推进",
         "preferred_store / store_candidate 不是 confirmed_store",
         "没有 available_time、appointment_record 或 request confirmed appointment 事实时",
         "SOP 三板斧",
@@ -333,7 +333,7 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
     )
 
 
-def test_effect_concern_without_case_tool_gets_planner_repair_violation() -> None:
+def test_effect_concern_without_case_tool_remains_a_model_decision() -> None:
     text = "\u4f1a\u4e0d\u4f1a\u53cd\u9ed1\u554a"
     plan = build_planner_plan_v2(
         {"content": text, "normalized_content": text},
@@ -352,10 +352,8 @@ def test_effect_concern_without_case_tool_gets_planner_repair_violation() -> Non
             "tool_calls": [],
         },
     )
-    assert any(
-        item.get("missing") == "case_studies_required_for_effect_turn"
-        for item in plan["tool_policy_violations"]
-    )
+    assert not any(item.get("subtype") == "kb_search" for item in plan["tool_policy_violations"])
+    assert "近期对话已展示案例" in PLANNER_SYSTEM_PROMPT
 
 
 def test_profile_prompt_downgrades_stale_history_without_dropping_facts() -> None:

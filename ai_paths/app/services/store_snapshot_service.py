@@ -5,6 +5,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,36 @@ import httpx
 from app.config import Settings
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.coze_oauth import CozeOAuthTokenProvider
+
+
+def store_snapshot_rows(path: str | Path = Path("data/store_snapshot.json")) -> list[dict[str, Any]]:
+    """Return snapshot rows and refresh the read cache when the file changes."""
+
+    resolved = _resolve_snapshot_path(Path(path))
+    try:
+        modified_ns = resolved.stat().st_mtime_ns
+    except OSError:
+        return []
+    return [dict(item) for item in _cached_snapshot_rows(str(resolved), modified_ns)]
+
+
+def _resolve_snapshot_path(path: Path) -> Path:
+    if path.is_absolute() or path.exists():
+        return path.resolve()
+    return (Path(__file__).resolve().parents[2] / path).resolve()
+
+
+@lru_cache(maxsize=4)
+def _cached_snapshot_rows(path: str, modified_ns: int) -> tuple[dict[str, Any], ...]:
+    del modified_ns
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return ()
+    stores_by_id = payload.get("stores_by_id") if isinstance(payload, dict) else {}
+    if not isinstance(stores_by_id, dict):
+        return ()
+    return tuple(dict(item) for item in stores_by_id.values() if isinstance(item, dict))
 
 
 class StoreSnapshotService:
