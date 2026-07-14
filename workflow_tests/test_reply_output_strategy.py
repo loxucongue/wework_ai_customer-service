@@ -223,6 +223,33 @@ def test_sent_message_summary_keeps_unknown_time_distinct_from_zero_today() -> N
     assert frequency["count_confidence"] == "unknown"
 
 
+def test_sent_message_summary_exposes_authoritative_case_image_delivery_evidence() -> None:
+    summary = sent_message_summary_for_model(
+        {
+            "history_events": [
+                {
+                    "event_id": "case-image-1",
+                    "event_type": "case_image_sent",
+                    "created_at": "2026-07-14T02:30:00+00:00",
+                    "facts": {
+                        "document_ids": ["case-doc-1", "case-doc-2"],
+                        "image_urls": ["https://example.com/case-1.jpg", "https://example.com/case-2.jpg"],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert summary["case_image_sent"] is True
+    delivery = summary["case_image_delivery"]
+    assert delivery["total_events"] == 1
+    assert delivery["last_sent_at"] == "2026-07-14T10:30:00+08:00"
+    assert delivery["last_document_count"] == 2
+    assert delivery["last_image_count"] == 2
+    assert delivery["source"] == "history_events"
+    assert delivery["decision_policy"] == "evidence_only_model_decides_case_image_send"
+
+
 def test_current_turn_context_does_not_label_payment_explanation_as_sent_card() -> None:
     context = build_current_turn_context(
         {

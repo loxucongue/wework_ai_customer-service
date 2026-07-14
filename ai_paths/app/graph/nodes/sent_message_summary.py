@@ -23,6 +23,7 @@ def sent_message_summary_for_model(
         visible_payment_records=visible_payment_records,
         now=now,
     )
+    case_image_delivery = _case_image_delivery(state.get("history_events"))
     activity_intro_image_sent = False
     store_ids: list[str] = []
 
@@ -51,10 +52,44 @@ def sent_message_summary_for_model(
         "payment_collection_sent": total_count > 0,
         "payment_collection_count": total_count,
         "payment_collection": payment_frequency,
+        "case_image_sent": bool(case_image_delivery),
+        "case_image_delivery": case_image_delivery,
         "activity_intro_image_sent": activity_intro_image_sent,
         "store_address_sent_by_store_id": list(dict.fromkeys(store_ids)),
     }
     return {key: value for key, value in output.items() if value not in (False, 0, [], {}, None, "")}
+
+
+def _case_image_delivery(raw_events: Any) -> dict[str, Any]:
+    """Expose case-image delivery facts without deciding whether another image is needed."""
+
+    events = [
+        (index, event, _event_datetime(event))
+        for index, event in enumerate(raw_events if isinstance(raw_events, list) else [])
+        if isinstance(event, dict) and str(event.get("event_type") or "").strip() == "case_image_sent"
+    ]
+    if not events:
+        return {}
+    _, latest, latest_at = max(
+        events,
+        key=lambda item: (
+            item[2].timestamp() if item[2] is not None else float("-inf"),
+            item[0],
+        ),
+    )
+    facts = latest.get("facts") if isinstance(latest.get("facts"), dict) else {}
+    document_ids = [str(item) for item in facts.get("document_ids") or [] if str(item or "").strip()]
+    image_urls = [str(item) for item in facts.get("image_urls") or [] if str(item or "").strip()]
+    timestamped_count = sum(1 for _, _, event_at in events if event_at is not None)
+    return {
+        "total_events": len(events),
+        "last_sent_at": latest_at.isoformat() if latest_at is not None else "",
+        "last_document_count": len(document_ids),
+        "last_image_count": len(image_urls),
+        "time_confidence": "high" if timestamped_count == len(events) else "partial",
+        "source": "history_events",
+        "decision_policy": "evidence_only_model_decides_case_image_send",
+    }
 
 
 def _unique_payment_events(raw_events: Any) -> list[dict[str, Any]]:

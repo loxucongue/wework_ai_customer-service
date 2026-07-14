@@ -92,7 +92,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "不说广告错误",
         "已筛选后的斑点改善意向客户",
         "不要让客户先发照片给你线上诊断",
-        "普通效果顾虑由你结合近期是否已经展示案例决定查图还是直接答疑推进",
+        "效果顾虑由你结合权威案例发送证据判断查图还是直接答疑推进",
         "preferred_store / store_candidate 不是 confirmed_store",
         "没有 available_time、appointment_record 或 request confirmed appointment 事实时",
         "SOP 三板斧",
@@ -167,6 +167,13 @@ def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None
     assert "def _sop_next_candidates" not in source
     assert '"next_candidates"' not in source
     assert 'state.get("sales_progression")' in source
+
+
+def test_planner_requires_authoritative_recent_case_image_evidence() -> None:
+    assert "sent_message_summary.case_image_delivery" in PLANNER_SYSTEM_PROMPT
+    assert "completed_pack_ids/completed_categories" in PLANNER_SYSTEM_PROMPT
+    assert "不能单独证明客户近期看到了案例图" in PLANNER_SYSTEM_PROMPT
+    assert "没有权威近期图片证据时查 case_studies" in PLANNER_SYSTEM_PROMPT
 
 
 def test_runtime_prompts_no_longer_carry_legacy_non_refund_policy() -> None:
@@ -364,8 +371,9 @@ def test_effect_concern_without_case_tool_remains_a_model_decision() -> None:
         },
     )
     assert not any(item.get("subtype") == "kb_search" for item in plan["tool_policy_violations"])
-    assert "近期对话已展示案例" in PLANNER_SYSTEM_PROMPT
-    assert "这是继续消除同一顾虑，不是索要新图" in PLANNER_SYSTEM_PROMPT
+    assert "sent_message_summary.case_image_delivery" in PLANNER_SYSTEM_PROMPT
+    assert "SOP 完成状态、画像总结和旧话题不能代替图片发送证据" in PLANNER_SYSTEM_PROMPT
+    assert "这是在评价刚才图片，不是索要新图" in PLANNER_SYSTEM_PROMPT
     assert "下个月再去/改天再去" in REPLY_SYSTEM_PROMPT
 
 
