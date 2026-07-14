@@ -52,6 +52,8 @@ class AgentState(TypedDict, total=False):
     customer_context_error: str | None
     customer_store_knowledge: dict[str, Any]
     sent_message_summary: dict[str, Any]
+    sop_gate: dict[str, Any]
+    sop_progress_evidence: dict[str, Any]
     background_substeps: list[dict[str, Any]]
 
     planner_decision: str
@@ -70,6 +72,7 @@ class AgentState(TypedDict, total=False):
     registration_state: dict[str, Any]
     appointment_state: dict[str, Any]
     appointment_decision: dict[str, Any]
+    sales_progression: dict[str, Any]
     current_known_store: dict[str, Any]
     store_candidate: dict[str, Any]
     planner_reply_messages: list[dict[str, Any]]

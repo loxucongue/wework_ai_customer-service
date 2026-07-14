@@ -806,6 +806,68 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(duplicate["send_sop"])
         self.assertEqual(len(repository.tasks), 2)
 
+    async def test_chat_gate_exposes_authoritative_sop_progress_without_message_bodies(self) -> None:
+        class _ProgressPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_new_customer_opening",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "opening",
+                            "name": "新客破冰",
+                            "purpose": "首次承接",
+                            "order": 10,
+                            "triggers": ["首次咨询"],
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "已发送的开场原文"}}
+                            ],
+                        },
+                        {
+                            "id": "s10_need_and_case",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "effect_case",
+                            "name": "需求和案例",
+                            "purpose": "承接客户斑点情况和效果信心",
+                            "order": 20,
+                            "triggers": ["需求承接"],
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "未发送的静态话术原文"}}
+                            ],
+                        },
+                    ]
+                }
+
+        repository = _Repo()
+        repository.sent_ids.add("s10_new_customer_opening")
+        repository.sent_categories.add("opening")
+        model = _PromptCaptureModel(
+            {"send_sop": False, "sop_pack_id": "", "need_ai_reply": True, "reason": "当前问题由普通回复承接"}
+        )
+        service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=_ProgressPackService(),
+            model_client=model,
+        )
+        request = ChatRequest(
+            content="我在朝阳区",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+        )
+
+        result = await service.evaluate_chat_gate(request, request_id="req_progress", request_context={})
+
+        evidence = result["sop_progress_evidence"]
+        self.assertEqual(evidence["completed_pack_ids"], ["s10_new_customer_opening"])
+        self.assertEqual(evidence["completed_categories"], ["opening"])
+        self.assertEqual(evidence["unfinished_sops"][0]["id"], "s10_need_and_case")
+        self.assertEqual(evidence["unfinished_sops"][0]["purpose"], "承接客户斑点情况和效果信心")
+        self.assertNotIn("reply_messages", evidence["unfinished_sops"][0])
+        self.assertNotIn("未发送的静态话术原文", str(evidence))
+
     def test_platform_auto_opening_matcher_is_narrow(self) -> None:
         self.assertTrue(is_platform_auto_opening_message("我已经添加了你，现在我们可以开始聊天了。"))
         self.assertTrue(is_platform_auto_opening_message("我已经添加了你 现在可以开始聊天了"))

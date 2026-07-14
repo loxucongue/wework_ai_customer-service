@@ -72,6 +72,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "不新增 thought",
         "store_candidate",
         "appointment_decision",
+        "sop_progress_evidence",
+        "sales_progression",
     ]:
         assert marker in PLANNER_SYSTEM_PROMPT
 
@@ -156,6 +158,15 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert GLOBAL_BUSINESS_RHYTHM_CONTRACT in REPLY_SYSTEM_PROMPT
     assert "store_candidate" in REPLY_SYSTEM_PROMPT
     assert "appointment_decision" in REPLY_SYSTEM_PROMPT
+    assert "sop_progress_evidence" in REPLY_SYSTEM_PROMPT
+    assert "sales_progression" in REPLY_SYSTEM_PROMPT
+
+
+def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None:
+    source = (ROOT / "ai_paths/app/graph/nodes/reply_context.py").read_text(encoding="utf-8")
+    assert "def _sop_next_candidates" not in source
+    assert '"next_candidates"' not in source
+    assert 'state.get("sales_progression")' in source
 
 
 def test_runtime_prompts_no_longer_carry_legacy_non_refund_policy() -> None:

@@ -371,6 +371,36 @@ def test_chinese_twelve_hour_time_uses_supported_afternoon_slot_for_repair() -> 
     assert "use create_plan" in violation["note"]
 
 
+def test_chinese_twelve_hour_time_matches_existing_afternoon_appointment() -> None:
+    state = {
+        **_base_state(),
+        "normalized_content": "那就两点半",
+        "customer_context": {
+            **_base_state()["customer_context"],
+            "appointment": {"status": "confirmed", "appointment_time": "2026-07-14 14:30:00"},
+        },
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "appointment_decision": {"action": "confirm_existing", "commitment_level": "confirmed"},
+            "sales_progression": {
+                "status": "terminal",
+                "target_stage": "close",
+                "action": "close",
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "好的，明天下午两点半见。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert not any(
+        item.get("missing") == "appointment_change_requires_verification"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_current_appointment_created_blocks_payment_card_in_same_turn() -> None:
     state = {
         **_base_state(),

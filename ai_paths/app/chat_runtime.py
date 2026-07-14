@@ -111,6 +111,7 @@ class ChatRuntime:
 
         sop_gate = await self._evaluate_sop_gate(effective_request, request_id, effective_context)
         initial_state["sop_gate"] = sop_gate
+        initial_state["sop_progress_evidence"] = dict(sop_gate.get("sop_progress_evidence") or {})
         _append_sop_gate_trace(initial_state, sop_gate)
         if sop_gate.get("send_sop"):
             sop_state = self._sop_reply_state(initial_state, sop_gate)

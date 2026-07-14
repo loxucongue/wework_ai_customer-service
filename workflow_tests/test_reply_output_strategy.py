@@ -4393,7 +4393,7 @@ def test_reply_validation_rejects_unfinished_lookup_sync_phrase() -> None:
         )
 
 
-def test_reply_payload_uses_sop_sequence_for_store_mainline() -> None:
+def test_reply_payload_uses_model_owned_progression_for_store_mainline() -> None:
     payload = reply_user_payload_for_model(
         {
             "content": "Xiamen",
@@ -4413,12 +4413,31 @@ def test_reply_payload_uses_sop_sequence_for_store_mainline() -> None:
             },
             "sent_message_summary": {},
             "history_events": [],
+            "sop_progress_evidence": {
+                "completed_pack_ids": ["s10_new_customer_opening"],
+                "completed_categories": ["opening"],
+                "unfinished_sops": [
+                    {
+                        "id": "s10_need_and_case",
+                        "sop_category": "effect_case",
+                        "purpose": "承接需求和案例效果",
+                        "order": 20,
+                    }
+                ],
+            },
+            "sales_progression": {
+                "status": "continue",
+                "target_stage": "need_and_case",
+                "action": "ask_need_context",
+                "goal": "承接客户斑点情况",
+                "basis": ["门店事实已解决"],
+            },
         }
     )
-    assert payload["reply_mode"] == "sop_sequence"
-    categories = {item["category"] for item in payload["sop_progress"]["next_candidates"]}
-    assert "store_address" in categories
-    assert "effect_case" in categories
+    assert payload["reply_mode"] == "normal_answer"
+    assert "next_candidates" not in payload["sop_progress"]
+    assert payload["sop_progress"]["selected_progression"]["action"] == "ask_need_context"
+    assert payload["sop_progress"]["unfinished_sops"][0]["id"] == "s10_need_and_case"
 
 
 def test_reply_payload_can_offer_deposit_after_payment_collection_was_sent() -> None:
@@ -4435,12 +4454,215 @@ def test_reply_payload_can_offer_deposit_after_payment_collection_was_sent() -> 
             "fact_envelope": {"structured_facts": {}},
             "history_events": [{"event_type": "payment_collection_sent", "facts": {}}],
             "conversation_history": [],
+            "sop_progress_evidence": {
+                "completed_pack_ids": ["s10_activity_intro"],
+                "completed_categories": ["activity_intro"],
+                "unfinished_sops": [],
+            },
+            "sales_progression": {
+                "status": "continue",
+                "target_stage": "deposit",
+                "action": "send_payment_card",
+                "goal": "响应当前报名意图",
+                "basis": ["客户当前明确报名"],
+            },
         }
     )
 
     assert payload["sent_message_summary"]["payment_collection_sent"] is True
-    categories = {item["category"] for item in payload["sop_progress"]["next_candidates"]}
-    assert "deposit_push" in categories
+    assert payload["sop_progress"]["selected_progression"]["action"] == "send_payment_card"
+    assert "next_candidates" not in payload["sop_progress"]
+
+
+def test_planner_requires_model_owned_sales_progression_with_live_sop_evidence() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "我在朝阳区",
+            "sop_progress_evidence": {
+                "completed_pack_ids": ["s10_new_customer_opening"],
+                "completed_categories": ["opening"],
+                "unfinished_sops": [{"id": "s10_need_and_case", "purpose": "承接需求"}],
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "none",
+            "next_step": "solve_blocker",
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "朝阳区这边的门店我给您发过去。"}}
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "sales_progression_required"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_planner_preserves_model_owned_sales_progression_without_business_template() -> None:
+    message = "朝阳区这边的门店我给您发过去。方便问下，您的斑点大概有多久了？"
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "我在朝阳区",
+            "sop_progress_evidence": {
+                "completed_pack_ids": ["s10_new_customer_opening"],
+                "completed_categories": ["opening"],
+                "unfinished_sops": [{"id": "s10_need_and_case", "purpose": "承接需求"}],
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "none",
+            "next_step": "solve_blocker",
+            "sales_progression": {
+                "status": "continue",
+                "target_stage": "need_and_case",
+                "action": "ask_need_context",
+                "goal": "承接斑点情况",
+                "basis": ["门店问题已解决"],
+            },
+            "reply_messages": [{"type": "text", "order": 1, "content": {"text": message}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["sales_progression"]["action"] == "ask_need_context"
+    assert plan["planner_reply_messages"][0]["content"]["text"] == message
+    assert not any(
+        item.get("missing") == "sales_progression_required"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_planner_keeps_store_card_backed_by_current_fact_envelope() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "广告不是说集美有吗，都有点远",
+            "fact_envelope": {
+                "structured_facts": {
+                    "store_facts": [
+                        {"store_id": "227", "store_name": "厦门百星湖里店", "city": "厦门市"}
+                    ]
+                }
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "confirm_store",
+            "appointment_decision": {
+                "action": "none",
+                "commitment_level": "none",
+                "basis": ["本轮已有真实门店事实"],
+            },
+            "sales_progression": {
+                "status": "continue",
+                "target_stage": "need_and_case",
+                "action": "ask_need_context",
+                "goal": "承接斑点情况",
+                "basis": ["门店问题已解决"],
+            },
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "这个是平台同城展示定位，我先把湖里这家发您。"}},
+                {"type": "store_address", "order": 2, "content": {"store_id": "227"}},
+                {"type": "text", "order": 3, "content": {"text": "您脸上的斑大概有多久了？"}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert any(item["type"] == "store_address" for item in plan["planner_reply_messages"])
+    assert not any(
+        item.get("missing") == "store_detail_tool_required"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_planner_can_ask_store_scope_without_triggering_pending_lookup_violation() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "你们门店在哪里"},
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "appointment_decision": {
+                "action": "ask_store",
+                "commitment_level": "none",
+                "basis": ["缺少城市或区域"],
+            },
+            "sales_progression": {
+                "status": "continue",
+                "target_stage": "store",
+                "action": "confirm_store",
+                "goal": "确认城市或区域",
+                "basis": ["当前没有门店范围"],
+            },
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "您在哪个城市或区域？我给您匹配门店。"}}
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert not any(
+        item.get("missing") == "store_lookup_action_requires_tool_or_store_card"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_planner_allows_flexible_visit_date_without_claiming_a_slot() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "我改天再去看看吧"},
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "solve_blocker",
+            "appointment_decision": {
+                "action": "none",
+                "commitment_level": "none",
+                "basis": ["客户尚未选择日期"],
+            },
+            "sales_progression": {
+                "status": "continue",
+                "target_stage": "activity",
+                "action": "explain_deposit",
+                "goal": "说明活动资格可先保留",
+                "basis": ["客户只是暂时推迟"],
+            },
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "可以的，活动资格可以先留着，到店日期后面按您方便再定。"},
+                }
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert not any(
+        item.get("missing") == "available_time_required_for_availability_claim"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_reply_payload_keeps_context_for_low_information_message() -> None:

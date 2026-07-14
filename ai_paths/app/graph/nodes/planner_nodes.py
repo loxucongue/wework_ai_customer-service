@@ -73,6 +73,7 @@ def create_planner_brain_node(
                 "payment_decision": plan.get("payment_decision", {}),
                 "order_decision": plan.get("order_decision", {}),
                 "appointment_decision": plan.get("appointment_decision", {}),
+                "sales_progression": plan.get("sales_progression", {}),
                 "current_known_store": plan.get("current_known_store", {}),
                 "store_candidate": plan.get("store_candidate", {}),
                 "planner_reply_messages": plan.get("planner_reply_messages", []),

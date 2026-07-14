@@ -76,6 +76,34 @@ ALLOWED_APPOINTMENT_DECISION_ACTIONS = (
 )
 ALLOWED_APPOINTMENT_COMMITMENT_LEVELS = ("none", "tentative", "confirmed")
 ALLOWED_ORDER_DECISION_ACTIONS = ("none", "create_work", "use_existing")
+ALLOWED_SALES_PROGRESSION_STATUSES = ("unknown", "continue", "pause", "terminal")
+ALLOWED_SALES_PROGRESSION_ACTIONS = (
+    "none",
+    "ask_need_context",
+    "deliver_value",
+    "confirm_store",
+    "explain_deposit",
+    "send_payment_card",
+    "manual_transfer",
+    "collect_registration",
+    "confirm_visit_time",
+    "confirm_appointment",
+    "close",
+    "risk_pause",
+)
+ALLOWED_SALES_PROGRESSION_TARGETS = (
+    "none",
+    "need_and_case",
+    "trust",
+    "store",
+    "activity",
+    "deposit",
+    "registration",
+    "appointment",
+    "service",
+    "close",
+    "risk",
+)
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -134,6 +162,9 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     )
     order_decision = _normalize_order_decision(
         model_payload.get("order_decision") if isinstance(model_payload, dict) else {},
+    )
+    sales_progression = _normalize_sales_progression(
+        model_payload.get("sales_progression") if isinstance(model_payload, dict) else {},
     )
     payment_decision = _reconcile_paid_payment_decision(
         payment_decision=payment_decision,
@@ -378,6 +409,11 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             state=state,
             decision=decision,
         ),
+        *_sales_progression_violations(
+            state=state,
+            decision=decision,
+            sales_progression=sales_progression,
+        ),
         *_appointment_availability_reply_violations(
             state=state,
             decision=decision,
@@ -414,6 +450,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "payment_decision": payment_decision,
         "order_decision": order_decision,
         "appointment_decision": appointment_decision,
+        "sales_progression": sales_progression,
         "planner_reply_messages": planner_reply_messages,
         "planner_tool_calls": executable_tools,
         "reply_constraints": reply_constraints,
@@ -1340,6 +1377,29 @@ def _normalize_appointment_decision(value: Any) -> dict[str, Any]:
     return output
 
 
+def _normalize_sales_progression(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    return {
+        "status": _normalize_enum(
+            str(raw.get("status") or ""),
+            ALLOWED_SALES_PROGRESSION_STATUSES,
+            "unknown",
+        ),
+        "target_stage": _normalize_enum(
+            str(raw.get("target_stage") or ""),
+            ALLOWED_SALES_PROGRESSION_TARGETS,
+            "none",
+        ),
+        "action": _normalize_enum(
+            str(raw.get("action") or ""),
+            ALLOWED_SALES_PROGRESSION_ACTIONS,
+            "none",
+        ),
+        "goal": str(raw.get("goal") or "").strip()[:240],
+        "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
+    }
+
+
 def _normalize_order_decision(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     action = _normalize_enum(str(raw.get("action") or ""), ALLOWED_ORDER_DECISION_ACTIONS, "none")
@@ -1514,6 +1574,8 @@ def _requested_appointment_time_for_validation(state: AgentState) -> str:
     if hour < 12:
         afternoon = f"{hour + 12:02d}:{minute:02d}"
         if afternoon in available:
+            return afternoon
+        if afternoon == _existing_appointment_time_for_validation(state):
             return afternoon
     return requested
 
@@ -1812,6 +1874,37 @@ def _direct_reply_message_violations(*, decision: str, messages: list[dict[str, 
     return []
 
 
+def _sales_progression_violations(
+    *,
+    state: AgentState,
+    decision: str,
+    sales_progression: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Require an explicit model-owned next move when live SOP progress is available."""
+    if decision != "direct_reply":
+        return []
+    progress_evidence = state.get("sop_progress_evidence")
+    if not isinstance(progress_evidence, dict) or not progress_evidence:
+        return []
+    status = str(sales_progression.get("status") or "unknown")
+    action = str(sales_progression.get("action") or "none")
+    if status in {"pause", "terminal"} or action != "none":
+        return []
+    return [
+        {
+            "task_type": "planner_contract",
+            "subtype": "sales_progression",
+            "missing": "sales_progression_required",
+            "note": (
+                "This is an ordinary customer-facing direct reply with authoritative SOP progress evidence. "
+                "After answering the current question, choose one natural model-owned next move in "
+                "sales_progression. Do not add a Python/template phrase; rewrite the JSON and customer messages "
+                "so the reply continues the sales flow. Use pause/terminal only when current structured facts justify it."
+            ),
+        }
+    ]
+
+
 def _need_tools_without_tool_violations(
     *,
     decision: str,
@@ -2053,6 +2146,9 @@ def _store_address_messages_are_scope_backed(messages: list[dict[str, Any]], sta
         if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
     }
     message_ids.discard("")
+    fact_store_ids = _fact_envelope_store_ids(state)
+    if message_ids and message_ids.issubset(fact_store_ids):
+        return True
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     if not message_ids or not message_ids.issubset(store_scope_ids(knowledge)):
         return False
@@ -2096,6 +2192,22 @@ def _store_address_messages_are_scope_backed(messages: list[dict[str, Any]], sta
         ):
             return False
     return True
+
+
+def _fact_envelope_store_ids(state: AgentState) -> set[str]:
+    """Return store IDs backed by authoritative facts from the current tool round."""
+    envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
+    sources: list[dict[str, Any]] = []
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        sources.append(recommended)
+    sources.extend(item for item in structured.get("store_facts") or [] if isinstance(item, dict))
+    return {
+        str(item.get("store_id") or item.get("id") or "").strip()
+        for item in sources
+        if str(item.get("store_id") or item.get("id") or "").strip()
+    }
 
 
 def _distance_tool_violations(required_tools: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -2953,6 +3065,8 @@ def _pending_lookup_reply_violations(
 ) -> list[dict[str, str]]:
     if decision != "direct_reply":
         return []
+    if str(appointment_decision.get("action") or "") in {"ask_store", "ask_time"}:
+        return []
     store_lookup_pending = (
         str(appointment_decision.get("action") or "") == "lookup_store" or next_step == "lookup_store"
     )
@@ -2971,8 +3085,6 @@ def _pending_lookup_reply_violations(
                 ),
             }
         ]
-    if str(appointment_decision.get("action") or "") in {"ask_store", "ask_time"}:
-        return []
     texts = [
         _message_text(item.get("content"))
         for item in messages
@@ -3110,25 +3222,13 @@ def _direct_reply_claims_appointment_availability_or_hold(compact: str) -> bool:
         )
     ):
         return True
-    if any(
-        term in compact
-        for term in (
-            "先留着",
-            "帮你留着",
-            "帮您留着",
-            "给你留着",
-            "给您留着",
-            "留好",
-            "预留",
-            "帮你记上",
-            "帮您记上",
-            "先记上",
-        )
-    ):
-        return True
     if re.search(r"锁.{0,8}(?:时段|时间|今天|明天|后天|上午|下午|晚上|\d{1,2}点)", compact):
         return True
-    if _claims_arrangement_without_fit_context(compact):
+    time_scope = r"(?:时段|时间|今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?)"
+    hold_action = r"(?:先留|留着|留好|预留|记上)"
+    if re.search(rf"{time_scope}.{{0,8}}{hold_action}", compact) or re.search(
+        rf"{hold_action}.{{0,8}}{time_scope}", compact
+    ):
         return True
     if re.search(r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?).{0,8}(?:可以|有空|有时间|有名额|有位置|能约|可约|安排)", compact):
         return True

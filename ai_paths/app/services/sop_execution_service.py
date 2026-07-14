@@ -129,6 +129,11 @@ class SopExecutionService:
             "reply_messages": [],
             "unfinished_count": 0,
             "completed_sop_pack_ids": [],
+            "sop_progress_evidence": {
+                "completed_pack_ids": [],
+                "completed_categories": [],
+                "unfinished_sops": [],
+            },
             "task": {},
             "model_usage": {},
             "error": "",
@@ -172,6 +177,11 @@ class SopExecutionService:
             result["completed_sop_pack_ids"] = sorted(completed_ids)
             result["completed_sop_categories"] = sorted(completed_categories)
             result["unfinished_count"] = len(unfinished)
+            result["sop_progress_evidence"] = {
+                "completed_pack_ids": sorted(completed_ids),
+                "completed_categories": sorted(completed_categories),
+                "unfinished_sops": [_sop_progress_summary(pack) for pack in unfinished],
+            }
             if not unfinished:
                 result.update({"mode": "complete", "reason": "all_sop_packs_completed"})
                 return _finish(result, started)
@@ -724,6 +734,18 @@ def _sop_summary(pack: dict[str, Any]) -> dict[str, Any]:
         "stage_tag": str(pack.get("stage_tag") or ""),
         "reply_messages_summary": _messages_summary(messages),
         **_message_editing_context(messages),
+    }
+
+
+def _sop_progress_summary(pack: dict[str, Any]) -> dict[str, Any]:
+    """Expose workflow progress without leaking static SOP message bodies."""
+    return {
+        "id": str(pack.get("id") or ""),
+        "sop_category": _pack_category(pack),
+        "name": str(pack.get("name") or ""),
+        "purpose": str(pack.get("purpose") or "")[:240],
+        "order": int(pack.get("order") or 0),
+        "triggers": [str(item) for item in pack.get("triggers") or [] if str(item or "").strip()],
     }
 
 
