@@ -196,6 +196,18 @@ def test_project_constitution_documents_define_two_reply_test_modes() -> None:
         assert "Full-chain online tests" in text or "全链路线上测试" in text
 
 
+def test_sop_gate_hands_location_slot_completion_to_ai() -> None:
+    source = (ROOT / "ai_paths/app/services/sop_execution_service.py").read_text(encoding="utf-8")
+    for marker in [
+        "门店匹配槽位已补齐",
+        "必须 send_sop=false、need_ai_reply=true",
+        "位置事实 + 到店时间顾虑",
+        "不能替代门店匹配回复",
+        "客户回“我现在在黄浦区，现在上班没时间，先加微信后面联系”",
+    ]:
+        assert marker in source
+
+
 def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> None:
     import json
 
