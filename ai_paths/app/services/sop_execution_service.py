@@ -129,6 +129,11 @@ class SopExecutionService:
             "reply_messages": [],
             "unfinished_count": 0,
             "completed_sop_pack_ids": [],
+            "sop_progress_evidence": {
+                "completed_pack_ids": [],
+                "completed_categories": [],
+                "unfinished_sops": [],
+            },
             "task": {},
             "model_usage": {},
             "error": "",
@@ -172,6 +177,11 @@ class SopExecutionService:
             result["completed_sop_pack_ids"] = sorted(completed_ids)
             result["completed_sop_categories"] = sorted(completed_categories)
             result["unfinished_count"] = len(unfinished)
+            result["sop_progress_evidence"] = {
+                "completed_pack_ids": sorted(completed_ids),
+                "completed_categories": sorted(completed_categories),
+                "unfinished_sops": [_sop_progress_summary(pack) for pack in unfinished],
+            }
             if not unfinished:
                 result.update({"mode": "complete", "reason": "all_sop_packs_completed"})
                 return _finish(result, started)
@@ -347,6 +357,7 @@ class SopExecutionService:
                     "如果 SOP 已经覆盖客户当前关心点，不要再让 AI 补发，避免客户同一轮收到重复内容。\n\n"
                     "# Source Priority\n"
                     "判断时按当前消息、最近对话、unfinished_sops 的 purpose/order/tags/triggers/reply_messages 摘要排序。\n"
+                    "最终是否可发必须以 reply_messages 摘要能否真实回答当前问题为准；purpose 和 triggers 只是候选线索，不能替代消息内容匹配。\n"
                     "SOP Gate 不拥有门店、档期、支付、订单、案例事实；这些事实缺失时不能自行补全，只能决定是否让普通 AI 继续。\n\n"
                     "# Input\n"
                     "你会收到：\n"
@@ -357,25 +368,29 @@ class SopExecutionService:
                     "# Task\n"
                     "1. 先理解客户当前消息和最近对话处于哪个成交阶段。\n"
                     "2. 从 unfinished_sops 中最多选择一个当前最该先发的 SOP。\n"
-                    "3. 判断该 SOP 是否已经足够承接本轮客户问题。\n"
+                    "3. 逐条核对该 SOP 的 reply_messages 摘要：它是否真正回答客户当前问题，还是只覆盖相邻但不同的顾虑。\n"
                     "4. 只有 SOP 无法覆盖、且客户问题必须实时答复时，才设置 need_ai_reply=true。\n\n"
                     "# Decision Policy\n"
                     "- 新客 SOP 没完成前，默认优先选择一个合适 SOP，不要轻易跳过直接进入普通 AI 聊天。\n"
-                    "- 选择 SOP 时优先看 purpose、order、triggers、reply_messages 摘要与当前客户问题是否匹配，不要只按关键词机械匹配。\n"
+                    "- 选择 SOP 时先看 purpose/order/triggers 找候选，再用 reply_messages 摘要做最终覆盖判断；不要只按关键词或宽泛目的机械匹配。\n"
                     "- 如果多个 SOP 都可用，选择最靠近当前成交阶段且 order 更靠前的一个。\n"
                     "- 发送 SOP 后默认 need_ai_reply=false。\n"
-                    "- 如果选中的 SOP 已经覆盖价格、效果、活动、预约金、普通顾虑、品牌信任或成交推进诉求，即使客户问题明确，也保持 need_ai_reply=false。\n"
+                    "- 如果选中的 SOP 的实际消息已经覆盖价格、效果、活动、预约金、普通顾虑、品牌信任或成交推进诉求，即使客户问题明确，也保持 need_ai_reply=false。\n"
                     "- 只有以下情况才允许 need_ai_reply=true：客户明确索要具体门店地址/导航/真实档期/预约或订单状态；投诉退款、身体不适、强人工诉求；或客户同一句包含多个独立问题，而当前 SOP 只覆盖其中一部分。\n"
                     "- 如果所有 unfinished_sops 都明显不适合当前客户状态，可以 send_sop=false，并让普通 AI 继续处理。\n\n"
                     "# Negative Cases\n"
                     "- 客户只是沉默、刚加微后未回复、或上一阶段 SOP 正常铺垫后没有新 customer 消息：不算冲突，优先继续 SOP。\n"
                     "- 客户正在问具体门店地址、真实档期、订单/付款异常、投诉退款或身体不适：SOP 不足以覆盖，need_ai_reply=true。\n"
                     "- 候选包只是和历史同属一个活动主题，不等于严重重合；只有同阶段核心目的和核心素材都已覆盖，才算严重重合。\n"
-                    "- 普通价格、效果、信任、隐形消费顾虑如果候选 SOP 已覆盖，就不需要额外 AI 文案。\n\n"
+                    "- 普通价格、效果、信任、隐形消费顾虑如果候选 SOP 的实际消息已覆盖，就不需要额外 AI 文案。\n"
+                    "- 如果客户当前问的是效果真实性、怕没效果、反黑、做坏、伤肤等效果/安全顾虑，而候选包实际消息主要是收费、预约金、隐形消费或活动价格规则，则该 SOP 没有覆盖当前问题；send_sop=false，need_ai_reply=true，交给普通 AI 结合历史案例和当前上下文回答并推进。\n"
+                    "- 如果客户当前问的是套路、乱收费、强制消费、预约金抵扣/可退或费用是否清楚，而候选包实际消息正是在解释明码标价和预约金规则，可以发送该 SOP。\n\n"
                     "# Few-Shot Calibration\n"
                     "- 新客未回复，1分钟介绍包已发，5分钟问地址包候选可用：send_sop=true，need_ai_reply=false。\n"
                     "- 客户刚问“这家地址发我”：如果候选 SOP 不是门店地址事实，send_sop=false 或 need_ai_reply=true，交给普通 AI 查门店。\n"
                     "- 客户问“效果怎么样”：候选效果案例/效果铺垫包可用且未发送过，send_sop=true，need_ai_reply=false。\n"
+                    "- 客户问“真有这么好的效果？”且历史已经发过效果图/案例，候选包是收费与预约金顾虑处理：该包没有回答效果真实性，send_sop=false，need_ai_reply=true。\n"
+                    "- 客户问“是不是套路，会不会乱收费？”且候选包是收费与预约金顾虑处理：该包覆盖收费和信任顾虑，send_sop=true，need_ai_reply=false。\n"
                     "- 客户说“我付款多扣了”：send_sop=false，need_ai_reply=true。\n\n"
                     "# Do Not\n"
                     "- 不生成客户可见 text/image/payment_collection/store_address/video。\n"
@@ -724,6 +739,18 @@ def _sop_summary(pack: dict[str, Any]) -> dict[str, Any]:
         "stage_tag": str(pack.get("stage_tag") or ""),
         "reply_messages_summary": _messages_summary(messages),
         **_message_editing_context(messages),
+    }
+
+
+def _sop_progress_summary(pack: dict[str, Any]) -> dict[str, Any]:
+    """Expose workflow progress without leaking static SOP message bodies."""
+    return {
+        "id": str(pack.get("id") or ""),
+        "sop_category": _pack_category(pack),
+        "name": str(pack.get("name") or ""),
+        "purpose": str(pack.get("purpose") or "")[:240],
+        "order": int(pack.get("order") or 0),
+        "triggers": [str(item) for item in pack.get("triggers") or [] if str(item or "").strip()],
     }
 
 

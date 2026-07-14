@@ -806,6 +806,135 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(duplicate["send_sop"])
         self.assertEqual(len(repository.tasks), 2)
 
+    async def test_chat_gate_exposes_authoritative_sop_progress_without_message_bodies(self) -> None:
+        class _ProgressPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_new_customer_opening",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "opening",
+                            "name": "新客破冰",
+                            "purpose": "首次承接",
+                            "order": 10,
+                            "triggers": ["首次咨询"],
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "已发送的开场原文"}}
+                            ],
+                        },
+                        {
+                            "id": "s10_need_and_case",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "effect_case",
+                            "name": "需求和案例",
+                            "purpose": "承接客户斑点情况和效果信心",
+                            "order": 20,
+                            "triggers": ["需求承接"],
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "未发送的静态话术原文"}}
+                            ],
+                        },
+                    ]
+                }
+
+        repository = _Repo()
+        repository.sent_ids.add("s10_new_customer_opening")
+        repository.sent_categories.add("opening")
+        model = _PromptCaptureModel(
+            {"send_sop": False, "sop_pack_id": "", "need_ai_reply": True, "reason": "当前问题由普通回复承接"}
+        )
+        service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=_ProgressPackService(),
+            model_client=model,
+        )
+        request = ChatRequest(
+            content="我在朝阳区",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+        )
+
+        result = await service.evaluate_chat_gate(request, request_id="req_progress", request_context={})
+
+        evidence = result["sop_progress_evidence"]
+        self.assertEqual(evidence["completed_pack_ids"], ["s10_new_customer_opening"])
+        self.assertEqual(evidence["completed_categories"], ["opening"])
+        self.assertEqual(evidence["unfinished_sops"][0]["id"], "s10_need_and_case")
+        self.assertEqual(evidence["unfinished_sops"][0]["purpose"], "承接客户斑点情况和效果信心")
+        self.assertNotIn("reply_messages", evidence["unfinished_sops"][0])
+        self.assertNotIn("未发送的静态话术原文", str(evidence))
+
+    async def test_chat_gate_prompt_requires_actual_message_coverage(self) -> None:
+        class _ObjectionPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_objection_resolution",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "s10_objection_resolution",
+                            "name": "收费与预约金顾虑处理",
+                            "purpose": (
+                                "仅用于客户当前主要顾虑是套路、隐形消费、乱收费、费用规则、"
+                                "预约金抵扣/可退或活动价格真实性时。效果真实性不适用。"
+                            ),
+                            "order": 40,
+                            "triggers": ["first_objection"],
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "我们是明码标价，没有强制消费。"}},
+                                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+                            ],
+                        }
+                    ]
+                }
+
+        repository = _Repo()
+        model = _PromptCaptureModel(
+            {"send_sop": False, "sop_pack_id": "", "need_ai_reply": True, "reason": "收费包不覆盖效果真实性"}
+        )
+        service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=_ObjectionPackService(),
+            model_client=model,
+        )
+        request = ChatRequest(
+            content="真有这么好的效果？",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+            conversation_history=["小贝: 已经发过同类效果图给您参考"],
+        )
+
+        result = await service.evaluate_chat_gate(request, request_id="req_effect_objection", request_context={})
+
+        self.assertEqual(result["mode"], "no_sop_selected")
+        self.assertTrue(result["need_ai_reply"])
+        system_prompt = model.messages[0]["content"]
+        user_prompt = model.messages[1]["content"]
+        self.assertIn("reply_messages 摘要能否真实回答当前问题", system_prompt)
+        self.assertIn("效果真实性、怕没效果、反黑、做坏、伤肤", system_prompt)
+        self.assertIn("收费、预约金、隐形消费或活动价格规则", system_prompt)
+        self.assertIn("收费与预约金顾虑处理", user_prompt)
+        self.assertIn("payment_collection", user_prompt)
+
+    def test_objection_resolution_pack_metadata_excludes_effect_objection(self) -> None:
+        import json
+
+        payload = json.loads(Path("config/sop_reply_packs.json").read_text(encoding="utf-8"))
+        pack = next(item for item in payload["packs"] if item["id"] == "s10_objection_resolution")
+
+        self.assertEqual(pack["name"], "收费与预约金顾虑处理")
+        self.assertIn("隐形消费", pack["purpose"])
+        self.assertIn("预约金抵扣", pack["purpose"])
+        self.assertIn("效果真实性", pack["purpose"])
+        self.assertIn("不适用", pack["purpose"])
+        self.assertNotIn("客户担心效果、套路", pack["purpose"])
+
     def test_platform_auto_opening_matcher_is_narrow(self) -> None:
         self.assertTrue(is_platform_auto_opening_message("我已经添加了你，现在我们可以开始聊天了。"))
         self.assertTrue(is_platform_auto_opening_message("我已经添加了你 现在可以开始聊天了"))

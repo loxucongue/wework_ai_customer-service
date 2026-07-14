@@ -59,6 +59,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "payment_decision": {"action":"none | explain | send_now | resend | after_paid_next_step | ask_party_size","party_size":1,"amount":10,"source":"","confidence":"high | medium | low","basis":[]},
   "order_decision": {"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
+  "sales_progression": {"status":"continue | pause | terminal","target_stage":"need_and_case | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[]},
   "reply_messages": [],
   "tool_calls": [],
   "handoff": {"needed": false, "reason": ""}
@@ -239,6 +240,7 @@ def _planner_call_output(plan: dict[str, Any]) -> dict[str, Any]:
         "payment_decision": plan.get("payment_decision", {}),
         "order_decision": plan.get("order_decision", {}),
         "appointment_decision": plan.get("appointment_decision", {}),
+        "sales_progression": plan.get("sales_progression", {}),
         "reply_messages": len(plan.get("planner_reply_messages", [])),
         "tool_calls": len(plan.get("planner_tool_calls", [])),
         "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
@@ -282,6 +284,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
             location_hints=_store_scope_location_hints(state, current_known_store, store_candidate),
         ),
         "sent_message_summary": sent_message_summary,
+        "sop_progress_evidence": _sop_progress_evidence_for_planner(state),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
     return _drop_empty(payload)
@@ -305,6 +308,7 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "turn_evidence": base.get("turn_evidence"),
         "risk_hold": base.get("risk_hold"),
         "sent_message_summary": base.get("sent_message_summary"),
+        "sop_progress_evidence": base.get("sop_progress_evidence"),
         "available_tools": base.get("available_tools"),
         "timeout_recovery": {
             "previous_error": str(previous_error or "")[:240],
@@ -316,6 +320,42 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
 
 def _current_date_iso() -> str:
     return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+
+
+def _sop_progress_evidence_for_planner(state: AgentState) -> dict[str, Any]:
+    raw = state.get("sop_progress_evidence")
+    if not isinstance(raw, dict):
+        gate = state.get("sop_gate") if isinstance(state.get("sop_gate"), dict) else {}
+        raw = gate.get("sop_progress_evidence") if isinstance(gate.get("sop_progress_evidence"), dict) else {}
+    completed_ids = [str(item) for item in raw.get("completed_pack_ids") or [] if str(item or "").strip()]
+    completed_categories = [
+        str(item) for item in raw.get("completed_categories") or [] if str(item or "").strip()
+    ]
+    unfinished: list[dict[str, Any]] = []
+    for item in raw.get("unfinished_sops") or []:
+        if not isinstance(item, dict) or not str(item.get("id") or "").strip():
+            continue
+        unfinished.append(
+            {
+                "id": str(item.get("id") or ""),
+                "sop_category": str(item.get("sop_category") or ""),
+                "name": str(item.get("name") or ""),
+                "purpose": str(item.get("purpose") or "")[:240],
+                "order": int(item.get("order") or 0),
+                "triggers": [str(value) for value in item.get("triggers") or [] if str(value or "").strip()],
+            }
+        )
+    if not completed_ids and not completed_categories and not unfinished:
+        return {}
+    return {
+        "completed_pack_ids": completed_ids,
+        "completed_categories": completed_categories,
+        "unfinished_sops": sorted(unfinished, key=lambda item: (int(item.get("order") or 0), item["id"])),
+        "usage": (
+            "只作为真实流程进度证据。你根据当前问题和历史决定本轮如何推进；"
+            "不能因为某个包未完成就机械触发，也不能为已完成包重复铺垫。"
+        ),
+    }
 
 
 def _compact_customer_profile_for_planner(profile: Any) -> dict[str, Any]:
@@ -630,6 +670,7 @@ def _compact_plan_for_repair(plan: dict[str, Any]) -> dict[str, Any]:
             "payment_action": plan.get("payment_action", ""),
             "payment_decision": plan.get("payment_decision", {}),
             "appointment_decision": plan.get("appointment_decision", {}),
+            "sales_progression": plan.get("sales_progression", {}),
             "reply_messages": plan.get("planner_reply_messages", []),
             "tool_calls": plan.get("planner_tool_calls", []),
             "handoff": plan.get("handoff", {}),
