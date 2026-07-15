@@ -246,6 +246,16 @@ class SopExecutionService:
             result["order_gate"] = order_gate.get("summary", {})
             if _apply_chat_order_gate_block(result, order_gate):
                 return _finish(result, started)
+            if _chat_gate_realtime_customer_message_should_use_ai(request, request_context):
+                result.update(
+                    {
+                        "mode": "realtime_customer_ai_reply",
+                        "send_sop": False,
+                        "need_ai_reply": True,
+                        "reason": "workflow_compatible_customer_message_use_ai_reply",
+                    }
+                )
+                return _finish(result, started)
 
             selector_input = _chat_selector_input(request, unfinished)
             result["selector_input"] = compact(selector_input, max_chars=6000)
@@ -1339,6 +1349,25 @@ def _chat_sop_payment_collection_supported(
         "payment_decision": {"amount": content.get("amount")},
     }
     return bool(payment_collection_order_fact(state, amount=content.get("amount")))
+
+
+def _chat_gate_realtime_customer_message_should_use_ai(request: ChatRequest, request_context: dict[str, Any]) -> bool:
+    """Do not let chat-gate static packs replace realtime customer replies.
+
+    `/sop/events` owns proactive SOP touches. The workflow-compatible reply
+    endpoint receives an actual customer turn, so the normal Planner/Reply
+    chain should interpret the customer's current intent with SOP progress as
+    evidence instead of sending a static pack as the whole answer.
+    """
+    merged_context = dict(request.request_context or {})
+    merged_context.update(request_context or {})
+    if _string(merged_context.get("source_protocol")) != "workflow-compatible":
+        return False
+    if not _string(request.content):
+        return False
+    if is_platform_auto_opening_message(request.content):
+        return False
+    return True
 
 
 def _chat_gate_professional_assist_risk(request: ChatRequest) -> str:

@@ -1292,6 +1292,51 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(duplicate["send_sop"])
         self.assertEqual(len(repository.tasks), 2)
 
+    async def test_chat_gate_hands_workflow_customer_message_to_ai(self) -> None:
+        class _PackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "static_pack",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "effect_case",
+                            "name": "static pack",
+                            "purpose": "static SOP pack",
+                            "order": 10,
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "static message"}}
+                            ],
+                        }
+                    ]
+                }
+
+        model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "static_pack", "need_ai_reply": False})
+        service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_PackService(),
+            model_client=model,
+        )
+        request = ChatRequest(
+            content="is this real",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="external",
+        )
+
+        result = await service.evaluate_chat_gate(
+            request,
+            request_id="req_realtime_customer",
+            request_context={"source_protocol": "workflow-compatible"},
+        )
+
+        self.assertEqual(result["mode"], "realtime_customer_ai_reply")
+        self.assertFalse(result["send_sop"])
+        self.assertTrue(result["need_ai_reply"])
+        self.assertEqual(model.messages, [])
+        self.assertEqual(result["sop_progress_evidence"]["unfinished_sops"][0]["id"], "static_pack")
+
     async def test_chat_gate_skips_platform_auto_opening_when_deposit_is_paid(self) -> None:
         repository = _Repo()
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening"})
