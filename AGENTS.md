@@ -30,3 +30,10 @@ Both modes are required for reply-quality changes. Single-node tests answer “i
   Prevention rule: 发卡动作与后台订单闭环必须解耦；订单和门店事实只决定能否声称已开单、是否可继续排客，不得否决 Planner 的 send_now/resend。发送频率由模型结合当天、历史和最近进展判断。
   Fix strategy: 删除 active-order 发卡校验和订单 violation；事务 prompt 明确 send_now/resend 必须输出 text + payment_collection，开单失败只记录后台事实。
   Regression check: `work_order.status=rejected/tool_error + payment_decision.action=send_now` 必须保留 10/20/30/40 元卡；已付、当前健康硬风险等安全终态仍不得发卡。
+
+- Phenomenon: 客户已经回复并进入真实聊天，或会话接口拉取失败时，仍收到按固定时间触发的问地址、报价或催付 SOP。
+  Root cause: 首次加微事件在会话拉取失败时降级为空历史，并丢弃事件创建后、实际处理前的新消息，发送前也没有真实客户回复的确定性拦截。
+  Trigger condition: 固定首次加微事件处理前客户已经发过消息，或会话接口返回 409、超时及其他失败。
+  Prevention rule: 固定首次加微 SOP 必须以最新会话拉取成功为前置条件；首次加微后的任何真实客户回复都阻断后续固定 SOP，客户消息时间无法确认时保守阻断。
+  Fix strategy: 取消空历史降级，保留事件创建后的新消息，只忽略企微自动加好友开场，并为客户已回复创建可审计的跳过任务。
+  Regression check: 客户在事件创建前后回复都不得调用模型或发送；只有 staff、AI、历史 SOP 消息时继续；会话拉取失败和客户消息无可靠时间时均不得发送。

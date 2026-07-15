@@ -35,10 +35,12 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 你会收到：
 - `mode`：`first_add_flow` 或 `platform_actions`。
 - `event`：触发事件、延迟、阶段和客户状态。
-- `recent_conversation`：最近 30 条已发生聊天摘要。
+- `recent_conversation`：最近 30 条已发生聊天，保留方向、来源、消息类型和时间。
+- `conversation_activity`：基于最新会话计算的客户回复、最后消息方向和时间可靠性摘要。
 - `candidate_sops`：可选的新客 SOP；每个包有阶段目的、完整 `editable_text_messages` 与只读 `readonly_messages`。
 - `platform_actions`：平台任务中的完整可编辑 text 与只读结构消息。
 - `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
+- `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
 
 `editable_text_messages` 是唯一可改写的原文。`readonly_messages` 中的图片、视频、预约金卡、门店卡和内部 notice 都是结构事实，不能修改。
 
@@ -48,6 +50,9 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 3. 如果发送内容与当前对话的称呼、语气或承接明显不自然，才针对对应已有 text 输出小幅 `text_adjustments`；正常时输出空数组。
 
 # Decision Policy
+- 事实优先级必须是：最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件。低优先级信息不得覆盖高优先级事实。
+- 客户画像和旧事件不是当前对话事实，不能成为强制发送依据，也不能覆盖近期聊天中的城市、问题、顾虑、拒绝或已经完成的行动。
+- 固定首次加微流程中的真实客户回复已由代码在本节点前阻断；不得把画像中的“未回复”或旧阶段当作重新触达理由。
 - 先做拒发审查，通过后才考虑“默认按 SOP 全流程发送”；不能用流程目标覆盖客户当前明确立场。
 - 拒发审查按以下顺序：销冠正在连续承接且会被打断；客户当前立场与候选包的核心行动相反；候选包与当前真实诉求冲突；同阶段的目标、核心事实和行动已被完整覆盖；同包或同类已经完成。
 - 判断重复时比较“阶段目标 + 核心事实 + 行动目标”，不要因为句子换了说法就当作没发过；但只是同一活动主题或只发过普通图片不等于完整覆盖。
@@ -433,6 +438,8 @@ class SopExecutionService:
         identity: dict[str, str],
         event_type: str,
         conversation_messages: list[dict[str, Any]],
+        conversation_activity: dict[str, Any] | None = None,
+        customer_memory: dict[str, Any] | None = None,
         candidate_packs: list[dict[str, Any]] | None = None,
         actions_reply_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -466,6 +473,8 @@ class SopExecutionService:
                 customer=customer,
                 event_type=event_type,
                 conversation_messages=conversation_messages,
+                conversation_activity=conversation_activity or {},
+                customer_memory=customer_memory or {},
                 candidate_packs=candidate_packs,
                 actions_reply_messages=actions_reply_messages,
                 completed_sop_pack_ids=completed_ids,
@@ -734,18 +743,31 @@ def _event_summary(payload: dict[str, Any], customer: dict[str, Any]) -> dict[st
     }
 
 
-def _conversation_context(messages: list[dict[str, Any]]) -> list[str]:
-    output: list[str] = []
+def _conversation_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Preserve message provenance and timing in the event model context."""
+    output: list[dict[str, Any]] = []
     for item in messages[-30:]:
         if not isinstance(item, dict):
             continue
         direction = _string(item.get("direction") or item.get("role") or item.get("sender_type") or item.get("from"))
-        sender = _string(item.get("sender_name") or item.get("sender_id"))
+        source = _string(item.get("source"))
+        message_type = _string(item.get("msgtype") or item.get("message_type") or item.get("type"))
         content = _message_text(item.get("content"))
-        if not content:
+        message_time = next(
+            (item.get(key) for key in ("msgtime", "timestamp", "created_at", "time") if item.get(key) not in (None, "")),
+            "",
+        )
+        if not any((direction, source, message_type, content, message_time)):
             continue
-        label = direction or sender
-        output.append(f"{label}:{content}"[:300] if label else content[:300])
+        output.append(
+            {
+                "direction": direction,
+                "source": source,
+                "message_type": message_type,
+                "content": content[:300],
+                "message_time": message_time,
+            }
+        )
     return output
 
 
@@ -816,20 +838,38 @@ def _event_selector_input(
     customer: dict[str, Any],
     event_type: str,
     conversation_messages: list[dict[str, Any]],
+    conversation_activity: dict[str, Any],
+    customer_memory: dict[str, Any],
     candidate_packs: list[dict[str, Any]],
     actions_reply_messages: list[dict[str, Any]],
     completed_sop_pack_ids: list[str],
     completed_sop_categories: list[str],
 ) -> dict[str, Any]:
+    memory_context = _customer_memory_context(customer_memory)
     return {
         "mode": "platform_actions" if event_type == "sop_platform_task" else "first_add_flow",
         "event": _event_summary(payload, customer),
         "recent_conversation": _conversation_context(conversation_messages),
+        "conversation_activity": conversation_activity,
+        **memory_context,
         "candidate_sops": [_sop_summary(pack) for pack in candidate_packs],
         "platform_actions_summary": _messages_summary(actions_reply_messages),
         "platform_actions": _message_editing_context(actions_reply_messages),
         "completed_sop_pack_ids": completed_sop_pack_ids,
         "completed_sop_categories": completed_sop_categories,
+    }
+
+
+def _customer_memory_context(memory: dict[str, Any]) -> dict[str, Any]:
+    """Expose existing profile and recent events as low-priority model context."""
+    portrait = memory.get("portrait") if isinstance(memory.get("portrait"), dict) else {}
+    basic_info = memory.get("basic_info") if isinstance(memory.get("basic_info"), dict) else {}
+    history_events = memory.get("history_events") if isinstance(memory.get("history_events"), list) else []
+    return {
+        "customer_profile": portrait,
+        "customer_basic_info": basic_info,
+        "lifecycle_stage": _string(memory.get("lifecycle_stage")),
+        "history_events": [compact(item, max_chars=800) for item in history_events[-12:] if isinstance(item, dict)],
     }
 
 

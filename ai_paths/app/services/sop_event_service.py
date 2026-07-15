@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fastapi import BackgroundTasks
 
 from app.services.outreach_send_client import OutreachSendClient
-from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs
+from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs, is_platform_auto_opening_message
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import ALLOWED_MESSAGE_TYPES, SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
@@ -31,12 +31,14 @@ class SopEventService:
         sop_reply_pack_service: SopReplyPackService,
         outreach_send_client: OutreachSendClient,
         sop_execution_service: SopExecutionService | None = None,
+        memory_store: Any | None = None,
         default_identity: dict[str, Any] | None = None,
     ) -> None:
         self.repository = repository
         self.sop_reply_pack_service = sop_reply_pack_service
         self.outreach_send_client = outreach_send_client
         self.sop_execution_service = sop_execution_service
+        self.memory_store = memory_store
         self.default_identity = {
             "corp_id": _string((default_identity or {}).get("corp_id")),
             "user_id": _string((default_identity or {}).get("user_id")),
@@ -127,30 +129,46 @@ class SopEventService:
             limit=30,
         )
         if conversation_fetch.get("status") != "ok":
-            if event_type in FIRST_ADD_EVENT_TYPES:
-                conversation_fetch = {
-                    "status": "fallback_empty",
-                    "reason": "conversation_fetch_failed",
-                    "error": str(conversation_fetch.get("error") or conversation_fetch.get("reason") or ""),
-                    "request": conversation_fetch.get("request", {}),
-                    "message_count": 0,
-                    "messages": [],
-                }
-            else:
-                return self._create_task_record(
-                    payload,
-                    customer,
-                    index=index,
-                    identity=identity,
-                    sop_pack_id=base_pack_id,
-                    sop_pack_name=base_pack_name,
-                    reply_messages=[],
-                    status="failed_conversation_fetch",
-                    error=str(conversation_fetch.get("error") or conversation_fetch.get("reason") or "conversation_fetch_failed"),
-                    send_payload={"identity": identity, "conversation_fetch": compact(conversation_fetch, max_chars=4000)},
-                )
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id=base_pack_id,
+                sop_pack_name=base_pack_name,
+                reply_messages=[],
+                status="failed_conversation_fetch",
+                error=str(conversation_fetch.get("error") or conversation_fetch.get("reason") or "conversation_fetch_failed"),
+                send_payload={"identity": identity, "conversation_fetch": compact(conversation_fetch, max_chars=4000)},
+            )
 
         conversation_messages = conversation_fetch.get("messages") if isinstance(conversation_fetch.get("messages"), list) else []
+        conversation_filter: dict[str, Any] = {}
+        if event_type in FIRST_ADD_EVENT_TYPES:
+            conversation_messages, conversation_filter = _first_add_conversation_messages(payload, customer, conversation_messages)
+        conversation_activity = _conversation_activity(
+            conversation_messages,
+            first_added_at=_first_added_at(customer) if event_type in FIRST_ADD_EVENT_TYPES else None,
+        )
+        if event_type in FIRST_ADD_EVENT_TYPES and conversation_activity["customer_replied"]:
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="first_add_customer_replied",
+                sop_pack_name="first_add_customer_replied",
+                reply_messages=[],
+                status="skipped_customer_replied",
+                error="",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_filter": conversation_filter,
+                    "conversation_activity": conversation_activity,
+                },
+            )
+
         quiet_hours = _quiet_hours_summary(payload, conversation_messages)
         if quiet_hours["skip"]:
             return self._create_task_record(
@@ -166,9 +184,12 @@ class SopEventService:
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_filter": conversation_filter,
+                    "conversation_activity": conversation_activity,
                     "quiet_hours": quiet_hours,
                 },
             )
+        customer_memory = self._load_customer_memory(identity["customer_id"])
         if event_type in FIRST_ADD_EVENT_TYPES:
             return await self._create_first_add_task(
                 payload,
@@ -177,6 +198,9 @@ class SopEventService:
                 identity=identity,
                 conversation_fetch=conversation_fetch,
                 conversation_messages=conversation_messages,
+                conversation_filter=conversation_filter,
+                conversation_activity=conversation_activity,
+                customer_memory=customer_memory,
             )
         if event_type == "sop_platform_task":
             return await self._create_platform_task(
@@ -186,6 +210,8 @@ class SopEventService:
                 identity=identity,
                 conversation_fetch=conversation_fetch,
                 conversation_messages=conversation_messages,
+                conversation_activity=conversation_activity,
+                customer_memory=customer_memory,
             )
 
         return self._create_task_record(
@@ -200,6 +226,16 @@ class SopEventService:
             error=f"unsupported_event_type:{event_type}",
             send_payload={"identity": identity, "conversation_fetch": _conversation_fetch_summary(conversation_fetch)},
         )
+
+    def _load_customer_memory(self, customer_id: str) -> dict[str, Any]:
+        """Load existing customer memory for model context without mutating it."""
+        if not self.memory_store:
+            return {}
+        try:
+            memory = self.memory_store.load(customer_id)
+        except Exception:
+            return {}
+        return memory if isinstance(memory, dict) else {}
 
     def _complete_identity(self, identity: dict[str, str]) -> dict[str, str]:
         lookup = getattr(self.repository, "find_sop_event_identity", None)
@@ -244,6 +280,9 @@ class SopEventService:
         identity: dict[str, str],
         conversation_fetch: dict[str, Any],
         conversation_messages: list[dict[str, Any]],
+        conversation_filter: dict[str, Any],
+        conversation_activity: dict[str, Any],
+        customer_memory: dict[str, Any],
     ) -> dict[str, Any]:
         sent_before = _event_created_at(payload)
         completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
@@ -254,11 +293,6 @@ class SopEventService:
         completed_categories = _sent_categories(self.repository, identity, sent_before=sent_before)
         match_context = _match_context(payload, customer)
         delay_minutes = match_context["delay_minutes"]
-        event_conversation_messages, conversation_filter = _first_add_conversation_messages(
-            payload,
-            customer,
-            conversation_messages,
-        )
         candidates = first_add_candidate_packs(
             self.sop_reply_pack_service.load(),
             completed_sop_pack_ids=completed_ids,
@@ -284,6 +318,7 @@ class SopEventService:
                     "completed_sop_categories": completed_categories,
                     "delay_minutes": delay_minutes,
                     "conversation_filter": conversation_filter,
+                    "conversation_activity": conversation_activity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                 },
             )
@@ -293,7 +328,9 @@ class SopEventService:
             customer=customer,
             identity=identity,
             event_type=_string(payload.get("event_type")),
-            conversation_messages=event_conversation_messages,
+            conversation_messages=conversation_messages,
+            conversation_activity=conversation_activity,
+            customer_memory=customer_memory,
             candidate_packs=candidates,
             actions_reply_messages=[],
         )
@@ -314,6 +351,7 @@ class SopEventService:
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_filter": conversation_filter,
+                    "conversation_activity": conversation_activity,
                     "event_decision_input": decision.get("selector_input", {}),
                 },
                 send_response={"event_decision": decision},
@@ -325,7 +363,7 @@ class SopEventService:
         )
         messages, sanitize_summary = sanitize_sop_reply_messages(
             adjusted_messages,
-            conversation_messages=event_conversation_messages,
+            conversation_messages=conversation_messages,
         )
         if not messages:
             return self._create_task_record(
@@ -343,6 +381,7 @@ class SopEventService:
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_filter": conversation_filter,
+                    "conversation_activity": conversation_activity,
                     "message_sanitize": sanitize_summary,
                     "message_adjustment": adjustment_summary,
                     "event_decision_input": decision.get("selector_input", {}),
@@ -365,6 +404,7 @@ class SopEventService:
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                 "conversation_filter": conversation_filter,
+                "conversation_activity": conversation_activity,
                 "message_sanitize": sanitize_summary,
                 "message_adjustment": adjustment_summary,
                 "event_decision_input": decision.get("selector_input", {}),
@@ -381,6 +421,8 @@ class SopEventService:
         identity: dict[str, str],
         conversation_fetch: dict[str, Any],
         conversation_messages: list[dict[str, Any]],
+        conversation_activity: dict[str, Any],
+        customer_memory: dict[str, Any],
     ) -> dict[str, Any]:
         raw_messages = _actions_to_reply_messages(_customer_actions(payload, customer))
         messages, sanitize_summary = sanitize_sop_reply_messages(
@@ -402,6 +444,7 @@ class SopEventService:
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
                     "message_sanitize": sanitize_summary,
                 },
             )
@@ -412,6 +455,8 @@ class SopEventService:
             identity=identity,
             event_type="sop_platform_task",
             conversation_messages=conversation_messages,
+            conversation_activity=conversation_activity,
+            customer_memory=customer_memory,
             candidate_packs=[],
             actions_reply_messages=messages,
         )
@@ -431,6 +476,7 @@ class SopEventService:
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
                     "message_sanitize": sanitize_summary,
                     "event_decision_input": decision.get("selector_input", {}),
                 },
@@ -459,6 +505,7 @@ class SopEventService:
             send_payload={
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                "conversation_activity": conversation_activity,
                 "message_sanitize": sanitize_summary,
                 "message_adjustment": adjustment_summary,
                 "event_decision_input": decision.get("selector_input", {}),
@@ -474,6 +521,8 @@ class SopEventService:
         identity: dict[str, str],
         event_type: str,
         conversation_messages: list[dict[str, Any]],
+        conversation_activity: dict[str, Any],
+        customer_memory: dict[str, Any],
         candidate_packs: list[dict[str, Any]],
         actions_reply_messages: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -493,6 +542,8 @@ class SopEventService:
             identity=identity,
             event_type=event_type,
             conversation_messages=conversation_messages,
+            conversation_activity=conversation_activity,
+            customer_memory=customer_memory,
             candidate_packs=candidate_packs,
             actions_reply_messages=actions_reply_messages,
         )
@@ -571,7 +622,8 @@ class SopEventService:
             )
 
         if result.get("status") == "sent":
-            return self.repository.update_sop_send_task(
+            sent_at = utc_now_iso()
+            sent_task = self.repository.update_sop_send_task(
                 str(task.get("id") or ""),
                 status="sent",
                 send_payload=_merge_send_payload(task, result.get("send_payload") if isinstance(result.get("send_payload"), dict) else {}),
@@ -579,8 +631,10 @@ class SopEventService:
                     task,
                     result.get("response") if isinstance(result.get("response"), dict) else result,
                 ),
-                sent_at=utc_now_iso(),
+                sent_at=sent_at,
             )
+            self._record_successful_send(sent_task, sent_at=sent_at)
+            return sent_task
         status = str(result.get("status") or "failed")
         reason = str(result.get("reason") or result.get("error") or "")
         final_status = status if status.startswith("skipped") else "failed"
@@ -591,6 +645,32 @@ class SopEventService:
             send_response=_merge_send_response(task, result),
             error=reason,
         )
+
+    def _record_successful_send(self, task: dict[str, Any], *, sent_at: str) -> None:
+        """Persist activity timestamps and minimal SOP history after a confirmed send."""
+        customer_id = _string(task.get("customer_id"))
+        touch_message_time = getattr(self.repository, "touch_customer_message_time", None)
+        if customer_id and callable(touch_message_time):
+            try:
+                touch_message_time(customer_id, field="last_outreach_at", value=sent_at)
+            except Exception:
+                pass
+        if not customer_id or not self.memory_store:
+            return
+        messages = task.get("reply_messages") if isinstance(task.get("reply_messages"), list) else []
+        message_types = [_string(item.get("type")) for item in messages if isinstance(item, dict) and _string(item.get("type"))]
+        try:
+            self.memory_store.record_sop_pack_sent(
+                customer_id,
+                sop_pack_id=_string(task.get("sop_pack_id")),
+                sop_category=_string(task.get("sop_category")),
+                source_event_id=_string(task.get("event_id")),
+                message_types=message_types,
+                sent_at=sent_at,
+                task_id=_string(task.get("id")),
+            )
+        except Exception:
+            pass
 
 
 def _customer_identity(payload: dict[str, Any], customer: dict[str, Any]) -> dict[str, str]:
@@ -824,6 +904,8 @@ def _latest_customer_message_at(messages: list[dict[str, Any]], *, before: datet
     for message in messages:
         if not _is_customer_message(message):
             continue
+        if is_platform_auto_opening_message(_conversation_message_content(message.get("content"))):
+            continue
         message_at = _message_time(message)
         if message_at and message_at <= before:
             candidates.append(message_at)
@@ -835,13 +917,95 @@ def _is_customer_message(message: dict[str, Any]) -> bool:
     return direction in {"customer", "user", "external"}
 
 
+def _first_added_at(customer: dict[str, Any]) -> datetime | None:
+    """Return the normalized first-added timestamp from the event customer payload."""
+    first_added = customer.get("first_added_event") if isinstance(customer.get("first_added_event"), dict) else {}
+    return _parse_time(first_added.get("timestamp") or first_added.get("created_at") or first_added.get("time"))
+
+
+def _conversation_activity(
+    messages: list[dict[str, Any]],
+    *,
+    first_added_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Summarize fresh conversation activity for deterministic first-add safety checks."""
+    real_customer_times: list[datetime] = []
+    real_customer_count = 0
+    unknown_time_customer_count = 0
+    ignored_auto_opening_count = 0
+    latest_message: tuple[datetime, str, bool] | None = None
+    fallback_last_direction = ""
+    fallback_last_is_real_customer = False
+
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        direction = _string(message.get("direction") or message.get("from") or message.get("sender_type") or message.get("role")).lower()
+        is_customer = _is_customer_message(message)
+        is_auto_opening = is_customer and is_platform_auto_opening_message(_conversation_message_content(message.get("content")))
+        is_real_customer = is_customer and not is_auto_opening
+        if direction:
+            fallback_last_direction = direction
+            fallback_last_is_real_customer = is_real_customer
+        message_at = _message_time(message)
+        if message_at and (latest_message is None or message_at >= latest_message[0]):
+            latest_message = (message_at, direction, is_real_customer)
+        if not is_customer:
+            continue
+        if is_auto_opening:
+            ignored_auto_opening_count += 1
+            continue
+        real_customer_count += 1
+        if message_at:
+            real_customer_times.append(message_at)
+        else:
+            unknown_time_customer_count += 1
+
+    missing_first_added_time = bool(real_customer_count and first_added_at is None)
+    uncertain_customer_timing = bool(unknown_time_customer_count or missing_first_added_time)
+    customer_replied = real_customer_count > 0
+    last_direction = latest_message[1] if latest_message else fallback_last_direction
+    last_message_is_customer = latest_message[2] if latest_message else fallback_last_is_real_customer
+    if unknown_time_customer_count:
+        reason = "customer_message_time_unknown"
+    elif missing_first_added_time:
+        reason = "first_added_time_unknown"
+    elif customer_replied:
+        reason = "customer_replied_after_first_add"
+    else:
+        reason = ""
+    return {
+        "message_count": len(messages),
+        "customer_replied": customer_replied,
+        "real_customer_message_count": real_customer_count,
+        "ignored_auto_opening_count": ignored_auto_opening_count,
+        "unknown_time_customer_message_count": unknown_time_customer_count,
+        "uncertain_customer_timing": uncertain_customer_timing,
+        "first_added_at": first_added_at.isoformat() if first_added_at else "",
+        "latest_customer_message_at": max(real_customer_times).isoformat() if real_customer_times else "",
+        "last_message_direction": last_direction,
+        "last_message_is_customer": last_message_is_customer,
+        "reason": reason,
+    }
+
+
+def _conversation_message_content(value: Any) -> str:
+    """Normalize conversation message content for the platform auto-opening matcher."""
+    if isinstance(value, dict):
+        for key in ("text", "content", "title", "url"):
+            text = _string(value.get(key))
+            if text:
+                return text
+        return ""
+    return _string(value)
+
+
 def _first_add_conversation_messages(
     payload: dict[str, Any],
     customer: dict[str, Any],
     messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    first_added = customer.get("first_added_event") if isinstance(customer.get("first_added_event"), dict) else {}
-    first_added_at = _parse_time(first_added.get("timestamp") or first_added.get("created_at") or first_added.get("time"))
+    first_added_at = _first_added_at(customer)
     event_created_at = _parse_time(payload.get("created_at") or payload.get("upstream_created_at"))
     summary: dict[str, Any] = {
         "scope": "first_add_event_window",
@@ -849,17 +1013,23 @@ def _first_add_conversation_messages(
         "kept_count": len(messages),
         "dropped_before_first_add": 0,
         "dropped_after_event_created": 0,
+        "kept_after_event_created": 0,
         "kept_unknown_time": 0,
         "first_added_at": first_added_at.isoformat() if first_added_at else "",
         "event_created_at": event_created_at.isoformat() if event_created_at else "",
     }
-    if not first_added_at and not event_created_at:
+    if not first_added_at:
         summary["scope"] = "first_add_no_time_window"
+        summary["kept_unknown_time"] = sum(1 for message in messages if not _message_time(message))
+        if event_created_at:
+            summary["kept_after_event_created"] = sum(
+                1 for message in messages if _message_time(message) and _message_time(message) > event_created_at
+            )
         return messages, summary
 
     filtered: list[dict[str, Any]] = []
     dropped = 0
-    dropped_after_event = 0
+    kept_after_event = 0
     unknown = 0
     for message in messages:
         message_at = _message_time(message)
@@ -871,12 +1041,11 @@ def _first_add_conversation_messages(
             dropped += 1
             continue
         if event_created_at and message_at > event_created_at:
-            dropped_after_event += 1
-            continue
+            kept_after_event += 1
         filtered.append(message)
     summary["kept_count"] = len(filtered)
     summary["dropped_before_first_add"] = dropped
-    summary["dropped_after_event_created"] = dropped_after_event
+    summary["kept_after_event_created"] = kept_after_event
     summary["kept_unknown_time"] = unknown
     return filtered, summary
 

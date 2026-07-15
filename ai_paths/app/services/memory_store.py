@@ -179,6 +179,66 @@ class CustomerMemoryStore:
                 pass
         return {"status": "recorded", "image_url": clean_url}
 
+    def record_sop_pack_sent(
+        self,
+        customer_id: str,
+        *,
+        sop_pack_id: str,
+        sop_category: str,
+        source_event_id: str,
+        message_types: list[str],
+        sent_at: str = "",
+        task_id: str = "",
+    ) -> dict[str, Any]:
+        """Record a successfully sent SOP pack without storing message bodies or identity data."""
+        clean_pack_id = str(sop_pack_id or "").strip()
+        if not clean_pack_id:
+            return {"status": "skipped", "reason": "empty_sop_pack_id"}
+
+        clean_types: list[str] = []
+        for message_type in message_types:
+            value = str(message_type or "").strip()
+            if value and value not in clean_types:
+                clean_types.append(value)
+        created_at = str(sent_at or "").strip() or self._now()
+        event_id = f"sop_pack_sent_{task_id or uuid4()}"
+        data = self.load(customer_id)
+        events = data.setdefault("history_events", [])
+        if not isinstance(events, list):
+            events = []
+            data["history_events"] = events
+        if any(isinstance(item, dict) and item.get("event_id") == event_id for item in events):
+            return {"status": "skipped", "reason": "duplicate_event", "event_id": event_id}
+
+        events.append(
+            {
+                "event_id": event_id,
+                "event_type": "sop_pack_sent",
+                "created_at": created_at,
+                "summary": "已发送SOP话术包",
+                "facts": {
+                    "sop_pack_id": clean_pack_id,
+                    "sop_category": str(sop_category or "").strip(),
+                    "message_types": clean_types,
+                    "source_event_id": str(source_event_id or "").strip(),
+                    "task_id": str(task_id or "").strip(),
+                },
+                "impact": "后续SOP判断应避免重复发送同一话术包。",
+                "confidence": 1.0,
+            }
+        )
+        data["customer_id"] = customer_id
+        data["updated_at"] = created_at
+        data["history_events"] = events[-100:]
+        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        self._path(customer_id).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        if self.repository:
+            try:
+                self.repository.save_memory(customer_id, data)
+            except Exception:
+                pass
+        return {"status": "recorded", "event_id": event_id, "sop_pack_id": clean_pack_id}
+
     def record_store_fact(
         self,
         customer_id: str,

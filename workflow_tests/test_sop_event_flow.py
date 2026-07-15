@@ -17,6 +17,7 @@ from app.services.sop_execution_service import (
 )
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
+from app.services.memory_store import CustomerMemoryStore
 from app.services.storage import AppRepository, SQLiteStore
 
 
@@ -49,12 +50,13 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             "wechat": "CS001",
             "identity_source": "conversations",
         }
-        client = _OutreachClient(messages=[{"direction": "customer", "content": "你好"}])
+        client = _OutreachClient(messages=[])
         selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send opening"})
         service = _service(repo=repo, client=client, selector=selector)
         payload = {
             "event_id": "evt_identity_fallback",
             "event_type": "sop_friend_added_schedule_batch",
+            "created_at": "2026-07-11T02:00:00+00:00",
             "account": {"enterprise_id": "ent", "wework_user_id": "CS001"},
             "sop": {"delay_minutes": 1},
             "customers": [{"customer": {"external_userid": "ext_user"}}],
@@ -72,7 +74,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_event_identity_falls_back_to_default_platform_identity(self) -> None:
         repo = _Repo()
-        client = _OutreachClient(messages=[{"direction": "customer", "content": "hello"}])
+        client = _OutreachClient(messages=[])
         selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send opening"})
         service = _service(
             repo=repo,
@@ -87,6 +89,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         payload = {
             "event_id": "evt_identity_default",
             "event_type": "sop_friend_added_schedule_batch",
+            "created_at": "2026-07-11T02:00:00+00:00",
             "account": {"enterprise_id": "ent", "wework_user_id": "SL097", "assignee_id": "test"},
             "sop": {"delay_minutes": 1},
             "customers": [{"customer": {"external_userid": "ext_user"}}],
@@ -136,14 +139,25 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_first_added_event_fetches_conversation_then_selects_first_add_sop(self) -> None:
         repo = _Repo()
-        client = _OutreachClient(messages=[{"direction": "customer", "content": "你好"}])
+        client = _OutreachClient(
+            messages=[
+                {
+                    "from": "staff",
+                    "source": "ai_reply",
+                    "msgtype": "text",
+                    "content": "前序开场",
+                    "msgtime": "2026-07-11T01:30:00+00:00",
+                }
+            ]
+        )
         selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send opening"})
         service = _service(repo=repo, client=client, selector=selector)
         payload = _base_payload(
             event_id="evt_first",
             event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
             sop={"delay_minutes": 3},
-            customers=[{"first_added_event": {"trace_id": "trace_1"}}],
+            customers=[{"first_added_event": {"trace_id": "trace_1", "timestamp": "2026-07-11T01:00:00+00:00"}}],
         )
 
         repo.create_sop_event(payload)
@@ -157,25 +171,29 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls[0]["event_type"], "sop_friend_added_schedule_batch")
         self.assertEqual(selector.calls[0]["candidate_packs"][0]["id"], "opening")
 
-    async def test_first_added_event_uses_empty_history_when_conversation_fetch_fails(self) -> None:
-        repo = _Repo()
-        client = _OutreachClient(fetch_result={"status": "failed", "error": "http_status:404"})
-        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send opening"})
-        service = _service(repo=repo, client=client, selector=selector)
-        payload = _base_payload(
-            event_id="evt_first_fetch_failed",
-            event_type="sop_friend_added_schedule_batch",
-            sop={"delay_minutes": 1},
-            customers=[{"first_added_event": {"trace_id": "trace_fetch_failed"}}],
-        )
+    async def test_first_added_event_blocks_when_conversation_fetch_fails(self) -> None:
+        for suffix, error in (("conflict", "http_status:409"), ("timeout", "TimeoutError: timed out")):
+            with self.subTest(error=error):
+                repo = _Repo()
+                client = _OutreachClient(fetch_result={"status": "failed", "error": error})
+                selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+                service = _service(repo=repo, client=client, selector=selector)
+                event_id = f"evt_first_fetch_failed_{suffix}"
+                payload = _base_payload(
+                    event_id=event_id,
+                    event_type="sop_friend_added_schedule_batch",
+                    sop={"delay_minutes": 1},
+                    customers=[{"first_added_event": {"trace_id": f"trace_fetch_failed_{suffix}"}}],
+                )
 
-        repo.create_sop_event(payload)
-        result = await service.process_event("evt_first_fetch_failed")
+                repo.create_sop_event(payload)
+                result = await service.process_event(event_id)
 
-        self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual(repo.tasks[0]["send_payload"]["conversation_fetch"]["status"], "fallback_empty")
-        self.assertEqual(selector.calls[0]["conversation_messages"], [])
+                self.assertEqual(result["status"], "processed_with_errors")
+                self.assertEqual(repo.tasks[0]["status"], "failed_conversation_fetch")
+                self.assertIn(error, repo.tasks[0]["error"])
+                self.assertEqual(selector.calls, [])
+                self.assertEqual(client.send_calls, [])
 
     async def test_event_skips_inactive_customer_during_quiet_hours(self) -> None:
         repo = _Repo()
@@ -183,7 +201,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             messages=[
                 {
                     "direction": "customer",
-                    "content": "我晚点再看",
+                    "content": "我已经添加了你，现在我们可以开始聊天了。",
                     "msgtime": "2026-07-10T17:29:00+00:00",
                 }
             ]
@@ -195,7 +213,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             event_type="sop_friend_added_schedule_batch",
             created_at="2026-07-10T18:00:00+00:00",
             sop={"delay_minutes": 3},
-            customers=[{"first_added_event": {"trace_id": "trace_quiet_inactive"}}],
+            customers=[{"first_added_event": {"trace_id": "trace_quiet_inactive", "timestamp": "2026-07-10T17:00:00+00:00"}}],
         )
 
         repo.create_sop_event(payload)
@@ -203,12 +221,12 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "processed")
         self.assertEqual(repo.tasks[0]["status"], "skipped_quiet_hours_inactive")
-        self.assertEqual(repo.tasks[0]["send_payload"]["quiet_hours"]["inactivity_minutes"], 31)
+        self.assertIsNone(repo.tasks[0]["send_payload"]["quiet_hours"]["inactivity_minutes"])
         self.assertEqual(repo.tasks[0]["send_payload"]["quiet_hours"]["timezone"], "Asia/Shanghai")
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
-    async def test_event_allows_recent_customer_message_during_quiet_hours(self) -> None:
+    async def test_event_skips_recent_customer_message_during_quiet_hours(self) -> None:
         repo = _Repo()
         client = _OutreachClient(
             messages=[
@@ -226,23 +244,24 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             event_type="sop_friend_added_schedule_batch",
             created_at="2026-07-10T18:00:00+00:00",
             sop={"delay_minutes": 3},
-            customers=[{"first_added_event": {"trace_id": "trace_quiet_active"}}],
+            customers=[{"first_added_event": {"trace_id": "trace_quiet_active", "timestamp": "2026-07-10T17:00:00+00:00"}}],
         )
 
         repo.create_sop_event(payload)
         result = await service.process_event("evt_quiet_active")
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual(len(selector.calls), 1)
+        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_replied")
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(client.send_calls, [])
 
-    async def test_event_allows_inactive_customer_outside_quiet_hours(self) -> None:
+    async def test_event_skips_customer_price_question_outside_quiet_hours(self) -> None:
         repo = _Repo()
         client = _OutreachClient(
             messages=[
                 {
                     "direction": "customer",
-                    "content": "我晚点再看",
+                    "content": "测完皮肤后的价格怎么算？",
                     "msgtime": "2026-07-11T00:00:00+00:00",
                 }
             ]
@@ -254,15 +273,17 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             event_type="sop_friend_added_schedule_batch",
             created_at="2026-07-11T02:00:00+00:00",
             sop={"delay_minutes": 3},
-            customers=[{"first_added_event": {"trace_id": "trace_daytime_inactive"}}],
+            customers=[{"first_added_event": {"trace_id": "trace_daytime_inactive", "timestamp": "2026-07-10T23:30:00+00:00"}}],
         )
 
         repo.create_sop_event(payload)
         result = await service.process_event("evt_daytime_inactive")
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual(len(selector.calls), 1)
+        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_replied")
+        self.assertEqual(repo.tasks[0]["send_payload"]["conversation_activity"]["reason"], "customer_replied_after_first_add")
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(client.send_calls, [])
 
     async def test_event_applies_model_text_adjustment_before_sending(self) -> None:
         repo = _Repo()
@@ -291,13 +312,13 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.tasks[0]["reply_messages"][0]["content"]["text"], "您好，刚加上您，我简单和您说下这次活动。")
         self.assertEqual(repo.tasks[0]["send_payload"]["message_adjustment"]["applied_orders"], [1])
 
-    async def test_first_added_event_ignores_conversation_before_first_add_time(self) -> None:
+    async def test_first_added_event_keeps_post_event_reply_and_skips(self) -> None:
         repo = _Repo()
         client = _OutreachClient(
             messages=[
                 {"from": "staff", "content": "旧会话", "msgtime": 1782286005000},
-                {"from": "customer", "content": "新回复", "msgtime": "2026-07-02T04:00:00+00:00"},
-                {"from": "staff", "content": "事件后回复", "msgtime": "2026-07-02T04:20:00+00:00"},
+                {"from": "staff", "content": "首次加微后开场", "msgtime": "2026-07-02T04:00:00+00:00"},
+                {"from": "customer", "content": "我在深圳，有附近地址吗？", "msgtime": "2026-07-02T04:20:00+00:00"},
             ]
         )
         selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send opening"})
@@ -314,13 +335,220 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_event("evt_first_filter_history")
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual(selector.calls[0]["conversation_messages"], [{"from": "customer", "content": "新回复", "msgtime": "2026-07-02T04:00:00+00:00"}])
+        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_replied")
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(client.send_calls, [])
         conversation_filter = repo.tasks[0]["send_payload"]["conversation_filter"]
         self.assertEqual(conversation_filter["input_count"], 3)
-        self.assertEqual(conversation_filter["kept_count"], 1)
+        self.assertEqual(conversation_filter["kept_count"], 2)
         self.assertEqual(conversation_filter["dropped_before_first_add"], 1)
-        self.assertEqual(conversation_filter["dropped_after_event_created"], 1)
+        self.assertEqual(conversation_filter["dropped_after_event_created"], 0)
+        self.assertEqual(conversation_filter["kept_after_event_created"], 1)
+
+    async def test_first_added_event_continues_with_staff_only_messages(self) -> None:
+        repo = _Repo()
+        messages = [
+            {
+                "from": "staff",
+                "source": "ai_reply",
+                "msgtype": "text",
+                "content": "我先把活动介绍发您",
+                "msgtime": "2026-07-02T04:20:00+00:00",
+            }
+        ]
+        client = _OutreachClient(messages=messages)
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "staff only"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_staff_only",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-02T04:10:00+00:00",
+            sop={"delay_minutes": 1},
+            customers=[{"first_added_event": {"trace_id": "trace_staff_only", "timestamp": "2026-07-02T03:50:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_staff_only")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(selector.calls[0]["conversation_messages"], messages)
+        self.assertEqual(repo.tasks[0]["send_payload"]["conversation_filter"]["kept_after_event_created"], 1)
+
+    async def test_first_added_event_ignores_platform_auto_opening_message(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            messages=[
+                {
+                    "from": "customer",
+                    "source": "wecom_system",
+                    "msgtype": "text",
+                    "content": "我已经添加了你，现在我们可以开始聊天了。",
+                    "msgtime": "2026-07-02T04:00:00+00:00",
+                }
+            ]
+        )
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "auto opening is not reply"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_auto_opening",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-02T04:10:00+00:00",
+            sop={"delay_minutes": 1},
+            customers=[{"first_added_event": {"trace_id": "trace_auto_opening", "timestamp": "2026-07-02T03:50:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_auto_opening")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(repo.tasks[0]["send_payload"]["conversation_activity"]["ignored_auto_opening_count"], 1)
+
+    async def test_first_added_event_skips_customer_message_without_reliable_time(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[{"from": "customer", "msgtype": "text", "content": "活动多少钱？"}])
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_customer_time_unknown",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-02T04:10:00+00:00",
+            sop={"delay_minutes": 1},
+            customers=[{"first_added_event": {"trace_id": "trace_customer_time_unknown", "timestamp": "2026-07-02T03:50:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_customer_time_unknown")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_replied")
+        activity = repo.tasks[0]["send_payload"]["conversation_activity"]
+        self.assertTrue(activity["uncertain_customer_timing"])
+        self.assertEqual(activity["reason"], "customer_message_time_unknown")
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(client.send_calls, [])
+
+    async def test_no_customer_reply_keeps_configured_5_30_60_70_minute_flow(self) -> None:
+        pack_ids = {
+            5: "event_s10_store_prompt_5min",
+            30: "event_s10_effect_warmup_30min",
+            60: "event_s10_price_quote_60min",
+            70: "event_s10_deposit_push_70min",
+        }
+        pack_service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
+        for delay_minutes, pack_id in pack_ids.items():
+            with self.subTest(delay_minutes=delay_minutes):
+                repo = _Repo()
+                client = _OutreachClient(messages=[])
+                selector = _Selector({"send_sop": True, "sop_pack_id": pack_id, "reason": "customer never replied"})
+                service = _service(repo=repo, client=client, selector=selector, pack_service=pack_service)
+                event_id = f"evt_no_reply_{delay_minutes}"
+                payload = _base_payload(
+                    event_id=event_id,
+                    event_type="sop_friend_added_schedule_batch",
+                    created_at="2026-07-11T02:00:00+00:00",
+                    sop={"delay_minutes": delay_minutes},
+                    customers=[{"first_added_event": {"trace_id": f"trace_no_reply_{delay_minutes}", "timestamp": "2026-07-11T01:00:00+00:00"}}],
+                )
+
+                repo.create_sop_event(payload)
+                result = await service.process_event(event_id)
+
+                self.assertEqual(result["status"], "processed")
+                self.assertEqual(repo.tasks[0]["status"], "sent")
+                self.assertEqual(repo.tasks[0]["sop_pack_id"], pack_id)
+
+    async def test_successful_send_records_minimal_sop_history_and_last_outreach_time(self) -> None:
+        repo = _Repo()
+        existing_memory = {
+            "portrait": {"concern": "价格"},
+            "basic_info": {"city": "深圳"},
+            "lifecycle_stage": "new_customer",
+            "history_events": [{"event_id": "history_1", "event_type": "store_matched"}],
+        }
+        memory_store = _MemoryStore(existing_memory)
+        client = _OutreachClient(messages=[])
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send opening"})
+        service = _service(repo=repo, client=client, selector=selector, memory_store=memory_store)
+        payload = _base_payload(
+            event_id="evt_record_sop_sent",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
+            sop={"delay_minutes": 1},
+            customers=[{"first_added_event": {"trace_id": "trace_record_sop_sent", "timestamp": "2026-07-11T01:00:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_record_sop_sent")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(memory_store.load_calls, ["ext_user"])
+        self.assertEqual(selector.calls[0]["customer_memory"], existing_memory)
+        self.assertEqual(len(memory_store.record_calls), 1)
+        record = memory_store.record_calls[0]
+        self.assertEqual(record["customer_id"], "ext_user")
+        self.assertEqual(record["sop_pack_id"], "opening")
+        self.assertEqual(record["message_types"], ["text"])
+        self.assertEqual(record["source_event_id"], "evt_record_sop_sent")
+        self.assertNotIn("reply_messages", record)
+        self.assertEqual(repo.message_times[0]["field"], "last_outreach_at")
+        self.assertTrue(repo.message_times[0]["value"])
+
+    async def test_rejected_or_failed_send_does_not_record_sop_history(self) -> None:
+        cases = (
+            (_Selector({"send_sop": False, "reason": "reject"}), _OutreachClient(messages=[]), "skipped_model_rejected"),
+            (
+                _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "send"}),
+                _OutreachClient(messages=[], send_result={"status": "failed", "reason": "send_failed"}),
+                "failed",
+            ),
+        )
+        for index, (selector, client, expected_status) in enumerate(cases):
+            with self.subTest(expected_status=expected_status):
+                repo = _Repo()
+                memory_store = _MemoryStore()
+                service = _service(repo=repo, client=client, selector=selector, memory_store=memory_store)
+                event_id = f"evt_no_record_{index}"
+                payload = _base_payload(
+                    event_id=event_id,
+                    event_type="sop_friend_added_schedule_batch",
+                    created_at="2026-07-11T02:00:00+00:00",
+                    sop={"delay_minutes": 1},
+                    customers=[{"first_added_event": {"trace_id": f"trace_no_record_{index}", "timestamp": "2026-07-11T01:00:00+00:00"}}],
+                )
+
+                repo.create_sop_event(payload)
+                await service.process_event(event_id)
+
+                self.assertEqual(repo.tasks[0]["status"], expected_status)
+                self.assertEqual(memory_store.record_calls, [])
+                self.assertEqual(repo.message_times, [])
+
+    def test_memory_store_sop_event_contains_no_message_body_or_identity(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            memory_store = CustomerMemoryStore(SimpleNamespace(memory_dir=Path(tmpdir)))
+
+            result = memory_store.record_sop_pack_sent(
+                "customer_1",
+                sop_pack_id="opening",
+                sop_category="opening",
+                source_event_id="evt_1",
+                message_types=["text", "image", "text"],
+                sent_at="2026-07-11T02:00:00+00:00",
+                task_id="task_1",
+            )
+            memory = memory_store.load("customer_1")
+
+        self.assertEqual(result["status"], "recorded")
+        event = memory["history_events"][0]
+        self.assertEqual(event["event_type"], "sop_pack_sent")
+        self.assertEqual(event["facts"]["message_types"], ["text", "image"])
+        serialized = str(event)
+        self.assertNotIn("content", serialized)
+        self.assertNotIn("corp_id", serialized)
+        self.assertNotIn("external_userid", serialized)
 
     async def test_immediate_first_added_event_uses_immediate_first_add_sop(self) -> None:
         repo = _Repo()
@@ -366,13 +594,13 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_event_payment_collection_amount_uses_recent_participant_count(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[{"direction": "customer", "content": "我带两个朋友一起过去"}])
-        selector = _Selector({"send_sop": True, "sop_pack_id": "deposit_pack", "reason": "send deposit"})
-        service = _service(repo=repo, client=client, selector=selector, pack_service=_DepositPackService())
+        selector = _Selector({"send_sop": True, "reason": "send platform deposit"})
+        service = _service(repo=repo, client=client, selector=selector)
         payload = _base_payload(
             event_id="evt_group_payment",
-            event_type="sop_friend_added_schedule_batch",
-            sop={"delay_minutes": 70},
-            customers=[{"first_added_event": {"trace_id": "trace_group"}}],
+            event_type="sop_platform_task",
+            sop={"platform_task_id": "group_payment", "actions": _DepositPackService().load()["packs"][0]["reply_messages"]},
+            customers=[{}],
         )
 
         repo.create_sop_event(payload)
@@ -389,13 +617,13 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_event_payment_collection_over_four_people_asks_confirmation(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[{"direction": "customer", "content": "我带四个朋友一起过去"}])
-        selector = _Selector({"send_sop": True, "sop_pack_id": "deposit_pack", "reason": "send deposit"})
-        service = _service(repo=repo, client=client, selector=selector, pack_service=_DepositPackService())
+        selector = _Selector({"send_sop": True, "reason": "send platform deposit"})
+        service = _service(repo=repo, client=client, selector=selector)
         payload = _base_payload(
             event_id="evt_group_payment_over_limit",
-            event_type="sop_friend_added_schedule_batch",
-            sop={"delay_minutes": 70},
-            customers=[{"first_added_event": {"trace_id": "trace_group_over_limit"}}],
+            event_type="sop_platform_task",
+            sop={"platform_task_id": "group_payment_over_limit", "actions": _DepositPackService().load()["packs"][0]["reply_messages"]},
+            customers=[{}],
         )
 
         repo.create_sop_event(payload)
@@ -741,7 +969,22 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             customer={},
             identity={"customer_id": "customer", "external_userid": "external"},
             event_type="sop_friend_added_schedule_batch",
-            conversation_messages=[{"direction": "staff", "content": "前序破冰"}],
+            conversation_messages=[
+                {
+                    "from": "staff",
+                    "source": "ai_reply",
+                    "msgtype": "text",
+                    "content": "前序破冰",
+                    "msgtime": 1783728000000,
+                }
+            ],
+            conversation_activity={"customer_replied": False, "last_message_direction": "staff"},
+            customer_memory={
+                "portrait": {"concern": "价格"},
+                "basic_info": {"city": "深圳"},
+                "lifecycle_stage": "new_customer",
+                "history_events": [{"event_id": "history_1", "event_type": "store_matched", "summary": "已匹配门店"}],
+            },
             candidate_packs=[
                 {
                     "id": "effect_followup",
@@ -779,9 +1022,17 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("payment_collection`、`store_address`、`image`、`video`", system_prompt)
         self.assertIn("editable_text_messages", system_prompt)
         self.assertIn("readonly_messages", system_prompt)
+        self.assertIn("最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件", system_prompt)
         self.assertIn("这是完整的效果案例铺垫原文，用于确认模型不会只根据截断摘要改写。", user_prompt)
         self.assertIn('"amount":10', user_prompt)
-        self.assertNotIn("不因为事件时间到了就机械发送", system_prompt)
+        self.assertIn('"direction":"staff"', user_prompt)
+        self.assertIn('"source":"ai_reply"', user_prompt)
+        self.assertIn('"message_type":"text"', user_prompt)
+        self.assertIn('"message_time":1783728000000', user_prompt)
+        self.assertIn('"customer_profile":{"concern":"价格"}', user_prompt)
+        self.assertIn('"customer_basic_info":{"city":"深圳"}', user_prompt)
+        self.assertIn('"lifecycle_stage":"new_customer"', user_prompt)
+        self.assertIn('"history_events":[{"event_id":"history_1"', user_prompt)
 
     async def test_event_judge_keeps_selector_contract_for_direct_prompt_inspection(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "effect_followup", "need_ai_reply": False, "reason": "ok"})
@@ -812,7 +1063,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("客户未回复、只有 staff 消息", system_prompt)
         self.assertIn("text_adjustments", system_prompt)
         self.assertIn("payment_collection`、`store_address`、`image`、`video`", system_prompt)
-        self.assertNotIn("不因为事件时间到了就机械发送", system_prompt)
+        self.assertIn("客户画像和旧事件不是当前对话事实", system_prompt)
 
     async def test_chat_gate_sends_configured_opening_for_platform_auto_message(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening", "need_ai_reply": False})
@@ -1046,12 +1297,14 @@ def _service(
     selector: Any | None = None,
     pack_service: Any | None = None,
     default_identity: dict[str, Any] | None = None,
+    memory_store: Any | None = None,
 ) -> SopEventService:
     return SopEventService(
         repository=repo,
         sop_reply_pack_service=pack_service or _PackService(),
         outreach_send_client=client,
         sop_execution_service=selector or _Selector({"send_sop": False, "reason": "default reject"}),
+        memory_store=memory_store,
         default_identity=default_identity,
     )
 
@@ -1260,9 +1513,11 @@ class _OutreachClient:
         self,
         messages: list[dict[str, Any]] | None = None,
         fetch_result: dict[str, Any] | None = None,
+        send_result: dict[str, Any] | None = None,
     ) -> None:
         self.messages = messages or []
         self.fetch_result = fetch_result
+        self.send_result = send_result
         self.fetch_calls: list[dict[str, Any]] = []
         self.send_calls: list[dict[str, Any]] = []
 
@@ -1276,11 +1531,28 @@ class _OutreachClient:
 
     async def send_reply_messages(self, **kwargs: Any) -> dict[str, Any]:
         self.send_calls.append(kwargs)
+        if self.send_result is not None:
+            return dict(self.send_result)
         return {
             "status": "sent",
             "send_payload": {"reply_messages": kwargs.get("reply_messages", [])},
             "response": {"code": 0, "msg": "ok"},
         }
+
+
+class _MemoryStore:
+    def __init__(self, memory: dict[str, Any] | None = None) -> None:
+        self.memory = memory or {}
+        self.load_calls: list[str] = []
+        self.record_calls: list[dict[str, Any]] = []
+
+    def load(self, customer_id: str) -> dict[str, Any]:
+        self.load_calls.append(customer_id)
+        return dict(self.memory)
+
+    def record_sop_pack_sent(self, customer_id: str, **kwargs: Any) -> dict[str, Any]:
+        self.record_calls.append({"customer_id": customer_id, **kwargs})
+        return {"status": "recorded"}
 
 
 class _Repo:
@@ -1291,6 +1563,7 @@ class _Repo:
         self.sent_categories: set[str] = set()
         self.identity_lookup: dict[str, str] = {}
         self.identity_lookup_error: Exception | None = None
+        self.message_times: list[dict[str, str]] = []
 
     def create_sop_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         event_id = str(payload["event_id"])
@@ -1333,6 +1606,9 @@ class _Repo:
         if self.identity_lookup_error:
             raise self.identity_lookup_error
         return dict(self.identity_lookup)
+
+    def touch_customer_message_time(self, customer_id: str, *, field: str, value: str | None = None) -> None:
+        self.message_times.append({"customer_id": customer_id, "field": field, "value": str(value or "")})
 
     def create_sop_send_task(self, **kwargs: Any) -> dict[str, Any]:
         for task in self.tasks:

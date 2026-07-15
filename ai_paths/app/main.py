@@ -56,6 +56,7 @@ sop_event_service = SopEventService(
     sop_reply_pack_service=sop_reply_pack_service,
     outreach_send_client=outreach_send_client,
     sop_execution_service=sop_execution_service,
+    memory_store=memory_store,
     default_identity={
         "corp_id": settings.platform_agent_default_corp_id,
         "user_id": settings.platform_agent_default_user_id,
