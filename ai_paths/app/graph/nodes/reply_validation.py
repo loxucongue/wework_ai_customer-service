@@ -109,12 +109,9 @@ def _is_same_district_store_sequence(messages: list[dict[str, Any]], state: dict
     if len(card_ids) < 2 or any(str(item.get("type") or "") not in {"text", "store_address"} for item in visible):
         return False
     text_count = sum(1 for item in visible if str(item.get("type") or "") == "text")
-    if text_count > 1:
+    if text_count > 2:
         return False
-    for region in _requested_district_regions(state):
-        if card_ids.issubset(region):
-            return True
-    return False
+    return _store_ids_in_requested_district(card_ids, state)
 
 
 def _visible_message_count(messages: list[dict[str, Any]]) -> int:
@@ -454,8 +451,12 @@ def _validate_multi_store_address_same_district(messages: list[dict[str, Any]], 
     store_ids.discard("")
     if len(store_ids) < 2:
         return
-    if not any(store_ids.issubset(region) for region in _requested_district_regions(state)):
+    if not _store_ids_in_requested_district(store_ids, state):
         raise ValueError("multiple_store_address_cards_must_share_requested_district")
+
+
+def _store_ids_in_requested_district(store_ids: set[str], state: dict[str, Any]) -> bool:
+    return any(store_ids.issubset(region) for region in _requested_district_regions(state))
 
 
 def _validate_store_address_card_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:

@@ -210,7 +210,7 @@ class OutreachSendClient:
     ) -> dict[str, Any]:
         external_userid = str(request_context.get("external_userid") or fallback_external_userid or "").strip()
         customer_id = external_userid or str(request_context.get("customer_id") or fallback_customer_id or "").strip()
-        return {
+        payload = {
             "corp_id": str(request_context.get("corp_id") or fallback_corp_id or "").strip(),
             "customer_id": customer_id,
             "external_userid": external_userid,
@@ -220,6 +220,21 @@ class OutreachSendClient:
             "task_id": f"ai-paths-final-reply-{request_id}",
             "reply_messages": reply_messages,
         }
+        for key in (
+            "customer_add_wechat_id",
+            "account_id",
+            "device_id",
+            "assignee_id",
+            "assignee_name",
+            "wework_user_id",
+            "enterprise_id",
+            "platform_account_id",
+            "platform_user_id",
+        ):
+            value = str(request_context.get(key) or "").strip()
+            if value:
+                payload[key] = value
+        return payload
 
 
 def _response_body(response: httpx.Response) -> dict[str, Any] | list[Any] | str:

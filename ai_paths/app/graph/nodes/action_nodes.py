@@ -973,13 +973,15 @@ def _appointment_query_from_planner(required_tools: list[dict[str, Any]], state:
 
 
 async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_client: CozeClient) -> dict[str, Any]:
-    query = str(tool.get("query") or tool.get("origin") or tool.get("address") or state.get("normalized_content") or "").strip()
+    raw_query = str(tool.get("query") or tool.get("origin") or tool.get("address") or state.get("normalized_content") or "").strip()
+    query = _clean_store_lookup_query(raw_query)
     purpose = str(tool.get("purpose") or "").strip()
     stores = _customer_scope_stores(state)
     scope_unavailable = _customer_store_scope_unavailable(state)
     if not query:
         return {
             "status": "missing_query",
+            "raw_query": raw_query,
             "query": "",
             "purpose": purpose,
             "stores": [],
@@ -993,8 +995,9 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     if workflow_id:
         geocode = await _geocode_address(coze_client, workflow_id, query)
 
-    candidates = _stores_for_geocode(geocode, stores, purpose)
-    source = "customer_scope_geocode"
+    geocode_conflict = _geocode_conflicts_with_query_scope(query, geocode, stores)
+    candidates = [] if geocode_conflict else _stores_for_geocode(geocode, stores, purpose)
+    source = "customer_scope_geocode_conflict_ignored" if geocode_conflict else "customer_scope_geocode"
     if not candidates:
         candidates = _stores_for_text_query(query, stores, purpose)
         source = "customer_scope_text_match"
@@ -1009,9 +1012,11 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     status = "ok" if normalized else "no_match"
     return {
         "status": status,
+        "raw_query": raw_query,
         "query": query,
         "purpose": purpose,
         "source": source,
+        "geocode_conflict_ignored": geocode_conflict,
         "geocode": {key: geocode.get(key) for key in ("formatted_address", "province", "city", "district", "location") if geocode.get(key)},
         "stores": normalized[:12],
         "candidate_stores": normalized,
@@ -1181,6 +1186,39 @@ def _stores_for_text_query(query: str, stores: list[dict[str, Any]], purpose: st
             if city_stores:
                 return city_stores
     return [store for _, store in scored]
+
+
+def _clean_store_lookup_query(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    # Data-cleaning only: strip labels from platform/operator structured notes.
+    match = re.match(r"^\s*[\u4e00-\u9fffA-Za-z0-9_ /-]{2,16}\s*[:：]\s*(.+?)\s*$", text)
+    if match:
+        label = match.group(0).split(":", 1)[0].split("：", 1)[0]
+        label_compact = _compact_text(label)
+        if label_compact and any(marker in label_compact for marker in ("门店", "位置", "地址", "定位", "区域", "商圈", "地标")):
+            text = match.group(1).strip()
+    return text
+
+
+def _geocode_conflicts_with_query_scope(query: str, geocode: dict[str, Any], stores: list[dict[str, Any]]) -> bool:
+    if not isinstance(geocode, dict) or not geocode.get("location"):
+        return False
+    if not stores:
+        return False
+    text = _compact_text(query)
+    if not text:
+        return False
+    explicit_matches = _stores_for_text_query(query, stores, "")
+    if not explicit_matches:
+        return False
+    geocode_matches = _stores_for_geocode(geocode, stores, "")
+    if not geocode_matches:
+        return True
+    explicit_ids = {str(store.get("store_id") or store.get("id") or "").strip() for store in explicit_matches}
+    geocode_ids = {str(store.get("store_id") or store.get("id") or "").strip() for store in geocode_matches}
+    return bool(explicit_ids and geocode_ids and explicit_ids.isdisjoint(geocode_ids))
 
 
 def _store_text_match_score(text: str, store: dict[str, Any]) -> int:
@@ -1375,9 +1413,9 @@ def _snapshot_stores_for_exact_query(query: str) -> list[dict[str, Any]]:
 
 def _snapshot_stores_for_region_query(query: str, geocode: dict[str, Any], purpose: str) -> list[dict[str, Any]]:
     stores = _usable_snapshot_store_values()
-    candidates = _stores_for_geocode(geocode, stores, purpose)
+    candidates = _stores_for_text_query(query, stores, purpose)
     if not candidates:
-        candidates = _stores_for_text_query(query, stores, purpose)
+        candidates = _stores_for_geocode(geocode, stores, purpose)
     return _dedupe_snapshot_stores(candidates)[:60]
 
 

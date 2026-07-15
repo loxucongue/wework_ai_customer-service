@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.graph.nodes.reply_validation import validated_model_messages
+from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.schemas import ChatResponse, ReplyMessage
 from app.services.workflow_compat import workflow_response_from_chat
@@ -61,6 +61,70 @@ class StoreAddressMessageTests(unittest.TestCase):
         self.assertEqual(plan["planner_tool_calls"][0]["name"], "customer_store_lookup")
         self.assertEqual(plan["planner_tool_calls"][0]["purpose"], "detail")
         self.assertTrue(plan["planner_tool_calls"][0]["query"])
+
+    def test_planner_keeps_requested_district_store_cards_without_lookup(self) -> None:
+        state = {
+            "normalized_content": "门店位置：双流人民广场",
+            "store_scope_summary": {
+                "relevant_regions": [
+                    {
+                        "city": "成都市",
+                        "requested_district_stores": [
+                            {"store_id": "280", "store_name": "成都天府新区店", "district": "双流区"},
+                            {"store_id": "379", "store_name": "成都双流店", "district": "双流区"},
+                            {"store_id": "522", "store_name": "成都双流高新店", "district": "双流区"},
+                        ],
+                    }
+                ]
+            },
+        }
+        plan = build_planner_plan_v2(
+            state,
+            {
+                "decision": "direct_reply",
+                "stage": "S2",
+                "sub_rule_id": "S2_LOCATION_DETAIL",
+                "reply_messages": [
+                    {"type": "text", "content": {"text": "双流这边这几家门店我都发您看下。"}},
+                    {"type": "store_address", "content": {"store_id": "280"}},
+                    {"type": "store_address", "content": {"store_id": "379"}},
+                    {"type": "store_address", "content": {"store_id": "522"}},
+                    {"type": "text", "content": {"text": "顺便问下，您脸上的斑大概有多久了？"}},
+                ],
+                "tool_calls": [],
+            },
+        )
+
+        self.assertEqual(plan["planner_decision"], "direct_reply")
+        self.assertEqual(plan["planner_tool_calls"], [])
+        self.assertEqual(
+            [item["type"] for item in plan["planner_reply_messages"]],
+            ["text", "store_address", "store_address", "store_address", "text"],
+        )
+
+    def test_reply_validation_allows_requested_district_cards_with_followup_text(self) -> None:
+        messages = [
+            {"type": "text", "order": 1, "content": "双流这边这几家门店我都发您看下。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "280"}},
+            {"type": "store_address", "order": 3, "content": {"store_id": "379"}},
+            {"type": "store_address", "order": 4, "content": {"store_id": "522"}},
+            {"type": "text", "order": 5, "content": "顺便问下，您脸上的斑大概有多久了？"},
+        ]
+        state = {
+            "store_scope_summary": {
+                "relevant_regions": [
+                    {
+                        "requested_district_stores": [
+                            {"store_id": "280"},
+                            {"store_id": "379"},
+                            {"store_id": "522"},
+                        ]
+                    }
+                ]
+            }
+        }
+
+        validate_reply_consistency(messages, state)
 
 
 if __name__ == "__main__":

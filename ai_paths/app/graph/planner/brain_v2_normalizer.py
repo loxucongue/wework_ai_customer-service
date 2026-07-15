@@ -676,7 +676,7 @@ def _reply_message_limit(value: list[Any], state: AgentState | None) -> int:
         for item in visible
         if str(item.get("type") or "").strip() == "store_address" and _store_address_id(item.get("content"))
     }
-    if text_count > 1 or len(card_ids) < 2:
+    if text_count > 2 or len(card_ids) < 2:
         return 4
     summary = state.get("store_scope_summary") if isinstance(state.get("store_scope_summary"), dict) else {}
     regions = summary.get("relevant_regions") if isinstance(summary.get("relevant_regions"), list) else []
@@ -2026,6 +2026,8 @@ def _store_detail_tool_violations(
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     )
     current_text = str(state.get("normalized_content") or state.get("content") or "")
+    if _has_store_address_message(messages) and _store_address_messages_are_requested_district_backed(messages, state):
+        return []
     if (
         _has_store_address_message(messages)
         and _store_address_messages_are_scope_backed(messages, state)
@@ -2074,6 +2076,8 @@ def _store_detail_lookup_tool_from_context(
     )
     current_text = str(state.get("normalized_content") or state.get("content") or "")
     has_store_address_card = _has_store_address_message(messages)
+    if has_store_address_card and _store_address_messages_are_requested_district_backed(messages, state):
+        return {}
     if has_store_address_card and _store_address_messages_are_scope_backed(messages, state) and not _asserts_store_address_detail(text):
         return {}
     if not (has_store_address_card or _direct_text_requires_store_detail_tool(text) or _current_message_requests_store_detail(current_text)):
@@ -2099,6 +2103,30 @@ def _store_detail_lookup_tool_from_context(
     if source in {"customer_profile", "profile", "preferred_store"}:
         return {}
     return {"name": "customer_store_lookup", "purpose": "detail", "query": query}
+
+
+def _store_address_messages_are_requested_district_backed(messages: list[dict[str, Any]], state: AgentState) -> bool:
+    message_ids = {
+        _store_address_id(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
+    }
+    message_ids.discard("")
+    if not message_ids:
+        return False
+    summary = state.get("store_scope_summary") if isinstance(state.get("store_scope_summary"), dict) else {}
+    regions = summary.get("relevant_regions") if isinstance(summary.get("relevant_regions"), list) else []
+    for region in regions:
+        if not isinstance(region, dict):
+            continue
+        expected = {
+            str(store.get("store_id") or store.get("id") or "").strip()
+            for store in region.get("requested_district_stores") or []
+            if isinstance(store, dict) and str(store.get("store_id") or store.get("id") or "").strip()
+        }
+        if message_ids.issubset(expected):
+            return True
+    return False
 
 
 def _store_address_messages_are_scope_backed(messages: list[dict[str, Any]], state: AgentState) -> bool:

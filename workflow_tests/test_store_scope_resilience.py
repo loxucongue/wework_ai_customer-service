@@ -191,6 +191,50 @@ def test_store_lookup_does_not_use_snapshot_region_fallback_for_generic_question
     assert output["missing"] == ["store_scope_unavailable"]
 
 
+def test_store_lookup_strips_structured_location_label_and_prefers_text_scope() -> None:
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "门店位置：双流人民广场", "purpose": "detail"},
+            {
+                "customer_store_knowledge": {
+                    "stores": [
+                        {
+                            "store_id": "379",
+                            "store_name": "成都双流店",
+                            "province": "四川省",
+                            "city": "成都市",
+                            "district": "双流区",
+                            "store_address": "成都市蛟龙港双流园区海港广场",
+                        },
+                        {
+                            "store_id": "522",
+                            "store_name": "成都双流高新店",
+                            "province": "四川省",
+                            "city": "成都市",
+                            "district": "双流区",
+                            "store_address": "成都市天府新区天府大道南段2034号三利广场3栋",
+                        },
+                        {
+                            "store_id": "157",
+                            "store_name": "杭州临平店",
+                            "province": "浙江省",
+                            "city": "杭州市",
+                            "district": "临平区",
+                            "store_address": "杭州市临平区南苑街道秀浦街",
+                        },
+                    ]
+                }
+            },
+            _FakeCoze(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["raw_query"] == "门店位置：双流人民广场"
+    assert output["query"] == "双流人民广场"
+    assert output["status"] == "ok"
+    assert [item["store_id"] for item in output["stores"]] == ["379", "522"]
+
+
 def test_store_tool_facts_keep_detail_fields_for_reply_model() -> None:
     output = build_planner_fact_output(
         {
