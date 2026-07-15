@@ -217,6 +217,7 @@ def _deterministic_customer_state_updates(
         payment["store_id"] = existing_order_state.get("store_id")
     tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
     order_result = tool_results.get("create_work_order") if isinstance(tool_results.get("create_work_order"), dict) else {}
+    order_tool = _planned_transaction_tool(state, "create_work_order")
     mobile_result = tool_results.get("add_customer_mobile") if isinstance(tool_results.get("add_customer_mobile"), dict) else {}
     plan_result = tool_results.get("create_order_plan") if isinstance(tool_results.get("create_order_plan"), dict) else {}
     model_basic = model_update.get("basic_info") if isinstance(model_update.get("basic_info"), dict) else {}
@@ -252,14 +253,36 @@ def _deterministic_customer_state_updates(
                 )
             )
 
-    if order_result:
+    confirmed_store = _confirmed_store_from_work_order(state, order_tool, order_result)
+    if confirmed_store:
+        basic_info.update(confirmed_store)
+        existing_store_id = str(existing_basic.get("confirmed_store_id") or "").strip()
+        existing_store_name = str(existing_basic.get("confirmed_store_name") or "").strip()
+        if (
+            str(confirmed_store.get("confirmed_store_id") or "").strip() != existing_store_id
+            or str(confirmed_store.get("confirmed_store_name") or "").strip() != existing_store_name
+        ):
+            events.append(
+                _state_event(
+                    state,
+                    event_type="store_confirmed",
+                    summary="客户已明确确认到店门店",
+                    facts={
+                        "store_id": confirmed_store.get("confirmed_store_id"),
+                        "store_name": confirmed_store.get("confirmed_store_name"),
+                        "source": order_tool.get("store_confirmation_source"),
+                    },
+                )
+            )
+
+    if order_result.get("status") in {"created", "reused"}:
         basic_info["order_state"] = {
             "status": order_result.get("status"),
             "order_id": order_result.get("order_id"),
             "order_no": order_result.get("order_no"),
-            "store_id": order_result.get("store_id"),
-            "category_id": order_result.get("category_id"),
-            "prepay_required": order_result.get("prepay_required"),
+            "store_id": order_result.get("store_id") or order_tool.get("store_id"),
+            "category_id": order_result.get("category_id") or order_tool.get("category_id"),
+            "prepay_required": order_result.get("prepay_required") or order_tool.get("prepay") or order_tool.get("amount"),
             "source": order_result.get("source"),
         }
     if customer_name or phone or mobile_result:
@@ -307,6 +330,67 @@ def _merge_profile_updates(base: dict[str, Any], authoritative: dict[str, Any]) 
     if authoritative.get("lifecycle_stage"):
         output["lifecycle_stage"] = authoritative["lifecycle_stage"]
     return output
+
+
+def _planned_transaction_tool(state: AgentState, name: str) -> dict[str, Any]:
+    """Return one explicit planner transaction tool call."""
+    tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
+    return next(
+        (
+            dict(item)
+            for item in tools
+            if isinstance(item, dict) and str(item.get("name") or "").strip() == name
+        ),
+        {},
+    )
+
+
+def _confirmed_store_from_work_order(
+    state: AgentState,
+    order_tool: dict[str, Any],
+    order_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist only a real store backed by an executed explicit-confirmation order tool."""
+    if not order_tool or not order_result:
+        return {}
+    confirmation_source = str(order_tool.get("store_confirmation_source") or "").strip()
+    if confirmation_source not in {"request_confirmed", "current_message", "recent_explicit_choice", "appointment_context"}:
+        return {}
+    error = str(order_result.get("error") or "").strip()
+    if error.startswith("planner_tool_policy_violation:") or error in {
+        "store_id_not_backed_by_store_fact",
+        "store_confirmation_required_before_work_order",
+    }:
+        return {}
+    store_id = str(order_result.get("store_id") or order_tool.get("store_id") or "").strip()
+    if not store_id:
+        return {}
+    store_name = str(order_tool.get("store_name") or "").strip() or _store_name_for_id(state, store_id)
+    return {
+        "confirmed_store_id": store_id,
+        "confirmed_store_name": store_name,
+    }
+
+
+def _store_name_for_id(state: AgentState, store_id: str) -> str:
+    """Resolve a confirmed store name from current verified store context."""
+    current_turn = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
+    sources = [
+        current_turn.get("confirmed_store"),
+        state.get("current_known_store"),
+    ]
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    sources.extend(knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else [])
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        source_id = str(source.get("store_id") or source.get("id") or "").strip()
+        if source_id != store_id:
+            continue
+        name = str(source.get("store_name") or source.get("name") or "").strip()
+        if name:
+            return name
+    return ""
 
 
 def _state_event(

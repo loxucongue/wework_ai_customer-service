@@ -31,6 +31,7 @@ from app.services.payment_collection import (
     payment_collection_context,
     payment_party_size_for_amount,
 )
+from app.services.customer_payment_state import normalize_prepay_facts, payment_collection_order_fact
 from app.services.risk_hold import HEALTH_RISK_TERMS, explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
 
 
@@ -166,6 +167,22 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     sales_progression = _normalize_sales_progression(
         model_payload.get("sales_progression") if isinstance(model_payload, dict) else {},
     )
+    unverified_paid_claim = (
+        str(payment_decision.get("action") or "") == "after_paid_next_step"
+        or payment_state == "customer_claimed_paid"
+    ) and not _has_authoritative_paid_context(state)
+    if unverified_paid_claim:
+        payment_decision = _with_payment_decision_action(
+            payment_decision,
+            "explain",
+            source="unverified_customer_claim",
+            confidence="high",
+            basis="客户口头表示已付，但当前订单和成功截图均未确认支付",
+        )
+        payment_state = "needs_payment" if _has_current_unpaid_order(state) else "unknown"
+        payment_action = "explain_existing"
+        appointment_decision = {"action": "none", "commitment_level": "none", "basis": ["支付状态尚未由订单或成功截图确认"]}
+        reply_constraints.append("客户口头表示已付不能单独作为支付成功事实；当前订单未确认入账时，只说明系统暂未查到，不推进付款后登记。")
     payment_decision = _reconcile_paid_payment_decision(
         payment_decision=payment_decision,
         order_decision=order_decision,
@@ -341,6 +358,12 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         if removed_payment:
             reply_constraints.append("payment_state 表示客户已付或结构化支付状态已付；本轮不要重复发送 payment_collection。")
             reply_strategy.setdefault("current_turn_context_guard", "payment_card_removed_after_model_paid_state")
+    state_for_payment = {
+        **state,
+        "payment_decision": payment_decision,
+        "order_decision": order_decision,
+        "planner_tool_calls": required_tools,
+    }
     planner_reply_messages = _append_required_payment_collection(
         state=state_for_payment,
         decision=decision,
@@ -377,7 +400,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             messages=planner_reply_messages,
         ),
         *_payment_consistency_violations(
-            state=state,
+            state=state_for_payment,
             decision=decision,
             conversion_stage=conversion_stage,
             next_step=next_step,
@@ -385,6 +408,11 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             payment_action=payment_action,
             payment_decision=payment_decision,
             messages=planner_reply_messages,
+        ),
+        *_postpaid_scheduling_tool_violations(
+            state=state,
+            payment_decision=payment_decision,
+            required_tools=required_tools,
         ),
         *_two_text_rhythm_violations(
             state=state,
@@ -1662,10 +1690,11 @@ def _matching_active_order_for_payment(
     amount: int,
 ) -> dict[str, Any]:
     context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    orders = [order for order in context.get("orders") or [] if isinstance(order, dict)]
+    current_orders = [order for order in orders if order.get("is_current_order")]
+    source_orders = current_orders or orders
     candidates: list[dict[str, Any]] = []
-    for order in context.get("orders") or []:
-        if not isinstance(order, dict):
-            continue
+    for order in source_orders:
         status = str(order.get("status") or "").strip().lower()
         if status not in {"1", "pending", "waiting_schedule", "scheduled"}:
             continue
@@ -1677,6 +1706,9 @@ def _matching_active_order_for_payment(
             continue
         required_amount = _numeric_payment_amount(order.get("prepay_required") or order.get("fee_required"))
         if amount and required_amount and required_amount != amount:
+            continue
+        deposit_state = str(order.get("deposit_state") or normalize_prepay_facts(order).get("deposit_state") or "")
+        if deposit_state != "required_unpaid":
             continue
         candidates.append(order)
     if store_id:
@@ -2669,7 +2701,15 @@ def _matching_current_message_region_tokens(value: str, state: AgentState) -> li
 
 
 def _looks_like_specific_region(text: str) -> bool:
-    return bool(re.search(r"[\u4e00-\u9fff]{2,}(省|市|区|县|镇|乡|旗|州|盟|新区|机场|高铁站|火车站)", text))
+    return bool(
+        re.search(
+            r"[\u4e00-\u9fff]{2,}"
+            r"(省|市|区|县|镇|乡|旗|州|盟|新区|机场|高铁站|火车站|地铁站|车站|"
+            r"大厦|广场|商场|中心|购物中心|商务中心|写字楼|医院|学校|公园|园区|"
+            r"小区|社区|村|路|街|街道)",
+            text,
+        )
+    )
 
 
 def _scope_region_tokens(state: AgentState) -> set[str]:
@@ -2796,6 +2836,18 @@ def _payment_consistency_violations(
     if decision != "direct_reply":
         return []
     needs_payment = decision_action in {"send_now", "resend"} or payment_action == "send_now"
+    if needs_payment and not payment_collection_order_fact(state, amount=payment_context.get("amount")):
+        return [
+            {
+                "task_type": "reply_schema_consistency",
+                "subtype": "payment_collection",
+                "missing": "work_order_required_before_payment_collection",
+                "note": (
+                    "payment_collection requires a matching active unpaid work order for the confirmed store and amount. "
+                    "Create or update the work order first; do not send the card when that tool fails."
+                ),
+            }
+        ]
     if needs_payment and payment_context["over_limit"]:
         return [
             {
@@ -2940,6 +2992,8 @@ def _append_required_payment_collection(
     payment_context = payment_collection_context(state=state, messages=messages)
     if payment_context["over_limit"]:
         return messages
+    if not payment_collection_order_fact(state, amount=payment_context.get("amount")):
+        return messages
     return [
         *_renumber_reply_messages(messages),
         {
@@ -2951,16 +3005,62 @@ def _append_required_payment_collection(
 
 
 def _has_paid_deposit_context(state: AgentState, *, payment_state: str = "unknown") -> bool:
-    if payment_state == "customer_claimed_paid":
+    """Return only authoritative order or payment-screenshot success, never a text claim."""
+    if _has_authoritative_paid_context(state):
         return True
-    if payment_state in {"resend_requested", "payment_failed", "needs_payment"}:
+    if payment_state in {"customer_claimed_paid", "resend_requested", "payment_failed", "needs_payment"}:
         return False
+    return False
+
+
+def _has_authoritative_paid_context(state: AgentState) -> bool:
+    """Check structured current-order or successful screenshot evidence for payment."""
     turn_context = _turn_context_for_guard(state)
     if str(turn_context.get("deposit_state") or "") == "deposit_paid":
         return True
     turn_evidence = turn_context.get("turn_evidence") if isinstance(turn_context.get("turn_evidence"), dict) else {}
     payment_evidence = turn_evidence.get("payment_evidence") if isinstance(turn_evidence.get("payment_evidence"), dict) else {}
-    return str(payment_evidence.get("structured_payment_state") or "") == "deposit_paid"
+    if str(payment_evidence.get("structured_payment_state") or "") == "deposit_paid":
+        return True
+    structured = payment_evidence.get("structured_payment_fact") if isinstance(payment_evidence.get("structured_payment_fact"), dict) else {}
+    if str(structured.get("deposit_state") or "") in {"paid_by_order", "paid_by_screenshot"}:
+        return True
+    image = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
+    return image.get("image_type") == "payment_proof" and image.get("payment_result") == "success"
+
+
+def _has_current_unpaid_order(state: AgentState) -> bool:
+    """Return whether the fresh current order explicitly remains unpaid."""
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    orders = [order for order in context.get("orders") or [] if isinstance(order, dict)]
+    current = [order for order in orders if order.get("is_current_order")]
+    candidates = current or orders[:1]
+    return any(str(order.get("deposit_state") or "") == "required_unpaid" for order in candidates)
+
+
+def _postpaid_scheduling_tool_violations(
+    *,
+    state: AgentState,
+    payment_decision: dict[str, Any],
+    required_tools: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Block formal availability and scheduling tools in the paid information-confirmation flow."""
+    if str(payment_decision.get("action") or "") != "after_paid_next_step" or not _has_authoritative_paid_context(state):
+        return []
+    violations: list[dict[str, str]] = []
+    for tool in required_tools:
+        name = str(tool.get("name") or "") if isinstance(tool, dict) else ""
+        if name not in {"available_time", "create_order_plan"}:
+            continue
+        violations.append(
+            {
+                "task_type": "tool_argument",
+                "subtype": name,
+                "missing": f"{name}_disabled_after_payment",
+                "note": "After payment, collect and confirm name, phone, store, visit date and time only; do not query slots or create a formal schedule.",
+            }
+        )
+    return violations
 
 
 def _compact_text(text: str) -> str:

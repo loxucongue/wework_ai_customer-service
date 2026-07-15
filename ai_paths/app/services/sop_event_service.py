@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from fastapi import BackgroundTasks
 
 from app.services.outreach_send_client import OutreachSendClient
+from app.services.customer_payment_state import is_paid_deposit_state, payment_collection_order_fact, resolved_payment_fact
 from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs, is_platform_auto_opening_message
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import ALLOWED_MESSAGE_TYPES, SopReplyPackService
@@ -32,6 +33,7 @@ class SopEventService:
         outreach_send_client: OutreachSendClient,
         sop_execution_service: SopExecutionService | None = None,
         memory_store: Any | None = None,
+        customer_context_service: Any | None = None,
         default_identity: dict[str, Any] | None = None,
     ) -> None:
         self.repository = repository
@@ -39,6 +41,7 @@ class SopEventService:
         self.outreach_send_client = outreach_send_client
         self.sop_execution_service = sop_execution_service
         self.memory_store = memory_store
+        self.customer_context_service = customer_context_service
         self.default_identity = {
             "corp_id": _string((default_identity or {}).get("corp_id")),
             "user_id": _string((default_identity or {}).get("user_id")),
@@ -149,17 +152,36 @@ class SopEventService:
         conversation_activity = _conversation_activity(
             conversation_messages,
             first_added_at=_first_added_at(customer) if event_type in FIRST_ADD_EVENT_TYPES else None,
+            event_at=_parse_time(payload.get("created_at") or payload.get("upstream_created_at")),
         )
-        if event_type in FIRST_ADD_EVENT_TYPES and conversation_activity["customer_replied"]:
+        if event_type in FIRST_ADD_EVENT_TYPES and conversation_activity["uncertain_customer_timing"]:
             return self._create_task_record(
                 payload,
                 customer,
                 index=index,
                 identity=identity,
-                sop_pack_id="first_add_customer_replied",
-                sop_pack_name="first_add_customer_replied",
+                sop_pack_id="first_add_customer_timing_uncertain",
+                sop_pack_name="first_add_customer_timing_uncertain",
                 reply_messages=[],
-                status="skipped_customer_replied",
+                status="skipped_customer_timing_uncertain",
+                error="",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_filter": conversation_filter,
+                    "conversation_activity": conversation_activity,
+                },
+            )
+        if event_type in FIRST_ADD_EVENT_TYPES and conversation_activity["latest_customer_pending_ai_reply"]:
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="first_add_customer_pending_ai_reply",
+                sop_pack_name="first_add_customer_pending_ai_reply",
+                reply_messages=[],
+                status="skipped_customer_pending_ai_reply",
                 error="",
                 send_payload={
                     "identity": identity,
@@ -189,7 +211,58 @@ class SopEventService:
                     "quiet_hours": quiet_hours,
                 },
             )
+        if event_type not in FIRST_ADD_EVENT_TYPES and event_type != "sop_platform_task":
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id=base_pack_id,
+                sop_pack_name=base_pack_name,
+                reply_messages=[],
+                status="skipped_unsupported_event_type",
+                error=f"unsupported_event_type:{event_type}",
+                send_payload={"identity": identity, "conversation_fetch": _conversation_fetch_summary(conversation_fetch)},
+            )
+
         customer_memory = self._load_customer_memory(identity["customer_id"])
+        order_gate = self._load_sop_order_gate(identity, customer_memory)
+        if order_gate["status"] == "failed":
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id=base_pack_id,
+                sop_pack_name=base_pack_name,
+                reply_messages=[],
+                status="failed_order_fetch",
+                error=str(order_gate.get("error") or "order_fetch_failed"),
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
+                    "order_gate": order_gate.get("summary", {}),
+                },
+            )
+        if order_gate["status"] == "paid":
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id=base_pack_id,
+                sop_pack_name=base_pack_name,
+                reply_messages=[],
+                status="skipped_deposit_paid",
+                error="",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
+                    "order_gate": order_gate.get("summary", {}),
+                },
+            )
         if event_type in FIRST_ADD_EVENT_TYPES:
             return await self._create_first_add_task(
                 payload,
@@ -201,6 +274,7 @@ class SopEventService:
                 conversation_filter=conversation_filter,
                 conversation_activity=conversation_activity,
                 customer_memory=customer_memory,
+                customer_context=order_gate.get("customer_context", {}),
             )
         if event_type == "sop_platform_task":
             return await self._create_platform_task(
@@ -212,20 +286,9 @@ class SopEventService:
                 conversation_messages=conversation_messages,
                 conversation_activity=conversation_activity,
                 customer_memory=customer_memory,
+                customer_context=order_gate.get("customer_context", {}),
             )
-
-        return self._create_task_record(
-            payload,
-            customer,
-            index=index,
-            identity=identity,
-            sop_pack_id=base_pack_id,
-            sop_pack_name=base_pack_name,
-            reply_messages=[],
-            status="skipped_unsupported_event_type",
-            error=f"unsupported_event_type:{event_type}",
-            send_payload={"identity": identity, "conversation_fetch": _conversation_fetch_summary(conversation_fetch)},
-        )
+        raise RuntimeError("unreachable_sop_event_type")
 
     def _load_customer_memory(self, customer_id: str) -> dict[str, Any]:
         """Load existing customer memory for model context without mutating it."""
@@ -236,6 +299,65 @@ class SopEventService:
         except Exception:
             return {}
         return memory if isinstance(memory, dict) else {}
+
+    def _load_sop_order_gate(self, identity: dict[str, str], customer_memory: dict[str, Any]) -> dict[str, Any]:
+        """Freshly load the current order and block unsafe SOP delivery states."""
+        if not self.customer_context_service:
+            return {"status": "failed", "error": "customer_context_service_not_configured", "summary": {}}
+        request_context = {
+            "customer_id": identity.get("customer_id", ""),
+            "external_userid": identity.get("external_userid", ""),
+            "corp_id": identity.get("corp_id", ""),
+            "user_id": identity.get("user_id", ""),
+            "wechat": identity.get("wechat", ""),
+        }
+        try:
+            context = self.customer_context_service.load(
+                customer_id=identity.get("customer_id", ""),
+                memory=customer_memory,
+                request_context=request_context,
+            )
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "summary": {"source": "exception"},
+            }
+        if not isinstance(context, dict) or context.get("source") != "platform_agent" or context.get("orders_error"):
+            error = str(
+                (context or {}).get("orders_error")
+                or (context or {}).get("error")
+                or "platform_order_context_unavailable"
+            )
+            return {
+                "status": "failed",
+                "error": error,
+                "summary": {"source": str((context or {}).get("source") or "unknown")},
+            }
+        basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
+        stored = basic.get("deposit_state")
+        stored_fact = stored if isinstance(stored, dict) else {}
+        payment = resolved_payment_fact(
+            orders=context.get("orders"),
+            existing_state=str(stored_fact.get("status") or stored or ""),
+            existing_source=str(stored_fact.get("source") or ""),
+            existing_fact=stored_fact,
+        )
+        summary = {
+            "source": "platform_agent.order_index",
+            "order_count": len(context.get("orders") or []),
+            "order_id": str(payment.get("order_id") or ""),
+            "store_id": str(payment.get("store_id") or ""),
+            "deposit_state": str(payment.get("deposit_state") or "unknown"),
+            "prepay_required": payment.get("prepay_required"),
+            "prepay_paid": payment.get("prepay_paid"),
+        }
+        return {
+            "status": "paid" if is_paid_deposit_state(payment.get("deposit_state")) else "unpaid",
+            "customer_context": context,
+            "payment": payment,
+            "summary": summary,
+        }
 
     def _complete_identity(self, identity: dict[str, str]) -> dict[str, str]:
         lookup = getattr(self.repository, "find_sop_event_identity", None)
@@ -283,6 +405,7 @@ class SopEventService:
         conversation_filter: dict[str, Any],
         conversation_activity: dict[str, Any],
         customer_memory: dict[str, Any],
+        customer_context: dict[str, Any],
     ) -> dict[str, Any]:
         sent_before = _event_created_at(payload)
         completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
@@ -360,6 +483,7 @@ class SopEventService:
         adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
             _pack_messages(selected),
             decision.get("text_adjustments"),
+            decision.get("message_operations"),
         )
         messages, sanitize_summary = sanitize_sop_reply_messages(
             adjusted_messages,
@@ -385,6 +509,25 @@ class SopEventService:
                     "message_sanitize": sanitize_summary,
                     "message_adjustment": adjustment_summary,
                     "event_decision_input": decision.get("selector_input", {}),
+                },
+                send_response={"event_decision": decision},
+            )
+        if not _sop_payment_collection_supported(messages, customer_memory, customer_context):
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id=str(selected.get("id") or ""),
+                sop_pack_name=str(selected.get("name") or ""),
+                sop_category=_pack_category(selected),
+                reply_messages=[],
+                status="skipped_missing_payment_order",
+                error="payment_collection_requires_matching_current_order",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
                 },
                 send_response={"event_decision": decision},
             )
@@ -423,6 +566,7 @@ class SopEventService:
         conversation_messages: list[dict[str, Any]],
         conversation_activity: dict[str, Any],
         customer_memory: dict[str, Any],
+        customer_context: dict[str, Any],
     ) -> dict[str, Any]:
         raw_messages = _actions_to_reply_messages(_customer_actions(payload, customer))
         messages, sanitize_summary = sanitize_sop_reply_messages(
@@ -486,11 +630,31 @@ class SopEventService:
         adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
             messages,
             decision.get("text_adjustments"),
+            decision.get("message_operations"),
         )
         messages, sanitize_summary = sanitize_sop_reply_messages(
             adjusted_messages,
             conversation_messages=conversation_messages,
         )
+        if not _sop_payment_collection_supported(messages, customer_memory, customer_context):
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="platform_actions",
+                sop_pack_name="platform_actions",
+                sop_category="platform_actions",
+                reply_messages=[],
+                status="skipped_missing_payment_order",
+                error="payment_collection_requires_matching_current_order",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
+                },
+                send_response={"event_decision": decision},
+            )
         return self._create_task_record(
             payload,
             customer,
@@ -840,6 +1004,26 @@ def _task_has_processing_error(task: dict[str, Any]) -> bool:
     }
 
 
+def _sop_payment_collection_supported(
+    messages: list[dict[str, Any]],
+    customer_memory: dict[str, Any],
+    customer_context: dict[str, Any],
+) -> bool:
+    """Allow a SOP payment card only when a matching current unpaid order exists."""
+    cards = [item for item in messages if isinstance(item, dict) and item.get("type") == "payment_collection"]
+    if not cards:
+        return True
+    content = cards[0].get("content") if isinstance(cards[0].get("content"), dict) else {}
+    basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
+    state = {
+        "customer_basic_info": basic,
+        "customer_context": customer_context,
+        "confirmed_store_id": basic.get("confirmed_store_id"),
+        "payment_decision": {"amount": content.get("amount")},
+    }
+    return bool(payment_collection_order_fact(state, amount=content.get("amount")))
+
+
 def _content_has_value(content: dict[str, Any]) -> bool:
     return any(str(value or "").strip() for value in content.values())
 
@@ -927,6 +1111,7 @@ def _conversation_activity(
     messages: list[dict[str, Any]],
     *,
     first_added_at: datetime | None = None,
+    event_at: datetime | None = None,
 ) -> dict[str, Any]:
     """Summarize fresh conversation activity for deterministic first-add safety checks."""
     real_customer_times: list[datetime] = []
@@ -934,6 +1119,8 @@ def _conversation_activity(
     unknown_time_customer_count = 0
     ignored_auto_opening_count = 0
     latest_message: tuple[datetime, str, bool] | None = None
+    latest_customer_at: datetime | None = None
+    latest_assistant_at: datetime | None = None
     fallback_last_direction = ""
     fallback_last_is_real_customer = False
 
@@ -950,6 +1137,10 @@ def _conversation_activity(
         message_at = _message_time(message)
         if message_at and (latest_message is None or message_at >= latest_message[0]):
             latest_message = (message_at, direction, is_real_customer)
+        if message_at and is_real_customer and (latest_customer_at is None or message_at >= latest_customer_at):
+            latest_customer_at = message_at
+        if message_at and not is_customer and (latest_assistant_at is None or message_at >= latest_assistant_at):
+            latest_assistant_at = message_at
         if not is_customer:
             continue
         if is_auto_opening:
@@ -966,12 +1157,25 @@ def _conversation_activity(
     customer_replied = real_customer_count > 0
     last_direction = latest_message[1] if latest_message else fallback_last_direction
     last_message_is_customer = latest_message[2] if latest_message else fallback_last_is_real_customer
+    latest_customer_pending_ai_reply = bool(
+        last_message_is_customer
+        or (latest_customer_at and (latest_assistant_at is None or latest_customer_at > latest_assistant_at))
+    )
+    assistant_waiting_customer = bool(latest_assistant_at and (latest_customer_at is None or latest_assistant_at >= latest_customer_at))
+    silence_after_assistant_minutes: int | None = None
+    if assistant_waiting_customer and latest_assistant_at:
+        reference_time = event_at or datetime.now(timezone.utc)
+        silence_after_assistant_minutes = max(0, int((reference_time - latest_assistant_at).total_seconds() // 60))
     if unknown_time_customer_count:
         reason = "customer_message_time_unknown"
     elif missing_first_added_time:
         reason = "first_added_time_unknown"
+    elif latest_customer_pending_ai_reply:
+        reason = "customer_pending_ai_reply"
+    elif assistant_waiting_customer:
+        reason = "assistant_waiting_customer"
     elif customer_replied:
-        reason = "customer_replied_after_first_add"
+        reason = "customer_replied_but_not_pending"
     else:
         reason = ""
     return {
@@ -982,9 +1186,14 @@ def _conversation_activity(
         "unknown_time_customer_message_count": unknown_time_customer_count,
         "uncertain_customer_timing": uncertain_customer_timing,
         "first_added_at": first_added_at.isoformat() if first_added_at else "",
-        "latest_customer_message_at": max(real_customer_times).isoformat() if real_customer_times else "",
+        "event_at": event_at.isoformat() if event_at else "",
+        "latest_customer_message_at": latest_customer_at.isoformat() if latest_customer_at else "",
+        "latest_assistant_message_at": latest_assistant_at.isoformat() if latest_assistant_at else "",
         "last_message_direction": last_direction,
         "last_message_is_customer": last_message_is_customer,
+        "latest_customer_pending_ai_reply": latest_customer_pending_ai_reply,
+        "assistant_waiting_customer": assistant_waiting_customer,
+        "silence_after_assistant_minutes": silence_after_assistant_minutes,
         "reason": reason,
     }
 

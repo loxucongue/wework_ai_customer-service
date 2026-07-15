@@ -24,12 +24,12 @@ Both modes are required for reply-quality changes. Single-node tests answer “i
   Fix strategy: 将案例图发送时间和数量作为 evidence 提供给 Planner；无权威近期图片证据的效果疑问由 Planner 调用 `kb_search(case_studies)`，最终 Reply 只使用真实 `case_facts` 输出图片。
   Regression check: 所有 SOP 均已完成但没有近期图片发送证据时，“效果怎么样”必须规划 `kb_search(case_studies)` 并在全链路输出真实 image；上一轮确实刚发图后的评价续问允许不重复查询。
 
-- Phenomenon: 客户明确问“怎么预约/发付款卡”，Planner 已决定 `send_now`，但开单接口拒绝或当前订单门店不匹配后，最终回复只剩文字，没有 `payment_collection`。
-  Root cause: Planner 事务补丁、normalizer 和 Reply 质量门把匹配有效订单或开单成功当成发预约金卡的结构前置，覆盖了模型的成交决策。
-  Trigger condition: `payment_decision.action=send_now/resend`，但 `create_work_order` 返回 rejected/error、缺少 order_id，或只有其他门店的未付订单。
-  Prevention rule: 发卡动作与后台订单闭环必须解耦；订单和门店事实只决定能否声称已开单、是否可继续排客，不得否决 Planner 的 send_now/resend。发送频率由模型结合当天、历史和最近进展判断。
-  Fix strategy: 删除 active-order 发卡校验和订单 violation；事务 prompt 明确 send_now/resend 必须输出 text + payment_collection，开单失败只记录后台事实。
-  Regression check: `work_order.status=rejected/tool_error + payment_decision.action=send_now` 必须保留 10/20/30/40 元卡；已付、当前健康硬风险等安全终态仍不得发卡。
+- Phenomenon: 客户收到预约金卡，但平台没有对应门店、金额一致的有效未付订单，或订单属于其他门店，导致付款与后台订单无法可靠关联。
+  Root cause: 发卡动作曾与后台订单解耦，Planner 的 `send_now/resend` 可以覆盖开单失败、订单缺失和门店不匹配事实。
+  Trigger condition: 客户尚未明确确认真实门店，`create_work_order` 返回 rejected/error、缺少 order_id，或当前只有其他门店/其他金额的订单时仍尝试输出 `payment_collection`。
+  Prevention rule: 预约金卡必须以同门店、同金额的有效未付订单或本轮开单/复用成功为前置；开单失败、订单查询失败、门店或金额不匹配时禁止发卡和虚构成功。
+  Fix strategy: 客户明确确认真实门店后立即创建或复用订单；发卡前统一校验当前订单，人数变化时先更新订单金额，成功后才允许输出 10/20/30/40 元卡。
+  Regression check: 开单成功但未进入付款动作时只正常承接；开单拒绝、工具异常、其他门店订单和金额不一致均不发卡；匹配有效未付订单才可发送对应金额卡片。
 
 - Phenomenon: 客户已经回复并进入真实聊天，或会话接口拉取失败时，仍收到按固定时间触发的问地址、报价或催付 SOP。
   Root cause: 首次加微事件在会话拉取失败时降级为空历史，并丢弃事件创建后、实际处理前的新消息，发送前也没有真实客户回复的确定性拦截。

@@ -59,11 +59,13 @@ def sanitize_sop_reply_messages(
 def apply_sop_text_adjustments(
     messages: list[dict[str, Any]],
     adjustments: Any,
+    message_operations: Any = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Apply model-proposed wording changes without changing the SOP message structure."""
+    """Apply model-proposed text operations without changing structured SOP facts."""
 
     normalized = [_normalize_message(message, index) for index, message in enumerate(messages, start=1)]
     normalized = [message for message in normalized if message]
+    normalized.sort(key=lambda item: int(item.get("order") or 0))
     text_by_order = {
         int(message.get("order") or 0): str(_content_dict(message.get("content")).get("text") or "").strip()
         for message in normalized
@@ -71,6 +73,7 @@ def apply_sop_text_adjustments(
     }
     requested = adjustments if isinstance(adjustments, list) else []
     applied_orders: list[int] = []
+    applied_operations: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
 
     for item in requested[:8]:
@@ -94,11 +97,143 @@ def apply_sop_text_adjustments(
                 applied_orders.append(order)
                 break
 
-    return normalized, {
+    for operation in message_operations if isinstance(message_operations, list) else []:
+        if not isinstance(operation, dict):
+            continue
+        applied, reason = _apply_text_message_operation(normalized, operation)
+        if applied:
+            applied_operations.append(applied)
+        else:
+            rejected.append({"operation": _operation_name(operation), "reason": reason or "invalid_operation"})
+
+    return _renumber_in_current_order(normalized), {
         "requested_count": len(requested),
         "applied_orders": applied_orders,
+        "applied_operations": applied_operations,
         "rejected": rejected,
     }
+
+
+def _apply_text_message_operation(messages: list[dict[str, Any]], operation: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    op = _operation_name(operation)
+    if op == "replace_text":
+        order = _positive_int(operation.get("order"), 0)
+        text = str(operation.get("text") or "").strip()
+        index = _text_index_by_order(messages, order)
+        if index is None:
+            return None, "not_existing_text_message"
+        if not text or len(text) > 500:
+            return None, "invalid_text_length"
+        original = _message_text(messages[index].get("content"))
+        if _numeric_tokens(text) != _numeric_tokens(original):
+            return None, "numeric_facts_changed"
+        messages[index]["content"] = {"text": text}
+        return {"op": op, "order": order}, ""
+
+    if op in {"insert_text_before", "insert_text_after"}:
+        text = str(operation.get("text") or "").strip()
+        anchor_key = "before_order" if op == "insert_text_before" else "after_order"
+        order = _positive_int(operation.get(anchor_key), 0)
+        anchor = _message_index_by_order(messages, order)
+        if anchor is None:
+            return None, "not_existing_anchor_message"
+        if not text or len(text) > 360:
+            return None, "invalid_text_length"
+        if _numeric_tokens(text):
+            return None, "numeric_facts_changed"
+        insert_at = anchor if op == "insert_text_before" else anchor + 1
+        messages.insert(insert_at, {"type": "text", "order": order, "content": {"text": text}})
+        return {"op": op, anchor_key: order}, ""
+
+    if op == "remove_text":
+        order = _positive_int(operation.get("order"), 0)
+        index = _text_index_by_order(messages, order)
+        if index is None:
+            return None, "not_existing_text_message"
+        original = _message_text(messages[index].get("content"))
+        if _numeric_tokens(original):
+            return None, "numeric_facts_changed"
+        if _would_remove_required_text(messages, index):
+            return None, "required_text_message"
+        del messages[index]
+        return {"op": op, "order": order}, ""
+
+    if op == "merge_text":
+        orders = [_positive_int(item, 0) for item in operation.get("orders") or []]
+        orders = [item for item in orders if item > 0]
+        text = str(operation.get("text") or "").strip()
+        if len(orders) < 2 or len(orders) > 4:
+            return None, "invalid_orders"
+        indices = [_text_index_by_order(messages, order) for order in orders]
+        if any(index is None for index in indices):
+            return None, "not_existing_text_message"
+        if not text or len(text) > 700:
+            return None, "invalid_text_length"
+        originals = [_message_text(messages[index].get("content")) for index in indices if index is not None]
+        if _numeric_tokens(text) != _numeric_tokens("".join(originals)):
+            return None, "numeric_facts_changed"
+        first = indices[0]
+        assert first is not None
+        messages[first]["content"] = {"text": text}
+        for index in sorted([item for item in indices[1:] if item is not None], reverse=True):
+            del messages[index]
+        return {"op": op, "orders": orders}, ""
+
+    if op == "split_text":
+        order = _positive_int(operation.get("order"), 0)
+        texts = [str(item or "").strip() for item in operation.get("texts") or []]
+        texts = [item for item in texts if item]
+        index = _text_index_by_order(messages, order)
+        if index is None:
+            return None, "not_existing_text_message"
+        if len(texts) < 2 or len(texts) > 4 or any(len(item) > 360 for item in texts):
+            return None, "invalid_text_length"
+        original = _message_text(messages[index].get("content"))
+        if _numeric_tokens("".join(texts)) != _numeric_tokens(original):
+            return None, "numeric_facts_changed"
+        replacement = [{"type": "text", "order": order, "content": {"text": text}} for text in texts]
+        messages[index : index + 1] = replacement
+        return {"op": op, "order": order, "count": len(texts)}, ""
+
+    return None, "unsupported_operation"
+
+
+def _operation_name(operation: dict[str, Any]) -> str:
+    return str(operation.get("op") or operation.get("operation") or "").strip()
+
+
+def _text_index_by_order(messages: list[dict[str, Any]], order: int) -> int | None:
+    for index, message in enumerate(messages):
+        if int(message.get("order") or 0) == order and str(message.get("type") or "") == "text":
+            return index
+    return None
+
+
+def _message_index_by_order(messages: list[dict[str, Any]], order: int) -> int | None:
+    for index, message in enumerate(messages):
+        if int(message.get("order") or 0) == order:
+            return index
+    return None
+
+
+def _would_remove_required_text(messages: list[dict[str, Any]], remove_index: int) -> bool:
+    remaining_text_count = sum(
+        1
+        for index, message in enumerate(messages)
+        if index != remove_index and str(message.get("type") or "") == "text"
+    )
+    if remaining_text_count > 0:
+        return False
+    return any(str(message.get("type") or "") == "payment_collection" for message in messages)
+
+
+def _renumber_in_current_order(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for order, message in enumerate(messages, start=1):
+        item = dict(message)
+        item["order"] = order
+        output.append(item)
+    return output
 
 
 def _normalize_message(message: dict[str, Any], index: int) -> dict[str, Any]:

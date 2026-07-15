@@ -15,6 +15,12 @@ from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
 
+UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS = {
+    "【未知消息类型】",
+    "[未知消息类型]",
+    "未知消息类型",
+}
+
 
 def create_input_normalization_layer(
     *,
@@ -32,8 +38,13 @@ def create_input_normalization_layer(
                 errors.append({"node": "layer_1_input_normalization", "message": "输入疑似乱码，已保留原文但后续会降低置信度"})
             temp_state = dict(state)
             temp_state["normalized_content"] = normalized
-            image_task = asyncio.create_task(_understand_image(temp_state, model_client))
-            image_info, model_call = await image_task
+            platform_transfer_info = _platform_unknown_transfer_image_info(normalized)
+            if platform_transfer_info is not None:
+                normalized = "客户发送了转账消息"
+                image_info, model_call = platform_transfer_info, None
+            else:
+                image_task = asyncio.create_task(_understand_image(temp_state, model_client))
+                image_info, model_call = await image_task
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
             output = {
@@ -47,6 +58,29 @@ def create_input_normalization_layer(
             return output
 
     return input_normalization_layer
+
+
+def _platform_unknown_transfer_image_info(content: str) -> dict[str, Any] | None:
+    """Normalize the platform's fixed unknown-message placeholder as a transfer fact."""
+    compact = "".join(str(content or "").split())
+    if compact not in UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS:
+        return None
+    return {
+        "has_image": False,
+        "image_desc": "平台未知消息类型占位符，业务约定为客户转账消息。",
+        "image_type": "payment_proof",
+        "image_intent": "general_image",
+        "body_part": "无",
+        "visible_concerns": [],
+        "risk_signals": [],
+        "extracted_text": ["【未知消息类型】"],
+        "text_clues": ["客户转账消息"],
+        "payment_result": "success",
+        "payment_amount": None,
+        "payment_order_no": "",
+        "confidence": 0.9,
+        "source": "platform.unknown_message_transfer",
+    }
 
 
 async def _understand_image(state: dict[str, Any], model_client: ModelClient | None) -> tuple[dict[str, Any], dict[str, Any] | None]:

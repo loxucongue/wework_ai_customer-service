@@ -11,6 +11,7 @@ from app.services.payment_collection import (
     payment_collection_content,
     payment_collection_context,
 )
+from app.services.customer_payment_state import payment_collection_order_fact
 from app.services.risk_hold import explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
@@ -132,12 +133,27 @@ def create_synthesize_reply_node(
                                         }
                                         model_call["output"] = {"messages": len(messages)}
                                     else:
-                                        repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
-                                        if repaired_messages is not None:
-                                            messages = repaired_messages
+                                        store_clarification_fallback = _maybe_build_store_location_clarification_fallback(
+                                            state,
+                                            retry_validation_exc,
+                                            messages=messages,
+                                        )
+                                        if store_clarification_fallback is not None:
+                                            messages = store_clarification_fallback
                                             validate_reply_consistency(messages, state)
+                                            reply_source = "deterministic_store_location_clarification_fallback"
+                                            model_call["fallback"] = {
+                                                "reason": f"{type(retry_validation_exc).__name__}: {retry_validation_exc}",
+                                                "strategy": "deterministic_store_location_clarification",
+                                            }
+                                            model_call["output"] = {"messages": len(messages)}
                                         else:
-                                            raise
+                                            repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
+                                            if repaired_messages is not None:
+                                                messages = repaired_messages
+                                                validate_reply_consistency(messages, state)
+                                            else:
+                                                raise
                         else:
                             retry_validation_exc = None
                         if retry_validation_exc is not None and _messages_have_handoff_notice(messages):
@@ -189,37 +205,52 @@ def create_synthesize_reply_node(
                         }
                         model_call["output"] = {"messages": len(messages)}
                     else:
-                        repaired_messages = _maybe_append_required_store_address(messages or planner_messages, state, exc)
-                        if repaired_messages is not None:
-                            messages = repaired_messages
+                        store_clarification_fallback = _maybe_build_store_location_clarification_fallback(
+                            state,
+                            exc,
+                            messages=messages or planner_messages,
+                        )
+                        if store_clarification_fallback is not None:
+                            messages = store_clarification_fallback
                             validate_reply_consistency(messages, state)
-                            reply_source = "deterministic_store_address_append"
+                            reply_source = "deterministic_store_location_clarification_fallback"
                             model_call["fallback"] = {
                                 "reason": primary_error,
-                                "strategy": "deterministic_store_address_append",
+                                "strategy": "deterministic_store_location_clarification",
                             }
                             model_call["output"] = {"messages": len(messages)}
                         else:
-                            appointment_fallback = _maybe_build_unavailable_appointment_fallback(state, exc)
-                            if appointment_fallback is not None:
-                                messages = appointment_fallback
+                            repaired_messages = _maybe_append_required_store_address(messages or planner_messages, state, exc)
+                            if repaired_messages is not None:
+                                messages = repaired_messages
                                 validate_reply_consistency(messages, state)
-                                reply_source = "deterministic_unavailable_appointment_fallback"
+                                reply_source = "deterministic_store_address_append"
                                 model_call["fallback"] = {
                                     "reason": primary_error,
-                                    "strategy": "deterministic_unavailable_appointment",
+                                    "strategy": "deterministic_store_address_append",
                                 }
                                 model_call["output"] = {"messages": len(messages)}
                             else:
-                                model_call["error"] = primary_error
-                                errors.append(
-                                    {
-                                        "node": "synthesize_reply",
-                                        "message": "final_reply_failed",
-                                        "detail": primary_error,
+                                appointment_fallback = _maybe_build_unavailable_appointment_fallback(state, exc)
+                                if appointment_fallback is not None:
+                                    messages = appointment_fallback
+                                    validate_reply_consistency(messages, state)
+                                    reply_source = "deterministic_unavailable_appointment_fallback"
+                                    model_call["fallback"] = {
+                                        "reason": primary_error,
+                                        "strategy": "deterministic_unavailable_appointment",
                                     }
-                                )
-                                messages = []
+                                    model_call["output"] = {"messages": len(messages)}
+                                else:
+                                    model_call["error"] = primary_error
+                                    errors.append(
+                                        {
+                                            "node": "synthesize_reply",
+                                            "message": "final_reply_failed",
+                                            "detail": primary_error,
+                                        }
+                                    )
+                                    messages = []
 
             messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
             if handoff_notice_appended:
@@ -460,6 +491,33 @@ def _maybe_append_required_store_address(
     return _renumber([*messages, {"type": "store_address", "content": {"store_id": store_id}}])
 
 
+def _maybe_build_store_location_clarification_fallback(
+    state: AgentState,
+    exc: Exception,
+    *,
+    messages: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]] | None:
+    error = str(exc)
+    if not any(
+        marker in error
+        for marker in (
+            "unsupported_store_address_message",
+            "store_address_text_card_mismatch",
+            "store_address_fact_required",
+        )
+    ):
+        return None
+    if _single_store_fact_id(state):
+        return None
+    if _state_requires_payment_collection(state):
+        return None
+    content = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if content and not _looks_like_store_location_turn(content):
+        return None
+    text = "亲，这个位置我还需要确认下城市或区域，确认后我给您匹配门店。"
+    return [{"type": "text", "order": 1, "content": text}]
+
+
 def _maybe_build_required_payment_collection_fallback(
     state: AgentState,
     exc: Exception,
@@ -481,6 +539,8 @@ def _maybe_build_required_payment_collection_fallback(
     if context.get("over_limit"):
         return None
     amount = int(context.get("amount") or 10)
+    if not payment_collection_order_fact(state, amount=amount):
+        return None
     return _renumber(
         [
             *source_messages,
@@ -514,11 +574,34 @@ def _state_requires_payment_collection(state: AgentState) -> bool:
     return False
 
 
+def _looks_like_store_location_turn(text: str) -> bool:
+    compact = "".join(str(text or "").split())
+    if not compact:
+        return False
+    return any(
+        term in compact
+        for term in (
+            "门店",
+            "位置",
+            "地址",
+            "导航",
+            "定位",
+            "附近",
+            "地标",
+            "大厦",
+            "广场",
+            "商场",
+            "中心",
+            "街道",
+            "路线",
+        )
+    )
+
+
 def _state_has_paid_deposit_context(state: AgentState) -> bool:
-    payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
-    if str(payment_decision.get("action") or "") == "after_paid_next_step":
-        return True
-    if str(state.get("payment_state") or "") == "customer_claimed_paid":
+    """Return whether order or successful screenshot evidence confirms payment."""
+    image = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
+    if image.get("image_type") == "payment_proof" and image.get("payment_result") == "success":
         return True
     current_turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
     return str(current_turn_context.get("deposit_state") or "") == "deposit_paid"

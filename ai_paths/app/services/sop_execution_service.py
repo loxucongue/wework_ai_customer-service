@@ -7,8 +7,9 @@ from typing import Any
 
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.schemas import ChatRequest
+from app.services.customer_payment_state import is_paid_deposit_state, payment_collection_order_fact, resolved_payment_fact
 from app.services.model_client import ModelClient
-from app.services.sop_message_sanitizer import sanitize_sop_reply_messages
+from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
@@ -22,12 +23,13 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 {GLOBAL_STRUCTURED_NODE_CONTRACT}
 
 # Narrow Output Exception
-本节点唯一可以包含客户可见文本的位置是 `text_adjustments`：它只能改写输入中已有 text 消息的同一个 order。
-这不是自由生成回复，也不能新增、删除、拆分、合并或重排任何消息。
+本节点唯一可以包含客户可见文本的位置是 `text_adjustments` 和 `message_operations`。
+它们只用于让已选 SOP 在当前聊天里更自然：可改写已有 text，也可对 text 做插入、删除、合并、拆分和顺序微调。
+这不是自由生成回复，不能新增、删除、拆分、合并、重排或修改任何只读结构消息。
 
 # Business Background And Goal
 客户是通过企业微信进入的活动新客。平台已经按时间和客户阶段触发 SOP；你的目标是让已配置 SOP 按销售节奏自然发送，建立信任、解决阶段顾虑，并逐步推进到真实门店、登记、预约金和到店。
-平台触达默认应继续既定 SOP；只有确实会打断当前真实对话、与当前诉求冲突或已严重重合时才拒发。
+`/sop/events` 被触发，本身就表示当前时间点应该主动触达客户。除非客户刚发了新消息正在等普通 AI/销售回复，或者候选包会和客户当前明确立场硬冲突，否则不能空拒。你的核心任务不是判断“要不要打扰”，而是判断“发哪个包、如何加过渡话术，让客户重新开口”。
 
 {GLOBAL_BUSINESS_RHYTHM_CONTRACT}
 
@@ -42,40 +44,54 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
 - `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
 
-`editable_text_messages` 是唯一可改写的原文。`readonly_messages` 中的图片、视频、预约金卡、门店卡和内部 notice 都是结构事实，不能修改。
+`editable_text_messages` 是唯一可操作的文本素材。`readonly_messages` 中的图片、视频、预约金卡、门店卡和内部 notice 都是结构事实，不能修改、删除、重排或复制。
 
 # Task
 1. 理解事件触发的 SOP 阶段、最近聊天和候选包的阶段目的。
 2. 判断是否发送：`first_add_flow` 只能选择一个 `candidate_sops.id`；`platform_actions` 只能决定平台 actions 是否发送。
-3. 如果发送内容与当前对话的称呼、语气或承接明显不自然，才针对对应已有 text 输出小幅 `text_adjustments`；正常时输出空数组。
+3. 如果发送内容与当前对话的称呼、语气、消息数量或承接顺序明显不自然，才输出 `text_adjustments` 或 `message_operations` 调整 text；正常时输出空数组。
 
 # Decision Policy
 - 事实优先级必须是：最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件。低优先级信息不得覆盖高优先级事实。
 - 客户画像和旧事件不是当前对话事实，不能成为强制发送依据，也不能覆盖近期聊天中的城市、问题、顾虑、拒绝或已经完成的行动。
-- 固定首次加微流程中的真实客户回复已由代码在本节点前阻断；不得把画像中的“未回复”或旧阶段当作重新触达理由。
+- 固定首次加微流程中，只有“最新真实客户消息还没被普通 AI/销售回复”会在代码层阻断。客户之前回复过、但最近是小贝/销售发完后客户沉默，属于主动触达场景，必须尽量发 SOP 或轻触，不得因为“客户曾回复过/之前追问过”而空拒。
 - 先做拒发审查，通过后才考虑“默认按 SOP 全流程发送”；不能用流程目标覆盖客户当前明确立场。
 - 拒发审查按以下顺序：销冠正在连续承接且会被打断；客户当前立场与候选包的核心行动相反；候选包与当前真实诉求冲突；同阶段的目标、核心事实和行动已被完整覆盖；同包或同类已经完成。
 - 判断重复时比较“阶段目标 + 核心事实 + 行动目标”，不要因为句子换了说法就当作没发过；但只是同一活动主题或只发过普通图片不等于完整覆盖。
-- 话术像公告、通知或机器人，只是润色理由，不是拒发理由。如果阶段和内容本身可以发，必须 `send_sop=true` 并通过 `text_adjustments` 改成自然聊天；不能因为原文生硬就选择不发。
+- 话术像公告、通知或机器人，只是调整理由，不是拒发理由；也是旧口径里的“只是润色理由，不是拒发理由”。如果阶段和内容本身可以发，必须 `send_sop=true` 并通过 `text_adjustments/message_operations` 改成自然聊天；不能因为原文生硬就选择不发。
 - 客户未回复、只有 staff 消息、前序 SOP 已正常发送、同一活动主题或仅发过普通图片，都不构成拒发。
-- `first_add_flow` 按破冰/介绍 -> 需求与门店 -> 效果案例 -> 活动报价 -> 登记与预约金的阶段推进；优先选择与 event 的 delay 和 stage 适配的候选，不倒退补发更早阶段，除非它是唯一合理候选。
+- `first_add_flow` 按破冰/介绍 -> 需求与门店 -> 效果案例 -> 活动报价 -> 登记与预约金的阶段推进；优先选择与 event 的 delay 和 stage 适配的候选。若最近一轮问了城市/区域/斑点情况/姓名电话/时间而客户沉默，选择能轻触该未完成问题的候选不算倒退；也可以在当前阶段包前插入一句轻触承接。
 - 客户刚提出一个问题并不当然拒发。只有销售正在实时处理该问题，或本包会明显答非所问、硬打断时才拒发。
 - 不把活动图、门店图、品牌图当成效果案例；不把“同一活动”误判为严重重合。
 - 平台自动加好友开场不是有效客户咨询；没有后续客户消息时，仍按未回复的 SOP 跟进判断。
+- 当 `conversation_activity.assistant_waiting_customer=true` 且 `latest_customer_pending_ai_reply=false`：这是典型的沉默触达场景。你应优先 `send_sop=true`，通过过渡、共情、轻问候或换一种问法让客户再次开口；不要因为“刚追问过、staff 已经回复过、客户没接话”而拒发。
+- 若候选 SOP 与当前未完成问题不完全一致，但没有硬冲突：仍应选择最合适的候选并用 `text_adjustments/message_operations` 做过渡。例如先轻触“亲，还在吗，我刚才是想帮您确认下具体区域”，再衔接效果图、活动报价或预约金价值。
+- 只有在 `conversation_activity.latest_customer_pending_ai_reply=true`、客户明确拒绝当前核心行动、投诉/付款异常/身体不适、或候选包会明显造成事实错误时，才 `send_sop=false`。
 
 # Few-Shot Calibration
 - 客户明确表示想到店再付、暂时不交预约金，候选包的核心行动是立即发收款卡：客户立场与核心行动相反，拒发，不通过润色继续推卡。
 - 近聊已完整说明活动价、预约金、到店抵扣、尾款和保留名额，候选包又是同一活动介绍与同一行动：阶段语义已完整覆盖，拒发。
 - 前序只发过破冰和门店铺垫，客户未回复，候选包用于发同类效果参考：属于正常下一阶段，发送。
+- 上一轮小贝/销售问了城市或斑点情况，客户沉默到本次定时事件：不要空拒；选择当前最合适的候选包，并在第一条 text 加一句轻触承接，让客户愿意继续开口。
 
 # Text Adjustment Policy
 - 由你语义判断是否需要润色，不按关键词机械判断。
-- 润色目的仅限于让既有 SOP 更像真人顺着当前聊天自然发出：可调整称呼、语气、连接句和表达顺序。
+- 调整目的仅限于让既有 SOP 更像真人顺着当前聊天自然发出：可调整称呼、语气、连接句、表达顺序，以及 text 消息的拆合和数量。
 - 这是企业微信一对一聊天，不是群发公告、短信通知或机构宣传稿。称呼可以用“您”或“亲”，也可以直接接上文；不要用“尊敬的客户/尊敬的顾客”这类式称呼。
 - 如果原文像系统通知或公告，不能只换一两个词；要在不改事实和阶段目标的前提下，改成销售正在微信里接着聊的短句。避免“您好，温馨提醒”“请及时参与”“本机构现隆重开展”“诚邀您参与”等通知体。
 - 聊天口吻应该是短、直接、有上下文：先顺着客户刚才的问题或前序阶段，再说本包要推进的内容。不要写“温馨提醒、及时参与、感谢您的关注”这类客服模板句。
-- 只有 `send_sop=true` 时才能输出 `text_adjustments`；润色不能把拒发冲突改写成可发。
+- 最近一条真实客户消息包含明确顾虑、问题或不便，且最终决定发送时，最早一条可编辑 text 必须先用一句短话直接承接该内容，再衔接原话术包目标；原文已经自然承接时不必硬改。
+- “共情”必须对应客户真实表达，不能机械添加“理解您、确实不容易”；客户只是普通询问时直接回答并衔接即可。
+- 只有 `send_sop=true` 时才能输出 `text_adjustments/message_operations`；调整不能把拒发冲突改写成可发，润色不能把拒发冲突改写成可发。
+- 可用 `message_operations`：
+  - `insert_text_before/insert_text_after`：只插入不含新数字事实的 text，用于补一句承接或把通知体拆得更像聊天。
+  - `remove_text`：只删除不含数字事实的多余 text，不能删除最后一条付款说明 text。
+  - `merge_text`：合并多条 text，必须保留这些 text 的全部数字事实。
+  - `split_text`：拆分一条 text，拆分后必须保留原 text 的全部数字事实。
+  - `replace_text`：等同 text_adjustments，改写同一 order 的 text。
+- `message_operations` 只能操作 editable text；不能操作 `readonly_messages`，不能新增 image/video/payment_collection/store_address/human_handoff_notice，不能把 text 改成其他消息类型。
 - 必须保留该文本的阶段目标、已有价格、金额、优惠、退款口径、门店、日期时间、支付方式及承诺边界。
+- 所有数字及其出现次数必须与对应原文一致，不能为了口语化重复或省略金额。
 - 不能编造新事实，不能把普通答疑改成另一阶段的强推销，不能新增催付、预约承诺、门店事实或效果承诺。
 - `payment_collection`、`store_address`、`image`、`video`、`human_handoff_notice` 永远保持原样；若 text 与这些只读消息有关，润色不得改变其事实含义。
 
@@ -97,7 +113,8 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
   "sop_pack_id": "first_add_flow 时必须来自 candidate_sops；platform_actions 时为空字符串",
   "need_ai_reply": false,
   "reason": "一句内部判断原因",
-  "text_adjustments": [{{"order": 1, "text": "仅改写已有 text 的润色结果"}}]
+  "text_adjustments": [{{"order": 1, "text": "仅改写已有 text 的润色结果"}}],
+  "message_operations": [{{"op": "insert_text_after", "after_order": 1, "text": "只新增一句无新事实的承接 text"}}]
 }}
 """.strip()
 
@@ -111,10 +128,14 @@ class SopExecutionService:
         repository: Any,
         sop_reply_pack_service: SopReplyPackService,
         model_client: ModelClient,
+        memory_store: Any | None = None,
+        customer_context_service: Any | None = None,
     ) -> None:
         self.repository = repository
         self.sop_reply_pack_service = sop_reply_pack_service
         self.model_client = model_client
+        self.memory_store = memory_store
+        self.customer_context_service = customer_context_service
 
     async def evaluate_chat_gate(
         self,
@@ -141,10 +162,25 @@ class SopExecutionService:
             },
             "task": {},
             "model_usage": {},
+            "text_adjustments": [],
+            "message_operations": [],
+            "message_adjustment": {},
+            "order_gate": {},
             "error": "",
         }
         try:
             if is_platform_auto_opening_message(request.content):
+                identity = _chat_identity(request, request_context)
+                customer_memory = self._load_chat_customer_memory(identity["customer_id"])
+                order_gate = self._load_chat_order_gate(
+                    request=request,
+                    request_context=request_context,
+                    identity=identity,
+                    customer_memory=customer_memory,
+                )
+                result["order_gate"] = order_gate.get("summary", {})
+                if _apply_chat_order_gate_block(result, order_gate):
+                    return _finish(result, started)
                 self._handle_platform_auto_opening(
                     result=result,
                     request=request,
@@ -191,11 +227,24 @@ class SopExecutionService:
                 result.update({"mode": "complete", "reason": "all_sop_packs_completed"})
                 return _finish(result, started)
 
+            customer_memory = self._load_chat_customer_memory(identity["customer_id"])
+            order_gate = self._load_chat_order_gate(
+                request=request,
+                request_context=request_context,
+                identity=identity,
+                customer_memory=customer_memory,
+            )
+            result["order_gate"] = order_gate.get("summary", {})
+            if _apply_chat_order_gate_block(result, order_gate):
+                return _finish(result, started)
+
             selector_input = _chat_selector_input(request, unfinished)
             result["selector_input"] = compact(selector_input, max_chars=6000)
             selector_output = await self._select_chat_sop(selector_input)
             result["selector_output"] = selector_output
             result["model_usage"] = dict(self.model_client.last_usage or {})
+            result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
+            result["message_operations"] = _message_operations(selector_output.get("message_operations"))
             selected = _selected_pack(selector_output, unfinished)
             if not selected:
                 result.update(
@@ -207,8 +256,14 @@ class SopExecutionService:
                 )
                 return _finish(result, started)
 
-            messages, sanitize_summary = sanitize_sop_reply_messages(
+            adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
                 _pack_messages(selected),
+                result["text_adjustments"],
+                result["message_operations"],
+            )
+            result["message_adjustment"] = adjustment_summary
+            messages, sanitize_summary = sanitize_sop_reply_messages(
+                adjusted_messages,
                 state={
                     "content": request.content,
                     "normalized_content": request.content,
@@ -222,6 +277,22 @@ class SopExecutionService:
                         "mode": "no_sop_selected",
                         "need_ai_reply": True,
                         "reason": "selected_sop_has_empty_reply_messages",
+                    }
+                )
+                return _finish(result, started)
+
+            if not _chat_sop_payment_collection_supported(
+                messages,
+                request=request,
+                customer_memory=customer_memory,
+                customer_context=order_gate.get("customer_context", {}),
+            ):
+                result.update(
+                    {
+                        "mode": "skipped_missing_payment_order",
+                        "send_sop": False,
+                        "need_ai_reply": True,
+                        "reason": "payment_collection_requires_matching_current_order",
                     }
                 )
                 return _finish(result, started)
@@ -269,6 +340,76 @@ class SopExecutionService:
                 }
             )
             return _finish(result, started)
+
+    def _load_chat_customer_memory(self, customer_id: str) -> dict[str, Any]:
+        """Load existing memory for fresh order selection without mutating it."""
+        if not self.memory_store:
+            return {}
+        try:
+            memory = self.memory_store.load(customer_id)
+        except Exception:
+            return {}
+        return memory if isinstance(memory, dict) else {}
+
+    def _load_chat_order_gate(
+        self,
+        *,
+        request: ChatRequest,
+        request_context: dict[str, Any],
+        identity: dict[str, str],
+        customer_memory: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Freshly query the current order before a chat-gate model or SOP can run."""
+        if not self.customer_context_service:
+            return {"status": "not_configured", "customer_context": {}, "summary": {"source": "not_configured"}}
+        effective_context = _chat_order_request_context(request, request_context, identity)
+        try:
+            context = self.customer_context_service.load(
+                customer_id=identity.get("customer_id", ""),
+                memory=customer_memory,
+                request_context=effective_context,
+            )
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "summary": {"source": "exception"},
+            }
+        if not isinstance(context, dict) or context.get("source") != "platform_agent" or context.get("orders_error"):
+            error = str(
+                (context or {}).get("orders_error")
+                or (context or {}).get("error")
+                or "platform_order_context_unavailable"
+            )
+            return {
+                "status": "failed",
+                "error": error,
+                "summary": {"source": str((context or {}).get("source") or "unknown")},
+            }
+        basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
+        stored = basic.get("deposit_state")
+        stored_fact = stored if isinstance(stored, dict) else {}
+        payment = resolved_payment_fact(
+            orders=context.get("orders"),
+            existing_state=str(stored_fact.get("status") or stored or ""),
+            existing_source=str(stored_fact.get("source") or ""),
+            existing_fact=stored_fact,
+        )
+        summary = {
+            "source": "platform_agent.order_index",
+            "order_count": len(context.get("orders") or []),
+            "order_id": str(payment.get("order_id") or ""),
+            "store_id": str(payment.get("store_id") or ""),
+            "deposit_state": str(payment.get("deposit_state") or "unknown"),
+            "prepay_required": payment.get("prepay_required"),
+            "prepay_paid": payment.get("prepay_paid"),
+        }
+        return {
+            "status": "paid" if is_paid_deposit_state(payment.get("deposit_state")) else "unpaid",
+            "customer_context": context,
+            "payment": payment,
+            "summary": summary,
+        }
 
     def _handle_platform_auto_opening(
         self,
@@ -355,7 +496,7 @@ class SopExecutionService:
                     "# SOP Gate Role\n"
                     "你是企业微信线上活动接待链路里的 SOP Gate，不是客服回复模型。\n"
                     "你只判断“本轮是否先发送一个已配置 SOP 话术包”，以及“发送 SOP 后是否还必须继续异步 AI 回复”。\n"
-                    "你不能生成客户可见文案，不能改写 SOP 内容，不能调用工具，不能补门店、价格、档期、案例或订单事实。\n\n"
+                    "你只能通过 text_adjustments 和 message_operations 调整所选话术包中的 text，让静态 SOP 更像真人顺着当前聊天发出；不能改变结构消息或调用工具，也不能补门店、价格、档期、案例或订单事实。\n\n"
                     "# Business Mission\n"
                     "当前业务目标是让新客按销冠主线完成前置认知：活动介绍、信任建立、效果/案例铺垫、费用规则、预约金价值和下一步成交动作。\n"
                     "普通聊天 AI 负责回答复杂实时问题；SOP Gate 负责在新客 SOP 未完成前，优先把配置好的话术包按客户当前阶段铺出去。\n"
@@ -368,25 +509,38 @@ class SopExecutionService:
                     "你会收到：\n"
                     "- current_message：客户当前消息。\n"
                     "- conversation_history：最近极短对话。\n"
+                    "- conversation_activity：事件层整理的当前会话状态，只是事实证据，包含最新一条是否客户待回复、是否小贝/销售正在等客户、沉默时长和时间可靠性。\n"
                     "- unfinished_sops：尚未发送过的 SOP 包，只包含 id/name/purpose/order/tags/triggers/reply_messages 摘要。\n"
                     "你不会收到完整门店事实、档期事实、案例结果或订单详情，因此不能判断这些事实本身。\n\n"
                     "# Task\n"
                     "1. 先理解客户当前消息和最近对话处于哪个成交阶段。\n"
                     "2. 从 unfinished_sops 中最多选择一个当前最该先发的 SOP。\n"
                     "3. 逐条核对该 SOP 的 reply_messages 摘要：它是否真正回答客户当前问题，还是只覆盖相邻但不同的顾虑。\n"
-                    "4. 只有 SOP 无法覆盖、且客户问题必须实时答复时，才设置 need_ai_reply=true。\n\n"
+                    "4. 只有 SOP 无法覆盖、且客户问题必须实时答复时，才设置 need_ai_reply=true。\n"
+                    "5. 决定发送时，检查 editable_text_messages 的称呼、语气、条数和顺序是否自然承接当前消息；不自然时输出 text_adjustments 或 message_operations。\n\n"
                     "# Decision Policy\n"
                     "- 新客 SOP 没完成前，默认优先选择一个合适 SOP，不要轻易跳过直接进入普通 AI 聊天。\n"
                     "- 选择 SOP 时先看 purpose/order/triggers 找候选，再用 reply_messages 摘要做最终覆盖判断；不要只按关键词或宽泛目的机械匹配。\n"
                     "- 如果多个 SOP 都可用，选择最靠近当前成交阶段且 order 更靠前的一个。\n"
+                    "- 如果 conversation_activity.assistant_waiting_customer=true，说明上一轮小贝/销售已经发出问题或铺垫后客户沉默。客户沉默不是拒绝，也不是永久跳过 SOP；但下一步要像真人销售一样轻触承接，避免直接跳到大段报价、收款或无过渡的下一阶段。\n"
+                    "- 如果上一轮主要是在问城市、区域、门店、斑点情况、姓名电话或时间，客户未回复，本轮候选 SOP 必须能自然承接这个未完成问题；可以通过 text_adjustments/message_operations 加一句轻触或换一种问法，再衔接原包目标。不要一上来堆效果、报价和预约金。\n"
+                    "- 如果 conversation_activity.latest_customer_pending_ai_reply=true，正常情况下事件层会拦截；若仍进入这里，也应 send_sop=false、need_ai_reply=true，避免定时 SOP 抢在普通 AI 前面。\n"
                     "- 发送 SOP 后默认 need_ai_reply=false。\n"
                     "- 如果选中的 SOP 的实际消息已经覆盖价格、效果、活动、预约金、普通顾虑、品牌信任或成交推进诉求，即使客户问题明确，也保持 need_ai_reply=false。\n"
                     "- 只有以下情况才允许 need_ai_reply=true：客户明确索要具体门店地址/导航/真实档期/预约或订单状态；投诉退款、身体不适、强人工诉求；客户在追问项目内容、费用包含、是否只是检测/清洁/洗脸、是否真正包含斑点改善，而候选 SOP 只是泛效果图/案例/能不能做铺垫；或客户同一句包含多个独立问题，而当前 SOP 只覆盖其中一部分。\n"
                     "- 客户刚刚被问城市/区域/定位/附近门店后，本轮补充了城市、区、地标、定位或详细地址，这是“门店匹配槽位已补齐”，不属于静态 SOP 铺垫；必须 send_sop=false、need_ai_reply=true，交给普通 AI 基于门店工具匹配门店并承接节奏。\n"
                     "- 客户一边给出位置，一边说正在上班、没时间、之后再联系、先加微信方便联系，本质仍是“位置事实 + 到店时间顾虑”；先让普通 AI 回应当前位置和时间顾虑、匹配门店或轻推名额，不要直接用活动介绍包覆盖。\n"
                     "- 如果所有 unfinished_sops 都明显不适合当前客户状态，可以 send_sop=false，并让普通 AI 继续处理。\n\n"
+                    "# Contextual Text Adjustment\n"
+                    "- 只有 send_sop=true 时才能输出 text_adjustments/message_operations；每项 order 必须来自所选包的 editable_text_messages 或以 text order 为锚点。\n"
+                    "- 客户当前有明确顾虑、问题或不便时，最早一条可编辑 text 应先用一句短话直接承接，再自然衔接原包目标；原文已经承接时输出空数组。\n"
+                    "- 不要机械添加“理解您、确实不容易”；普通询问直接回答并衔接即可。\n"
+                    "- 必须保留原文的阶段目标、价格、金额、优惠、退款、门店、时间、支付及承诺边界。\n"
+                    "- 所有数字及其出现次数必须与对应原文完全一致，不能重复、删减或改写数字。\n"
+                    "- message_operations 只允许 replace_text、insert_text_before、insert_text_after、remove_text、merge_text、split_text；只能操作 text。插入 text 不能新增数字事实，删除 text 不能删除数字事实，合并/拆分必须保留全部数字事实。\n"
+                    "- image、video、payment_collection、store_address、human_handoff_notice 都是只读消息，不能改写、删除、重排、复制或由 text 转换生成。\n\n"
                     "# Negative Cases\n"
-                    "- 客户只是沉默、刚加微后未回复、或上一阶段 SOP 正常铺垫后没有新 customer 消息：不算冲突，优先继续 SOP。\n"
+                    "- 客户只是沉默、刚加微后未回复、或上一阶段 SOP 正常铺垫后没有新 customer 消息：不算冲突，优先继续 SOP；但如果最近一轮刚问了一个关键问题而客户没答，优先轻触/承接这个问题，不要机械跳阶段。\n"
                     "- 客户正在问具体门店地址、真实档期、订单/付款异常、投诉退款或身体不适：SOP 不足以覆盖，need_ai_reply=true。\n"
                     "- 客户回复城市、区、商圈、地标或定位，是给普通 AI 做门店匹配的事实输入；即使候选 SOP 能讲活动、价格或预约金，也不能替代门店匹配回复。\n"
                     "- 候选包只是和历史同属一个活动主题，不等于严重重合；只有同阶段核心目的和核心素材都已覆盖，才算严重重合。\n"
@@ -395,7 +549,8 @@ class SopExecutionService:
                     "- 如果客户当前问的是“268/活动价是否只包含检测、清洁、扫斑、洗脸，没有真正斑点改善”这类项目内容与费用包含顾虑，泛效果案例包不能覆盖；除非候选 SOP 的实际消息明确解释“检测清洁是前置步骤、不是全部项目、适合后会做斑点改善、费用透明”，否则 send_sop=false，need_ai_reply=true。\n"
                     "- 如果客户当前问的是套路、乱收费、强制消费、预约金抵扣/可退或费用是否清楚，而候选包实际消息正是在解释明码标价和预约金规则，可以发送该 SOP。\n\n"
                     "# Few-Shot Calibration\n"
-                    "- 新客未回复，1分钟介绍包已发，5分钟问地址包候选可用：send_sop=true，need_ai_reply=false。\n"
+                    "- 新客未回复，1分钟介绍包已发，5分钟问地址包候选可用：send_sop=true，need_ai_reply=false，可以把文案润色成更轻的“亲，还在吗，我先确认下您在哪个城市/区域，方便给您匹配门店”。\n"
+                    "- 上一轮小贝问“您在哪个城市哪个区”，客户沉默 5 分钟，候选效果或报价包可用：不要直接跳到效果/报价；优先选择能追问位置或轻触承接的包，或调整当前包首条 text 先轻触未答问题。\n"
                     "- 客户刚问“这家地址发我”：如果候选 SOP 不是门店地址事实，send_sop=false 或 need_ai_reply=true，交给普通 AI 查门店。\n"
                     "- 上一轮小贝问“您在哪个城市哪个区，我把离您最近的门店位置发您”，客户回“我现在在黄浦区，现在上班没时间，先加微信后面联系”：send_sop=false，need_ai_reply=true，交给普通 AI 匹配黄浦区/同城门店并顺着没时间顾虑承接。\n"
                     "- 客户问“效果怎么样”：候选效果案例/效果铺垫包可用且未发送过，send_sop=true，need_ai_reply=false。\n"
@@ -404,13 +559,13 @@ class SopExecutionService:
                     "- 客户问“是不是套路，会不会乱收费？”且候选包是收费与预约金顾虑处理：该包覆盖收费和信任顾虑，send_sop=true，need_ai_reply=false。\n"
                     "- 客户说“我付款多扣了”：send_sop=false，need_ai_reply=true。\n\n"
                     "# Do Not\n"
-                    "- 不生成客户可见 text/image/payment_collection/store_address/video。\n"
-                    "- 不改写 SOP 文案，不补写话术包。\n"
+                    "- 不生成独立客户回复；可以为承接自然插入少量 text，但不得新增 image/payment_collection/store_address/video/handoff。\n"
+                    "- 不改写所选包之外的文案，不补写新的话术包。\n"
                     "- 不输出工具名、门店名、价格细节、档期承诺、案例描述。\n"
                     "- 不因为客户问价格/效果/预约/顾虑就自动 need_ai_reply=true；先看 SOP 是否已覆盖。\n"
                     "- 不输出旧链路字段、阶段分析长文或多余 JSON 字段。\n\n"
                     "# Output\n"
-                    "只能输出 JSON，字段必须是 send_sop、sop_pack_id、need_ai_reply、reason。"
+                    "只能输出 JSON，字段必须是 send_sop、sop_pack_id、need_ai_reply、reason、text_adjustments、message_operations。"
                 ),
             },
             {
@@ -421,7 +576,9 @@ class SopExecutionService:
                     '  "send_sop": true/false,\n'
                     '  "sop_pack_id": "未完成 SOP 的 id 或空字符串",\n'
                     '  "need_ai_reply": true/false,\n'
-                    '  "reason": "一句内部原因"\n'
+                    '  "reason": "一句内部原因",\n'
+                    '  "text_adjustments": [{"order": 1, "text": "只改写所选包已有 text"}],\n'
+                    '  "message_operations": [{"op": "insert_text_after", "after_order": 1, "text": "只新增无新事实的 text"}]\n'
                     "}\n"
                     f"输入：{selector_input}"
                 ),
@@ -455,6 +612,7 @@ class SopExecutionService:
             "reason": "",
             "completed_sop_pack_ids": [],
             "text_adjustments": [],
+            "message_operations": [],
             "model_usage": {},
             "error": "",
         }
@@ -485,6 +643,7 @@ class SopExecutionService:
             result["selector_output"] = selector_output
             result["model_usage"] = dict(self.model_client.last_usage or {})
             result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
+            result["message_operations"] = _message_operations(selector_output.get("message_operations"))
 
             if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}:
                 selected = _selected_pack(selector_output, candidate_packs)
@@ -506,7 +665,7 @@ class SopExecutionService:
             result.update(
                 {
                     "mode": "event_selected" if send_sop else "event_rejected",
-                    "need_ai_reply": False,
+                    "need_ai_reply": bool(selector_output.get("need_ai_reply")),
                     "reason": str(selector_output.get("reason") or result.get("reason") or ""),
                 }
             )
@@ -941,6 +1100,67 @@ def _text_adjustments(value: Any) -> list[dict[str, Any]]:
     return output
 
 
+def _message_operations(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    output: list[dict[str, Any]] = []
+    allowed = {"replace_text", "insert_text_before", "insert_text_after", "remove_text", "merge_text", "split_text"}
+    for item in value[:8]:
+        if not isinstance(item, dict):
+            continue
+        op = _string(item.get("op") or item.get("operation"))
+        if op not in allowed:
+            continue
+        normalized: dict[str, Any] = {"op": op}
+        if op == "replace_text":
+            order = _positive_int(item.get("order"), 0)
+            text = _string(item.get("text"))
+            if order > 0 and text and len(text) <= 500:
+                normalized.update({"order": order, "text": text})
+            else:
+                continue
+        elif op in {"insert_text_before", "insert_text_after"}:
+            key = "before_order" if op == "insert_text_before" else "after_order"
+            order = _positive_int(item.get(key), 0)
+            text = _string(item.get("text"))
+            if order > 0 and text and len(text) <= 360:
+                normalized.update({key: order, "text": text})
+            else:
+                continue
+        elif op == "remove_text":
+            order = _positive_int(item.get("order"), 0)
+            if order > 0:
+                normalized["order"] = order
+            else:
+                continue
+        elif op == "merge_text":
+            orders = [_positive_int(order, 0) for order in item.get("orders") or []]
+            orders = [order for order in orders if order > 0]
+            text = _string(item.get("text"))
+            if 2 <= len(orders) <= 4 and text and len(text) <= 700:
+                normalized.update({"orders": orders, "text": text})
+            else:
+                continue
+        elif op == "split_text":
+            order = _positive_int(item.get("order"), 0)
+            texts = [_string(text) for text in item.get("texts") or []]
+            texts = [text for text in texts if text]
+            if order > 0 and 2 <= len(texts) <= 4 and all(len(text) <= 360 for text in texts):
+                normalized.update({"order": order, "texts": texts})
+            else:
+                continue
+        output.append(normalized)
+    return output
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
 def _selected_pack(selector_output: dict[str, Any], packs: list[dict[str, Any]]) -> dict[str, Any]:
     if not bool(selector_output.get("send_sop")):
         return {}
@@ -1027,6 +1247,89 @@ def _chat_identity(request: ChatRequest, request_context: dict[str, Any]) -> dic
         "external_userid": external_userid,
         "customer_id": external_userid or customer_id,
     }
+
+
+def _apply_chat_order_gate_block(result: dict[str, Any], order_gate: dict[str, Any]) -> bool:
+    """Apply a fail-closed order gate result before any chat SOP can be selected or sent."""
+    if order_gate.get("status") == "failed":
+        result.update(
+            {
+                "mode": "failed_order_fetch",
+                "send_sop": False,
+                "need_ai_reply": True,
+                "reason": "sop_gate_order_fetch_failed",
+                "error": str(order_gate.get("error") or "platform_order_context_unavailable"),
+            }
+        )
+        return True
+    if order_gate.get("status") == "paid":
+        result.update(
+            {
+                "mode": "skipped_deposit_paid",
+                "send_sop": False,
+                "need_ai_reply": True,
+                "reason": "deposit_paid_skip_sop_gate",
+            }
+        )
+        return True
+    return False
+
+
+def _chat_order_request_context(
+    request: ChatRequest,
+    request_context: dict[str, Any],
+    identity: dict[str, str],
+) -> dict[str, Any]:
+    """Build the platform order query context from the current chat identity."""
+    output = dict(request.request_context or {})
+    output.update(request_context or {})
+    request_values = {
+        "corp_id": request.corp_id,
+        "user_id": request.user_id,
+        "wechat": request.wechat,
+        "external_userid": request.external_userid,
+        "customer_add_wechat_id": request.customer_add_wechat_id,
+        "confirmed_store_id": request.confirmed_store_id or request.store_id,
+        "confirmed_store_name": request.confirmed_store_name or request.store_name,
+    }
+    for key, value in request_values.items():
+        if output.get(key) in (None, "") and value not in (None, ""):
+            output[key] = value
+    for key in ("corp_id", "user_id", "wechat", "external_userid", "customer_id"):
+        if output.get(key) in (None, "") and identity.get(key) not in (None, ""):
+            output[key] = identity[key]
+    return output
+
+
+def _chat_sop_payment_collection_supported(
+    messages: list[dict[str, Any]],
+    *,
+    request: ChatRequest,
+    customer_memory: dict[str, Any],
+    customer_context: dict[str, Any],
+) -> bool:
+    """Require a matching active unpaid order before a chat-gate payment card."""
+    payment_message = next(
+        (item for item in messages if isinstance(item, dict) and _string(item.get("type")) == "payment_collection"),
+        None,
+    )
+    if not payment_message:
+        return True
+    content = payment_message.get("content") if isinstance(payment_message.get("content"), dict) else {}
+    basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
+    confirmed_store_id = str(
+        request.confirmed_store_id
+        or request.store_id
+        or basic.get("confirmed_store_id")
+        or ""
+    ).strip()
+    state = {
+        "customer_context": customer_context,
+        "customer_basic_info": basic,
+        "confirmed_store_id": confirmed_store_id,
+        "payment_decision": {"amount": content.get("amount")},
+    }
+    return bool(payment_collection_order_fact(state, amount=content.get("amount")))
 
 
 def _chat_gate_professional_assist_risk(request: ChatRequest) -> str:

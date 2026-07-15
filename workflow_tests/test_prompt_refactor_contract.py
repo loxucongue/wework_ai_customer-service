@@ -44,16 +44,19 @@ def test_prompt_files_do_not_contain_common_encoding_damage() -> None:
             assert marker not in text, f"{path} contains possible encoding damage: {marker}"
 
 
-def test_transaction_prompts_separate_payment_card_from_order_and_keep_appointment_sequence() -> None:
+def test_transaction_prompts_require_order_and_keep_postpaid_information_only() -> None:
     assert "create_work_order" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "payment_result=success" in PLANNER_TRANSACTION_PATCH_PROMPT
-    assert "缺少成功 order_id 或开单失败都不得取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
-    assert "不要求先确认门店、先有订单或开单成功" in PLANNER_TRANSACTION_PATCH_PROMPT
-    assert "不再让客户补登记" in REPLY_TRANSACTION_PATCH_PROMPT
-    assert "本次交易终态" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "缺少成功 order_id 或开单失败必须取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "同门店、同金额有效未付订单" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "不调用 available_time/create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "客户口头说“我付了”不能单独确认已付" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "姓名、电话、门店、到店日期和时间" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "不查档期、不创建排客" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "既有 appointment_created/confirmed" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "感谢和欢迎到店" in PLANNER_TRANSACTION_PATCH_PROMPT
-    assert "改约决策分两轮闭环" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "不得新调 create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "完整 11 位号码" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不能只回一句“199是别的口径”" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "current-turn transaction results" not in REPLY_TRANSACTION_PATCH_PROMPT
@@ -61,6 +64,8 @@ def test_transaction_prompts_separate_payment_card_from_order_and_keep_appointme
     assert "尊敬的客户" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "成交推进不是无限循环" in GLOBAL_REPLY_CONTRACT
     assert "排客完成终态" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
+    assert "不要求先确认门店、先有订单或开单成功" not in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "缺少成功 order_id 或开单失败都不得取消卡片" not in REPLY_TRANSACTION_PATCH_PROMPT
 
 
 def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None:
@@ -95,7 +100,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "不要让客户先发照片给你线上诊断",
         "效果顾虑由你结合权威案例发送证据判断查图还是直接答疑推进",
         "preferred_store / store_candidate 不是 confirmed_store",
-        "没有 available_time、appointment_record 或 request confirmed appointment 事实时",
+        "日期和时间只作为到店意向",
         "SOP 三板斧",
         "不要只答疑停住",
         "小程序收款卡片/收款码",
@@ -111,7 +116,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "普通顾虑被解决后的明确接受也可以进入 send_now",
         "卡片操作和一个理由放在前面",
         "不重复卡片",
-        "只用于客户已付后的姓名、电话、门店、日期或排期承接",
+        "只用于权威事实已付后的姓名、电话、门店、日期和时间承接",
         "短拒绝",
         "软拒绝",
         "sales_progression 必须保持 continue",
@@ -158,7 +163,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "不是必须照抄的客户文案",
         "短确认后的收款动作要像继续聊天",
         "当前仍是未付状态",
-        "Reply 不得因为缺门店、缺订单、开单失败",
+        "缺订单、门店/金额不匹配或开单失败时必须二次否决卡片",
         "不得退回去重问城市或门店",
         "降压挽回",
         "不催、不急或有时间再约",
@@ -221,6 +226,38 @@ def test_sop_gate_hands_location_slot_completion_to_ai() -> None:
         "客户回“我现在在黄浦区，现在上班没时间，先加微信后面联系”",
     ]:
         assert marker in source
+
+
+def test_sop_gate_requires_contextual_first_text_and_preserves_numeric_facts() -> None:
+    source = (ROOT / "ai_paths/app/services/sop_execution_service.py").read_text(encoding="utf-8")
+    for marker in [
+        "最早一条可编辑 text",
+        "先用一句短话直接承接",
+        "不要机械添加",
+        "所有数字及其出现次数",
+        "text_adjustments",
+        "message_operations",
+        "insert_text_after",
+        "只能操作 text",
+        "payment_collection_requires_matching_current_order",
+        "skipped_deposit_paid",
+        "failed_order_fetch",
+    ]:
+        assert marker in source
+
+
+def test_paid_after_flow_prioritizes_name_and_phone_without_schedule_tools() -> None:
+    global_contract = (ROOT / "ai_paths/app/prompts/global_contract.py").read_text(encoding="utf-8")
+    planner_prompt = (ROOT / "ai_paths/app/graph/planner/brain_v2_prompts.py").read_text(encoding="utf-8")
+    reply_prompt = (ROOT / "ai_paths/app/prompts/reply_synthesizer.py").read_text(encoding="utf-8")
+    for source in [global_contract, planner_prompt, reply_prompt]:
+        assert "姓名" in source
+        assert "电话" in source
+        assert "不调用 available_time" in source or "不查档期" in source
+        assert "create_order_plan" in source
+    assert "姓名和电话是第一优先级" in global_contract
+    assert "先检查姓名和电话" in planner_prompt
+    assert "姓名、电话是第一优先级" in reply_prompt
 
 
 def test_sop_gate_does_not_use_case_pack_for_project_content_or_cleaning_doubt() -> None:

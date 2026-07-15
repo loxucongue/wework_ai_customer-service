@@ -251,7 +251,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_event("evt_quiet_active")
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_replied")
+        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_pending_ai_reply")
+        self.assertEqual(repo.tasks[0]["send_payload"]["conversation_activity"]["reason"], "customer_pending_ai_reply")
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
@@ -280,8 +281,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_event("evt_daytime_inactive")
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_replied")
-        self.assertEqual(repo.tasks[0]["send_payload"]["conversation_activity"]["reason"], "customer_replied_after_first_add")
+        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_pending_ai_reply")
+        self.assertEqual(repo.tasks[0]["send_payload"]["conversation_activity"]["reason"], "customer_pending_ai_reply")
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
@@ -335,7 +336,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_event("evt_first_filter_history")
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_replied")
+        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_pending_ai_reply")
+        self.assertEqual(repo.tasks[0]["send_payload"]["conversation_activity"]["reason"], "customer_pending_ai_reply")
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
         conversation_filter = repo.tasks[0]["send_payload"]["conversation_filter"]
@@ -374,6 +376,45 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.tasks[0]["status"], "sent")
         self.assertEqual(selector.calls[0]["conversation_messages"], messages)
         self.assertEqual(repo.tasks[0]["send_payload"]["conversation_filter"]["kept_after_event_created"], 1)
+
+    async def test_first_added_event_continues_when_staff_is_waiting_after_customer_reply(self) -> None:
+        repo = _Repo()
+        messages = [
+            {
+                "from": "customer",
+                "msgtype": "text",
+                "content": "我在深圳",
+                "msgtime": "2026-07-02T04:12:00+00:00",
+            },
+            {
+                "from": "staff",
+                "source": "ai_reply",
+                "msgtype": "text",
+                "content": "亲，您在深圳哪个区，我给您匹配门店",
+                "msgtime": "2026-07-02T04:20:00+00:00",
+            },
+        ]
+        client = _OutreachClient(messages=messages)
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "light touch while waiting"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_staff_waiting_after_customer",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-02T04:25:00+00:00",
+            sop={"delay_minutes": 5},
+            customers=[{"first_added_event": {"trace_id": "trace_staff_waiting", "timestamp": "2026-07-02T03:50:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_staff_waiting_after_customer")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        activity = selector.calls[0]["conversation_activity"]
+        self.assertTrue(activity["customer_replied"])
+        self.assertFalse(activity["latest_customer_pending_ai_reply"])
+        self.assertTrue(activity["assistant_waiting_customer"])
+        self.assertEqual(activity["reason"], "assistant_waiting_customer")
 
     async def test_first_added_event_ignores_platform_auto_opening_message(self) -> None:
         repo = _Repo()
@@ -422,14 +463,14 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_event("evt_customer_time_unknown")
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_replied")
+        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_timing_uncertain")
         activity = repo.tasks[0]["send_payload"]["conversation_activity"]
         self.assertTrue(activity["uncertain_customer_timing"])
         self.assertEqual(activity["reason"], "customer_message_time_unknown")
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
-    async def test_no_customer_reply_keeps_configured_5_30_60_70_minute_flow(self) -> None:
+    async def test_no_customer_reply_keeps_non_payment_flow_but_blocks_unbacked_payment_card(self) -> None:
         pack_ids = {
             5: "event_s10_store_prompt_5min",
             30: "event_s10_effect_warmup_30min",
@@ -456,8 +497,85 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 result = await service.process_event(event_id)
 
                 self.assertEqual(result["status"], "processed")
-                self.assertEqual(repo.tasks[0]["status"], "sent")
+                expected_status = "skipped_missing_payment_order" if delay_minutes == 70 else "sent"
+                self.assertEqual(repo.tasks[0]["status"], expected_status)
                 self.assertEqual(repo.tasks[0]["sop_pack_id"], pack_id)
+
+    async def test_paid_current_order_skips_sop_before_model_and_send(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+        context_service = _CustomerContextService(
+            {
+                "source": "platform_agent",
+                "orders": [
+                    {
+                        "id": "order-paid",
+                        "status": "waiting_schedule",
+                        "store_id": "386",
+                        "prepay_required": 10,
+                        "prepay_paid": 10,
+                        "is_current_order": True,
+                    }
+                ],
+            }
+        )
+        service = _service(
+            repo=repo,
+            client=client,
+            selector=selector,
+            customer_context_service=context_service,
+        )
+        payload = _base_payload(
+            event_id="evt_paid_skip",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
+            sop={"delay_minutes": 5},
+            customers=[{"first_added_event": {"trace_id": "trace_paid", "timestamp": "2026-07-11T01:00:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_paid_skip")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "skipped_deposit_paid")
+        self.assertEqual(repo.tasks[0]["send_payload"]["order_gate"]["deposit_state"], "paid_by_order")
+        self.assertEqual(len(context_service.load_calls), 1)
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(client.send_calls, [])
+
+    async def test_order_query_failure_blocks_sop_before_model_and_send(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+        service = _service(
+            repo=repo,
+            client=client,
+            selector=selector,
+            customer_context_service=_CustomerContextService(
+                {
+                    "source": "platform_agent",
+                    "orders": [],
+                    "orders_error": "TimeoutError: timed out",
+                }
+            ),
+        )
+        payload = _base_payload(
+            event_id="evt_order_fetch_failed",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
+            sop={"delay_minutes": 5},
+            customers=[{"first_added_event": {"trace_id": "trace_order_failed", "timestamp": "2026-07-11T01:00:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_order_fetch_failed")
+
+        self.assertEqual(result["status"], "processed_with_errors")
+        self.assertEqual(repo.tasks[0]["status"], "failed_order_fetch")
+        self.assertIn("TimeoutError", repo.tasks[0]["error"])
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(client.send_calls, [])
 
     async def test_successful_send_records_minimal_sop_history_and_last_outreach_time(self) -> None:
         repo = _Repo()
@@ -595,7 +713,35 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         repo = _Repo()
         client = _OutreachClient(messages=[{"direction": "customer", "content": "我带两个朋友一起过去"}])
         selector = _Selector({"send_sop": True, "reason": "send platform deposit"})
-        service = _service(repo=repo, client=client, selector=selector)
+        service = _service(
+            repo=repo,
+            client=client,
+            selector=selector,
+            memory_store=_MemoryStore(
+                {
+                    "basic_info": {
+                        "confirmed_store_id": "386",
+                        "confirmed_store_name": "厦门百星店",
+                        "order_state": {"order_id": "order-30", "store_id": "386", "prepay_required": 30},
+                    }
+                }
+            ),
+            customer_context_service=_CustomerContextService(
+                {
+                    "source": "platform_agent",
+                    "orders": [
+                        {
+                            "id": "order-30",
+                            "status": "pending",
+                            "store_id": "386",
+                            "prepay_required": 30,
+                            "prepay_paid": 0,
+                            "is_current_order": True,
+                        }
+                    ],
+                }
+            ),
+        )
         payload = _base_payload(
             event_id="evt_group_payment",
             event_type="sop_platform_task",
@@ -676,6 +822,38 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(messages[0]["content"]["text"], "活动268元，先付10元预约金。")
         self.assertEqual(summary["applied_orders"], [])
+        self.assertEqual(summary["rejected"][0]["reason"], "numeric_facts_changed")
+
+    def test_sop_message_operations_can_adjust_text_count_without_touching_structures(self) -> None:
+        messages, summary = apply_sop_text_adjustments(
+            [
+                {"type": "text", "order": 1, "content": {"text": "您好，温馨提醒您及时参与活动。"}},
+                {"type": "text", "order": 2, "content": {"text": "感谢您的关注。"}},
+                {"type": "image", "order": 3, "content": {"url": "https://example.com/a.jpg"}},
+            ],
+            [],
+            [
+                {"op": "replace_text", "order": 1, "text": "亲，前面说的活动还在，我简单接着跟您说。"},
+                {"op": "insert_text_after", "after_order": 1, "text": "您刚才有顾虑的话直接问我就行。"},
+                {"op": "remove_text", "order": 2},
+            ],
+        )
+
+        self.assertEqual([item["type"] for item in messages], ["text", "text", "image"])
+        self.assertEqual(messages[0]["content"]["text"], "亲，前面说的活动还在，我简单接着跟您说。")
+        self.assertEqual(messages[1]["content"]["text"], "您刚才有顾虑的话直接问我就行。")
+        self.assertEqual(messages[2]["content"]["url"], "https://example.com/a.jpg")
+        self.assertEqual([item["op"] for item in summary["applied_operations"]], ["replace_text", "insert_text_after", "remove_text"])
+
+    def test_sop_message_operations_reject_new_numeric_facts(self) -> None:
+        messages, summary = apply_sop_text_adjustments(
+            [{"type": "text", "order": 1, "content": {"text": "亲，活动还在。"}}],
+            [],
+            [{"op": "insert_text_after", "after_order": 1, "text": "现在只要10元。"}],
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(summary["applied_operations"], [])
         self.assertEqual(summary["rejected"][0]["reason"], "numeric_facts_changed")
 
     async def test_platform_task_only_judges_and_sends_platform_actions(self) -> None:
@@ -1018,7 +1196,12 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("冲突", system_prompt)
         self.assertIn("严重重合", system_prompt)
         self.assertIn("客户未回复、只有 staff 消息", system_prompt)
+        self.assertIn("当前时间点应该主动触达客户", system_prompt)
+        self.assertIn("让客户重新开口", system_prompt)
+        self.assertIn("assistant_waiting_customer=true", system_prompt)
         self.assertIn("text_adjustments", system_prompt)
+        self.assertIn("message_operations", system_prompt)
+        self.assertIn("insert_text_after", system_prompt)
         self.assertIn("payment_collection`、`store_address`、`image`、`video`", system_prompt)
         self.assertIn("editable_text_messages", system_prompt)
         self.assertIn("readonly_messages", system_prompt)
@@ -1061,7 +1244,12 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("冲突", system_prompt)
         self.assertIn("严重重合", system_prompt)
         self.assertIn("客户未回复、只有 staff 消息", system_prompt)
+        self.assertIn("当前时间点应该主动触达客户", system_prompt)
+        self.assertIn("让客户重新开口", system_prompt)
+        self.assertIn("assistant_waiting_customer=true", system_prompt)
         self.assertIn("text_adjustments", system_prompt)
+        self.assertIn("message_operations", system_prompt)
+        self.assertIn("insert_text_after", system_prompt)
         self.assertIn("payment_collection`、`store_address`、`image`、`video`", system_prompt)
         self.assertIn("客户画像和旧事件不是当前对话事实", system_prompt)
 
@@ -1092,6 +1280,297 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(duplicate["mode"], "platform_auto_opening_duplicate")
         self.assertFalse(duplicate["send_sop"])
         self.assertEqual(len(repository.tasks), 2)
+
+    async def test_chat_gate_skips_platform_auto_opening_when_deposit_is_paid(self) -> None:
+        repository = _Repo()
+        model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "chat_opening"})
+        service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=_DualScopeOpeningPackService(),
+            model_client=model,
+            memory_store=_MemoryStore(),
+            customer_context_service=_CustomerContextService(
+                {
+                    "source": "platform_agent",
+                    "orders": [
+                        {
+                            "id": "order-paid",
+                            "status": "waiting_schedule",
+                            "store_id": "386",
+                            "prepay_required": 10,
+                            "prepay_paid": 10,
+                            "is_current_order": True,
+                        }
+                    ],
+                }
+            ),
+        )
+        request = ChatRequest(
+            content="我已经添加了你，现在我们可以开始聊天了。",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+        )
+
+        result = await service.evaluate_chat_gate(request, request_id="req_auto_paid", request_context={})
+
+        self.assertEqual(result["mode"], "skipped_deposit_paid")
+        self.assertFalse(result["send_sop"])
+        self.assertEqual(repository.tasks, [])
+        self.assertEqual(model.messages, [])
+
+    async def test_chat_gate_applies_contextual_text_adjustment_without_changing_pack_structure(self) -> None:
+        class _ContextPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "context_pack",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "intro",
+                            "name": "顾虑承接",
+                            "purpose": "回应客户收费顾虑",
+                            "order": 10,
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "我们是明码标价，没有强制消费。"}},
+                                {"type": "image", "order": 2, "content": {"url": "https://example.com/fact.png"}},
+                            ],
+                        }
+                    ]
+                }
+
+        model = _PromptCaptureModel(
+            {
+                "send_sop": True,
+                "sop_pack_id": "context_pack",
+                "need_ai_reply": False,
+                "reason": "话术覆盖收费顾虑",
+                "text_adjustments": [
+                    {"order": 1, "text": "您担心到店后乱收费，这个我直接说清楚：我们是明码标价，没有强制消费。"}
+                ],
+            }
+        )
+        service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_ContextPackService(),
+            model_client=model,
+        )
+        request = ChatRequest(
+            content="我怕到店以后乱收费",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+        )
+
+        result = await service.evaluate_chat_gate(request, request_id="req_context_adjust", request_context={})
+
+        self.assertTrue(result["send_sop"])
+        self.assertEqual([item["type"] for item in result["reply_messages"]], ["text", "image"])
+        self.assertEqual(
+            result["reply_messages"][0]["content"]["text"],
+            "您担心到店后乱收费，这个我直接说清楚：我们是明码标价，没有强制消费。",
+        )
+        self.assertEqual(result["message_adjustment"]["applied_orders"], [1])
+        self.assertIn("最早一条可编辑 text", str(model.messages[0]["content"]))
+
+    async def test_chat_gate_rejects_adjustment_that_changes_numeric_occurrences(self) -> None:
+        class _NumericPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "numeric_pack",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "activity_intro",
+                            "name": "活动说明",
+                            "purpose": "说明活动价格",
+                            "order": 10,
+                            "reply_messages": [
+                                {
+                                    "type": "text",
+                                    "order": 1,
+                                    "content": {"text": "活动价268元，预约金10元，到店抵扣10元。"},
+                                }
+                            ],
+                        }
+                    ]
+                }
+
+        model = _PromptCaptureModel(
+            {
+                "send_sop": True,
+                "sop_pack_id": "numeric_pack",
+                "need_ai_reply": False,
+                "reason": "说明价格",
+                "text_adjustments": [
+                    {"order": 1, "text": "活动价268元，先付10元，到店抵扣10元，这10元可以退。"}
+                ],
+            }
+        )
+        service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_NumericPackService(),
+            model_client=model,
+        )
+        request = ChatRequest(content="怎么收费", customer_id="customer", corp_id="corp", external_userid="ext")
+
+        result = await service.evaluate_chat_gate(request, request_id="req_numeric_adjust", request_context={})
+
+        self.assertTrue(result["send_sop"])
+        self.assertEqual(result["reply_messages"][0]["content"]["text"], "活动价268元，预约金10元，到店抵扣10元。")
+        self.assertEqual(result["message_adjustment"]["applied_orders"], [])
+        self.assertEqual(result["message_adjustment"]["rejected"][0]["reason"], "numeric_facts_changed")
+
+    async def test_chat_gate_blocks_before_model_when_order_fetch_fails_or_deposit_is_paid(self) -> None:
+        class _PlainPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "plain_pack",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "intro",
+                            "name": "普通承接",
+                            "purpose": "普通承接",
+                            "order": 10,
+                            "reply_messages": [{"type": "text", "order": 1, "content": {"text": "普通话术"}}],
+                        }
+                    ]
+                }
+
+        request = ChatRequest(
+            content="你好",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+            user_id=7294,
+            wechat="CS001",
+        )
+        failed_model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "plain_pack"})
+        failed_context = _CustomerContextService(
+            {"source": "local_memory_fallback", "orders": [], "error": "order index timeout"}
+        )
+        failed_service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_PlainPackService(),
+            model_client=failed_model,
+            memory_store=_MemoryStore(),
+            customer_context_service=failed_context,
+        )
+
+        failed = await failed_service.evaluate_chat_gate(request, request_id="req_order_failed", request_context={})
+
+        self.assertEqual(failed["mode"], "failed_order_fetch")
+        self.assertFalse(failed["send_sop"])
+        self.assertEqual(failed_model.messages, [])
+        self.assertEqual(len(failed_context.load_calls), 1)
+
+        paid_model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "plain_pack"})
+        paid_service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_PlainPackService(),
+            model_client=paid_model,
+            memory_store=_MemoryStore(),
+            customer_context_service=_CustomerContextService(
+                {
+                    "source": "platform_agent",
+                    "orders": [
+                        {
+                            "id": "order-paid",
+                            "status": "waiting_schedule",
+                            "store_id": "386",
+                            "prepay_required": 10,
+                            "prepay_paid": 10,
+                            "is_current_order": True,
+                        }
+                    ],
+                }
+            ),
+        )
+
+        paid = await paid_service.evaluate_chat_gate(request, request_id="req_order_paid", request_context={})
+
+        self.assertEqual(paid["mode"], "skipped_deposit_paid")
+        self.assertFalse(paid["send_sop"])
+        self.assertEqual(paid_model.messages, [])
+
+    async def test_chat_gate_payment_card_requires_matching_current_order(self) -> None:
+        class _PaymentPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "payment_pack",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "deposit_push",
+                            "name": "预约金推进",
+                            "purpose": "发送预约金入口",
+                            "order": 10,
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "10元预约金到店抵扣。"}},
+                                {"type": "payment_collection", "order": 2, "content": {"amount": 10}},
+                            ],
+                        }
+                    ]
+                }
+
+        request = ChatRequest(
+            content="付款入口发我",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+            confirmed_store_id="386",
+        )
+        output = {
+            "send_sop": True,
+            "sop_pack_id": "payment_pack",
+            "need_ai_reply": False,
+            "reason": "客户索要入口",
+            "text_adjustments": [],
+        }
+        missing_service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_PaymentPackService(),
+            model_client=_PromptCaptureModel(output),
+            memory_store=_MemoryStore({"basic_info": {"confirmed_store_id": "386"}}),
+            customer_context_service=_CustomerContextService({"source": "platform_agent", "orders": []}),
+        )
+
+        missing = await missing_service.evaluate_chat_gate(request, request_id="req_payment_missing", request_context={})
+
+        self.assertEqual(missing["mode"], "skipped_missing_payment_order")
+        self.assertFalse(missing["send_sop"])
+
+        valid_service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_PaymentPackService(),
+            model_client=_PromptCaptureModel(output),
+            memory_store=_MemoryStore({"basic_info": {"confirmed_store_id": "386"}}),
+            customer_context_service=_CustomerContextService(
+                {
+                    "source": "platform_agent",
+                    "orders": [
+                        {
+                            "id": "order-unpaid",
+                            "status": "pending",
+                            "store_id": "386",
+                            "prepay_required": 10,
+                            "prepay_paid": 0,
+                            "is_current_order": True,
+                        }
+                    ],
+                }
+            ),
+        )
+
+        valid = await valid_service.evaluate_chat_gate(request, request_id="req_payment_valid", request_context={})
+
+        self.assertTrue(valid["send_sop"])
+        self.assertEqual([item["type"] for item in valid["reply_messages"]], ["text", "payment_collection"])
 
     async def test_chat_gate_exposes_authoritative_sop_progress_without_message_bodies(self) -> None:
         class _ProgressPackService:
@@ -1298,6 +1777,7 @@ def _service(
     pack_service: Any | None = None,
     default_identity: dict[str, Any] | None = None,
     memory_store: Any | None = None,
+    customer_context_service: Any | None = None,
 ) -> SopEventService:
     return SopEventService(
         repository=repo,
@@ -1305,6 +1785,7 @@ def _service(
         outreach_send_client=client,
         sop_execution_service=selector or _Selector({"send_sop": False, "reason": "default reject"}),
         memory_store=memory_store,
+        customer_context_service=customer_context_service or _CustomerContextService(),
         default_identity=default_identity,
     )
 
@@ -1553,6 +2034,16 @@ class _MemoryStore:
     def record_sop_pack_sent(self, customer_id: str, **kwargs: Any) -> dict[str, Any]:
         self.record_calls.append({"customer_id": customer_id, **kwargs})
         return {"status": "recorded"}
+
+
+class _CustomerContextService:
+    def __init__(self, context: dict[str, Any] | None = None) -> None:
+        self.context = context or {"source": "platform_agent", "orders": []}
+        self.load_calls: list[dict[str, Any]] = []
+
+    def load(self, **kwargs: Any) -> dict[str, Any]:
+        self.load_calls.append(kwargs)
+        return dict(self.context)
 
 
 class _Repo:

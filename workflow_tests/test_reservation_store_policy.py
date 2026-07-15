@@ -62,9 +62,9 @@ def test_planner_treats_complete_requested_district_scope_as_direct_reply_fact()
     assert "scope 事实直回" in PLANNER_SYSTEM_PROMPT
 
 
-def test_transaction_output_gate_does_not_make_order_a_payment_card_prerequisite() -> None:
-    assert "or a payment prerequisite" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
-    assert "even when `transaction_facts.unpaid_orders=[]`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
+def test_transaction_output_gate_requires_matching_order_before_payment_card() -> None:
+    assert "requires a matching active unpaid order" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
+    assert "a rejected or failed result blocks the card" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
 
 
 def test_planner_transaction_facts_expose_only_structured_order_state() -> None:

@@ -21,10 +21,8 @@ class CustomerContextService:
     def __init__(self, platform_client: PlatformAgentClient | None = None) -> None:
         self._platform_client = platform_client
         self._identity_cache: dict[str, tuple[float, dict[str, Any]]] = {}
-        self._orders_cache: dict[str, tuple[float, Any]] = {}
         self._cache_lock = Lock()
         self._identity_ttl_seconds = 30 * 60
-        self._orders_ttl_seconds = 30
 
     def load(
         self,
@@ -35,7 +33,11 @@ class CustomerContextService:
     ) -> dict[str, Any]:
         if self._platform_client and self._platform_client.available:
             try:
-                platform_context = self._load_from_platform(customer_id=customer_id, request_context=request_context)
+                platform_context = self._load_from_platform(
+                    customer_id=customer_id,
+                    memory=memory,
+                    request_context=request_context,
+                )
                 if platform_context:
                     return platform_context
             except Exception as exc:
@@ -110,10 +112,21 @@ class CustomerContextService:
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
-    def _load_from_platform(self, *, customer_id: str, request_context: dict[str, Any]) -> dict[str, Any]:
+    def _load_from_platform(
+        self,
+        *,
+        customer_id: str,
+        memory: dict[str, Any],
+        request_context: dict[str, Any],
+    ) -> dict[str, Any]:
         assert self._platform_client is not None
         identity = self.load_identity(customer_id=customer_id, request_context=request_context)
-        return self._context_from_identity(customer_id=customer_id, memory={}, request_context=request_context, identity=identity)
+        return self._context_from_identity(
+            customer_id=customer_id,
+            memory=memory,
+            request_context=request_context,
+            identity=identity,
+        )
 
     def _context_from_identity(
         self,
@@ -131,6 +144,12 @@ class CustomerContextService:
         scoped_context = dict(identity.get("request_context") or request_context)
         orders, orders_error, orders_cache_hit = self._load_orders(platform_customer_id, scoped_context)
         appointment = appointment_from_request_context(request_context) or appointment_from_orders(orders)
+        compact_orders = _compact_orders_with_current_scope(
+            orders,
+            memory=memory,
+            request_context=scoped_context,
+            customer_info=info,
+        )
         context = {
             "customer_id": platform_customer_id,
             "platform_customer_id": platform_customer_id,
@@ -145,7 +164,7 @@ class CustomerContextService:
             },
             "customer": compact_customer(info),
             "appointment": appointment,
-            "orders": [compact_order(order) for order in orders[:5]],
+            "orders": compact_orders,
             "request_context": compact_request_context(scoped_context),
             "cache": {
                 "customer_info_hit": bool(identity.get("cache_hit")),
@@ -181,21 +200,14 @@ class CustomerContextService:
             return {}, False, f"{type(exc).__name__}: {exc}"
 
     def _load_orders(self, platform_customer_id: str, request_context: dict[str, Any]) -> tuple[list[dict[str, Any]], str, bool]:
+        """Load current orders for every turn without reusing a payment-state cache."""
         if not self._platform_client or not self._platform_client.available or not platform_customer_id:
             return [], "", False
-        bypass_cache = any(request_context.get(key) not in (None, "") for key in ("appointment_id", "store_id", "appointment_time"))
-        key = self._orders_cache_key(platform_customer_id, request_context)
-        if not bypass_cache:
-            cached = self._get_cached(self._orders_cache, key, self._orders_ttl_seconds)
-            if isinstance(cached, dict):
-                return list(cached.get("orders") or []), str(cached.get("error") or ""), True
         try:
             orders = self._platform_client.list_orders(customer_id=platform_customer_id, page=1, limit=10, request_context=request_context)
-            self._set_cached(self._orders_cache, key, {"orders": [dict(order) for order in orders], "error": ""})
             return orders, "", False
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
-            self._set_cached(self._orders_cache, key, {"orders": [], "error": error})
             return [], error, False
 
     def _get_cached(self, cache: dict[str, tuple[float, Any]], key: str, ttl_seconds: int) -> Any:
@@ -215,9 +227,8 @@ class CustomerContextService:
     def _set_cached(self, cache: dict[str, tuple[float, Any]], key: str, value: Any) -> None:
         if not key:
             return
-        ttl = self._identity_ttl_seconds if cache is self._identity_cache else self._orders_ttl_seconds
         with self._cache_lock:
-            cache[key] = (time.monotonic() + ttl, value)
+            cache[key] = (time.monotonic() + self._identity_ttl_seconds, value)
 
     @staticmethod
     def _identity_cache_key(request_context: dict[str, Any]) -> str:
@@ -229,12 +240,90 @@ class CustomerContextService:
         ]
         return "|".join(str(part or "") for part in parts)
 
-    @staticmethod
-    def _orders_cache_key(platform_customer_id: str, request_context: dict[str, Any]) -> str:
-        parts = [
-            platform_customer_id,
-            request_context.get("corp_id"),
-            request_context.get("user_id"),
-            request_context.get("wechat"),
-        ]
-        return "|".join(str(part or "") for part in parts)
+
+def _compact_orders_with_current_scope(
+    orders: list[dict[str, Any]],
+    *,
+    memory: dict[str, Any],
+    request_context: dict[str, Any],
+    customer_info: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Mark and prioritize the one active order that belongs to the current customer flow."""
+    active = [order for order in orders if isinstance(order, dict) and _is_active_order(order)]
+    current = _select_current_order(
+        active,
+        memory=memory,
+        request_context=request_context,
+        customer_info=customer_info,
+    )
+    ordered = ([current] if current else []) + [order for order in orders if order is not current]
+    result: list[dict[str, Any]] = []
+    for order in ordered[:5]:
+        if not isinstance(order, dict):
+            continue
+        compact = compact_order(order)
+        if order is current:
+            compact["is_current_order"] = True
+        result.append(compact)
+    return result
+
+
+def _select_current_order(
+    orders: list[dict[str, Any]],
+    *,
+    memory: dict[str, Any],
+    request_context: dict[str, Any],
+    customer_info: dict[str, Any],
+) -> dict[str, Any]:
+    """Select the saved order first, then the active order matching confirmed store and category."""
+    basic = memory.get("basic_info") if isinstance(memory.get("basic_info"), dict) else {}
+    order_state = basic.get("order_state") if isinstance(basic.get("order_state"), dict) else {}
+    deposit_state = basic.get("deposit_state") if isinstance(basic.get("deposit_state"), dict) else {}
+    target_order_id = str(
+        request_context.get("order_id")
+        or order_state.get("order_id")
+        or deposit_state.get("order_id")
+        or ""
+    ).strip()
+    if target_order_id:
+        exact = next((order for order in orders if _order_id(order) == target_order_id), None)
+        if exact:
+            return exact
+
+    target_store_id = str(
+        request_context.get("confirmed_store_id")
+        or order_state.get("store_id")
+        or basic.get("confirmed_store_id")
+        or ""
+    ).strip()
+    target_category_id = str(
+        request_context.get("category_id")
+        or order_state.get("category_id")
+        or customer_info.get("category_id")
+        or ""
+    ).strip()
+    scoped = [order for order in orders if _order_matches_scope(order, store_id=target_store_id, category_id=target_category_id)]
+    if scoped:
+        return scoped[0]
+    return orders[0] if orders else {}
+
+
+def _is_active_order(order: dict[str, Any]) -> bool:
+    """Return whether a raw platform order can represent the current payment flow."""
+    status = str(order.get("status") or "").strip().lower()
+    return status in {"1", "2", "3", "pending", "waiting_schedule", "scheduled"}
+
+
+def _order_matches_scope(order: dict[str, Any], *, store_id: str, category_id: str) -> bool:
+    """Match an active order to the confirmed store and compatible category."""
+    if store_id and str(order.get("store_id") or "").strip() != store_id:
+        return False
+    actual_category = str(order.get("category_id") or "").strip().lower()
+    expected_category = str(category_id or "").strip().lower()
+    unspecified = {"", "0", "none", "null"}
+    return expected_category in unspecified or actual_category in unspecified or expected_category == actual_category
+
+
+def _order_id(order: dict[str, Any]) -> str:
+    """Return a normalized platform order identifier."""
+    return str(order.get("id") or order.get("order_id") or "").strip()

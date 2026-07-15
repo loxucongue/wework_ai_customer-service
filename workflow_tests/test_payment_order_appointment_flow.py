@@ -8,12 +8,13 @@ import pytest
 
 from app.config import Settings
 from app.graph.nodes.action_nodes import create_execute_actions_node
+from app.graph.nodes.layer_nodes import _platform_unknown_transfer_image_info
 from app.graph.nodes.image_validation import validated_image_info
 from app.graph.nodes.profile_nodes import _deterministic_customer_state_updates
 from app.graph.nodes.reply_validation import validate_reply_consistency
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.services.customer_order_context import compact_order
-from app.services.customer_payment_state import resolved_payment_fact
+from app.services.customer_payment_state import normalize_prepay_facts, resolved_payment_fact
 from app.services.trace_logger import TraceLogger
 
 
@@ -116,7 +117,23 @@ def test_successful_payment_screenshot_is_paid_and_is_not_downgraded() -> None:
     assert persisted["deposit_state"] == "paid_by_screenshot"
 
 
-def test_payment_card_does_not_require_order_fact_in_full_planner_state() -> None:
+def test_platform_unknown_message_placeholder_is_treated_as_transfer_success() -> None:
+    image = _platform_unknown_transfer_image_info("【未知消息类型】")
+    assert image is not None
+    assert image["image_type"] == "payment_proof"
+    assert image["payment_result"] == "success"
+
+    payment = resolved_payment_fact(
+        orders=[{"id": "order-unknown-transfer", "prepay_required": 10, "prepay_paid": 0, "deposit_state": "required_unpaid"}],
+        image_info=image,
+    )
+
+    assert payment["deposit_state"] == "paid_by_screenshot"
+    assert payment["order_id"] == "order-unknown-transfer"
+    assert payment["source"] == "platform.unknown_message_transfer"
+
+
+def test_payment_card_requires_matching_order_fact_in_full_planner_state() -> None:
     state = {
         **_base_state(),
         "normalized_content": "就这家，我报名",
@@ -138,11 +155,12 @@ def test_payment_card_does_not_require_order_fact_in_full_planner_state() -> Non
             "tool_calls": [],
         },
     )
-    assert not any(item.get("missing") == "work_order_required_before_payment_collection" for item in plan["tool_policy_violations"])
-    validate_reply_consistency(
-        plan["planner_reply_messages"],
-        {**state, **plan, "fact_envelope": {"structured_facts": {"order_facts": []}}},
-    )
+    assert any(item.get("missing") == "work_order_required_before_payment_collection" for item in plan["tool_policy_violations"])
+    with pytest.raises(ValueError, match="work_order_required_before_payment_collection"):
+        validate_reply_consistency(
+            plan["planner_reply_messages"],
+            {**state, **plan, "fact_envelope": {"structured_facts": {"order_facts": []}}},
+        )
 
 
 def test_planner_reuses_matching_active_order_instead_of_incomplete_create_tool() -> None:
@@ -180,7 +198,7 @@ def test_planner_reuses_matching_active_order_instead_of_incomplete_create_tool(
     assert not any(item.get("missing", "").startswith("create_work_order_missing") for item in plan["tool_policy_violations"])
 
 
-def test_active_order_from_another_store_does_not_block_payment_card() -> None:
+def test_active_order_from_another_store_cannot_authorize_payment_card() -> None:
     state = {
         **_base_state(),
         "confirmed_store_id": "386",
@@ -210,10 +228,47 @@ def test_active_order_from_another_store_does_not_block_payment_card() -> None:
         },
     )
 
-    assert not any(item.get("missing") == "work_order_required_before_payment_collection" for item in plan["tool_policy_violations"])
+    assert any(item.get("missing") == "work_order_required_before_payment_collection" for item in plan["tool_policy_violations"])
 
 
-def test_create_plan_decision_requires_create_order_plan_tool() -> None:
+def test_payment_state_uses_marked_current_order_instead_of_other_paid_order() -> None:
+    payment = resolved_payment_fact(
+        orders=[
+            {
+                "id": "order-current",
+                "status": "pending",
+                "store_id": "386",
+                "prepay_required": "10.00",
+                "prepay_paid": "0.00",
+                "is_current_order": True,
+            },
+            {
+                "id": "order-old",
+                "status": "pending",
+                "store_id": "369",
+                "prepay_required": "10.00",
+                "prepay_paid": "10.00",
+            },
+        ]
+    )
+
+    assert payment["order_id"] == "order-current"
+    assert payment["deposit_state"] == "required_unpaid"
+
+
+def test_payment_label_required_does_not_mean_paid() -> None:
+    payment = normalize_prepay_facts({"prepay_required": 10, "prepay_paid": "需支付预约金"})
+
+    assert payment["deposit_state"] == "required_unpaid"
+
+
+def test_payment_label_paid_does_not_mean_paid_without_numeric_amount() -> None:
+    payment = normalize_prepay_facts({"prepay_required": 10, "prepay_paid": "已支付"})
+
+    assert payment["deposit_state"] == "required_unpaid"
+
+
+def test_paid_customer_cannot_create_formal_appointment_plan() -> None:
     state = {
         **_base_state(),
         "customer_basic_info": {"customer_name": "测试客户", "phone": "13800138000", "deposit_state": {"status": "paid_by_screenshot"}},
@@ -227,10 +282,20 @@ def test_create_plan_decision_requires_create_order_plan_tool() -> None:
             "order_decision": {"action": "use_existing", "order_id": "order-101", "store_id": "386"},
             "appointment_decision": {"action": "create_plan", "commitment_level": "confirmed"},
             "reply_messages": [{"type": "text", "content": {"text": "两点半已经安排好。"}}],
-            "tool_calls": [],
+            "tool_calls": [
+                {
+                    "name": "create_order_plan",
+                    "order_id": "order-101",
+                    "store_id": "386",
+                    "appointment_time": "2026-07-16 14:30",
+                }
+            ],
         },
     )
-    assert any(item.get("missing") == "create_order_plan_tool_required" for item in plan["tool_policy_violations"])
+    assert any(
+        item.get("missing") == "create_order_plan_disabled_after_payment"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_incomplete_mobile_is_rejected_before_tool_execution() -> None:
@@ -666,7 +731,7 @@ def test_existing_work_order_amount_is_updated_for_party_size() -> None:
     assert platform.created_work == []
 
 
-def test_paid_registered_customer_can_sync_mobile_and_create_plan() -> None:
+def test_paid_registered_customer_syncs_mobile_but_does_not_create_plan() -> None:
     platform = _PlatformClient()
     with tempfile.TemporaryDirectory() as tmpdir:
         node = create_execute_actions_node(
@@ -703,14 +768,20 @@ def test_paid_registered_customer_can_sync_mobile_and_create_plan() -> None:
                         "mobile": "13800138000",
                     },
                 ],
+                "tool_policy_violations": [
+                    {
+                        "subtype": "create_order_plan",
+                        "missing": "create_order_plan_disabled_after_payment",
+                    }
+                ],
             }
         ))
 
     assert output["tool_results"]["add_customer_mobile"]["status"] == "synced"
-    assert output["tool_results"]["create_order_plan"]["status"] == "created"
-    assert output["tool_results"]["create_order_plan"]["store_name"] == "厦门百星店"
-    appointment_facts = output["fact_envelope"]["structured_facts"]["appointment_facts"]
-    assert appointment_facts[0]["type"] == "appointment_created"
+    assert output["tool_results"]["create_order_plan"]["error"].endswith(
+        "create_order_plan_disabled_after_payment"
+    )
+    assert platform.created_plan == []
 
 
 def test_deterministic_profile_state_persists_screenshot_payment() -> None:
@@ -732,3 +803,54 @@ def test_deterministic_profile_state_persists_screenshot_payment() -> None:
     assert update["portrait"]["deposit_state"] == "deposit_paid"
     assert update["basic_info"]["deposit_state"]["status"] == "paid_by_screenshot"
     assert events[0]["event_type"] == "deposit_payment_confirmed"
+
+
+def test_deterministic_profile_state_persists_confirmed_store_and_work_order() -> None:
+    update, events = _deterministic_customer_state_updates(
+        {
+            **_base_state(),
+            "planner_tool_calls": [
+                {
+                    "name": "create_work_order",
+                    "store_id": "386",
+                    "store_name": "厦门百星店",
+                    "category_id": "10",
+                    "prepay": 20,
+                    "store_confirmation_source": "current_message",
+                }
+            ],
+            "tool_results": {
+                "create_work_order": {
+                    "status": "created",
+                    "order_id": "order-101",
+                    "store_id": "386",
+                    "category_id": "10",
+                    "prepay_required": 20,
+                    "source": "platform_agent.order.create_work",
+                }
+            },
+            "customer_basic_info": {"preferred_store_id": "369", "preferred_store_name": "厦门旧候选店"},
+        },
+        {},
+    )
+
+    assert update["basic_info"]["confirmed_store_id"] == "386"
+    assert update["basic_info"]["confirmed_store_name"] == "厦门百星店"
+    assert update["basic_info"]["order_state"]["order_id"] == "order-101"
+    assert update["basic_info"]["order_state"]["prepay_required"] == 20
+    assert any(item["event_type"] == "store_confirmed" for item in events)
+
+
+def test_preferred_store_without_executed_work_order_is_not_confirmed() -> None:
+    update, events = _deterministic_customer_state_updates(
+        {
+            **_base_state(),
+            "customer_basic_info": {"preferred_store_id": "386", "preferred_store_name": "厦门百星店"},
+            "planner_tool_calls": [],
+            "tool_results": {},
+        },
+        {},
+    )
+
+    assert "confirmed_store_id" not in update.get("basic_info", {})
+    assert not any(item["event_type"] == "store_confirmed" for item in events)

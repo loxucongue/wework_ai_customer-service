@@ -32,6 +32,38 @@ from app.schemas import ChatResponse, ReplyMessage
 from app.services.workflow_compat import workflow_response_from_chat
 
 
+def _payment_order_state(*, amount: int = 10, store_id: str = "386") -> dict:
+    return {
+        "confirmed_store_id": store_id,
+        "customer_basic_info": {
+            "confirmed_store_id": store_id,
+            "order_state": {"order_id": "order-current", "store_id": store_id, "prepay_required": amount},
+        },
+        "customer_context": {
+            "orders": [
+                {
+                    "id": "order-current",
+                    "status": "pending",
+                    "store_id": store_id,
+                    "prepay_required": amount,
+                    "prepay_paid": 0,
+                    "deposit_state": "required_unpaid",
+                    "is_current_order": True,
+                }
+            ]
+        },
+    }
+
+
+def _paid_order_state(*, amount: int = 10, store_id: str = "386") -> dict:
+    state = _payment_order_state(amount=amount, store_id=store_id)
+    state["customer_context"]["orders"][0].update(
+        {"prepay_paid": amount, "deposit_state": "paid_by_order"}
+    )
+    state["current_turn_context"] = {"deposit_state": "deposit_paid"}
+    return state
+
+
 def test_contextual_short_message_keeps_planner_history() -> None:
     assert _should_suppress_planner_memory({"normalized_content": "可以"}) is False
     assert _should_suppress_planner_memory({"normalized_content": "人呢"}) is False
@@ -624,9 +656,10 @@ def test_planner_tool_policy_flags_post_deposit_time_confirmation_missing_store(
     assert any(item.get("subtype") == "available_time" for item in plan["tool_policy_violations"])
 
 
-def test_planner_removes_payment_collection_after_customer_says_paid() -> None:
+def test_planner_does_not_treat_customer_paid_claim_as_authoritative() -> None:
     plan = build_planner_plan_v2(
         {
+            **_payment_order_state(amount=20),
             "normalized_content": "付完然后呢",
             "conversation_history": [
                 "用户: 我报名，朋友一起",
@@ -652,10 +685,8 @@ def test_planner_removes_payment_collection_after_customer_says_paid() -> None:
         },
     )
 
-    assert plan["conversion_stage"] == "time_confirm"
-    assert plan["next_step"] == "confirm_time"
-    assert plan["payment_state"] == "customer_claimed_paid"
-    assert plan["payment_decision"]["action"] == "after_paid_next_step"
+    assert plan["payment_state"] == "needs_payment"
+    assert plan["payment_decision"]["action"] == "explain"
     assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
     assert plan["reply_strategy"]["payment_action_guard"] == "payment_card_removed_by_payment_action"
 
@@ -833,7 +864,7 @@ def test_planner_payment_action_offer_resend_removes_same_turn_payment_card() ->
 
 def test_planner_payment_action_send_now_auto_appends_payment_card() -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": "发吧，我现在付"},
+        {**_payment_order_state(), "normalized_content": "发吧，我现在付"},
         {
             "decision": "direct_reply",
             "stage": "S3",
@@ -1082,7 +1113,7 @@ def test_previous_payment_entry_explanation_does_not_auto_append_payment_collect
 
 def test_accompany_deposit_direct_reply_missing_card_is_repaired() -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": "那我可以带朋友一起过去了解一下吗"},
+        {**_payment_order_state(amount=20), "normalized_content": "那我可以带朋友一起过去了解一下吗"},
         {
             "decision": "direct_reply",
             "stage": "S3",
@@ -1121,7 +1152,7 @@ def test_accompany_deposit_direct_reply_missing_card_is_repaired() -> None:
 )
 def test_payment_collection_amount_follows_participant_count(content: str, expected_amount: int) -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": content, "content": content},
+        {**_payment_order_state(amount=expected_amount), "normalized_content": content, "content": content},
         {
             "decision": "direct_reply",
             "stage": "S3",
@@ -1142,6 +1173,7 @@ def test_payment_collection_amount_follows_participant_count(content: str, expec
 def test_payment_decision_single_registration_overrides_noisy_history_amount() -> None:
     plan = build_planner_plan_v2(
         {
+            **_payment_order_state(),
             "normalized_content": "那我报名",
             "conversation_history": ["用户: 想淡斑", "小贝: 明天方便到店看一下吗？"],
         },
@@ -1173,7 +1205,7 @@ def test_payment_decision_single_registration_overrides_noisy_history_amount() -
 
 def test_payment_decision_friend_together_auto_appends_twenty_yuan_card() -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": "我朋友也一起过去"},
+        {**_payment_order_state(amount=20), "normalized_content": "我朋友也一起过去"},
         {
             "decision": "direct_reply",
             "stage": "S3",
@@ -1200,7 +1232,7 @@ def test_payment_decision_friend_together_auto_appends_twenty_yuan_card() -> Non
 
 def test_payment_decision_two_friends_auto_appends_thirty_yuan_card() -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": "我带两个朋友一起"},
+        {**_payment_order_state(amount=30), "normalized_content": "我带两个朋友一起"},
         {
             "decision": "direct_reply",
             "stage": "S3",
@@ -1227,7 +1259,7 @@ def test_payment_decision_two_friends_auto_appends_thirty_yuan_card() -> None:
 
 def test_payment_decision_after_paid_next_step_removes_card() -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": "付完然后呢"},
+        {**_paid_order_state(amount=20), "normalized_content": "付完然后呢"},
         {
             "decision": "direct_reply",
             "stage": "S4",
@@ -1256,6 +1288,7 @@ def test_payment_decision_after_paid_next_step_removes_card() -> None:
 def test_payment_decision_resend_inherits_last_payment_amount() -> None:
     plan = build_planner_plan_v2(
         {
+            **_payment_order_state(amount=20),
             "normalized_content": "没收到，再发一下",
             "conversation_history": ["小贝: 2位一共20元预约金入口已发", "小贝: payment_collection amount=20"],
             "history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 20}}],
@@ -2765,7 +2798,7 @@ def test_direct_reply_cannot_say_customer_can_go_before_store_and_schedule_are_k
     )
 
 
-def test_confirmed_appointment_decision_requires_real_appointment_fact() -> None:
+def test_unverified_paid_claim_cannot_confirm_appointment() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "明天可以去吗",
@@ -2794,11 +2827,12 @@ def test_confirmed_appointment_decision_requires_real_appointment_fact() -> None
         },
     )
 
-    assert plan["appointment_decision"]["commitment_level"] == "confirmed"
-    assert any(
-        item.get("missing") == "available_time_required_for_confirmed_appointment_decision"
-        for item in plan["tool_policy_violations"]
-    )
+    assert plan["appointment_decision"] == {
+        "action": "none",
+        "commitment_level": "none",
+        "basis": ["支付状态尚未由订单或成功截图确认"],
+    }
+    assert plan["payment_state"] != "customer_claimed_paid"
 
 
 def test_confirmed_appointment_decision_allows_request_confirmed_appointment_fact() -> None:
@@ -2947,63 +2981,50 @@ def test_reply_validation_requires_card_for_payment_promise_without_order() -> N
         )
 
 
-def test_reply_validation_still_requires_card_after_work_order_rejection() -> None:
-    with pytest.raises(ValueError, match="payment_collection_required_when_reply_promises_payment_entry"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "这家门店的预约入口还在核对中。"}}],
-            {
-                "conversion_stage": "deposit_push",
-                "next_step": "send_deposit",
-                "payment_action": "send_now",
-                "payment_decision": {"action": "send_now", "amount": 10},
-                "order_decision": {"action": "create_work", "store_id": "386"},
-                "fact_envelope": {
-                    "structured_facts": {
-                        "order_facts": [{"type": "work_order", "status": "rejected"}],
-                    }
-                }
-            },
-        )
-
-
-def test_reply_validation_allows_card_after_work_order_rejection() -> None:
+def test_reply_validation_allows_safe_text_after_work_order_rejection() -> None:
     validate_reply_consistency(
-        [
-            {"type": "text", "order": 1, "content": {"text": "10元小程序收款卡发您了，到店会抵扣。"}},
-            {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
-        ],
+        [{"type": "text", "order": 1, "content": {"text": "这家门店我先记录好了，支付信息确认后再继续。"}}],
         {
             "conversion_stage": "deposit_push",
             "next_step": "send_deposit",
             "payment_action": "send_now",
             "payment_decision": {"action": "send_now", "amount": 10},
             "order_decision": {"action": "create_work", "store_id": "386"},
-            "fact_envelope": {
-                "structured_facts": {
-                    "order_facts": [{"type": "work_order", "status": "rejected"}],
-                }
-            },
+            "tool_results": {"create_work_order": {"status": "rejected"}},
         },
     )
 
 
-def test_reply_validation_still_requires_card_after_work_order_tool_error() -> None:
-    with pytest.raises(ValueError, match="payment_collection_required_when_reply_promises_payment_entry"):
+def test_reply_validation_rejects_card_after_work_order_rejection() -> None:
+    with pytest.raises(ValueError, match="work_order_required_before_payment_collection"):
         validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "这家门店的预约入口还在核对中。"}}],
+            [
+                {"type": "text", "order": 1, "content": {"text": "10元小程序收款卡发您了，到店会抵扣。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
             {
                 "conversion_stage": "deposit_push",
                 "next_step": "send_deposit",
                 "payment_action": "send_now",
                 "payment_decision": {"action": "send_now", "amount": 10},
                 "order_decision": {"action": "create_work", "store_id": "386"},
-                "fact_envelope": {
-                    "structured_facts": {
-                        "order_facts": [{"type": "work_order", "status": "tool_error"}],
-                    }
-                }
+                "tool_results": {"create_work_order": {"status": "rejected"}},
             },
         )
+
+
+def test_reply_validation_allows_safe_text_after_work_order_tool_error() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "门店信息已经记下，我再确认一下支付信息。"}}],
+        {
+            "conversion_stage": "deposit_push",
+            "next_step": "send_deposit",
+            "payment_action": "send_now",
+            "payment_decision": {"action": "send_now", "amount": 10},
+            "order_decision": {"action": "create_work", "store_id": "386"},
+            "tool_results": {"create_work_order": {"status": "tool_error"}},
+        },
+    )
 
 
 def test_reply_validation_allows_confirmed_store_reference_without_appointment_commitment() -> None:
@@ -3190,6 +3211,7 @@ def test_final_reply_keeps_current_refund_handoff_notice() -> None:
 
 def test_required_payment_collection_fallback_adds_missing_card() -> None:
     state = {
+        **_payment_order_state(amount=20, store_id="227"),
         "normalized_content": _u(r"\u53ef\u4ee5"),
         "conversion_stage": "deposit_push",
         "next_step": "send_deposit",
@@ -3433,6 +3455,7 @@ def test_history_health_context_removes_direct_reply_handoff_notice() -> None:
 
 def test_history_health_context_does_not_block_payment_collection_after_notice() -> None:
     state = {
+        **_payment_order_state(),
         "normalized_content": _u(r"\u90a3\u6211\u5148\u5230\u5e97\u68c0\u6d4b\uff0c\u660e\u5929\u4e0b\u5348\u53ef\u4ee5\uff0c\u53d1\u5165\u53e3"),
         "conversation_history": [
             _u(r"\u5c0f\u8d1d: \u60a8\u6709\u8fc7\u654f\u4f53\u8d28\uff0c\u8fd9\u4e2a\u8981\u5230\u5e97\u5148\u505a\u68c0\u6d4b\uff0c\u8ba9\u95e8\u5e97\u4e13\u4e1a\u4eba\u5458\u770b\u4e0b\u9002\u4e0d\u9002\u5408\u518d\u5b89\u6392\u3002"),
@@ -3499,7 +3522,7 @@ def test_current_payment_entry_overrides_unfinished_store_lookup_for_friend() ->
 
 def test_current_payment_entry_uses_three_person_amount() -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": "带两个朋友一起去，发入口"},
+        {**_payment_order_state(amount=30), "normalized_content": "带两个朋友一起去，发入口"},
         {
             "decision": "direct_reply",
             "stage": "S3",
@@ -3521,7 +3544,11 @@ def test_current_payment_entry_uses_three_person_amount() -> None:
 
 def test_current_payment_entry_uses_twenty_yuan_for_two_person_total() -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": "我和朋友两个人想预约，发入口", "content": "我和朋友两个人想预约，发入口"},
+        {
+            **_payment_order_state(amount=20),
+            "normalized_content": "我和朋友两个人想预约，发入口",
+            "content": "我和朋友两个人想预约，发入口",
+        },
         {
             "decision": "direct_reply",
             "stage": "S3",

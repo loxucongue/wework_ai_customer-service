@@ -5,6 +5,7 @@ from typing import Any
 
 
 PAID_DEPOSIT_STATES = {"paid_by_order", "paid_by_screenshot"}
+ACTIVE_ORDER_STATUSES = {"1", "2", "3", "pending", "waiting_schedule", "scheduled"}
 
 
 def normalize_prepay_facts(order: dict[str, Any]) -> dict[str, Any]:
@@ -16,8 +17,8 @@ def normalize_prepay_facts(order: dict[str, Any]) -> dict[str, Any]:
     if paid_raw in (None, ""):
         paid_raw = order.get("fee_paid")
 
-    required = _positive_or_true(required_raw)
-    paid = _positive_or_true(paid_raw)
+    required = _positive_number(required_raw)
+    paid = _positive_number(paid_raw)
     return {
         "prepay_required": required_raw,
         "prepay_paid": paid_raw,
@@ -37,7 +38,7 @@ def payment_fact_from_image(image_info: Any) -> dict[str, Any]:
         "amount": image_info.get("payment_amount"),
         "order_no_hint": str(image_info.get("payment_order_no") or "")[:80],
         "confidence": image_info.get("confidence", 0),
-        "source": "vision.payment_proof",
+        "source": str(image_info.get("source") or "vision.payment_proof"),
     }
     if result == "success":
         output["deposit_state"] = "paid_by_screenshot"
@@ -71,12 +72,20 @@ def resolved_payment_fact(
                 "source": "platform_agent.order_index",
                 "prepay_required": order.get("prepay_required"),
                 "prepay_paid": order.get("prepay_paid"),
+                "is_current_order": bool(order.get("is_current_order")),
             }
         )
 
+    current_order = next((item for item in order_facts if item.get("is_current_order")), None)
+    if current_order:
+        order_facts = [current_order]
+    elif order_facts:
+        order_facts = [order_facts[0]]
     paid_order = next((item for item in order_facts if item["deposit_state"] == "paid_by_order"), None)
     image_fact = payment_fact_from_image(image_info)
-    existing_paid = existing_state in PAID_DEPOSIT_STATES or existing_state == "deposit_paid"
+    existing_screenshot_paid = existing_state == "paid_by_screenshot" or (
+        existing_state == "deposit_paid" and existing_source == "vision.payment_proof"
+    )
 
     if paid_order:
         selected = dict(paid_order)
@@ -85,10 +94,10 @@ def resolved_payment_fact(
         related_order = next((item for item in order_facts if item.get("order_id")), None)
         if related_order:
             selected.update({key: related_order.get(key) for key in ("order_id", "order_no", "store_id", "store_name")})
-    elif existing_paid:
+    elif existing_screenshot_paid:
         selected = {
             **(existing_fact if isinstance(existing_fact, dict) else {}),
-            "deposit_state": existing_state,
+            "deposit_state": "paid_by_screenshot",
             "source": existing_source or "customer_memory",
         }
     else:
@@ -104,21 +113,84 @@ def is_paid_deposit_state(value: Any) -> bool:
     return str(value or "").strip() in {*PAID_DEPOSIT_STATES, "deposit_paid"}
 
 
-def _positive_or_true(value: Any) -> bool:
+def payment_collection_order_fact(state: dict[str, Any], *, amount: Any = None) -> dict[str, Any]:
+    """Return the matching active unpaid order that can authorize a payment card."""
+    expected_amount = _numeric_amount(amount or _payment_decision_value(state, "amount"))
+    expected_store_id = _payment_store_id(state)
+    if expected_amount not in {10, 20, 30, 40} or not expected_store_id:
+        return {}
+
+    tool_results = state.get("tool_results") if isinstance(state.get("tool_results"), dict) else {}
+    created = tool_results.get("create_work_order") if isinstance(tool_results.get("create_work_order"), dict) else {}
+    if _order_supports_card(created, store_id=expected_store_id, amount=expected_amount, allow_created=True):
+        return {**created, "support_source": "create_work_order"}
+
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    orders = [order for order in context.get("orders") or [] if isinstance(order, dict)]
+    current = [order for order in orders if order.get("is_current_order")]
+    candidates = current or orders
+    for order in candidates:
+        if _order_supports_card(order, store_id=expected_store_id, amount=expected_amount, allow_created=False):
+            return {**order, "support_source": "platform_agent.order_index"}
+    return {}
+
+
+def _positive_number(value: Any) -> bool:
+    """Accept only a numeric positive amount from platform prepayment fields."""
     if isinstance(value, bool):
-        return value
+        return False
     try:
         return float(value) > 0
     except (TypeError, ValueError):
-        return str(value or "").strip().lower() in {
-            "true",
-            "yes",
-            "paid",
-            "success",
-            "已支付",
-            "已支付预约金",
-            "需支付预约金",
-        }
+        return False
+
+
+def _payment_decision_value(state: dict[str, Any], key: str) -> Any:
+    """Read a normalized payment decision value from planner state."""
+    decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
+    return decision.get(key)
+
+
+def _payment_store_id(state: dict[str, Any]) -> str:
+    """Resolve the confirmed transaction store without falling back to preferred-store memory."""
+    order_decision = state.get("order_decision") if isinstance(state.get("order_decision"), dict) else {}
+    turn = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
+    confirmed = turn.get("confirmed_store") if isinstance(turn.get("confirmed_store"), dict) else {}
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    order_state = basic.get("order_state") if isinstance(basic.get("order_state"), dict) else {}
+    candidates = [
+        order_decision.get("store_id"),
+        state.get("confirmed_store_id"),
+        confirmed.get("store_id"),
+        basic.get("confirmed_store_id"),
+        order_state.get("store_id"),
+    ]
+    for tool in state.get("planner_tool_calls") or []:
+        if isinstance(tool, dict) and str(tool.get("name") or "") == "create_work_order":
+            candidates.append(tool.get("store_id"))
+    return next((str(value).strip() for value in candidates if str(value or "").strip()), "")
+
+
+def _order_supports_card(order: dict[str, Any], *, store_id: str, amount: int, allow_created: bool) -> bool:
+    """Validate store, amount, active status and unpaid state for payment-card authorization."""
+    status = str(order.get("status") or "").strip().lower()
+    allowed_statuses = {"created", "reused"} if allow_created else ACTIVE_ORDER_STATUSES
+    if status not in allowed_statuses:
+        return False
+    if str(order.get("store_id") or "").strip() != store_id:
+        return False
+    required = _numeric_amount(order.get("prepay_required") or order.get("fee_required"))
+    if required != amount:
+        return False
+    return str(normalize_prepay_facts(order).get("deposit_state") or "") == "required_unpaid"
+
+
+def _numeric_amount(value: Any) -> int:
+    """Normalize a platform monetary field to an integer amount."""
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:

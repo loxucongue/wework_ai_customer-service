@@ -42,7 +42,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；客户可见不要输出公里、分钟、车程。
 - 需要真实可约时间时，必须有真实 store_id 和 date 才能用 available_time；没有工具事实不能承诺能约、已安排或已留位。
 - 效果、怕没效果、怕反黑、要效果图时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。
-- 预约金由 payment_decision 决定；客户声称已付时不再发 payment_collection，只推进下一步且不能说支付已核实。
+- 预约金由 payment_decision 决定；客户口头声称已付不能确认到账，只有当前订单 `prepay_paid>0` 或清晰支付成功截图才能推进付款后信息确认。
 
 # Output JSON Schema
 只输出 JSON：

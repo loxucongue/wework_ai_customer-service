@@ -50,6 +50,8 @@ sop_execution_service = SopExecutionService(
     repository=repository,
     sop_reply_pack_service=sop_reply_pack_service,
     model_client=model_client,
+    memory_store=memory_store,
+    customer_context_service=customer_context_service,
 )
 sop_event_service = SopEventService(
     repository=repository,
@@ -57,6 +59,7 @@ sop_event_service = SopEventService(
     outreach_send_client=outreach_send_client,
     sop_execution_service=sop_execution_service,
     memory_store=memory_store,
+    customer_context_service=customer_context_service,
     default_identity={
         "corp_id": settings.platform_agent_default_corp_id,
         "user_id": settings.platform_agent_default_user_id,
