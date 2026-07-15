@@ -22,6 +22,7 @@ SOP_QUIET_TIMEZONE = ZoneInfo("Asia/Shanghai")
 SOP_QUIET_START_HOUR = 1
 SOP_QUIET_END_HOUR = 7
 SOP_QUIET_INACTIVITY_MINUTES = 30
+SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES = 3
 
 
 class SopEventService:
@@ -188,6 +189,26 @@ class SopEventService:
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_filter": conversation_filter,
                     "conversation_activity": conversation_activity,
+                },
+            )
+        recent_assistant_activity = _recent_assistant_activity_summary(conversation_activity)
+        if event_type in FIRST_ADD_EVENT_TYPES and recent_assistant_activity["skip"]:
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="first_add_recent_active_conversation",
+                sop_pack_name="first_add_recent_active_conversation",
+                reply_messages=[],
+                status="skipped_recent_active_conversation",
+                error="",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_filter": conversation_filter,
+                    "conversation_activity": conversation_activity,
+                    "recent_assistant_activity": recent_assistant_activity,
                 },
             )
 
@@ -1080,6 +1101,36 @@ def _quiet_hours_summary(payload: dict[str, Any], messages: list[dict[str, Any]]
         "inactivity_minutes": inactivity_minutes,
         "skip": bool(in_quiet_window and inactive),
         "reason": "quiet_hours_customer_inactive" if in_quiet_window and inactive else "",
+    }
+
+
+def _recent_assistant_activity_summary(conversation_activity: dict[str, Any]) -> dict[str, Any]:
+    """Avoid SOP pushes immediately after an assistant/staff reply in an active chat."""
+    silence = conversation_activity.get("silence_after_assistant_minutes")
+    assistant_waiting = bool(conversation_activity.get("assistant_waiting_customer"))
+    customer_pending = bool(conversation_activity.get("latest_customer_pending_ai_reply"))
+    event_at = _parse_time(conversation_activity.get("event_at"))
+    latest_assistant_at = _parse_time(conversation_activity.get("latest_assistant_message_at"))
+    try:
+        silence_minutes = int(silence) if silence is not None else None
+    except (TypeError, ValueError):
+        silence_minutes = None
+    assistant_reply_before_event = bool(
+        latest_assistant_at is not None
+        and (event_at is None or latest_assistant_at <= event_at)
+    )
+    within_guard = bool(
+        assistant_waiting
+        and not customer_pending
+        and assistant_reply_before_event
+        and silence_minutes is not None
+        and silence_minutes < SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES
+    )
+    return {
+        "skip": within_guard,
+        "reason": "recent_assistant_activity" if within_guard else "",
+        "threshold_minutes": SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES,
+        "silence_after_assistant_minutes": silence_minutes,
     }
 
 

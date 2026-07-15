@@ -286,6 +286,46 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
+    async def test_event_skips_when_assistant_just_replied(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            messages=[
+                {
+                    "direction": "customer",
+                    "content": "成都大邑",
+                    "msgtime": "2026-07-11T02:30:00+00:00",
+                },
+                {
+                    "direction": "staff",
+                    "source": "ai_reply",
+                    "msgtype": "text",
+                    "content": "亲，成都大邑过去可以先看双流店，您看这家方便吗？",
+                    "msgtime": "2026-07-11T02:35:28+00:00",
+                },
+            ]
+        )
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_recent_assistant_activity",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:35:55+00:00",
+            sop={"delay_minutes": 30},
+            customers=[{"first_added_event": {"trace_id": "trace_recent_assistant", "timestamp": "2026-07-11T01:50:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_recent_assistant_activity")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "skipped_recent_active_conversation")
+        recent_activity = repo.tasks[0]["send_payload"]["recent_assistant_activity"]
+        self.assertTrue(recent_activity["skip"])
+        self.assertEqual(recent_activity["reason"], "recent_assistant_activity")
+        self.assertEqual(recent_activity["silence_after_assistant_minutes"], 0)
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(client.send_calls, [])
+
     async def test_event_applies_model_text_adjustment_before_sending(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[])
@@ -1200,6 +1240,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("平台提醒现在应该主动触达客户", system_prompt)
         self.assertIn("让客户重新开口", system_prompt)
         self.assertIn("assistant_waiting_customer=true", system_prompt)
+        self.assertIn("最近活跃保护窗口", system_prompt)
         self.assertIn("不是要求你机械按 `delay_minutes` 强制发送", system_prompt)
         self.assertIn("最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标", system_prompt)
         self.assertIn("不要无限重复追问同一个问题", system_prompt)
@@ -1254,6 +1295,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("平台提醒现在应该主动触达客户", system_prompt)
         self.assertIn("让客户重新开口", system_prompt)
         self.assertIn("assistant_waiting_customer=true", system_prompt)
+        self.assertIn("最近活跃保护窗口", system_prompt)
         self.assertIn("不是要求你机械按 `delay_minutes` 强制发送", system_prompt)
         self.assertIn("最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标", system_prompt)
         self.assertIn("不要无限重复追问同一个问题", system_prompt)
