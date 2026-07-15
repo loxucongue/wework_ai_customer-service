@@ -85,6 +85,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "sales_progression": state.get("sales_progression", {}),
         "reply_constraints": state.get("reply_constraints", []),
         "planner_tool_policy_violations": _compact_planner_violations(state.get("tool_policy_violations", [])),
+        "planner_direct_reply_draft": _planner_direct_reply_draft_for_reply(state),
         "handoff": {} if suppress_profile_memory else handoff,
         "appointment_context": {} if suppress_profile_memory else appointment_context,
         "current_turn_context": current_turn_context,
@@ -142,6 +143,56 @@ def _planner_structured_actions_for_reply(
                 }
             )
     return actions
+
+
+def _planner_direct_reply_draft_for_reply(state: AgentState) -> dict[str, Any]:
+    """Expose Planner's customer-visible direct-reply draft as a styleable model input.
+
+    The draft is produced by the Planner model, so it is an AI semantic decision rather than
+    a Python business template. Reply may polish it, but should not drop the chosen action.
+    """
+    if str(state.get("planner_decision") or "") != "direct_reply":
+        return {}
+    if state.get("tool_policy_violations"):
+        return {}
+
+    messages: list[dict[str, Any]] = []
+    for message in state.get("planner_reply_messages") or []:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(message.get("type") or "").strip()
+        if message_type not in {"text", "payment_collection", "store_address", "image", "human_handoff_notice"}:
+            continue
+        content = message.get("content")
+        if message_type == "text":
+            text = ""
+            if isinstance(content, dict):
+                text = str(content.get("text") or content.get("content") or "").strip()
+            else:
+                text = str(content or "").strip()
+            if not text:
+                continue
+            messages.append({"type": "text", "content": text})
+            continue
+        if isinstance(content, dict):
+            safe_content = {
+                key: content.get(key)
+                for key in ("store_id", "amount", "url", "handoff_reason")
+                if content.get(key) not in (None, "", [], {})
+            }
+        else:
+            safe_content = {}
+        messages.append(_drop_empty({"type": message_type, "content": safe_content}))
+
+    if not messages:
+        return {}
+    return {
+        "messages": messages[:5],
+        "usage": (
+            "Planner direct-reply draft. Reply may polish wording and split/merge text, "
+            "but must preserve its concrete answer and sales/progression action unless hard facts forbid it."
+        ),
+    }
 
 
 def _current_turn_context_for_reply(value: dict[str, Any]) -> dict[str, Any]:

@@ -181,6 +181,9 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "appointment_decision" in REPLY_SYSTEM_PROMPT
     assert "sop_progress_evidence" in REPLY_SYSTEM_PROMPT
     assert "sales_progression" in REPLY_SYSTEM_PROMPT
+    assert "planner_direct_reply_draft" in REPLY_SYSTEM_PROMPT
+    assert "不能删掉草稿里的具体回答、付款选择、保留名额、登记或门店动作" in REPLY_SYSTEM_PROMPT
+    assert "不能删掉其中的具体成交动作" in REPLY_SYSTEM_PROMPT
 
 
 def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None:
@@ -188,6 +191,8 @@ def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None
     assert "def _sop_next_candidates" not in source
     assert '"next_candidates"' not in source
     assert 'state.get("sales_progression")' in source
+    assert '"planner_direct_reply_draft"' in source
+    assert "def _planner_direct_reply_draft_for_reply" in source
 
 
 def test_planner_requires_authoritative_recent_case_image_evidence() -> None:

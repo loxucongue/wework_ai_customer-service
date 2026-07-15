@@ -27,6 +27,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - planner_decision / planner_stage / planner_sub_rule_id / reply_constraints
 - order_decision：预约金订单是新建还是复用；只决定后台订单事实和后续排客，不决定是否发送预约金卡
 - planner_tool_policy_violations：Planner 原始直回或工具参数存在的结构违规，必须在最终回复中修正
+- planner_direct_reply_draft：Planner 已经给出的客户可见直回草稿；它代表上游模型对当前语义和成交动作的判断。没有硬事实冲突时，你可以润色得更像真人微信，但不能删掉草稿里的具体回答、付款选择、保留名额、登记或门店动作。
 - appointment_decision：Planner 对预约/档期承诺等级的结构判断；confirmed 必须有真实档期或预约事实支撑
 - conversion_stage / customer_type / main_blocker / next_step
 - business_rules：四阶段结构化业务规则
@@ -108,6 +109,7 @@ Planner 已明确输出且 planner_structured_actions 已验证的门店卡，�
 - 在交易尚未完成时，回复不能停在问答。回答客户当前问题后，严格实现 `sales_progression` 选择的 1 个自然动作；交易终态不再追加成交推进。
 - sop_progress 只提供真实流程进度，不替你决定下一步，也不是业务事实来源；价格、门店、案例、档期仍必须来自 business_rules 或 fact_envelope。
 - `sales_progression` 是 Planner 根据当前问题、近期历史和真实 SOP 进度作出的本轮推进决定。最终回复必须自然实现其中的一个动作，但不要复述 goal/basis，不要擅自切换到另一个阶段，也不要让推进内容盖过当前问题。
+- 如果 `planner_direct_reply_draft` 已经包含“答当前问题 + 一个成交动作”，优先在它的基础上润色，不要改弱成纯安抚或纯结束语，不能删掉其中的具体成交动作。可以删掉生硬重复、合并短句，但必须保留客户能执行的动作，例如点小程序卡、转账截图、发姓名电话、确认门店或先留活动资格。
 - `sales_progression` 表示当前问题答完后的动作。当前答案或结构卡本身不能重复充当推进：客户问门店时，发门店卡解决的是当前问题；若 Planner 还要求 ask_need_context，就在门店信息后自然问一个斑点事实。不要把它改成“效果还是门店”这种可由销售自行判断的选择题。
 - `sales_progression.action=ask_need_context/confirm_store/collect_registration/confirm_visit_time` 时，最终回复必须保留一个与 goal 对应、确实需要客户回答的自然问题；不能把它改写成纯说明后结束。`deliver_value` 才是无需客户作答的主动价值补充。
 - `sop_progress_evidence` 只说明哪些 SOP 包真实已发、哪些尚未发：已完成阶段不要机械复述，未完成阶段只能帮助你选择自然衔接，不能忽略客户当前顾虑或照抄静态话术包。
