@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from app.config import Settings
+from app.policies.constants import KNOWN_STORE_FACTS
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.coze_oauth import CozeOAuthTokenProvider
 
@@ -23,7 +24,7 @@ def store_snapshot_rows(path: str | Path = Path("data/store_snapshot.json")) -> 
     try:
         modified_ns = resolved.stat().st_mtime_ns
     except OSError:
-        return []
+        return [dict(item) for item in KNOWN_STORE_FACTS]
     return [dict(item) for item in _cached_snapshot_rows(str(resolved), modified_ns)]
 
 

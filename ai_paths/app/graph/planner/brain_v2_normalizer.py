@@ -24,7 +24,7 @@ from app.graph.planner.planner_contract import (
     ALLOWED_TOOLS,
 )
 from app.graph.state import AgentState
-from app.policies.constants import KNOWN_STORE_NAMES
+from app.policies.constants import KNOWN_STORE_FACTS, KNOWN_STORE_NAMES
 from app.services.payment_collection import (
     payment_amount_for_party_size,
     payment_collection_content,
@@ -2580,20 +2580,11 @@ def _snapshot_store_names() -> list[str]:
     global _STORE_SNAPSHOT_NAME_CACHE
     if _STORE_SNAPSHOT_NAME_CACHE is not None:
         return _STORE_SNAPSHOT_NAME_CACHE
-    path = Path("data/store_snapshot.json")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        _STORE_SNAPSHOT_NAME_CACHE = []
-        return _STORE_SNAPSHOT_NAME_CACHE
-    stores_by_id = data.get("stores_by_id") if isinstance(data, dict) else {}
-    names = []
-    if isinstance(stores_by_id, dict):
-        names = [
-            str(store.get("store_name") or store.get("name") or "").strip()
-            for store in stores_by_id.values()
-            if isinstance(store, dict) and str(store.get("store_name") or store.get("name") or "").strip()
-        ]
+    names = [
+        str(store.get("store_name") or store.get("name") or "").strip()
+        for store in _snapshot_store_values_for_guard()
+        if str(store.get("store_name") or store.get("name") or "").strip()
+    ]
     _STORE_SNAPSHOT_NAME_CACHE = list(dict.fromkeys(names))
     return _STORE_SNAPSHOT_NAME_CACHE
 
@@ -2602,26 +2593,16 @@ def _snapshot_region_tokens() -> set[str]:
     global _STORE_SNAPSHOT_REGION_TOKEN_CACHE
     if _STORE_SNAPSHOT_REGION_TOKEN_CACHE is not None:
         return _STORE_SNAPSHOT_REGION_TOKEN_CACHE
-    path = Path("data/store_snapshot.json")
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        _STORE_SNAPSHOT_REGION_TOKEN_CACHE = set()
-        return _STORE_SNAPSHOT_REGION_TOKEN_CACHE
-    stores_by_id = data.get("stores_by_id") if isinstance(data, dict) else {}
     tokens: set[str] = set()
-    if isinstance(stores_by_id, dict):
-        for store in stores_by_id.values():
-            if not isinstance(store, dict):
+    for store in _snapshot_store_values_for_guard():
+        for key in ("province", "city", "district"):
+            raw = str(store.get(key) or "").strip()
+            if not raw:
                 continue
-            for key in ("province", "city", "district"):
-                raw = str(store.get(key) or "").strip()
-                if not raw:
-                    continue
-                tokens.add(raw)
-                for suffix in ("省", "市", "区", "县", "旗", "自治州", "自治县", "新区"):
-                    if raw.endswith(suffix) and len(raw) > len(suffix):
-                        tokens.add(raw[: -len(suffix)])
+            tokens.add(raw)
+            for suffix in ("省", "市", "区", "县", "旗", "自治州", "自治县", "新区"):
+                if raw.endswith(suffix) and len(raw) > len(suffix):
+                    tokens.add(raw[: -len(suffix)])
     _STORE_SNAPSHOT_REGION_TOKEN_CACHE = {token for token in tokens if len(_compact_text(token)) >= 2}
     return _STORE_SNAPSHOT_REGION_TOKEN_CACHE
 
@@ -2648,22 +2629,24 @@ def _snapshot_broad_region_tokens() -> set[str]:
     global _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
     if _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE is not None:
         return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
+    tokens: set[str] = set()
+    for store in _snapshot_store_values_for_guard():
+        for key in ("province", "city"):
+            tokens.update(_region_token_variants(store.get(key)))
+    _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE = {token for token in tokens if len(_compact_text(token)) >= 2}
+    return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
+
+
+def _snapshot_store_values_for_guard() -> list[dict[str, Any]]:
     path = Path("data/store_snapshot.json")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE = set()
-        return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
+        return [dict(item) for item in KNOWN_STORE_FACTS]
     stores_by_id = data.get("stores_by_id") if isinstance(data, dict) else {}
-    tokens: set[str] = set()
-    if isinstance(stores_by_id, dict):
-        for store in stores_by_id.values():
-            if not isinstance(store, dict):
-                continue
-            for key in ("province", "city"):
-                tokens.update(_region_token_variants(store.get(key)))
-    _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE = {token for token in tokens if len(_compact_text(token)) >= 2}
-    return _STORE_SNAPSHOT_BROAD_REGION_TOKEN_CACHE
+    if isinstance(stores_by_id, dict) and stores_by_id:
+        return [dict(store) for store in stores_by_id.values() if isinstance(store, dict)]
+    return [dict(item) for item in KNOWN_STORE_FACTS]
 
 
 def _region_token_variants(value: Any) -> set[str]:

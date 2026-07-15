@@ -268,6 +268,28 @@ KNOWN_STORE_NAMES = [
     "重庆渝中店",
 ]
 
+# Minimal real-store facts used only when the daily full store snapshot is not
+# available in a local/test runtime. Production still prefers the generated
+# snapshot and customer-scoped store facts.
+KNOWN_STORE_FACTS = [
+    {
+        "store_id": "12",
+        "store_name": "厦门思明店",
+        "province": "福建省",
+        "city": "厦门市",
+        "district": "思明区",
+        "store_address": "厦门市思明区",
+    },
+    {
+        "store_id": "562",
+        "store_name": "广州白云三店",
+        "province": "广东省",
+        "city": "广州市",
+        "district": "白云区",
+        "store_address": "广州市白云区白云大道北349号",
+    },
+]
+
 STORE_AREA_TERMS = ["徐汇", "静安", "浦东", "思明", "湖里", "百星", "渝北", "南岸", "渝中", "中贸"]
 
 TIME_REFERENCE_TERMS = [

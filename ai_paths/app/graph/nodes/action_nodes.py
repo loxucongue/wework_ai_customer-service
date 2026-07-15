@@ -16,6 +16,7 @@ from app.graph.planner.runtime_plan import (
     planner_secondary_tasks,
 )
 from app.graph.state import AgentState
+from app.policies.constants import KNOWN_STORE_FACTS
 from app.services.coze_client import CozeClient
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.customer_payment_state import is_paid_deposit_state, normalize_prepay_facts
@@ -1480,7 +1481,9 @@ def _snapshot_store_values() -> list[dict[str, Any]]:
         except (OSError, json.JSONDecodeError):
             _STORE_SNAPSHOT_CACHE = {}
     stores_by_id = _STORE_SNAPSHOT_CACHE.get("stores_by_id") if isinstance(_STORE_SNAPSHOT_CACHE, dict) else {}
-    return [store for store in stores_by_id.values() if isinstance(store, dict)] if isinstance(stores_by_id, dict) else []
+    if isinstance(stores_by_id, dict) and stores_by_id:
+        return [store for store in stores_by_id.values() if isinstance(store, dict)]
+    return [dict(item) for item in KNOWN_STORE_FACTS]
 
 
 def _dedupe_snapshot_stores(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
