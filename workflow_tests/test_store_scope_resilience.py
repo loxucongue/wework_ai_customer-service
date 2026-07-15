@@ -42,6 +42,20 @@ class _FakeCoze:
         geocode_workflow_id = ""
 
 
+class _FakeGeocodeCoze:
+    class settings:
+        geocode_workflow_id = "geo-workflow"
+
+    def __init__(self, geocodes: dict[str, dict[str, object]]) -> None:
+        self.geocodes = geocodes
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def run_workflow(self, workflow_id: str, parameters: dict[str, object]) -> dict[str, object]:
+        self.calls.append((workflow_id, parameters))
+        address = str(parameters.get("address") or "")
+        return {"code": 0, "data": [self.geocodes.get(address, {})]}
+
+
 class _Snapshot:
     def stores_for_scope(self, rows: list[dict[str, object]], **_: object) -> dict[str, object]:
         stores = [
@@ -233,6 +247,83 @@ def test_store_lookup_strips_structured_location_label_and_prefers_text_scope() 
     assert output["query"] == "双流人民广场"
     assert output["status"] == "ok"
     assert [item["store_id"] for item in output["stores"]] == ["379", "522"]
+
+
+def test_store_lookup_geocodes_structured_poi_message_before_matching_scope() -> None:
+    coze = _FakeGeocodeCoze(
+        {
+            "五缘湾湿地公园-花溪": {
+                "province": "福建省",
+                "city": "厦门市",
+                "district": "湖里区",
+                "formatted_address": "福建省厦门市湖里区五缘湾湿地公园-花溪",
+                "location": "118.181,24.532",
+            },
+            "甲良镇新市场(黄江路)": {
+                "province": "贵州省",
+                "city": "黔南布依族苗族自治州",
+                "district": "荔波县",
+                "township": "甲良镇",
+                "formatted_address": "贵州省黔南布依族苗族自治州荔波县甲良镇新市场",
+                "location": "107.931,25.302",
+            },
+        }
+    )
+    state = {
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "201",
+                    "store_name": "厦门百星湖里店",
+                    "province": "福建省",
+                    "city": "厦门市",
+                    "district": "湖里区",
+                    "store_address": "厦门市湖里区枋湖路",
+                },
+                {
+                    "store_id": "202",
+                    "store_name": "厦门思明店",
+                    "province": "福建省",
+                    "city": "厦门市",
+                    "district": "思明区",
+                    "store_address": "厦门市思明区",
+                },
+                {
+                    "store_id": "301",
+                    "store_name": "荔波店",
+                    "province": "贵州省",
+                    "city": "黔南布依族苗族自治州",
+                    "district": "荔波县",
+                    "store_address": "荔波县",
+                },
+            ]
+        }
+    }
+
+    xiamen = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "门店位置：五缘湾湿地公园-花溪", "purpose": "nearby_candidates"},
+            state,
+            coze,  # type: ignore[arg-type]
+        )
+    )
+    libo = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "门店位置：甲良镇新市场(黄江路)", "purpose": "nearby_candidates"},
+            state,
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert [call[1]["address"] for call in coze.calls] == ["五缘湾湿地公园-花溪", "甲良镇新市场(黄江路)"]
+    assert xiamen["query"] == "五缘湾湿地公园-花溪"
+    assert xiamen["geocode"]["city"] == "厦门市"
+    assert xiamen["geocode"]["district"] == "湖里区"
+    assert [item["store_id"] for item in xiamen["stores"]] == ["201"]
+    assert libo["query"] == "甲良镇新市场(黄江路)"
+    assert libo["geocode"]["city"] == "黔南布依族苗族自治州"
+    assert libo["geocode"]["district"] == "荔波县"
+    assert [item["store_id"] for item in libo["stores"]] == ["301"]
 
 
 def test_store_tool_facts_keep_detail_fields_for_reply_model() -> None:

@@ -1542,11 +1542,21 @@ async def _geocode_address(coze_client: CozeClient, workflow_id: str, address: s
         return {}
     raw = await coze_client.run_workflow(workflow_id, {"address": address})
     data = raw.get("data")
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                return item
+        return {}
     if isinstance(data, str) and data:
         try:
             parsed = json.loads(data)
         except json.JSONDecodeError:
             parsed = {}
+        if isinstance(parsed, list):
+            for item in parsed:
+                if isinstance(item, dict):
+                    return item
+            return {}
     elif isinstance(data, dict):
         parsed = data
     else:
