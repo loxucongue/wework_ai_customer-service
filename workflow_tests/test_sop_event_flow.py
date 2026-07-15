@@ -195,7 +195,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(selector.calls, [])
                 self.assertEqual(client.send_calls, [])
 
-    async def test_event_skips_inactive_customer_during_quiet_hours(self) -> None:
+    async def test_event_continues_after_auto_opening_during_quiet_hours(self) -> None:
         repo = _Repo()
         client = _OutreachClient(
             messages=[
@@ -206,7 +206,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 }
             ]
         )
-        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "continue first-add SOP"})
         service = _service(repo=repo, client=client, selector=selector)
         payload = _base_payload(
             event_id="evt_quiet_inactive",
@@ -220,11 +220,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_event("evt_quiet_inactive")
 
         self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "skipped_quiet_hours_inactive")
-        self.assertIsNone(repo.tasks[0]["send_payload"]["quiet_hours"]["inactivity_minutes"])
-        self.assertEqual(repo.tasks[0]["send_payload"]["quiet_hours"]["timezone"], "Asia/Shanghai")
-        self.assertEqual(selector.calls, [])
-        self.assertEqual(client.send_calls, [])
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(repo.tasks[0]["sop_pack_id"], "opening")
+        self.assertEqual(len(selector.calls), 1)
+        self.assertEqual(len(client.send_calls), 1)
 
     async def test_event_skips_recent_customer_message_during_quiet_hours(self) -> None:
         repo = _Repo()
@@ -540,6 +539,41 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 expected_status = "skipped_missing_payment_order" if delay_minutes == 70 else "sent"
                 self.assertEqual(repo.tasks[0]["status"], expected_status)
                 self.assertEqual(repo.tasks[0]["sop_pack_id"], pack_id)
+
+    async def test_unbacked_event_payment_pack_can_be_downgraded_to_text_touch_by_model(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        selector = _Selector(
+            {
+                "send_sop": True,
+                "sop_pack_id": "deposit_pack",
+                "reason": "收款卡缺订单，改成轻触达",
+                "message_operations": [
+                    {"op": "remove_message", "order": 2},
+                    {
+                        "op": "replace_text",
+                        "order": 1,
+                        "text": "亲，10元预约金是先留活动名额，到店抵扣；您后面想来我再帮您登记。",
+                    },
+                ],
+            }
+        )
+        service = _service(repo=repo, client=client, selector=selector, pack_service=_DepositPackService())
+        payload = _base_payload(
+            event_id="evt_deposit_text_touch",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
+            sop={"delay_minutes": 70},
+            customers=[{"first_added_event": {"trace_id": "trace_deposit_text_touch", "timestamp": "2026-07-11T01:00:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_deposit_text_touch")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual([item["type"] for item in repo.tasks[0]["reply_messages"]], ["text"])
+        self.assertEqual(len(client.send_calls), 1)
 
     async def test_paid_current_order_skips_sop_before_model_and_send(self) -> None:
         repo = _Repo()
@@ -1170,6 +1204,20 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("event_s10_day1_final_close", [item["id"] for item in explicit])
 
+    def test_first_add_candidates_fall_forward_when_current_delay_has_no_candidate(self) -> None:
+        service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
+        config = service.load()
+
+        candidates = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=["s10_new_customer_opening", "event_s10_store_prompt_5min"],
+            completed_sop_categories=[],
+            delay_minutes=10,
+            match_context={"delay_minutes": 10},
+        )
+
+        self.assertEqual([item["id"] for item in candidates], ["event_s10_effect_warmup_30min"])
+
     async def test_event_judge_prompt_defaults_to_platform_sop_unless_conflict_or_overlap(self) -> None:
         model = _PromptCaptureModel(
             {
@@ -1249,7 +1297,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("text_adjustments", system_prompt)
         self.assertIn("message_operations", system_prompt)
         self.assertIn("insert_text_after", system_prompt)
-        self.assertIn("payment_collection`、`store_address`、`image`、`video`", system_prompt)
+        self.assertIn("payment_collection_gate.status", system_prompt)
+        self.assertIn("remove_message", system_prompt)
         self.assertIn("editable_text_messages", system_prompt)
         self.assertIn("readonly_messages", system_prompt)
         self.assertIn("最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件", system_prompt)
@@ -1263,6 +1312,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"customer_basic_info":{"city":"深圳"}', user_prompt)
         self.assertIn('"lifecycle_stage":"new_customer"', user_prompt)
         self.assertIn('"history_events":[{"event_id":"history_1"', user_prompt)
+        self.assertIn('"payment_collection_gate"', user_prompt)
+        self.assertIn('"status":"missing_matching_current_order"', user_prompt)
 
     async def test_event_judge_keeps_selector_contract_for_direct_prompt_inspection(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "effect_followup", "need_ai_reply": False, "reason": "ok"})
@@ -1303,7 +1354,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("text_adjustments", system_prompt)
         self.assertIn("message_operations", system_prompt)
         self.assertIn("insert_text_after", system_prompt)
-        self.assertIn("payment_collection`、`store_address`、`image`、`video`", system_prompt)
+        self.assertIn("payment_collection_gate.status", system_prompt)
+        self.assertIn("remove_message", system_prompt)
         self.assertIn("客户画像和旧事件不是当前对话事实", system_prompt)
 
     async def test_chat_gate_sends_configured_opening_for_platform_auto_message(self) -> None:

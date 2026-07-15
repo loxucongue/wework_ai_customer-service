@@ -238,7 +238,9 @@ def test_sop_gate_requires_contextual_first_text_and_preserves_numeric_facts() -
         "text_adjustments",
         "message_operations",
         "insert_text_after",
-        "只能操作 text",
+        "除 `remove_message` 删除不支持发送的 `payment_collection` 外",
+        "payment_collection_gate.status",
+        "remove_message",
         "payment_collection_requires_matching_current_order",
         "skipped_deposit_paid",
         "failed_order_fetch",
@@ -468,7 +470,23 @@ def test_profile_prompt_downgrades_stale_history_without_dropping_facts() -> Non
         assert marker in PROFILE_ANALYZER_SYSTEM_PROMPT
     assert "旧健康风险、旧门店、旧预约任务只有在本轮客户继续提到时" in PROFILE_ANALYZER_SYSTEM_PROMPT
     assert "系统发过 payment_collection 不等于客户已支付" in PROFILE_ANALYZER_SYSTEM_PROMPT
+    assert "要的、空了来、改天来、后面有时间去、谢谢" in PROFILE_ANALYZER_SYSTEM_PROMPT
+    assert "是否发卡、解释预约金或只做门店承接，由下一轮 Planner" in PROFILE_ANALYZER_SYSTEM_PROMPT
+    assert "不能把它总结成“放弃/流失/禁止推进定金”" in PROFILE_ANALYZER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PROFILE_ANALYZER_SYSTEM_PROMPT
+
+
+def test_prompts_treat_reserved_visit_intent_as_sales_continuation() -> None:
+    assert "要的，空了来，谢谢" in PLANNER_SYSTEM_PROMPT
+    assert "仍认可到店但时间未定" in PLANNER_SYSTEM_PROMPT
+    assert "customer_profile、history_events、customer_context" in PLANNER_SYSTEM_PROMPT
+    assert "不是本轮禁令" in PLANNER_SYSTEM_PROMPT
+    assert "不要只回“空了再来/后面再说”" in PLANNER_SYSTEM_PROMPT
+
+    assert "要的，空了来，谢谢" in REPLY_SYSTEM_PROMPT
+    assert "这是保留意向，不是结束" in REPLY_SYSTEM_PROMPT
+    assert "不要只回“那您空了再来”" in REPLY_SYSTEM_PROMPT
+    assert "不要说“更方便/更顺路”除非有距离排序事实" in REPLY_SYSTEM_PROMPT
 
 
 def test_vision_prompt_is_sectioned_json_only_and_non_diagnostic() -> None:

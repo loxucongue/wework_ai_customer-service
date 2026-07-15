@@ -25,7 +25,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 # Narrow Output Exception
 本节点唯一可以包含客户可见文本的位置是 `text_adjustments` 和 `message_operations`。
 它们只用于让已选 SOP 在当前聊天里更自然：可改写已有 text，也可对 text 做插入、删除、合并、拆分和顺序微调。
-这不是自由生成回复，不能新增、删除、拆分、合并、重排或修改任何只读结构消息。
+这不是自由生成回复，不能新增、拆分、合并、重排或修改任何只读结构消息；唯一例外是 `payment_collection_gate` 明确不支持发卡时，可删除该 `payment_collection` 并同步调整文本。
 
 # Business Background And Goal
 客户是通过企业微信进入的活动新客。平台已经按时间和客户阶段触发 SOP；你的目标是让已配置 SOP 按销售节奏自然发送，建立信任、解决阶段顾虑，并逐步推进到真实门店、登记、预约金和到店。
@@ -45,7 +45,8 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
 - `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
 
-`editable_text_messages` 是唯一可操作的文本素材。`readonly_messages` 中的图片、视频、预约金卡、门店卡和内部 notice 都是结构事实，不能修改、删除、重排或复制。
+`editable_text_messages` 是主要可操作文本素材。`readonly_messages` 中的图片、视频、门店卡和内部 notice 都是结构事实，不能修改、删除、重排或复制。
+`payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `missing_matching_current_order` 或 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。
 
 # Task
 1. 理解事件触发的 SOP 阶段、最近聊天和候选包的阶段目的。
@@ -72,6 +73,10 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 平台自动加好友开场不是有效客户咨询；没有后续客户消息时，仍按未回复的 SOP 跟进判断。
 - 当 `conversation_activity.assistant_waiting_customer=true` 且 `latest_customer_pending_ai_reply=false`，并且已经过了最近活跃保护窗口：这是典型的沉默触达场景。你应优先 `send_sop=true`，目标是让客户再次开口或继续被 SOP 推进；不要因为“刚追问过、staff 已经回复过、客户没接话”而拒发。
 - 若候选 SOP 与当前未完成问题不完全一致，但没有硬冲突：仍应选择最合适的下一步候选并用 `text_adjustments/message_operations` 做过渡。例如门店城市还没补齐但已经问过一次且客户沉默，可以先承接“门店后面您发城市/定位我再匹配”，再衔接效果图、活动报价或预约金价值。
+- 候选包如果包含 `payment_collection`：
+  - `payment_collection_gate.status=supported`：可按正常 SOP 判断发送。
+  - `payment_collection_gate.status=missing_matching_current_order`：不能原样发送预约金卡。若客户当前阶段适合继续主动触达，应删除该卡并把 text 改成轻触达、登记或解释活动价值；若删除卡后只剩不合适内容，才拒发。
+  - `payment_collection_gate.status=paid_skip_card`：客户已付，不得再发预约金卡；只可保留/改写为已付后的姓名电话或到店安排轻触达。
 - 只有在 `conversation_activity.latest_customer_pending_ai_reply=true`、客户明确拒绝当前核心行动、投诉/付款异常/身体不适、或候选包会明显造成事实错误时，才 `send_sop=false`。
 
 # Few-Shot Calibration
@@ -99,11 +104,12 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
   - `merge_text`：合并多条 text，必须保留这些 text 的全部数字事实。
   - `split_text`：拆分一条 text，拆分后必须保留原 text 的全部数字事实。
   - `replace_text`：等同 text_adjustments，改写同一 order 的 text。
-- `message_operations` 只能操作 editable text；不能操作 `readonly_messages`，不能新增 image/video/payment_collection/store_address/human_handoff_notice，不能把 text 改成其他消息类型。
+  - `remove_message`：仅用于删除 `payment_collection_gate.status` 不支持发送的 `payment_collection`，必须同步调整 text，不能让客户以为同轮已经发了收款卡。
+- 除 `remove_message` 删除不支持发送的 `payment_collection` 外，`message_operations` 只能操作 editable text；不能操作其他 `readonly_messages`，不能新增 image/video/payment_collection/store_address/human_handoff_notice，不能把 text 改成其他消息类型。
 - 必须保留该文本的阶段目标、已有价格、金额、优惠、退款口径、门店、日期时间、支付方式及承诺边界。
 - 所有数字及其出现次数必须与对应原文一致，不能为了口语化重复或省略金额。
 - 不能编造新事实，不能把普通答疑改成另一阶段的强推销，不能新增催付、预约承诺、门店事实或效果承诺。
-- `payment_collection`、`store_address`、`image`、`video`、`human_handoff_notice` 永远保持原样；若 text 与这些只读消息有关，润色不得改变其事实含义。
+- `store_address`、`image`、`video`、`human_handoff_notice` 永远保持原样；若 text 与这些只读消息有关，润色不得改变其事实含义。`payment_collection` 只有在 gate 明确不支持时才可删除，不能改金额或复制生成。
 
 # Text Style Calibration
 - 原文：“尊敬的顾客您好，本机构现隆重开展淡斑活动，诚邀您参与。”客户刚说自己脸上有斑：改成类似“亲，您是想了解淡斑对吧，我简单跟您说下这次活动。”
@@ -557,8 +563,8 @@ class SopExecutionService:
                     "- 不要机械添加“理解您、确实不容易”；普通询问直接回答并衔接即可。\n"
                     "- 必须保留原文的阶段目标、价格、金额、优惠、退款、门店、时间、支付及承诺边界。\n"
                     "- 所有数字及其出现次数必须与对应原文完全一致，不能重复、删减或改写数字。\n"
-                    "- message_operations 只允许 replace_text、insert_text_before、insert_text_after、remove_text、merge_text、split_text；只能操作 text。插入 text 不能新增数字事实，删除 text 不能删除数字事实，合并/拆分必须保留全部数字事实。\n"
-                    "- image、video、payment_collection、store_address、human_handoff_notice 都是只读消息，不能改写、删除、重排、复制或由 text 转换生成。\n\n"
+                    "- message_operations 只允许 replace_text、insert_text_before、insert_text_after、remove_text、merge_text、split_text、remove_message。插入 text 不能新增数字事实，删除 text 不能删除数字事实，合并/拆分必须保留全部数字事实。\n"
+                    "- image、video、store_address、human_handoff_notice 都是只读消息，不能改写、删除、重排、复制或由 text 转换生成。payment_collection 只有在 payment_collection_gate.status 不支持发送时才可用 remove_message 删除，不能改金额或复制生成。\n\n"
                     "# Negative Cases\n"
                     "- 客户只是沉默、刚加微后未回复、或上一阶段 SOP 正常铺垫后没有新 customer 消息：不算冲突，优先继续 SOP；但如果最近一轮刚问了一个关键问题而客户没答，优先轻触/承接这个问题，不要机械跳阶段。\n"
                     "- 客户正在问具体门店地址、真实档期、订单/付款异常、投诉退款或身体不适：SOP 不足以覆盖，need_ai_reply=true。\n"
@@ -617,6 +623,7 @@ class SopExecutionService:
         conversation_messages: list[dict[str, Any]],
         conversation_activity: dict[str, Any] | None = None,
         customer_memory: dict[str, Any] | None = None,
+        customer_context: dict[str, Any] | None = None,
         candidate_packs: list[dict[str, Any]] | None = None,
         actions_reply_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -653,6 +660,7 @@ class SopExecutionService:
                 conversation_messages=conversation_messages,
                 conversation_activity=conversation_activity or {},
                 customer_memory=customer_memory or {},
+                customer_context=customer_context or {},
                 candidate_packs=candidate_packs,
                 actions_reply_messages=actions_reply_messages,
                 completed_sop_pack_ids=completed_ids,
@@ -863,7 +871,38 @@ def first_add_candidate_packs(
         if _is_final_close_pack(pack) and not _final_close_context_matches(pack, delay_minutes, match_context):
             continue
         candidates.append(pack)
-    return sorted(candidates, key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")))
+    if candidates:
+        return sorted(candidates, key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")))
+
+    if delay_minutes <= 0:
+        return []
+    future_candidates: list[dict[str, Any]] = []
+    for pack in packs:
+        if not isinstance(pack, dict) or not bool(pack.get("enabled")) or not _pack_messages(pack):
+            continue
+        if not _pack_has_scope(pack, "event_first_add"):
+            continue
+        pack_event_type = _string(pack.get("event_type"))
+        if pack_event_type and pack_event_type != event_type:
+            continue
+        pack_id = _string(pack.get("id"))
+        if pack_id in completed:
+            continue
+        if _pack_category(pack) in completed_categories:
+            continue
+        pack_delay = _int(pack.get("delay_minutes"), 0)
+        if pack_delay <= delay_minutes:
+            continue
+        if _is_final_close_pack(pack) and not _final_close_context_matches(pack, delay_minutes, match_context):
+            continue
+        future_candidates.append(pack)
+    if not future_candidates:
+        return []
+    next_delay = min(_int(pack.get("delay_minutes"), 0) for pack in future_candidates)
+    return sorted(
+        [pack for pack in future_candidates if _int(pack.get("delay_minutes"), 0) == next_delay],
+        key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")),
+    )
 
 
 def _is_final_close_pack(pack: dict[str, Any]) -> bool:
@@ -966,7 +1005,12 @@ def _recent_history(history: Any) -> list[str]:
     return [str(item)[:240] for item in history[-8:] if str(item or "").strip()]
 
 
-def _sop_summary(pack: dict[str, Any]) -> dict[str, Any]:
+def _sop_summary(
+    pack: dict[str, Any],
+    *,
+    customer_memory: dict[str, Any] | None = None,
+    customer_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     messages = _pack_messages(pack)
     return {
         "id": str(pack.get("id") or ""),
@@ -981,6 +1025,11 @@ def _sop_summary(pack: dict[str, Any]) -> dict[str, Any]:
         "delay_minutes": int(pack.get("delay_minutes") or 0),
         "stage_tag": str(pack.get("stage_tag") or ""),
         "reply_messages_summary": _messages_summary(messages),
+        "payment_collection_gate": _payment_collection_gate_summary(
+            messages,
+            customer_memory=customer_memory or {},
+            customer_context=customer_context or {},
+        ),
         **_message_editing_context(messages),
     }
 
@@ -1019,6 +1068,7 @@ def _event_selector_input(
     conversation_messages: list[dict[str, Any]],
     conversation_activity: dict[str, Any],
     customer_memory: dict[str, Any],
+    customer_context: dict[str, Any],
     candidate_packs: list[dict[str, Any]],
     actions_reply_messages: list[dict[str, Any]],
     completed_sop_pack_ids: list[str],
@@ -1031,9 +1081,17 @@ def _event_selector_input(
         "recent_conversation": _conversation_context(conversation_messages),
         "conversation_activity": conversation_activity,
         **memory_context,
-        "candidate_sops": [_sop_summary(pack) for pack in candidate_packs],
+        "candidate_sops": [
+            _sop_summary(pack, customer_memory=customer_memory, customer_context=customer_context)
+            for pack in candidate_packs
+        ],
         "platform_actions_summary": _messages_summary(actions_reply_messages),
         "platform_actions": _message_editing_context(actions_reply_messages),
+        "platform_payment_collection_gate": _payment_collection_gate_summary(
+            actions_reply_messages,
+            customer_memory=customer_memory,
+            customer_context=customer_context,
+        ),
         "completed_sop_pack_ids": completed_sop_pack_ids,
         "completed_sop_categories": completed_sop_categories,
     }
@@ -1100,6 +1158,67 @@ def _readonly_message_facts(message_type: str, content: dict[str, Any]) -> dict[
     return {}
 
 
+def _payment_collection_gate_summary(
+    messages: list[dict[str, Any]],
+    *,
+    customer_memory: dict[str, Any],
+    customer_context: dict[str, Any],
+) -> dict[str, Any]:
+    cards = [
+        message
+        for message in messages
+        if isinstance(message, dict) and _string(message.get("type")) == "payment_collection"
+    ]
+    if not cards:
+        return {"has_payment_collection": False, "status": "not_required"}
+    basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
+    payment_fact = resolved_payment_fact(
+        orders=customer_context.get("orders") if isinstance(customer_context, dict) else [],
+        existing_state=_string(basic.get("deposit_state")),
+        existing_source=_string(basic.get("deposit_source")),
+        existing_fact=basic.get("deposit_fact"),
+    )
+    if is_paid_deposit_state(payment_fact.get("deposit_state")) or is_paid_deposit_state(basic.get("deposit_state")):
+        return {
+            "has_payment_collection": True,
+            "status": "paid_skip_card",
+            "amounts": [_payment_message_amount(card) for card in cards],
+            "source": payment_fact.get("source") or "customer_memory",
+        }
+    unsupported: list[int] = []
+    supported: list[int] = []
+    for card in cards:
+        amount = _payment_message_amount(card)
+        state = {
+            "customer_context": customer_context if isinstance(customer_context, dict) else {},
+            "customer_basic_info": basic,
+            "confirmed_store_id": _string(basic.get("confirmed_store_id")),
+            "payment_decision": {"amount": amount},
+        }
+        if payment_collection_order_fact(state, amount=amount):
+            supported.append(amount)
+        else:
+            unsupported.append(amount)
+    if unsupported:
+        return {
+            "has_payment_collection": True,
+            "status": "missing_matching_current_order",
+            "amounts": supported + unsupported,
+            "supported_amounts": supported,
+            "unsupported_amounts": unsupported,
+        }
+    return {
+        "has_payment_collection": True,
+        "status": "supported",
+        "amounts": supported,
+    }
+
+
+def _payment_message_amount(message: dict[str, Any]) -> int:
+    content = message.get("content") if isinstance(message.get("content"), dict) else {}
+    return _positive_int(content.get("amount"), 10)
+
+
 def _text_adjustments(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -1124,7 +1243,7 @@ def _message_operations(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     output: list[dict[str, Any]] = []
-    allowed = {"replace_text", "insert_text_before", "insert_text_after", "remove_text", "merge_text", "split_text"}
+    allowed = {"replace_text", "insert_text_before", "insert_text_after", "remove_text", "merge_text", "split_text", "remove_message"}
     for item in value[:8]:
         if not isinstance(item, dict):
             continue
@@ -1148,6 +1267,12 @@ def _message_operations(value: Any) -> list[dict[str, Any]]:
             else:
                 continue
         elif op == "remove_text":
+            order = _positive_int(item.get("order"), 0)
+            if order > 0:
+                normalized["order"] = order
+            else:
+                continue
+        elif op == "remove_message":
             order = _positive_int(item.get("order"), 0)
             if order > 0:
                 normalized["order"] = order

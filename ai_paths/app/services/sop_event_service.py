@@ -212,26 +212,6 @@ class SopEventService:
                 },
             )
 
-        quiet_hours = _quiet_hours_summary(payload, conversation_messages)
-        if quiet_hours["skip"]:
-            return self._create_task_record(
-                payload,
-                customer,
-                index=index,
-                identity=identity,
-                sop_pack_id=base_pack_id,
-                sop_pack_name=base_pack_name,
-                reply_messages=[],
-                status="skipped_quiet_hours_inactive",
-                error="",
-                send_payload={
-                    "identity": identity,
-                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
-                    "conversation_filter": conversation_filter,
-                    "conversation_activity": conversation_activity,
-                    "quiet_hours": quiet_hours,
-                },
-            )
         if event_type not in FIRST_ADD_EVENT_TYPES and event_type != "sop_platform_task":
             return self._create_task_record(
                 payload,
@@ -475,6 +455,7 @@ class SopEventService:
             conversation_messages=conversation_messages,
             conversation_activity=conversation_activity,
             customer_memory=customer_memory,
+            customer_context=customer_context,
             candidate_packs=candidates,
             actions_reply_messages=[],
         )
@@ -622,6 +603,7 @@ class SopEventService:
             conversation_messages=conversation_messages,
             conversation_activity=conversation_activity,
             customer_memory=customer_memory,
+            customer_context=customer_context,
             candidate_packs=[],
             actions_reply_messages=messages,
         )
@@ -708,6 +690,7 @@ class SopEventService:
         conversation_messages: list[dict[str, Any]],
         conversation_activity: dict[str, Any],
         customer_memory: dict[str, Any],
+        customer_context: dict[str, Any],
         candidate_packs: list[dict[str, Any]],
         actions_reply_messages: list[dict[str, Any]],
     ) -> dict[str, Any]:
@@ -729,6 +712,7 @@ class SopEventService:
             conversation_messages=conversation_messages,
             conversation_activity=conversation_activity,
             customer_memory=customer_memory,
+            customer_context=customer_context,
             candidate_packs=candidate_packs,
             actions_reply_messages=actions_reply_messages,
         )

@@ -158,6 +158,17 @@ def _apply_text_message_operation(messages: list[dict[str, Any]], operation: dic
         del messages[index]
         return {"op": op, "order": order}, ""
 
+    if op == "remove_message":
+        order = _positive_int(operation.get("order"), 0)
+        index = _message_index_by_order(messages, order)
+        if index is None:
+            return None, "not_existing_message"
+        message_type = str(messages[index].get("type") or "")
+        if message_type != "payment_collection":
+            return None, "unsupported_message_type"
+        del messages[index]
+        return {"op": op, "order": order, "type": message_type}, ""
+
     if op == "merge_text":
         orders = [_positive_int(item, 0) for item in operation.get("orders") or []]
         orders = [item for item in orders if item > 0]

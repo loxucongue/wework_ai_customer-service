@@ -20,6 +20,7 @@ UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS = {
     "[未知消息类型]",
     "未知消息类型",
 }
+BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS = 8.0
 
 
 def create_input_normalization_layer(
@@ -176,10 +177,20 @@ def create_background_context_layer(
                 {},
                 identity,
             )
-            customer_result_timed, store_result_timed, conversation_result_timed = await asyncio.gather(
+            customer_result_timed, conversation_result_timed = await asyncio.gather(
                 customer_task,
-                store_task,
                 conversation_task,
+            )
+            store_result_timed = await _await_timed_background_task(
+                store_task,
+                name="store_index",
+                timeout_seconds=BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS,
+                timeout_result={
+                    "source": "customer_store_knowledge_timeout",
+                    "stores": [],
+                    "appointment_extra_stores": [],
+                    "error": f"timeout_after_{BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS:g}s",
+                },
             )
             customer_result = customer_result_timed["result"]
             customer_store_knowledge = store_result_timed["result"]
@@ -249,6 +260,26 @@ def _timed_call(name: str, func: Callable[..., Any], *args: Any, **kwargs: Any) 
             "result": {},
             "cache_hit": False,
             "error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+async def _await_timed_background_task(
+    task: asyncio.Task[dict[str, Any]],
+    *,
+    name: str,
+    timeout_seconds: float,
+    timeout_result: dict[str, Any],
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), timeout=timeout_seconds)
+    except TimeoutError:
+        return {
+            "name": name,
+            "duration_ms": int((time.perf_counter() - started) * 1000),
+            "result": dict(timeout_result),
+            "cache_hit": False,
+            "error": str(timeout_result.get("error") or f"timeout_after_{timeout_seconds:g}s"),
         }
 
 
