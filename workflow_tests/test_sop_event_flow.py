@@ -9,7 +9,12 @@ from tempfile import TemporaryDirectory
 from app.schemas import ChatRequest
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.services.sop_event_service import SopEventService
-from app.services.sop_execution_service import SOP_EVENT_SYSTEM_PROMPT, SopExecutionService, is_platform_auto_opening_message
+from app.services.sop_execution_service import (
+    SOP_EVENT_SYSTEM_PROMPT,
+    SopExecutionService,
+    first_add_candidate_packs,
+    is_platform_auto_opening_message,
+)
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage import AppRepository, SQLiteStore
@@ -687,6 +692,37 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("event_first_add", opening["scopes"])
         self.assertEqual(opening["event_type"], "")
         self.assertEqual(opening["delay_minutes"], 0)
+
+    def test_final_close_pack_requires_late_or_explicit_stage_context(self) -> None:
+        service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
+        config = service.load()
+
+        early = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=[],
+            completed_sop_categories=[],
+            delay_minutes=70,
+            match_context={"delay_minutes": 70},
+        )
+        self.assertNotIn("event_s10_day1_final_close", [item["id"] for item in early])
+
+        late = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=[],
+            completed_sop_categories=[],
+            delay_minutes=600,
+            match_context={"delay_minutes": 600},
+        )
+        self.assertIn("event_s10_day1_final_close", [item["id"] for item in late])
+
+        explicit = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=[],
+            completed_sop_categories=[],
+            delay_minutes=0,
+            match_context={"delay_minutes": 0, "event_id": "evt:day1_18_final_close", "stage_tag": "final_close"},
+        )
+        self.assertIn("event_s10_day1_final_close", [item["id"] for item in explicit])
 
     async def test_event_judge_prompt_defaults_to_platform_sop_unless_conflict_or_overlap(self) -> None:
         model = _PromptCaptureModel(

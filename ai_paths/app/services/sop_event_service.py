@@ -252,7 +252,8 @@ class SopEventService:
             sent_before=sent_before,
         )
         completed_categories = _sent_categories(self.repository, identity, sent_before=sent_before)
-        delay_minutes = _match_context(payload, customer)["delay_minutes"]
+        match_context = _match_context(payload, customer)
+        delay_minutes = match_context["delay_minutes"]
         event_conversation_messages, conversation_filter = _first_add_conversation_messages(
             payload,
             customer,
@@ -264,6 +265,7 @@ class SopEventService:
             completed_sop_categories=completed_categories,
             delay_minutes=delay_minutes,
             event_type=_string(payload.get("event_type")),
+            match_context=match_context,
         )
         if not candidates:
             return self._create_task_record(
@@ -656,6 +658,7 @@ def _match_context(payload: dict[str, Any], customer: dict[str, Any]) -> dict[st
     customer_sop = customer.get("sop") if isinstance(customer.get("sop"), dict) else {}
     return {
         "event_type": _string(payload.get("event_type")),
+        "event_id": _string(payload.get("event_id")),
         "delay_minutes": _int(customer_sop.get("delay_minutes"), _int(root_sop.get("delay_minutes"), 0)),
         "day_stage": _string(customer_sop.get("day_stage")) or _string(root_sop.get("day_stage")),
         "customer_state": _string(customer_sop.get("customer_state")) or _string(root_sop.get("customer_state")),

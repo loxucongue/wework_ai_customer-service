@@ -648,6 +648,7 @@ def first_add_candidate_packs(
     completed_sop_categories: list[str] | None = None,
     delay_minutes: int,
     event_type: str = "sop_friend_added_schedule_batch",
+    match_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     packs = config.get("packs") if isinstance(config.get("packs"), list) else []
     completed = set(completed_sop_pack_ids)
@@ -671,8 +672,43 @@ def first_add_candidate_packs(
             continue
         if delay_minutes > 0 and pack_delay > delay_minutes:
             continue
+        if _is_final_close_pack(pack) and not _final_close_context_matches(pack, delay_minutes, match_context):
+            continue
         candidates.append(pack)
     return sorted(candidates, key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")))
+
+
+def _is_final_close_pack(pack: dict[str, Any]) -> bool:
+    if _pack_category(pack) == "final_close":
+        return True
+    if _string(pack.get("stage_tag")) == "final_close":
+        return True
+    return "day1_18_final_close" in {str(item) for item in pack.get("triggers") or []}
+
+
+def _final_close_context_matches(pack: dict[str, Any], delay_minutes: int, match_context: dict[str, Any] | None) -> bool:
+    # Keep backward compatibility for platform schedules that still express the
+    # final close as a late delay, while allowing explicit 18:00 stage triggers.
+    if delay_minutes >= 600:
+        return True
+    if not match_context:
+        return False
+    context_values = {
+        _string(match_context.get("customer_state")),
+        _string(match_context.get("stage_tag")),
+        _string(match_context.get("day_stage")),
+    }
+    pack_values = {
+        _string(pack.get("customer_state")),
+        _string(pack.get("stage_tag")),
+        _string(pack.get("day_stage")),
+    }
+    if any(value and value in pack_values for value in context_values):
+        return True
+    event_id = _string(match_context.get("event_id"))
+    if event_id:
+        return any(str(trigger or "").strip() and str(trigger).strip() in event_id for trigger in pack.get("triggers") or [])
+    return False
 
 
 def _chat_selector_input(request: ChatRequest, unfinished_packs: list[dict[str, Any]]) -> dict[str, Any]:

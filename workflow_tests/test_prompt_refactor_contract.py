@@ -119,6 +119,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "[咖啡]",
         "安排最好的总监老师/主任老师",
         "主任/总监到店",
+        "测完皮肤后的价格怎么算",
+        "几百几千",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
@@ -164,6 +166,8 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "不要只说“那先不打扰/好的那算了”",
         "主任/总监/资深老师接待",
         "主任/总监到店",
+        "测完皮肤后的价格怎么算",
+        "不是到店后重新报成几百几千",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
     assert GLOBAL_REPLY_CONTRACT in REPLY_SYSTEM_PROMPT
