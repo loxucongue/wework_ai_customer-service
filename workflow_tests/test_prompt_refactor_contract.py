@@ -112,6 +112,12 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "卡片操作和一个理由放在前面",
         "不重复卡片",
         "只用于客户已付后的姓名、电话、门店、日期或排期承接",
+        "短拒绝",
+        "软拒绝",
+        "sales_progression 必须保持 continue",
+        "不要只回复“不打扰了/好的那算了”",
+        "[咖啡]",
+        "安排最好的总监老师/主任老师",
         "主任/总监到店",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
@@ -152,6 +158,11 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "当前仍是未付状态",
         "Reply 不得因为缺门店、缺订单、开单失败",
         "不得退回去重问城市或门店",
+        "降压挽回",
+        "不催、不急或有时间再约",
+        "[咖啡]",
+        "不要只说“那先不打扰/好的那算了”",
+        "主任/总监/资深老师接待",
         "主任/总监到店",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
