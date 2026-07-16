@@ -3,11 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 
-LOCATION_CARD_HEADER = "\u3010\u5ba2\u6237\u53d1\u9001\u5b9a\u4f4d\u5361\u7247\u3011"
-LOCATION_TITLE_LABEL = "\u6807\u9898"
-LOCATION_ADDRESS_LABEL = "\u5730\u5740"
-LOCATION_COORDINATES_LABEL = "\u5750\u6807"
-LOCATION_ZOOM_LABEL = "\u5730\u56fe\u7f29\u653e"
+LOCATION_CARD_HEADER = "【客户发送定位卡片】"
+LOCATION_CARD_PREFIX = "定位卡片："
+LOCATION_TITLE_LABEL = "标题"
+LOCATION_ADDRESS_LABEL = "地址"
+LOCATION_COORDINATES_LABEL = "坐标"
+LOCATION_ZOOM_LABEL = "地图缩放"
 
 
 def location_card_from_context(request_context: dict[str, Any] | None) -> dict[str, str]:
@@ -41,13 +42,13 @@ def location_card_fact_text(location_card: dict[str, Any] | None) -> str:
     coordinates = _string(card.get("coordinates"))
     zoom = _string(card.get("zoom"))
     if title:
-        lines.append(f"{LOCATION_TITLE_LABEL}\uff1a{title}")
+        lines.append(f"{LOCATION_TITLE_LABEL}：{title}")
     if address:
-        lines.append(f"{LOCATION_ADDRESS_LABEL}\uff1a{address}")
+        lines.append(f"{LOCATION_ADDRESS_LABEL}：{address}")
     if coordinates:
-        lines.append(f"{LOCATION_COORDINATES_LABEL}\uff1a{coordinates}")
+        lines.append(f"{LOCATION_COORDINATES_LABEL}：{coordinates}")
     if zoom:
-        lines.append(f"{LOCATION_ZOOM_LABEL}\uff1a{zoom}")
+        lines.append(f"{LOCATION_ZOOM_LABEL}：{zoom}")
     if not lines:
         return ""
     return "\n".join([LOCATION_CARD_HEADER, *lines])
@@ -57,11 +58,22 @@ def append_location_card_to_content(content: str, request_context: dict[str, Any
     normalized = _string(content)
     card = location_card_from_context(request_context)
     fact_text = location_card_fact_text(card)
-    if not fact_text or fact_text in normalized:
+    if not fact_text:
+        return normalized, card
+    normalized = _normalize_location_card_prefix(normalized)
+    if fact_text in normalized:
         return normalized, card
     if not normalized:
         return fact_text, card
     return f"{normalized}\n{fact_text}", card
+
+
+def _normalize_location_card_prefix(content: str) -> str:
+    text = _string(content)
+    for prefix in ("门店位置：", "门店位置:"):
+        if text.startswith(prefix):
+            return f"{LOCATION_CARD_PREFIX}{text[len(prefix):].strip()}"
+    return text
 
 
 def _string(value: Any) -> str:

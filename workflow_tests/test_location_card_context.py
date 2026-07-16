@@ -18,6 +18,8 @@ def _location_context() -> dict[str, str]:
 def test_location_card_appends_fact_block_to_current_message() -> None:
     normalized, card = append_location_card_to_content("门店位置：厦门大学附属第一医院", _location_context())
 
+    assert normalized.startswith("定位卡片：厦门大学附属第一医院")
+    assert not normalized.startswith("门店位置：")
     assert "【客户发送定位卡片】" in normalized
     assert "标题：厦门大学附属第一医院" in normalized
     assert "地址：福建省厦门市思明区镇海路55号" in normalized
