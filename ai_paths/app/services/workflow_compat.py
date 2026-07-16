@@ -24,8 +24,15 @@ def normalize_workflow_request(payload: dict[str, Any]) -> ChatRequest:
         "msgtime": _string(content_object.get("msgtime")) if content_object else "",
         "msgtype": (_string(content_object.get("msgtype")) if content_object else "") or _string(parameters.get("msgtype")),
         "location": _string(content_object.get("location")) if content_object else "",
+        "location_title": _string(content_object.get("location_title")) if content_object else "",
+        "location_address": _string(content_object.get("location_address")) if content_object else "",
+        "location_zoom": _string(content_object.get("location_zoom")) if content_object else "",
+        "messages_count": _string(parameters.get("messages_count") or parameters.get("raw_message_count")),
     }
     request_context.update({key: value for key, value in content_meta.items() if value})
+    raw_summary = _raw_workflow_payload_summary(payload, parameters, content_object)
+    if raw_summary:
+        request_context["raw_workflow_payload"] = raw_summary
 
     messages = parameters.get("messages")
     raw_history = parameters.get("conversation_history")
@@ -117,6 +124,39 @@ def _workflow_messages_to_history(messages: list[Any]) -> list[str]:
             role = "对话"
         history.append(f"{role}: {content}")
     return history[-10:]
+
+
+def _raw_workflow_payload_summary(
+    payload: dict[str, Any],
+    parameters: dict[str, Any],
+    content_object: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep the original workflow wrapper shape for log audits without storing large histories twice."""
+    summary: dict[str, Any] = {
+        "url": _string(payload.get("url")),
+        "workflow_id": _string(payload.get("workflow_id")) or _string(parameters.get("workflow_id")),
+        "parameters": {
+            "category_id": _string(parameters.get("category_id")),
+            "content": content_object if content_object else _string(parameters.get("content")),
+            "customer_id": _string(parameters.get("customer_id")),
+            "user_id": _string(parameters.get("user_id")),
+            "external_userid": _string(parameters.get("external_userid")),
+            "corp_id": _string(parameters.get("corp_id")),
+            "wechat": _string(parameters.get("wechat")),
+            "messages_count": parameters.get("messages_count") or parameters.get("raw_message_count") or "",
+        },
+    }
+    return _drop_empty(summary)
+
+
+def _drop_empty(value: Any) -> Any:
+    if isinstance(value, dict):
+        output = {key: _drop_empty(item) for key, item in value.items()}
+        return {key: item for key, item in output.items() if item not in ("", None, {}, [])}
+    if isinstance(value, list):
+        output = [_drop_empty(item) for item in value]
+        return [item for item in output if item not in ("", None, {}, [])]
+    return value
 
 
 def _workflow_reply_message(message: dict[str, Any]) -> dict[str, Any]:
