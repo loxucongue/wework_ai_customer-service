@@ -1092,17 +1092,28 @@ def _quiet_hours_summary(payload: dict[str, Any], messages: list[dict[str, Any]]
     event_at = _parse_time(payload.get("created_at") or payload.get("upstream_created_at")) or datetime.now(timezone.utc)
     local_event_at = event_at.astimezone(SOP_QUIET_TIMEZONE)
     latest_customer_at = _latest_customer_message_at(messages, before=event_at)
+    latest_auto_opening_at = _latest_auto_opening_message_at(messages, before=event_at)
+    activity_at = latest_customer_at or latest_auto_opening_at
+    activity_source = (
+        "customer_message"
+        if latest_customer_at
+        else "platform_auto_opening"
+        if latest_auto_opening_at
+        else ""
+    )
     inactivity_minutes: int | None = None
-    if latest_customer_at:
-        inactivity_minutes = max(0, int((event_at - latest_customer_at).total_seconds() // 60))
+    if activity_at:
+        inactivity_minutes = max(0, int((event_at - activity_at).total_seconds() // 60))
     in_quiet_window = SOP_QUIET_START_HOUR <= local_event_at.hour < SOP_QUIET_END_HOUR
-    inactive = latest_customer_at is None or (inactivity_minutes is not None and inactivity_minutes >= SOP_QUIET_INACTIVITY_MINUTES)
+    inactive = activity_at is None or (inactivity_minutes is not None and inactivity_minutes >= SOP_QUIET_INACTIVITY_MINUTES)
     return {
         "timezone": "Asia/Shanghai",
         "event_at": event_at.isoformat(),
         "local_event_at": local_event_at.isoformat(),
         "window": f"{SOP_QUIET_START_HOUR:02d}:00-{SOP_QUIET_END_HOUR:02d}:00",
         "latest_customer_message_at": latest_customer_at.isoformat() if latest_customer_at else "",
+        "latest_platform_auto_opening_at": latest_auto_opening_at.isoformat() if latest_auto_opening_at else "",
+        "quiet_activity_source": activity_source,
         "inactivity_minutes": inactivity_minutes,
         "skip": bool(in_quiet_window and inactive),
         "reason": "quiet_hours_customer_inactive" if in_quiet_window and inactive else "",
@@ -1145,6 +1156,19 @@ def _latest_customer_message_at(messages: list[dict[str, Any]], *, before: datet
         if not _is_customer_message(message):
             continue
         if is_platform_auto_opening_message(_conversation_message_content(message.get("content"))):
+            continue
+        message_at = _message_time(message)
+        if message_at and message_at <= before:
+            candidates.append(message_at)
+    return max(candidates) if candidates else None
+
+
+def _latest_auto_opening_message_at(messages: list[dict[str, Any]], *, before: datetime) -> datetime | None:
+    candidates: list[datetime] = []
+    for message in messages:
+        if not _is_customer_message(message):
+            continue
+        if not is_platform_auto_opening_message(_conversation_message_content(message.get("content"))):
             continue
         message_at = _message_time(message)
         if message_at and message_at <= before:
