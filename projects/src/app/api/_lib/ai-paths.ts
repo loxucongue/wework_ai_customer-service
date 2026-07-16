@@ -36,9 +36,13 @@ type WorkflowContent = {
   msgtime?: unknown;
   msgtype?: unknown;
   location?: unknown;
+  location_title?: unknown;
+  location_address?: unknown;
+  location_zoom?: unknown;
 };
 
 type WorkflowCompatibleBody = {
+  url?: unknown;
   workflow_id?: unknown;
   parameters?: Record<string, unknown>;
 };
@@ -122,6 +126,34 @@ export function normalizeWorkflowCompatibleBody(
   const msgtime = stringValue(contentObject.msgtime);
   const msgtype = stringValue(contentObject.msgtype) || stringValue(parameters.msgtype);
   const location = stringValue(contentObject.location);
+  const locationTitle = stringValue(contentObject.location_title) || stringValue(parameters.location_title);
+  const locationAddress = stringValue(contentObject.location_address) || stringValue(parameters.location_address);
+  const locationZoom = stringValue(contentObject.location_zoom) || stringValue(parameters.location_zoom);
+  const messagesCount = stringValue(parameters.messages_count) || stringValue(parameters.raw_message_count);
+  const rawMessageCount = messagesCount || (messages.length ? String(messages.length) : messageSummary ? "summary" : "");
+  const rawWorkflowPayload = compactObject({
+    url: stringValue(wrapper.url),
+    workflow_id: workflowId,
+    parameters: compactObject({
+      category_id: categoryId,
+      content: isRecord(contentField) ? compactObject({
+        content: contentObject.content,
+        msgid: contentObject.msgid,
+        msgtime: contentObject.msgtime,
+        msgtype: contentObject.msgtype,
+        location: contentObject.location,
+        location_title: contentObject.location_title,
+        location_address: contentObject.location_address,
+        location_zoom: contentObject.location_zoom,
+      }) : content,
+      customer_id: stringValue(parameters.customer_id),
+      user_id: stringValue(parameters.user_id),
+      external_userid: stringValue(parameters.external_userid),
+      corp_id: stringValue(parameters.corp_id),
+      wechat: stringValue(parameters.wechat),
+      messages_count: messagesCount,
+    }),
+  });
 
   Object.assign(requestContext, compactObject({
     source_protocol: "workflow-compatible",
@@ -131,7 +163,12 @@ export function normalizeWorkflowCompatibleBody(
     msgtime,
     msgtype,
     location,
-    raw_message_count: messages.length ? String(messages.length) : messageSummary ? "summary" : "",
+    location_title: locationTitle,
+    location_address: locationAddress,
+    location_zoom: locationZoom,
+    messages_count: messagesCount,
+    raw_message_count: rawMessageCount,
+    raw_workflow_payload: rawWorkflowPayload,
   }));
 
   const customerId =
