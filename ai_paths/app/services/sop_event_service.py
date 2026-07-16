@@ -1096,7 +1096,7 @@ def _quiet_hours_summary(payload: dict[str, Any], messages: list[dict[str, Any]]
     if latest_customer_at:
         inactivity_minutes = max(0, int((event_at - latest_customer_at).total_seconds() // 60))
     in_quiet_window = SOP_QUIET_START_HOUR <= local_event_at.hour < SOP_QUIET_END_HOUR
-    inactive = latest_customer_at is not None and inactivity_minutes is not None and inactivity_minutes >= SOP_QUIET_INACTIVITY_MINUTES
+    inactive = latest_customer_at is None or (inactivity_minutes is not None and inactivity_minutes >= SOP_QUIET_INACTIVITY_MINUTES)
     return {
         "timezone": "Asia/Shanghai",
         "event_at": event_at.isoformat(),
