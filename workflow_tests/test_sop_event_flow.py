@@ -195,7 +195,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(selector.calls, [])
                 self.assertEqual(client.send_calls, [])
 
-    async def test_event_skips_inactive_customer_during_quiet_hours(self) -> None:
+    async def test_event_continues_auto_opening_without_real_customer_message_during_quiet_hours(self) -> None:
         repo = _Repo()
         client = _OutreachClient(
             messages=[
@@ -206,7 +206,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 }
             ]
         )
-        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "continue first-add SOP"})
         service = _service(repo=repo, client=client, selector=selector)
         payload = _base_payload(
             event_id="evt_quiet_inactive",
@@ -220,10 +220,46 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_event("evt_quiet_inactive")
 
         self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(repo.tasks[0]["sop_pack_id"], "opening")
+        self.assertEqual(len(selector.calls), 1)
+        self.assertEqual(len(client.send_calls), 1)
+
+    async def test_event_skips_real_customer_inactive_over_30_minutes_during_quiet_hours(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            messages=[
+                {
+                    "direction": "customer",
+                    "content": "我先看看",
+                    "msgtime": "2026-07-10T17:00:00+00:00",
+                },
+                {
+                    "direction": "staff",
+                    "content": "好的亲，您看下",
+                    "msgtime": "2026-07-10T17:20:00+00:00",
+                },
+            ]
+        )
+        selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_quiet_real_customer_inactive",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-10T18:00:00+00:00",
+            sop={"delay_minutes": 3},
+            customers=[{"first_added_event": {"trace_id": "trace_quiet_real_customer_inactive", "timestamp": "2026-07-10T16:50:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_quiet_real_customer_inactive")
+
+        self.assertEqual(result["status"], "processed")
         self.assertEqual(repo.tasks[0]["status"], "skipped_quiet_hours_inactive")
-        self.assertIsNone(repo.tasks[0]["send_payload"]["quiet_hours"]["inactivity_minutes"])
-        self.assertEqual(repo.tasks[0]["send_payload"]["quiet_hours"]["timezone"], "Asia/Shanghai")
-        self.assertEqual(repo.tasks[0]["send_payload"]["quiet_hours"]["window"], "00:00-08:00")
+        quiet = repo.tasks[0]["send_payload"]["quiet_hours"]
+        self.assertEqual(quiet["timezone"], "Asia/Shanghai")
+        self.assertEqual(quiet["window"], "00:00-08:00")
+        self.assertEqual(quiet["inactivity_minutes"], 60)
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
