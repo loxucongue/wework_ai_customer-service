@@ -19,8 +19,8 @@ from app.services.trace_logger import compact
 
 FIRST_ADD_EVENT_TYPES = {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}
 SOP_QUIET_TIMEZONE = ZoneInfo("Asia/Shanghai")
-SOP_QUIET_START_HOUR = 1
-SOP_QUIET_END_HOUR = 7
+SOP_QUIET_START_HOUR = 0
+SOP_QUIET_END_HOUR = 8
 SOP_QUIET_INACTIVITY_MINUTES = 30
 SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES = 3
 
@@ -209,6 +209,27 @@ class SopEventService:
                     "conversation_filter": conversation_filter,
                     "conversation_activity": conversation_activity,
                     "recent_assistant_activity": recent_assistant_activity,
+                },
+            )
+
+        quiet_hours = _quiet_hours_summary(payload, conversation_messages)
+        if quiet_hours["skip"]:
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id=base_pack_id,
+                sop_pack_name=base_pack_name,
+                reply_messages=[],
+                status="skipped_quiet_hours_inactive",
+                error="",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_filter": conversation_filter,
+                    "conversation_activity": conversation_activity,
+                    "quiet_hours": quiet_hours,
                 },
             )
 
