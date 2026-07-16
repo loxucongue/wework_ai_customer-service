@@ -7,6 +7,7 @@ from typing import Any, Callable
 from app.graph.nodes.common import looks_bad_text, model_usage_snapshot, repair_mojibake_text
 from app.graph.nodes.conversation_history_fetch import ConversationFetcher, fetch_platform_conversation_history
 from app.graph.nodes.image_info import build_vision_prompt, fallback_image_info, validated_image_info
+from app.graph.nodes.location_card import append_location_card_to_content
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
@@ -34,6 +35,8 @@ def create_input_normalization_layer(
             if not normalized and state.get("file_image"):
                 normalized = "[图片]"
             normalized, encoding_repair = repair_mojibake_text(normalized)
+            request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+            normalized, location_card = append_location_card_to_content(normalized, request_context)
             errors = list(state.get("errors", []))
             if looks_bad_text(normalized):
                 errors.append({"node": "layer_1_input_normalization", "message": "输入疑似乱码，已保留原文但后续会降低置信度"})
@@ -50,6 +53,7 @@ def create_input_normalization_layer(
                 span["entry"]["tool_calls"] = [model_call]
             output = {
                 "normalized_content": normalized,
+                "location_card": location_card,
                 "image_info": image_info,
                 "errors": errors,
                 "encoding_repair": encoding_repair,

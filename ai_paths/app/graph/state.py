@@ -41,6 +41,7 @@ class AgentState(TypedDict, total=False):
     memory_persist_allowed: bool
 
     normalized_content: str
+    location_card: dict[str, Any]
     image_info: dict[str, Any]
     guardrail_result: dict[str, Any]
     customer_profile: dict[str, Any]

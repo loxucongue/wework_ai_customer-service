@@ -13,6 +13,7 @@ from app.graph.nodes.current_turn_context import (
     can_use_contextual_store_for_message,
     current_store_anchor_from_state,
 )
+from app.graph.nodes.location_card import location_card_from_state
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import build_store_scope_summary
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
@@ -262,6 +263,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "current_date": _current_date_iso(),
         "timezone": "Asia/Shanghai",
         "current_message": state.get("normalized_content") or "",
+        "location_card": location_card_from_state(state),
         "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-20:],
         "short_message_context": {} if suppress_memory else short_message_context_for_model(
             content=str(state.get("normalized_content") or state.get("content") or ""),

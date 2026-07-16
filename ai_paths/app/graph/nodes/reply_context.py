@@ -6,6 +6,7 @@ from app.graph.nodes.common import recent_assistant_replies
 from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference, target_time_status
 from app.graph.nodes.contextual_short_message import short_message_context_for_model
 from app.graph.nodes.current_turn_context import build_current_turn_context
+from app.graph.nodes.location_card import location_card_from_state
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import build_store_scope_summary
 from app.graph.nodes.memory_usage_policy import (
@@ -56,6 +57,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     )
     return {
         "content": state.get("normalized_content"),
+        "location_card": location_card_from_state(state),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-20:],
         "short_message_context": {} if suppress_profile_memory else short_message_context_for_model(
             content=str(state.get("normalized_content") or state.get("content") or ""),
