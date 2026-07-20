@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -9,6 +10,7 @@ from app.services.coze_client import CozeClient
 
 
 VOICE_FALLBACK_TEXT = "客户发送了一条语音消息，但系统暂时无法转写，请引导客户发文字或重新发送。"
+VOICE_TRANSCRIPTION_ATTEMPTS = 3
 
 
 async def transcribe_voice_request(request: ChatRequest, coze_client: CozeClient) -> ChatRequest:
@@ -34,23 +36,42 @@ async def transcribe_voice_request(request: ChatRequest, coze_client: CozeClient
         transcription.update({"status": "failed", "error": "missing_audio_url"})
         return _request_with_voice_fallback(request, transcription)
 
-    try:
-        raw = await coze_client.run_workflow(workflow_id, {"input": audio_url})
-        output = _workflow_output_text(raw)
-        transcription.update(
-            {
-                "status": "ok" if output else "empty_output",
-                "output_preview": output[:160],
-                "execute_id": str(raw.get("execute_id") or ""),
-                "debug_url": str(raw.get("debug_url") or ""),
+    attempts: list[dict[str, Any]] = []
+    last_error = ""
+    for attempt in range(1, VOICE_TRANSCRIPTION_ATTEMPTS + 1):
+        try:
+            raw = await coze_client.run_workflow(workflow_id, {"input": audio_url})
+            output = _workflow_output_text(raw)
+            attempt_info = {
+                "attempt": attempt,
                 "coze_code": raw.get("code"),
                 "coze_msg": str(raw.get("msg") or "")[:200],
+                "execute_id": str(raw.get("execute_id") or ""),
+                "debug_url": str(raw.get("debug_url") or ""),
+                "output_preview": output[:80],
             }
-        )
-        if output:
-            return _request_with_transcribed_content(request, output, transcription)
-    except Exception as exc:
-        transcription.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
+            attempts.append(attempt_info)
+            if output:
+                transcription.update(
+                    {
+                        "status": "ok",
+                        "attempts": attempts,
+                        "attempt_count": attempt,
+                        "output_preview": output[:160],
+                        "execute_id": attempt_info["execute_id"],
+                        "debug_url": attempt_info["debug_url"],
+                        "coze_code": attempt_info["coze_code"],
+                        "coze_msg": attempt_info["coze_msg"],
+                    }
+                )
+                return _request_with_transcribed_content(request, output, transcription)
+            last_error = str(raw.get("msg") or "empty_output")[:200]
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            attempts.append({"attempt": attempt, "error": last_error[:200]})
+        if attempt < VOICE_TRANSCRIPTION_ATTEMPTS:
+            await asyncio.sleep(0.4 * attempt)
+    transcription.update({"status": "failed", "attempts": attempts, "attempt_count": len(attempts), "error": last_error})
     return _request_with_voice_fallback(request, transcription)
 
 

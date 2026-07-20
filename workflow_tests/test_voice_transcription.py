@@ -8,7 +8,7 @@ from app.services.voice_transcription import VOICE_FALLBACK_TEXT, transcribe_voi
 
 
 class FakeCozeClient:
-    def __init__(self, raw: dict | None = None, exc: Exception | None = None) -> None:
+    def __init__(self, raw: dict | list[dict] | None = None, exc: Exception | None = None) -> None:
         self.settings = SimpleNamespace(audio_to_text_workflow_id="workflow-audio")
         self.raw = raw or {"code": 0, "data": '{"output":"我在厦门湖里区。"}', "execute_id": "exec-1"}
         self.exc = exc
@@ -18,6 +18,9 @@ class FakeCozeClient:
         self.calls.append((workflow_id, parameters))
         if self.exc:
             raise self.exc
+        if isinstance(self.raw, list):
+            index = min(len(self.calls) - 1, len(self.raw) - 1)
+            return self.raw[index]
         return self.raw
 
 
@@ -75,3 +78,24 @@ def test_voice_request_does_not_pass_url_when_transcription_fails() -> None:
     assert updated.content == VOICE_FALLBACK_TEXT
     assert "https://example.com" not in updated.content
     assert updated.request_context["voice_transcription"]["status"] == "failed"
+
+
+def test_voice_request_retries_empty_workflow_output() -> None:
+    request = ChatRequest(
+        content="https://example.com/a.mp3",
+        customer_id="c1",
+        corp_id="corp",
+        request_context={"msgtype": "voice"},
+    )
+    client = FakeCozeClient(
+        raw=[
+            {"code": 6014, "msg": "temporary empty"},
+            {"code": 0, "data": '{"output":"我在厦门湖里区。"}', "execute_id": "exec-2"},
+        ]
+    )
+
+    updated = asyncio.run(transcribe_voice_request(request, client))
+
+    assert updated.content == "我在厦门湖里区。"
+    assert len(client.calls) == 2
+    assert updated.request_context["voice_transcription"]["attempt_count"] == 2
