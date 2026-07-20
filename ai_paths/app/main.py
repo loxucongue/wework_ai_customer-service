@@ -29,7 +29,7 @@ from app.services.store_service import StoreService
 from app.services.store_snapshot_service import StoreSnapshotService
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.trace_logger import TraceLogger
-from app.services.voice_transcription import transcribe_voice_request
+from app.services.voice_transcription import DoubaoAsrClient, transcribe_voice_request
 from app.services.workflow_compat import (
     normalize_workflow_request,
     workflow_error_response,
@@ -41,6 +41,7 @@ trace_logger = TraceLogger(settings)
 sqlite_store = SQLiteStore(settings)
 repository = AppRepository(sqlite_store)
 coze_client = CozeClient(settings)
+voice_transcription_client = DoubaoAsrClient(settings)
 model_client = ModelClient(settings)
 memory_store = CustomerMemoryStore(settings, repository)
 platform_agent_client = PlatformAgentClient(settings)
@@ -148,6 +149,7 @@ async def shutdown() -> None:
         sop_event_retry_worker = None
     await model_client.aclose()
     await coze_client.aclose()
+    await voice_transcription_client.aclose()
     await outreach_send_client.aclose()
     await outreach_system_client.aclose()
     platform_agent_client.close()
@@ -291,7 +293,7 @@ async def sop_events(
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, _: None = Depends(require_api_key)) -> ChatResponse:
-    request = await transcribe_voice_request(request, coze_client)
+    request = await transcribe_voice_request(request, voice_transcription_client)
     response = await run_chat(request)
     _record_http_response_body(response.request_id, response.model_dump())
     return response
@@ -303,7 +305,7 @@ async def reply(
     background_tasks: BackgroundTasks,
     _: None = Depends(require_external_api_key),
 ) -> ChatResponse:
-    request = await transcribe_voice_request(request, coze_client)
+    request = await transcribe_voice_request(request, voice_transcription_client)
     response = await chat_runtime.run_platform_reply(request, background_tasks=background_tasks)
     _record_http_response_body(response.request_id, response.model_dump())
     return response
@@ -336,7 +338,7 @@ async def workflow_compatible_reply(
         request = normalize_workflow_request(payload)
     except ValueError as exc:
         return JSONResponse(status_code=400, content=workflow_error_response(str(exc)))
-    request = await transcribe_voice_request(request, coze_client)
+    request = await transcribe_voice_request(request, voice_transcription_client)
     response = (
         await chat_runtime.run_platform_reply(request, background_tasks=background_tasks)
         if platform_async

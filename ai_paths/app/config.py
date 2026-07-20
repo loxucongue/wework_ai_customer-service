@@ -122,6 +122,22 @@ class Settings(BaseSettings):
         default="7664438534082789417",
         alias="AUDIO_TO_TEXT_WORKFLOW_ID",
     )
+    doubao_asr_api_key: str = Field(default="", alias="DOUBAO_ASR_API_KEY", repr=False)
+    doubao_asr_app_key: str = Field(default="", alias="DOUBAO_ASR_APP_KEY", repr=False)
+    doubao_asr_access_key: str = Field(default="", alias="DOUBAO_ASR_ACCESS_KEY", repr=False)
+    doubao_asr_secret_key: str = Field(default="", alias="DOUBAO_ASR_SECRET_KEY", repr=False)
+    doubao_asr_resource_id: str = Field(default="volc.seedasr.auc", alias="DOUBAO_ASR_RESOURCE_ID")
+    doubao_asr_submit_url: str = Field(
+        default="https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit",
+        alias="DOUBAO_ASR_SUBMIT_URL",
+    )
+    doubao_asr_query_url: str = Field(
+        default="https://openspeech.bytedance.com/api/v3/auc/bigmodel/query",
+        alias="DOUBAO_ASR_QUERY_URL",
+    )
+    doubao_asr_timeout_seconds: float = Field(default=15.0, alias="DOUBAO_ASR_TIMEOUT_SECONDS")
+    doubao_asr_poll_interval_seconds: float = Field(default=1.0, alias="DOUBAO_ASR_POLL_INTERVAL_SECONDS")
+    doubao_asr_poll_attempts: int = Field(default=8, alias="DOUBAO_ASR_POLL_ATTEMPTS")
 
     log_dir: Path = Path("logs/runs")
     trace_log_dir: Path | None = Field(default=None, alias="AI_PATHS_TRACE_LOG_DIR")
