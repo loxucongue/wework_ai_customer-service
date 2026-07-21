@@ -68,6 +68,17 @@ def test_transaction_prompts_require_order_and_keep_postpaid_information_only() 
     assert "缺少成功 order_id 或开单失败都不得取消卡片" not in REPLY_TRANSACTION_PATCH_PROMPT
 
 
+def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
+    assert "唯一可信交易门店锚点" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
+    assert "single_store_card_anchor" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "store_address_delivery.unique_latest_store_id" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "最近发过多家" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "store_binding_decision" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "accepted_explicit/accepted_implicit" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "辅助字段缺失或平台开单失败时，本轮仍正常回答" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "绝不能因为开单未成功而输出空回复" in REPLY_SYSTEM_PROMPT
+
+
 def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None:
     for marker in [
         "Fact Source Priority",
@@ -92,7 +103,9 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "2位一共20元，3位一共30元，4位一共40元",
         "客户可见回复只说哪家更近，不说公里、分钟、车程",
         "旧健康风险、旧门店、旧预约任务只有在客户当前明确延续时才主导本轮",
-        "客户给出明确城市、区域或地标并问门店/附近/地址/停车/营业时间/导航时，输出 need_tools",
+        "客户给出明确城市、区域、可唯一绑定城市的地标或真实门店名",
+        "普通重名地标缺城市时按上面的消歧规则先确认",
+        "城市覆盖直回",
         "平台同城投放或展示定位",
         "同城真实门店",
         "不说广告错误",
@@ -109,6 +122,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "收款卡是当前最自然的下一步",
         "已有同城 store_facts",
         "requested_district_stores",
+        "status=ambiguous_location",
+        "平台结构化 POI",
         "不论该区是 1 家还是多家",
         "不要问“要不要了解/要不要看/是否需要/要不要我发”",
         "不要每轮复读",
@@ -157,6 +172,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "转账、截图和备注登记",
         "manual_transfer",
         "requested_district_stores",
+        "customer_store_lookup.status=ambiguous_location",
         "不论是 1 家还是多家",
         "不要问客户“要不要了解活动/要不要我给您看/是否需要/您看下吗”",
         "不要每次复读同一句",

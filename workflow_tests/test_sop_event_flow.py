@@ -18,6 +18,7 @@ from app.services.sop_execution_service import (
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.memory_store import CustomerMemoryStore
+from app.services.customer_scope import build_customer_scope
 from app.services.storage import AppRepository, SQLiteStore
 
 
@@ -131,11 +132,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         repo.create_sop_event(payload)
         result = await service.process_event("evt_identity_lookup_error")
 
-        self.assertEqual(result["status"], "processed")
-        self.assertEqual(client.fetch_calls[0]["corp_id"], "ww943af61cd5d2afe4")
-        self.assertEqual(client.fetch_calls[0]["user_id"], "test2")
-        self.assertEqual(client.fetch_calls[0]["wechat"], "auto-3a03ca3ecaae3ae2")
-        self.assertIn("identity_lookup_error", repo.tasks[0]["send_payload"]["identity"])
+        self.assertEqual(result["status"], "processed_with_errors")
+        self.assertEqual(client.fetch_calls, [])
 
     async def test_first_added_event_fetches_conversation_then_selects_first_add_sop(self) -> None:
         repo = _Repo()
@@ -610,7 +608,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         pack_ids = {
             5: "event_s10_store_prompt_5min",
             30: "event_s10_effect_warmup_30min",
-            60: "event_s10_price_quote_60min",
+            60: "s10_activity_intro",
             70: "event_s10_deposit_push_70min",
         }
         pack_service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
@@ -633,7 +631,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 result = await service.process_event(event_id)
 
                 self.assertEqual(result["status"], "processed")
-                expected_status = "skipped_missing_payment_order" if delay_minutes == 70 else "sent"
+                expected_status = "skipped_missing_payment_order" if delay_minutes in {60, 70} else "sent"
                 self.assertEqual(repo.tasks[0]["status"], expected_status)
                 self.assertEqual(repo.tasks[0]["sop_pack_id"], pack_id)
 
@@ -773,11 +771,17 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "processed")
         self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual(memory_store.load_calls, ["ext_user"])
+        scope_key = build_customer_scope(
+            corp_id="ww943af61cd5d2afe4",
+            wechat="CS001",
+            external_userid="ext_user",
+            customer_id="ext_user",
+        ).sales_contact_key
+        self.assertEqual(memory_store.load_calls, [scope_key])
         self.assertEqual(selector.calls[0]["customer_memory"], existing_memory)
         self.assertEqual(len(memory_store.record_calls), 1)
         record = memory_store.record_calls[0]
-        self.assertEqual(record["customer_id"], "ext_user")
+        self.assertEqual(record["customer_id"], scope_key)
         self.assertEqual(record["sop_pack_id"], "opening")
         self.assertEqual(record["message_types"], ["text"])
         self.assertEqual(record["source_event_id"], "evt_record_sop_sent")
@@ -1099,7 +1103,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 "id": "existing_task",
                 "event_id": "evt_existing",
                 "idempotency_key": "existing_idem",
-                "send_once_key": "sop_pack:opening|corp:ww943af61cd5d2afe4|external:ext_user",
+                "send_once_key": "sop_pack:opening|corp:ww943af61cd5d2afe4|wechat:cs001|external:ext_user",
                 "customer_id": "ext_user",
                 "external_userid": "ext_user",
                 "corp_id": "ww943af61cd5d2afe4",
@@ -1245,6 +1249,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 repo.list_sent_sop_pack_ids_for_customer(
                     customer_id="ext",
                     external_userid="ext",
+                    corp_id="ww",
+                    wechat="CS001",
                     sent_before="2026-07-02T06:30:00+00:00",
                 ),
                 ["before_pack"],
@@ -1253,6 +1259,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 repo.list_sent_sop_categories_for_customer(
                     customer_id="ext",
                     external_userid="ext",
+                    corp_id="ww",
+                    wechat="CS001",
                     sent_before="2026-07-02T06:30:00+00:00",
                 ),
                 ["before_category"],
@@ -1314,6 +1322,28 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual([item["id"] for item in candidates], ["event_s10_effect_warmup_30min"])
+
+    def test_first_add_candidates_include_next_step_when_due_pack_may_repeat(self) -> None:
+        service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
+        config = service.load()
+
+        candidates = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=["s10_new_customer_opening"],
+            completed_sop_categories=[],
+            delay_minutes=10,
+            match_context={"delay_minutes": 10},
+        )
+
+        ids = [item["id"] for item in candidates]
+        self.assertIn("event_s10_store_prompt_5min", ids)
+        self.assertIn("event_s10_effect_warmup_30min", ids)
+        self.assertLess(ids.index("event_s10_store_prompt_5min"), ids.index("event_s10_effect_warmup_30min"))
+        groups = {item["id"]: item.get("_candidate_group") for item in candidates}
+        self.assertEqual(groups["event_s10_store_prompt_5min"], "due")
+        self.assertEqual(groups["event_s10_effect_warmup_30min"], "next_step")
+        next_step = [item for item in candidates if item.get("_candidate_group") == "next_step"]
+        self.assertLessEqual(len(next_step), 1)
 
     async def test_event_judge_prompt_defaults_to_platform_sop_unless_conflict_or_overlap(self) -> None:
         model = _PromptCaptureModel(
@@ -1391,6 +1421,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不要无限重复追问同一个问题", system_prompt)
         self.assertIn("客户沉默时，优先推进下一个合理 SOP 价值点", system_prompt)
         self.assertIn("发送效果铺垫包", system_prompt)
+        self.assertIn("candidate_group", system_prompt)
+        self.assertIn("next_step", system_prompt)
         self.assertIn("text_adjustments", system_prompt)
         self.assertIn("message_operations", system_prompt)
         self.assertIn("insert_text_after", system_prompt)
@@ -1409,6 +1441,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"customer_basic_info":{"city":"深圳"}', user_prompt)
         self.assertIn('"lifecycle_stage":"new_customer"', user_prompt)
         self.assertIn('"history_events":[{"event_id":"history_1"', user_prompt)
+        self.assertIn('"candidate_policy"', user_prompt)
+        self.assertIn('"candidate_group":"due"', user_prompt)
         self.assertIn('"payment_collection_gate"', user_prompt)
         self.assertIn('"status":"missing_matching_current_order"', user_prompt)
 
@@ -1448,6 +1482,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标", system_prompt)
         self.assertIn("不要无限重复追问同一个问题", system_prompt)
         self.assertIn("客户沉默时，优先推进下一个合理 SOP 价值点", system_prompt)
+        self.assertIn("candidate_group", system_prompt)
+        self.assertIn("next_step", system_prompt)
         self.assertIn("text_adjustments", system_prompt)
         self.assertIn("message_operations", system_prompt)
         self.assertIn("insert_text_after", system_prompt)
@@ -1463,6 +1499,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             content="我已经添加了你，现在我们可以开始聊天了。",
             customer_id="customer",
             corp_id="corp",
+            wechat="CS001",
             external_userid="ext",
             conversation_history=["用户: 门店在哪？"],
         )
@@ -1514,6 +1551,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             customer_id="customer",
             corp_id="corp",
             external_userid="external",
+            wechat="CS001",
         )
 
         result = await service.evaluate_chat_gate(
@@ -1557,6 +1595,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             customer_id="customer",
             corp_id="corp",
             external_userid="ext",
+            wechat="CS001",
         )
 
         result = await service.evaluate_chat_gate(request, request_id="req_auto_paid", request_context={})
@@ -1608,6 +1647,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             customer_id="customer",
             corp_id="corp",
             external_userid="ext",
+            wechat="CS001",
         )
 
         result = await service.evaluate_chat_gate(request, request_id="req_context_adjust", request_context={})
@@ -1661,7 +1701,13 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             sop_reply_pack_service=_NumericPackService(),
             model_client=model,
         )
-        request = ChatRequest(content="怎么收费", customer_id="customer", corp_id="corp", external_userid="ext")
+        request = ChatRequest(
+            content="怎么收费",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+            wechat="CS001",
+        )
 
         result = await service.evaluate_chat_gate(request, request_id="req_numeric_adjust", request_context={})
 
@@ -1770,6 +1816,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             customer_id="customer",
             corp_id="corp",
             external_userid="ext",
+            wechat="CS001",
             confirmed_store_id="386",
         )
         output = {
@@ -1869,6 +1916,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             customer_id="customer",
             corp_id="corp",
             external_userid="ext",
+            wechat="CS001",
         )
 
         result = await service.evaluate_chat_gate(request, request_id="req_progress", request_context={})
@@ -1920,6 +1968,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             customer_id="customer",
             corp_id="corp",
             external_userid="ext",
+            wechat="CS001",
             conversation_history=["小贝: 已经发过同类效果图给您参考"],
         )
 
@@ -1932,6 +1981,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("reply_messages 摘要能否真实回答当前问题", system_prompt)
         self.assertIn("效果真实性、怕没效果、反黑、做坏、伤肤", system_prompt)
         self.assertIn("收费、预约金、隐形消费或活动价格规则", system_prompt)
+        self.assertIn("具体门店地址/导航/真实档期", system_prompt)
+        self.assertIn("门店匹配槽位已补齐", system_prompt)
         self.assertIn("收费与预约金顾虑处理", user_prompt)
         self.assertIn("payment_collection", user_prompt)
 
@@ -1983,6 +2034,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             customer_id="customer",
             corp_id="corp",
             external_userid="ext",
+            wechat="CS001",
             conversation_history=["小贝: 线上预付10到店再付款258共268，明码标价哈亲放心"],
         )
 
@@ -2327,6 +2379,8 @@ class _Repo:
         *,
         customer_id: str,
         external_userid: str,
+        corp_id: str = "",
+        wechat: str = "",
         sent_before: str = "",
     ) -> list[str]:
         return sorted(self.sent_ids)
@@ -2336,6 +2390,8 @@ class _Repo:
         *,
         customer_id: str,
         external_userid: str,
+        corp_id: str = "",
+        wechat: str = "",
         sent_before: str = "",
     ) -> list[str]:
         return sorted(self.sent_categories)

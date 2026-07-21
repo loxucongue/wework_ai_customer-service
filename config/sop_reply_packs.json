@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-02T01:45:06+00:00",
+  "updated_at": "2026-07-21T01:30:00+00:00",
   "packs": [
     {
       "id": "s10_new_customer_opening",
@@ -42,7 +42,7 @@
           "type": "image",
           "order": 3,
           "content": {
-            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png"
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260720/b441a00bbf264ea0-s10-opening-efficacy.png"
           }
         }
       ]
@@ -114,19 +114,25 @@
       "id": "s10_activity_intro",
       "enabled": true,
       "scope": "chat_gate",
+      "scopes": [
+        "chat_gate",
+        "event_first_add"
+      ],
       "sop_category": "s10_activity_intro",
       "name": "活动介绍",
       "purpose": "客户第一次了解活动、价格或预约金时，说明活动价值、费用规则、预约金可退抵扣口径、名额保留，并补充效果案例参考。",
       "order": 30,
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
-      "delay_minutes": 5,
+      "delay_minutes": 60,
       "day_stage": "day1",
-      "customer_state": "first_add_ai_notice",
-      "stage_tag": "first_add_ai_notice",
+      "customer_state": "effect_warmup_no_reply",
+      "stage_tag": "price_quote",
       "triggers": [
         "first_activity_question",
-        "first_price_question"
+        "first_price_question",
+        "price_quote",
+        "day1_quote"
       ],
       "reply_messages": [
         {
@@ -158,17 +164,11 @@
           }
         },
         {
-          "type": "text",
+          "type": "payment_collection",
           "order": 5,
           "content": {
-            "text": "您可以看下这位吴先生就是这个月参加我们特惠活动来我们当地门店操作完斑点的效果，有效的清理斑点底层黑色素"
-          }
-        },
-        {
-          "type": "image",
-          "order": 6,
-          "content": {
-            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f9095a62ef1f6f9f-1329752764320508_1780495754436492285_YSvXwtYX8O.png"
+            "amount": 10,
+            "remark": ""
           }
         }
       ]
@@ -348,8 +348,11 @@
     },
     {
       "id": "event_s10_price_quote_60min",
-      "enabled": true,
+      "enabled": false,
       "scope": "event_first_add",
+      "scopes": [
+        "event_first_add"
+      ],
       "sop_category": "price_quote",
       "name": "事件-60分钟报价",
       "purpose": "客户沉默时补齐活动价、预约金、尾款和可退规则，推进优惠名额。",

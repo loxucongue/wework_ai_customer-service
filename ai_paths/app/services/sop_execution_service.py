@@ -8,11 +8,16 @@ from typing import Any
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, payment_collection_order_fact, resolved_payment_fact
+from app.services.customer_scope import customer_scope_from_identity
 from app.services.model_client import ModelClient
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
+
+
+FIRST_ADD_NEXT_STEP_LOOKAHEAD_MINUTES = 30
+FIRST_ADD_NEXT_STEP_MAX_CANDIDATES = 1
 
 
 SOP_EVENT_SYSTEM_PROMPT = f"""
@@ -40,7 +45,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `event`：触发事件、延迟、阶段和客户状态。
 - `recent_conversation`：最近 30 条已发生聊天，保留方向、来源、消息类型和时间。
 - `conversation_activity`：基于最新会话计算的客户回复、最后消息方向和时间可靠性摘要。
-- `candidate_sops`：可选的新客 SOP；每个包有阶段目的、完整 `editable_text_messages` 与只读 `readonly_messages`。
+- `candidate_sops`：可选的新客 SOP；每个包有阶段目的、候选分组、完整 `editable_text_messages` 与只读 `readonly_messages`。
 - `platform_actions`：平台任务中的完整可编辑 text 与只读结构消息。
 - `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
 - `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
@@ -57,6 +62,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 事实优先级必须是：最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件。低优先级信息不得覆盖高优先级事实。
 - 客户画像和旧事件不是当前对话事实，不能成为强制发送依据，也不能覆盖近期聊天中的城市、问题、顾虑、拒绝或已经完成的行动。
 - 固定首次加微流程中，只有“最新真实客户消息还没被普通 AI/销售回复”会在代码层阻断。客户之前回复过、但最近是小贝/销售发完后客户沉默，属于主动触达场景，必须尽量发 SOP 或轻触，不得因为“客户曾回复过/之前追问过”而空拒。
+- 当 `conversation_activity.latest_customer_pending_ai_reply=true` 时，这是客户最新问题等待普通 AI/销售回答的硬边界，必须 `send_sop=false`；不能改选 `next_step` 绕过，也不能用润色把 SOP 当成答复。
 - 小贝/销售刚刚回复完客户的几分钟保护窗口会在代码层阻断，防止 SOP 紧贴上一条回复刷屏。进入本节点通常表示已经过了最近活跃保护窗口，或不存在刚回复完的活跃聊天。
 - 先做拒发审查，通过后才考虑“默认按 SOP 全流程发送”；不能用流程目标覆盖客户当前明确立场。
 - 拒发审查按以下顺序：销冠正在连续承接且会被打断；客户当前立场与候选包的核心行动相反；候选包与当前真实诉求冲突；同阶段的目标、核心事实和行动已被完整覆盖；同包或同类已经完成。
@@ -65,9 +71,14 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 客户未回复、只有 staff 消息、前序 SOP 已正常发送、同一活动主题或仅发过普通图片，都不构成拒发。
 
 - `first_add_flow` 按破冰/介绍 -> 需求与门店 -> 效果案例 -> 活动报价 -> 登记与预约金的阶段推进；`delay_minutes` 只表示这次可以检查到哪个候选范围，不等于必须发送该时间点最高阶段的包。
+- `candidate_sops.candidate_group` 可能是 `due` 或 `next_step`：`due` 是当前已到期/逾期的未完成包；`next_step` 是最近的下一阶段未完成包，只是给你在 due 包重复、冲突或已经被最近聊天覆盖时继续 SOP 节奏的备选，不是强制跳阶段。
+- `stage_tag/customer_state` 是阶段前置语义，不只是描述文字。`payment_followup/deposit_push/quoted_no_deposit/deposit_unpaid_*` 这类后续包，必须由最近对话、completed_sop_pack_ids/categories 或客户状态证明活动报价/预约金已经真实触达；不能仅因它和报价包同一时刻到期就越过未完成的 `price_quote`。
+- 如果 `price_quote` 仍未完成且近期只完成效果/门店铺垫，应优先选择活动报价包。它的 `payment_collection_gate=missing_matching_current_order` 只表示删除收款卡并同步调整 text，不是跳过报价、改选未付款跟进包的理由。
 - 选择包时按“最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标”判断。客户正在聊且最新客户消息等待普通 AI/销售回复时，不发 SOP；客户沉默时，优先推进下一个合理 SOP 价值点。
 - 某个步骤已经被问过或轻触过一次，例如已经问过城市/区域、斑点情况、姓名电话或预约金，客户继续沉默时，不要无限重复追问同一个问题；应往后推进到下一个未完成且不会制造事实错误的 SOP 包，并用第一条 text 自然承接“这个信息后面您方便再补，我先给您看/说下一步”。
 - 只有这个必要信息从未触达过，或当前候选只有该步骤，才继续轻触该问题；已经触达过但客户沉默，不得因为“任务未解决”而空拒。
+- 当 due 候选和最近聊天严重重合，或客户已被轻触过同一问题但仍沉默时，不要直接 `send_sop=false`；应继续评估 `next_step` 候选，选择一个不编造事实、不涉及风险和支付冲突、能让客户继续开口的下一阶段包。
+- 只有在 due 与 next_step 都不适合发送时，才拒发；拒发理由必须说明是客户最新消息待回复、明确冲突、健康/投诉/支付异常、事实错误风险，还是所有候选都严重重复。
 - 客户刚提出一个问题并不当然拒发。只有销售正在实时处理该问题，或本包会明显答非所问、硬打断时才拒发。
 - 不把活动图、门店图、品牌图当成效果案例；不把“同一活动”误判为严重重合。
 - 平台自动加好友开场不是有效客户咨询；没有后续客户消息时，仍按未回复的 SOP 跟进判断。
@@ -87,6 +98,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 刚破冰后还没有问过城市/区域，5分钟问地址包候选可用：发送问地址包，轻触客户补城市/区域。
 - 已经问过城市/区域或定位，客户仍沉默，后续事件候选里有效果铺垫包：不要再次卡在门店步骤，也不要空拒；发送效果铺垫包，并可在第一条 text 前半句承接“门店后面您发城市/定位我再匹配”，再发效果参考。
 - 已经发过效果铺垫，客户仍沉默，后续候选里有活动报价包：推进报价和活动价值，不要因为客户没有回复效果图而空拒。
+- 已经发过效果铺垫、活动报价尚未发送，而同一批候选同时出现活动报价包和“未付款效果跟进”：选择活动报价包；若缺匹配订单，删除其中 payment_collection 并把收款承诺改成自然的活动价值轻触达，不能先发“未付款跟进”。
 - 已经报价，客户仍沉默，后续候选里有预约金价值或收款包：可推进预约金价值；如果客户明确拒付、已付、投诉/付款异常/身体不适，则不发该包。
 
 # Text Adjustment Policy
@@ -187,7 +199,17 @@ class SopExecutionService:
         try:
             if is_platform_auto_opening_message(request.content):
                 identity = _chat_identity(request, request_context)
-                customer_memory = self._load_chat_customer_memory(identity["customer_id"])
+                if not _string(identity.get("wechat")):
+                    result.update(
+                        {
+                            "mode": "missing_sales_account_scope",
+                            "send_sop": False,
+                            "need_ai_reply": False,
+                            "reason": "wechat_required_for_sop_scope",
+                        }
+                    )
+                    return _finish(result, started)
+                customer_memory = self._load_chat_customer_memory(identity)
                 order_gate = self._load_chat_order_gate(
                     request=request,
                     request_context=request_context,
@@ -213,6 +235,16 @@ class SopExecutionService:
                 return _finish(result, started)
 
             identity = _chat_identity(request, request_context)
+            if not _string(identity.get("wechat")):
+                result.update(
+                    {
+                        "mode": "missing_sales_account_scope",
+                        "send_sop": False,
+                        "need_ai_reply": True,
+                        "reason": "wechat_required_for_sop_scope",
+                    }
+                )
+                return _finish(result, started)
             enabled_packs = _enabled_chat_packs(self.sop_reply_pack_service.load())
             if not enabled_packs:
                 result.update({"mode": "complete", "reason": "no_enabled_sop_packs"})
@@ -222,6 +254,8 @@ class SopExecutionService:
                 self.repository.list_sent_sop_pack_ids_for_customer(
                     customer_id=identity["customer_id"],
                     external_userid=identity["external_userid"],
+                    corp_id=identity.get("corp_id", ""),
+                    wechat=identity.get("wechat", ""),
                 )
             )
             completed_categories = set(_sent_categories(self.repository, identity))
@@ -243,7 +277,7 @@ class SopExecutionService:
                 result.update({"mode": "complete", "reason": "all_sop_packs_completed"})
                 return _finish(result, started)
 
-            customer_memory = self._load_chat_customer_memory(identity["customer_id"])
+            customer_memory = self._load_chat_customer_memory(identity)
             order_gate = self._load_chat_order_gate(
                 request=request,
                 request_context=request_context,
@@ -367,12 +401,15 @@ class SopExecutionService:
             )
             return _finish(result, started)
 
-    def _load_chat_customer_memory(self, customer_id: str) -> dict[str, Any]:
+    def _load_chat_customer_memory(self, identity: dict[str, str]) -> dict[str, Any]:
         """Load existing memory for fresh order selection without mutating it."""
         if not self.memory_store:
             return {}
+        scope = customer_scope_from_identity(identity)
+        if not scope.persistence_allowed:
+            return {}
         try:
-            memory = self.memory_store.load(customer_id)
+            memory = self.memory_store.load(scope.sales_contact_key)
         except Exception:
             return {}
         return memory if isinstance(memory, dict) else {}
@@ -648,6 +685,8 @@ class SopExecutionService:
             completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
                 customer_id=identity.get("customer_id", ""),
                 external_userid=identity.get("external_userid", ""),
+                corp_id=identity.get("corp_id", ""),
+                wechat=identity.get("wechat", ""),
                 sent_before=sent_before,
             )
             completed_categories = _sent_categories(self.repository, identity, sent_before=sent_before)
@@ -870,12 +909,17 @@ def first_add_candidate_packs(
             continue
         if _is_final_close_pack(pack) and not _final_close_context_matches(pack, delay_minutes, match_context):
             continue
-        candidates.append(pack)
-    if candidates:
-        return sorted(candidates, key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")))
+        candidates.append(
+            _annotated_first_add_candidate(
+                pack,
+                group="due",
+                reason_hint="currently_due_or_overdue",
+            )
+        )
+    candidates = sorted(candidates, key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")))
 
     if delay_minutes <= 0:
-        return []
+        return candidates
     future_candidates: list[dict[str, Any]] = []
     for pack in packs:
         if not isinstance(pack, dict) or not bool(pack.get("enabled")) or not _pack_messages(pack):
@@ -895,14 +939,32 @@ def first_add_candidate_packs(
             continue
         if _is_final_close_pack(pack) and not _final_close_context_matches(pack, delay_minutes, match_context):
             continue
-        future_candidates.append(pack)
+        future_candidates.append(
+            _annotated_first_add_candidate(
+                pack,
+                group="next_step",
+                reason_hint="fallback_next_unfinished_step_when_due_candidates_repeat_or_conflict",
+            )
+        )
     if not future_candidates:
-        return []
+        return candidates
     next_delay = min(_int(pack.get("delay_minutes"), 0) for pack in future_candidates)
-    return sorted(
+    next_step_candidates = sorted(
         [pack for pack in future_candidates if _int(pack.get("delay_minutes"), 0) == next_delay],
         key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")),
-    )
+    )[:FIRST_ADD_NEXT_STEP_MAX_CANDIDATES]
+    if not candidates:
+        return next_step_candidates
+    if next_delay - delay_minutes <= FIRST_ADD_NEXT_STEP_LOOKAHEAD_MINUTES:
+        return candidates + next_step_candidates
+    return candidates
+
+
+def _annotated_first_add_candidate(pack: dict[str, Any], *, group: str, reason_hint: str) -> dict[str, Any]:
+    candidate = dict(pack)
+    candidate["_candidate_group"] = group
+    candidate["_selection_reason_hint"] = reason_hint
+    return candidate
 
 
 def _is_final_close_pack(pack: dict[str, Any]) -> bool:
@@ -1020,6 +1082,8 @@ def _sop_summary(
         "name": str(pack.get("name") or ""),
         "purpose": str(pack.get("purpose") or "")[:240],
         "order": int(pack.get("order") or 0),
+        "candidate_group": _string(pack.get("_candidate_group")) or "due",
+        "selection_reason_hint": _string(pack.get("_selection_reason_hint")),
         "tags": [str(item) for item in pack.get("triggers") or [] if str(item or "").strip()],
         "event_type": str(pack.get("event_type") or ""),
         "delay_minutes": int(pack.get("delay_minutes") or 0),
@@ -1075,11 +1139,21 @@ def _event_selector_input(
     completed_sop_categories: list[str],
 ) -> dict[str, Any]:
     memory_context = _customer_memory_context(customer_memory)
+    due_count = sum(1 for pack in candidate_packs if _string(pack.get("_candidate_group")) != "next_step")
+    next_step_count = sum(1 for pack in candidate_packs if _string(pack.get("_candidate_group")) == "next_step")
     return {
         "mode": "platform_actions" if event_type == "sop_platform_task" else "first_add_flow",
         "event": _event_summary(payload, customer),
         "recent_conversation": _conversation_context(conversation_messages),
         "conversation_activity": conversation_activity,
+        "candidate_policy": {
+            "due_candidates": due_count,
+            "next_step_candidates": next_step_count,
+            "selection_rule": (
+                "优先评估 due 候选；如果 due 候选与最近聊天重复、冲突或已被覆盖，"
+                "再评估 next_step 候选。next_step 只用于继续同一新客 SOP 节奏，不能编造事实或绕过风险边界。"
+            ),
+        },
         **memory_context,
         "candidate_sops": [
             _sop_summary(pack, customer_memory=customer_memory, customer_context=customer_context)
@@ -1361,11 +1435,12 @@ def _send_once_key(identity: dict[str, str], sop_pack_id: str) -> str:
     external_userid = _string(identity.get("external_userid")).lower()
     customer_id = _string(identity.get("customer_id")).lower()
     customer_key = external_userid or customer_id
-    if not pack_id or not customer_key:
+    wechat = _string(identity.get("wechat")).lower()
+    if not pack_id or not customer_key or not wechat:
         return ""
     corp_id = _string(identity.get("corp_id")).lower()
     customer_kind = "external" if external_userid else "customer"
-    return f"sop_pack:{pack_id}|corp:{corp_id}|{customer_kind}:{customer_key}"
+    return f"sop_pack:{pack_id}|corp:{corp_id}|wechat:{wechat}|{customer_kind}:{customer_key}"
 
 
 def _sent_categories(repository: Any, identity: dict[str, str], *, sent_before: str = "") -> list[str]:
@@ -1376,6 +1451,8 @@ def _sent_categories(repository: Any, identity: dict[str, str], *, sent_before: 
         func(
             customer_id=identity.get("customer_id", ""),
             external_userid=identity.get("external_userid", ""),
+            corp_id=identity.get("corp_id", ""),
+            wechat=identity.get("wechat", ""),
             sent_before=sent_before,
         )
         or []

@@ -221,7 +221,7 @@
           "store_address",
           "activity_price"
         ],
-        "stage_goal": "门店已铺垫后，不重复制造门店顾虑，转向保留名额"
+        "stage_goal": "先解决客户当前距离选择，再继续保留名额；已有门店名不等于已有距离排序"
       },
       "turn_evidence": {
         "store_evidence": {
@@ -265,7 +265,7 @@
       ]
     },
     "expected_decision": {
-      "decision": "direct_reply",
+      "decision": "need_tools",
       "payment_action": "none",
       "allowed_payment_actions": [
         "none",
@@ -275,14 +275,18 @@
       "expected_message_types": [
         "text"
       ],
-      "must_not_call_tools": [
-        "distance_calculate"
+      "required_tools": [
+        {
+          "name": "customer_store_lookup"
+        },
+        {
+          "name": "distance_calculate"
+        }
       ],
       "must_not_ask_slots": [
-        "重新问客户哪个门店",
         "重新问城市"
       ],
-      "notes": "门店已聊过，客户只是距离顾虑，应安抚并推进保留名额；不要输出公里/分钟。"
+      "notes": "客户明确表达两家都远，应基于集美位置重新查询同城候选并做内部距离排序；最终只推荐相对方便门店，不输出公里、分钟或车程。"
     }
   },
   {

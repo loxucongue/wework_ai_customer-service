@@ -10,6 +10,7 @@ from fastapi import BackgroundTasks
 
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.customer_payment_state import is_paid_deposit_state, payment_collection_order_fact, resolved_payment_fact
+from app.services.customer_scope import customer_scope_from_identity
 from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs, is_platform_auto_opening_message
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import ALLOWED_MESSAGE_TYPES, SopReplyPackService
@@ -247,7 +248,7 @@ class SopEventService:
                 send_payload={"identity": identity, "conversation_fetch": _conversation_fetch_summary(conversation_fetch)},
             )
 
-        customer_memory = self._load_customer_memory(identity["customer_id"])
+        customer_memory = self._load_customer_memory(identity)
         order_gate = self._load_sop_order_gate(identity, customer_memory)
         if order_gate["status"] == "failed":
             return self._create_task_record(
@@ -312,12 +313,15 @@ class SopEventService:
             )
         raise RuntimeError("unreachable_sop_event_type")
 
-    def _load_customer_memory(self, customer_id: str) -> dict[str, Any]:
+    def _load_customer_memory(self, identity: dict[str, str]) -> dict[str, Any]:
         """Load existing customer memory for model context without mutating it."""
         if not self.memory_store:
             return {}
+        scope = customer_scope_from_identity(identity)
+        if not scope.persistence_allowed:
+            return {}
         try:
-            memory = self.memory_store.load(customer_id)
+            memory = self.memory_store.load(scope.sales_contact_key)
         except Exception:
             return {}
         return memory if isinstance(memory, dict) else {}
@@ -386,7 +390,9 @@ class SopEventService:
         merged = dict(identity)
         found: dict[str, Any] = {}
         lookup_error = ""
-        missing = [key for key in ("corp_id", "user_id", "wechat") if not _string(identity.get(key))]
+        # WeChat is the sales-account boundary and must come from the event itself.
+        # Looking it up by customer would risk attaching this event to another account.
+        missing = [key for key in ("corp_id", "user_id") if not _string(identity.get(key))]
         if missing and callable(lookup):
             try:
                 raw_found = lookup(
@@ -397,13 +403,13 @@ class SopEventService:
                 found = raw_found if isinstance(raw_found, dict) else {}
             except Exception as exc:
                 lookup_error = f"{type(exc).__name__}: {exc}"
-        for key in ("corp_id", "user_id", "wechat", "external_userid", "customer_id"):
+        for key in ("corp_id", "user_id", "external_userid", "customer_id"):
             if not _string(merged.get(key)) and _string(found.get(key)):
                 merged[key] = _string(found.get(key))
         if _string(found.get("identity_source")):
             merged["identity_source"] = _string(found.get("identity_source"))
         filled_from_default: list[str] = []
-        for key in ("corp_id", "user_id", "wechat"):
+        for key in ("corp_id", "user_id"):
             if not _string(merged.get(key)) and _string(self.default_identity.get(key)):
                 merged[key] = _string(self.default_identity.get(key))
                 filled_from_default.append(key)
@@ -433,6 +439,8 @@ class SopEventService:
         completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
             customer_id=identity["customer_id"],
             external_userid=identity["external_userid"],
+            corp_id=identity.get("corp_id", ""),
+            wechat=identity.get("wechat", ""),
             sent_before=sent_before,
         )
         completed_categories = _sent_categories(self.repository, identity, sent_before=sent_before)
@@ -839,19 +847,22 @@ class SopEventService:
     def _record_successful_send(self, task: dict[str, Any], *, sent_at: str) -> None:
         """Persist activity timestamps and minimal SOP history after a confirmed send."""
         customer_id = _string(task.get("customer_id"))
+        scope = customer_scope_from_identity(task)
         touch_message_time = getattr(self.repository, "touch_customer_message_time", None)
-        if customer_id and callable(touch_message_time):
+        if scope.persistence_allowed and callable(touch_message_time):
             try:
-                touch_message_time(customer_id, field="last_outreach_at", value=sent_at)
+                touch_message_time(scope.sales_contact_key, field="last_outreach_at", value=sent_at)
             except Exception:
                 pass
         if not customer_id or not self.memory_store:
+            return
+        if not scope.persistence_allowed:
             return
         messages = task.get("reply_messages") if isinstance(task.get("reply_messages"), list) else []
         message_types = [_string(item.get("type")) for item in messages if isinstance(item, dict) and _string(item.get("type"))]
         try:
             self.memory_store.record_sop_pack_sent(
-                customer_id,
+                scope.sales_contact_key,
                 sop_pack_id=_string(task.get("sop_pack_id")),
                 sop_category=_string(task.get("sop_category")),
                 source_event_id=_string(task.get("event_id")),
@@ -957,11 +968,12 @@ def _send_once_key(identity: dict[str, str], sop_pack_id: str) -> str:
     external_userid = _string(identity.get("external_userid")).lower()
     customer_id = _string(identity.get("customer_id")).lower()
     customer_key = external_userid or customer_id
-    if not pack_id or not customer_key:
+    wechat = _string(identity.get("wechat")).lower()
+    if not pack_id or not customer_key or not wechat:
         return ""
     corp_id = _string(identity.get("corp_id")).lower()
     customer_kind = "external" if external_userid else "customer"
-    return f"sop_pack:{pack_id}|corp:{corp_id}|{customer_kind}:{customer_key}"
+    return f"sop_pack:{pack_id}|corp:{corp_id}|wechat:{wechat}|{customer_kind}:{customer_key}"
 
 
 def _sent_categories(repository: Any, identity: dict[str, str], *, sent_before: str = "") -> list[str]:
@@ -972,6 +984,8 @@ def _sent_categories(repository: Any, identity: dict[str, str], *, sent_before: 
         func(
             customer_id=identity.get("customer_id", ""),
             external_userid=identity.get("external_userid", ""),
+            corp_id=identity.get("corp_id", ""),
+            wechat=identity.get("wechat", ""),
             sent_before=sent_before,
         )
         or []
@@ -1380,16 +1394,17 @@ def _idempotency_key(payload: dict[str, Any], customer: dict[str, Any], *, sop_p
     event_type = _string(payload.get("event_type"))
     identity = _customer_identity(payload, customer)
     customer_key = identity["external_userid"] or identity["customer_id"] or f"customer_{index}"
+    account_key = identity.get("wechat") or "missing_wechat"
     customer_sop = customer.get("sop") if isinstance(customer.get("sop"), dict) else {}
     root_sop = payload.get("sop") if isinstance(payload.get("sop"), dict) else {}
     if event_type == "sop_friend_added_schedule_batch":
         first_added = customer.get("first_added_event") if isinstance(customer.get("first_added_event"), dict) else {}
         trace_id = _string(first_added.get("trace_id")) or event_id
         delay = _int(customer_sop.get("delay_minutes"), _int(root_sop.get("delay_minutes"), 0))
-        return "|".join([event_type, trace_id, str(delay), customer_key, sop_pack_id])
+        return "|".join([event_type, trace_id, str(delay), account_key, customer_key, sop_pack_id])
     platform_task_id = _string(customer_sop.get("platform_task_id")) or _string(root_sop.get("platform_task_id")) or event_id
     actions_hash = _stable_hash(_customer_actions(payload, customer))[:16]
-    return "|".join([event_type or "sop_event", platform_task_id, customer_key, sop_pack_id, actions_hash])
+    return "|".join([event_type or "sop_event", platform_task_id, account_key, customer_key, sop_pack_id, actions_hash])
 
 
 def _stable_hash(value: Any) -> str:

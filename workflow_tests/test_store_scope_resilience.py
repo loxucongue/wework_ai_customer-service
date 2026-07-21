@@ -56,6 +56,34 @@ class _FakeGeocodeCoze:
         return {"code": 0, "data": [self.geocodes.get(address, {})]}
 
 
+class _AmbiguousGeocodeCoze:
+    class settings:
+        geocode_workflow_id = "geo-workflow"
+
+    async def run_workflow(self, workflow_id: str, parameters: dict[str, object]) -> dict[str, object]:
+        assert workflow_id == "geo-workflow"
+        assert parameters.get("address") == "人民广场"
+        return {
+            "code": 0,
+            "data": [
+                {
+                    "province": "上海市",
+                    "city": "上海市",
+                    "district": "黄浦区",
+                    "formatted_address": "上海市黄浦区人民广场",
+                    "location": "121.475,31.232",
+                },
+                {
+                    "province": "辽宁省",
+                    "city": "大连市",
+                    "district": "中山区",
+                    "formatted_address": "辽宁省大连市中山区人民广场",
+                    "location": "121.614,38.914",
+                },
+            ],
+        }
+
+
 class _Snapshot:
     def stores_for_scope(self, rows: list[dict[str, object]], **_: object) -> dict[str, object]:
         stores = [
@@ -324,6 +352,79 @@ def test_store_lookup_geocodes_structured_poi_message_before_matching_scope() ->
     assert libo["geocode"]["city"] == "黔南布依族苗族自治州"
     assert libo["geocode"]["district"] == "荔波县"
     assert [item["store_id"] for item in libo["stores"]] == ["301"]
+
+
+def test_store_lookup_preserves_cross_city_ambiguity_for_plain_landmark() -> None:
+    state = {
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "101",
+                    "store_name": "上海黄浦店",
+                    "province": "上海市",
+                    "city": "上海市",
+                    "district": "黄浦区",
+                },
+                {
+                    "store_id": "201",
+                    "store_name": "大连中山店",
+                    "province": "辽宁省",
+                    "city": "大连市",
+                    "district": "中山区",
+                },
+            ]
+        }
+    }
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "人民广场", "purpose": "nearby_candidates"},
+            state,
+            _AmbiguousGeocodeCoze(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ambiguous_location"
+    assert output["source"] == "poi_to_geocode_ambiguous"
+    assert output["stores"] == []
+    assert output["missing"] == ["confirmed_city_or_district"]
+    assert output["geocode_candidate_count"] == 2
+    assert {item["city"] for item in output["geocode_candidate_regions"]} == {"上海市", "大连市"}
+
+
+def test_structured_poi_keeps_first_geocode_candidate_by_contract() -> None:
+    state = {
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "101",
+                    "store_name": "上海黄浦店",
+                    "province": "上海市",
+                    "city": "上海市",
+                    "district": "黄浦区",
+                },
+                {
+                    "store_id": "201",
+                    "store_name": "大连中山店",
+                    "province": "辽宁省",
+                    "city": "大连市",
+                    "district": "中山区",
+                },
+            ]
+        }
+    }
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "门店位置：人民广场", "purpose": "nearby_candidates"},
+            state,
+            _AmbiguousGeocodeCoze(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["query"] == "人民广场"
+    assert [item["store_id"] for item in output["stores"]] == ["101"]
 
 
 def test_store_tool_facts_keep_detail_fields_for_reply_model() -> None:

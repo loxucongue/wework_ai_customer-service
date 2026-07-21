@@ -575,6 +575,7 @@ def _audit_config(config: dict[str, Any]) -> dict[str, Any]:
                     issues.append(_audit_issue("warning", "payment_without_intro_text", pack_id, "payment_collection 前应有 text 说明锁名额、到店抵扣和可退规则。", order=index))
 
     _audit_first_add_candidates(packs, issues)
+    _audit_shared_activity_quote(packs, issues)
     errors = sum(1 for issue in issues if issue.get("severity") == "error")
     warnings = sum(1 for issue in issues if issue.get("severity") == "warning")
     return {
@@ -616,6 +617,42 @@ def _audit_first_add_candidates(packs: list[Any], issues: list[dict[str, Any]]) 
         issues.append(_audit_issue("error", "first_add_immediate_no_candidate", "", "sop_friend_added_immediate 没有可发送的首次加微候选包。"))
     if not scheduled:
         issues.append(_audit_issue("error", "first_add_schedule_no_candidate", "", "sop_friend_added_schedule_batch 1 分钟没有可发送的首次加微候选包。"))
+
+
+def _audit_shared_activity_quote(packs: list[Any], issues: list[dict[str, Any]]) -> None:
+    canonical = next(
+        (pack for pack in packs if isinstance(pack, dict) and str(pack.get("id") or "") == "s10_activity_intro"),
+        {},
+    )
+    legacy = next(
+        (
+            pack
+            for pack in packs
+            if isinstance(pack, dict) and str(pack.get("id") or "") == "event_s10_price_quote_60min"
+        ),
+        {},
+    )
+    if not bool(canonical.get("enabled")) and not bool(legacy.get("enabled")):
+        return
+    canonical_scopes = set(_normalize_scopes(canonical))
+    if not bool(canonical.get("enabled")) or not {"chat_gate", "event_first_add"}.issubset(canonical_scopes):
+        issues.append(
+            _audit_issue(
+                "error",
+                "shared_activity_quote_scope_missing",
+                "s10_activity_intro",
+                "活动报价必须由 s10_activity_intro 同时覆盖 chat_gate 和 event_first_add。",
+            )
+        )
+    if bool(legacy.get("enabled")):
+        issues.append(
+            _audit_issue(
+                "error",
+                "legacy_activity_quote_enabled",
+                "event_s10_price_quote_60min",
+                "活动报价已由 s10_activity_intro 共用，旧 60 分钟报价包必须停用，避免重复发送。",
+            )
+        )
 
 
 def _audit_issue(severity: str, code: str, pack_id: str, message: str, *, order: int | None = None) -> dict[str, Any]:
