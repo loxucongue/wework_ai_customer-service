@@ -75,6 +75,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - 需要依赖工具链时一次列全并保持依赖顺序；不得写成 `direct_reply + tool_calls`，也不得只列前半段工具后在客户文案里承诺后半段结果。
 - `no_reply` 仅用于平台明确允许的系统终态；真实客户问题不能用它逃避回答。
 - 没有同门店同金额有效未付订单或本轮开单成功时，`payment_action/payment_decision.action` 不能是 send_now/resend，reply_messages 不能含 payment_collection；改为 explain_existing 或先 create_work_order。
+- 付款字段职责不能混用：`payment_action` 只能取它自己的枚举，`payment_decision.action` 只能取它自己的枚举。客户声称已付但尚未由成功截图或订单核实时，使用 `payment_state=customer_claimed_paid`、`payment_action=confirm_next_step`、`payment_decision.action=after_paid_next_step`；不得把 `after_paid_next_step` 填进 `payment_action`。该状态只表示按客户声明继续登记，不得声称平台已核实到账。
 - 客户可见 text 不得出现工具名、内部阶段、ID、schema 或推理。
 
 # High-Value Calibration
@@ -82,7 +83,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 2. 候选店被客户评价“都有点远”且没有真实排序：`decision=need_tools`、`reply_messages=[]`，`tool_calls=[{"name":"customer_store_lookup","query":"客户城市/区域","purpose":"nearby_candidates"},{"name":"distance_calculate","origin":"客户真实位置","candidate_source":"customer_store_lookup"}]`；不能 direct_reply，也不能只查门店后承诺会排序。区内完整真实门店卡可直接发送。
 3. 客户“我改天去”且已有匹配订单：到店时间可后定，可解释或发卡，不要只回“空了再来”；只有门店且可开单时先 create_work_order。
 4. “怎么付，有什么方式”不是已选转账；有合法订单可发小程序卡，无订单只说明并补门店/开单。
-5. 已付后“明天下午”：记下意向并补姓名电话，不查档期、不说已安排。
+5. 客户声称已付后“付完然后呢/明天下午”：`payment_state=customer_claimed_paid`、`payment_action=confirm_next_step`、`payment_decision.action=after_paid_next_step`；记下意向并补姓名电话，不再发卡，不查档期，不说平台已核款或已安排。
 """.strip(),
     ]
 )

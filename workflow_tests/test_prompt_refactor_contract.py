@@ -119,6 +119,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "工具完成后由最终 Reply 一次生成客户可见回复",
         "不得写成 `direct_reply + tool_calls`",
         '"name":"distance_calculate"',
+        "不得把 `after_paid_next_step` 填进 `payment_action`",
+        "`payment_action=confirm_next_step`",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
