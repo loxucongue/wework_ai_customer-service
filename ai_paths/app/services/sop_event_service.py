@@ -250,7 +250,13 @@ class SopEventService:
 
         customer_memory = self._load_customer_memory(identity)
         order_gate = self._load_sop_order_gate(identity, customer_memory)
-        if order_gate["status"] == "failed":
+        customer_context = dict(order_gate.get("customer_context") or {})
+        customer_context["_sop_order_gate"] = {
+            **dict(order_gate.get("summary") or {}),
+            "status": _string(order_gate.get("status")) or "unknown",
+            "error": _string(order_gate.get("error")),
+        }
+        if event_type in FIRST_ADD_EVENT_TYPES and order_gate["status"] == "failed":
             return self._create_task_record(
                 payload,
                 customer,
@@ -268,7 +274,7 @@ class SopEventService:
                     "order_gate": order_gate.get("summary", {}),
                 },
             )
-        if order_gate["status"] == "paid":
+        if event_type in FIRST_ADD_EVENT_TYPES and order_gate["status"] == "paid":
             return self._create_task_record(
                 payload,
                 customer,
@@ -297,7 +303,7 @@ class SopEventService:
                 conversation_filter=conversation_filter,
                 conversation_activity=conversation_activity,
                 customer_memory=customer_memory,
-                customer_context=order_gate.get("customer_context", {}),
+                customer_context=customer_context,
             )
         if event_type == "sop_platform_task":
             return await self._create_platform_task(
@@ -309,7 +315,7 @@ class SopEventService:
                 conversation_messages=conversation_messages,
                 conversation_activity=conversation_activity,
                 customer_memory=customer_memory,
-                customer_context=order_gate.get("customer_context", {}),
+                customer_context=customer_context,
             )
         raise RuntimeError("unreachable_sop_event_type")
 
@@ -499,7 +505,7 @@ class SopEventService:
                 sop_pack_id=str(decision.get("sop_pack_id") or "first_add_model_rejected"),
                 sop_pack_name=str(decision.get("sop_pack_name") or "first_add_model_rejected"),
                 reply_messages=[],
-                status="skipped_model_error" if is_model_error else "skipped_model_rejected",
+                status="failed_model_error" if is_model_error else "skipped_model_rejected",
                 error=str(decision.get("error") or "") if is_model_error else "",
                 send_payload={
                     "identity": identity,
@@ -624,6 +630,51 @@ class SopEventService:
                 },
             )
 
+        ai_auto_reply = _conversation_ai_auto_reply(customer)
+        if ai_auto_reply is False:
+            if not _sop_payment_collection_supported(messages, customer_memory, customer_context):
+                return self._create_task_record(
+                    payload,
+                    customer,
+                    index=index,
+                    identity=identity,
+                    sop_pack_id="platform_actions",
+                    sop_pack_name="platform_actions",
+                    sop_category="platform_actions",
+                    reply_messages=messages,
+                    status="skipped_unsafe_payment_collection",
+                    error="ai_auto_reply_disabled_but_payment_collection_not_safe",
+                    send_payload={
+                        "identity": identity,
+                        "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                        "conversation_activity": conversation_activity,
+                        "message_sanitize": sanitize_summary,
+                        "ai_auto_reply": False,
+                        "routing_mode": "direct_platform_actions",
+                    },
+                )
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="platform_actions",
+                sop_pack_name="platform_actions",
+                sop_category="platform_actions",
+                reply_messages=messages,
+                status="pending",
+                error="",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
+                    "message_sanitize": sanitize_summary,
+                    "ai_auto_reply": False,
+                    "routing_mode": "direct_platform_actions",
+                },
+                send_response={"event_decision": {"mode": "direct_platform_actions", "model_called": False}},
+            )
+
         decision = await self._event_decision(
             payload=payload,
             customer=customer,
@@ -647,7 +698,7 @@ class SopEventService:
                 sop_pack_name="platform_actions",
                 sop_category="platform_actions",
                 reply_messages=messages,
-                status="skipped_model_error" if is_model_error else "skipped_model_rejected",
+                status="failed_model_error" if is_model_error else "skipped_model_rejected",
                 error=str(decision.get("error") or "") if is_model_error else "",
                 send_payload={
                     "identity": identity,
@@ -997,9 +1048,17 @@ def _customer_actions(payload: dict[str, Any], customer: dict[str, Any]) -> list
     customer_actions = customer_sop.get("actions")
     if isinstance(customer_actions, list) and customer_actions:
         return customer_actions
+    customer_task = customer_sop.get("platform_task") if isinstance(customer_sop.get("platform_task"), dict) else {}
+    customer_message_content = customer_task.get("message_content")
+    if isinstance(customer_message_content, list) and customer_message_content:
+        return customer_message_content
     root_sop = payload.get("sop") if isinstance(payload.get("sop"), dict) else {}
     root_actions = root_sop.get("actions")
-    return root_actions if isinstance(root_actions, list) else []
+    if isinstance(root_actions, list) and root_actions:
+        return root_actions
+    root_task = root_sop.get("platform_task") if isinstance(root_sop.get("platform_task"), dict) else {}
+    root_message_content = root_task.get("message_content")
+    return root_message_content if isinstance(root_message_content, list) else []
 
 
 def _actions_to_reply_messages(actions: list[Any]) -> list[dict[str, Any]]:
@@ -1011,7 +1070,10 @@ def _actions_to_reply_messages(actions: list[Any]) -> list[dict[str, Any]]:
             message_type = "text"
         if message_type == "human_handoff":
             message_type = "human_handoff_notice"
-        content = _message_content(message_type, action.get("content"))
+        raw_content = action.get("content")
+        if raw_content in (None, ""):
+            raw_content = action.get("message_content")
+        content = _message_content(message_type, raw_content)
         if not _content_has_value(content):
             continue
         messages.append({"type": message_type, "order": index, "content": content})
@@ -1019,6 +1081,7 @@ def _actions_to_reply_messages(actions: list[Any]) -> list[dict[str, Any]]:
 
 
 def _message_content(message_type: str, value: Any) -> dict[str, Any]:
+    value = _decode_embedded_json_string(value)
     content = value if isinstance(value, dict) else {}
     if message_type == "text":
         return {"text": _string(content.get("text")) or _string(value)}
@@ -1033,6 +1096,34 @@ def _message_content(message_type: str, value: Any) -> dict[str, Any]:
     return {}
 
 
+def _decode_embedded_json_string(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if len(text) < 2 or text[0] != '"' or text[-1] != '"':
+        return value
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return value
+    return decoded if isinstance(decoded, str) else value
+
+
+def _conversation_ai_auto_reply(customer: dict[str, Any]) -> bool | None:
+    conversation = customer.get("conversation") if isinstance(customer.get("conversation"), dict) else {}
+    value = conversation.get("ai_auto_reply")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    normalized = _string(value).lower()
+    if normalized in {"false", "0", "off", "disabled"}:
+        return False
+    if normalized in {"true", "1", "on", "enabled"}:
+        return True
+    return None
+
+
 def _task_has_processing_error(task: dict[str, Any]) -> bool:
     status = _string(task.get("status"))
     if status.startswith("failed"):
@@ -1040,7 +1131,6 @@ def _task_has_processing_error(task: dict[str, Any]) -> bool:
     return status in {
         "skipped_missing_identity",
         "skipped_unsupported_event_type",
-        "skipped_model_error",
     }
 
 

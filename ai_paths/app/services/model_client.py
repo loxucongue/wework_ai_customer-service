@@ -68,6 +68,7 @@ class ModelClient:
         *,
         tier: ModelTier = "balanced",
         temperature: float = 0.1,
+        deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         if not self.available:
             raise RuntimeError("No model API key configured")
@@ -97,7 +98,9 @@ class ModelClient:
                 build_payload=build_payload,
                 consume=consume,
                 failure_label="All JSON model candidates failed",
-            )
+                deadline_monotonic=deadline_monotonic,
+            ),
+            deadline_monotonic=deadline_monotonic,
         )
 
     async def vision_json(
@@ -144,13 +147,20 @@ class ModelClient:
             )
         )
 
-    async def _run_with_transient_retries(self, invoke: Callable[[], Awaitable[T]]) -> T:
+    async def _run_with_transient_retries(
+        self,
+        invoke: Callable[[], Awaitable[T]],
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> T:
         """Retry provider and format failures without changing business decisions."""
         attempts = max(1, int(self.settings.model_request_retry_attempts or 1))
         retry_delay = max(0.0, float(self.settings.model_request_retry_delay_seconds or 0.0))
         retry_errors: list[str] = []
 
         for attempt in range(1, attempts + 1):
+            if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+                raise TimeoutError("model request deadline exhausted")
             try:
                 result = await invoke()
             except Exception as exc:
@@ -163,10 +173,18 @@ class ModelClient:
                     }
                 )
                 self.last_usage = usage
-                if attempt >= attempts or not self._is_retryable_request_error(exc):
+                if (
+                    attempt >= attempts
+                    or not self._is_retryable_request_error(exc)
+                    or (deadline_monotonic is not None and time.monotonic() >= deadline_monotonic)
+                ):
                     raise
                 if retry_delay:
-                    await asyncio.sleep(retry_delay)
+                    delay = retry_delay
+                    if deadline_monotonic is not None:
+                        delay = min(delay, max(0.0, deadline_monotonic - time.monotonic()))
+                    if delay:
+                        await asyncio.sleep(delay)
                 continue
 
             usage = self.last_usage if isinstance(self.last_usage, dict) else {}
@@ -189,6 +207,7 @@ class ModelClient:
         build_payload: Callable[[str], dict[str, Any]],
         consume: Callable[[dict[str, Any]], Awaitable[T]],
         failure_label: str,
+        deadline_monotonic: float | None = None,
     ) -> T:
         if not models:
             raise RuntimeError(f"{failure_label}: no model candidates")
@@ -198,9 +217,12 @@ class ModelClient:
         next_index = 0
         max_parallel = max(1, min(2, int(self.settings.model_hedge_max_parallel or 1)))
         hedge_delay = self._hedge_delay_for_tier(tier)
-        total_timeout = self._total_timeout_for_tier(tier)
+        configured_total_timeout = self._total_timeout_for_tier(tier)
         started_at = time.perf_counter()
-        deadline = started_at + total_timeout
+        deadline = started_at + configured_total_timeout
+        if deadline_monotonic is not None:
+            deadline = min(deadline, deadline_monotonic)
+        total_timeout = max(0.0, deadline - started_at)
         candidate_models = list(models)
         started_models: list[str] = []
         hedge_started = False
@@ -213,6 +235,8 @@ class ModelClient:
                     "started_models": list(started_models),
                     "hedge_started": bool(hedge_started),
                     "total_timeout_seconds": total_timeout,
+                    "configured_total_timeout_seconds": configured_total_timeout,
+                    "deadline_limited": deadline_monotonic is not None and total_timeout < configured_total_timeout,
                     "overall_duration_ms": int((time.perf_counter() - started_at) * 1000),
                 }
             )
@@ -238,6 +262,8 @@ class ModelClient:
                 "pending_models": pending_models,
                 "hedge_started": bool(hedge_started),
                 "total_timeout_seconds": total_timeout,
+                "configured_total_timeout_seconds": configured_total_timeout,
+                "deadline_limited": deadline_monotonic is not None and total_timeout < configured_total_timeout,
                 "error": error,
             }
 

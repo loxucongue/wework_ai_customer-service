@@ -52,6 +52,10 @@ sop_execution_service = SopExecutionService(
     model_client=model_client,
     memory_store=memory_store,
     customer_context_service=customer_context_service,
+    event_model_retry_attempts=settings.sop_event_model_retry_attempts,
+    event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
+    event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
+    event_model_max_concurrency=settings.sop_event_model_max_concurrency,
 )
 sop_event_service = SopEventService(
     repository=repository,

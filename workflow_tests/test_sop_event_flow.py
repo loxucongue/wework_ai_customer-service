@@ -1057,6 +1057,112 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls[0]["candidate_packs"], [])
         self.assertEqual(selector.calls[0]["actions_reply_messages"][0]["content"]["text"], "平台建议文案")
 
+    async def test_platform_task_bypasses_model_when_ai_auto_reply_is_disabled(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        selector = _Selector({"send_sop": False, "reason": "must not run"})
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_platform_direct",
+            event_type="sop_platform_task",
+            sop={
+                "platform_task_id": "task_direct",
+                "platform_task": {"message_content": [{"type": "text", "content": "直接转发文案"}]},
+            },
+            customers=[{"conversation": {"ai_auto_reply": False}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_platform_direct")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(repo.tasks[0]["reply_messages"][0]["content"]["text"], "直接转发文案")
+        self.assertEqual(repo.tasks[0]["send_payload"]["routing_mode"], "direct_platform_actions")
+        self.assertEqual(repo.tasks[0]["send_response"]["event_decision"]["model_called"], False)
+        self.assertEqual(selector.calls, [])
+
+    async def test_paid_platform_task_still_sends_non_payment_arrival_followup(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        selector = _Selector({"send_sop": True, "reason": "已付后的到店提醒仍适用"})
+        context_service = _CustomerContextService(
+            {
+                "source": "platform_agent",
+                "orders": [
+                    {
+                        "id": "order-paid",
+                        "status": "waiting_schedule",
+                        "store_id": "386",
+                        "prepay_required": 10,
+                        "prepay_paid": 10,
+                        "is_current_order": True,
+                    }
+                ],
+            }
+        )
+        service = _service(repo=repo, client=client, selector=selector, customer_context_service=context_service)
+        payload = _base_payload(
+            event_id="evt_platform_paid_arrival",
+            event_type="sop_platform_task",
+            sop={"platform_task_id": "task_arrival", "actions": [{"type": "text", "content": "今天到店我给您安排接待。"}]},
+            customers=[{"conversation": {"ai_auto_reply": True}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_platform_paid_arrival")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(len(selector.calls), 1)
+        self.assertEqual(
+            selector.calls[0]["customer_context"]["_sop_order_gate"]["deposit_state"],
+            "paid_by_order",
+        )
+        self.assertEqual(len(client.send_calls), 1)
+
+    async def test_platform_action_decodes_json_quoted_message_content(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        service = _service(repo=repo, client=client, selector=_Selector({"send_sop": True, "reason": "send"}))
+        payload = _base_payload(
+            event_id="evt_platform_quoted",
+            event_type="sop_platform_task",
+            sop={"actions": [{"type": "text", "message_content": '"催到店话术\\n请回复时间"'}]},
+            customers=[{"conversation": {"ai_auto_reply": True}}],
+        )
+
+        repo.create_sop_event(payload)
+        await service.process_event("evt_platform_quoted")
+
+        self.assertEqual(repo.tasks[0]["reply_messages"][0]["content"]["text"], "催到店话术\n请回复时间")
+
+    async def test_platform_model_exhaustion_is_recorded_as_failure(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        selector = _Selector(
+            {
+                "send_sop": False,
+                "reason": "event_sop_model_retries_exhausted",
+                "error": "TimeoutError: total timeout 45.0s",
+                "model_attempts": [{"attempt": 1, "status": "failed"}],
+            }
+        )
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_platform_model_failed",
+            event_type="sop_platform_task",
+            sop={"actions": [{"type": "text", "content": "触达内容"}]},
+            customers=[{"conversation": {"ai_auto_reply": True}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_platform_model_failed")
+
+        self.assertEqual(result["status"], "processed_with_errors")
+        self.assertEqual(repo.tasks[0]["status"], "failed_model_error")
+        self.assertEqual(client.send_calls, [])
+
     async def test_first_added_event_does_not_use_chat_gate_pack(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[])
@@ -1445,6 +1551,87 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"candidate_group":"due"', user_prompt)
         self.assertIn('"payment_collection_gate"', user_prompt)
         self.assertIn('"status":"missing_matching_current_order"', user_prompt)
+
+    async def test_event_selector_prioritizes_platform_message_content_and_paid_followup_boundary(self) -> None:
+        model = _PromptCaptureModel({"send_sop": True, "reason": "arrival followup is compatible"})
+        service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_PackService(), model_client=model)
+
+        result = await service.evaluate_event_suggestion(
+            payload={
+                "event_type": "sop_platform_task",
+                "sop": {
+                    "platform_task": {
+                        "message_content": [
+                            {"type": "text", "content": "到店赠送护理一次，今天方便几点到店？"},
+                            {"type": "image", "content": "https://example.com/arrival.jpg"},
+                        ]
+                    }
+                },
+            },
+            customer={"conversation": {"ai_auto_reply": True}},
+            identity={"customer_id": "customer", "external_userid": "external"},
+            event_type="sop_platform_task",
+            conversation_messages=[],
+            customer_context={
+                "orders": [{"id": "paid", "prepay_required": 10, "prepay_paid": 10, "is_current_order": True}]
+            },
+            actions_reply_messages=[{"type": "text", "order": 1, "content": {"text": "到店赠送护理一次，今天方便几点到店？"}}],
+        )
+
+        self.assertTrue(result["send_sop"])
+        selector_input = result["selector_input"]
+        self.assertEqual(selector_input["current_platform_task"]["priority"], "current_outreach_objective_after_hard_facts")
+        self.assertIn("到店赠送护理一次", selector_input["current_platform_task"]["message_content"][0]["content"])
+        self.assertEqual(selector_input["current_payment_state"]["deposit_state"], "paid_by_order")
+        self.assertIn("必须优先分析它的阶段目的", str(model.messages[0]["content"]))
+        self.assertIn("已支付预约金只禁止再次发送预约金卡或催付", str(model.messages[0]["content"]))
+
+    async def test_event_model_timeout_retries_then_succeeds(self) -> None:
+        model = _SequenceModel([TimeoutError("total timeout 45.0s"), {"send_sop": True, "reason": "retry ok"}])
+        service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_PackService(),
+            model_client=model,
+            event_model_retry_attempts=3,
+            event_model_retry_delay_seconds=0,
+        )
+
+        result = await service.evaluate_event_suggestion(
+            payload={"event_type": "sop_platform_task"},
+            customer={},
+            identity={"customer_id": "customer", "external_userid": "external"},
+            event_type="sop_platform_task",
+            conversation_messages=[],
+            actions_reply_messages=[{"type": "text", "order": 1, "content": {"text": "触达内容"}}],
+        )
+
+        self.assertTrue(result["send_sop"])
+        self.assertEqual([item["status"] for item in result["model_attempts"]], ["failed", "succeeded"])
+        self.assertEqual(len(model.calls), 2)
+        self.assertTrue(all(call.get("deadline_monotonic") for call in model.calls))
+
+    async def test_event_model_exhaustion_is_failure_not_skip(self) -> None:
+        model = _SequenceModel([TimeoutError("timeout 1"), TimeoutError("timeout 2"), TimeoutError("timeout 3")])
+        service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_PackService(),
+            model_client=model,
+            event_model_retry_attempts=3,
+            event_model_retry_delay_seconds=0,
+        )
+
+        result = await service.evaluate_event_suggestion(
+            payload={"event_type": "sop_platform_task"},
+            customer={},
+            identity={"customer_id": "customer", "external_userid": "external"},
+            event_type="sop_platform_task",
+            conversation_messages=[],
+            actions_reply_messages=[{"type": "text", "order": 1, "content": {"text": "触达内容"}}],
+        )
+
+        self.assertEqual(result["mode"], "event_model_error")
+        self.assertEqual(result["reason"], "event_sop_model_retries_exhausted")
+        self.assertEqual(len(result["model_attempts"]), 3)
 
     async def test_event_judge_keeps_selector_contract_for_direct_prompt_inspection(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "effect_followup", "need_ai_reply": False, "reason": "ok"})
@@ -2286,6 +2473,21 @@ class _PromptCaptureModel:
         self.messages = messages
         self.kwargs = kwargs
         return dict(self.output)
+
+
+class _SequenceModel:
+    def __init__(self, outcomes: list[Any]) -> None:
+        self.outcomes = list(outcomes)
+        self.calls: list[dict[str, Any]] = []
+        self.last_usage: dict[str, Any] = {}
+
+    async def chat_json(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(dict(kwargs))
+        outcome = self.outcomes.pop(0)
+        self.last_usage = {"attempt_index": len(self.calls), "candidate_models": ["test-model"]}
+        if isinstance(outcome, Exception):
+            raise outcome
+        return dict(outcome)
 
 
 class _OutreachClient:

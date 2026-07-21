@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -47,6 +48,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `conversation_activity`：基于最新会话计算的客户回复、最后消息方向和时间可靠性摘要。
 - `candidate_sops`：可选的新客 SOP；每个包有阶段目的、候选分组、完整 `editable_text_messages` 与只读 `readonly_messages`。
 - `platform_actions`：平台任务中的完整可编辑 text 与只读结构消息。
+- `current_platform_task.message_content`：平台本轮明确要求触达的原始内容，是 `platform_actions` 模式下的当前任务目标。
 - `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
 - `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
 
@@ -60,6 +62,8 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 
 # Decision Policy
 - 事实优先级必须是：最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件。低优先级信息不得覆盖高优先级事实。
+- `platform_actions` 模式下，`current_platform_task.message_content` 是平台根据当前流程选出的本轮触达任务。除最新聊天或订单/支付等硬事实与它明确冲突外，必须优先分析它的阶段目的，不能因旧画像、历史累计或“客户已付”而整体忽略。
+- 已支付预约金只禁止再次发送预约金卡或催付，不禁止催到店、姓名电话登记、活动服务说明及其他与已付状态一致的后续触达。平台内容属于后续到店推进时，应保留其目标并按上下文自然润色。
 - 客户画像和旧事件不是当前对话事实，不能成为强制发送依据，也不能覆盖近期聊天中的城市、问题、顾虑、拒绝或已经完成的行动。
 - 固定首次加微流程中，只有“最新真实客户消息还没被普通 AI/销售回复”会在代码层阻断。客户之前回复过、但最近是小贝/销售发完后客户沉默，属于主动触达场景，必须尽量发 SOP 或轻触，不得因为“客户曾回复过/之前追问过”而空拒。
 - 当 `conversation_activity.latest_customer_pending_ai_reply=true` 时，这是客户最新问题等待普通 AI/销售回答的硬边界，必须 `send_sop=false`；不能改选 `next_step` 绕过，也不能用润色把 SOP 当成答复。
@@ -158,12 +162,20 @@ class SopExecutionService:
         model_client: ModelClient,
         memory_store: Any | None = None,
         customer_context_service: Any | None = None,
+        event_model_retry_attempts: int = 3,
+        event_model_retry_delay_seconds: float = 1.0,
+        event_model_attempt_timeout_seconds: float = 45.0,
+        event_model_max_concurrency: int = 2,
     ) -> None:
         self.repository = repository
         self.sop_reply_pack_service = sop_reply_pack_service
         self.model_client = model_client
         self.memory_store = memory_store
         self.customer_context_service = customer_context_service
+        self.event_model_retry_attempts = max(1, int(event_model_retry_attempts or 1))
+        self.event_model_retry_delay_seconds = max(0.0, float(event_model_retry_delay_seconds or 0.0))
+        self.event_model_attempt_timeout_seconds = max(1.0, float(event_model_attempt_timeout_seconds or 45.0))
+        self._event_model_semaphore = asyncio.Semaphore(max(1, int(event_model_max_concurrency or 1)))
 
     async def evaluate_chat_gate(
         self,
@@ -706,7 +718,19 @@ class SopExecutionService:
                 completed_sop_categories=completed_categories,
             )
             result["selector_input"] = compact(selector_input, max_chars=6000)
-            selector_output = await self._judge_event_sop(selector_input)
+            selector_output, model_attempts, model_error = await self._judge_event_sop_with_retries(selector_input)
+            result["model_attempts"] = model_attempts
+            if model_error:
+                result.update(
+                    {
+                        "mode": "event_model_error",
+                        "send_sop": False,
+                        "need_ai_reply": False,
+                        "error": model_error,
+                        "reason": "event_sop_model_retries_exhausted",
+                    }
+                )
+                return _finish(result, started)
             result["selector_output"] = selector_output
             result["model_usage"] = dict(self.model_client.last_usage or {})
             result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
@@ -749,7 +773,51 @@ class SopExecutionService:
             )
             return _finish(result, started)
 
-    async def _judge_event_sop(self, selector_input: dict[str, Any]) -> dict[str, Any]:
+    async def _judge_event_sop_with_retries(
+        self,
+        selector_input: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
+        attempts: list[dict[str, Any]] = []
+        last_error = ""
+        for attempt in range(1, self.event_model_retry_attempts + 1):
+            started = time.perf_counter()
+            deadline = time.monotonic() + self.event_model_attempt_timeout_seconds
+            try:
+                async with self._event_model_semaphore:
+                    output = await self._judge_event_sop(selector_input, deadline_monotonic=deadline)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                attempts.append(
+                    {
+                        "attempt": attempt,
+                        "status": "failed",
+                        "duration_ms": int((time.perf_counter() - started) * 1000),
+                        "error": last_error,
+                        "model_usage": compact(self.model_client.last_usage or {}, max_chars=1800),
+                    }
+                )
+                if attempt < self.event_model_retry_attempts and self.event_model_retry_delay_seconds:
+                    await asyncio.sleep(self.event_model_retry_delay_seconds)
+                continue
+            attempts.append(
+                {
+                    "attempt": attempt,
+                    "status": "succeeded",
+                    "duration_ms": int((time.perf_counter() - started) * 1000),
+                    "model_usage": compact(self.model_client.last_usage or {}, max_chars=1800),
+                }
+            )
+            return output, attempts, ""
+        return {}, attempts, last_error or "event model retries exhausted"
+
+    async def _judge_event_sop(
+        self,
+        selector_input: dict[str, Any],
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
         messages = [
             {
                 "role": "system",
@@ -763,7 +831,12 @@ class SopExecutionService:
                 ),
             },
         ]
-        data = await self.model_client.chat_json(messages, tier="reply", temperature=0)
+        data = await self.model_client.chat_json(
+            messages,
+            tier="reply",
+            temperature=0,
+            deadline_monotonic=deadline_monotonic,
+        )
         return data if isinstance(data, dict) else {}
 
     def _record_chat_gate_task(
@@ -1012,6 +1085,7 @@ def _event_summary(payload: dict[str, Any], customer: dict[str, Any]) -> dict[st
     root_sop = payload.get("sop") if isinstance(payload.get("sop"), dict) else {}
     customer_sop = customer.get("sop") if isinstance(customer.get("sop"), dict) else {}
     first_added = customer.get("first_added_event") if isinstance(customer.get("first_added_event"), dict) else {}
+    conversation = customer.get("conversation") if isinstance(customer.get("conversation"), dict) else {}
     return {
         "event_type": _string(payload.get("event_type")),
         "delay_minutes": _string(customer_sop.get("delay_minutes")) or _string(root_sop.get("delay_minutes")),
@@ -1020,6 +1094,7 @@ def _event_summary(payload: dict[str, Any], customer: dict[str, Any]) -> dict[st
         "stage_tag": _string(customer_sop.get("stage_tag")) or _string(root_sop.get("stage_tag")),
         "platform_task_id": _string(customer_sop.get("platform_task_id")) or _string(root_sop.get("platform_task_id")),
         "first_added_trace_id": _string(first_added.get("trace_id")),
+        "ai_auto_reply": conversation.get("ai_auto_reply"),
     }
 
 
@@ -1144,6 +1219,10 @@ def _event_selector_input(
     return {
         "mode": "platform_actions" if event_type == "sop_platform_task" else "first_add_flow",
         "event": _event_summary(payload, customer),
+        "current_platform_task": {
+            "priority": "current_outreach_objective_after_hard_facts",
+            "message_content": _platform_task_message_content(payload, customer),
+        },
         "recent_conversation": _conversation_context(conversation_messages),
         "conversation_activity": conversation_activity,
         "candidate_policy": {
@@ -1166,8 +1245,58 @@ def _event_selector_input(
             customer_memory=customer_memory,
             customer_context=customer_context,
         ),
+        "current_payment_state": _payment_state_summary(customer_memory, customer_context),
         "completed_sop_pack_ids": completed_sop_pack_ids,
         "completed_sop_categories": completed_sop_categories,
+    }
+
+
+def _platform_task_message_content(payload: dict[str, Any], customer: dict[str, Any]) -> list[dict[str, str]]:
+    customer_sop = customer.get("sop") if isinstance(customer.get("sop"), dict) else {}
+    root_sop = payload.get("sop") if isinstance(payload.get("sop"), dict) else {}
+    customer_task = customer_sop.get("platform_task") if isinstance(customer_sop.get("platform_task"), dict) else {}
+    root_task = root_sop.get("platform_task") if isinstance(root_sop.get("platform_task"), dict) else {}
+    raw_messages = customer_task.get("message_content") or root_task.get("message_content") or []
+    if not isinstance(raw_messages, list):
+        return []
+    output: list[dict[str, str]] = []
+    for item in raw_messages[:12]:
+        if not isinstance(item, dict):
+            continue
+        message_type = _string(item.get("type")) or "text"
+        content = _platform_content_text(item.get("content"))
+        if content:
+            output.append({"type": message_type, "content": content[:1200]})
+    return output
+
+
+def _platform_content_text(value: Any) -> str:
+    text = _string(value)
+    if len(text) < 2 or text[0] != '"' or text[-1] != '"':
+        return text
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return text
+    return decoded if isinstance(decoded, str) else text
+
+
+def _payment_state_summary(customer_memory: dict[str, Any], customer_context: dict[str, Any]) -> dict[str, Any]:
+    basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
+    payment = resolved_payment_fact(
+        orders=customer_context.get("orders") if isinstance(customer_context, dict) else [],
+        existing_state=_string(basic.get("deposit_state")),
+        existing_source=_string(basic.get("deposit_source")),
+        existing_fact=basic.get("deposit_fact"),
+    )
+    order_gate = customer_context.get("_sop_order_gate") if isinstance(customer_context.get("_sop_order_gate"), dict) else {}
+    return {
+        "deposit_state": _string(payment.get("deposit_state")) or _string(order_gate.get("deposit_state")) or "unknown",
+        "source": _string(payment.get("source")) or _string(order_gate.get("source")) or "unknown",
+        "order_id": _string(payment.get("order_id")) or _string(order_gate.get("order_id")),
+        "store_id": _string(payment.get("store_id")) or _string(order_gate.get("store_id")),
+        "prepay_required": payment.get("prepay_required", order_gate.get("prepay_required")),
+        "prepay_paid": payment.get("prepay_paid", order_gate.get("prepay_paid")),
     }
 
 

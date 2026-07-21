@@ -274,6 +274,19 @@ function SopDetailPanel({
   rawPayload?: Record<string, JsonValue>;
   loading: boolean;
 }) {
+  const taskMetrics = tasks.length
+    ? {
+        taskCount: tasks.length,
+        sentCount: tasks.filter((task) => task.status === "sent").length,
+        skippedCount: tasks.filter((task) => String(task.status || "").startsWith("skipped")).length,
+        failedCount: tasks.filter((task) => String(task.status || "").startsWith("failed")).length,
+      }
+    : {
+        taskCount: event.task_count || 0,
+        sentCount: event.sent_count || 0,
+        skippedCount: event.skipped_count || 0,
+        failedCount: event.failed_count || 0,
+      };
   return (
     <div className="space-y-5">
       <section className="rounded-lg border bg-white p-5">
@@ -291,10 +304,10 @@ function SopDetailPanel({
           <div className="mt-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{event.error}</div>
         ) : null}
         <div className="mt-4 grid grid-cols-4 gap-3 text-sm">
-          <Metric label="任务" value={event.task_count || 0} />
-          <Metric label="已发" value={event.sent_count || 0} />
-          <Metric label="跳过" value={event.skipped_count || 0} />
-          <Metric label="失败" value={event.failed_count || 0} />
+          <Metric label="任务" value={taskMetrics.taskCount} />
+          <Metric label="已发" value={taskMetrics.sentCount} />
+          <Metric label="业务跳过" value={taskMetrics.skippedCount} />
+          <Metric label="处理失败" value={taskMetrics.failedCount} />
         </div>
       </section>
 
@@ -302,6 +315,7 @@ function SopDetailPanel({
         <h3 className="mb-3 text-sm font-semibold">发送任务</h3>
         {tasks.map((task) => {
           const isTaskError = taskHasError(task);
+          const modelAttempts = taskModelAttempts(task);
           return (
             <div key={task.id || `${task.event_id}-${task.sop_pack_id}`} className="mb-4 rounded-md border p-4 last:mb-0">
               <div className="flex flex-wrap items-center gap-2">
@@ -328,7 +342,29 @@ function SopDetailPanel({
                   {task.error}
                 </div>
               ) : null}
-              <MessagePreview messages={task.reply_messages || []} />
+              {modelAttempts.length ? (
+                <div className="mt-3 rounded-md border bg-slate-50 p-3">
+                  <div className="text-xs font-semibold text-slate-600">模型尝试 {modelAttempts.length} 次</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {modelAttempts.map((attempt, index) => {
+                      const status = String(attempt.status || "unknown");
+                      const duration = Number(attempt.duration_ms || 0);
+                      return (
+                        <span
+                          key={`${index}-${status}`}
+                          className={`rounded-md border px-2 py-1 text-xs ${
+                            status === "succeeded" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700"
+                          }`}
+                          title={String(attempt.error || "")}
+                        >
+                          #{String(attempt.attempt || index + 1)} {status === "succeeded" ? "成功" : "失败"} · {duration}ms
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+              <MessagePreview messages={task.reply_messages || []} status={task.status || ""} />
               <JsonBlock title="reply_messages" value={task.reply_messages || []} />
               <JsonBlock title="send_payload（含 conversation_fetch / event_decision_input）" value={task.send_payload || {}} />
               <JsonBlock title="send_response（含 event_decision / 主动发送响应体）" value={task.send_response || {}} />
@@ -346,13 +382,16 @@ function SopDetailPanel({
   );
 }
 
-function MessagePreview({ messages }: { messages: JsonValue[] }) {
+function MessagePreview({ messages, status }: { messages: JsonValue[]; status: string }) {
+  const sent = status === "sent";
+  const pending = status === "pending";
+  const title = sent ? "实际发送内容" : pending ? "待发送内容" : "候选内容（未发送）";
   if (!Array.isArray(messages) || messages.length === 0) {
-    return <div className="mt-3 rounded-md border bg-slate-50 p-3 text-sm text-slate-500">最终执行内容：空</div>;
+    return <div className="mt-3 rounded-md border bg-slate-50 p-3 text-sm text-slate-500">{title}：空</div>;
   }
   return (
     <div className="mt-3 rounded-md border bg-white">
-      <div className="border-b bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">最终执行内容</div>
+      <div className="border-b bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">{title}</div>
       <div className="space-y-2 p-3">
         {messages.map((message, index) => (
           <MessagePreviewItem key={index} message={message} index={index} />
@@ -466,6 +505,14 @@ function taskHasError(task?: SopSendTask) {
   return statusHasError(task.status);
 }
 
+function taskModelAttempts(task: SopSendTask) {
+  const response = isRecord(task.send_response) ? task.send_response : {};
+  const decision = isRecord(response.event_decision) ? response.event_decision : {};
+  return Array.isArray(decision.model_attempts)
+    ? decision.model_attempts.filter(isRecord)
+    : [];
+}
+
 function statusHasError(status?: string) {
   const value = String(status || "");
   return (
@@ -498,7 +545,21 @@ function JsonBlock({ title, value, initiallyOpen = false }: { title: string; val
 function StatusBadge({ status }: { status: string }) {
   if (!status) return null;
   const tone = statusHasError(status) ? "red" : status.includes("skipped") ? "amber" : "slate";
-  return <Badge tone={tone}>{status}</Badge>;
+  return <Badge tone={tone}>{statusLabel(status)}</Badge>;
+}
+
+function statusLabel(status: string) {
+  const labels: Record<string, string> = {
+    sent: "已发送",
+    pending: "待发送",
+    processed: "处理完成",
+    processed_with_errors: "处理有错误",
+    failed_model_error: "模型重试失败",
+    skipped_model_rejected: "模型判断不发送",
+    skipped_deposit_paid: "已付后跳过收款流程",
+    skipped_unsafe_payment_collection: "收款内容被安全拦截",
+  };
+  return labels[status] || status;
 }
 
 function Badge({ children, tone = "slate" }: { children: ReactNode; tone?: "slate" | "red" | "amber" }) {
