@@ -7,6 +7,7 @@ from app.graph.nodes.current_turn_context import build_current_turn_context
 from app.graph.nodes.location_card import location_card_from_state
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import build_store_scope_summary
+from app.graph.nodes.turn_evidence_view import turn_evidence_for_model
 from app.graph.planner.runtime_plan import (
     planner_handoff,
     planner_required_tools,
@@ -243,28 +244,7 @@ def _planner_direct_reply_draft_for_reply(state: AgentState) -> dict[str, Any]:
 
 def _current_turn_context_for_reply(value: dict[str, Any]) -> dict[str, Any]:
     """Expose current-turn evidence to reply model without legacy task conclusions."""
-    if not isinstance(value, dict):
-        return {}
-    allowed_keys = {
-        "is_contextual_short_message",
-        "is_context_reference_message",
-        "binding_source",
-        "context_hints",
-        "last_assistant_action",
-        "confirmed_store",
-        "current_store_anchor",
-        "confirmed_appointment",
-        "deposit_state",
-        "payment_evidence",
-        "registration_evidence",
-        "resolved_slots",
-        "missing_slots",
-        "blocked_actions",
-    }
-    output = {key: value[key] for key in allowed_keys if key in value and value[key] not in ({}, [], "", None)}
-    if output:
-        output["source_policy"] = "reply_evidence_only_planner_decides_business_action"
-    return output
+    return turn_evidence_for_model(value)
 
 
 def _transaction_facts_for_reply(fact_envelope: dict[str, Any]) -> dict[str, Any]:

@@ -180,7 +180,6 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_store_address_card_consistency(messages, state)
     _validate_appointment_lookup_promise(messages, state)
     _validate_appointment_time_facts(messages, state)
-    _validate_appointment_time_option_count(messages, state)
     _validate_registration_confirmation_facts(messages, state)
     _validate_appointment_confirmation_facts(messages, state)
     _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
@@ -192,6 +191,7 @@ def collect_reply_soft_warnings(messages: list[dict[str, Any]], state: dict[str,
         _validate_case_image_required_for_effect_turn,
         _validate_effect_reply_confidence_order,
         _validate_generic_store_question_does_not_use_context_store,
+        _validate_appointment_time_option_count,
         _validate_repeat_similarity,
         _validate_two_text_rhythm,
     )

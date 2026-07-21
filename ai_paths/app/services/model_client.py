@@ -4,6 +4,7 @@ import json
 import asyncio
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from typing import Any, Literal, TypeVar
 
 import httpx
@@ -19,10 +20,21 @@ T = TypeVar("T")
 class ModelClient:
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.last_usage: dict[str, Any] | None = None
+        self._last_usage: ContextVar[dict[str, Any] | None] = ContextVar(
+            f"model_client_last_usage_{id(self)}",
+            default=None,
+        )
         self._client: httpx.AsyncClient | None = None
         self._client_timeout: int | None = None
         self._client_loop_id: int | None = None
+
+    @property
+    def last_usage(self) -> dict[str, Any] | None:
+        return self._last_usage.get()
+
+    @last_usage.setter
+    def last_usage(self, value: dict[str, Any] | None) -> None:
+        self._last_usage.set(value)
 
     @property
     def available(self) -> bool:
@@ -73,7 +85,7 @@ class ModelClient:
         messages: list[dict[str, Any]],
         *,
         tier: ModelTier = "balanced",
-        temperature: float = 0.1,
+        temperature: float = 0.0,
         deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         if not self.available:
@@ -118,7 +130,7 @@ class ModelClient:
         prompt: str,
         image_url: str,
         tier: ModelTier = "vision",
-        temperature: float = 0.1,
+        temperature: float = 0.0,
         deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         if not self.available:
@@ -235,7 +247,7 @@ class ModelClient:
             raise RuntimeError(f"{failure_label}: no model candidates")
         self.last_usage = None
         errors: list[str] = []
-        pending: dict[asyncio.Task[T], tuple[int, str]] = {}
+        pending: dict[asyncio.Task[tuple[T, dict[str, Any]]], tuple[int, str]] = {}
         next_index = 0
         max_parallel = max(1, min(2, int(self.settings.model_hedge_max_parallel or 1)))
         hedge_delay = self._hedge_delay_for_tier(tier)
@@ -308,10 +320,11 @@ class ModelClient:
                 "error": error,
             }
 
-        async def run_one(index: int, model: str) -> T:
+        async def run_one(index: int, model: str) -> tuple[T, dict[str, Any]]:
             payload = build_payload(model)
             raw = await self._post_chat(payload, tier=tier, fallback_index=index, errors=list(errors))
-            return await consume(raw)
+            usage = dict(self.last_usage or {})
+            return await consume(raw), usage
 
         def launch() -> None:
             nonlocal next_index, hedge_started
@@ -348,7 +361,7 @@ class ModelClient:
                 for task in done:
                     index, model = pending.pop(task)
                     try:
-                        result = await task
+                        result, winner_usage = await task
                     except Exception as exc:
                         errors.append(f"{model}: {type(exc).__name__}: {exc}")
                         if not self._should_try_next_model(exc):
@@ -364,6 +377,7 @@ class ModelClient:
                         other.cancel()
                     if pending:
                         await asyncio.gather(*pending.keys(), return_exceptions=True)
+                    self.last_usage = winner_usage
                     enrich_last_usage(model)
                     return result
             record_failure(f"{failure_label}: " + " | ".join(errors))

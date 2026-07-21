@@ -196,6 +196,44 @@ def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None
     assert "def _planner_direct_reply_draft_for_reply" in source
 
 
+def test_model_visible_turn_evidence_excludes_python_business_conclusions() -> None:
+    planner_source = (ROOT / "ai_paths/app/graph/planner/brain_v2.py").read_text(encoding="utf-8")
+    reply_source = (ROOT / "ai_paths/app/graph/nodes/reply_context.py").read_text(encoding="utf-8")
+    view_source = (ROOT / "ai_paths/app/graph/nodes/turn_evidence_view.py").read_text(encoding="utf-8")
+
+    assert "turn_evidence_for_model(value)" in planner_source
+    assert "turn_evidence_for_model(value)" in reply_source
+    for forbidden in [
+        '"context_hints"',
+        '"binding_source"',
+        '"last_assistant_action"',
+        '"payment_evidence"',
+        '"resolved_slots"',
+        '"missing_slots"',
+        '"blocked_actions"',
+    ]:
+        assert forbidden not in view_source
+    for required in [
+        '"store_evidence"',
+        '"appointment_evidence"',
+        '"registration_evidence"',
+        '"evidence_conflicts"',
+    ]:
+        assert required in view_source
+
+
+def test_structured_model_nodes_use_zero_temperature() -> None:
+    model_client = (ROOT / "ai_paths/app/services/model_client.py").read_text(encoding="utf-8")
+    profile = (ROOT / "ai_paths/app/graph/nodes/profile_nodes.py").read_text(encoding="utf-8")
+    outreach = (ROOT / "ai_paths/app/services/outreach_service.py").read_text(encoding="utf-8")
+    vision = (ROOT / "ai_paths/app/graph/nodes/layer_nodes.py").read_text(encoding="utf-8")
+
+    assert "temperature: float = 0.0" in model_client
+    assert "temperature=0.0" in profile
+    assert outreach.count("temperature=0.0") >= 2
+    assert "vision_json(" in vision and "temperature=0.0" in vision
+
+
 def test_planner_requires_authoritative_recent_case_image_evidence() -> None:
     assert "sent_message_summary.case_image_delivery" in PLANNER_SYSTEM_PROMPT
     assert "completed_pack_ids/completed_categories" in PLANNER_SYSTEM_PROMPT

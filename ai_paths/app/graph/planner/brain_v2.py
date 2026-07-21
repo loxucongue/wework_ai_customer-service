@@ -16,6 +16,7 @@ from app.graph.nodes.current_turn_context import (
 from app.graph.nodes.location_card import location_card_from_state
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model, store_anchor_fact_for_model
 from app.graph.nodes.store_scope_summary import build_store_scope_summary
+from app.graph.nodes.turn_evidence_view import turn_evidence_for_model
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
 from app.graph.planner.brain_v2_prompts import (
     PLANNER_REPAIR_PROMPT,
@@ -372,59 +373,7 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
 
 
 def _turn_evidence_for_planner(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    allowed_keys = (
-        "is_contextual_short_message",
-        "is_context_reference_message",
-        "binding_source",
-        "context_hints",
-        "last_assistant_action",
-        "confirmed_store",
-        "current_store_anchor",
-        "confirmed_appointment",
-        "deposit_state",
-        "payment_evidence",
-        "registration_evidence",
-        "resolved_slots",
-        "missing_slots",
-        "blocked_actions",
-        "evidence_conflicts",
-    )
-    output: dict[str, Any] = {}
-    for key in allowed_keys:
-        item = value.get(key)
-        if item in (None, "", [], {}):
-            continue
-        if key == "payment_evidence" and isinstance(item, dict):
-            item = {
-                field: item.get(field)
-                for field in (
-                    "sent_payment_collection",
-                    "last_amount",
-                    "last_sent_at",
-                    "last_assistant_payment_text",
-                    "recent_payment_texts",
-                    "source_policy",
-                )
-                if item.get(field) not in (None, "", [], {})
-            }
-            if isinstance(item.get("recent_payment_texts"), list):
-                item["recent_payment_texts"] = item["recent_payment_texts"][-3:]
-        if item not in (None, "", [], {}):
-            output[key] = item
-    nested = value.get("turn_evidence")
-    if isinstance(nested, dict):
-        for key in ("store_evidence", "appointment_evidence"):
-            item = nested.get(key)
-            if item not in (None, "", [], {}):
-                output[key] = item
-        history = nested.get("history_evidence")
-        if isinstance(history, dict) and history.get("recent_assistant_text"):
-            output["recent_assistant_text"] = str(history.get("recent_assistant_text"))[:600]
-    if output:
-        output["source_policy"] = "evidence_only_planner_owns_business_semantics"
-    return output
+    return turn_evidence_for_model(value)
 
 
 def _current_date_iso() -> str:

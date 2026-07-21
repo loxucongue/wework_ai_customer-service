@@ -136,7 +136,7 @@ async def _profile_update_from_model(
     result = await model_client.chat_json(
         messages,
         tier="fast",
-        temperature=0.2,
+        temperature=0.0,
     )
     return result if isinstance(result, dict) else {}
 

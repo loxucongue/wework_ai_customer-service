@@ -640,10 +640,11 @@ def test_planner_payload_keeps_context_for_low_information_message() -> None:
     assert "customer_context" not in payload
     assert "current_turn_context" not in payload
     assert "open_task" not in payload["turn_evidence"]
-    assert payload["turn_evidence"]["binding_source"] in {"last_assistant", "none"}
-    assert "payment_context_available" in payload["turn_evidence"]["context_hints"]
-    assert payload["turn_evidence"]["confirmed_appointment"]["store_name"] == "广州白云三店"
-    assert payload["turn_evidence"]["source_policy"] == "evidence_only_planner_owns_business_semantics"
+    assert "binding_source" not in payload["turn_evidence"]
+    assert "context_hints" not in payload["turn_evidence"]
+    assert "payment_evidence" not in payload["turn_evidence"]
+    assert payload["turn_evidence"]["appointment_evidence"]["store_name"] == "广州白云三店"
+    assert payload["turn_evidence"]["source_policy"] == "facts_only_models_decide_business_semantics"
     assert payload["transaction_facts"]["store_anchor_fact"]["status"] == "none"
 
 
@@ -676,10 +677,13 @@ def test_reply_payload_exposes_one_sanitized_turn_evidence_view() -> None:
     )
 
     assert "current_turn_context" not in payload
-    assert payload["turn_evidence"]["current_store_anchor"]["store_id"] == "562"
+    assert payload["turn_evidence"]["store_evidence"]["unique_recent_store"]["store_id"] == "562"
     assert "open_task" not in payload["turn_evidence"]
     assert "evidence_summary" not in payload["turn_evidence"]
-    assert payload["turn_evidence"]["source_policy"] == "reply_evidence_only_planner_decides_business_action"
+    assert "context_hints" not in payload["turn_evidence"]
+    assert "missing_slots" not in payload["turn_evidence"]
+    assert "blocked_actions" not in payload["turn_evidence"]
+    assert payload["turn_evidence"]["source_policy"] == "facts_only_models_decide_business_semantics"
 
 
 def test_reply_payload_drops_planner_unavailable_neutral_draft() -> None:
@@ -713,6 +717,34 @@ def test_reply_validation_rejects_tail_amount_as_offer_total() -> None:
         [{"type": "text", "order": 1, "content": "10元会抵扣，您到店最后再付258元就可以。"}],
         {},
     )
+
+
+def test_many_available_time_options_are_soft_quality_warning() -> None:
+    state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "appointment_facts": [
+                    {
+                        "type": "available_time",
+                        "status": "success",
+                        "available_times": ["10:00", "11:00", "14:00"],
+                    }
+                ]
+            }
+        }
+    }
+    messages = [
+        {
+            "type": "text",
+            "order": 1,
+            "content": "可选时间：10:00、11:00、14:00，您按方便的时间选就行。",
+        }
+    ]
+
+    validate_reply_consistency(messages, state)
+    warnings = collect_reply_soft_warnings(messages, state)
+
+    assert any(item.get("detail") == "too_many_appointment_time_options" for item in warnings)
 
 
 def test_planner_tool_policy_flags_post_deposit_time_confirmation_missing_store() -> None:
@@ -4901,9 +4933,10 @@ def test_reply_payload_keeps_context_for_low_information_message() -> None:
     assert "history_events" not in payload
     assert "fact_envelope" not in payload
     assert payload["transaction_facts"]["appointments"]
-    assert payload["turn_evidence"]["binding_source"] in {"last_assistant", "none"}
-    assert "payment_context_available" in payload["turn_evidence"]["context_hints"]
-    assert payload["turn_evidence"]["confirmed_store"]["store_name"] == "广州白云三店"
+    assert "binding_source" not in payload["turn_evidence"]
+    assert "context_hints" not in payload["turn_evidence"]
+    assert "payment_evidence" not in payload["turn_evidence"]
+    assert payload["turn_evidence"]["store_evidence"]["unique_recent_store"]["store_name"] == "广州白云三店"
     assert "open_task" not in payload["turn_evidence"]
     assert "evidence_summary" not in payload["turn_evidence"]
 

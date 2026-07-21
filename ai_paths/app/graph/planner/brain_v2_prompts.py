@@ -13,7 +13,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 
 # Input Contract
 - `current_message/image_info`：当前问题与图片事实；`conversation_history`：按时间排列的最近20条真实对话。
-- `turn_evidence/payment_evidence/context_hints`：门店、付款、登记、时间和最近动作证据，不是代码业务结论。
+- `turn_evidence`：门店、登记、时间和冲突的结构事实；付款状态看 `transaction_facts`，聊天语义由你结合近 20 条历史判断。
 - `transaction_facts`：当前账号实时订单/支付；`current_known_store`：高置信门店；`store_candidate`：低置信候选，不能当确认门店。
 - `store_scope_summary`：当前 WeChat 可见省/市/区门店数量及真实 ID；`sent_message_summary`：素材和卡片发送事实；`sop_progress_evidence`：已发流程证据。
 - `available_tools` 是唯一可调用工具；Current Business Facts 是稳定活动/品牌事实。

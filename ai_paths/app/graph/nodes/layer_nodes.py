@@ -120,6 +120,7 @@ async def _understand_image(state: dict[str, Any], model_client: ModelClient | N
                 prompt=prompt,
                 image_url=str(state.get("file_image")),
                 tier="vision",
+                temperature=0.0,
             )
             image_info = validated_image_info(payload, has_image=True)
             model_call["raw_json_output"] = payload

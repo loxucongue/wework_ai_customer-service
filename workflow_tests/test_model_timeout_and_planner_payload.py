@@ -135,6 +135,43 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(usage.get("cancelled_models") or []), {"slow-primary", "slow-fallback"})
         self.assertIn("TimeoutError", str(usage.get("error")))
 
+    async def test_model_usage_is_isolated_between_concurrent_business_requests(self) -> None:
+        class ConcurrentUsageClient(ModelClient):
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                model = str(payload.get("model") or "")
+                await asyncio.sleep(0.02 if model == "fast-model" else 0.01)
+                self.last_usage = {"model": model, "tier": tier, "usage": {}}
+                return {"choices": [{"message": {"content": model}}]}
+
+        client = ConcurrentUsageClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_fast="fast-model",
+                model_fast_fallbacks="",
+                model_balanced="balanced-model",
+                model_balanced_fallbacks="",
+                model_hedge_max_parallel=1,
+            )
+        )
+
+        async def run(tier: str) -> tuple[str, str]:
+            result = await client.chat_text([{"role": "user", "content": tier}], tier=tier)  # type: ignore[arg-type]
+            await asyncio.sleep(0.03)
+            return result, str((client.last_usage or {}).get("winner_model") or "")
+
+        fast, balanced = await asyncio.gather(run("fast"), run("balanced"))
+
+        self.assertEqual(fast, ("fast-model", "fast-model"))
+        self.assertEqual(balanced, ("balanced-model", "balanced-model"))
+
     async def test_transient_retries_share_one_absolute_deadline(self) -> None:
         class InvalidJsonClient(ModelClient):
             def __init__(self, settings: Settings) -> None:

@@ -319,7 +319,7 @@ class OutreachService:
                 {"role": "user", "content": dumps(source_snapshot)},
             ],
             tier="balanced",
-            temperature=0.25,
+            temperature=0.0,
         )
         if not bool(response.get("should_create_plan", True)):
             self.repository.add_outreach_event(
@@ -556,7 +556,7 @@ class OutreachService:
                 {"role": "user", "content": dumps(payload)},
             ],
             tier="balanced",
-            temperature=0.35,
+            temperature=0.0,
         )
         messages = response.get("reply_messages")
         if not isinstance(messages, list) or not messages:
