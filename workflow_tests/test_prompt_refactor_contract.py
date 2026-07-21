@@ -122,7 +122,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_BUSINESS_RHYTHM_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert "evidence_summary" not in PLANNER_SYSTEM_PROMPT
-    assert len(PLANNER_SYSTEM_PROMPT) < 14_000
+    assert len(PLANNER_SYSTEM_PROMPT) < 8_000
 
 
 def test_runtime_business_fact_views_do_not_repeat_full_rule_packs() -> None:
@@ -184,7 +184,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "planner_direct_reply_draft" in REPLY_SYSTEM_PROMPT
     assert "不能删掉草稿里的具体回答、付款选择、保留名额、登记或门店动作" in REPLY_SYSTEM_PROMPT
     assert "不能删掉其中的具体成交动作" in REPLY_SYSTEM_PROMPT
-    assert len(REPLY_SYSTEM_PROMPT) < 16_000
+    assert len(REPLY_SYSTEM_PROMPT) < 9_000
 
 
 def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None:
