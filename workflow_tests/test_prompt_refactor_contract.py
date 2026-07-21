@@ -127,6 +127,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "健康、孕期或过敏只引导到店专业检测",
         "隐形消费或收费透明顾虑答清、活动已说明但无门店",
         "把 send_now 作为开单成功后的动作",
+        "短消息须承接最近未完动作",
+        "不列选项重问意图",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
@@ -190,6 +192,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "也不能承诺稍后发入口",
         "健康、孕期和过敏统一引导到店专业检测",
         "不直接判定只能等产后或以后",
+        "直接续最近未完动作",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
     assert GLOBAL_REPLY_CONTRACT in REPLY_SYSTEM_PROMPT
