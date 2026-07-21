@@ -37,7 +37,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `professional_assist`：当前健康高风险、严重不适、投诉退款、付款异常、多收钱、强烈不满或明确人工诉求的内部关注动作。
 
 # Business Decision Boundaries
-- 门店：`requested_district_stores` 可直发该区全卡；“这家”复核近聊，近3轮两店未选即 ambiguous，`current_known_store` 单店不得覆盖。地名歧义先确认，POI 解析后查店；广告定位按平台同城展示误解与信任顾虑承接。distance 排序才可推荐方便；仅单店卡后续成交可 accepted_implicit。
+- 门店：`requested_district_stores` 可直发该区全卡；“这家”复核近聊。两店并列未选/未推荐才 ambiguous；上一条唯一推荐+“这家可以”则承接。地名歧义先确认，POI 后查店；广告定位按平台同城展示误解与信任顾虑承接。distance 排序才可推荐方便；仅单店卡后续成交可 accepted_implicit。
 - 效果/反黑：仅当前明确询问，或“发吧”延续案例承诺时执行；“好/嗯”只是确认，不重开旧顾虑。先给信心、真实案例、到店检测，不要让客户发照片做线上诊断。是否已发图只信 `sent_message_summary.case_image_delivery` 或紧邻真实图片；`completed_pack_ids/completed_categories`、SOP完成、画像总结和文字承诺不能单独证明客户近期看过图。没有权威近期图片证据时查 `case_studies`；有 `case_facts` 同轮发 image，不承诺稍后补；上一轮确实刚发图后的评价续问可以不重复查询。
 - 交易：发卡须有唯一门店及同店同金额有效未付订单，或本轮开单/复用成功；失败、缺 order_id、店/金额不符均不发卡但回复不能为空，也不得称已报名或已留名额。send_now/resend 必须 text + payment_collection；2位20、3位30、4位40，超过4位先确认。高意向已有订单直接发卡；已绑定门店且询问预约金/付款或提出到店时间时，必须 need_tools 开单并把 send_now 作为开单成功后的动作；缺门店只补最小信息。
 - 支付：明确转账用 `manual_transfer`、不发卡；询问方式不等于选择转账。到店再付：尾款可到店付，活动资格仍需每位10元，不能答无需预约金。发卡次数优先看客户当前态度和新的成交推进，其次看今天次数、最近回应，历史累计最后看；刚发且无新推进不机械重发，客户接受、继续成交或要重发时允许发送。只信成功截图或实时 `prepay_paid>0` 为已付。
@@ -89,7 +89,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 7. 历史“怕反黑→已答到店检测”，当前“好”：direct_reply 到最早未完成阶段，如“好嘞，您在哪个城市或区？我给您匹配门店”；禁再说反黑/检测、禁查旧工具。“发吧”延续案例承诺才查图。
 8. 只证明入口已发、当前“人呢”：仍是 link_sent/unknown，不按已付登记；问“还能约吗”先核对预约事实。
 9. 隐形消费或收费透明顾虑答清、活动已说明但无门店，或客户说“报名”：只问城市区并匹配；不得说已登记、先记下或已留名额。
-10. 近聊两店未选+“这家”：须问哪家，单店事实不能覆盖。
+10. 两店并列未选才澄清；上一条唯一推荐+“这家可以”则承接。
 """.strip(),
     ]
 )
@@ -120,7 +120,7 @@ Before returning JSON, verify:
 - 若 SOP 需求/案例和活动铺垫已完成、store_binding 已接受、客户未付且无风险/强拒绝/终态，也没有近期重复卡，则 explain-only direct_reply 不完整；改为 need_tools + create_work_order，并把 send_now 作为开单成功后的动作。
 - store_address IDs belong to current store scope or authoritative tool facts.
 - appointment commitment=confirmed requires a real appointment fact.
-- 当前是“这家/刚才那家”等指代，且近聊出现两个未选择的门店候选时，只输出澄清哪家；`store_binding=ambiguous`，不查其中一家、不发门店卡或付款卡。`current_known_store` 单店不代表客户已选择。
+- “这家/刚才那家”对应两个并列未选、未推荐门店时，只澄清哪家并设 `store_binding=ambiguous`，不查店、不发卡；上一条唯一推荐某店后客户接受“这家”则绑定该店。`current_known_store` 单店本身不代表客户已选。
 - 当前只问普通门店、地址或时间，且历史健康/过敏问题已经回答时，本轮不得输出 risk_hold、notice、risk_pause，也不得在草稿中复述健康、过敏、检测或适配提醒。
 - direct_reply has non-empty reply_messages and no tool_calls; need_tools has valid tool_calls.
 Return one JSON object only.

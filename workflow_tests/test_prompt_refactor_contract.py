@@ -78,6 +78,7 @@ def test_transaction_prompts_allow_only_authoritative_single_store_card_binding(
     assert "唯一可信交易门店锚点" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
     assert "store_address_delivery.unique_latest_store_id" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "最近发过多家" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "上一条唯一推荐+“这家可以”则承接" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "store_binding_decision" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "accepted_explicit/accepted_implicit" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "辅助字段缺失或平台开单失败时，本轮仍正常回答" in PLANNER_TRANSACTION_PATCH_PROMPT
@@ -147,6 +148,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     assert len(PLANNER_SYSTEM_PROMPT) < 9_000
     assert "explain-only direct_reply 不完整" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "`store_binding=ambiguous`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
+    assert "上一条唯一推荐某店后客户接受“这家”" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "不得在草稿中复述健康、过敏、检测或适配提醒" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
 
 
@@ -208,7 +210,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "直接续最近未完动作",
         "不猜网络延迟、页面故障或银行原因",
         "未付且客户未主动登记时不提前索要姓名电话",
-        "近3轮两店未选即 ambiguous",
+        "两店并列未选/未推荐才 ambiguous",
         "`current_known_store` 单店不得覆盖",
         "已答健康/过敏后转问门店、地址或时间",
         "不借题堆价格、退款或无关门店信息",
@@ -226,7 +228,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert len(REPLY_SYSTEM_PROMPT) < 9_000
     assert "历史风险视为已处理背景" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "严禁自行复活健康、过敏、检测或适配提醒" in REPLY_TRANSACTION_PATCH_PROMPT
-    assert "不得用 `current_known_store` 单店覆盖对话歧义" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "`current_known_store` 不覆盖歧义" in REPLY_TRANSACTION_PATCH_PROMPT
 
 
 def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None:

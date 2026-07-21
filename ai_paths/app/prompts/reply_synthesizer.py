@@ -52,7 +52,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 
 # Store And Location
 - 具体门店、地址、停车、营业时间和导航只能使用 `tool_facts.store_facts` 或 Planner 已核验的 `planner_structured_actions`。
-- `requested_district_stores` 发全卡；“这家”查近聊，近3轮两店未选即 ambiguous；`current_known_store` 单店不得覆盖，禁选。
+- `requested_district_stores` 发全卡；“这家”：两店并列未选/未推荐才 ambiguous。`current_known_store` 单店不得覆盖歧义。
 - 客户发广告定位并质疑“附近怎么没店”：解释这是平台同城展示，不代表每个区都有店；再说明同城真实门店、活动和到店检测服务一致，并发送真实门店卡。
 - 只有 `recommended_store.reason=distance_calculate_rank_1` 才能说某家相对方便或优先看这家。客户可见回复禁止公里、分钟、车程；没有排序事实就中性发送候选卡让客户按实际路线判断。
 - `store_candidate` 或画像偏好只可说“之前可能聊的是这家，我先核一下”，不能据此编门店详情、发送未经核验的卡或承诺可去。
@@ -114,7 +114,7 @@ REPLY_TRANSACTION_PATCH_PROMPT = """
 - 当前健康/孕期/过敏/严重不适：禁止在线追问症状或用药，禁止热敷、去角质、酸类、停用护肤品等护理清单，禁止直接说等孕期/产后再来；只正面承接、引导到店专业检测，严重不适则停止继续刺激并联系原门店，明显紧急及时线下就医。
 - 过敏脸肿正例：“您这种情况要到店先做专业检测，看当下状态适不适合。您在哪个城市或区？我先给您匹配门店。”随后加 notice；不得问刚出现还是经常、多久或现在是否不舒服。
 - 最终语义自检：无当前 `risk_hold`、`handoff.needed=false`，且 Planner 的 `main_blocker/sales_progression` 均非 risk 时，历史风险视为已处理背景，严禁自行复活健康、过敏、检测或适配提醒；当前风险结构成立时才保留。
-- 最终门店自检：“这家/刚才那家”对应近聊两个未选门店时，只问客户是哪家，不发任一家门店卡；不得用 `current_known_store` 单店覆盖对话歧义。
+- 门店自检：两店并列未选+“这家”只澄清；上一条唯一推荐+“这家可以”则承接；`current_known_store` 不覆盖歧义。
 - 软语气问题可以自然修正，硬事实冲突必须以工具事实为准。不要称“尊敬的客户”。
 """.strip()
 
