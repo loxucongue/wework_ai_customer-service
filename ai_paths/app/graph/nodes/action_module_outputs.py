@@ -172,6 +172,15 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "prepay_required": value.get("prepay_required"),
                 "prepay_paid": value.get("prepay_paid"),
                 "deposit_state": str(value.get("deposit_state") or ""),
+                "order_binding_state": str(value.get("order_binding_state") or ""),
+                "order_binding_repaired": bool(value.get("order_binding_repaired")),
+                "store_confirmation_source": str(value.get("store_confirmation_source") or ""),
+                "creation_mode": str(value.get("creation_mode") or ""),
+                "missing": [str(item) for item in value.get("missing") or [] if str(item or "").strip()],
+                "missing_optional_fields": [
+                    str(item) for item in value.get("missing_optional_fields") or [] if str(item or "").strip()
+                ],
+                "error": str(value.get("error") or "")[:240],
                 "source": str(value.get("source") or ""),
             }
             structured_facts["order_facts"].append(order_fact)

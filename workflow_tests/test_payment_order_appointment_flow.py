@@ -12,6 +12,7 @@ from app.graph.nodes.layer_nodes import _platform_unknown_transfer_image_info
 from app.graph.nodes.image_validation import validated_image_info
 from app.graph.nodes.profile_nodes import _deterministic_customer_state_updates
 from app.graph.nodes.reply_validation import validate_reply_consistency
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.services.customer_order_context import compact_order
 from app.services.customer_payment_state import normalize_prepay_facts, resolved_payment_fact
@@ -86,6 +87,7 @@ def test_order_context_supports_new_prepay_fields() -> None:
     assert order["prepay_required"] == 20
     assert order["prepay_paid"] == 20
     assert order["deposit_state"] == "paid_by_order"
+    assert order["order_binding_state"] == "needs_binding"
 
 
 def test_successful_payment_screenshot_is_paid_and_is_not_downgraded() -> None:
@@ -248,6 +250,7 @@ def test_payment_state_uses_marked_current_order_instead_of_other_paid_order() -
                 "store_id": "369",
                 "prepay_required": "10.00",
                 "prepay_paid": "10.00",
+                "created_at": "2020-01-01T00:00:00+00:00",
             },
         ]
     )
@@ -560,6 +563,387 @@ def test_create_work_order_accepts_shared_current_known_store_fact() -> None:
     assert output["tool_results"]["create_work_order"]["store_id"] == "12"
 
 
+def test_create_work_order_accepts_latest_single_store_card_anchor() -> None:
+    platform = _PlatformClient()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        node = create_execute_actions_node(
+            coze_client=object(),
+            trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+            store_service=None,
+            platform_agent_client=platform,
+            appointment_query_from_state=lambda _content, _store_lookup, _state: {},
+        )
+        output = asyncio.run(node({
+            **_base_state(),
+            "history_events": [
+                {
+                    "event_id": "store-card-386",
+                    "event_type": "store_address_sent",
+                    "created_at": "2026-07-19T08:00:00+00:00",
+                    "facts": {"store_id": "386", "request_id": "store-card-request"},
+                }
+            ],
+            "planner_tool_calls": [{
+                "name": "create_work_order",
+                "store_id": "386",
+                "category_id": "10",
+                "prepay": 10,
+                "store_confirmation_source": "single_store_card_anchor",
+            }],
+        }))
+
+    result = output["tool_results"]["create_work_order"]
+    assert result["status"] == "created"
+    assert result["store_id"] == "386"
+    assert result["store_confirmation_source"] == "single_store_card_anchor"
+
+
+def test_store_anchor_fact_distinguishes_unique_multi_and_unverified_batches() -> None:
+    unique = sent_message_summary_for_model({
+        "history_events": [{
+            "event_type": "store_address_sent",
+            "created_at": "2026-07-19T08:00:00+00:00",
+            "facts": {"store_id": "386", "request_id": "request-1"},
+        }]
+    })["store_anchor_fact"]
+    multi = sent_message_summary_for_model({
+        "history_events": [
+            {
+                "event_type": "store_address_sent",
+                "created_at": "2026-07-19T08:00:00+00:00",
+                "facts": {"store_id": "386", "request_id": "request-2"},
+            },
+            {
+                "event_type": "store_address_sent",
+                "created_at": "2026-07-19T08:00:00+00:00",
+                "facts": {"store_id": "562", "request_id": "request-2"},
+            },
+        ]
+    })["store_anchor_fact"]
+    unverified = sent_message_summary_for_model({
+        "history_events": [{
+            "event_type": "store_address_sent",
+            "created_at": "2026-07-19T08:00:00+00:00",
+            "facts": {"store_id": "386"},
+        }]
+    })["store_anchor_fact"]
+
+    assert unique["status"] == "eligible"
+    assert unique["store_id"] == "386"
+    assert multi["status"] == "ambiguous"
+    assert multi["store_ids"] == ["386", "562"]
+    assert unverified["status"] == "unverified"
+    assert "store_id" not in unverified
+
+
+def test_planner_store_binding_exploring_blocks_work_order_tool() -> None:
+    state = {**_base_state(), "normalized_content": "我再比较一下这几家"}
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "need_tools",
+            "payment_decision": {"action": "explain", "amount": 10},
+            "store_binding_decision": {
+                "status": "exploring",
+                "store_id": "386",
+                "confidence": "high",
+                "basis": ["客户仍在比较"],
+            },
+            "order_decision": {
+                "action": "create_work",
+                "store_id": "386",
+                "amount": 10,
+                "store_binding_level": "explicit_confirmed",
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [{
+                "name": "create_work_order",
+                "store_id": "386",
+                "prepay": 10,
+                "store_confirmation_source": "current_message",
+            }],
+        },
+    )
+
+    assert plan["store_binding_decision"]["status"] == "exploring"
+    assert any(
+        item.get("missing") == "create_work_order_store_binding_not_accepted"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_planner_accepted_store_binding_requires_order_resolution_without_forcing_payment() -> None:
+    state = {
+        **_base_state(),
+        "normalized_content": "这个活动具体多少钱",
+        "history_events": [{
+            "event_type": "store_address_sent",
+            "created_at": "2026-07-19T08:00:00+00:00",
+            "facts": {"store_id": "386", "request_id": "request-accepted"},
+        }],
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "payment_decision": {"action": "explain", "amount": 10},
+            "store_binding_decision": {
+                "status": "accepted_implicit",
+                "store_id": "386",
+                "confidence": "high",
+            },
+            "order_decision": {
+                "action": "none",
+                "store_id": "386",
+                "amount": 10,
+                "store_binding_level": "single_store_card_anchor",
+            },
+            "appointment_decision": {"action": "none", "commitment_level": "tentative"},
+            "reply_messages": [
+                {"type": "text", "content": {"text": "活动是268元。"}},
+                {"type": "text", "content": {"text": "到店时间后面按您方便安排。"}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "accepted_store_binding_requires_order_resolution"
+        for item in plan["tool_policy_violations"]
+    )
+    assert not any(
+        item.get("missing") == "available_time_required_for_availability_claim"
+        for item in plan["tool_policy_violations"]
+    )
+    assert plan["payment_decision"]["action"] == "explain"
+    assert all(item.get("type") != "payment_collection" for item in plan["planner_reply_messages"])
+
+
+def test_planner_unverified_store_event_cannot_be_accepted_implicit() -> None:
+    state = {
+        **_base_state(),
+        "normalized_content": "活动怎么报名",
+        "history_events": [{
+            "event_type": "store_address_sent",
+            "created_at": "2026-07-19T08:00:00+00:00",
+            "facts": {"store_id": "386"},
+        }],
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "need_tools",
+            "payment_decision": {"action": "send_now", "amount": 10},
+            "store_binding_decision": {
+                "status": "accepted_implicit",
+                "store_id": "386",
+                "confidence": "medium",
+            },
+            "order_decision": {
+                "action": "create_work",
+                "store_id": "386",
+                "amount": 10,
+                "store_binding_level": "single_store_card_anchor",
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [{
+                "name": "create_work_order",
+                "store_id": "386",
+                "prepay": 10,
+                "store_confirmation_source": "single_store_card_anchor",
+            }],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "accepted_implicit_requires_eligible_store_anchor_fact"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_create_work_order_allows_missing_optional_platform_fields() -> None:
+    platform = _PlatformClient()
+    platform.get_customer_info = lambda **_kwargs: {}
+    state = _base_state()
+    state["user_id"] = None
+    state["request_context"] = {"corp_id": "corp", "wechat": "CS001"}
+    state["customer_context"] = {
+        "platform_customer_id": "21325693",
+        "customer": {},
+        "orders": [],
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        node = create_execute_actions_node(
+            coze_client=object(),
+            trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+            store_service=None,
+            platform_agent_client=platform,
+            appointment_query_from_state=lambda _content, _store_lookup, _state: {},
+        )
+        output = asyncio.run(node({
+            **state,
+            "planner_tool_calls": [{
+                "name": "create_work_order",
+                "store_id": "386",
+                "prepay": 10,
+                "store_confirmation_source": "current_message",
+            }],
+        }))
+
+    result = output["tool_results"]["create_work_order"]
+    assert result["status"] == "created"
+    assert result["creation_mode"] == "partial"
+    assert set(result["missing_optional_fields"]) == {
+        "customer_add_wechat_id",
+        "user_id",
+        "kind",
+        "category_id",
+    }
+    assert platform.checked_customer == []
+    assert platform.created_work[0]["user_id"] is None
+    order_fact = output["fact_envelope"]["structured_facts"]["order_facts"][0]
+    assert order_fact["missing_optional_fields"] == result["missing_optional_fields"]
+
+
+def test_create_work_order_rejects_multi_store_card_batch_anchor() -> None:
+    platform = _PlatformClient()
+    state = _base_state()
+    state["customer_store_knowledge"] = {
+        "stores": [
+            {"store_id": "386", "store_name": "厦门百星店"},
+            {"store_id": "562", "store_name": "厦门湖里店"},
+        ]
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        node = create_execute_actions_node(
+            coze_client=object(),
+            trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+            store_service=None,
+            platform_agent_client=platform,
+            appointment_query_from_state=lambda _content, _store_lookup, _state: {},
+        )
+        output = asyncio.run(node({
+            **state,
+            "history_events": [
+                {
+                    "event_id": "store-card-386",
+                    "event_type": "store_address_sent",
+                    "created_at": "2026-07-19T08:00:00+00:00",
+                    "facts": {"store_id": "386", "request_id": "store-card-request"},
+                },
+                {
+                    "event_id": "store-card-562",
+                    "event_type": "store_address_sent",
+                    "created_at": "2026-07-19T08:00:00+00:00",
+                    "facts": {"store_id": "562", "request_id": "store-card-request"},
+                },
+            ],
+            "planner_tool_calls": [{
+                "name": "create_work_order",
+                "store_id": "386",
+                "category_id": "10",
+                "prepay": 10,
+                "store_confirmation_source": "single_store_card_anchor",
+            }],
+        }))
+
+    result = output["tool_results"]["create_work_order"]
+    assert result["status"] == "rejected"
+    assert result["error"] == "single_store_card_anchor_not_authoritative"
+    assert platform.created_work == []
+
+
+def test_planner_policy_accepts_matching_single_store_card_anchor() -> None:
+    state = {
+        **_base_state(),
+        "normalized_content": "活动怎么报名",
+        "history_events": [
+            {
+                "event_id": "store-card-386",
+                "event_type": "store_address_sent",
+                "created_at": "2026-07-19T08:00:00+00:00",
+                "facts": {"store_id": "386", "request_id": "store-card-request"},
+            }
+        ],
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "need_tools",
+            "conversion_stage": "deposit_push",
+            "payment_decision": {"action": "send_now", "party_size": 1, "amount": 10},
+            "order_decision": {
+                "action": "create_work",
+                "store_id": "386",
+                "amount": 10,
+                "store_binding_level": "single_store_card_anchor",
+                "source": "single_store_card_anchor",
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [
+                {
+                    "name": "create_work_order",
+                    "store_id": "386",
+                    "category_id": "10",
+                    "prepay": 10,
+                    "store_confirmation_source": "single_store_card_anchor",
+                }
+            ],
+        },
+    )
+
+    assert plan["order_decision"]["store_binding_level"] == "single_store_card_anchor"
+    assert not any(
+        item.get("missing") == "create_work_order_single_store_card_anchor_mismatch"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_planner_policy_rejects_mismatched_single_store_card_anchor() -> None:
+    state = {
+        **_base_state(),
+        "normalized_content": "活动怎么报名",
+        "history_events": [
+            {
+                "event_id": "store-card-386",
+                "event_type": "store_address_sent",
+                "created_at": "2026-07-19T08:00:00+00:00",
+                "facts": {"store_id": "386", "request_id": "store-card-request"},
+            }
+        ],
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "need_tools",
+            "conversion_stage": "deposit_push",
+            "payment_decision": {"action": "send_now", "party_size": 1, "amount": 10},
+            "order_decision": {
+                "action": "create_work",
+                "store_id": "562",
+                "amount": 10,
+                "store_binding_level": "single_store_card_anchor",
+                "source": "single_store_card_anchor",
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "稍等一下哈"}}],
+            "tool_calls": [
+                {
+                    "name": "create_work_order",
+                    "store_id": "562",
+                    "category_id": "10",
+                    "prepay": 10,
+                    "store_confirmation_source": "single_store_card_anchor",
+                }
+            ],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "create_work_order_single_store_card_anchor_mismatch"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_no_tool_does_not_execute_platform_transaction_placeholders() -> None:
     platform = _PlatformClient()
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -668,6 +1052,56 @@ def test_existing_zero_category_order_is_reused_for_confirmed_category() -> None
     assert platform.created_work == []
 
 
+def test_paid_unbound_work_order_is_bound_instead_of_duplicate_create() -> None:
+    platform = _PlatformClient(
+        orders=[
+            {
+                "id": "order-paid-unbound",
+                "order_no": "2607192311534541",
+                "status": 2,
+                "store_id": 0,
+                "category_id": 0,
+                "prepay_required": 0,
+                "prepay_paid": 10,
+            }
+        ],
+        check_result={"result": 0},
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        node = create_execute_actions_node(
+            coze_client=object(),
+            trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+            store_service=None,
+            platform_agent_client=platform,
+            appointment_query_from_state=lambda _content, _store_lookup, _state: {},
+        )
+        output = asyncio.run(node({
+            **_base_state(),
+            "planner_tool_calls": [{
+                "name": "create_work_order",
+                "store_id": "386",
+                "category_id": "10",
+                "prepay": 10,
+                "store_confirmation_source": "current_message",
+            }],
+        }))
+
+    result = output["tool_results"]["create_work_order"]
+    assert result["status"] == "reused"
+    assert result["source"] == "platform_agent.order.modify"
+    assert result["order_binding_repaired"] is True
+    assert result["order_id"] == "order-paid-unbound"
+    assert result["store_id"] == "386"
+    assert result["category_id"] == "10"
+    assert result["prepay_required"] == 10
+    assert result["deposit_state"] == "paid_by_order"
+    assert platform.modified_work[0]["order_id"] == "order-paid-unbound"
+    assert platform.modified_work[0]["store_id"] == "386"
+    assert platform.modified_work[0]["category_id"] == "10"
+    assert platform.created_work == []
+    assert platform.checked_customer == []
+
+
 def test_check_customer_result_zero_prevents_duplicate_work_order() -> None:
     platform = _PlatformClient(check_result={"result": 0})
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -692,6 +1126,36 @@ def test_check_customer_result_zero_prevents_duplicate_work_order() -> None:
     assert output["tool_results"]["create_work_order"]["status"] == "rejected"
     assert output["tool_results"]["create_work_order"]["check_customer"] == {"result": 0}
     assert platform.created_work == []
+
+
+def test_request_category_label_uses_platform_customer_category_id() -> None:
+    platform = _PlatformClient()
+    state = _base_state()
+    state["request_context"] = {**state["request_context"], "category_id": "S20"}
+    state["customer_context"] = {
+        **state["customer_context"],
+        "customer": {"kind": 1, "category_id": "811"},
+    }
+    with tempfile.TemporaryDirectory() as tmpdir:
+        node = create_execute_actions_node(
+            coze_client=object(),
+            trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+            store_service=None,
+            platform_agent_client=platform,
+            appointment_query_from_state=lambda _content, _store_lookup, _state: {},
+        )
+        output = asyncio.run(node({
+            **state,
+            "planner_tool_calls": [{
+                "name": "create_work_order",
+                "store_id": "386",
+                "prepay": 10,
+                "store_confirmation_source": "current_message",
+            }],
+        }))
+
+    assert output["tool_results"]["create_work_order"]["status"] == "created"
+    assert platform.created_work[0]["category_id"] == "811"
 
 
 def test_existing_work_order_amount_is_updated_for_party_size() -> None:

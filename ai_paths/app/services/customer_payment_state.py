@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import datetime, timezone
 from typing import Any
 
 
 PAID_DEPOSIT_STATES = {"paid_by_order", "paid_by_screenshot"}
 ACTIVE_ORDER_STATUSES = {"1", "2", "3", "pending", "waiting_schedule", "scheduled"}
+PAID_ORDER_PROTECTION_MONTHS = 3
 
 
 def normalize_prepay_facts(order: dict[str, Any]) -> dict[str, Any]:
@@ -19,11 +21,43 @@ def normalize_prepay_facts(order: dict[str, Any]) -> dict[str, Any]:
 
     required = _positive_number(required_raw)
     paid = _positive_number(paid_raw)
+    needs_binding = paid and _order_binding_missing(order, required=required)
+    protection = paid_order_protection_fact(order) if paid else {}
+    deposit_state = "paid_by_order" if paid else ("required_unpaid" if required else "unknown")
+    if protection.get("paid_protection_status") == "expired":
+        deposit_state = "historical_paid_expired"
     return {
         "prepay_required": required_raw,
         "prepay_paid": paid_raw,
-        "deposit_state": "paid_by_order" if paid else ("required_unpaid" if required else "unknown"),
+        "deposit_state": deposit_state,
         "deposit_source": "platform_agent.order_index",
+        "order_binding_state": "needs_binding" if needs_binding else ("bound" if paid or required else "unknown"),
+        **protection,
+    }
+
+
+def paid_order_protection_fact(order: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Classify a paid order using order creation time as the agreed temporary proxy."""
+    if not _positive_number(order.get("prepay_paid") if order.get("prepay_paid") not in (None, "") else order.get("fee_paid")):
+        return {}
+    raw_created_at = order_created_at_value(order)
+    created_at = _parse_datetime(raw_created_at)
+    if created_at is None:
+        return {
+            "paid_protection_status": "unknown_time_protected",
+            "paid_time_source": "order_created_at_proxy",
+            "paid_time_value": raw_created_at,
+        }
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    cutoff = _subtract_months(current.astimezone(timezone.utc), PAID_ORDER_PROTECTION_MONTHS)
+    expired = created_at < cutoff
+    return {
+        "paid_protection_status": "expired" if expired else "protected",
+        "paid_time_source": "order_created_at_proxy",
+        "paid_time_value": created_at.isoformat(),
+        "paid_protection_cutoff": cutoff.isoformat(),
     }
 
 
@@ -67,21 +101,34 @@ def resolved_payment_fact(
                 "order_no": str(order.get("order_no") or ""),
                 "store_id": str(order.get("store_id") or ""),
                 "store_name": str(order.get("store_name") or ""),
+                "category_id": str(order.get("category_id") or ""),
                 "status": str(order.get("status") or ""),
                 "deposit_state": state,
                 "source": "platform_agent.order_index",
                 "prepay_required": order.get("prepay_required"),
                 "prepay_paid": order.get("prepay_paid"),
+                "order_binding_state": order.get("order_binding_state")
+                or normalize_prepay_facts(order).get("order_binding_state"),
+                "paid_protection_status": order.get("paid_protection_status")
+                or normalize_prepay_facts(order).get("paid_protection_status"),
+                "paid_time_source": order.get("paid_time_source")
+                or normalize_prepay_facts(order).get("paid_time_source"),
+                "paid_time_value": order.get("paid_time_value")
+                or normalize_prepay_facts(order).get("paid_time_value"),
                 "is_current_order": bool(order.get("is_current_order")),
             }
         )
 
+    paid_order = next(
+        (
+            item
+            for item in order_facts
+            if item["deposit_state"] == "paid_by_order" and item.get("paid_protection_status") != "expired"
+        ),
+        None,
+    )
     current_order = next((item for item in order_facts if item.get("is_current_order")), None)
-    if current_order:
-        order_facts = [current_order]
-    elif order_facts:
-        order_facts = [order_facts[0]]
-    paid_order = next((item for item in order_facts if item["deposit_state"] == "paid_by_order"), None)
+    current_flow_facts = [current_order] if current_order else order_facts[:1]
     image_fact = payment_fact_from_image(image_info)
     existing_screenshot_paid = existing_state == "paid_by_screenshot" or (
         existing_state == "deposit_paid" and existing_source == "vision.payment_proof"
@@ -91,7 +138,7 @@ def resolved_payment_fact(
         selected = dict(paid_order)
     elif image_fact.get("deposit_state") == "paid_by_screenshot":
         selected = dict(image_fact)
-        related_order = next((item for item in order_facts if item.get("order_id")), None)
+        related_order = next((item for item in current_flow_facts if item.get("order_id")), None)
         if related_order:
             selected.update({key: related_order.get(key) for key in ("order_id", "order_no", "store_id", "store_name")})
     elif existing_screenshot_paid:
@@ -101,7 +148,7 @@ def resolved_payment_fact(
             "source": existing_source or "customer_memory",
         }
     else:
-        selected = next((dict(item) for item in order_facts if item["deposit_state"] == "required_unpaid"), {})
+        selected = next((dict(item) for item in current_flow_facts if item["deposit_state"] == "required_unpaid"), {})
 
     if not selected:
         return {}
@@ -111,6 +158,32 @@ def resolved_payment_fact(
 
 def is_paid_deposit_state(value: Any) -> bool:
     return str(value or "").strip() in {*PAID_DEPOSIT_STATES, "deposit_paid"}
+
+
+def order_created_at_value(order: dict[str, Any]) -> Any:
+    """Read platform order creation time across known snake/camel-case response versions."""
+    return next(
+        (
+            order.get(key)
+            for key in (
+                "created_at",
+                "create_at",
+                "created_time",
+                "create_time",
+                "order_created_at",
+                "createdAt",
+                "createAt",
+                "createdTime",
+                "createTime",
+                "orderCreatedAt",
+                "orderCreateTime",
+                "add_time",
+                "addTime",
+            )
+            if order.get(key) not in (None, "")
+        ),
+        None,
+    )
 
 
 def payment_collection_order_fact(state: dict[str, Any], *, amount: Any = None) -> dict[str, Any]:
@@ -143,6 +216,46 @@ def _positive_number(value: Any) -> bool:
         return float(value) > 0
     except (TypeError, ValueError):
         return False
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        seconds = float(value)
+        if seconds > 100_000_000_000:
+            seconds /= 1000
+        try:
+            parsed = datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if text.replace(".", "", 1).isdigit():
+            return _parse_datetime(float(text))
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _subtract_months(value: datetime, months: int) -> datetime:
+    month_index = value.year * 12 + (value.month - 1) - months
+    year, month_zero = divmod(month_index, 12)
+    month = month_zero + 1
+    day = min(value.day, monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
+def _order_binding_missing(order: dict[str, Any], *, required: bool) -> bool:
+    store_id = str(order.get("store_id") or "").strip().lower()
+    category_id = str(order.get("category_id") or "").strip().lower()
+    return store_id in {"", "0", "none", "null"} or category_id in {"", "0", "none", "null"} or not required
 
 
 def _payment_decision_value(state: dict[str, Any], key: str) -> Any:

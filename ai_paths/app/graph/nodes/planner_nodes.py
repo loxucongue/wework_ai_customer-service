@@ -71,6 +71,7 @@ def create_planner_brain_node(
                 "payment_state": plan.get("payment_state", "unknown"),
                 "payment_action": plan.get("payment_action", "unknown"),
                 "payment_decision": plan.get("payment_decision", {}),
+                "store_binding_decision": plan.get("store_binding_decision", {}),
                 "order_decision": plan.get("order_decision", {}),
                 "appointment_decision": plan.get("appointment_decision", {}),
                 "sales_progression": plan.get("sales_progression", {}),

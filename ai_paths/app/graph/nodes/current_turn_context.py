@@ -170,6 +170,7 @@ def build_current_turn_context(
         payment_evidence=payment_evidence,
         registration_evidence=registration_evidence,
         risk_hold=risk_hold,
+        sent_summary=sent_summary,
     )
     if turn_evidence:
         output["turn_evidence"] = turn_evidence
@@ -194,6 +195,7 @@ def _turn_evidence(
     payment_evidence: dict[str, Any],
     registration_evidence: dict[str, Any],
     risk_hold: dict[str, Any],
+    sent_summary: dict[str, Any],
 ) -> dict[str, Any]:
     return _drop_empty(
         {
@@ -205,7 +207,15 @@ def _turn_evidence(
                 last_assistant_text=last_assistant,
                 history=history,
             ),
-            "store_evidence": build_store_evidence(store_anchor),
+            "store_evidence": build_store_evidence(
+                store_anchor,
+                store_address_delivery=(sent_summary or {}).get("store_address_delivery")
+                if isinstance(sent_summary, dict)
+                else {},
+                store_anchor_fact=(sent_summary or {}).get("store_anchor_fact")
+                if isinstance(sent_summary, dict)
+                else {},
+            ),
             "appointment_evidence": build_appointment_evidence(
                 appointment=appointment,
                 missing_slots=visible_missing_slots,

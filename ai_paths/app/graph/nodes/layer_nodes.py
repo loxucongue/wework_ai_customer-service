@@ -382,13 +382,15 @@ def _load_memory(memory_store: CustomerMemoryStore | None, state: AgentState) ->
             "saved_memory": {},
             "memory_isolated": True,
         }
-    memory = memory_store.load(str(state.get("customer_id") or "unknown")) if memory_store else {}
+    sales_contact_key = str(state.get("sales_contact_key") or "").strip()
+    memory = memory_store.load(sales_contact_key) if memory_store and sales_contact_key else {}
     return {
         "customer_profile": memory.get("portrait", {}) if isinstance(memory, dict) else {},
         "customer_basic_info": memory.get("basic_info", {}) if isinstance(memory, dict) else {},
         "history_events": memory.get("history_events", []) if isinstance(memory, dict) else [],
         "lifecycle_stage": memory.get("lifecycle_stage", "") if isinstance(memory, dict) else "",
         "saved_memory": memory if isinstance(memory, dict) else {},
+        "memory_scope_status": "scoped" if sales_contact_key else "skipped_missing_wechat_scope",
     }
 
 

@@ -282,6 +282,60 @@ def test_sent_message_summary_exposes_authoritative_case_image_delivery_evidence
     assert delivery["decision_policy"] == "evidence_only_model_decides_case_image_send"
 
 
+def test_sent_message_summary_exposes_latest_single_store_card_delivery() -> None:
+    summary = sent_message_summary_for_model(
+        {
+            "history_events": [
+                {
+                    "event_id": "store-old-221",
+                    "event_type": "store_address_sent",
+                    "created_at": "2026-07-13T02:00:00+00:00",
+                    "facts": {"store_id": "221", "request_id": "request-old"},
+                },
+                {
+                    "event_id": "store-latest-386",
+                    "event_type": "store_address_sent",
+                    "created_at": "2026-07-14T02:00:00+00:00",
+                    "facts": {"store_id": "386", "request_id": "request-latest"},
+                },
+            ]
+        }
+    )
+
+    delivery = summary["store_address_delivery"]
+    assert delivery["latest_batch_store_ids"] == ["386"]
+    assert delivery["unique_latest_store_id"] == "386"
+    assert delivery["latest_batch_count"] == 1
+    assert delivery["batch_confidence"] == "high"
+    assert delivery["decision_policy"] == "evidence_only_model_decides_store_binding"
+
+
+def test_sent_message_summary_does_not_treat_latest_multi_store_batch_as_single_anchor() -> None:
+    summary = sent_message_summary_for_model(
+        {
+            "history_events": [
+                {
+                    "event_id": "store-latest-386",
+                    "event_type": "store_address_sent",
+                    "created_at": "2026-07-14T02:00:00+00:00",
+                    "facts": {"store_id": "386", "request_id": "request-latest"},
+                },
+                {
+                    "event_id": "store-latest-562",
+                    "event_type": "store_address_sent",
+                    "created_at": "2026-07-14T02:00:00+00:00",
+                    "facts": {"store_id": "562", "request_id": "request-latest"},
+                },
+            ]
+        }
+    )
+
+    delivery = summary["store_address_delivery"]
+    assert delivery["latest_batch_store_ids"] == ["386", "562"]
+    assert delivery["latest_batch_count"] == 2
+    assert "unique_latest_store_id" not in delivery
+
+
 def test_current_turn_context_does_not_label_payment_explanation_as_sent_card() -> None:
     context = build_current_turn_context(
         {

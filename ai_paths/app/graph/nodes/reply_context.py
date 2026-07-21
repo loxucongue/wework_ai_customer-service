@@ -82,6 +82,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "payment_state": state.get("payment_state", ""),
         "payment_action": state.get("payment_action", ""),
         "payment_decision": state.get("payment_decision", {}),
+        "store_binding_decision": state.get("store_binding_decision", {}),
         "order_decision": state.get("order_decision", {}),
         "appointment_decision": state.get("appointment_decision", {}),
         "sales_progression": state.get("sales_progression", {}),
@@ -248,6 +249,10 @@ def _transaction_facts_for_reply(fact_envelope: dict[str, Any]) -> dict[str, Any
                 "order_id": item.get("order_id"),
                 "store_id": item.get("store_id"),
                 "deposit_state": item.get("deposit_state"),
+                "creation_mode": item.get("creation_mode"),
+                "missing": item.get("missing"),
+                "missing_optional_fields": item.get("missing_optional_fields"),
+                "error": item.get("error"),
             }
         )
         for item in (structured.get("order_facts") or [])

@@ -13,7 +13,11 @@ from app.graph.nodes.current_turn_context import (
     current_store_anchor_from_state,
     is_context_reference_message,
 )
-from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
+from app.graph.nodes.sent_message_summary import (
+    latest_single_store_card_anchor_id,
+    sent_message_summary_for_model,
+    store_anchor_fact_for_model,
+)
 from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.graph.planner.planner_contract import (
     ALLOWED_CONVERSION_STAGES,
@@ -77,6 +81,24 @@ ALLOWED_APPOINTMENT_DECISION_ACTIONS = (
 )
 ALLOWED_APPOINTMENT_COMMITMENT_LEVELS = ("none", "tentative", "confirmed")
 ALLOWED_ORDER_DECISION_ACTIONS = ("none", "create_work", "use_existing")
+ALLOWED_STORE_BINDING_LEVELS = (
+    "none",
+    "explicit_confirmed",
+    "single_store_card_anchor",
+    "request_confirmed",
+    "appointment_context",
+    "existing_order",
+    "ambiguous",
+)
+ALLOWED_STORE_BINDING_STATUSES = (
+    "none",
+    "accepted_explicit",
+    "accepted_implicit",
+    "exploring",
+    "rejected",
+    "ambiguous",
+)
+ALLOWED_STORE_BINDING_CONFIDENCE = ("high", "medium", "low")
 ALLOWED_SALES_PROGRESSION_STATUSES = ("unknown", "continue", "pause", "terminal")
 ALLOWED_SALES_PROGRESSION_ACTIONS = (
     "none",
@@ -164,6 +186,10 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     order_decision = _normalize_order_decision(
         model_payload.get("order_decision") if isinstance(model_payload, dict) else {},
     )
+    store_binding_decision = _normalize_store_binding_decision(
+        model_payload.get("store_binding_decision") if isinstance(model_payload, dict) else {},
+        order_decision=order_decision,
+    )
     sales_progression = _normalize_sales_progression(
         model_payload.get("sales_progression") if isinstance(model_payload, dict) else {},
     )
@@ -216,6 +242,10 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         payment_decision=payment_decision,
         order_decision=order_decision,
         required_tools=required_tools,
+    )
+    store_binding_decision = _complete_store_binding_from_order_decision(
+        store_binding_decision,
+        order_decision=order_decision,
     )
     forced_store_lookup = _store_detail_lookup_tool_from_context(
         decision=decision,
@@ -377,8 +407,17 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     handoff = _normalize_handoff(handoff_raw)
     tool_policy_violations = [
         *normalizer_policy_violations,
+        *_store_binding_order_consistency_violations(
+            state=state,
+            store_binding_decision=store_binding_decision,
+            order_decision=order_decision,
+            required_tools=required_tools,
+        ),
         *_rejected_tool_violations(model_payload.get("tool_calls") if isinstance(model_payload, dict) else []),
-        *_tool_policy_violations(required_tools, state),
+        *_tool_policy_violations(
+            required_tools,
+            {**state, "store_binding_decision": store_binding_decision},
+        ),
         *_store_detail_tool_violations(
             decision=decision,
             messages=planner_reply_messages,
@@ -470,6 +509,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "payment_state": payment_state,
         "payment_action": payment_action,
         "payment_decision": payment_decision,
+        "store_binding_decision": store_binding_decision,
         "order_decision": order_decision,
         "appointment_decision": appointment_decision,
         "sales_progression": sales_progression,
@@ -1139,6 +1179,9 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
             store_id = str(tool.get("store_id") or "").strip()
             amount = str(tool.get("prepay") or tool.get("amount") or "").strip()
             confirmation_source = str(tool.get("store_confirmation_source") or "").strip()
+            binding = state.get("store_binding_decision") if isinstance(state.get("store_binding_decision"), dict) else {}
+            binding_status = str(binding.get("status") or "none").strip()
+            binding_store_id = str(binding.get("store_id") or "").strip()
             missing_args = [
                 key
                 for key, value in (("store_id", store_id), ("prepay", amount), ("store_confirmation_source", confirmation_source))
@@ -1153,13 +1196,53 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                         "note": "create_work_order requires a confirmed real store_id and a 10/20/30/40 prepay amount.",
                     }
                 )
-            elif confirmation_source not in {"request_confirmed", "current_message", "recent_explicit_choice", "appointment_context"}:
+            elif binding_status in {"exploring", "rejected", "ambiguous"}:
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "create_work_order",
+                        "missing": "create_work_order_store_binding_not_accepted",
+                        "note": (
+                            "The Planner says the customer is still comparing, rejected the store, or has an ambiguous "
+                            "store choice. Resolve that semantic decision before creating an order."
+                        ),
+                    }
+                )
+            elif binding_status in {"accepted_explicit", "accepted_implicit"} and binding_store_id != store_id:
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "create_work_order",
+                        "missing": "create_work_order_store_binding_mismatch",
+                        "note": "create_work_order.store_id must match store_binding_decision.store_id.",
+                    }
+                )
+            elif confirmation_source not in {
+                "request_confirmed",
+                "current_message",
+                "recent_explicit_choice",
+                "single_store_card_anchor",
+                "appointment_context",
+            }:
                 violations.append(
                     {
                         "task_type": "tool_argument",
                         "subtype": "create_work_order",
                         "missing": "create_work_order_store_confirmation_invalid",
                         "note": "A profile preference or unconfirmed lookup candidate cannot authorize order creation.",
+                    }
+                )
+            elif confirmation_source == "single_store_card_anchor" and latest_single_store_card_anchor_id(state) != store_id:
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "create_work_order",
+                        "missing": "create_work_order_single_store_card_anchor_mismatch",
+                        "note": (
+                            "single_store_card_anchor requires the exact store id from the latest authoritative delivery batch, "
+                            "and that batch must contain exactly one store card. Multi-store deliveries and profile preferences "
+                            "cannot authorize order creation."
+                        ),
                     }
                 )
             elif not _is_known_numeric_store_id(store_id, state):
@@ -1430,6 +1513,13 @@ def _normalize_order_decision(value: Any) -> dict[str, Any]:
         text = str(raw.get(key) or "").strip()
         if text:
             output[key] = text[:120]
+    binding_level = _normalize_enum(
+        str(raw.get("store_binding_level") or ""),
+        ALLOWED_STORE_BINDING_LEVELS,
+        "none",
+    )
+    if binding_level != "none":
+        output["store_binding_level"] = binding_level
     try:
         amount = int(float(raw.get("amount") or raw.get("prepay") or 0))
     except (TypeError, ValueError):
@@ -1440,6 +1530,140 @@ def _normalize_order_decision(value: Any) -> dict[str, Any]:
     if basis:
         output["basis"] = basis[:6]
     return output
+
+
+def _normalize_store_binding_decision(
+    value: Any,
+    *,
+    order_decision: dict[str, Any],
+) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    status = _normalize_enum(
+        str(raw.get("status") or ""),
+        ALLOWED_STORE_BINDING_STATUSES,
+        "none",
+    )
+    if status == "none":
+        status = _store_binding_status_from_order_decision(order_decision)
+    store_id = str(raw.get("store_id") or order_decision.get("store_id") or "").strip()
+    confidence = _normalize_enum(
+        str(raw.get("confidence") or ""),
+        ALLOWED_STORE_BINDING_CONFIDENCE,
+        "",
+    )
+    output: dict[str, Any] = {
+        "status": status,
+        "store_id": store_id,
+        "confidence": confidence,
+        "source": str(raw.get("source") or order_decision.get("source") or "").strip()[:120],
+        "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
+    }
+    return {key: item for key, item in output.items() if item not in (None, "", [], {})}
+
+
+def _complete_store_binding_from_order_decision(
+    value: dict[str, Any],
+    *,
+    order_decision: dict[str, Any],
+) -> dict[str, Any]:
+    output = dict(value or {})
+    if str(output.get("status") or "none") == "none":
+        output["status"] = _store_binding_status_from_order_decision(order_decision)
+    if not output.get("store_id") and order_decision.get("store_id"):
+        output["store_id"] = str(order_decision.get("store_id") or "").strip()
+    if not output.get("source") and order_decision.get("source"):
+        output["source"] = str(order_decision.get("source") or "").strip()[:120]
+    return {key: item for key, item in output.items() if item not in (None, "", [], {})}
+
+
+def _store_binding_status_from_order_decision(order_decision: dict[str, Any]) -> str:
+    binding_level = str(order_decision.get("store_binding_level") or "").strip()
+    if binding_level == "single_store_card_anchor":
+        return "accepted_implicit"
+    if binding_level == "ambiguous":
+        return "ambiguous"
+    if binding_level in {
+        "explicit_confirmed",
+        "request_confirmed",
+        "appointment_context",
+        "existing_order",
+    }:
+        return "accepted_explicit"
+    return "none"
+
+
+def _store_binding_order_consistency_violations(
+    *,
+    state: AgentState,
+    store_binding_decision: dict[str, Any],
+    order_decision: dict[str, Any],
+    required_tools: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    """Validate the model's own store-acceptance decision against order structure."""
+
+    status = str(store_binding_decision.get("status") or "none").strip()
+    store_id = str(store_binding_decision.get("store_id") or "").strip()
+    order_action = str(order_decision.get("action") or "none").strip()
+    order_store_id = str(order_decision.get("store_id") or "").strip()
+    create_tool = next(
+        (
+            item
+            for item in required_tools
+            if isinstance(item, dict) and str(item.get("name") or "").strip() == "create_work_order"
+        ),
+        {},
+    )
+    if status == "accepted_implicit":
+        anchor = store_anchor_fact_for_model(state)
+        if str(anchor.get("status") or "") != "eligible" or str(anchor.get("store_id") or "") != store_id:
+            return [
+                {
+                    "task_type": "transaction_consistency",
+                    "subtype": "store_binding",
+                    "missing": "accepted_implicit_requires_eligible_store_anchor_fact",
+                    "note": (
+                        "accepted_implicit requires the latest authoritative store-card batch to contain exactly one "
+                        "matching store. Unverified legacy events and multi-store batches must be exploring/ambiguous."
+                    ),
+                }
+            ]
+    if status in {"exploring", "rejected", "ambiguous"} and order_action in {"create_work", "use_existing"}:
+        return [
+            {
+                "task_type": "transaction_consistency",
+                "subtype": "store_binding",
+                "missing": "unaccepted_store_binding_cannot_resolve_order",
+                "note": "Do not create or bind an order while the customer is still comparing, rejected the store, or has an ambiguous choice.",
+            }
+        ]
+    if status not in {"accepted_explicit", "accepted_implicit"}:
+        return []
+    if store_id and order_store_id and store_id != order_store_id:
+        return [
+            {
+                "task_type": "transaction_consistency",
+                "subtype": "store_binding",
+                "missing": "accepted_store_binding_order_store_mismatch",
+                "note": "The order decision must use the same real store selected by store_binding_decision.",
+            }
+        ]
+    if explicit_professional_assist_reason(state) or is_hard_health_risk_hold(health_risk_hold(state)):
+        return []
+    if _has_authoritative_paid_context(state):
+        return []
+    if order_action == "none" and not create_tool:
+        return [
+            {
+                "task_type": "transaction_consistency",
+                "subtype": "store_binding",
+                "missing": "accepted_store_binding_requires_order_resolution",
+                "note": (
+                    "The Planner has decided that the customer accepted a unique transaction store. Resolve the order "
+                    "with use_existing or need_tools + create_work_order. This does not force payment_collection."
+                ),
+            }
+        ]
+    return []
 
 
 def _reconcile_paid_payment_decision(
@@ -1456,9 +1680,11 @@ def _reconcile_paid_payment_decision(
         for order in reversed(context.get("orders") or []):
             if not isinstance(order, dict):
                 continue
+            normalized_payment = normalize_prepay_facts(order)
             paid = _numeric_payment_amount(order.get("prepay_paid") or order.get("fee_paid"))
             required = _numeric_payment_amount(order.get("prepay_required") or order.get("fee_required"))
-            if paid or str(order.get("deposit_state") or "") in {"paid_by_order", "paid_by_screenshot", "paid"}:
+            deposit_state = str(order.get("deposit_state") or normalized_payment.get("deposit_state") or "")
+            if deposit_state in {"paid_by_order", "paid_by_screenshot", "paid"}:
                 amount = paid or required
                 if amount:
                     break
@@ -3277,6 +3503,14 @@ def _has_confirmed_appointment_or_available_time_fact(state: AgentState) -> bool
 
 
 def _direct_reply_claims_appointment_availability_or_hold(compact: str) -> bool:
+    # Customer-controlled timing is not a claim that a real store slot exists.
+    if re.search(r"(?:到店)?(?:时间|日期).{0,8}(?:后面|之后).{0,8}按(?:您|你)方便", compact) or re.search(
+        r"按(?:您|你)方便.{0,6}(?:定|安排|确认)",
+        compact,
+    ):
+        concrete_slot = re.search(r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?)", compact)
+        if not concrete_slot:
+            return False
     if any(
         term in compact
         for term in (

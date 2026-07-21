@@ -10,6 +10,7 @@ from typing import Any, Callable
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_task_results import ActionToolTask, merge_action_task_results
 from app.graph.nodes.appointment_time_utils import normalize_time_text
+from app.graph.nodes.sent_message_summary import latest_single_store_card_anchor_id
 from app.graph.planner.runtime_plan import (
     planner_primary_task,
     planner_required_tools,
@@ -217,14 +218,26 @@ def _create_or_reuse_work_order(
 ) -> dict[str, Any]:
     store_id = str(tool.get("store_id") or "").strip()
     amount = _coerce_deposit_amount(tool.get("prepay") or tool.get("amount"))
-    category_id = str(tool.get("category_id") or _request_context(state).get("category_id") or _customer_fact(state, "category_id") or "").strip()
+    category_id = _order_category_id(state, tool)
     confirmation_source = str(tool.get("store_confirmation_source") or "").strip()
     if not store_id or not amount:
         return {"status": "invalid_arguments", "missing": [key for key, value in (("store_id", store_id), ("prepay", amount)) if not value]}
     if store_id not in _known_store_ids(state, tool_results):
         return {"status": "rejected", "error": "store_id_not_backed_by_store_fact", "store_id": store_id}
-    if confirmation_source not in {"request_confirmed", "current_message", "recent_explicit_choice", "appointment_context"}:
+    if confirmation_source not in {
+        "request_confirmed",
+        "current_message",
+        "recent_explicit_choice",
+        "single_store_card_anchor",
+        "appointment_context",
+    }:
         return {"status": "rejected", "error": "store_confirmation_required_before_work_order", "store_id": store_id}
+    if confirmation_source == "single_store_card_anchor" and latest_single_store_card_anchor_id(state) != store_id:
+        return {
+            "status": "rejected",
+            "error": "single_store_card_anchor_not_authoritative",
+            "store_id": store_id,
+        }
 
     fresh_orders = platform_client.list_orders(
         customer_id=_platform_customer_id(state),
@@ -238,7 +251,12 @@ def _create_or_reuse_work_order(
     if existing:
         existing_amount = _numeric_amount(existing.get("prepay_required"))
         if existing.get("deposit_state") == "paid_by_order":
-            return {"status": "reused", "source": "platform_agent.order_index", **existing}
+            return {
+                "status": "reused",
+                "source": "platform_agent.order_index",
+                "store_confirmation_source": confirmation_source,
+                **existing,
+            }
         if existing_amount != amount:
             user_id = _request_context(state).get("user_id") or state.get("user_id")
             modified = platform_client.modify_work_order(
@@ -258,43 +276,104 @@ def _create_or_reuse_work_order(
                 }
             existing["prepay_required"] = amount
             existing["amount_updated"] = True
-        return {"status": "reused", "source": "platform_agent.order_index", **existing}
+        return {
+            "status": "reused",
+            "source": "platform_agent.order_index",
+            "store_confirmation_source": confirmation_source,
+            **existing,
+        }
+
+    bindable_paid_order = _bindable_paid_order(fresh_orders, amount=amount)
+    if bindable_paid_order:
+        user_id = _request_context(state).get("user_id") or state.get("user_id")
+        modified = platform_client.modify_work_order(
+            order_id=bindable_paid_order.get("order_id"),
+            store_id=store_id,
+            user_id=user_id,
+            amount=amount,
+            category_id=category_id or None,
+            request_context=_request_context(state),
+        )
+        if _platform_explicitly_rejected(modified):
+            return {
+                "status": "rejected",
+                "error": "existing_paid_work_order_binding_failed",
+                "order_id": bindable_paid_order.get("order_id"),
+                "result": _compact_platform_result(modified),
+            }
+        return {
+            "status": "reused",
+            "source": "platform_agent.order.modify",
+            **bindable_paid_order,
+            "store_id": store_id,
+            "category_id": category_id,
+            "prepay_required": amount,
+            "deposit_state": "paid_by_order",
+            "order_binding_state": "bound",
+            "order_binding_repaired": True,
+            "store_confirmation_source": confirmation_source,
+        }
 
     customer_id = _platform_customer_id(state)
     customer_add_wechat_id = _customer_add_wechat_id(state)
     user_id = _request_context(state).get("user_id") or state.get("user_id")
     customer_kind = _customer_fact(state, "kind") or _request_context(state).get("kind")
-    if not customer_add_wechat_id or customer_kind in (None, "") or not category_id:
+    enrichment_error = ""
+    if not customer_add_wechat_id or customer_kind in (None, "") or not category_id or user_id in (None, ""):
         request_context = _request_context(state)
-        customer_info = platform_client.get_customer_info(
-            user_id=user_id,
-            corp_id=request_context.get("corp_id"),
-            wechat=request_context.get("wechat"),
-            external_userid=request_context.get("external_userid"),
-        )
+        try:
+            customer_info = platform_client.get_customer_info(
+                user_id=user_id,
+                corp_id=request_context.get("corp_id"),
+                wechat=request_context.get("wechat"),
+                external_userid=request_context.get("external_userid"),
+            )
+        except Exception as exc:
+            customer_info = {}
+            enrichment_error = f"{type(exc).__name__}: {exc}"
         customer_add_wechat_id = str(customer_add_wechat_id or customer_info.get("customer_add_wechat_id") or "").strip()
+        user_id = user_id or customer_info.get("user_id") or customer_info.get("assignee_id")
         customer_kind = customer_kind if customer_kind not in (None, "") else customer_info.get("kind")
-        category_id = str(category_id or customer_info.get("category_id") or "").strip()
-    missing = [
+        info_category = str(customer_info.get("category_id") or "").strip()
+        if _is_platform_category_id(info_category) and not _is_platform_category_id(category_id):
+            category_id = info_category
+        else:
+            category_id = str(category_id or info_category or "").strip()
+    hard_missing = [
         key
         for key, value in (
             ("customer_id", customer_id),
-            ("customer_add_wechat_id", customer_add_wechat_id),
-            ("user_id", user_id),
-            ("kind", customer_kind),
         )
         if value in (None, "")
     ]
-    if missing:
-        return {"status": "invalid_arguments", "missing": missing}
+    if hard_missing:
+        return {"status": "invalid_arguments", "missing": hard_missing}
+    missing_optional_fields = [
+        key
+        for key, value in (
+            ("customer_add_wechat_id", customer_add_wechat_id),
+            ("user_id", user_id),
+            ("kind", customer_kind),
+            ("category_id", category_id),
+        )
+        if value in (None, "")
+    ]
 
-    check = platform_client.check_customer(
-        customer_id=customer_id,
-        kind=customer_kind,
-        request_context=_request_context(state),
-    )
-    if _check_customer_rejected(check):
-        return {"status": "rejected", "source": "platform_agent.order.check_customer", "check_customer": _compact_platform_result(check)}
+    check_status = "skipped_missing_optional_kind"
+    if customer_kind not in (None, ""):
+        check = platform_client.check_customer(
+            customer_id=customer_id,
+            kind=customer_kind,
+            request_context=_request_context(state),
+        )
+        check_status = "accepted"
+        if _check_customer_rejected(check):
+            return {
+                "status": "rejected",
+                "source": "platform_agent.order.check_customer",
+                "check_customer": _compact_platform_result(check),
+                "missing_optional_fields": missing_optional_fields,
+            }
 
     created = platform_client.create_work_order(
         customer_id=customer_id,
@@ -313,6 +392,8 @@ def _create_or_reuse_work_order(
             "error": "create_work_order_missing_order_id",
             "source": "platform_agent.order.create_work",
             "result": _compact_platform_result(created),
+            "missing_optional_fields": missing_optional_fields,
+            "enrichment_error": enrichment_error,
         }
     return {
         "status": "created",
@@ -322,6 +403,11 @@ def _create_or_reuse_work_order(
         "category_id": category_id,
         "prepay_required": amount,
         "deposit_state": "required_unpaid",
+        "store_confirmation_source": confirmation_source,
+        "creation_mode": "partial" if missing_optional_fields else "complete",
+        "missing_optional_fields": missing_optional_fields,
+        "customer_check_status": check_status,
+        "enrichment_error": enrichment_error,
     }
 
 
@@ -425,6 +511,20 @@ def _customer_fact(state: AgentState, key: str) -> Any:
     return customer.get(key)
 
 
+def _order_category_id(state: AgentState, tool: dict[str, Any]) -> str:
+    tool_category = str(tool.get("category_id") or "").strip()
+    customer_category = str(_customer_fact(state, "category_id") or "").strip()
+    request_category = str(_request_context(state).get("category_id") or "").strip()
+    for value in (tool_category, customer_category, request_category):
+        if _is_platform_category_id(value):
+            return value
+    return tool_category or customer_category or request_category
+
+
+def _is_platform_category_id(value: Any) -> bool:
+    return str(value or "").strip().isdigit()
+
+
 def _context_orders(state: AgentState) -> list[dict[str, Any]]:
     context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
     return [item for item in context.get("orders") or [] if isinstance(item, dict)]
@@ -469,6 +569,32 @@ def _reusable_raw_order(orders: list[dict[str, Any]], *, store_id: str, category
             "prepay_required": payment.get("prepay_required"),
             "prepay_paid": payment.get("prepay_paid"),
             "deposit_state": payment.get("deposit_state") or "unknown",
+        }
+    return {}
+
+
+def _bindable_paid_order(orders: list[dict[str, Any]], *, amount: int) -> dict[str, Any]:
+    for order in orders:
+        if order_status_text(order.get("status")) not in {"pending", "waiting_schedule", "scheduled"}:
+            continue
+        payment = normalize_prepay_facts(order)
+        if payment.get("deposit_state") != "paid_by_order":
+            continue
+        paid_amount = _numeric_amount(payment.get("prepay_paid") or order.get("fee_paid"))
+        if paid_amount and paid_amount != amount:
+            continue
+        if payment.get("order_binding_state") != "needs_binding":
+            continue
+        order_id = str(order.get("id") or order.get("order_id") or "")
+        if not order_id:
+            continue
+        return {
+            "order_id": order_id,
+            "order_no": str(order.get("order_no") or ""),
+            "prepay_paid": payment.get("prepay_paid"),
+            "previous_store_id": str(order.get("store_id") or ""),
+            "previous_category_id": str(order.get("category_id") or ""),
+            "previous_prepay_required": payment.get("prepay_required"),
         }
     return {}
 
@@ -901,7 +1027,7 @@ def _tool_execution_error_result(
         or state.get("content")
         or ""
     ).strip()
-    return {
+    result = {
         "status": "tool_error",
         "query": query,
         "purpose": str(tool.get("purpose") or "").strip(),
@@ -912,6 +1038,15 @@ def _tool_execution_error_result(
         "error": f"{type(exc).__name__}: {exc}",
         "tool": tool_name,
     }
+    if tool_name == "create_work_order":
+        result.update(
+            {
+                "store_id": str(tool.get("store_id") or "").strip(),
+                "prepay_required": _coerce_deposit_amount(tool.get("prepay") or tool.get("amount")),
+                "source": "platform_agent.order.create_work",
+            }
+        )
+    return result
 
 
 def _needs_distance_calculate(required_tools: list[dict[str, Any]]) -> bool:
@@ -995,6 +1130,32 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     geocode: dict[str, Any] = {}
     if workflow_id:
         geocode = await _geocode_address(coze_client, workflow_id, query)
+
+    ambiguous_location = _geocode_location_is_ambiguous(
+        raw_query=raw_query,
+        query=query,
+        geocode=geocode,
+        stores=stores,
+    )
+    if ambiguous_location:
+        return {
+            "status": "ambiguous_location",
+            "raw_query": raw_query,
+            "query": query,
+            "purpose": purpose,
+            "source": "poi_to_geocode_ambiguous",
+            "geocode": {
+                key: geocode.get(key)
+                for key in ("formatted_address", "province", "city", "district", "location")
+                if geocode.get(key)
+            },
+            "geocode_candidate_count": int(geocode.get("candidate_count") or 0),
+            "geocode_candidate_regions": list(geocode.get("candidate_regions") or [])[:6],
+            "stores": [],
+            "candidate_stores": [],
+            "candidate_store_count": 0,
+            "missing": ["confirmed_city_or_district"],
+        }
 
     geocode_conflict = _geocode_conflicts_with_query_scope(query, geocode, stores)
     candidates = [] if geocode_conflict else _stores_for_geocode(geocode, stores, purpose)
@@ -1201,6 +1362,31 @@ def _clean_store_lookup_query(value: str) -> str:
         if label_compact and any(marker in label_compact for marker in ("门店", "位置", "地址", "定位", "区域", "商圈", "地标")):
             text = match.group(1).strip()
     return text
+
+
+def _geocode_location_is_ambiguous(
+    *,
+    raw_query: str,
+    query: str,
+    geocode: dict[str, Any],
+    stores: list[dict[str, Any]],
+) -> bool:
+    """Keep cross-city geocode ambiguity as a fact instead of selecting a city for the model."""
+
+    if not bool(geocode.get("ambiguous_regions")):
+        return False
+    if _has_structured_location_label(raw_query):
+        return False
+    return not bool(_stores_for_text_query(query, stores, ""))
+
+
+def _has_structured_location_label(value: str) -> bool:
+    text = str(value or "").strip()
+    match = re.match(r"^\s*([\u4e00-\u9fffA-Za-z0-9_ /-]{2,16})\s*[:：]\s*.+$", text)
+    if not match:
+        return False
+    label = _compact_text(match.group(1))
+    return bool(label and any(marker in label for marker in ("门店", "位置", "地址", "定位", "区域", "商圈", "地标")))
 
 
 def _geocode_conflicts_with_query_scope(query: str, geocode: dict[str, Any], stores: list[dict[str, Any]]) -> bool:
@@ -1546,37 +1732,59 @@ async def _geocode_address(coze_client: CozeClient, workflow_id: str, address: s
     raw = await coze_client.run_workflow(workflow_id, {"address": address})
     data = raw.get("data")
     if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                return item
-        return {}
+        return _first_geocode_candidate(data)
     if isinstance(data, str) and data:
         try:
             parsed = json.loads(data)
         except json.JSONDecodeError:
             parsed = {}
         if isinstance(parsed, list):
-            for item in parsed:
-                if isinstance(item, dict):
-                    return item
-            return {}
+            return _first_geocode_candidate(parsed)
     elif isinstance(data, dict):
         parsed = data
     else:
         parsed = raw
     output = parsed.get("output") if isinstance(parsed, dict) else None
     if isinstance(output, list) and output and isinstance(output[0], dict):
-        return output[0]
+        return _first_geocode_candidate(output)
     if isinstance(output, dict):
         return output
     if isinstance(parsed, dict) and isinstance(parsed.get("output"), str):
         try:
             nested = json.loads(str(parsed.get("output") or ""))
             if isinstance(nested, list) and nested and isinstance(nested[0], dict):
-                return nested[0]
+                return _first_geocode_candidate(nested)
         except json.JSONDecodeError:
             return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _first_geocode_candidate(items: list[Any]) -> dict[str, Any]:
+    candidates = [dict(item) for item in items if isinstance(item, dict)]
+    if not candidates:
+        return {}
+    first = candidates[0]
+    regions: list[dict[str, str]] = []
+    region_keys: set[tuple[str, str, str]] = set()
+    for candidate in candidates:
+        region = {
+            key: str(candidate.get(key) or "").strip()
+            for key in ("province", "city", "district")
+            if str(candidate.get(key) or "").strip()
+        }
+        region_key = (
+            region.get("province", ""),
+            region.get("city", ""),
+            region.get("district", ""),
+        )
+        if not any(region_key) or region_key in region_keys:
+            continue
+        region_keys.add(region_key)
+        regions.append(region)
+    first["candidate_count"] = len(candidates)
+    first["candidate_regions"] = regions[:12]
+    first["ambiguous_regions"] = len(region_keys) > 1
+    return first
 
 
 async def _distance_between_points(coze_client: CozeClient, workflow_id: str, origin: str, destination: str) -> dict[str, Any]:

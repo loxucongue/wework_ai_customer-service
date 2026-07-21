@@ -4,19 +4,11 @@ from typing import Any
 
 from app.services.platform_agent_client import unix_to_text
 from app.services.customer_appointment_context import empty_appointment
-from app.services.customer_payment_state import normalize_prepay_facts
+from app.services.customer_payment_state import normalize_prepay_facts, order_created_at_value
 
 
 def appointment_from_orders(orders: list[dict[str, Any]]) -> dict[str, Any]:
-    active_statuses = {1, 2, 3}
-    active_orders = []
-    for order in orders:
-        try:
-            status = int(order.get("status", -1))
-        except (TypeError, ValueError):
-            status = -1
-        if status in active_statuses:
-            active_orders.append(order)
+    active_orders = [order for order in orders if _is_current_flow_order(order)]
     if not active_orders:
         return empty_appointment(source="platform_agent.order_index")
     order = sorted(active_orders, key=lambda item: int(item.get("plan_at") or item.get("created_at") or 0), reverse=True)[0]
@@ -50,6 +42,7 @@ def compact_order(order: dict[str, Any]) -> dict[str, Any]:
         "fee_required": order.get("fee_required"),
         "fee_paid": order.get("fee_paid"),
         "fee_paid_total": order.get("fee_paid_total"),
+        "created_at": order_created_at_value(order),
         **normalize_prepay_facts(order),
         "store_id": order.get("store_id"),
         "store_name": order.get("store_name"),
@@ -88,3 +81,13 @@ def order_status_text(value: Any) -> str:
         7: "evaluated",
         8: "cancelled",
     }.get(status, "unknown")
+
+
+def _is_current_flow_order(order: dict[str, Any]) -> bool:
+    try:
+        status = int(order.get("status", -1))
+    except (TypeError, ValueError):
+        status = -1
+    if status not in {1, 2, 3}:
+        return False
+    return normalize_prepay_facts(order).get("deposit_state") != "historical_paid_expired"

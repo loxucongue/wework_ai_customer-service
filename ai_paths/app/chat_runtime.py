@@ -15,6 +15,7 @@ from app.graph.nodes.activity_intro_image import activity_intro_image_url, appen
 from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
+from app.services.customer_scope import customer_scope_from_state
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
@@ -496,20 +497,20 @@ class ChatRuntime:
                         _record_sent_case_images(
                             self._memory_store,
                             final_state,
-                            customer_id=str(request.customer_id or ""),
+                            customer_id=str(final_state.get("sales_contact_key") or ""),
                             reply_messages=messages,
                         )
                         _record_activity_intro_image(
                             self._memory_store,
                             final_state,
-                            customer_id=str(request.customer_id or ""),
+                            customer_id=str(final_state.get("sales_contact_key") or ""),
                             reply_messages=messages,
                             send_mode="async",
                         )
                         _record_visible_store_facts(
                             self._memory_store,
                             final_state,
-                            customer_id=str(request.customer_id or ""),
+                            customer_id=str(final_state.get("sales_contact_key") or ""),
                             reply_messages=messages,
                         )
                 self._save_state(conversation_id, final_state)
@@ -590,20 +591,20 @@ class ChatRuntime:
                         _record_sent_case_images(
                             self._memory_store,
                             final_state,
-                            customer_id=str(request.customer_id or ""),
+                            customer_id=str(final_state.get("sales_contact_key") or ""),
                             reply_messages=messages,
                         )
                         _record_activity_intro_image(
                             self._memory_store,
                             final_state,
-                            customer_id=str(request.customer_id or ""),
+                            customer_id=str(final_state.get("sales_contact_key") or ""),
                             reply_messages=messages,
                             send_mode="async",
                         )
                         _record_visible_store_facts(
                             self._memory_store,
                             final_state,
-                            customer_id=str(request.customer_id or ""),
+                            customer_id=str(final_state.get("sales_contact_key") or ""),
                             reply_messages=messages,
                         )
                 self._save_state(conversation_id, final_state)
@@ -753,7 +754,7 @@ class ChatRuntime:
     @staticmethod
     def _initial_state(request: ChatRequest, request_id: str, request_context: dict[str, Any]) -> AgentState:
         test_isolated = bool(request_context.get("test_isolated"))
-        return {
+        state: AgentState = {
             "request_id": request_id,
             "customer_id": request.customer_id,
             "corp_id": request.corp_id,
@@ -776,6 +777,11 @@ class ChatRuntime:
             "trace": [],
             "errors": [],
         }
+        scope = customer_scope_from_state(state)
+        state["sales_contact_key"] = scope.sales_contact_key
+        state["global_customer_key"] = scope.global_customer_key
+        state["customer_scope"] = scope.as_dict()
+        return state
 
     def _handle_graph_exception(self, initial_state: AgentState, exc: Exception) -> AgentState:
         failed_state = failed_state_from_exception(initial_state, exc)
@@ -818,20 +824,20 @@ class ChatRuntime:
                 _record_sent_case_images(
                     self._memory_store,
                     final_state,
-                    customer_id=str(request.customer_id or ""),
+                    customer_id=str(final_state.get("sales_contact_key") or ""),
                     reply_messages=[message.model_dump() for message in reply_messages],
                 )
                 _record_activity_intro_image(
                     self._memory_store,
                     final_state,
-                    customer_id=str(request.customer_id or ""),
+                    customer_id=str(final_state.get("sales_contact_key") or ""),
                     reply_messages=[message.model_dump() for message in reply_messages],
                     send_mode="sync",
                 )
                 _record_visible_store_facts(
                     self._memory_store,
                     final_state,
-                    customer_id=str(request.customer_id or ""),
+                    customer_id=str(final_state.get("sales_contact_key") or ""),
                     reply_messages=[message.model_dump() for message in reply_messages],
                 )
         elif reply_messages:
@@ -1166,7 +1172,7 @@ def _set_async_final_control(state: AgentState, result: dict[str, Any]) -> None:
 
 def _memory_persistence_allowed(state: AgentState) -> bool:
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
-    return bool(request_context.get("memory_persist_allowed"))
+    return bool(request_context.get("memory_persist_allowed")) and bool(str(state.get("sales_contact_key") or "").strip())
 
 
 def _async_superseded_result() -> dict[str, Any]:

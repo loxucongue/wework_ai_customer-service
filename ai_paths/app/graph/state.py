@@ -30,6 +30,9 @@ class AgentState(TypedDict, total=False):
     wechat: str | None
     external_userid: str | None
     customer_add_wechat_id: str | int | None
+    sales_contact_key: str
+    global_customer_key: str
+    customer_scope: dict[str, Any]
     confirmed_store_id: str | int | None
     confirmed_store_name: str | None
     store_id: str | int | None
@@ -67,6 +70,7 @@ class AgentState(TypedDict, total=False):
     payment_state: str
     payment_action: str
     payment_decision: dict[str, Any]
+    store_binding_decision: dict[str, Any]
     order_decision: dict[str, Any]
     order_state: dict[str, Any]
     deposit_state: dict[str, Any]

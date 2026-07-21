@@ -47,10 +47,14 @@ class Repository:
     def save_run(self, *, conversation_id: str, final_state: dict[str, Any], token_usage: dict[str, Any]) -> None:
         self.saved_states.append(dict(final_state))
 
-    def list_sent_sop_pack_ids_for_customer(self, *, customer_id: str, external_userid: str) -> list[str]:
+    def list_sent_sop_pack_ids_for_customer(
+        self, *, customer_id: str, external_userid: str, corp_id: str = "", wechat: str = ""
+    ) -> list[str]:
         return sorted(self.sent_sop_ids)
 
-    def list_sent_sop_categories_for_customer(self, *, customer_id: str, external_userid: str) -> list[str]:
+    def list_sent_sop_categories_for_customer(
+        self, *, customer_id: str, external_userid: str, corp_id: str = "", wechat: str = ""
+    ) -> list[str]:
         return sorted(self.sent_sop_categories)
 
     def create_sop_event(self, payload: dict[str, Any]) -> dict[str, Any]:

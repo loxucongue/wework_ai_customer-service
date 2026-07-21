@@ -14,7 +14,7 @@ from app.graph.nodes.current_turn_context import (
     current_store_anchor_from_state,
 )
 from app.graph.nodes.location_card import location_card_from_state
-from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model, store_anchor_fact_for_model
 from app.graph.nodes.store_scope_summary import build_store_scope_summary
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
 from app.graph.planner.brain_v2_prompts import (
@@ -28,6 +28,7 @@ from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, planner
 from app.graph.state import AgentState
 from app.policies.business_rules import planner_business_rules_prompt_section
 from app.policies.constants import KNOWN_STORE_NAMES
+from app.services.customer_payment_state import normalize_prepay_facts
 from app.services.model_client import ModelClient
 from app.services.risk_hold import HEALTH_RISK_TERMS, health_risk_hold
 from app.services.store_snapshot_service import store_snapshot_rows
@@ -58,6 +59,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "payment_state": "unknown | link_sent | customer_claimed_paid | resend_requested | payment_failed | needs_payment",
   "payment_action": "unknown | none | send_now | offer_resend | explain_existing | confirm_next_step",
   "payment_decision": {"action":"none | explain | send_now | resend | after_paid_next_step | ask_party_size","party_size":1,"amount":10,"source":"","confidence":"high | medium | low","basis":[]},
+  "store_binding_decision": {"status":"none | accepted_explicit | accepted_implicit | exploring | rejected | ambiguous","store_id":"","confidence":"high | medium | low","source":"","basis":[]},
   "order_decision": {"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
   "sales_progression": {"status":"continue | pause | terminal","target_stage":"need_and_case | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[]},
@@ -239,6 +241,7 @@ def _planner_call_output(plan: dict[str, Any]) -> dict[str, Any]:
         "next_step": plan.get("next_step", ""),
         "payment_action": plan.get("payment_action", ""),
         "payment_decision": plan.get("payment_decision", {}),
+        "store_binding_decision": plan.get("store_binding_decision", {}),
         "order_decision": plan.get("order_decision", {}),
         "appointment_decision": plan.get("appointment_decision", {}),
         "sales_progression": plan.get("sales_progression", {}),
@@ -671,6 +674,8 @@ def _compact_plan_for_repair(plan: dict[str, Any]) -> dict[str, Any]:
             "payment_state": plan.get("payment_state", ""),
             "payment_action": plan.get("payment_action", ""),
             "payment_decision": plan.get("payment_decision", {}),
+            "store_binding_decision": plan.get("store_binding_decision", {}),
+            "order_decision": plan.get("order_decision", {}),
             "appointment_decision": plan.get("appointment_decision", {}),
             "sales_progression": plan.get("sales_progression", {}),
             "reply_messages": plan.get("planner_reply_messages", []),
@@ -728,6 +733,9 @@ def _compact_customer_context(raw: dict[str, Any]) -> dict[str, Any]:
                     "prepay_required",
                     "prepay_paid",
                     "deposit_state",
+                    "paid_protection_status",
+                    "paid_time_source",
+                    "paid_time_value",
                     "appointment_time",
                 )
                 if order.get(key) not in (None, "", [], {})
@@ -757,19 +765,27 @@ def _transaction_facts_for_planner(state: AgentState) -> dict[str, Any]:
         paid = raw.get("prepay_paid")
         if paid in (None, ""):
             paid = raw.get("fee_paid")
-        deposit_state = str(raw.get("deposit_state") or "").strip()
+        normalized_payment = normalize_prepay_facts(raw)
+        deposit_state = str(raw.get("deposit_state") or normalized_payment.get("deposit_state") or "").strip()
         if not deposit_state:
             deposit_state = "paid_by_order" if _numeric_order_amount(paid) > 0 else (
                 "required_unpaid" if _numeric_order_amount(required) > 0 else "unknown"
             )
+        paid_protection_status = str(
+            raw.get("paid_protection_status") or normalized_payment.get("paid_protection_status") or ""
+        ).strip()
         item = {
             "order_id": order_id,
             "store_id": str(raw.get("store_id") or "").strip(),
             "prepay_required": required,
             "prepay_paid": paid,
             "deposit_state": deposit_state,
+            "paid_protection_status": paid_protection_status,
+            "paid_time_source": raw.get("paid_time_source") or normalized_payment.get("paid_time_source"),
+            "paid_time_value": raw.get("paid_time_value") or normalized_payment.get("paid_time_value"),
         }
-        if deposit_state == "paid_by_order" or _numeric_order_amount(paid) > 0:
+        item = {key: value for key, value in item.items() if value not in (None, "", [], {})}
+        if deposit_state == "paid_by_order" and paid_protection_status != "expired":
             paid_orders.append(item)
         elif deposit_state == "required_unpaid" and _numeric_order_amount(required) > 0:
             unpaid_orders.append(item)
@@ -777,6 +793,7 @@ def _transaction_facts_for_planner(state: AgentState) -> dict[str, Any]:
         "has_unpaid_order": bool(unpaid_orders),
         "unpaid_orders": unpaid_orders,
         "paid_orders": paid_orders,
+        "store_anchor_fact": store_anchor_fact_for_model(state),
     }
 
 

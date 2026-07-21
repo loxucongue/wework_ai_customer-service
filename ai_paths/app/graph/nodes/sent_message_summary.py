@@ -24,6 +24,8 @@ def sent_message_summary_for_model(
         now=now,
     )
     case_image_delivery = _case_image_delivery(state.get("history_events"))
+    store_address_delivery = _store_address_delivery(state.get("history_events"))
+    store_anchor_fact = _store_anchor_fact(store_address_delivery)
     activity_intro_image_sent = False
     store_ids: list[str] = []
 
@@ -56,8 +58,113 @@ def sent_message_summary_for_model(
         "case_image_delivery": case_image_delivery,
         "activity_intro_image_sent": activity_intro_image_sent,
         "store_address_sent_by_store_id": list(dict.fromkeys(store_ids)),
+        "store_address_delivery": store_address_delivery,
+        "store_anchor_fact": store_anchor_fact,
     }
     return {key: value for key, value in output.items() if value not in (False, 0, [], {}, None, "")}
+
+
+def latest_single_store_card_anchor_id(state: dict[str, Any]) -> str:
+    """Return the latest single-card store id from authoritative delivery events."""
+
+    anchor = store_anchor_fact_for_model(state)
+    if str(anchor.get("status") or "") != "eligible":
+        return ""
+    return str(anchor.get("store_id") or "").strip()
+
+
+def store_anchor_fact_for_model(state: dict[str, Any]) -> dict[str, Any]:
+    """Return structural store-card evidence without deciding customer acceptance."""
+
+    return _store_anchor_fact(_store_address_delivery(state.get("history_events")))
+
+
+def _store_anchor_fact(delivery: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(delivery, dict) or not delivery:
+        return {"status": "none", "source": "history_events"}
+    store_ids = [
+        str(item or "").strip()
+        for item in delivery.get("latest_batch_store_ids") or []
+        if str(item or "").strip()
+    ]
+    confidence = str(delivery.get("batch_confidence") or "").strip()
+    if confidence != "high":
+        status = "unverified"
+    elif len(store_ids) == 1:
+        status = "eligible"
+    elif len(store_ids) > 1:
+        status = "ambiguous"
+    else:
+        status = "none"
+    return _drop_empty(
+        {
+            "status": status,
+            "store_id": store_ids[0] if status == "eligible" else "",
+            "store_ids": store_ids,
+            "batch_count": len(store_ids),
+            "confidence": confidence or "none",
+            "last_sent_at": str(delivery.get("last_sent_at") or "").strip(),
+            "request_id": str(delivery.get("request_id") or "").strip(),
+            "source": "latest_store_address_delivery",
+            "usage": "evidence_only_planner_decides_customer_store_acceptance",
+        }
+    )
+
+
+def _store_address_delivery(raw_events: Any) -> dict[str, Any]:
+    """Expose the latest store-card delivery batch without deciding sales intent."""
+
+    deliveries: list[tuple[int, dict[str, Any], datetime | None, str, str]] = []
+    for index, event in enumerate(raw_events if isinstance(raw_events, list) else []):
+        if not isinstance(event, dict) or str(event.get("event_type") or "").strip() != "store_address_sent":
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        store_id = str(facts.get("store_id") or facts.get("id") or "").strip()
+        if not store_id:
+            continue
+        deliveries.append(
+            (
+                index,
+                event,
+                _event_datetime(event),
+                store_id,
+                str(facts.get("request_id") or "").strip(),
+            )
+        )
+    if not deliveries:
+        return {}
+
+    latest = max(
+        deliveries,
+        key=lambda item: (
+            item[2].timestamp() if item[2] is not None else float("-inf"),
+            item[0],
+        ),
+    )
+    latest_request_id = latest[4]
+    if latest_request_id:
+        latest_batch = [item for item in deliveries if item[4] == latest_request_id]
+        batch_confidence = "high"
+    else:
+        # Legacy events do not prove whether adjacent cards belonged to one response.
+        latest_batch = [latest]
+        batch_confidence = "partial"
+
+    store_ids = list(dict.fromkeys(item[3] for item in sorted(latest_batch, key=lambda item: item[0])))
+    latest_at = latest[2]
+    return _drop_empty(
+        {
+            "total_events": len(deliveries),
+            "latest_batch_store_ids": store_ids,
+            "unique_latest_store_id": store_ids[0] if len(store_ids) == 1 and batch_confidence == "high" else "",
+            "latest_batch_count": len(store_ids),
+            "last_sent_at": latest_at.isoformat() if latest_at is not None else "",
+            "request_id": latest_request_id,
+            "batch_confidence": batch_confidence,
+            "source": "history_events",
+            "decision_policy": "evidence_only_model_decides_store_binding",
+        }
+    )
 
 
 def _case_image_delivery(raw_events: Any) -> dict[str, Any]:
@@ -292,3 +399,7 @@ def _conversation_text(item: Any) -> str:
             return str(content.get("text") or content.get("content") or "")
         return str(content or item.get("text") or "")
     return str(item or "")
+
+
+def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
