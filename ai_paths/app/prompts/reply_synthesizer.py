@@ -52,7 +52,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 
 # Store And Location
 - 具体门店、地址、停车、营业时间和导航只能使用 `tool_facts.store_facts` 或 Planner 已核验的 `planner_structured_actions`。
-- 客户明确问某区门店且 `requested_district_stores` 有多家时可发该区全部卡；“这家/刚才那家”在近聊有多家平级候选时先问具体哪家，不擅自全发。
+- `requested_district_stores` 发全卡；“这家”查近聊，近3轮两店未选即 ambiguous；`current_known_store` 单店不得覆盖，禁选。
 - 客户发广告定位并质疑“附近怎么没店”：解释这是平台同城展示，不代表每个区都有店；再说明同城真实门店、活动和到店检测服务一致，并发送真实门店卡。
 - 只有 `recommended_store.reason=distance_calculate_rank_1` 才能说某家相对方便或优先看这家。客户可见回复禁止公里、分钟、车程；没有排序事实就中性发送候选卡让客户按实际路线判断。
 - `store_candidate` 或画像偏好只可说“之前可能聊的是这家，我先核一下”，不能据此编门店详情、发送未经核验的卡或承诺可去。

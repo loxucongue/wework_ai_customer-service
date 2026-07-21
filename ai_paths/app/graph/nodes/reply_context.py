@@ -20,7 +20,7 @@ from app.policies.compliance_terms import (
     UNSUPPORTED_QUALIFICATION_CONTEXT_TERMS,
     UNSUPPORTED_SERVICE_COMMITMENT_CONTEXT_TERMS,
 )
-from app.services.risk_hold import health_risk_hold
+from app.services.risk_hold import current_health_risk_hold_for_model
 
 
 def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
@@ -38,7 +38,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         sent_message_summary=sent_message_summary,
     )
     current_turn_context = _current_turn_context_for_reply(raw_current_turn_context)
-    risk_hold = {} if suppress_profile_memory else health_risk_hold(state)
+    risk_hold = {} if suppress_profile_memory else current_health_risk_hold_for_model(state)
     reply_mode = str(sop_progress.get("recommended_reply_mode") or "normal_answer").strip() or "normal_answer"
     store_scope_summary = _sanitize_planner_context_for_reply(
         build_store_scope_summary(

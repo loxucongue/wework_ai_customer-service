@@ -246,7 +246,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     normalizer_policy_violations: list[dict[str, str]] = []
 
     reply_strategy: dict[str, Any] = {}
-    if risk_hold:
+    if is_hard_health_risk_hold(risk_hold):
         reply_strategy["risk_hold"] = risk_hold
     required_tools = _dedupe_tools(planner_tool_calls)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]

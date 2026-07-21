@@ -89,6 +89,18 @@ def is_hard_health_risk_hold(value: dict[str, Any] | None) -> bool:
     return str(value.get("risk_hold") or "") == "health_check_required" or str(value.get("severity") or "") == "hard"
 
 
+def current_health_risk_hold_for_model(state: dict[str, Any]) -> dict[str, Any]:
+    """Expose only a current hard-risk safety fact to business models.
+
+    Recent resolved health history remains in conversation_history for model
+    interpretation. Passing an advisory workflow conclusion here would give old
+    risk more authority than the customer's current question.
+    """
+
+    value = health_risk_hold(state)
+    return value if is_hard_health_risk_hold(value) else {}
+
+
 def _current_and_merged_text(state: dict[str, Any]) -> str:
     parts = [
         str(state.get("normalized_content") or state.get("content") or ""),

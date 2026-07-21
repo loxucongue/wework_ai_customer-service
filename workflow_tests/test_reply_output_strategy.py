@@ -701,6 +701,58 @@ def test_current_turn_context_old_health_risk_does_not_shadow_store_question() -
     assert "recommended_next_action" not in context
 
 
+def test_model_payloads_do_not_promote_resolved_health_history_to_risk_hold() -> None:
+    state = {
+        "normalized_content": "厦门思明店地址发我",
+        "conversation_history": [
+            "用户: 我容易过敏能做吗",
+            "小贝: 到店先检测确认适合再做。",
+            "用户: 好的。",
+        ],
+        "customer_store_knowledge": {},
+    }
+
+    planner_payload = _planner_payload_for_model(state)
+    reply_payload = reply_user_payload_for_model(state)
+
+    assert "risk_hold" not in planner_payload
+    assert "risk_hold" not in reply_payload
+
+
+def test_advisory_health_history_is_not_promoted_to_reply_strategy() -> None:
+    state = {
+        "normalized_content": "厦门思明店地址发我",
+        "conversation_history": [
+            "用户: 我容易过敏能做吗",
+            "小贝: 到店先检测确认适合再做。",
+            "用户: 好的。",
+        ],
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "payment_state": "unknown",
+            "payment_action": "none",
+            "payment_decision": {"action": "none"},
+            "store_binding_decision": {"status": "exploring"},
+            "order_decision": {"action": "none"},
+            "appointment_decision": {"action": "none", "commitment_level": "none"},
+            "sales_progression": {"status": "continue", "target_stage": "store", "action": "confirm_store"},
+            "reply_messages": [{"type": "text", "content": "您说的是厦门思明店吗？"}],
+            "tool_calls": [],
+            "handoff": {"needed": False, "reason": ""},
+        },
+    )
+
+    assert "risk_hold" not in plan["reply_strategy"]
+
+
 def test_current_turn_context_current_health_risk_still_hard_blocks_payment() -> None:
     context = build_current_turn_context(
         {
@@ -714,6 +766,17 @@ def test_current_turn_context_current_health_risk_still_hard_blocks_payment() ->
     assert context["resolved_slots"]["health_check"] == "required"
     assert "payment_collection" in context["blocked_actions"]
     assert "recommended_next_action" not in context
+
+
+def test_model_payloads_keep_current_hard_health_risk_fact() -> None:
+    state = {
+        "normalized_content": "我有心脏病和高血压能做吗",
+        "conversation_history": [],
+        "customer_store_knowledge": {},
+    }
+
+    assert _planner_payload_for_model(state)["risk_hold"]["severity"] == "hard"
+    assert reply_user_payload_for_model(state)["risk_hold"]["severity"] == "hard"
 
 
 def test_planner_payload_keeps_context_for_low_information_message() -> None:

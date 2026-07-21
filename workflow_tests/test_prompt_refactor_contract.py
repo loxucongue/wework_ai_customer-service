@@ -206,7 +206,8 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "直接续最近未完动作",
         "不猜网络延迟、页面故障或银行原因",
         "未付且客户未主动登记时不提前索要姓名电话",
-        "近聊有多家平级候选时先问具体哪家",
+        "近3轮两店未选即 ambiguous",
+        "`current_known_store` 单店不得覆盖",
         "已答健康/过敏后转问门店、地址或时间",
         "不借题堆价格、退款或无关门店信息",
         "不能说核实/处理退款",
@@ -242,7 +243,6 @@ def test_model_visible_turn_evidence_excludes_python_business_conclusions() -> N
     for forbidden in [
         '"context_hints"',
         '"binding_source"',
-        '"last_assistant_action"',
         '"payment_evidence"',
         '"resolved_slots"',
         '"missing_slots"',
@@ -250,6 +250,8 @@ def test_model_visible_turn_evidence_excludes_python_business_conclusions() -> N
     ]:
         assert forbidden not in view_source
     for required in [
+        '"history_evidence"',
+        '"recent_assistant_action"',
         '"store_evidence"',
         '"appointment_evidence"',
         '"registration_evidence"',

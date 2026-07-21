@@ -31,7 +31,7 @@ from app.policies.business_rules import planner_business_rules_prompt_section
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.customer_payment_state import normalize_prepay_facts
 from app.services.model_client import ModelClient
-from app.services.risk_hold import HEALTH_RISK_TERMS, health_risk_hold
+from app.services.risk_hold import HEALTH_RISK_TERMS, current_health_risk_hold_for_model
 from app.services.store_snapshot_service import store_snapshot_rows
 
 PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
@@ -319,7 +319,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         current_known_store=current_known_store,
         sent_message_summary=sent_message_summary,
     )
-    risk_hold = {} if suppress_memory else health_risk_hold(state)
+    risk_hold = {} if suppress_memory else current_health_risk_hold_for_model(state)
     turn_evidence = _turn_evidence_for_planner(current_turn_context)
     payload = {
         "current_date": _current_date_iso(),
