@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.services.customer_scope import build_customer_scope
 from app.services.model_client import ModelClient
 from app.services.outreach_prompts import (
     OUTREACH_MESSAGE_SYSTEM_PROMPT,
@@ -213,17 +214,23 @@ class OutreachService:
             limit=limit,
         )
         messages = self._conversation_messages(payload)
+        scope = build_customer_scope(
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
         latest_customer = self._latest_message_time(messages, sender="customer")
         latest_staff = self._latest_message_time(messages, sender="staff")
-        if latest_customer:
+        if latest_customer and scope.persistence_allowed:
             self.repository.touch_customer_message_time(
-                customer_id,
+                scope.sales_contact_key,
                 field="last_customer_message_at",
                 value=latest_customer,
             )
-        if latest_staff:
+        if latest_staff and scope.persistence_allowed:
             self.repository.touch_customer_message_time(
-                customer_id,
+                scope.sales_contact_key,
                 field="last_staff_message_at",
                 value=latest_staff,
             )
@@ -242,8 +249,22 @@ class OutreachService:
             "latest_staff_message_at": latest_staff,
         }
 
-    def cached_customer_conversation(self, customer_id: str, *, limit: int = 10, error: str = "") -> dict[str, Any]:
-        context = self.repository.recent_customer_context(customer_id)
+    def cached_customer_conversation(
+        self,
+        customer_id: str,
+        *,
+        corp_id: str,
+        wechat: str,
+        external_userid: str = "",
+        limit: int = 10,
+        error: str = "",
+    ) -> dict[str, Any]:
+        context = self.repository.recent_customer_context(
+            customer_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+        )
         messages = self._local_context_messages(context.get("recent_messages") or [], limit=limit)
         if not messages:
             return {}
@@ -270,7 +291,12 @@ class OutreachService:
         business_goal: str = "",
         sop_plan_id: str = "",
     ) -> dict[str, Any]:
-        context = self.repository.recent_customer_context(customer_id)
+        context = self.repository.recent_customer_context(
+            customer_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+        )
         memory = context.get("memory") or {}
         recent_messages = context.get("recent_messages") or []
         goal = business_goal or "推进客户支付10元预约金并到店"
@@ -466,13 +492,20 @@ class OutreachService:
             send_status=str(data.get("send_status") or send_result.get("msg") or "accepted"),
             system_msgid=str(data.get("system_msgid") or ""),
         )
-        self.repository.touch_customer_message_time(str(task["customer_id"]), field="last_outreach_at", value=sent_at)
-        self.repository.update_customer_outreach_state(
-            str(task["customer_id"]),
-            outreach_status="waiting",
-            outreach_plan_id=str(task["plan_id"]),
-            last_outreach_at=sent_at,
+        scope = build_customer_scope(
+            corp_id=task.get("corp_id") or plan.get("corp_id"),
+            wechat=task.get("wechat") or plan.get("wechat"),
+            external_userid=task.get("external_userid") or plan.get("external_userid"),
+            customer_id=task.get("customer_id"),
         )
+        if scope.persistence_allowed:
+            self.repository.touch_customer_message_time(scope.sales_contact_key, field="last_outreach_at", value=sent_at)
+            self.repository.update_customer_outreach_state(
+                scope.sales_contact_key,
+                outreach_status="waiting",
+                outreach_plan_id=str(task["plan_id"]),
+                last_outreach_at=sent_at,
+            )
         self.repository.update_outreach_plan_status(str(task["plan_id"]), "waiting")
         self.repository.add_outreach_event(
             plan_id=str(task["plan_id"]),
@@ -505,7 +538,12 @@ class OutreachService:
         return {"ok": True, "status": "previewed", "reply_messages": reply_messages, "task": task}
 
     async def _generate_task_messages(self, *, task: dict[str, Any], plan: dict[str, Any]) -> list[dict[str, Any]]:
-        context = self.repository.recent_customer_context(str(task["customer_id"]))
+        context = self.repository.recent_customer_context(
+            str(task["customer_id"]),
+            corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
+            wechat=str(task.get("wechat") or plan.get("wechat") or ""),
+            external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
+        )
         payload = {
             "task": task,
             "plan": plan,

@@ -26,6 +26,8 @@ type EventItem = {
 
 type InspectResult = {
   customer_id?: string;
+  wechat?: string;
+  scope?: Record<string, unknown>;
   counts?: Counts;
   sop_summary?: SopSummaryItem[];
   latest_events?: EventItem[];
@@ -60,6 +62,7 @@ const COUNT_LABELS: Record<string, string> = {
 
 export function CustomerCleanupWorkbench() {
   const [customerId, setCustomerId] = useState("");
+  const [wechat, setWechat] = useState("");
   const [confirmCustomerId, setConfirmCustomerId] = useState("");
   const [result, setResult] = useState<InspectResult | null>(null);
   const [clearResult, setClearResult] = useState<Record<string, unknown> | null>(null);
@@ -69,22 +72,24 @@ export function CustomerCleanupWorkbench() {
   const [error, setError] = useState("");
 
   const normalizedCustomerId = customerId.trim();
-  const canClear = normalizedCustomerId && confirmCustomerId.trim() === normalizedCustomerId && !clearing;
+  const normalizedWechat = wechat.trim();
+  const canClear = normalizedCustomerId && normalizedWechat && confirmCustomerId.trim() === normalizedCustomerId && !clearing;
   const totalRecords = useMemo(() => {
     const counts = result?.counts || {};
     return Object.values(counts).reduce((sum, value) => sum + Number(value || 0), 0);
   }, [result]);
 
   async function inspect() {
-    if (!normalizedCustomerId) {
-      setError("请输入 customer_id");
+    if (!normalizedCustomerId || !normalizedWechat) {
+      setError("请输入 customer_id 和 WeChat 账号");
       return;
     }
     setLoading(true);
     setError("");
     setClearResult(null);
     try {
-      const response = await fetch(`/api/admin/customer-records?customer_id=${encodeURIComponent(normalizedCustomerId)}`, {
+      const query = new URLSearchParams({ customer_id: normalizedCustomerId, wechat: normalizedWechat });
+      const response = await fetch(`/api/admin/customer-records?${query}`, {
         cache: "no-store",
       });
       const data = await response.json();
@@ -112,7 +117,7 @@ export function CustomerCleanupWorkbench() {
       const response = await fetch("/api/admin/customer-records/clear", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer_id: normalizedCustomerId, ...options }),
+        body: JSON.stringify({ customer_id: normalizedCustomerId, wechat: normalizedWechat, ...options }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -158,6 +163,18 @@ export function CustomerCleanupWorkbench() {
                 }}
                 className="mt-2 h-10 w-full rounded-md border px-3 text-sm"
                 placeholder="例如 21325693 或 external_userid"
+              />
+            </label>
+            <label className="mt-4 block text-sm font-medium text-slate-700">
+              WeChat 账号边界
+              <input
+                value={wechat}
+                onChange={(event) => setWechat(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void inspect();
+                }}
+                className="mt-2 h-10 w-full rounded-md border px-3 text-sm"
+                placeholder="例如 CS001"
               />
             </label>
             <button

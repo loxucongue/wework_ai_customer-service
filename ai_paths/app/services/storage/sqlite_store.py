@@ -22,6 +22,7 @@ class SQLiteStore:
             self._ensure_outreach_plan_columns(conn)
             self._ensure_sop_event_columns(conn)
             self._ensure_sop_send_task_columns(conn)
+            self._ensure_sales_contact_indexes(conn)
 
     @staticmethod
     def _ensure_customer_memory_columns(conn: sqlite3.Connection) -> None:
@@ -91,6 +92,27 @@ class SQLiteStore:
             CREATE UNIQUE INDEX IF NOT EXISTS idx_sop_send_tasks_send_once_key
             ON sop_send_tasks(send_once_key)
             WHERE send_once_key<>'' AND status IN ('pending','sent')
+            """
+        )
+
+    @staticmethod
+    def _ensure_sales_contact_indexes(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_conversations_sales_contact
+            ON conversations(corp_id, wechat, external_userid, customer_id, updated_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_outreach_plans_sales_contact
+            ON outreach_plans(corp_id, wechat, external_userid, customer_id, created_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_sales_contact
+            ON sop_send_tasks(corp_id, wechat, external_userid, customer_id, status, created_at)
             """
         )
 

@@ -313,22 +313,68 @@ async def admin_conversation(conversation_id: str) -> dict[str, Any]:
 
 
 @app.get("/admin/customers/{customer_id}/memory", dependencies=[Depends(require_api_key)])
-async def admin_customer_memory(customer_id: str) -> dict[str, Any]:
-    return repository.load_memory(customer_id) or {}
+async def admin_customer_memory(
+    customer_id: str,
+    wechat: str,
+    corp_id: str = "",
+    external_userid: str = "",
+) -> dict[str, Any]:
+    scope = repository.resolve_customer_account_scope(
+        customer_id,
+        wechat=wechat,
+        corp_id=corp_id,
+        external_userid=external_userid,
+    )
+    if scope.get("status") == "ambiguous_scope":
+        raise HTTPException(status_code=409, detail=scope)
+    sales_contact_key = str(scope.get("sales_contact_key") or "")
+    return repository.load_memory(sales_contact_key) or {} if sales_contact_key else {}
 
 
 @app.delete("/admin/customers/{customer_id}/memory", dependencies=[Depends(require_api_key)])
-async def admin_clear_customer_memory(customer_id: str) -> dict[str, Any]:
-    memory_store.clear(customer_id)
-    return {"status": "ok", "customer_id": customer_id}
+async def admin_clear_customer_memory(
+    customer_id: str,
+    wechat: str,
+    corp_id: str = "",
+    external_userid: str = "",
+) -> dict[str, Any]:
+    scope = repository.resolve_customer_account_scope(
+        customer_id,
+        wechat=wechat,
+        corp_id=corp_id,
+        external_userid=external_userid,
+    )
+    if scope.get("status") == "ambiguous_scope":
+        raise HTTPException(status_code=409, detail=scope)
+    sales_contact_key = str(scope.get("sales_contact_key") or "")
+    if not sales_contact_key:
+        raise HTTPException(status_code=409, detail={"error": "customer account scope could not be resolved", "scope": scope})
+    memory_store.clear(sales_contact_key)
+    return {"status": "ok", "customer_id": customer_id, "wechat": wechat, "scope": scope}
 
 
 @app.get("/admin/customer-records", dependencies=[Depends(require_api_key)])
-async def admin_customer_records(customer_id: str) -> dict[str, Any]:
+async def admin_customer_records(
+    customer_id: str,
+    wechat: str,
+    corp_id: str = "",
+    external_userid: str = "",
+) -> dict[str, Any]:
     customer = str(customer_id or "").strip()
     if not customer:
         raise HTTPException(status_code=400, detail="customer_id is required")
-    return repository.inspect_customer_records(customer)
+    account = str(wechat or "").strip()
+    if not account:
+        raise HTTPException(status_code=400, detail="wechat is required")
+    result = repository.inspect_customer_records(
+        customer,
+        wechat=account,
+        corp_id=corp_id,
+        external_userid=external_userid,
+    )
+    if (result.get("scope") or {}).get("status") == "ambiguous_scope":
+        raise HTTPException(status_code=409, detail=result.get("scope"))
+    return result
 
 
 @app.post("/admin/customer-records/clear", dependencies=[Depends(require_api_key)])
@@ -336,13 +382,22 @@ async def admin_clear_customer_records(payload: dict[str, Any] = Body(...)) -> d
     customer = str(payload.get("customer_id") or "").strip()
     if not customer:
         raise HTTPException(status_code=400, detail="customer_id is required")
-    return repository.clear_customer_records(
+    account = str(payload.get("wechat") or "").strip()
+    if not account:
+        raise HTTPException(status_code=400, detail="wechat is required")
+    result = repository.clear_customer_records(
         customer,
+        wechat=account,
+        corp_id=str(payload.get("corp_id") or "").strip(),
+        external_userid=str(payload.get("external_userid") or "").strip(),
         clear_memory=bool(payload.get("clear_memory", True)),
         clear_sop=bool(payload.get("clear_sop", True)),
         clear_conversations=bool(payload.get("clear_conversations", False)),
         clear_outreach=bool(payload.get("clear_outreach", False)),
     )
+    if result.get("status") == "ambiguous_scope":
+        raise HTTPException(status_code=409, detail=result.get("scope"))
+    return result
 
 
 @app.get("/admin/runs/{request_id}", dependencies=[Depends(require_api_key)])
@@ -453,6 +508,9 @@ async def admin_outreach_refresh_conversation(
         detail = f"{type(exc).__name__}: {exc}"
         cached = outreach_service.cached_customer_conversation(
             customer_id,
+            corp_id=str(payload.get("corp_id") or ""),
+            wechat=str(payload.get("wechat") or ""),
+            external_userid=str(payload.get("external_userid") or ""),
             limit=int(payload.get("limit") or 10),
             error=detail,
         )

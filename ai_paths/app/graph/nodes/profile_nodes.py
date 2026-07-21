@@ -74,11 +74,15 @@ def create_profile_event_extractor_node(
             saved_memory = {}
             if memory_store:
                 try:
-                    saved_memory = memory_store.save_update(
-                        str(state.get("customer_id") or "unknown"),
-                        profile_update=profile_update,
-                        event_updates=event_updates,
-                    )
+                    sales_contact_key = str(state.get("sales_contact_key") or "").strip()
+                    if sales_contact_key:
+                        saved_memory = memory_store.save_update(
+                            sales_contact_key,
+                            profile_update=profile_update,
+                            event_updates=event_updates,
+                        )
+                    else:
+                        memory_error = "memory_scope_missing_wechat"
                 except Exception as exc:
                     memory_error = f"{type(exc).__name__}: {exc}"
             output = {

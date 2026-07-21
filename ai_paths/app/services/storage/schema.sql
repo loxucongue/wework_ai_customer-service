@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS conversations (
 
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at);
 CREATE INDEX IF NOT EXISTS idx_conversations_customer_id ON conversations(customer_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_sales_contact
+ON conversations(corp_id, wechat, external_userid, customer_id, updated_at);
 
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
@@ -112,6 +114,8 @@ CREATE TABLE IF NOT EXISTS outreach_plans (
 
 CREATE INDEX IF NOT EXISTS idx_outreach_plans_customer_id ON outreach_plans(customer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_outreach_plans_status ON outreach_plans(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_outreach_plans_sales_contact
+ON outreach_plans(corp_id, wechat, external_userid, customer_id, created_at);
 
 CREATE TABLE IF NOT EXISTS outreach_sop_plans (
     id TEXT PRIMARY KEY,
@@ -211,3 +215,5 @@ CREATE TABLE IF NOT EXISTS sop_send_tasks (
 CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_event_id ON sop_send_tasks(event_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_customer ON sop_send_tasks(customer_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_pack ON sop_send_tasks(sop_pack_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_sop_send_tasks_sales_contact
+ON sop_send_tasks(corp_id, wechat, external_userid, customer_id, status, created_at);

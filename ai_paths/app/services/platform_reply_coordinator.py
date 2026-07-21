@@ -180,14 +180,14 @@ class PlatformReplyCoordinator:
 
 def _customer_key(request: ChatRequest, request_context: dict[str, Any]) -> str:
     corp_id = str(request_context.get("corp_id") or request.corp_id or "").strip()
-    external_userid = str(request_context.get("external_userid") or request.external_userid or "").strip()
-    if corp_id and external_userid:
-        return f"{corp_id}:external:{external_userid}"
-    customer_id = str(request_context.get("customer_id") or request.customer_id or "").strip()
-    if corp_id and customer_id:
-        return f"{corp_id}:customer:{customer_id}"
-    user_id = str(request_context.get("user_id") or request.user_id or "").strip()
     wechat = str(request_context.get("wechat") or request.wechat or "").strip()
+    external_userid = str(request_context.get("external_userid") or request.external_userid or "").strip()
+    if corp_id and wechat and external_userid:
+        return f"{corp_id}:wechat:{wechat}:external:{external_userid}"
+    customer_id = str(request_context.get("customer_id") or request.customer_id or "").strip()
+    if corp_id and wechat and customer_id:
+        return f"{corp_id}:wechat:{wechat}:customer:{customer_id}"
+    user_id = str(request_context.get("user_id") or request.user_id or "").strip()
     return f"{corp_id}:fallback:{user_id}:{wechat}:{customer_id}"
 
 

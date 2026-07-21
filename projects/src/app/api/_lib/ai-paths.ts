@@ -292,22 +292,35 @@ export async function callAiPathsHealth() {
   });
 }
 
-export async function getAiPathsCustomerMemory(customerId: string) {
+export type CustomerAccountScope = {
+  wechat: string;
+  corp_id?: string;
+  external_userid?: string;
+};
+
+export async function getAiPathsCustomerMemory(customerId: string, scope: CustomerAccountScope) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const headers = aiPathsAuthHeaders();
-  return fetch(`${apiBase.replace(/\/$/, "")}/admin/customers/${encodeURIComponent(customerId)}/memory`, {
+  const query = new URLSearchParams({ wechat: scope.wechat });
+  if (scope.corp_id) query.set("corp_id", scope.corp_id);
+  if (scope.external_userid) query.set("external_userid", scope.external_userid);
+  return fetch(`${apiBase.replace(/\/$/, "")}/admin/customers/${encodeURIComponent(customerId)}/memory?${query}`, {
     method: "GET",
     headers,
     cache: "no-store",
   });
 }
 
-export async function clearAiPathsCustomerMemory(customerId: string) {
+export async function clearAiPathsCustomerMemory(customerId: string, scope: CustomerAccountScope) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const headers = aiPathsAuthHeaders();
 
   return fetch(
-    `${apiBase.replace(/\/$/, "")}/admin/customers/${encodeURIComponent(customerId)}/memory`,
+    `${apiBase.replace(/\/$/, "")}/admin/customers/${encodeURIComponent(customerId)}/memory?${new URLSearchParams({
+      wechat: scope.wechat,
+      ...(scope.corp_id ? { corp_id: scope.corp_id } : {}),
+      ...(scope.external_userid ? { external_userid: scope.external_userid } : {}),
+    })}`,
     {
       method: "DELETE",
       headers,

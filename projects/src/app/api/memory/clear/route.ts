@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
     return authError;
   }
 
-  let body: { customer_id?: string };
+  let body: { customer_id?: string; wechat?: string; corp_id?: string; external_userid?: string };
   try {
     body = (await request.json()) as { customer_id?: string };
   } catch {
@@ -15,12 +15,20 @@ export async function POST(request: NextRequest) {
   }
 
   const customerId = String(body.customer_id || "").trim();
+  const wechat = String(body.wechat || "").trim();
   if (!customerId) {
     return jsonResponse({ error: "customer_id is required" }, 400);
   }
+  if (!wechat) {
+    return jsonResponse({ error: "wechat is required" }, 400);
+  }
 
   try {
-    const response = await clearAiPathsCustomerMemory(customerId);
+    const response = await clearAiPathsCustomerMemory(customerId, {
+      wechat,
+      corp_id: String(body.corp_id || "").trim(),
+      external_userid: String(body.external_userid || "").trim(),
+    });
     const text = await response.text();
     if (!response.ok) {
       return jsonResponse(

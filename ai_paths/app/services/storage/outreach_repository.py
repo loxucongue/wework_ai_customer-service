@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
+from app.services.customer_scope import build_customer_scope
 from app.services.storage.serialization import dumps, loads_dict, loads_list, utc_now_iso
 
 
@@ -32,7 +33,7 @@ def _string(value: Any) -> str:
 
 
 class OutreachRepositoryMixin:
-    def touch_customer_message_time(self, customer_id: str, *, field: str, value: str | None = None) -> None:
+    def touch_customer_message_time(self, memory_key: str, *, field: str, value: str | None = None) -> None:
         if field not in {
             "last_customer_message_at",
             "last_staff_message_at",
@@ -50,16 +51,16 @@ class OutreachRepositoryMixin:
                 ON CONFLICT(customer_id) DO UPDATE SET
                     updated_at=excluded.updated_at
                 """,
-                (customer_id, now),
+                (memory_key, now),
             )
             conn.execute(
                 f"UPDATE customer_memory SET {field}=?, updated_at=? WHERE customer_id=?",
-                (now, now, customer_id),
+                (now, now, memory_key),
             )
 
     def update_customer_outreach_state(
         self,
-        customer_id: str,
+        memory_key: str,
         *,
         outreach_status: str,
         outreach_plan_id: str = "",
@@ -73,7 +74,7 @@ class OutreachRepositoryMixin:
                 VALUES (?, '{}', '{}', '', ?)
                 ON CONFLICT(customer_id) DO NOTHING
                 """,
-                (customer_id, now),
+                (memory_key, now),
             )
             conn.execute(
                 """
@@ -82,7 +83,7 @@ class OutreachRepositoryMixin:
                     updated_at=?
                 WHERE customer_id=?
                 """,
-                (outreach_status, outreach_plan_id, last_outreach_at, now, customer_id),
+                (outreach_status, outreach_plan_id, last_outreach_at, now, memory_key),
             )
 
     def list_outreach_candidates(
@@ -94,64 +95,68 @@ class OutreachRepositoryMixin:
         lifecycle_stage: str = "",
         no_plan_only: bool = False,
     ) -> list[dict[str, Any]]:
-        params: list[Any] = []
-        clauses = ["1=1"]
-        if outreach_status:
-            clauses.append("COALESCE(cm.outreach_status, 'none')=?")
-            params.append(outreach_status)
-        if lifecycle_stage:
-            clauses.append("COALESCE(cm.lifecycle_stage, '')=?")
-            params.append(lifecycle_stage)
-        if no_plan_only:
-            clauses.append("COALESCE(cm.outreach_plan_id, '')=''")
         cutoff_72h = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
         result_limit = max(1, min(limit, 200))
         query_limit = max(result_limit, min(result_limit * 5, 1000))
-        params.append(query_limit)
         with self.store.connect() as conn:
             rows = conn.execute(
-                f"""
-                SELECT
-                    c.customer_id,
-                    COALESCE(cm.portrait, '{{}}') AS portrait,
-                    COALESCE(cm.basic_info, '{{}}') AS basic_info,
-                    COALESCE(cm.lifecycle_stage, '') AS lifecycle_stage,
-                    COALESCE(
-                        cm.last_customer_message_at,
-                        (SELECT created_at FROM messages m WHERE m.conversation_id=c.id AND m.role='user' ORDER BY created_at DESC LIMIT 1),
-                        c.updated_at
-                    ) AS last_customer_message_at,
-                    COALESCE(cm.last_staff_message_at, '') AS last_staff_message_at,
-                    COALESCE(cm.last_ai_reply_at, '') AS last_ai_reply_at,
-                    COALESCE(cm.last_manual_takeover_at, '') AS last_manual_takeover_at,
-                    COALESCE(cm.last_outreach_at, '') AS last_outreach_at,
-                    COALESCE(cm.outreach_status, 'none') AS outreach_status,
-                    COALESCE(cm.outreach_plan_id, '') AS outreach_plan_id,
-                    COALESCE(cm.updated_at, c.updated_at) AS updated_at,
-                    c.external_userid,
-                    c.corp_id,
-                    c.user_id,
-                    c.wechat,
-                    c.title,
+                """
+                SELECT c.customer_id, c.updated_at, c.external_userid, c.corp_id, c.user_id, c.wechat, c.title,
+                    (SELECT created_at FROM messages m WHERE m.conversation_id=c.id AND m.role='user' ORDER BY created_at DESC LIMIT 1) AS conversation_last_customer_at,
                     (SELECT content FROM messages m WHERE m.conversation_id=c.id AND m.role='user' ORDER BY created_at DESC LIMIT 1) AS last_customer_message,
-                    (SELECT summary FROM history_events e WHERE e.customer_id=c.customer_id ORDER BY created_at DESC LIMIT 1) AS latest_event_summary,
-                    (SELECT COUNT(*) FROM outreach_tasks t WHERE t.customer_id=c.customer_id AND t.status='sent' AND t.sent_at>=?) AS outreach_sent_count_72h
+                    (
+                        SELECT COUNT(*) FROM outreach_tasks t
+                        JOIN outreach_plans p ON p.id=t.plan_id
+                        WHERE p.customer_id=c.customer_id AND p.corp_id=c.corp_id
+                          AND p.wechat=c.wechat AND p.external_userid=c.external_userid
+                          AND t.status='sent' AND t.sent_at>=?
+                    ) AS outreach_sent_count_72h
                 FROM conversations c
-                LEFT JOIN customer_memory cm ON cm.customer_id=c.customer_id
-                WHERE {' AND '.join(clauses)}
-                  AND c.customer_id IS NOT NULL
-                  AND c.customer_id!=''
-                  AND c.updated_at=(SELECT MAX(c2.updated_at) FROM conversations c2 WHERE c2.customer_id=c.customer_id)
-                ORDER BY last_customer_message_at DESC, updated_at DESC
+                WHERE c.customer_id IS NOT NULL AND c.customer_id!='' AND c.wechat!=''
+                  AND c.updated_at=(
+                      SELECT MAX(c2.updated_at) FROM conversations c2
+                      WHERE c2.customer_id=c.customer_id AND c2.corp_id=c.corp_id
+                        AND c2.wechat=c.wechat AND c2.external_userid=c.external_userid
+                  )
+                ORDER BY c.updated_at DESC
                 LIMIT ?
                 """,
-                [cutoff_72h, *params],
+                (cutoff_72h, query_limit),
             ).fetchall()
         items: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            item["portrait"] = loads_dict(item.get("portrait"))
-            item["basic_info"] = loads_dict(item.get("basic_info"))
+            scope = build_customer_scope(
+                corp_id=item.get("corp_id"),
+                wechat=item.get("wechat"),
+                external_userid=item.get("external_userid"),
+                customer_id=item.get("customer_id"),
+            )
+            memory = self.load_memory(scope.sales_contact_key) if scope.persistence_allowed else {}
+            memory = memory if isinstance(memory, dict) else {}
+            item["portrait"] = memory.get("portrait") if isinstance(memory.get("portrait"), dict) else {}
+            item["basic_info"] = memory.get("basic_info") if isinstance(memory.get("basic_info"), dict) else {}
+            item["lifecycle_stage"] = str(memory.get("lifecycle_stage") or "")
+            item["last_customer_message_at"] = str(
+                memory.get("last_customer_message_at")
+                or item.get("conversation_last_customer_at")
+                or item.get("updated_at")
+                or ""
+            )
+            item["last_staff_message_at"] = str(memory.get("last_staff_message_at") or "")
+            item["last_ai_reply_at"] = str(memory.get("last_ai_reply_at") or "")
+            item["last_manual_takeover_at"] = str(memory.get("last_manual_takeover_at") or "")
+            item["last_outreach_at"] = str(memory.get("last_outreach_at") or "")
+            item["outreach_status"] = str(memory.get("outreach_status") or "none")
+            item["outreach_plan_id"] = str(memory.get("outreach_plan_id") or "")
+            events = memory.get("history_events") if isinstance(memory.get("history_events"), list) else []
+            item["latest_event_summary"] = str((events[-1] if events else {}).get("summary") or "")
+            if outreach_status and item["outreach_status"] != outreach_status:
+                continue
+            if lifecycle_stage and item["lifecycle_stage"] != lifecycle_stage:
+                continue
+            if no_plan_only and item["outreach_plan_id"]:
+                continue
             item["silent_minutes"] = _silent_minutes(item.get("last_customer_message_at"))
             if item["silent_minutes"] >= silent_minutes_min:
                 items.append(item)
@@ -234,7 +239,14 @@ class OutreachRepositoryMixin:
             event_summary="AI generated outreach plan",
             payload=source_snapshot,
         )
-        self.update_customer_outreach_state(customer_id, outreach_status="draft", outreach_plan_id=plan_id)
+        scope = build_customer_scope(
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
+        if scope.persistence_allowed:
+            self.update_customer_outreach_state(scope.sales_contact_key, outreach_status="draft", outreach_plan_id=plan_id)
         return self.get_outreach_plan(plan_id)
 
     def list_outreach_sop_plans(self, *, limit: int = 100) -> list[dict[str, Any]]:
@@ -376,16 +388,33 @@ class OutreachRepositoryMixin:
             "events": [self._decode_outreach_event(dict(row)) for row in events],
         }
 
-    def get_active_outreach_plan_for_customer(self, customer_id: str) -> dict[str, Any]:
+    def get_active_outreach_plan_for_customer(
+        self,
+        customer_id: str,
+        *,
+        corp_id: str = "",
+        wechat: str = "",
+        external_userid: str = "",
+    ) -> dict[str, Any]:
+        if not wechat:
+            return {}
+        clauses = ["customer_id=?", "wechat=?", "status IN ('draft', 'active', 'waiting', 'paused')"]
+        params: list[Any] = [customer_id, wechat]
+        if corp_id:
+            clauses.append("corp_id=?")
+            params.append(corp_id)
+        if external_userid:
+            clauses.append("external_userid=?")
+            params.append(external_userid)
         with self.store.connect() as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT id FROM outreach_plans
-                WHERE customer_id=? AND status IN ('draft', 'active', 'waiting', 'paused')
+                WHERE {' AND '.join(clauses)}
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                (customer_id,),
+                params,
             ).fetchone()
         return self.get_outreach_plan(row["id"]) if row else {}
 
@@ -431,13 +460,23 @@ class OutreachRepositoryMixin:
                     "UPDATE outreach_plans SET status=?, updated_at=? WHERE id=?",
                     (status, now, plan_id),
                 )
-            plan = conn.execute("SELECT customer_id FROM outreach_plans WHERE id=?", (plan_id,)).fetchone()
+            plan = conn.execute(
+                "SELECT customer_id, corp_id, wechat, external_userid FROM outreach_plans WHERE id=?",
+                (plan_id,),
+            ).fetchone()
         if plan:
-            self.update_customer_outreach_state(
-                str(plan["customer_id"]),
-                outreach_status=status,
-                outreach_plan_id=plan_id if status not in {"cancelled", "completed"} else "",
+            scope = build_customer_scope(
+                corp_id=plan["corp_id"],
+                wechat=plan["wechat"],
+                external_userid=plan["external_userid"],
+                customer_id=plan["customer_id"],
             )
+            if scope.persistence_allowed:
+                self.update_customer_outreach_state(
+                    scope.sales_contact_key,
+                    outreach_status=status,
+                    outreach_plan_id=plan_id if status not in {"cancelled", "completed"} else "",
+                )
         return self.get_outreach_plan(plan_id)
 
     def list_due_outreach_tasks(self, *, limit: int = 20, now: str | None = None) -> list[dict[str, Any]]:
@@ -539,12 +578,30 @@ class OutreachRepositoryMixin:
             )
         return {"event_id": event_id}
 
-    def recent_customer_context(self, customer_id: str) -> dict[str, Any]:
-        memory = self.load_memory(customer_id) or {"customer_id": customer_id, "history_events": []}
+    def recent_customer_context(
+        self,
+        customer_id: str,
+        *,
+        corp_id: str,
+        wechat: str,
+        external_userid: str = "",
+    ) -> dict[str, Any]:
+        scope = build_customer_scope(
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
+        memory = self.load_memory(scope.sales_contact_key) if scope.persistence_allowed else None
+        memory = memory or {"customer_id": scope.sales_contact_key, "history_events": []}
         with self.store.connect() as conn:
             conversation = conn.execute(
-                "SELECT id FROM conversations WHERE customer_id=? ORDER BY updated_at DESC LIMIT 1",
-                (customer_id,),
+                """
+                SELECT id FROM conversations
+                WHERE (customer_id=? OR external_userid=?) AND corp_id=? AND wechat=?
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (customer_id, external_userid or customer_id, corp_id, wechat),
             ).fetchone()
             messages = []
             if conversation:

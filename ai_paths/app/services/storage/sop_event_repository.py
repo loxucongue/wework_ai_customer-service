@@ -317,21 +317,28 @@ class SopEventRepositoryMixin:
                         FROM conversations
                         WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
                           AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
+                          AND (?='' OR LOWER(wechat)=LOWER(?))
                         UNION ALL
                         SELECT customer_id, external_userid, corp_id, user_id, wechat, 'sop_send_tasks' AS source, updated_at
                         FROM sop_send_tasks
                         WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
                           AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
+                          AND (?='' OR LOWER(wechat)=LOWER(?))
                         UNION ALL
                         SELECT customer_id, external_userid, corp_id, user_id, wechat, 'outreach_plans' AS source, updated_at
                         FROM outreach_plans
                         WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
                           AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
+                          AND (?='' OR LOWER(wechat)=LOWER(?))
                     )
                     ORDER BY updated_at DESC
                     LIMIT 1
                     """,
-                    (external_key, customer_key, external_key, customer_key, external_key, customer_key),
+                    (
+                        external_key, customer_key, wechat_key, wechat_key,
+                        external_key, customer_key, wechat_key, wechat_key,
+                        external_key, customer_key, wechat_key, wechat_key,
+                    ),
                 ).fetchone()
                 if row:
                     return _identity_row(dict(row))
@@ -360,8 +367,16 @@ class SopEventRepositoryMixin:
                     return _identity_row(dict(row))
         return {}
 
-    def has_sent_sop_pack_for_customer(self, *, customer_id: str, external_userid: str, sop_pack_id: str) -> bool:
-        if not sop_pack_id:
+    def has_sent_sop_pack_for_customer(
+        self,
+        *,
+        customer_id: str,
+        external_userid: str,
+        sop_pack_id: str,
+        corp_id: str = "",
+        wechat: str = "",
+    ) -> bool:
+        if not sop_pack_id or not str(wechat or "").strip():
             return False
         clauses = ["sop_pack_id=?", "status='sent'"]
         params: list[Any] = [sop_pack_id]
@@ -373,6 +388,11 @@ class SopEventRepositoryMixin:
             params.append(customer_id)
         else:
             return False
+        clauses.append("wechat=?")
+        params.append(wechat)
+        if corp_id:
+            clauses.append("corp_id=?")
+            params.append(corp_id)
         with self.store.connect() as conn:
             row = conn.execute(
                 f"SELECT id FROM sop_send_tasks WHERE {' AND '.join(clauses)} LIMIT 1",
@@ -385,8 +405,12 @@ class SopEventRepositoryMixin:
         *,
         customer_id: str,
         external_userid: str,
+        corp_id: str = "",
+        wechat: str = "",
         sent_before: str = "",
     ) -> list[str]:
+        if not str(wechat or "").strip():
+            return []
         clauses = ["status='sent'", "sop_pack_id<>''"]
         params: list[Any] = []
         if external_userid:
@@ -397,6 +421,12 @@ class SopEventRepositoryMixin:
             params.append(customer_id)
         else:
             return []
+        if corp_id:
+            clauses.append("corp_id=?")
+            params.append(corp_id)
+        if wechat:
+            clauses.append("wechat=?")
+            params.append(wechat)
         if sent_before:
             clauses.append("COALESCE(NULLIF(sent_at, ''), updated_at)<=?")
             params.append(sent_before)
@@ -416,8 +446,12 @@ class SopEventRepositoryMixin:
         *,
         customer_id: str,
         external_userid: str,
+        corp_id: str = "",
+        wechat: str = "",
         sent_before: str = "",
     ) -> list[str]:
+        if not str(wechat or "").strip():
+            return []
         clauses = ["status='sent'", "sop_category<>''"]
         params: list[Any] = []
         if external_userid:
@@ -428,6 +462,12 @@ class SopEventRepositoryMixin:
             params.append(customer_id)
         else:
             return []
+        if corp_id:
+            clauses.append("corp_id=?")
+            params.append(corp_id)
+        if wechat:
+            clauses.append("wechat=?")
+            params.append(wechat)
         if sent_before:
             clauses.append("COALESCE(NULLIF(sent_at, ''), updated_at)<=?")
             params.append(sent_before)

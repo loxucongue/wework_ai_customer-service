@@ -209,7 +209,7 @@ export function ChatMain() {
       const response = await fetch("/api/memory/clear", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer_id: activeConversation.id }),
+        body: JSON.stringify(FRONTEND_TEST_WECHAT_CONTEXT),
       });
       if (!response.ok) {
         throw new Error(`API error: ${response.status}`);

@@ -12,6 +12,7 @@ from app.services.customer_context_extractors import (
     compact_order,
     compact_request_context,
 )
+from app.services.customer_payment_state import normalize_prepay_facts
 from app.services.platform_agent_client import PlatformAgentClient
 
 
@@ -311,7 +312,9 @@ def _select_current_order(
 def _is_active_order(order: dict[str, Any]) -> bool:
     """Return whether a raw platform order can represent the current payment flow."""
     status = str(order.get("status") or "").strip().lower()
-    return status in {"1", "2", "3", "pending", "waiting_schedule", "scheduled"}
+    if status not in {"1", "2", "3", "pending", "waiting_schedule", "scheduled"}:
+        return False
+    return normalize_prepay_facts(order).get("deposit_state") != "historical_paid_expired"
 
 
 def _order_matches_scope(order: dict[str, Any], *, store_id: str, category_id: str) -> bool:

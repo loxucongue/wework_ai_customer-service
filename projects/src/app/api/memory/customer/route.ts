@@ -8,12 +8,20 @@ export async function GET(request: NextRequest) {
   }
 
   const customerId = request.nextUrl.searchParams.get("customer_id")?.trim() || "";
+  const wechat = request.nextUrl.searchParams.get("wechat")?.trim() || "";
   if (!customerId) {
     return jsonResponse({ error: "customer_id is required" }, 400);
   }
+  if (!wechat) {
+    return jsonResponse({ error: "wechat is required" }, 400);
+  }
 
   try {
-    const response = await getAiPathsCustomerMemory(customerId);
+    const response = await getAiPathsCustomerMemory(customerId, {
+      wechat,
+      corp_id: request.nextUrl.searchParams.get("corp_id")?.trim() || "",
+      external_userid: request.nextUrl.searchParams.get("external_userid")?.trim() || "",
+    });
     const text = await response.text();
     if (!response.ok) {
       return jsonResponse(

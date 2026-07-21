@@ -7,5 +7,13 @@ export async function GET(request: NextRequest) {
     return authError;
   }
   const customerId = request.nextUrl.searchParams.get("customer_id") || "";
-  return proxyAiPathsAdmin(`/admin/customer-records?customer_id=${encodeURIComponent(customerId)}`);
+  const query = new URLSearchParams({
+    customer_id: customerId,
+    wechat: request.nextUrl.searchParams.get("wechat") || "",
+  });
+  for (const key of ["corp_id", "external_userid"]) {
+    const value = request.nextUrl.searchParams.get(key);
+    if (value) query.set(key, value);
+  }
+  return proxyAiPathsAdmin(`/admin/customer-records?${query}`);
 }
