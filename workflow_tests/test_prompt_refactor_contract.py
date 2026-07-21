@@ -178,6 +178,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "主任、总监、专家或特殊老师只有工具事实",
         "绝不能因为开单未成功而输出空回复",
         "不查 `available_time`",
+        "不能停在费用说明",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
     assert GLOBAL_REPLY_CONTRACT in REPLY_SYSTEM_PROMPT
