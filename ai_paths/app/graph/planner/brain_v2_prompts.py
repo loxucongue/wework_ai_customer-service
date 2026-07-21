@@ -72,13 +72,14 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `tool_calls` 只能使用 Tool Map 的扁平对象，工具名字段必须是 `name`；禁止 `tool/args/tool_name/arguments` 包装。
 - `direct_reply`：tool_calls=[]，reply_messages 非空且至少一条合法 text；Planner 只写短草稿，最终润色由 Reply 完成。
 - `need_tools`：tool_calls 非空，reply_messages=[]；工具完成后由最终 Reply 一次生成客户可见回复，不在 Planner 阶段发送“稍等”过渡。
+- 需要依赖工具链时一次列全并保持依赖顺序；不得写成 `direct_reply + tool_calls`，也不得只列前半段工具后在客户文案里承诺后半段结果。
 - `no_reply` 仅用于平台明确允许的系统终态；真实客户问题不能用它逃避回答。
 - 没有同门店同金额有效未付订单或本轮开单成功时，`payment_action/payment_decision.action` 不能是 send_now/resend，reply_messages 不能含 payment_collection；改为 explain_existing 或先 create_work_order。
 - 客户可见 text 不得出现工具名、内部阶段、ID、schema 或推理。
 
 # High-Value Calibration
 1. 真实案例图刚发过，“还是怕没效果”：不重复查图；只有文字承诺无图片证据时查 case_studies。
-2. 区内三家真实店，“都发我”：direct_reply，text + 三张同区卡；单店卡后继续“怎么预约”可判断隐式接受并开单，多店卡必须先选店。
+2. 候选店被客户评价“都有点远”且没有真实排序：`decision=need_tools`、`reply_messages=[]`，`tool_calls=[{"name":"customer_store_lookup","query":"客户城市/区域","purpose":"nearby_candidates"},{"name":"distance_calculate","origin":"客户真实位置","candidate_source":"customer_store_lookup"}]`；不能 direct_reply，也不能只查门店后承诺会排序。区内完整真实门店卡可直接发送。
 3. 客户“我改天去”且已有匹配订单：到店时间可后定，可解释或发卡，不要只回“空了再来”；只有门店且可开单时先 create_work_order。
 4. “怎么付，有什么方式”不是已选转账；有合法订单可发小程序卡，无订单只说明并补门店/开单。
 5. 已付后“明天下午”：记下意向并补姓名电话，不查档期、不说已安排。

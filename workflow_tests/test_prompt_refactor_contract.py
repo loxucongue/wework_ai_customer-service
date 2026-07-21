@@ -117,6 +117,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "human_handoff_notice",
         "真实客户问题不能用它逃避回答",
         "工具完成后由最终 Reply 一次生成客户可见回复",
+        "不得写成 `direct_reply + tool_calls`",
+        '"name":"distance_calculate"',
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
