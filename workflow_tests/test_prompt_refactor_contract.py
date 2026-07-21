@@ -121,6 +121,12 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         '"name":"distance_calculate"',
         "不得把 `after_paid_next_step` 填进 `payment_action`",
         "`payment_action=confirm_next_step`",
+        "不在线追问用药或症状",
+        "连“可以继续约”也不能确认",
+        "答清后仍无门店就问城市区域",
+        "健康、孕期或过敏只引导到店专业检测",
+        "隐形消费或收费透明顾虑答清、活动已说明但无门店",
+        "把 send_now 作为开单成功后的动作",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
@@ -179,6 +185,11 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "绝不能因为开单未成功而输出空回复",
         "不查 `available_time`",
         "不能停在费用说明",
+        "不在线追问用药和身体症状",
+        "不能说“可以继续约",
+        "也不能承诺稍后发入口",
+        "健康、孕期和过敏统一引导到店专业检测",
+        "不直接判定只能等产后或以后",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
     assert GLOBAL_REPLY_CONTRACT in REPLY_SYSTEM_PROMPT

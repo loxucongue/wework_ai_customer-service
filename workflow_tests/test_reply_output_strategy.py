@@ -13,11 +13,12 @@ from app.graph.nodes.contextual_short_message import short_message_context_for_m
 from app.graph.nodes.conversation_history_fetch import platform_messages_to_history
 from app.graph.nodes.current_turn_context import build_current_turn_context
 from app.graph.nodes.layer_nodes import create_background_context_layer
-from app.graph.nodes.reply_context import reply_user_payload_for_model
+from app.graph.nodes.reply_context import reply_recovery_payload_for_model, reply_user_payload_for_model
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.appointment_time_utils import normalize_time_text, summarize_available_slots
 from app.graph.nodes.profile_nodes import _profile_conversation_history
 from app.graph.nodes.reply_nodes import (
+    REPLY_RECOVERY_SYSTEM_PROMPT,
     _ensure_required_handoff_notice,
     _maybe_build_required_payment_collection_fallback,
     _normalize_planner_reply_messages,
@@ -62,6 +63,99 @@ def _paid_order_state(*, amount: int = 10, store_id: str = "386") -> dict:
     )
     state["current_turn_context"] = {"deposit_state": "deposit_paid"}
     return state
+
+
+def test_reply_recovery_keeps_semantic_evidence_and_twelve_history_items() -> None:
+    state = {
+        "normalized_content": "人呢",
+        "conversation_history": [f"用户: 第{i}条" for i in range(1, 21)],
+        "planner_sub_rule_id": "PLANNER_SYSTEM_UNAVAILABLE",
+        "payment_state": "link_sent",
+        "history_events": [
+            {
+                "event_id": "payment-1",
+                "event_type": "payment_collection_sent",
+                "occurred_at": "2026-07-21T12:00:00+08:00",
+                "facts": {"amount": 10},
+            }
+        ],
+        "customer_context": {
+            "orders": [
+                {
+                    "id": "order-1",
+                    "store_id": "12",
+                    "prepay_required": 10,
+                    "prepay_paid": 0,
+                    "deposit_state": "required_unpaid",
+                }
+            ]
+        },
+        "fact_envelope": {
+            "structured_facts": {
+                "case_facts": [{"image_url": "https://example.test/case.png"}],
+                "store_facts": [{"store_id": "12", "store_name": "厦门思明店"}],
+            }
+        },
+    }
+
+    payload = reply_recovery_payload_for_model(state)
+
+    assert len(payload["conversation_history"]) == 12
+    assert payload["conversation_history"][0] == "用户: 第9条"
+    assert payload["transaction_facts"]
+    assert payload["tool_facts"]["case_facts"]
+    assert payload["sent_message_summary"]["payment_collection_sent"] is True
+    assert payload["business_rules"]
+    assert "发过卡当成已付" in payload["recovery_contract"]["history_policy"]
+
+
+def test_reply_recovery_prompt_preserves_human_tone_and_payment_semantics() -> None:
+    for marker in (
+        "最近12条",
+        "发过 payment_collection 只代表发过卡",
+        "我带两个朋友",
+        "不能再反问“如果你要我再发”",
+        "不能说已经同意/正在办理退款",
+        "不要复读整套规则",
+    ):
+        assert marker in REPLY_RECOVERY_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "如果后面自动退回也会原路返回。",
+        "可以，先帮您处理退款这边。",
+        "可以，这边先帮您登记退款。",
+    ],
+)
+def test_reply_validation_blocks_unverified_refund_execution_claims(text: str) -> None:
+    with pytest.raises(ValueError, match="unverified_refund_execution_claim"):
+        validate_reply_consistency([{"type": "text", "order": 1, "content": text}], {})
+
+
+def test_reply_validation_blocks_case_image_promise_without_image_structure() -> None:
+    with pytest.raises(ValueError, match="case_image_structure_required_when_reply_promises_delivery"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "好，我这边先给您发同类淡斑改善参考。"}],
+            {},
+        )
+
+
+def test_reply_validation_blocks_customer_visible_internal_fact_language() -> None:
+    with pytest.raises(ValueError, match="customer_visible_internal_language"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "当前没有可用的距离排序事实。"}],
+            {},
+        )
+
+
+def test_reply_validation_blocks_unverified_time_acceptance() -> None:
+    with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "明天下午过去就行。"}],
+            {"appointment_decision": {"commitment_level": "tentative"}},
+        )
 
 
 def test_contextual_short_message_keeps_planner_history() -> None:

@@ -97,6 +97,54 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     })
 
 
+def reply_recovery_payload_for_model(state: AgentState) -> dict[str, Any]:
+    """Keep the semantic contract intact while dropping duplicated recovery input."""
+
+    full = reply_user_payload_for_model(state)
+    history = full.get("conversation_history") if isinstance(full.get("conversation_history"), list) else []
+    keys = (
+        "current_message",
+        "location_card",
+        "image_info",
+        "planner_decision",
+        "planner_stage",
+        "planner_sub_rule_id",
+        "conversion_stage",
+        "main_blocker",
+        "next_step",
+        "payment_state",
+        "payment_action",
+        "payment_decision",
+        "store_binding_decision",
+        "order_decision",
+        "appointment_decision",
+        "sales_progression",
+        "planner_direct_reply_draft",
+        "turn_evidence",
+        "transaction_facts",
+        "risk_hold",
+        "store_scope_summary",
+        "planner_structured_actions",
+        "sent_message_summary",
+        "sop_progress",
+        "business_rules",
+        "tool_facts",
+        "fact_notes",
+        "reply_constraints",
+    )
+    payload = {
+        key: full.get(key)
+        for key in keys
+        if full.get(key) not in (None, "", [], {})
+    }
+    payload["conversation_history"] = history[-12:]
+    payload["recovery_contract"] = {
+        "history_policy": "最近12条按原顺序保留；不可把发过卡当成已付，也不可让旧风险覆盖当前普通问题",
+        "rule_policy": "business_rules 与结构事实仍然有效；精简只删除重复字段，不降低业务或事实边界",
+    }
+    return _drop_empty(payload)
+
+
 def _compact_customer_background(state: AgentState) -> dict[str, Any]:
     profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}

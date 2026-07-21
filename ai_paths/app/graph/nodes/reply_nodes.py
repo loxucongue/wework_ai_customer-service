@@ -7,6 +7,7 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency
+from app.graph.nodes.reply_context import reply_recovery_payload_for_model
 from app.graph.nodes.store_scope_summary import region_mentioned_in_text
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
@@ -21,12 +22,18 @@ from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
 
 
-REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售回复模型。完整 Reply 已超时或未通过硬事实校验，请根据精简事实重新生成客户可见回复。
+REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售回复模型。完整 Reply 已超时或未通过硬事实校验，请根据去重后的完整业务事实重新生成客户可见回复。精简只删除重复字段，不代表可以忽略业务规则、最近历史或结构事实。
 
 要求：
 - 只输出 JSON 对象：{\"reply_messages\":[{\"type\":\"text\",\"order\":1,\"content\":\"...\"}]}。
-- 先直接解决客户当前问题，再自然承接上下文和 Planner 已选择的一个成交动作。
+- 当前消息优先，结合最近12条原序历史。先直接解决本轮问题，再自然承接一个销售动作；不要复读整套规则，不要说“继续处理、安排下一步、温馨提醒、尊敬的客户”。
+- 像真人微信聊天：短句、口语、具体，不暴露“事实、排序、工具、系统、流程、状态”等内部表达。客户只回“好/嗯”时，确认并轻推下一步，不重播上一轮顾虑、案例、价格和预约金全套内容。
 - 只能使用输入中的工具、门店、订单、支付、图片和档期事实；没有事实就不要编。
+- 发过 payment_collection 只代表发过卡，不代表已支付。只有成功支付截图或订单 prepay_paid 才是权威已付；客户口头说已付只能按声明承接，不能说已核款。
+- 人数按到店总人数理解：“我朋友也一起”通常是本人+1位朋友=2位；“我带两个朋友”是本人+2位朋友=3位。卡片金额仍须服从 Planner 与有效订单事实。
+- 客户明确要入口/预约且缺合法订单时，直接说明正在按已确认门店接着办理或只补最小必要门店信息，不能再反问“如果你要我再发”。
+- 没有真实 case_facts/image 不能说“我给您发图/图发您了”；有图且当前明确要图时才输出 image。上一轮顾虑已回答、客户只确认时不要擅自重发案例。
+- 退款、扣款异常只能先核对门店、时间、金额、项目或截图；不能说已经同意/正在办理退款，也不能承诺自动退回、原路到账或处理时效。
 - 不输出公里、分钟、车程；不承诺绝对效果；没有真实预约事实不能说已经安排好。
 - payment_collection、store_address、image、human_handoff_notice 必须使用输入中已核验的结构事实。
 - 使用自然微信口吻，不解释系统故障，不输出 markdown 或内部分析。
@@ -338,30 +345,7 @@ def _maybe_append_planner_payment_structure(
 
 
 def _reply_recovery_messages(state: AgentState) -> list[dict[str, Any]]:
-    raw_evidence = state.get("current_turn_context")
-    turn_evidence = raw_evidence if isinstance(raw_evidence, dict) else {}
-    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
-    structured_facts = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
-    planner_reply_messages = (
-        []
-        if str(state.get("planner_sub_rule_id") or "") == "PLANNER_SYSTEM_UNAVAILABLE"
-        else list(state.get("planner_reply_messages") or [])[:6]
-    )
-    payload = {
-        "current_message": state.get("normalized_content") or state.get("content") or "",
-        "conversation_history": list(state.get("conversation_history") or [])[-8:],
-        "image_info": state.get("image_info") or {},
-        "planner_decision": state.get("planner_decision") or "",
-        "planner_reply_messages": planner_reply_messages,
-        "payment_decision": state.get("payment_decision") or {},
-        "store_binding_decision": state.get("store_binding_decision") or {},
-        "order_decision": state.get("order_decision") or {},
-        "appointment_decision": state.get("appointment_decision") or {},
-        "sales_progression": state.get("sales_progression") or {},
-        "turn_evidence": _compact_recovery_value(turn_evidence),
-        "tool_facts": _compact_recovery_value(structured_facts),
-        "reply_constraints": list(state.get("reply_constraints") or [])[:12],
-    }
+    payload = _compact_recovery_value(reply_recovery_payload_for_model(state))
     return [
         {"role": "system", "content": REPLY_RECOVERY_SYSTEM_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
@@ -378,7 +362,7 @@ def _compact_recovery_value(value: Any, *, depth: int = 0) -> Any:
             if item not in (None, "", [], {})
         }
     if isinstance(value, list):
-        return [_compact_recovery_value(item, depth=depth + 1) for item in value[-8:]]
+        return [_compact_recovery_value(item, depth=depth + 1) for item in value[-12:]]
     if isinstance(value, str):
         return value[:600]
     return value

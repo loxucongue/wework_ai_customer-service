@@ -168,6 +168,9 @@ def _move_handoff_notices_after_visible(messages: list[dict[str, Any]]) -> list[
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_handoff_notice_text(messages)
     _validate_deposit_refund_policy(messages)
+    _validate_unverified_refund_execution_claims(messages)
+    _validate_structured_delivery_promises(messages, state)
+    _validate_no_customer_visible_internal_language(messages)
     _validate_offer_total_and_tail_amount(messages)
     _validate_payment_not_during_health_risk_hold(messages, state)
     _validate_payment_collection_consistency(messages, state)
@@ -253,6 +256,68 @@ def _validate_deposit_refund_policy(messages: list[dict[str, Any]]) -> None:
     text = _combined_text(messages)
     if re.search(r"不做退(?:还)?\s*\d+\s*元", text):
         raise ValueError("legacy_deposit_refund_policy")
+
+
+def _validate_unverified_refund_execution_claims(messages: list[dict[str, Any]]) -> None:
+    """Block refund execution claims; the system only knows that records need review."""
+
+    compact = re.sub(r"\s+", "", _combined_text(messages))
+    unsupported = (
+        "自动退回",
+        "自动退款",
+        "会原路返回",
+        "会原路退回",
+        "已经处理退款",
+        "退款已经处理",
+        "先帮您处理退款",
+        "先帮你处理退款",
+        "帮您登记退款",
+        "帮你登记退款",
+    )
+    if any(term in compact for term in unsupported):
+        raise ValueError("unverified_refund_execution_claim")
+
+
+def _validate_structured_delivery_promises(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """A customer-visible promise to send media must include an authorized structure."""
+
+    text = re.sub(r"\s+", "", _combined_text(messages))
+    promises_case_image = any(
+        term in text
+        for term in (
+            "给您发效果图",
+            "给你发效果图",
+            "发您效果图",
+            "发你效果图",
+            "给您发同类",
+            "给你发同类",
+            "发您同类",
+            "发你同类",
+            "我这边先给您发",
+            "我这边先给你发",
+        )
+    ) and any(term in text for term in ("效果", "案例", "改善参考", "同类淡斑"))
+    if not promises_case_image:
+        return
+    if any(str(item.get("type") or "") == "image" for item in messages if isinstance(item, dict)):
+        return
+    raise ValueError("case_image_structure_required_when_reply_promises_delivery")
+
+
+def _validate_no_customer_visible_internal_language(messages: list[dict[str, Any]]) -> None:
+    compact = re.sub(r"\s+", "", _combined_text(messages))
+    internal_phrases = (
+        "距离排序事实",
+        "当前没有可用的事实",
+        "工具事实",
+        "fact_envelope",
+        "planner_decision",
+        "payment_decision",
+        "系统状态显示",
+        "进入下一流程",
+    )
+    if any(term in compact for term in internal_phrases):
+        raise ValueError("customer_visible_internal_language")
 
 
 def _validate_offer_total_and_tail_amount(messages: list[dict[str, Any]]) -> None:
@@ -1222,6 +1287,8 @@ def _asserts_appointment_confirmed(text: str) -> bool:
         )
     )
     if matched:
+        return True
+    if re.search(rf"{time_token}.{{0,8}}(?:过去|到店|过来|来店)(?:也)?(?:可以|没问题|就行)", compact):
         return True
     hold_terms = ("先留着", "帮你留着", "帮您留着", "给你留着", "给您留着", "留好", "预留", "帮你记上", "帮您记上", "先记上")
     if any(term in compact for term in hold_terms) and (
