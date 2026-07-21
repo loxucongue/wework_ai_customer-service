@@ -71,6 +71,17 @@ def store_scope_ids(raw: dict[str, Any]) -> set[str]:
     }
 
 
+def region_mentioned_in_text(region: str, text: str) -> bool:
+    compact_region = "".join(str(region or "").split()).lower()
+    compact_text = "".join(str(text or "").split()).lower()
+    if not compact_region or not compact_text:
+        return False
+    if compact_region in compact_text:
+        return True
+    normalized_region = _normalize_region(compact_region)
+    return len(normalized_region) >= 2 and normalized_region in compact_text
+
+
 def _relevant_city_summary(
     stores: list[dict[str, Any]],
     *,

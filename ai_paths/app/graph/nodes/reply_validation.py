@@ -7,7 +7,7 @@ from typing import Any
 
 from app.graph.nodes.common import renumber_messages
 from app.graph.nodes.contextual_short_message import is_contextual_short_message
-from app.graph.nodes.store_scope_summary import store_scope_ids
+from app.graph.nodes.store_scope_summary import region_mentioned_in_text, store_scope_ids
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
     payment_amount_matches_text,
@@ -838,7 +838,7 @@ def _store_address_card_conflicts_with_visible_text(
             for name in _store_record_names(record):
                 if name and name in text and not _store_name_matches_target(name, target_names):
                     return True
-            other_region_hit = any(_compact_text(region) in _compact_text(text) for region in _store_record_regions(record))
+            other_region_hit = any(region_mentioned_in_text(region, text) for region in _store_record_regions(record))
             if other_region_hit and target_tokens and not any(token and token in _compact_text(text) for token in target_tokens):
                 return True
         for name in KNOWN_STORE_NAMES:

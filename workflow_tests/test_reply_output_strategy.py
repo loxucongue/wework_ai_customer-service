@@ -3914,6 +3914,40 @@ def test_reply_validation_rejects_store_address_card_conflicting_with_visible_st
         )
 
 
+def test_reply_validation_rejects_store_card_when_visible_city_omits_suffix() -> None:
+    with pytest.raises(ValueError, match="store_address_text_card_mismatch"):
+        validate_reply_consistency(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "厦门这边实际是思明和湖里两家，我先发您门店位置。"},
+                },
+                {"type": "store_address", "order": 2, "content": {"store_id": "68"}},
+            ],
+            {
+                "customer_store_knowledge": {
+                    "stores": [
+                        {
+                            "store_id": "68",
+                            "store_name": "乌鲁木齐店",
+                            "province": "新疆维吾尔自治区",
+                            "city": "乌鲁木齐市",
+                            "district": "沙依巴克区",
+                        },
+                        {
+                            "store_id": "12",
+                            "store_name": "厦门思明店",
+                            "province": "福建省",
+                            "city": "厦门市",
+                            "district": "思明区",
+                        },
+                    ]
+                }
+            },
+        )
+
+
 def test_distance_fact_output_hides_customer_visible_numbers() -> None:
     output = build_planner_fact_output(
         {

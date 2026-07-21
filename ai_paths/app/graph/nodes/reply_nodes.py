@@ -5,6 +5,7 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_usage_snapshot
 from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency
+from app.graph.nodes.store_scope_summary import region_mentioned_in_text
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
     normalize_payment_amount_text,
@@ -778,7 +779,7 @@ def _store_address_card_conflicts_with_visible_text(
         for name in _store_record_names(record):
             if name and name in text and name not in target_names:
                 return True
-        other_region_hit = any(_compact_text(region) in _compact_text(text) for region in _store_record_regions(record))
+        other_region_hit = any(region_mentioned_in_text(region, text) for region in _store_record_regions(record))
         if other_region_hit and target_tokens and not any(token and token in _compact_text(text) for token in target_tokens):
             return True
     for name in KNOWN_STORE_NAMES:
