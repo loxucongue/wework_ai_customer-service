@@ -146,6 +146,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     assert "evidence_summary" not in PLANNER_SYSTEM_PROMPT
     assert len(PLANNER_SYSTEM_PROMPT) < 9_000
     assert "explain-only direct_reply 不完整" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
+    assert "`store_binding=ambiguous`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
+    assert "不得在草稿中复述健康、过敏、检测或适配提醒" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
 
 
 def test_runtime_business_fact_views_do_not_repeat_full_rule_packs() -> None:
@@ -222,6 +224,9 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "不能删掉草稿里的具体回答、付款选择、保留名额、登记或门店动作" in REPLY_SYSTEM_PROMPT
     assert "不能删掉其中的具体成交动作" in REPLY_SYSTEM_PROMPT
     assert len(REPLY_SYSTEM_PROMPT) < 9_000
+    assert "历史风险视为已处理背景" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "严禁自行复活健康、过敏、检测或适配提醒" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "不得用 `current_known_store` 单店覆盖对话歧义" in REPLY_TRANSACTION_PATCH_PROMPT
 
 
 def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None:

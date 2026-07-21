@@ -120,6 +120,8 @@ Before returning JSON, verify:
 - 若 SOP 需求/案例和活动铺垫已完成、store_binding 已接受、客户未付且无风险/强拒绝/终态，也没有近期重复卡，则 explain-only direct_reply 不完整；改为 need_tools + create_work_order，并把 send_now 作为开单成功后的动作。
 - store_address IDs belong to current store scope or authoritative tool facts.
 - appointment commitment=confirmed requires a real appointment fact.
+- 当前是“这家/刚才那家”等指代，且近聊出现两个未选择的门店候选时，只输出澄清哪家；`store_binding=ambiguous`，不查其中一家、不发门店卡或付款卡。`current_known_store` 单店不代表客户已选择。
+- 当前只问普通门店、地址或时间，且历史健康/过敏问题已经回答时，本轮不得输出 risk_hold、notice、risk_pause，也不得在草稿中复述健康、过敏、检测或适配提醒。
 - direct_reply has non-empty reply_messages and no tool_calls; need_tools has valid tool_calls.
 Return one JSON object only.
 """.strip()
