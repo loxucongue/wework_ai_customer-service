@@ -789,6 +789,12 @@ def _compact_text(value: Any) -> str:
 
 
 def _reply_repair_hint(error: str) -> str:
+    if "health_online_symptom_question_not_allowed" in error:
+        return "不要在线追问客户症状、出现频率或用药情况。健康、过敏或孕期只正面承接并引导到店专业检测；严重不适收原门店、项目和时间。"
+    if "health_specific_care_advice_not_allowed" in error:
+        return "不要给热敷、冷敷、去角质、酸类、停用护肤品等具体护理清单。严重不适只说停止继续刺激、联系原门店；明显紧急时及时线下就医。"
+    if "pregnancy_deferral_claim_not_allowed" in error:
+        return "不要直接判定只能等孕期结束、产后或哺乳期结束再来。只说明需要到店专业检测评估，确认适合后再安排。"
     if "payment_collection_blocked_by_health_risk_hold" in error:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_blocked_by_payment_action" in error:

@@ -737,6 +737,8 @@ def test_planner_payload_keeps_context_for_low_information_message() -> None:
     assert "binding_source" not in payload["turn_evidence"]
     assert "context_hints" not in payload["turn_evidence"]
     assert "payment_evidence" not in payload["turn_evidence"]
+    assert payload["turn_evidence"]["history_evidence"]["is_short_message"] is True
+    assert payload["turn_evidence"]["history_evidence"]["history_window_size"] == 20
     assert payload["turn_evidence"]["appointment_evidence"]["store_name"] == "广州白云三店"
     assert payload["turn_evidence"]["source_policy"] == "facts_only_models_decide_business_semantics"
     assert payload["transaction_facts"]["store_anchor_fact"]["status"] == "none"
@@ -4424,9 +4426,84 @@ def test_reply_validation_rejects_claimed_registration_without_order_fact() -> N
         )
 
 
+def test_reply_validation_rejects_claimed_reserved_slot_without_order_fact() -> None:
+    with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "可以，我先给您留活动名额。"}}],
+            {"fact_envelope": {"structured_facts": {"order_facts": []}}},
+        )
+
+
+def test_reply_validation_rejects_claimed_activity_registration_without_order_fact() -> None:
+    with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": _u(r"\u6211\u5148\u5e2e\u60a8\u767b\u8bb0\u6d3b\u52a8\u3002")}}],
+            {"fact_envelope": {"structured_facts": {"order_facts": []}}},
+        )
+
+
+@pytest.mark.parametrize(
+    ("text", "violation"),
+    [
+        ("您脸肿是刚出现的还是以前就经常这样？", "health_online_symptom_question_not_allowed"),
+        ("您先停用护肤品，也先别去角质。", "health_specific_care_advice_not_allowed"),
+        ("建议等孕期结束后再来做。", "pregnancy_deferral_claim_not_allowed"),
+    ],
+)
+def test_reply_validation_rejects_online_health_advice_boundaries(text: str, violation: str) -> None:
+    with pytest.raises(ValueError, match=violation):
+        validate_reply_consistency(
+            [
+                {"type": "text", "order": 1, "content": text},
+                {
+                    "type": "human_handoff_notice",
+                    "order": 2,
+                    "content": {"handoff_reason": "health risk"},
+                },
+            ],
+            {},
+        )
+
+
+def test_reply_validation_allows_health_detection_and_generic_stop_stimulation() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "您先停止继续刺激皮肤，联系原门店核对；到店做专业检测，确认适合再安排。",
+            },
+            {
+                "type": "human_handoff_notice",
+                "order": 2,
+                "content": {"handoff_reason": "health risk"},
+            },
+        ],
+        {},
+    )
+
+    with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": _u(r"\u6211\u5148\u7ed9\u60a8\u8bb0\u4e0b\u6d3b\u52a8\u540d\u989d\u3002")}}],
+            {"fact_envelope": {"structured_facts": {"order_facts": []}}},
+        )
+
+
 def test_reply_validation_allows_claimed_registration_with_created_order_fact() -> None:
     validate_reply_consistency(
         [{"type": "text", "order": 1, "content": {"text": "可以，先给您报上。"}}],
+        {
+            "fact_envelope": {
+                "structured_facts": {
+                    "order_facts": [{"status": "created", "order_id": "order-1"}],
+                    "appointment_facts": [],
+                }
+            }
+        },
+    )
+
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "可以，我先给您留活动名额。"}}],
         {
             "fact_envelope": {
                 "structured_facts": {

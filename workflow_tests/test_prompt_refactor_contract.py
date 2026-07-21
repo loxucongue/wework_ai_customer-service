@@ -5,7 +5,11 @@ from pathlib import Path
 
 from app.graph.nodes.image_info import build_vision_prompt
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
-from app.graph.planner.brain_v2_prompts import PLANNER_SYSTEM_PROMPT, PLANNER_TRANSACTION_PATCH_PROMPT
+from app.graph.planner.brain_v2_prompts import (
+    PLANNER_SYSTEM_PROMPT,
+    PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT,
+    PLANNER_TRANSACTION_PATCH_PROMPT,
+)
 from app.prompts.global_contract import (
     GLOBAL_BUSINESS_RHYTHM_CONTRACT,
     GLOBAL_REPLY_CONTRACT,
@@ -129,12 +133,19 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "把 send_now 作为开单成功后的动作",
         "短消息须承接最近未完动作",
         "不列选项重问意图",
+        "不能答无需预约金",
+        "有 case_facts 同轮发 image",
+        "已答风险在普通门店/时间轮完全不复述",
+        "不得称已报名或已留名额",
+        "仅客户当前询问可退或退款时主动展开",
+        "“好/嗯”只是确认，不重开旧顾虑",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_BUSINESS_RHYTHM_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert "evidence_summary" not in PLANNER_SYSTEM_PROMPT
     assert len(PLANNER_SYSTEM_PROMPT) < 9_000
+    assert "explain-only direct_reply 不完整" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
 
 
 def test_runtime_business_fact_views_do_not_repeat_full_rule_packs() -> None:
@@ -193,6 +204,12 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "健康、孕期和过敏统一引导到店专业检测",
         "不直接判定只能等产后或以后",
         "直接续最近未完动作",
+        "不猜网络延迟、页面故障或银行原因",
+        "未付且客户未主动登记时不提前索要姓名电话",
+        "近聊有多家平级候选时先问具体哪家",
+        "已答健康/过敏后转问门店、地址或时间",
+        "不借题堆价格、退款或无关门店信息",
+        "不能说核实/处理退款",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
     assert GLOBAL_REPLY_CONTRACT in REPLY_SYSTEM_PROMPT

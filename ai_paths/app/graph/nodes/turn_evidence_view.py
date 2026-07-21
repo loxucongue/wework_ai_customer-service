@@ -9,6 +9,7 @@ def turn_evidence_for_model(value: Any) -> dict[str, Any]:
         return {}
 
     nested = value.get("turn_evidence") if isinstance(value.get("turn_evidence"), dict) else {}
+    history = _history_evidence(nested.get("history_evidence"))
     store = _store_evidence(nested.get("store_evidence"))
     appointment = _appointment_evidence(
         nested.get("appointment_evidence"),
@@ -21,6 +22,7 @@ def turn_evidence_for_model(value: Any) -> dict[str, Any]:
 
     output = _drop_empty(
         {
+            "history_evidence": history,
             "store_evidence": store,
             "appointment_evidence": appointment,
             "registration_evidence": registration,
@@ -30,6 +32,20 @@ def turn_evidence_for_model(value: Any) -> dict[str, Any]:
     if output:
         output["source_policy"] = "facts_only_models_decide_business_semantics"
     return output
+
+
+def _history_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return _drop_empty(
+        {
+            "is_short_message": value.get("is_short_message") if "is_short_message" in value else None,
+            "is_deictic_message": value.get("is_deictic_message") if "is_deictic_message" in value else None,
+            "recent_assistant_action": _text(value.get("recent_assistant_action")),
+            "recent_assistant_text": _text(value.get("recent_assistant_text"))[:160],
+            "history_window_size": value.get("history_window_size"),
+        }
+    )
 
 
 def _store_evidence(value: Any) -> dict[str, Any]:

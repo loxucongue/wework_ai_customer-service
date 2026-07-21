@@ -167,6 +167,7 @@ def _move_handoff_notices_after_visible(messages: list[dict[str, Any]]) -> list[
 
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_handoff_notice_text(messages)
+    _validate_health_reply_boundaries(messages, state)
     _validate_deposit_refund_policy(messages)
     _validate_unverified_refund_execution_claims(messages)
     _validate_structured_delivery_promises(messages, state)
@@ -187,6 +188,55 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_appointment_confirmation_facts(messages, state)
     _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
     _validate_fact_boundaries(messages, state)
+
+
+def _validate_health_reply_boundaries(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    has_notice = any(
+        str(item.get("type") or "") in {"human_handoff", "human_handoff_notice"}
+        for item in messages
+        if isinstance(item, dict)
+    )
+    if not has_notice and not is_hard_health_risk_hold(health_risk_hold(state)):
+        return
+    text = _compact_text(_combined_text(messages))
+    if any(
+        marker in text
+        for marker in (
+            "平时还是最近",
+            "现在是否不舒服",
+            "是刚出现的还是",
+            "还是以前就经常",
+            "最近才出现还是",
+        )
+    ):
+        raise ValueError("health_online_symptom_question_not_allowed")
+    if any(
+        marker in text
+        for marker in (
+            "先别热敷",
+            "先不要热敷",
+            "先别冷敷",
+            "先不要冷敷",
+            "暂停护肤品",
+            "停用护肤品",
+            "先别用护肤品",
+            "先不要用护肤品",
+            "去角质",
+            "酸类产品",
+            "暂停刺激性的护理",
+        )
+    ):
+        raise ValueError("health_specific_care_advice_not_allowed")
+    if any(
+        marker in text
+        for marker in (
+            "等孕期结束后再",
+            "等生完再",
+            "产后再来",
+            "哺乳期结束后再",
+        )
+    ):
+        raise ValueError("pregnancy_deferral_claim_not_allowed")
 
 
 def collect_reply_soft_warnings(messages: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, str]]:
@@ -1327,6 +1377,18 @@ def _asserts_registration_confirmed(text: str) -> bool:
             "帮您报上",
             "先给您报名",
             "先帮您报名",
+            "给您登记活动",
+            "帮您登记活动",
+            "先给您登记活动",
+            "先帮您登记活动",
+            "给您记下活动名额",
+            "帮您记下活动名额",
+            "先给您记活动名额",
+            "先帮您记活动名额",
+            "给您留活动名额",
+            "帮您留活动名额",
+            "先给您留名额",
+            "先帮您留名额",
         )
     )
 
