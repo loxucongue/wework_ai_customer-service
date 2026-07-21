@@ -468,6 +468,12 @@ def _fact_notes_for_model(
     store_lookup_status = structured_facts.get("store_lookup_status") or {}
     if isinstance(store_lookup_status, dict) and store_lookup_status.get("distance_lookup_required"):
         notes.append("客户在问距离或附近门店，但本轮没有真实距离排序结果；不要说最近、更近、几公里或几分钟，只能基于候选门店说明还需要按地图距离核对。")
+    if (
+        isinstance(store_lookup_status, dict)
+        and store_lookup_status.get("source") == "distance_calculate"
+        and store_lookup_status.get("recommendation_status") == "insufficient_comparable_candidates"
+    ):
+        notes.append("本轮不足两家可比较门店，没有真实排序结论；可以说明查到的候选，但不能称某家优先、更方便、更顺路或最近。")
 
     sent_store_ids = {
         str(item).strip()

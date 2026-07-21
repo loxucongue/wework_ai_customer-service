@@ -674,7 +674,7 @@ def _validate_fact_boundaries(messages: list[dict[str, Any]], state: dict[str, A
         raise ValueError("store_address_fact_required")
     if _asserts_customer_visible_distance_value(text, state):
         raise ValueError("distance_value_not_customer_visible")
-    if _asserts_distance_ranking(text) and not has_distance:
+    if _asserts_distance_ranking(text, state) and not has_distance:
         raise ValueError("distance_fact_required")
 
 
@@ -793,16 +793,14 @@ def _has_distance_ranking_fact(structured: dict[str, Any]) -> bool:
     store_lookup_status = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
     recommendation_status = str(store_lookup_status.get("recommendation_status") or store_lookup_status.get("status") or "")
     try:
-        candidate_count = int(store_lookup_status.get("candidate_count") or 0)
+        comparable_candidate_count = int(store_lookup_status.get("comparable_candidate_count") or 0)
     except (TypeError, ValueError):
-        candidate_count = 0
+        comparable_candidate_count = 0
     return (
         recommended_store.get("reason") == "distance_calculate_rank_1"
-        or (
-            store_lookup_status.get("source") == "distance_calculate"
-            and candidate_count > 0
-            and recommendation_status not in {"distance_tool_unavailable", "error", "failed"}
-        )
+        and store_lookup_status.get("source") == "distance_calculate"
+        and comparable_candidate_count >= 2
+        and recommendation_status not in {"distance_tool_unavailable", "insufficient_comparable_candidates", "error", "failed"}
     )
 
 
@@ -994,11 +992,24 @@ def _asserts_address(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fffA-Za-z0-9]{1,30}(?:路|街|大道|巷)\s*\d+\s*号", text))
 
 
-def _asserts_distance_ranking(text: str) -> bool:
+def _asserts_distance_ranking(text: str, state: dict[str, Any]) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
     if _asks_location_before_distance_matching(compact):
         return False
     if any(term in compact for term in ("最近的是", "离您最近", "离你最近", "距离最近", "就近门店", "就近的门店")):
+        return True
+    if any(term in compact for term in ("优先这家", "先看这家")):
+        return True
+    known_store_names = {
+        _compact_text(name)
+        for record in _known_store_records_for_validation(state)
+        for name in _store_record_names(record)
+        if _compact_text(name)
+    }
+    mentions_known_store = any(name in compact for name in known_store_names)
+    if mentions_known_store and any(term in compact for term in ("优先", "首选", "更方便", "相对方便", "更顺路", "相对顺路")):
+        return True
+    if any(term in compact for term in ("这家更方便", "这家相对方便", "这家更顺路", "这家相对顺路", "该店更方便", "该店更顺路")):
         return True
     return any(term in compact for term in ("更近", "近一些", "近一点", "较近")) and any(
         term in compact for term in ("门店", "店", "地址", "导航", "位置", "离您", "离你")

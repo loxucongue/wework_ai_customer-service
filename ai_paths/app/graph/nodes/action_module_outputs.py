@@ -86,18 +86,29 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             continue
 
         if key == "distance_calculate":
+            candidate_stores = value.get("ranked_stores") if isinstance(value.get("ranked_stores"), list) else []
+            if not candidate_stores:
+                candidate_stores = value.get("candidate_stores") if isinstance(value.get("candidate_stores"), list) else []
+            comparable_stores = [
+                item
+                for item in candidate_stores
+                if isinstance(item, dict)
+                and item.get("distance_km") is not None
+                and not str(item.get("distance_error") or "").strip()
+            ]
+            has_real_ranking = len(comparable_stores) >= 2
             structured_facts["store_lookup_status"] = {
                 "query": str(value.get("origin") or ""),
                 "location_preference": str(value.get("origin") or ""),
                 "distance_origin": str(value.get("origin") or ""),
                 "distance_lookup_required": bool(value.get("status") == "distance_tool_unavailable"),
-                "recommendation_status": str(value.get("status") or ""),
+                "recommendation_status": (
+                    str(value.get("status") or "") if has_real_ranking else "insufficient_comparable_candidates"
+                ),
                 "source": "distance_calculate",
                 "candidate_count": int(value.get("candidate_store_count") or len(value.get("ranked_stores") or value.get("candidate_stores") or [])),
+                "comparable_candidate_count": len(comparable_stores),
             }
-            candidate_stores = value.get("ranked_stores") if isinstance(value.get("ranked_stores"), list) else []
-            if not candidate_stores:
-                candidate_stores = value.get("candidate_stores") if isinstance(value.get("candidate_stores"), list) else []
             structured_facts["store_facts"] = [
                 {
                     **_store_fact_from_lookup_item(item),
@@ -107,10 +118,12 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 for item in candidate_stores[:5]
                 if isinstance(item, dict)
             ]
-            if structured_facts["store_facts"]:
-                top_store = structured_facts["store_facts"][0]
+            if has_real_ranking:
+                top_store = _store_fact_from_lookup_item(comparable_stores[0])
                 structured_facts["recommended_store"] = {
                     **top_store,
+                    "distance_source": str(comparable_stores[0].get("distance_source") or ""),
+                    "distance_error": "",
                     "reason": "distance_calculate_rank_1",
                 }
             facts.append(

@@ -4031,7 +4031,16 @@ def test_distance_fact_output_hides_customer_visible_numbers() -> None:
                         "distance_meters": 3200,
                         "duration_seconds": 600,
                         "distance_source": "amap",
-                    }
+                    },
+                    {
+                        "store_id": "228",
+                        "store_name": "厦门湖里店",
+                        "address": "厦门市湖里区示例路2号",
+                        "distance_km": 5.1,
+                        "distance_meters": 5100,
+                        "duration_seconds": 900,
+                        "distance_source": "amap",
+                    },
                 ],
             }
         },
@@ -4056,10 +4065,45 @@ def test_reply_validation_allows_distance_rank_without_numeric_value() -> None:
                         "store_name": "厦门思明店",
                         "reason": "distance_calculate_rank_1",
                     },
+                    "store_lookup_status": {
+                        "source": "distance_calculate",
+                        "recommendation_status": "ok",
+                        "candidate_count": 2,
+                        "comparable_candidate_count": 2,
+                    },
                 }
             }
         },
     )
+
+
+def test_single_distance_candidate_is_not_a_ranking_fact() -> None:
+    output = build_planner_fact_output(
+        {
+            "distance_calculate": {
+                "origin": "厦门集美",
+                "status": "ok",
+                "ranked_stores": [
+                    {
+                        "store_id": "12",
+                        "store_name": "厦门思明店",
+                        "distance_km": 18.0,
+                        "distance_source": "amap",
+                    }
+                ],
+            }
+        },
+        {},
+    )
+    structured = output["fact_envelope"]["structured_facts"]
+    assert structured["recommended_store"] == {}
+    assert structured["store_lookup_status"]["recommendation_status"] == "insufficient_comparable_candidates"
+    assert structured["store_lookup_status"]["comparable_candidate_count"] == 1
+    with pytest.raises(ValueError, match="distance_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": {"text": "给您优先这家：厦门思明店。"}}],
+            output,
+        )
 
 
 def test_reply_validation_allows_asking_location_before_nearby_matching() -> None:
