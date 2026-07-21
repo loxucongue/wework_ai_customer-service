@@ -157,6 +157,80 @@ def model_usage_snapshot(model_client: Any | None) -> dict[str, Any]:
     }
 
 
+def model_call_metrics(model_call: Any, *, prompt_warning_threshold: int) -> dict[str, Any]:
+    """Build a small observable summary without copying model prompts into state."""
+    if not isinstance(model_call, dict):
+        return {}
+    call_input = model_call.get("input") if isinstance(model_call.get("input"), dict) else {}
+    messages = call_input.get("messages") if isinstance(call_input.get("messages"), list) else []
+    input_chars = sum(
+        len(str(message.get("content") or ""))
+        for message in messages
+        if isinstance(message, dict)
+    )
+    usages: list[dict[str, Any]] = []
+    if isinstance(model_call.get("usage"), dict):
+        usages.append(model_call["usage"])
+    for value in (model_call.get("retry"), model_call.get("recovery")):
+        if isinstance(value, dict) and isinstance(value.get("usage"), dict):
+            usages.append(value["usage"])
+    for value in model_call.get("nested_calls") or []:
+        if isinstance(value, dict) and isinstance(value.get("usage"), dict):
+            usages.append(value["usage"])
+    usage = next(
+        (
+            value
+            for value in reversed(usages)
+            if value.get("winner_model") or value.get("prompt_tokens")
+        ),
+        usages[-1] if usages else {},
+    )
+    prompt_tokens = int(usage.get("prompt_tokens") or 0)
+    return {
+        "message_count": len(messages),
+        "input_chars": input_chars,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "winner_model": str(usage.get("winner_model") or usage.get("model") or ""),
+        "hedge_started": bool(usage.get("hedge_started", False)),
+        "duration_ms": int(usage.get("overall_duration_ms") or usage.get("duration_ms") or 0),
+        "prompt_warning_threshold": int(prompt_warning_threshold),
+        "prompt_warning": bool(prompt_tokens > prompt_warning_threshold),
+    }
+
+
+def model_recovery_attempts(model_call: Any, *, node: str) -> list[dict[str, Any]]:
+    if not isinstance(model_call, dict):
+        return []
+    attempts: list[dict[str, Any]] = []
+    for name, value in (
+        ("repair", model_call.get("retry")),
+        ("compact_recovery", model_call.get("recovery")),
+    ):
+        if not isinstance(value, dict):
+            continue
+        attempts.append(
+            {
+                "node": node,
+                "type": name,
+                "reason": str(value.get("reason") or value.get("error") or "")[:240],
+                "succeeded": not bool(value.get("error")),
+            }
+        )
+    for value in model_call.get("nested_calls") or []:
+        if not isinstance(value, dict):
+            continue
+        attempts.append(
+            {
+                "node": node,
+                "type": str(value.get("name") or "nested_model_call"),
+                "reason": str(value.get("error") or "")[:240],
+                "succeeded": not bool(value.get("error")),
+            }
+        )
+    return attempts
+
+
 def json_dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 

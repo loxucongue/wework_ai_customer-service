@@ -78,9 +78,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
     payload = _planner_payload_for_model(state)
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-        {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": "# Planner Rule Packs\n" + planner_business_rules_prompt_section()},
-        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
+        {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
         {"role": "system", "content": PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT},
     ]
@@ -99,9 +97,7 @@ def planner_v2_repair_messages_for_model(
     }
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
-        {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
-        {"role": "system", "content": "# Planner Rule Packs\n" + planner_business_rules_prompt_section()},
-        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
+        {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
         {"role": "system", "content": PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT},
@@ -395,16 +391,37 @@ def _turn_evidence_for_planner(value: Any) -> dict[str, Any]:
         "blocked_actions",
         "evidence_conflicts",
     )
-    output = {
-        key: value.get(key)
-        for key in allowed_keys
-        if value.get(key) not in (None, "", [], {})
-    }
+    output: dict[str, Any] = {}
+    for key in allowed_keys:
+        item = value.get(key)
+        if item in (None, "", [], {}):
+            continue
+        if key == "payment_evidence" and isinstance(item, dict):
+            item = {
+                field: item.get(field)
+                for field in (
+                    "sent_payment_collection",
+                    "last_amount",
+                    "last_sent_at",
+                    "last_assistant_payment_text",
+                    "recent_payment_texts",
+                    "source_policy",
+                )
+                if item.get(field) not in (None, "", [], {})
+            }
+            if isinstance(item.get("recent_payment_texts"), list):
+                item["recent_payment_texts"] = item["recent_payment_texts"][-3:]
+        if item not in (None, "", [], {}):
+            output[key] = item
     nested = value.get("turn_evidence")
     if isinstance(nested, dict):
-        for key, item in nested.items():
-            if key not in output and item not in (None, "", [], {}):
+        for key in ("store_evidence", "appointment_evidence"):
+            item = nested.get(key)
+            if item not in (None, "", [], {}):
                 output[key] = item
+        history = nested.get("history_evidence")
+        if isinstance(history, dict) and history.get("recent_assistant_text"):
+            output["recent_assistant_text"] = str(history.get("recent_assistant_text"))[:600]
     if output:
         output["source_policy"] = "evidence_only_planner_owns_business_semantics"
     return output

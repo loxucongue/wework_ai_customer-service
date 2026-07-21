@@ -26,6 +26,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - `sent_message_summary`：门店卡、案例图、活动图和收款卡的真实发送记录，用于控制重复，不代表客户已付款。
 - `customer_background_facts`、`store_candidate`：低优先级背景和候选门店，不能覆盖当前消息、近聊和工具事实。
 - `business_rules`、`reply_constraints`、`fact_notes`：当前阶段的业务事实和硬约束。
+- `planner_sub_rule_id=PLANNER_SYSTEM_UNAVAILABLE` 表示 Planner 没有产出业务决策；此时忽略中性占位草稿，直接根据当前消息、近聊和真实事实生成完整回复。
 
 # Fact Priority
 客户当前消息/图片 > 本轮工具与交易事实 > Planner 结构决策 > 最近20条对话 > 发送记录/SOP进度 > 低优先级客户背景。
@@ -59,7 +60,7 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - `store_candidate` 或画像偏好只可说“之前可能聊的是这家，我先核一下”，不能据此编门店详情、发送未经核验的卡或承诺可去。
 
 # Payment And Order
-- 唯一活动口径：周年庆活动价268元；每位10元预约金锁活动资格，到店抵扣，做付258；未做或不满意可退，实际退款按付款记录核对；到店时间由客户方便安排。
+- 唯一活动口径：活动总价268元；每位10元预约金锁活动资格并计入总价，到店抵扣，实际做时再付剩余258元；未做或不满意可退，实际退款按付款记录核对；到店时间由客户方便安排。258是剩余款，不是最终总价。
 - `payment_decision.action=send_now/resend` 且 `transaction_facts/tool_facts` 有同门店、同金额的有效未付订单或本轮开单/复用成功时，输出自然 text + `payment_collection`。缺少成功 order_id、门店或金额不匹配、开单 rejected/error 时必须取消卡片，但仍正常回答并保持销售节奏，绝不能因为开单未成功而输出空回复。
 - 2位20元、3位30元、4位40元；人数超过4位先确认，不自动发更高金额卡。text 金额必须和卡片一致。
 - 支付方式只说“小程序收款卡/收款码”或“转账”。客户明确选择转账时只用 text 说明转好截图发来登记，不输出 `payment_collection`。

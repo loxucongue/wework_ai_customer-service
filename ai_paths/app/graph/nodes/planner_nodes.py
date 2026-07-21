@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from app.graph.nodes.common import model_usage_snapshot
+from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_planner_brain_v2, safety_fallback_plan
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
@@ -60,6 +60,19 @@ def create_planner_brain_node(
             if planner_call:
                 span["entry"]["tool_calls"] = [planner_call]
 
+            context_metrics = dict(state.get("model_context_metrics") or {})
+            context_metrics["planner"] = model_call_metrics(planner_call, prompt_warning_threshold=12_000)
+            recovery_attempts = [
+                *list(state.get("recovery_attempts") or []),
+                *model_recovery_attempts(planner_call, node="planner_brain"),
+            ]
+            recovery_reason = str(
+                (planner_call or {}).get("initial_error")
+                or (planner_call or {}).get("error")
+                or state.get("recovery_reason")
+                or ""
+            )[:500]
+
             output = {
                 "planner_decision": plan.get("planner_decision", "need_tools"),
                 "planner_stage": plan.get("planner_stage", ""),
@@ -95,8 +108,19 @@ def create_planner_brain_node(
                 "planner_source": (
                     "guardrail"
                     if (state.get("guardrail_result") or {}).get("blocked")
-                    else ("llm" if model_client and model_client.available else "fallback")
+                    else (
+                        "fallback"
+                        if str(plan.get("planner_sub_rule_id") or "") == "PLANNER_SYSTEM_UNAVAILABLE"
+                        else ("llm" if model_client and model_client.available else "fallback")
+                    )
                 ),
+                "model_deadline": {
+                    **dict(state.get("model_deadline") or {}),
+                    "planner": dict((planner_call or {}).get("deadline") or {}),
+                },
+                "model_context_metrics": context_metrics,
+                "recovery_attempts": recovery_attempts,
+                "recovery_reason": recovery_reason,
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output

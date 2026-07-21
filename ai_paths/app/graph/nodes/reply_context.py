@@ -45,7 +45,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
             location_hints=_store_scope_location_hints_for_reply(state),
         )
     )
-    return {
+    return _drop_empty({
         "current_message": state.get("normalized_content"),
         "location_card": location_card_from_state(state),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-20:],
@@ -93,7 +93,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
             content=str(state.get("normalized_content") or state.get("content") or ""),
             sent_message_summary=sent_message_summary,
         ),
-    }
+    })
 
 
 def _compact_customer_background(state: AgentState) -> dict[str, Any]:
@@ -196,6 +196,8 @@ def _planner_direct_reply_draft_for_reply(state: AgentState) -> dict[str, Any]:
     a Python business template. Reply may polish it, but should not drop the chosen action.
     """
     if str(state.get("planner_decision") or "") != "direct_reply":
+        return {}
+    if str(state.get("planner_sub_rule_id") or "") == "PLANNER_SYSTEM_UNAVAILABLE":
         return {}
     if state.get("tool_policy_violations"):
         return {}

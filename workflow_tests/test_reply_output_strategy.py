@@ -682,6 +682,39 @@ def test_reply_payload_exposes_one_sanitized_turn_evidence_view() -> None:
     assert payload["turn_evidence"]["source_policy"] == "reply_evidence_only_planner_decides_business_action"
 
 
+def test_reply_payload_drops_planner_unavailable_neutral_draft() -> None:
+    payload = reply_user_payload_for_model(
+        {
+            "normalized_content": "会不会反黑啊",
+            "conversation_history": ["用户: 我担心做完反黑"],
+            "planner_decision": "direct_reply",
+            "planner_sub_rule_id": "PLANNER_SYSTEM_UNAVAILABLE",
+            "planner_reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "我在，继续帮您处理。"}}
+            ],
+        }
+    )
+
+    assert "planner_direct_reply_draft" not in payload
+
+
+def test_reply_validation_rejects_tail_amount_as_offer_total() -> None:
+    with pytest.raises(ValueError, match="offer_total_tail_amount_conflict"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "10元到店抵扣，最后就是按258算。"}],
+            {},
+        )
+
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "活动总价268元，10元抵扣后，做时再付剩余258元。"}],
+        {},
+    )
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "10元会抵扣，您到店最后再付258元就可以。"}],
+        {},
+    )
+
+
 def test_planner_tool_policy_flags_post_deposit_time_confirmation_missing_store() -> None:
     plan = build_planner_plan_v2(
         {
@@ -2702,7 +2735,7 @@ def test_create_work_order_tool_keeps_transaction_arguments_after_dedupe() -> No
     assert plan["planner_reply_messages"] == []
 
 
-def test_direct_reply_answer_with_next_step_marks_two_text_violation() -> None:
+def test_direct_reply_answer_with_next_step_does_not_trigger_hard_repair() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "可以带朋友一起去吗"},
         {
@@ -2717,7 +2750,7 @@ def test_direct_reply_answer_with_next_step_marks_two_text_violation() -> None:
             "tool_calls": [],
         },
     )
-    assert any(item.get("missing") == "two_text_required" for item in plan["tool_policy_violations"])
+    assert not any(item.get("missing") == "two_text_required" for item in plan["tool_policy_violations"])
 
 
 def test_direct_reply_time_availability_claim_requires_available_time_tool() -> None:
@@ -4660,7 +4693,7 @@ def test_reply_payload_can_offer_deposit_after_payment_collection_was_sent() -> 
     assert "next_candidates" not in payload["sop_progress"]
 
 
-def test_planner_requires_model_owned_sales_progression_with_live_sop_evidence() -> None:
+def test_missing_sales_progression_does_not_trigger_hard_repair() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "我在朝阳区",
@@ -4684,7 +4717,7 @@ def test_planner_requires_model_owned_sales_progression_with_live_sop_evidence()
         },
     )
 
-    assert any(
+    assert not any(
         item.get("missing") == "sales_progression_required"
         for item in plan["tool_policy_violations"]
     )

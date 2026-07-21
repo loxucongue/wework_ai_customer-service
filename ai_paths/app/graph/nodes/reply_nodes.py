@@ -5,7 +5,7 @@ import time
 from typing import Any, Callable
 
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
-from app.graph.nodes.common import model_usage_snapshot
+from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency
 from app.graph.nodes.store_scope_summary import region_mentioned_in_text
 from app.policies.constants import KNOWN_STORE_NAMES
@@ -135,6 +135,18 @@ def create_synthesize_reply_node(
                 warnings.extend(collect_reply_soft_warnings(messages, state))
             if model_call:
                 span["entry"]["tool_calls"] = [model_call]
+            context_metrics = dict(state.get("model_context_metrics") or {})
+            context_metrics["reply"] = model_call_metrics(model_call, prompt_warning_threshold=16_000)
+            recovery_attempts = [
+                *list(state.get("recovery_attempts") or []),
+                *model_recovery_attempts(model_call, node="synthesize_reply"),
+            ]
+            recovery_reason = str(
+                (model_call or {}).get("primary_error")
+                or (model_call or {}).get("error")
+                or state.get("recovery_reason")
+                or ""
+            )[:500]
             output = {
                 "reply_messages": messages,
                 "reply_source": reply_source,
@@ -142,6 +154,13 @@ def create_synthesize_reply_node(
                 "postprocess_reasons": [],
                 "errors": errors,
                 "warnings": warnings,
+                "model_deadline": {
+                    **dict(state.get("model_deadline") or {}),
+                    "reply": dict((model_call or {}).get("deadline") or {}),
+                },
+                "model_context_metrics": context_metrics,
+                "recovery_attempts": recovery_attempts,
+                "recovery_reason": recovery_reason,
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output
@@ -323,12 +342,17 @@ def _reply_recovery_messages(state: AgentState) -> list[dict[str, Any]]:
     turn_evidence = raw_evidence if isinstance(raw_evidence, dict) else {}
     fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured_facts = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    planner_reply_messages = (
+        []
+        if str(state.get("planner_sub_rule_id") or "") == "PLANNER_SYSTEM_UNAVAILABLE"
+        else list(state.get("planner_reply_messages") or [])[:6]
+    )
     payload = {
         "current_message": state.get("normalized_content") or state.get("content") or "",
         "conversation_history": list(state.get("conversation_history") or [])[-8:],
         "image_info": state.get("image_info") or {},
         "planner_decision": state.get("planner_decision") or "",
-        "planner_reply_messages": list(state.get("planner_reply_messages") or [])[:6],
+        "planner_reply_messages": planner_reply_messages,
         "payment_decision": state.get("payment_decision") or {},
         "store_binding_decision": state.get("store_binding_decision") or {},
         "order_decision": state.get("order_decision") or {},
@@ -789,6 +813,8 @@ def _reply_repair_hint(error: str) -> str:
         return "如果 payment_action=send_now、文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
     if "payment_collection_amount_text_mismatch" in error:
         return "预约金卡片金额必须和文本一致；同行按每位10元锁活动名额，2位说一共20元，3位说一共30元，4位说一共40元。"
+    if "offer_total_tail_amount_conflict" in error:
+        return "活动总价是268元。10元预约金计入总价并到店抵扣，客户实际做时再付剩余258元；不能把258说成最终总价、全部费用或一共只付258元。"
     if "payment_participant_count_confirm_required" in error:
         return "客户同行人数超过4位时不要发送 payment_collection；改成 text 确认一共几位到店，或说明多人同行先由门店承接确认。"
     if "human_handoff_notice" in error:

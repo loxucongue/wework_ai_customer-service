@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from app.graph.nodes.image_info import build_vision_prompt
@@ -12,6 +13,7 @@ from app.prompts.global_contract import (
 )
 from app.prompts.profile_analyzer import PROFILE_ANALYZER_SYSTEM_PROMPT
 from app.prompts.reply_synthesizer import REPLY_SYSTEM_PROMPT, REPLY_TRANSACTION_PATCH_PROMPT
+from app.policies.business_rules import planner_business_rules_prompt_section, reply_business_rules_for_model
 from app.services.outreach_prompts import OUTREACH_MESSAGE_SYSTEM_PROMPT, OUTREACH_PLAN_SYSTEM_PROMPT
 
 
@@ -121,6 +123,22 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     assert GLOBAL_BUSINESS_RHYTHM_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert "evidence_summary" not in PLANNER_SYSTEM_PROMPT
     assert len(PLANNER_SYSTEM_PROMPT) < 14_000
+
+
+def test_runtime_business_fact_views_do_not_repeat_full_rule_packs() -> None:
+    planner_facts = planner_business_rules_prompt_section()
+    reply_facts = json.dumps(
+        reply_business_rules_for_model(stage="S3", sub_rule_id="S3_PAYMENT_COLLECTION"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    assert len(GLOBAL_BUSINESS_RHYTHM_CONTRACT) < 4_000
+    assert len(planner_facts) < 2_000
+    assert len(reply_facts) < 2_000
+    assert "case_image_fallback_urls" not in planner_facts
+    assert "case_image_fallback_urls" not in reply_facts
+    assert "conversion_psychology" not in reply_facts
 
 
 def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:

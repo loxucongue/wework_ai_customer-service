@@ -6,7 +6,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.graph.nodes.contextual_short_message import is_contextual_short_message
 from app.graph.nodes.appointment_time_utils import normalize_time_text
 from app.graph.nodes.current_turn_context import (
     build_current_turn_context,
@@ -449,13 +448,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             payment_decision=payment_decision,
             required_tools=required_tools,
         ),
-        *_two_text_rhythm_violations(
-            state=state,
-            decision=decision,
-            conversion_stage=conversion_stage,
-            next_step=next_step,
-            messages=planner_reply_messages,
-        ),
         *_pending_lookup_reply_violations(
             decision=decision,
             next_step=next_step,
@@ -465,11 +457,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         *_no_reply_customer_question_violations(
             state=state,
             decision=decision,
-        ),
-        *_sales_progression_violations(
-            state=state,
-            decision=decision,
-            sales_progression=sales_progression,
         ),
         *_appointment_availability_reply_violations(
             state=state,
@@ -1985,37 +1972,6 @@ def _direct_reply_message_violations(*, decision: str, messages: list[dict[str, 
     return []
 
 
-def _sales_progression_violations(
-    *,
-    state: AgentState,
-    decision: str,
-    sales_progression: dict[str, Any],
-) -> list[dict[str, str]]:
-    """Require an explicit model-owned next move when live SOP progress is available."""
-    if decision != "direct_reply":
-        return []
-    progress_evidence = state.get("sop_progress_evidence")
-    if not isinstance(progress_evidence, dict) or not progress_evidence:
-        return []
-    status = str(sales_progression.get("status") or "unknown")
-    action = str(sales_progression.get("action") or "none")
-    if status in {"pause", "terminal"} or action != "none":
-        return []
-    return [
-        {
-            "task_type": "planner_contract",
-            "subtype": "sales_progression",
-            "missing": "sales_progression_required",
-            "note": (
-                "This is an ordinary customer-facing direct reply with authoritative SOP progress evidence. "
-                "After answering the current question, choose one natural model-owned next move in "
-                "sales_progression. Do not add a Python/template phrase; rewrite the JSON and customer messages "
-                "so the reply continues the sales flow. Use pause/terminal only when current structured facts justify it."
-            ),
-        }
-    ]
-
-
 def _need_tools_without_tool_violations(
     *,
     decision: str,
@@ -3095,36 +3051,6 @@ def _text_explains_previous_payment_entry(messages: list[dict[str, Any]]) -> boo
     return any(term in text for term in ("刚刚发的是", "刚才发的是", "前面发的是", "之前发的是"))
 
 
-def _two_text_rhythm_violations(
-    *,
-    state: AgentState,
-    decision: str,
-    conversion_stage: str,
-    next_step: str,
-    messages: list[dict[str, Any]],
-) -> list[dict[str, str]]:
-    if decision != "direct_reply" or conversion_stage == "deposit_push" or next_step == "send_deposit":
-        return []
-    if is_contextual_short_message(str(state.get("normalized_content") or state.get("content") or "")):
-        return []
-    if any(str(item.get("type") or "") != "text" for item in messages if isinstance(item, dict)):
-        return []
-    text_messages = [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") == "text"]
-    if len(text_messages) != 1:
-        return []
-    text = _message_text(text_messages[0].get("content"))
-    if not _looks_like_answer_with_next_step(text):
-        return []
-    return [
-        {
-            "task_type": "reply_format",
-            "subtype": "two_text_rhythm",
-            "missing": "two_text_required",
-            "note": "This direct text reply contains both an answer and a next-step prompt. Rewrite reply_messages as two short text messages: answer first, then one light next-step action.",
-        }
-    ]
-
-
 def _pending_lookup_reply_violations(
     *,
     decision: str,
@@ -3348,29 +3274,6 @@ def _claims_arrangement_without_fit_context(compact: str) -> bool:
     if any(term in compact for term in ("适合再安排", "确认适合再安排", "检测评估", "皮肤状态")):
         return False
     return bool(re.search(r"按.{0,12}安排", compact) or re.search(r"帮[你您]按.{0,12}安排", compact))
-
-
-def _looks_like_answer_with_next_step(text: str) -> bool:
-    value = str(text or "").strip()
-    if len(value) < 18:
-        return False
-    return any(
-        term in value
-        for term in (
-            "您方便",
-            "哪个区",
-            "哪天",
-            "今天还是明天",
-            "上午还是下午",
-            "周六还是周日",
-            "到店看看",
-            "到店看",
-            "帮您看名额",
-            "帮您查",
-            "帮您看看",
-            "我帮您看",
-        )
-    )
 
 
 def _normalize_handoff(raw: Any) -> dict[str, Any]:

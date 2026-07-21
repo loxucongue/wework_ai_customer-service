@@ -168,6 +168,7 @@ def _move_handoff_notices_after_visible(messages: list[dict[str, Any]]) -> list[
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_handoff_notice_text(messages)
     _validate_deposit_refund_policy(messages)
+    _validate_offer_total_and_tail_amount(messages)
     _validate_payment_not_during_health_risk_hold(messages, state)
     _validate_payment_collection_consistency(messages, state)
     _validate_payment_collection_amount_text(messages, state)
@@ -252,6 +253,20 @@ def _validate_deposit_refund_policy(messages: list[dict[str, Any]]) -> None:
     text = _combined_text(messages)
     if re.search(r"不做退(?:还)?\s*\d+\s*元", text):
         raise ValueError("legacy_deposit_refund_policy")
+
+
+def _validate_offer_total_and_tail_amount(messages: list[dict[str, Any]]) -> None:
+    """Protect the fixed offer total from being confused with the remaining payment."""
+    text = re.sub(r"\s+", "", _combined_text(messages))
+    if not text or "258" not in text:
+        return
+    invalid_patterns = (
+        r"(?:最后|最终)(?:就是)?(?:按|算|是|为)258(?:元)?(?:算|结算)?",
+        r"(?:总价|总共|一共|合计|全部费用|活动价)(?:就是|只要|只需|是|为|按)?258元?",
+        r"258元?(?:就是|是)?(?:总价|总共|全部费用|活动价)",
+    )
+    if any(re.search(pattern, text) for pattern in invalid_patterns):
+        raise ValueError("offer_total_tail_amount_conflict")
 
 
 def debug_message_contents(messages: list[dict[str, Any]]) -> list[str]:
