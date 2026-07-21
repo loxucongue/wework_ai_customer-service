@@ -57,10 +57,10 @@ def test_transaction_prompts_require_order_and_keep_postpaid_information_only() 
     assert "既有 appointment_created/confirmed" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "感谢和欢迎到店" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不得新调 create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
-    assert "完整 11 位号码" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "完整11位电话" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不能只回一句“199是别的口径”" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "current-turn transaction results" not in REPLY_TRANSACTION_PATCH_PROMPT
-    assert "transaction_facts 是本轮刚执行完成的权威工具事实" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "`transaction_facts` 是本轮刚执行完成的权威工具事实" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "尊敬的客户" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "成交推进不是无限循环" in GLOBAL_REPLY_CONTRACT
     assert "排客完成终态" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
@@ -70,7 +70,6 @@ def test_transaction_prompts_require_order_and_keep_postpaid_information_only() 
 
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
     assert "唯一可信交易门店锚点" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
-    assert "single_store_card_anchor" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "store_address_delivery.unique_latest_store_id" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "最近发过多家" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "store_binding_decision" in PLANNER_TRANSACTION_PATCH_PROMPT
@@ -81,12 +80,13 @@ def test_transaction_prompts_allow_only_authoritative_single_store_card_binding(
 
 def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None:
     for marker in [
-        "Fact Source Priority",
-        "Decision SOP",
+        "Role And Mission",
+        "Input Contract",
+        "Fact Priority",
+        "Decision Procedure",
         "Tool Map",
-        "Negative Cases",
-        "Few-Shot Calibration",
-        "不新增 thought",
+        "High-Value Calibration",
+        "Decision And Output Schema",
         "store_candidate",
         "appointment_decision",
         "sop_progress_evidence",
@@ -95,111 +95,78 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         assert marker in PLANNER_SYSTEM_PROMPT
 
     for business_rule in [
-        "已发送过 payment_collection 只是频率证据，不是硬去重",
-        "历史累计次数都不能单独决定发或不发",
-        "到店抵扣，未做或不满意可退",
+        "发卡次数是证据不是阈值",
+        "未做或不满意可退",
         "实际按付款记录核对",
-        "预约金只锁活动名额、到店时间按客户方便安排",
-        "2位一共20元，3位一共30元，4位一共40元",
-        "客户可见回复只说哪家更近，不说公里、分钟、车程",
+        "2位20、3位30、4位40",
+        "客户可见不输出公里、分钟、车程",
         "旧健康风险、旧门店、旧预约任务只有在客户当前明确延续时才主导本轮",
-        "客户给出明确城市、区域、可唯一绑定城市的地标或真实门店名",
-        "普通重名地标缺城市时按上面的消歧规则先确认",
-        "城市覆盖直回",
-        "平台同城投放或展示定位",
-        "同城真实门店",
-        "不说广告错误",
-        "已筛选后的斑点改善意向客户",
-        "不要让客户先发照片给你线上诊断",
-        "效果顾虑由你结合权威案例发送证据判断查图还是直接答疑推进",
-        "preferred_store / store_candidate 不是 confirmed_store",
-        "日期和时间只作为到店意向",
-        "SOP 三板斧",
-        "不要只答疑停住",
-        "小程序收款卡片/收款码",
-        "转账和截图备注",
+        "preferred_store/store_candidate 不是 confirmed store",
+        "平台同城展示误解与信任顾虑",
+        "已筛选的斑点改善意向人群",
+        "不要让客户发照片做线上诊断",
+        "sent_message_summary.case_image_delivery",
+        "小程序收款卡/收款码或转账",
         "manual_transfer",
-        "收款卡是当前最自然的下一步",
-        "已有同城 store_facts",
         "requested_district_stores",
-        "status=ambiguous_location",
         "平台结构化 POI",
-        "不论该区是 1 家还是多家",
-        "不要问“要不要了解/要不要看/是否需要/要不要我发”",
-        "不要每轮复读",
-        "今天发送次数",
-        "普通顾虑被解决后的明确接受也可以进入 send_now",
-        "卡片操作和一个理由放在前面",
-        "不重复卡片",
-        "只用于权威事实已付后的姓名、电话、门店、日期和时间承接",
-        "短拒绝",
-        "软拒绝",
-        "sales_progression 必须保持 continue",
-        "不要只回复“不打扰了/好的那算了”",
-        "[咖啡]",
-        "安排最好的总监老师/主任老师",
-        "主任/总监到店",
-        "测完皮肤后的价格怎么算",
-        "几百几千",
+        "不反问客户是否要看或了解",
+        "当前普通已付流程只登记到店意向",
+        "human_handoff_notice",
+        "真实客户问题不能用它逃避回答",
+        "工具完成后由最终 Reply 一次生成客户可见回复",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_BUSINESS_RHYTHM_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert "evidence_summary" not in PLANNER_SYSTEM_PROMPT
+    assert len(PLANNER_SYSTEM_PROMPT) < 14_000
 
 
 def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
-    for marker in ["Response SOP", "Fact Source Priority", "Message Map", "Few-Shot Calibration"]:
+    for marker in [
+        "Role And Mission",
+        "Input Contract",
+        "Fact Priority",
+        "Reply Procedure",
+        "Sales Rhythm",
+        "Effect And Safety",
+        "Store And Location",
+        "Payment And Order",
+        "Message Schema",
+        "Calibration",
+    ]:
         assert marker in REPLY_SYSTEM_PROMPT
 
     for business_rule in [
-        "先肯定对应需求大多数可以做",
-        "已经筛选后的斑点改善意向客户",
-        "不要引导客户发照片给你做线上诊断",
-        "发我正面清晰照",
-        "到店抵扣，未做或不满意可退",
+        "客户已是斑点改善意向人群",
+        "这类大多数客户可以做、改善反馈不错",
+        "不要让客户发照片做线上诊断",
+        "未做或不满意可退",
         "实际按付款记录核对",
-        "10/20/30/40",
+        "每位10元预约金",
         "human_handoff_notice",
-        "旧画像健康风险、旧门店、旧预约任务不得覆盖客户当前普通问题",
-        "到店先做皮肤检测/专业检测",
-        "平台同城投放/平台展示定位",
-        "发送门店卡",
-        "广告错误/骗您的",
-        "SOP 三板斧后",
-        "明确付款选择或成交动作",
-        "小程序收款卡片/收款码",
-        "转账、截图和备注登记",
-        "manual_transfer",
+        "旧健康风险、旧门店、旧订单和旧预约不得覆盖当前普通问题",
+        "平台同城展示",
+        "SOP 已铺垫后",
+        "小程序收款卡/收款码",
         "requested_district_stores",
-        "customer_store_lookup.status=ambiguous_location",
-        "不论是 1 家还是多家",
-        "不要问客户“要不要了解活动/要不要我给您看/是否需要/您看下吗”",
-        "不要每次复读同一句",
-        "不是必须照抄的客户文案",
-        "短确认后的收款动作要像继续聊天",
-        "当前仍是未付状态",
-        "缺订单、门店/金额不匹配或开单失败时必须二次否决卡片",
-        "不得退回去重问城市或门店",
+        "不要问“要不要了解、要不要看、是否需要、要不要我发”",
         "降压挽回",
-        "不催、不急或有时间再约",
-        "[咖啡]",
-        "不要只说“那先不打扰/好的那算了”",
-        "主任/总监/资深老师接待",
-        "主任/总监到店",
-        "测完皮肤后的价格怎么算",
-        "不是到店后重新报成几百几千",
+        "主任、总监、专家或特殊老师只有工具事实",
+        "绝不能因为开单未成功而输出空回复",
+        "不查 `available_time`",
     ]:
         assert business_rule in REPLY_SYSTEM_PROMPT
     assert GLOBAL_REPLY_CONTRACT in REPLY_SYSTEM_PROMPT
     assert GLOBAL_BUSINESS_RHYTHM_CONTRACT in REPLY_SYSTEM_PROMPT
     assert "store_candidate" in REPLY_SYSTEM_PROMPT
     assert "appointment_decision" in REPLY_SYSTEM_PROMPT
-    assert "sop_progress_evidence" in REPLY_SYSTEM_PROMPT
     assert "sales_progression" in REPLY_SYSTEM_PROMPT
     assert "planner_direct_reply_draft" in REPLY_SYSTEM_PROMPT
     assert "不能删掉草稿里的具体回答、付款选择、保留名额、登记或门店动作" in REPLY_SYSTEM_PROMPT
     assert "不能删掉其中的具体成交动作" in REPLY_SYSTEM_PROMPT
+    assert len(REPLY_SYSTEM_PROMPT) < 16_000
 
 
 def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None:
@@ -214,8 +181,8 @@ def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None
 def test_planner_requires_authoritative_recent_case_image_evidence() -> None:
     assert "sent_message_summary.case_image_delivery" in PLANNER_SYSTEM_PROMPT
     assert "completed_pack_ids/completed_categories" in PLANNER_SYSTEM_PROMPT
-    assert "不能单独证明客户近期看到了案例图" in PLANNER_SYSTEM_PROMPT
-    assert "没有权威近期图片证据时查 case_studies" in PLANNER_SYSTEM_PROMPT
+    assert "不能单独证明客户近期看过图" in PLANNER_SYSTEM_PROMPT
+    assert "没有权威近期图片证据时查 `case_studies`" in PLANNER_SYSTEM_PROMPT
 
 
 def test_runtime_prompts_no_longer_carry_legacy_non_refund_policy() -> None:
@@ -277,10 +244,12 @@ def test_paid_after_flow_prioritizes_name_and_phone_without_schedule_tools() -> 
         assert "姓名" in source
         assert "电话" in source
         assert "不调用 available_time" in source or "不查档期" in source
-        assert "create_order_plan" in source
+        assert "已安排" in source or "已预留" in source
+    assert "create_order_plan" in planner_prompt
+    assert "order_plan" in reply_prompt
     assert "姓名和电话是第一优先级" in global_contract
-    assert "先检查姓名和电话" in planner_prompt
-    assert "姓名、电话是第一优先级" in reply_prompt
+    assert "已付后先收姓名和完整11位电话" in planner_prompt
+    assert "先收姓名和电话" in reply_prompt
 
 
 def test_sop_gate_does_not_use_case_pack_for_project_content_or_cleaning_doubt() -> None:
@@ -481,9 +450,9 @@ def test_effect_concern_without_case_tool_remains_a_model_decision() -> None:
     )
     assert not any(item.get("subtype") == "kb_search" for item in plan["tool_policy_violations"])
     assert "sent_message_summary.case_image_delivery" in PLANNER_SYSTEM_PROMPT
-    assert "SOP 完成状态、画像总结和旧话题不能代替图片发送证据" in PLANNER_SYSTEM_PROMPT
-    assert "这是在评价刚才图片，不是索要新图" in PLANNER_SYSTEM_PROMPT
-    assert "下个月再去/改天再去" in REPLY_SYSTEM_PROMPT
+    assert "SOP完成、画像总结和文字承诺不能单独证明客户近期看过图" in PLANNER_SYSTEM_PROMPT
+    assert "上一轮确实刚发图后的评价续问可以不重复查询" in PLANNER_SYSTEM_PROMPT
+    assert "改天" in REPLY_SYSTEM_PROMPT
 
 
 def test_profile_prompt_downgrades_stale_history_without_dropping_facts() -> None:
@@ -498,16 +467,14 @@ def test_profile_prompt_downgrades_stale_history_without_dropping_facts() -> Non
 
 
 def test_prompts_treat_reserved_visit_intent_as_sales_continuation() -> None:
-    assert "要的，空了来，谢谢" in PLANNER_SYSTEM_PROMPT
-    assert "仍认可到店但时间未定" in PLANNER_SYSTEM_PROMPT
-    assert "customer_profile、history_events、customer_context" in PLANNER_SYSTEM_PROMPT
-    assert "不是本轮禁令" in PLANNER_SYSTEM_PROMPT
-    assert "不要只回“空了再来/后面再说”" in PLANNER_SYSTEM_PROMPT
+    assert "客户“我改天去”" in PLANNER_SYSTEM_PROMPT
+    assert "到店时间可后定" in PLANNER_SYSTEM_PROMPT
+    assert "不要只回“空了再来”" in PLANNER_SYSTEM_PROMPT
 
-    assert "要的，空了来，谢谢" in REPLY_SYSTEM_PROMPT
-    assert "这是保留意向，不是结束" in REPLY_SYSTEM_PROMPT
-    assert "不要只回“那您空了再来”" in REPLY_SYSTEM_PROMPT
-    assert "不要说“更方便/更顺路”除非有距离排序事实" in REPLY_SYSTEM_PROMPT
+    assert "客户说忙、天气热、改天、路远或要订行程" in REPLY_SYSTEM_PROMPT
+    assert "不自动等于退出" in REPLY_SYSTEM_PROMPT
+    assert "到店时间后面按客户方便安排" in REPLY_SYSTEM_PROMPT
+    assert "只有 `recommended_store.reason=distance_calculate_rank_1`" in REPLY_SYSTEM_PROMPT
 
 
 def test_vision_prompt_is_sectioned_json_only_and_non_diagnostic() -> None:

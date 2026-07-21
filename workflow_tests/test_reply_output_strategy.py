@@ -636,14 +636,15 @@ def test_planner_payload_keeps_context_for_low_information_message() -> None:
 
     assert payload["conversation_history"] == [f"history-{index}" for index in range(15, 35)]
     assert payload["customer_profile"]["decision_stage"] == "预约推进"
-    assert payload["history_events"]
-    assert payload["customer_context"]["appointment_info"]["store_name"] == "广州白云三店"
-    assert "open_task" not in payload["current_turn_context"]
-    assert payload["current_turn_context"]["binding_source"] in {"last_assistant", "none"}
-    assert "payment_context_available" in payload["current_turn_context"]["context_hints"]
-    assert payload["current_turn_context"]["confirmed_store"]["store_name"] == "广州白云三店"
-    assert payload["turn_evidence"]["source_policy"] == "evidence_only_planner_decides_business_action"
-    assert payload["turn_evidence"]["store_evidence"]["candidates"]
+    assert "history_events" not in payload
+    assert "customer_context" not in payload
+    assert "current_turn_context" not in payload
+    assert "open_task" not in payload["turn_evidence"]
+    assert payload["turn_evidence"]["binding_source"] in {"last_assistant", "none"}
+    assert "payment_context_available" in payload["turn_evidence"]["context_hints"]
+    assert payload["turn_evidence"]["confirmed_appointment"]["store_name"] == "广州白云三店"
+    assert payload["turn_evidence"]["source_policy"] == "evidence_only_planner_owns_business_semantics"
+    assert payload["transaction_facts"]["store_anchor_fact"]["status"] == "none"
 
 
 def test_planner_payload_does_not_send_long_sales_strategy_to_planner() -> None:
@@ -665,7 +666,7 @@ def test_planner_payload_does_not_send_long_sales_strategy_to_planner() -> None:
     assert "next_sales_strategy" not in payload["customer_profile"]
 
 
-def test_reply_payload_exposes_turn_evidence_without_dropping_current_turn_context() -> None:
+def test_reply_payload_exposes_one_sanitized_turn_evidence_view() -> None:
     payload = reply_user_payload_for_model(
         {
             "normalized_content": "这家地址发我",
@@ -674,12 +675,11 @@ def test_reply_payload_exposes_turn_evidence_without_dropping_current_turn_conte
         }
     )
 
-    assert payload["current_turn_context"]["current_store_anchor"]["store_id"] == "562"
-    assert "open_task" not in payload["current_turn_context"]
-    assert "evidence_summary" not in payload["current_turn_context"]
-    assert payload["current_turn_context"]["source_policy"] == "reply_evidence_only_planner_decides_business_action"
-    assert payload["turn_evidence"]["store_evidence"]["unique_recent_store"]["store_id"] == "562"
-    assert payload["turn_evidence"]["source_policy"] == "evidence_only_planner_decides_business_action"
+    assert "current_turn_context" not in payload
+    assert payload["turn_evidence"]["current_store_anchor"]["store_id"] == "562"
+    assert "open_task" not in payload["turn_evidence"]
+    assert "evidence_summary" not in payload["turn_evidence"]
+    assert payload["turn_evidence"]["source_policy"] == "reply_evidence_only_planner_decides_business_action"
 
 
 def test_planner_tool_policy_flags_post_deposit_time_confirmation_missing_store() -> None:
@@ -980,7 +980,7 @@ def test_planner_send_now_is_not_downgraded_by_short_message_guard() -> None:
     assert not any(item.get("missing") == "payment_collection_blocked_by_payment_action" for item in plan["tool_policy_violations"])
 
 
-def test_need_tools_transition_is_standardized() -> None:
+def test_need_tools_does_not_emit_intermediate_customer_reply() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "想看效果"},
         {
@@ -995,7 +995,7 @@ def test_need_tools_transition_is_standardized() -> None:
             "tool_calls": [{"name": "kb_search", "kb_name": "case_studies", "query": "淡斑效果"}],
         },
     )
-    assert plan["planner_reply_messages"] == [{"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}]
+    assert plan["planner_reply_messages"] == []
 
 
 def test_effect_question_direct_reply_is_not_forced_to_case_tool_by_normalizer() -> None:
@@ -1983,7 +1983,7 @@ def test_payment_entry_request_does_not_trigger_ambiguous_store_lookup_guard() -
     )
 
 
-def test_store_detail_direct_reply_with_appointment_anchor_becomes_lookup_tool() -> None:
+def test_store_detail_direct_reply_with_missing_fact_is_flagged_without_forced_tool() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "我昨天没去，你把门店地址发我一下",
@@ -2014,11 +2014,12 @@ def test_store_detail_direct_reply_with_appointment_anchor_becomes_lookup_tool()
         },
     )
 
-    assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "detail", "query": "银川兴庆店"}
-    ]
-    assert not any(item.get("missing") == "store_detail_tool_required" for item in plan["tool_policy_violations"])
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert any(
+        item.get("missing") == "store_lookup_action_requires_tool_or_store_card"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_current_scoped_store_lookup_query_is_not_overwritten_by_old_appointment_anchor() -> None:
@@ -2698,7 +2699,7 @@ def test_create_work_order_tool_keeps_transaction_arguments_after_dedupe() -> No
     assert tool["store_confirmation_source"] == "current_message"
     assert not any(item.get("missing", "").startswith("create_work_order_missing") for item in plan["tool_policy_violations"])
     assert not any(item.get("missing") == "payment_collection_required" for item in plan["tool_policy_violations"])
-    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
+    assert plan["planner_reply_messages"] == []
 
 
 def test_direct_reply_answer_with_next_step_marks_two_text_violation() -> None:
@@ -2743,7 +2744,7 @@ def test_direct_reply_time_availability_claim_requires_available_time_tool() -> 
     )
 
 
-def test_available_time_inherits_recent_relative_date_and_need_tools_uses_standard_transition() -> None:
+def test_available_time_inherits_recent_relative_date_without_intermediate_reply() -> None:
     plan = build_planner_plan_v2(
         {
             "current_date": "2026-07-12",
@@ -2789,9 +2790,7 @@ def test_available_time_inherits_recent_relative_date_and_need_tools_uses_standa
         item for item in plan["planner_tool_calls"] if item.get("name") == "available_time"
     )
     assert available_time["date"] == "2026-07-13"
-    assert plan["planner_reply_messages"] == [
-        {"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}
-    ]
+    assert plan["planner_reply_messages"] == []
 
 
 def test_case_confidence_across_two_messages_is_not_misread_as_pending_lookup() -> None:
@@ -3378,7 +3377,7 @@ def test_merged_health_risk_overrides_store_lookup_task() -> None:
     assert plan["reply_strategy"]["risk_hold"]["risk_hold"] == "health_check_required"
 
 
-def test_store_detail_tool_clears_deposit_stage_residue() -> None:
+def test_store_detail_tool_does_not_rewrite_planner_business_stage() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
@@ -3404,10 +3403,10 @@ def test_store_detail_tool_clears_deposit_stage_residue() -> None:
     )
 
     assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_stage"] == "S2"
-    assert plan["planner_sub_rule_id"] == "S2_STORE_ADDRESS"
-    assert plan["conversion_stage"] == "store_match"
-    assert plan["next_step"] == "lookup_store"
+    assert plan["planner_stage"] == "S3"
+    assert plan["planner_sub_rule_id"] == "S3_PAYMENT_COLLECTION"
+    assert plan["conversion_stage"] == "deposit_push"
+    assert plan["next_step"] == "send_deposit"
     assert plan["planner_tool_calls"] == [
         {
             "name": "customer_store_lookup",
@@ -3415,7 +3414,10 @@ def test_store_detail_tool_clears_deposit_stage_residue() -> None:
             "query": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
         }
     ]
-    assert not plan["tool_policy_violations"]
+    assert any(
+        item.get("missing") == "payment_decision_required"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 def test_history_health_context_does_not_hijack_current_time_change() -> None:
@@ -3504,6 +3506,7 @@ def test_history_health_context_removes_direct_reply_handoff_notice() -> None:
     assert plan["planner_decision"] == "direct_reply"
     assert plan["handoff"]["needed"] is False
     assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
+    assert not any(item["type"] == "human_handoff_notice" for item in plan["planner_reply_messages"])
     assert plan["reply_strategy"]["current_turn_context_guard"] == "advisory_health_history_removed_handoff_notice"
 
 
@@ -3570,7 +3573,7 @@ def test_current_payment_entry_overrides_unfinished_store_lookup_for_friend() ->
     )
 
     assert plan["planner_decision"] == "need_tools"
-    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
+    assert plan["planner_reply_messages"] == []
     assert not any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
 
 
@@ -3649,7 +3652,7 @@ def test_current_time_confirmation_missing_location_does_not_reuse_failed_distan
     )
 
     assert plan["planner_decision"] == "need_tools"
-    assert [item["type"] for item in plan["planner_reply_messages"]] == ["text"]
+    assert plan["planner_reply_messages"] == []
 
 
 def test_current_health_risk_hold_blocks_payment_collection() -> None:
@@ -4206,7 +4209,7 @@ def test_reply_payload_lifts_current_mobile_sync_fact() -> None:
         }
     )
 
-    assert payload["current_turn_context"]["registration_evidence"]["phone_collected"] is True
+    assert payload["turn_evidence"]["registration_evidence"]["phone_collected"] is True
     assert payload["transaction_facts"]["registration"][0]["status"] == "synced"
 
 
@@ -4860,36 +4863,32 @@ def test_reply_payload_keeps_context_for_low_information_message() -> None:
     )
 
     assert payload["conversation_history"] == [f"history-{index}" for index in range(15)]
-    assert payload["customer_profile"]["decision_stage"] == "预约推进"
-    assert payload["customer_basic_info"]["preferred_store_name"] == "广州白云三店"
-    assert payload["history_events"]
-    assert payload["fact_envelope"]["structured_facts"]["appointment_facts"]
-    assert payload["current_turn_context"]["binding_source"] in {"last_assistant", "none"}
-    assert "payment_context_available" in payload["current_turn_context"]["context_hints"]
-    assert payload["current_turn_context"]["confirmed_store"]["store_name"] == "广州白云三店"
-    assert "open_task" not in payload["current_turn_context"]
-    assert "evidence_summary" not in payload["current_turn_context"]
+    assert payload["customer_background_facts"]["profile"]["decision_stage"] == "预约推进"
+    assert "customer_basic_info" not in payload
+    assert "history_events" not in payload
+    assert "fact_envelope" not in payload
+    assert payload["transaction_facts"]["appointments"]
+    assert payload["turn_evidence"]["binding_source"] in {"last_assistant", "none"}
+    assert "payment_context_available" in payload["turn_evidence"]["context_hints"]
+    assert payload["turn_evidence"]["confirmed_store"]["store_name"] == "广州白云三店"
+    assert "open_task" not in payload["turn_evidence"]
+    assert "evidence_summary" not in payload["turn_evidence"]
 
 
 def test_planner_prompt_treats_payment_sent_as_context_not_hard_dedupe() -> None:
-    assert "已发送过 payment_collection 只是频率证据，不是硬去重" in PLANNER_SYSTEM_PROMPT
-    assert "历史累计次数都不能单独决定发或不发" in PLANNER_SYSTEM_PROMPT
+    assert "发卡次数是证据不是阈值" in PLANNER_SYSTEM_PROMPT
     assert "优先看客户当前态度和新的成交推进" in PLANNER_SYSTEM_PROMPT
-    assert "其次看今天发送次数" in PLANNER_SYSTEM_PROMPT
-    assert "你还没付/支付失败/刚才没付款" in PLANNER_SYSTEM_PROMPT
-    assert "要交钱吗/预约金怎么抵扣/能不能退/是不是额外收费/尾款多少" in PLANNER_SYSTEM_PROMPT
-    assert "不要求客户逐字说“发入口”" in PLANNER_SYSTEM_PROMPT
-    assert "普通顾虑被解决后的明确接受也可以进入 send_now" in PLANNER_SYSTEM_PROMPT
-    assert "已经发送过 payment_collection 后，只有客户明确说没收到" not in PLANNER_SYSTEM_PROMPT
-    assert "只解释规则，不发 payment_collection" not in PLANNER_SYSTEM_PROMPT
+    assert "其次看今天次数" in PLANNER_SYSTEM_PROMPT
+    assert "刚发且无新推进不机械重发" in PLANNER_SYSTEM_PROMPT
+    assert "客户接受、继续成交或要重发时允许发送" in PLANNER_SYSTEM_PROMPT
 
 
 def test_reply_prompt_uses_handoff_notice_and_direct_resolution() -> None:
     from app.prompts.reply_synthesizer import REPLY_SYSTEM_PROMPT
 
     assert "human_handoff_notice" in REPLY_SYSTEM_PROMPT
-    assert "到店先做皮肤检测/专业检测" in REPLY_SYSTEM_PROMPT
-    assert "确认是不是在我们门店做的" in REPLY_SYSTEM_PROMPT
+    assert "到店先检测" in REPLY_SYSTEM_PROMPT
+    assert "门店、时间、金额、项目" in REPLY_SYSTEM_PROMPT
     assert "专业同事确认/核对" not in REPLY_SYSTEM_PROMPT
 
 

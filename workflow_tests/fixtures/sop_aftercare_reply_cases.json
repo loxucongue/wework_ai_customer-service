@@ -248,7 +248,17 @@
           "offer_facts": {
             "deposit_per_person": 10,
             "refund_policy": "未做或不满意可退"
-          }
+          },
+          "order_facts": [
+            {
+              "type": "work_order",
+              "status": "reused",
+              "order_id": "order-friend-entry-20",
+              "store_id": "227",
+              "prepay_required": 20,
+              "deposit_state": "required_unpaid"
+            }
+          ]
         }
       }
     },
@@ -501,7 +511,17 @@
             "limited_quota": true,
             "deposit_per_person": 10,
             "refund_policy": "未做或不满意可退"
-          }
+          },
+          "order_facts": [
+            {
+              "type": "work_order",
+              "status": "reused",
+              "order_id": "order-director-10",
+              "store_id": "562",
+              "prepay_required": 10,
+              "deposit_state": "required_unpaid"
+            }
+          ]
         }
       }
     },
@@ -530,7 +550,17 @@
       },
       "fact_envelope": {
         "structured_facts": {
-          "offer_facts": {"deposit_per_person": 10, "refund_policy": "未做或不满意可退"}
+          "offer_facts": {"deposit_per_person": 10, "refund_policy": "未做或不满意可退"},
+          "order_facts": [
+            {
+              "type": "work_order",
+              "status": "reused",
+              "order_id": "order-payment-options-10",
+              "store_id": "227",
+              "prepay_required": 10,
+              "deposit_state": "required_unpaid"
+            }
+          ]
         }
       }
     },

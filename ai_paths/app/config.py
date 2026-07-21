@@ -58,11 +58,18 @@ class Settings(BaseSettings):
     model_hedge_max_parallel: int = 2
     model_planner_total_timeout_seconds: float = 35.0
     model_reply_total_timeout_seconds: float = 45.0
+    model_planner_primary_budget_seconds: float = 25.0
+    model_planner_recovery_budget_seconds: float = 10.0
+    model_reply_primary_budget_seconds: float = 30.0
+    model_reply_recovery_budget_seconds: float = 15.0
+    model_vision_total_timeout_seconds: float = 15.0
     model_request_retry_attempts: int = 2
     model_request_retry_delay_seconds: float = 0.5
     sop_event_model_retry_attempts: int = Field(default=3, alias="SOP_EVENT_MODEL_RETRY_ATTEMPTS")
     sop_event_model_retry_delay_seconds: float = Field(default=1.0, alias="SOP_EVENT_MODEL_RETRY_DELAY_SECONDS")
     sop_event_model_attempt_timeout_seconds: float = Field(default=45.0, alias="SOP_EVENT_MODEL_ATTEMPT_TIMEOUT_SECONDS")
+    sop_event_model_total_timeout_seconds: float = Field(default=60.0, alias="SOP_EVENT_MODEL_TOTAL_TIMEOUT_SECONDS")
+    sop_chat_gate_total_timeout_seconds: float = Field(default=12.0, alias="SOP_CHAT_GATE_TOTAL_TIMEOUT_SECONDS")
     sop_event_model_max_concurrency: int = Field(default=2, alias="SOP_EVENT_MODEL_MAX_CONCURRENCY")
     model_json_max_tokens: int = 2048
     model_text_max_tokens: int = 2048

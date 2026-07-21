@@ -56,6 +56,9 @@ type ModelCallView = {
   output: JsonValue;
   usage: JsonValue;
   error: string;
+  hedgeStarted: boolean;
+  attempts: number;
+  timeoutStage: string;
 };
 
 const DEFAULT_FILTERS: Filters = {
@@ -325,6 +328,9 @@ function RunDetailPanel({
                 {call.tier ? <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-xs text-slate-700">{call.tier}</span> : null}
                 <span className="ml-3 text-slate-500">{call.durationMs ?? "-"}ms</span>
                 {call.totalTokens ? <span className="ml-3 text-slate-500">token {call.totalTokens}</span> : null}
+                {call.hedgeStarted ? <span className="ml-3 text-amber-700">hedge</span> : null}
+                {call.attempts > 1 ? <span className="ml-3 text-amber-700">尝试 {call.attempts}</span> : null}
+                {call.timeoutStage ? <span className="ml-3 text-red-600">{call.timeoutStage}</span> : null}
                 {call.error ? <span className="ml-3 text-red-600">error</span> : null}
               </summary>
               <div className="mt-2 grid gap-3 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)_minmax(260px,0.65fr)]">
@@ -533,6 +539,9 @@ function collectModelCallValue(
   if (isRecord(value.retry)) {
     context.output.push(toModelCallView(value.retry, context.node, `${context.idPrefix}-retry`, `${stringField(value.name) || "model"}_retry`));
   }
+  if (isRecord(value.recovery)) {
+    context.output.push(toModelCallView(value.recovery, context.node, `${context.idPrefix}-recovery`, `${stringField(value.name) || "model"}_recovery`));
+  }
 }
 
 function isModelCall(value: Record<string, JsonValue>) {
@@ -551,13 +560,16 @@ function toModelCallView(value: Record<string, JsonValue>, node: string, id: str
     node,
     name: stringField(value.name) || fallbackName || "model_call",
     tier: stringField(usage.tier) || stringField(isRecord(value.input) ? value.input.tier : ""),
-    model: stringField(usage.model),
-    durationMs: numberField(usage.duration_ms) ?? numberField(value.duration_ms),
+    model: stringField(usage.winner_model) || stringField(usage.model),
+    durationMs: numberField(usage.overall_duration_ms) ?? numberField(usage.duration_ms) ?? numberField(value.duration_ms),
     totalTokens: numberField(usage.total_tokens) ?? 0,
     input,
     output,
     usage,
     error: stringField(value.error),
+    hedgeStarted: Boolean(usage.hedge_started),
+    attempts: numberField(usage.attempts) ?? numberField(usage.request_attempt) ?? 0,
+    timeoutStage: stringField(usage.timeout_stage),
   };
 }
 

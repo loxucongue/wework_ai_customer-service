@@ -57,9 +57,9 @@ def test_store_scope_exposes_every_real_store_in_requested_district() -> None:
 
 
 def test_planner_treats_complete_requested_district_scope_as_direct_reply_fact() -> None:
-    assert "完整、可直接外发的真实门店集合" in PLANNER_SYSTEM_PROMPT
-    assert "不需要再次 customer_store_lookup" in PLANNER_SYSTEM_PROMPT
-    assert "scope 事实直回" in PLANNER_SYSTEM_PROMPT
+    assert "该区完整真实门店集合" in PLANNER_SYSTEM_PROMPT
+    assert "不需要再次 `customer_store_lookup`" in PLANNER_SYSTEM_PROMPT
+    assert "可 direct_reply" in PLANNER_SYSTEM_PROMPT
 
 
 def test_transaction_output_gate_requires_matching_order_before_payment_card() -> None:

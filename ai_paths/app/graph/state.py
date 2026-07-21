@@ -59,6 +59,12 @@ class AgentState(TypedDict, total=False):
     sop_gate: dict[str, Any]
     sop_progress_evidence: dict[str, Any]
     background_substeps: list[dict[str, Any]]
+    background_fact_views: dict[str, Any]
+    input_quality_flags: list[str]
+    model_deadline: dict[str, Any]
+    model_context_metrics: dict[str, Any]
+    recovery_attempts: list[dict[str, Any]]
+    recovery_reason: str
 
     planner_decision: str
     planner_stage: str

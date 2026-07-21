@@ -39,19 +39,13 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([message.type for message in second_response.reply_messages], ["text"])
         self.assertTrue(any("1. question A" in state["content"] and "2. question B" in state["content"] for state in graph.states))
 
-    async def test_need_tools_sync_reply_is_empty_for_two_thirds_probability(self) -> None:
-        with patch("app.chat_runtime.random.random", return_value=0.2):
-            messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
-
+    async def test_need_tools_sync_reply_is_always_empty(self) -> None:
+        messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
         self.assertEqual(messages, [])
 
-    async def test_need_tools_sync_reply_can_use_short_random_transition(self) -> None:
-        with patch("app.chat_runtime.random.random", return_value=0.9), patch(
-            "app.chat_runtime.random.choice", return_value="稍等哈"
-        ):
-            messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
-
-        self.assertEqual(messages, [{"type": "text", "order": 1, "content": {"text": "稍等哈"}}])
+    async def test_need_tools_does_not_emit_intermediate_transition(self) -> None:
+        messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
+        self.assertEqual(messages, [])
 
     async def test_rejected_direct_reply_schedules_async_finalize(self) -> None:
         state = {
@@ -67,24 +61,15 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(_should_run_async_finalize(state))
 
-    async def test_professional_assist_need_tools_returns_notice_sync_reply(self) -> None:
-        with patch("app.chat_runtime.random.random", return_value=0.9), patch(
-            "app.chat_runtime.random.choice", return_value="稍等一下哈"
-        ):
-            messages = _planner_sync_reply_messages(
-                {
-                    "planner_decision": "need_tools",
-                    "required_tools": [{"name": "professional_assist", "reason": "健康高风险"}],
-                    "planner_reply_messages": [],
-                }
-            )
-
-        self.assertEqual([item["type"] for item in messages], ["text", "human_handoff_notice"])
-        self.assertEqual(messages[1]["content"]["handoff_reason"], "健康高风险")
-        visible_text = messages[0]["content"]["text"]
-        self.assertIn("到店先做检测", visible_text)
-        self.assertNotIn("转人工", visible_text)
-        self.assertNotIn("专业同事", visible_text)
+    async def test_professional_assist_waits_for_final_reply(self) -> None:
+        messages = _planner_sync_reply_messages(
+            {
+                "planner_decision": "need_tools",
+                "required_tools": [{"name": "professional_assist", "reason": "健康高风险"}],
+                "planner_reply_messages": [],
+            }
+        )
+        self.assertEqual(messages, [])
 
     async def test_run_chat_graph_exception_returns_deterministic_reply_instead_of_502(self) -> None:
         repository = _Repository()
@@ -98,7 +83,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(response.reply_messages), 1)
         self.assertEqual(response.reply_messages[0].type, "text")
-        self.assertIn("门店", str(response.reply_messages[0].content))
+        self.assertEqual(response.reply_messages[0].content, {"text": "我在，继续帮您处理。"})
         self.assertTrue(repository.saved_states)
         self.assertEqual(repository.saved_states[-1]["reply_source"], "deterministic_runtime_exception_fallback")
 
@@ -114,7 +99,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(response.reply_messages), 1)
         self.assertEqual(response.reply_messages[0].type, "text")
-        self.assertIn("刚刚这条", str(response.reply_messages[0].content))
+        self.assertEqual(response.reply_messages[0].content, {"text": "我在，继续帮您处理。"})
         self.assertEqual(repository.saved_states[-1]["reply_source"], "deterministic_empty_reply_fallback")
 
     async def test_platform_auto_opening_returns_sop_before_planner(self) -> None:
@@ -159,8 +144,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
             outreach_send_client=outreach,
         )
 
-        with patch("app.chat_runtime.random.random", return_value=0.2):
-            response = await runtime.run_platform_reply(_request("集美附近门店帮我看下"))
+        response = await runtime.run_platform_reply(_request("集美附近门店帮我看下"))
 
         self.assertEqual(len(response.reply_messages), 1)
         self.assertEqual(response.reply_messages[0].type, "text")
@@ -191,6 +175,39 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["reply_source"], "planner_direct_reply")
         self.assertEqual(saved["reply_control"]["sync_return"]["type"], "direct_reply")
 
+    async def test_trace_file_preserves_model_prompt_raw_json_and_recovery(self) -> None:
+        prompt = "模型系统规则" * 3000
+        raw_output = {"decision": "direct_reply", "detail": "输出事实" * 2000}
+        with tempfile.TemporaryDirectory() as directory:
+            logger = FileTraceLogger(Settings(log_dir=Path(directory)))
+            state = {
+                "request_id": "trace-model-details",
+                "trace": [
+                    {
+                        "node": "planner_brain",
+                        "tool_calls": [
+                            {
+                                "name": "planner_brain_v2",
+                                "input": {"messages": [{"role": "system", "content": prompt}]},
+                                "raw_json_output": raw_output,
+                                "usage": {"winner_model": "gpt-5.4", "attempts": 2},
+                                "recovery": {
+                                    "name": "planner_brain_timeout_retry",
+                                    "input": {"messages": [{"role": "system", "content": "compact recovery"}]},
+                                    "raw_json_output": {"decision": "direct_reply"},
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+            saved = json.loads(logger.write_run(state).read_text(encoding="utf-8"))
+
+        model_call = saved["trace"][0]["tool_calls"][0]
+        self.assertEqual(model_call["input"]["messages"][0]["content"], prompt)
+        self.assertEqual(model_call["raw_json_output"], raw_output)
+        self.assertEqual(model_call["recovery"]["raw_json_output"], {"decision": "direct_reply"})
+
     async def test_finalize_exception_is_recovered_and_returned_synchronously(self) -> None:
         repository = _Repository()
         outreach = _OutreachSendClient()
@@ -203,8 +220,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
             outreach_send_client=outreach,
         )
 
-        with patch("app.chat_runtime.random.random", return_value=0.2):
-            response = await runtime.run_platform_reply(_request("集美附近门店帮我看下"))
+        response = await runtime.run_platform_reply(_request("集美附近门店帮我看下"))
 
         self.assertEqual(len(response.reply_messages), 1)
         self.assertEqual(response.reply_messages[0].type, "text")

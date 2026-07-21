@@ -92,9 +92,14 @@ class PlannerModelOwnershipTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(plan["planner_decision"], "need_tools")
-        self.assertEqual(plan["planner_reply_messages"], [{"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}])
-        self.assertEqual(plan["planner_tool_calls"], [{"name": "customer_store_lookup", "purpose": "detail", "query": "南昌高新店"}])
+        self.assertEqual(plan["planner_decision"], "direct_reply")
+        self.assertEqual(plan["planner_tool_calls"], [])
+        self.assertTrue(
+            any(
+                item.get("missing") == "store_detail_tool_required"
+                for item in plan["tool_policy_violations"]
+            )
+        )
 
     def test_planner_preserves_conversion_psychology_fields(self) -> None:
         plan = build_planner_plan_v2(
@@ -184,8 +189,9 @@ class PlannerModelOwnershipTests(unittest.TestCase):
         )
 
         self.assertNotIn("customer_profile", payload)
-        self.assertEqual(payload["history_events"], [{"event_type": "old"}])
+        self.assertNotIn("history_events", payload)
         self.assertEqual(payload["conversation_history"], ["用户: 之前的历史"])
+        self.assertIn("turn_evidence", payload)
 
     def test_planner_store_scope_payload_contains_city_district_counts_and_relevant_stores(self) -> None:
         payload = _planner_payload_for_model(

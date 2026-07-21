@@ -40,6 +40,13 @@ class FakeBadHandoffModelClient:
     async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
         self.calls += 1
         self.tiers.append(tier)
+        if self.calls >= 3:
+            return {
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "我在的，您把具体想核对的情况发我，我先把信息记录清楚。"}},
+                    {"type": "human_handoff_notice", "order": 2, "content": {"handoff_reason": "客户要求人工处理"}},
+                ]
+            }
         return {
             "reply_messages": [
                 {
@@ -90,10 +97,16 @@ class FakeUnavailableAppointmentModelClient:
                     {"type": "text", "order": 2, "content": {"text": "您明天想上午还是下午去？"}},
                 ]
             }
+        if self.calls == 2:
+            return {
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "明天去可以先安排到店检测，不过这边暂时没查到实时档期。"}},
+                    {"type": "text", "order": 2, "content": {"text": "您明天想上午去还是下午去？"}},
+                ]
+            }
         return {
             "reply_messages": [
-                {"type": "text", "order": 1, "content": {"text": "明天去可以先安排到店检测，不过这边暂时没查到实时档期。"}},
-                {"type": "text", "order": 2, "content": {"text": "您明天想上午去还是下午去？"}},
+                {"type": "text", "order": 1, "content": {"text": "明天到店的意向我记下了。您更方便上午还是下午？"}},
             ]
         }
 
@@ -284,18 +297,19 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
             output = await node(state)
 
-        self.assertEqual(model.calls, 2)
-        self.assertEqual(model.tiers, ["strong", "strong"])
+        self.assertEqual(model.calls, 3)
+        self.assertEqual(model.tiers, ["strong", "strong", "fast"])
         self.assertEqual(output["errors"], [])
-        self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
+        self.assertEqual(output["reply_source"], "compact_recovery_model")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
         text = output["reply_messages"][0]["content"]
-        self.assertEqual("我在，继续帮您处理。", text)
+        self.assertIn("信息记录清楚", text)
         self.assertNotIn("专业顾问", text)
         self.assertNotIn("专人联系", text)
         self.assertNotIn("同步处理", text)
-        fallback_info = state["trace"][0]["tool_calls"][0].get("fallback")
-        self.assertEqual(fallback_info.get("strategy"), "deterministic_neutral_final")
+        recovery_info = state["trace"][0]["tool_calls"][0].get("recovery")
+        self.assertIsInstance(recovery_info, dict)
+        self.assertEqual(recovery_info.get("tier"), "fast")
 
     async def test_no_reply_strong_dissatisfaction_gets_visible_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -322,8 +336,8 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             output = await node(state)
 
         self.assertEqual(output["errors"], [])
-        self.assertEqual(output["reply_source"], "planner_no_reply")
-        self.assertEqual(output["reply_messages"], [])
+        self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
+        self.assertEqual(output["reply_messages"][0]["content"], "我在，继续帮您处理。")
 
     async def test_no_reply_explicit_stop_stays_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -350,8 +364,8 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             output = await node(state)
 
         self.assertEqual(output["errors"], [])
-        self.assertEqual(output["reply_source"], "planner_no_reply")
-        self.assertEqual(output["reply_messages"], [])
+        self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
+        self.assertEqual(output["reply_messages"][0]["content"], "我在，继续帮您处理。")
 
     async def test_handoff_notice_fallback_when_reply_model_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -476,11 +490,11 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
             output = await node(state)
 
-        self.assertEqual(model.calls, 2)
+        self.assertEqual(model.calls, 3)
         self.assertEqual(output["errors"], [])
-        self.assertEqual(output["reply_source"], "deterministic_unavailable_appointment_fallback")
+        self.assertEqual(output["reply_source"], "compact_recovery_model")
         text = "\n".join(item["content"] for item in output["reply_messages"] if item["type"] == "text")
-        self.assertIn("明天的实时空档这边暂时没拿到", text)
+        self.assertIn("明天到店的意向我记下了", text)
         self.assertNotIn("可以约", text)
         self.assertNotIn("安排好", text)
 

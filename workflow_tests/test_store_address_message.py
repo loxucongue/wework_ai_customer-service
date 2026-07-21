@@ -56,11 +56,14 @@ class StoreAddressMessageTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(plan["planner_decision"], "need_tools")
-        self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text"])
-        self.assertEqual(plan["planner_tool_calls"][0]["name"], "customer_store_lookup")
-        self.assertEqual(plan["planner_tool_calls"][0]["purpose"], "detail")
-        self.assertTrue(plan["planner_tool_calls"][0]["query"])
+        self.assertEqual(plan["planner_decision"], "direct_reply")
+        self.assertEqual(plan["planner_tool_calls"], [])
+        self.assertTrue(
+            any(
+                item.get("missing") == "store_detail_tool_required"
+                for item in plan["tool_policy_violations"]
+            )
+        )
 
     def test_planner_keeps_requested_district_store_cards_without_lookup(self) -> None:
         state = {

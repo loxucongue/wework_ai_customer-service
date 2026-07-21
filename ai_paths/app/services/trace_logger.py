@@ -91,7 +91,7 @@ class TraceLogger:
         path = self.log_dir / f"{request_id}.json"
         serializable = compact(state, max_chars=50000)
         if isinstance(serializable, dict) and isinstance(state.get("trace"), list):
-            serializable["trace"] = [compact(entry, max_chars=20000) for entry in state.get("trace", [])]
+            serializable["trace"] = [_trace_entry_for_storage(entry) for entry in state.get("trace", [])]
             for key in (*RUN_OBSERVABILITY_KEYS, *RUN_TERMINAL_KEYS):
                 if key in state:
                     serializable[key] = compact(state.get(key), max_chars=20000)
@@ -109,3 +109,55 @@ class TraceLogger:
             return parsed if isinstance(parsed, dict) else {}
         except (OSError, json.JSONDecodeError):
             return {}
+
+
+def _trace_entry_for_storage(entry: Any) -> Any:
+    if not isinstance(entry, dict):
+        return compact(entry, max_chars=50000)
+    stored = compact(entry, max_chars=50000)
+    if not isinstance(stored, dict):
+        return stored
+    tool_calls = entry.get("tool_calls") if isinstance(entry.get("tool_calls"), list) else []
+    stored["tool_calls"] = [_tool_call_for_storage(call) for call in tool_calls]
+    return stored
+
+
+def _tool_call_for_storage(call: Any) -> Any:
+    if not isinstance(call, dict):
+        return compact(call, max_chars=20000)
+    stored = compact(call, max_chars=40000)
+    if not isinstance(stored, dict) or not _looks_like_model_call(call):
+        return stored
+    model_input = call.get("input")
+    if isinstance(model_input, dict):
+        stored_input = compact(model_input, max_chars=50000)
+        if isinstance(stored_input, dict) and isinstance(model_input.get("messages"), list):
+            stored_input["messages"] = [_model_message_for_storage(item) for item in model_input["messages"]]
+        stored["input"] = stored_input
+    if "raw_json_output" in call:
+        stored["raw_json_output"] = compact(call.get("raw_json_output"), max_chars=50000)
+    for key in ("nested_calls", "retry", "recovery"):
+        value = call.get(key)
+        if isinstance(value, list):
+            stored[key] = [_tool_call_for_storage(item) for item in value]
+        elif isinstance(value, dict):
+            stored[key] = _tool_call_for_storage(value)
+    return stored
+
+
+def _model_message_for_storage(message: Any) -> Any:
+    if not isinstance(message, dict):
+        return compact(message, max_chars=50000)
+    return {
+        key: compact(value, max_chars=50000)
+        for key, value in message.items()
+    }
+
+
+def _looks_like_model_call(value: dict[str, Any]) -> bool:
+    name = str(value.get("name") or "").lower()
+    return (
+        isinstance(value.get("usage"), dict)
+        or "raw_json_output" in value
+        or any(token in name for token in ("model", "planner", "reply_synthesizer", "profile_analyzer", "vision"))
+    )

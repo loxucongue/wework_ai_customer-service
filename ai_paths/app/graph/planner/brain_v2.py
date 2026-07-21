@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.graph.nodes.common import model_usage_snapshot
-from app.graph.nodes.contextual_short_message import short_message_context_for_model
 from app.graph.nodes.current_turn_context import (
     build_current_turn_context,
     can_use_contextual_store_for_message,
@@ -129,8 +129,17 @@ async def run_planner_brain_v2(
     initial_messages = planner_v2_messages_for_model(planner_state)
     nested_calls: list[dict[str, Any]] = []
     initial_error = ""
+    node_started_at = time.monotonic()
+    primary_budget = _model_budget_seconds(model_client, "model_planner_primary_budget_seconds", 25.0)
+    recovery_budget = _model_budget_seconds(model_client, "model_planner_recovery_budget_seconds", 10.0)
+    primary_deadline = node_started_at + primary_budget
     try:
-        payload = await model_client.chat_json(initial_messages, tier=tier, temperature=0.0)
+        payload = await _chat_json_with_deadline(
+            model_client,
+            initial_messages,
+            tier=tier,
+            deadline_monotonic=primary_deadline,
+        )
         plan = build_planner_plan_v2(planner_state, payload)
         initial_usage = model_usage_snapshot(model_client)
     except Exception as exc:
@@ -142,8 +151,14 @@ async def run_planner_brain_v2(
         }
         retry_messages = planner_v2_timeout_retry_messages_for_model(planner_state, previous_error=initial_error)
         retry_call["input"]["messages"] = retry_messages
+        recovery_deadline = time.monotonic() + recovery_budget
         try:
-            payload = await model_client.chat_json(retry_messages, tier="fast", temperature=0.0)
+            payload = await _chat_json_with_deadline(
+                model_client,
+                retry_messages,
+                tier="fast",
+                deadline_monotonic=recovery_deadline,
+            )
             plan = build_planner_plan_v2(planner_state, payload)
             retry_call["raw_json_output"] = payload
             retry_call["output"] = _planner_call_output(plan)
@@ -165,11 +180,16 @@ async def run_planner_brain_v2(
                 "raw_json_output": {},
                 "output": _planner_call_output(plan),
                 "usage": initial_usage,
+                "deadline": {
+                    "primary_budget_seconds": primary_budget,
+                    "recovery_budget_seconds": recovery_budget,
+                    "elapsed_ms": int((time.monotonic() - node_started_at) * 1000),
+                },
                 "nested_calls": nested_calls,
             }
             return plan, model_call
         nested_calls.append(retry_call)
-    for repair_attempt in range(1, 4):
+    for repair_attempt in range(1, 2):
         violations = list(plan.get("tool_policy_violations", []))
         if not violations:
             break
@@ -184,7 +204,12 @@ async def run_planner_brain_v2(
                 violations=violations,
             )
             repair_call["input"]["messages"] = repair_messages
-            repaired_payload = await model_client.chat_json(repair_messages, tier=tier, temperature=0.0)
+            repaired_payload = await _chat_json_with_deadline(
+                model_client,
+                repair_messages,
+                tier=tier,
+                deadline_monotonic=primary_deadline,
+            )
             repaired_plan = build_planner_plan_v2(planner_state, repaired_payload)
             plan = repaired_plan
             repair_call["raw_json_output"] = repaired_payload
@@ -202,6 +227,12 @@ async def run_planner_brain_v2(
         "raw_json_output": payload,
         "output": _planner_call_output(plan),
         "usage": initial_usage,
+        "deadline": {
+            "primary_budget_seconds": primary_budget,
+            "recovery_budget_seconds": recovery_budget,
+            "remaining_primary_budget_ms": max(0, int((primary_deadline - time.monotonic()) * 1000)),
+            "elapsed_ms": int((time.monotonic() - node_started_at) * 1000),
+        },
     }
     if initial_error:
         model_call["initial_error"] = initial_error
@@ -209,6 +240,36 @@ async def run_planner_brain_v2(
         model_call["nested_calls"] = nested_calls
     _attach_derived_planner_facts(plan, planner_state)
     return plan, model_call
+
+
+async def _chat_json_with_deadline(
+    model_client: ModelClient,
+    messages: list[dict[str, Any]],
+    *,
+    tier: str,
+    deadline_monotonic: float,
+) -> dict[str, Any]:
+    """Pass node deadlines to the real client while keeping lightweight test doubles compatible."""
+    try:
+        return await model_client.chat_json(
+            messages,
+            tier=tier,
+            temperature=0.0,
+            deadline_monotonic=deadline_monotonic,
+        )
+    except TypeError as exc:
+        if "deadline_monotonic" not in str(exc):
+            raise
+        return await model_client.chat_json(messages, tier=tier, temperature=0.0)
+
+
+def _model_budget_seconds(model_client: ModelClient, name: str, default: float) -> float:
+    settings = getattr(model_client, "settings", None)
+    value = getattr(settings, name, default) if settings is not None else default
+    try:
+        return max(0.1, float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _planner_state_with_derived_facts(state: AgentState) -> AgentState:
@@ -262,27 +323,20 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         sent_message_summary=sent_message_summary,
     )
     risk_hold = {} if suppress_memory else health_risk_hold(state)
+    turn_evidence = _turn_evidence_for_planner(current_turn_context)
     payload = {
         "current_date": _current_date_iso(),
         "timezone": "Asia/Shanghai",
         "current_message": state.get("normalized_content") or "",
         "location_card": location_card_from_state(state),
         "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-20:],
-        "short_message_context": {} if suppress_memory else short_message_context_for_model(
-            content=str(state.get("normalized_content") or state.get("content") or ""),
-            conversation_history=state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else [],
-            sent_message_summary=sent_message_summary,
-        ),
         "image_info": _compact_image_info(state.get("image_info") or {}),
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
         "customer_profile": {} if suppress_memory else _compact_customer_profile_for_planner(state.get("customer_profile") or {}),
-        "history_events": [] if suppress_memory else (state.get("history_events") or [])[-8:],
-        "customer_context": {} if suppress_memory else _compact_customer_context(state.get("customer_context") or {}),
         "transaction_facts": {} if suppress_memory else _transaction_facts_for_planner(state),
         "current_known_store": current_known_store,
         "store_candidate": store_candidate,
-        "current_turn_context": current_turn_context,
-        "turn_evidence": current_turn_context.get("turn_evidence") if isinstance(current_turn_context, dict) else {},
+        "turn_evidence": turn_evidence,
         "risk_hold": risk_hold,
         "store_scope_summary": build_store_scope_summary(
             state.get("customer_store_knowledge") or {},
@@ -302,16 +356,14 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "timezone": base.get("timezone"),
         "current_message": base.get("current_message"),
         "conversation_history": (base.get("conversation_history") or [])[-8:],
-        "short_message_context": base.get("short_message_context"),
         "image_info": base.get("image_info"),
         "category_id": base.get("category_id"),
-        "customer_profile": base.get("customer_profile"),
-        "customer_context": base.get("customer_context"),
+        "transaction_facts": base.get("transaction_facts"),
         "current_known_store": base.get("current_known_store"),
         "store_candidate": base.get("store_candidate"),
-        "current_turn_context": base.get("current_turn_context"),
         "turn_evidence": base.get("turn_evidence"),
         "risk_hold": base.get("risk_hold"),
+        "store_scope_summary": base.get("store_scope_summary"),
         "sent_message_summary": base.get("sent_message_summary"),
         "sop_progress_evidence": base.get("sop_progress_evidence"),
         "available_tools": base.get("available_tools"),
@@ -321,6 +373,41 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         },
     }
     return _drop_empty(payload)
+
+
+def _turn_evidence_for_planner(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_keys = (
+        "is_contextual_short_message",
+        "is_context_reference_message",
+        "binding_source",
+        "context_hints",
+        "last_assistant_action",
+        "confirmed_store",
+        "current_store_anchor",
+        "confirmed_appointment",
+        "deposit_state",
+        "payment_evidence",
+        "registration_evidence",
+        "resolved_slots",
+        "missing_slots",
+        "blocked_actions",
+        "evidence_conflicts",
+    )
+    output = {
+        key: value.get(key)
+        for key in allowed_keys
+        if value.get(key) not in (None, "", [], {})
+    }
+    nested = value.get("turn_evidence")
+    if isinstance(nested, dict):
+        for key, item in nested.items():
+            if key not in output and item not in (None, "", [], {}):
+                output[key] = item
+    if output:
+        output["source_policy"] = "evidence_only_planner_owns_business_semantics"
+    return output
 
 
 def _current_date_iso() -> str:

@@ -55,6 +55,8 @@ sop_execution_service = SopExecutionService(
     event_model_retry_attempts=settings.sop_event_model_retry_attempts,
     event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
     event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
+    event_model_total_timeout_seconds=settings.sop_event_model_total_timeout_seconds,
+    chat_gate_total_timeout_seconds=settings.sop_chat_gate_total_timeout_seconds,
     event_model_max_concurrency=settings.sop_event_model_max_concurrency,
 )
 sop_event_service = SopEventService(

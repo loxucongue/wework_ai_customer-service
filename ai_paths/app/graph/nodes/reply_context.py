@@ -2,23 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.graph.nodes.common import recent_assistant_replies
 from app.graph.nodes.appointment_time_utils import available_time_values, filter_times_by_preference, target_time_status
-from app.graph.nodes.contextual_short_message import short_message_context_for_model
 from app.graph.nodes.current_turn_context import build_current_turn_context
 from app.graph.nodes.location_card import location_card_from_state
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.store_scope_summary import build_store_scope_summary
-from app.graph.nodes.memory_usage_policy import (
-    memory_usage_policy_for_reply,
-)
 from app.graph.planner.runtime_plan import (
     planner_handoff,
     planner_required_tools,
-    planner_task_views,
 )
 from app.graph.state import AgentState
-from app.graph.runtime_turn_policy import should_suspend_appointment_context_for_current_turn
 from app.policies.business_rules import reply_business_rules_for_model
 from app.policies.compliance_terms import (
     QUALIFICATION_CONTEXT_SAFE_NOTE,
@@ -30,13 +23,10 @@ from app.services.risk_hold import health_risk_hold
 
 
 def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
-    planner_views = planner_task_views(state)
-    should_show_appointment_context = not should_suspend_appointment_context_for_current_turn(state, planner_views)
     suppress_profile_memory = False
     fact_envelope = {} if suppress_profile_memory else (state.get("fact_envelope") or {})
     required_tools = planner_required_tools(state)
     handoff = planner_handoff(state)
-    appointment_context = _appointment_context_for_model(state) if should_show_appointment_context else {}
     sent_message_summary = {} if suppress_profile_memory else sent_message_summary_for_model(state)
     sop_progress = _sop_progress_for_reply(
         state,
@@ -56,20 +46,11 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         )
     )
     return {
-        "content": state.get("normalized_content"),
+        "current_message": state.get("normalized_content"),
         "location_card": location_card_from_state(state),
         "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-20:],
-        "short_message_context": {} if suppress_profile_memory else short_message_context_for_model(
-            content=str(state.get("normalized_content") or state.get("content") or ""),
-            conversation_history=state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else [],
-            sent_message_summary=sent_message_summary,
-        ),
         "image_info": state.get("image_info", {}),
-        "customer_profile": {} if suppress_profile_memory else state.get("customer_profile", {}),
-        "customer_basic_info": {} if suppress_profile_memory else state.get("customer_basic_info", {}),
-        "history_events": [] if suppress_profile_memory else state.get("history_events", [])[-8:],
-        "memory_usage_policy": memory_usage_policy_for_reply(state),
-        "recent_assistant_replies": [] if suppress_profile_memory else recent_assistant_replies(state, 4),
+        "customer_background_facts": {} if suppress_profile_memory else _compact_customer_background(state),
         "guardrail_result": state.get("guardrail_result", {}),
         "required_tools": [] if suppress_profile_memory else required_tools,
         "planner_decision": state.get("planner_decision", ""),
@@ -90,9 +71,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "planner_tool_policy_violations": _compact_planner_violations(state.get("tool_policy_violations", [])),
         "planner_direct_reply_draft": _planner_direct_reply_draft_for_reply(state),
         "handoff": {} if suppress_profile_memory else handoff,
-        "appointment_context": {} if suppress_profile_memory else appointment_context,
-        "current_turn_context": current_turn_context,
-        "turn_evidence": raw_current_turn_context.get("turn_evidence") if isinstance(raw_current_turn_context, dict) else {},
+        "turn_evidence": current_turn_context,
         "transaction_facts": _transaction_facts_for_reply(fact_envelope),
         "store_candidate": _store_candidate_for_reply(state),
         "risk_hold": risk_hold,
@@ -104,18 +83,80 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "sent_message_summary": sent_message_summary,
         "reply_mode": reply_mode,
         "sop_progress": sop_progress,
-        "sop_progress_evidence": state.get("sop_progress_evidence", {}),
         "business_rules": reply_business_rules_for_model(
             stage=str(state.get("planner_stage") or ""),
             sub_rule_id=str(state.get("planner_sub_rule_id") or ""),
         ),
-        "fact_envelope": fact_envelope,
+        "tool_facts": _tool_facts_for_reply(fact_envelope),
         "fact_notes": _fact_notes_for_model(
             fact_envelope,
             content=str(state.get("normalized_content") or state.get("content") or ""),
             sent_message_summary=sent_message_summary,
         ),
     }
+
+
+def _compact_customer_background(state: AgentState) -> dict[str, Any]:
+    profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    allowed_profile_keys = (
+        "customer_stage",
+        "stage",
+        "decision_stage",
+        "main_concern",
+        "main_concerns",
+        "customer_tags",
+        "tags",
+        "deposit_state",
+        "appointment_state",
+    )
+    allowed_basic_keys = ("city", "province", "district")
+    return _drop_empty(
+        {
+            "profile": {
+                key: profile.get(key)
+                for key in allowed_profile_keys
+                if profile.get(key) not in (None, "", [], {})
+            },
+            "basic_location": {
+                key: basic.get(key)
+                for key in allowed_basic_keys
+                if basic.get(key) not in (None, "", [], {})
+            },
+            "priority": "low_current_message_recent_history_and_tool_facts_win",
+        }
+    )
+
+
+def _tool_facts_for_reply(fact_envelope: dict[str, Any]) -> dict[str, Any]:
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope, dict) else {}
+    if not isinstance(structured, dict):
+        return {}
+    allowed_keys = (
+        "store_facts",
+        "recommended_store",
+        "store_lookup_status",
+        "distance_facts",
+        "appointment_facts",
+        "case_facts",
+        "professional_assist",
+        "order_facts",
+        "registration_facts",
+        "payment_facts",
+        "tool_errors",
+    )
+    output: dict[str, Any] = {}
+    for key in allowed_keys:
+        value = structured.get(key)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, list):
+            output[key] = [_sanitize_planner_context_for_reply(item) for item in value[-8:]]
+        else:
+            output[key] = _sanitize_planner_context_for_reply(value)
+    if output:
+        output["source_policy"] = "authoritative_current_turn_tool_facts"
+    return output
 
 
 def _planner_structured_actions_for_reply(
@@ -598,25 +639,6 @@ def _available_time_fact_note(item: dict[str, Any], content: str) -> str:
         parts.append(f"客户问的{target_time}可约")
         return prefix + "，".join(parts) + "。第一句可以直接确认该时间可约，再推进预约金或确认信息。"
     return prefix + "，".join(parts) + "。客户问有没有时间时，只推荐第一个可约时间，最多补1个备选；不要列完整时间表，也不要同轮追加payment_collection，除非客户本轮已经明确选定时间或要付款入口。"
-
-
-def _appointment_context_for_model(state: AgentState) -> dict[str, Any]:
-    appointment_cache = state.get("appointment_cache") if isinstance(state.get("appointment_cache"), dict) else {}
-    context: dict[str, Any] = {}
-    for source_key, target_key in (
-        ("store_id", "store_id"),
-        ("store_name", "store_name"),
-        ("date", "date"),
-        ("appointment_date", "date"),
-        ("time", "time"),
-        ("appointment_time", "time"),
-        ("people_count", "people_count"),
-    ):
-        value = appointment_cache.get(source_key)
-        text = str(value or "").strip()
-        if text and target_key not in context:
-            context[target_key] = text
-    return context
 
 
 def _store_scope_location_hints_for_reply(state: AgentState) -> list[str]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import unittest
 from datetime import date, timedelta
 from typing import Any
@@ -92,6 +93,11 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, "fast")
         self.assertEqual(client.models[:2], ["slow-model", "fast-model"])
+        usage = client.last_usage or {}
+        self.assertEqual(usage.get("primary_model"), "slow-model")
+        self.assertEqual(usage.get("hedge_model"), "fast-model")
+        self.assertEqual(usage.get("winner_model"), "fast-model")
+        self.assertIn("slow-model", usage.get("cancelled_models") or [])
 
     async def test_model_client_records_timeout_candidate_and_hedge_metadata(self) -> None:
         class TimeoutModelClient(ModelClient):
@@ -126,7 +132,52 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage.get("pending_models"), ["slow-primary", "slow-fallback"])
         self.assertTrue(usage.get("hedge_started"))
         self.assertEqual(usage.get("total_timeout_seconds"), 1.0)
+        self.assertEqual(set(usage.get("cancelled_models") or []), {"slow-primary", "slow-fallback"})
         self.assertIn("TimeoutError", str(usage.get("error")))
+
+    async def test_transient_retries_share_one_absolute_deadline(self) -> None:
+        class InvalidJsonClient(ModelClient):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.calls = 0
+
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                self.calls += 1
+                await asyncio.sleep(0.08)
+                return {"choices": [{"message": {"content": "not-json"}}]}
+
+        client = InvalidJsonClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_fast="json-model",
+                model_fast_fallbacks="",
+                model_hedge_max_parallel=1,
+                model_request_retry_attempts=3,
+                model_request_retry_delay_seconds=0,
+                model_timeout_seconds=1,
+            )
+        )
+        started = time.monotonic()
+        with self.assertRaises(TimeoutError):
+            await client.chat_json(
+                [{"role": "user", "content": "Return JSON."}],
+                tier="fast",
+                deadline_monotonic=started + 0.13,
+            )
+
+        self.assertLess(time.monotonic() - started, 0.23)
+        self.assertEqual(client.calls, 2)
+        usage = client.last_usage or {}
+        self.assertEqual(usage.get("attempts"), 2)
+        self.assertEqual(usage.get("remaining_budget_ms"), 0)
 
     async def test_model_client_retries_transient_invalid_json_once(self) -> None:
         class RetryJsonClient(ModelClient):

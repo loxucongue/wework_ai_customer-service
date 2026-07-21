@@ -73,9 +73,7 @@
         "none",
         "explain_existing"
       ],
-      "expected_message_types": [
-        "text"
-      ],
+      "expected_message_types": [],
       "must_not_call_tools": [
         "professional_assist"
       ],
@@ -188,9 +186,7 @@
       "decision": "need_tools",
       "customer_need": "怕反黑/伤肤顾虑",
       "allowed_payment_actions": ["none", "explain_existing"],
-      "expected_message_types": [
-        "text"
-      ],
+      "expected_message_types": [],
       "required_tools": [
         {"name": "kb_search"}
       ],
@@ -272,9 +268,7 @@
         "confirm_next_step",
         "explain_existing"
       ],
-      "expected_message_types": [
-        "text"
-      ],
+      "expected_message_types": [],
       "required_tools": [
         {
           "name": "customer_store_lookup"
@@ -450,9 +444,7 @@
       "decision": "need_tools",
       "payment_action": "send_now",
       "payment_amount": 10,
-      "expected_message_types": [
-        "text"
-      ],
+      "expected_message_types": [],
       "required_tools": [
         {"name": "create_work_order"}
       ],

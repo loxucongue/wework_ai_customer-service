@@ -41,5 +41,5 @@ def test_planner_and_reply_payload_expose_location_card() -> None:
 
     assert planner_payload["current_message"] == normalized
     assert planner_payload["location_card"]["address"] == "福建省厦门市思明区镇海路55号"
-    assert reply_payload["content"] == normalized
+    assert reply_payload["current_message"] == normalized
     assert reply_payload["location_card"]["coordinates"] == "24.451232,118.088724"

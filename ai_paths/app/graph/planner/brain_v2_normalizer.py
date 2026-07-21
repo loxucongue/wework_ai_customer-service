@@ -22,10 +22,26 @@ from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.graph.planner.planner_contract import (
     ALLOWED_CONVERSION_STAGES,
     ALLOWED_CUSTOMER_TYPES,
-    ALLOWED_KBS,
     ALLOWED_MAIN_BLOCKERS,
     ALLOWED_NEXT_STEPS,
-    ALLOWED_TOOLS,
+)
+from app.graph.planner.planner_reply_structure_guards import (
+    has_handoff_notice as _has_handoff_notice,
+    has_payment_collection as _has_payment_collection,
+    remove_payment_collection_messages as _remove_payment_collection_messages,
+    renumber_reply_messages as _renumber_reply_messages,
+)
+from app.graph.planner.planner_schema_normalizer import (
+    clean_str_list as _clean_str_list,
+    dedupe_tools as _dedupe_tools,
+    normalize_enum as _normalize_enum,
+    normalize_tools as _normalize_tools,
+)
+from app.graph.planner.planner_tool_fact_guards import rejected_tool_violations as _rejected_tool_violations
+from app.graph.planner.planner_transaction_guards import (
+    authoritative_paid_context as _authoritative_paid_context,
+    current_unpaid_order as _current_unpaid_order,
+    postpaid_scheduling_tool_violations as _structured_postpaid_scheduling_tool_violations,
 )
 from app.graph.state import AgentState
 from app.policies.constants import KNOWN_STORE_FACTS, KNOWN_STORE_NAMES
@@ -247,19 +263,9 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         store_binding_decision,
         order_decision=order_decision,
     )
-    forced_store_lookup = _store_detail_lookup_tool_from_context(
-        decision=decision,
-        messages=planner_reply_messages,
-        required_tools=required_tools,
-        state=state,
-    )
-    if forced_store_lookup:
-        decision = "need_tools"
-        required_tools = _dedupe_tools([forced_store_lookup])
-        planner_reply_messages = [_standard_transition_message()]
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
     if decision == "need_tools" and executable_tools:
-        planner_reply_messages = [_standard_transition_message()]
+        planner_reply_messages = []
     if (
         explicit_risk_reason
         and decision == "direct_reply"
@@ -288,7 +294,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         customer_type = "risk"
         main_blocker = "risk"
         next_step = "solve_blocker"
-        planner_reply_messages = [_standard_transition_message()]
+        planner_reply_messages = []
         required_tools = [{"name": "professional_assist", "reason": explicit_risk_reason}]
         executable_tools = required_tools
         handoff_raw = {"needed": True, "reason": explicit_risk_reason}
@@ -320,17 +326,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     if executable_tools and decision == "direct_reply":
         decision = "need_tools"
     if decision == "need_tools":
-        planner_reply_messages = [_standard_transition_message()]
-    if _should_force_store_detail_stage(state, required_tools):
-        stage = "S2"
-        sub_rule_id = "S2_STORE_ADDRESS"
-        conversion_stage = "store_match"
-        customer_type = "distance"
-        main_blocker = "logistics"
-        next_step = "lookup_store"
-        if handoff_raw and isinstance(handoff_raw, dict) and _mentions_health_risk_text(str(handoff_raw.get("reason") or "")):
-            handoff_raw = {"needed": False, "reason": ""}
-        reply_constraints.append("当前消息是门店地址/导航/停车/位置详情查询，本轮只查门店事实；不要保留 deposit_push/send_deposit。")
+        planner_reply_messages = []
     if is_hard_health_risk_hold(risk_hold) and not explicit_risk_reason:
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
         payment_decision = _with_payment_decision_action(
@@ -597,42 +593,9 @@ def _normalize_decision(value: Any) -> str:
     return decision if decision in {"direct_reply", "need_tools", "no_reply"} else "need_tools"
 
 
-def _standard_transition_message() -> dict[str, Any]:
-    return {"type": "text", "order": 1, "content": {"text": "稍等一下哈"}}
-
-
-def _should_force_store_detail_stage(state: AgentState, required_tools: list[dict[str, Any]]) -> bool:
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if not _current_message_requests_store_detail(content):
-        return False
-    return any(
-        isinstance(tool, dict) and str(tool.get("name") or "") == "customer_store_lookup"
-        for tool in required_tools
-    )
-
-
 def _mentions_health_risk_text(text: str) -> bool:
     raw = str(text or "")
     return "健康风险" in raw or any(term in raw for term in HEALTH_RISK_TERMS)
-
-
-def _advisory_health_context_message(turn_context: dict[str, Any], state: AgentState) -> str:
-    appointment = turn_context.get("confirmed_appointment") if isinstance(turn_context.get("confirmed_appointment"), dict) else {}
-    store = turn_context.get("confirmed_store") if isinstance(turn_context.get("confirmed_store"), dict) else {}
-    store_name = str(store.get("store_name") or "").strip()
-    appointment_text = _appointment_text(appointment)
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if "下午" in content and "下午" not in appointment_text:
-        appointment_text = "明天下午" if "明天" in content or "明天" in appointment_text else "下午"
-    if appointment_text and store_name:
-        prefix = f"可以，那就按{appointment_text}继续给您确认{store_name}。"
-    elif appointment_text:
-        prefix = f"可以，那就按{appointment_text}继续给您确认到店安排。"
-    elif store_name:
-        prefix = f"可以，这边继续给您确认{store_name}的到店安排。"
-    else:
-        prefix = "可以，这边继续帮您确认到店安排。"
-    return f"{prefix}到店会先做检测评估，确认适合再安排操作。"
 
 
 def _turn_context_for_guard(state: AgentState) -> dict[str, Any]:
@@ -645,23 +608,6 @@ def _turn_context_for_guard(state: AgentState) -> dict[str, Any]:
         return {}
 
 
-def _text_message(text: str) -> dict[str, Any]:
-    return {"type": "text", "order": 1, "content": {"text": text}}
-
-
-def _handoff_notice_message(risk_hold: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "human_handoff_notice", "order": 1, "content": {"handoff_reason": _risk_hold_reason(risk_hold)}}
-
-
-def _risk_hold_reason(risk_hold: dict[str, Any]) -> str:
-    return str(risk_hold.get("reason") or "健康/过敏高风险，需先到店检测确认适配性").strip()
-
-
-def _appointment_text(appointment: dict[str, Any]) -> str:
-    bits = [str(appointment.get(key) or "").strip() for key in ("date", "time")]
-    return " ".join(bit for bit in bits if bit)
-
-
 def _renumber_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
     for item in messages:
@@ -671,11 +617,6 @@ def _renumber_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         updated["order"] = len(output) + 1
         output.append(updated)
     return output
-
-
-def _normalize_enum(value: Any, allowed: tuple[str, ...], default: str) -> str:
-    text = str(value or "").strip()
-    return text if text in allowed else default
 
 
 def _normalize_reply_messages(value: Any, *, state: AgentState | None = None) -> list[dict[str, Any]]:
@@ -1008,56 +949,6 @@ def _date_reference_from_text(text: str, *, base_date: date) -> str:
     if "今天" in value or "今日" in value:
         return base_date.isoformat()
     return ""
-
-
-def _normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
-    tools: list[dict[str, Any]] = []
-    if not isinstance(raw_tools, list):
-        return tools
-    for item in raw_tools:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "").strip()
-        if name not in ALLOWED_TOOLS:
-            continue
-        tool = {"name": name, "purpose": str(item.get("purpose") or "").strip()}
-        kb_name = str(item.get("kb_name") or "").strip()
-        if kb_name:
-            if name != "kb_search" or kb_name not in ALLOWED_KBS:
-                continue
-            tool["kb_name"] = kb_name
-        query = str(item.get("query") or "").strip()
-        if query:
-            tool["query"] = query
-        for key in (
-            "reason",
-            "origin",
-            "candidate_store_ids",
-            "candidate_source",
-            "store_id",
-            "date",
-            "target_time",
-            "time",
-            "appointment_time",
-            "scope",
-            "need_fields",
-            "for_distance",
-            "order_id",
-            "category_id",
-            "prepay",
-            "amount",
-            "mobile",
-            "customer_name",
-            "user_id",
-            "teacher_id",
-            "seat_check",
-            "store_confirmation_source",
-            "availability_source",
-        ):
-            if key in item:
-                tool[key] = item[key]
-        tools.append(tool)
-    return tools
 
 
 def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentState) -> list[dict[str, str]]:
@@ -2318,51 +2209,6 @@ def _store_detail_tool_violations(
     ]
 
 
-def _store_detail_lookup_tool_from_context(
-    *,
-    decision: str,
-    messages: list[dict[str, Any]],
-    required_tools: list[dict[str, Any]],
-    state: AgentState,
-) -> dict[str, Any]:
-    if decision != "direct_reply" or _has_tool(required_tools, "customer_store_lookup"):
-        return {}
-    text = " ".join(
-        _message_text(item.get("content"))
-        for item in messages
-        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
-    )
-    current_text = str(state.get("normalized_content") or state.get("content") or "")
-    has_store_address_card = _has_store_address_message(messages)
-    if has_store_address_card and _store_address_messages_are_requested_district_backed(messages, state):
-        return {}
-    if has_store_address_card and _store_address_messages_are_scope_backed(messages, state) and not _asserts_store_address_detail(text):
-        return {}
-    if not (has_store_address_card or _direct_text_requires_store_detail_tool(text) or _current_message_requests_store_detail(current_text)):
-        return {}
-    anchor = current_store_anchor_from_state(
-        state,
-        current_known_store=None,
-        allow_profile=False,
-        prefer_recent=True,
-    )
-    query = ""
-    if isinstance(anchor, dict) and not anchor.get("ambiguous"):
-        query = str(anchor.get("store_name") or anchor.get("name") or anchor.get("store_id") or "").strip()
-    if not query and has_store_address_card:
-        matched_names = _store_names_matching_text(state, text)
-        if len(matched_names) == 1:
-            query = matched_names[0]
-    if not query and has_store_address_card:
-        query = _clean_scoped_location_query(current_text) or _clean_scoped_location_query(text)
-    if not query:
-        return {}
-    source = str(anchor.get("source") or "").strip() if isinstance(anchor, dict) else ""
-    if source in {"customer_profile", "profile", "preferred_store"}:
-        return {}
-    return {"name": "customer_store_lookup", "purpose": "detail", "query": query}
-
-
 def _store_address_messages_are_requested_district_backed(messages: list[dict[str, Any]], state: AgentState) -> bool:
     message_ids = {
         _store_address_id(item.get("content"))
@@ -2952,27 +2798,6 @@ def _history_item_text(item: Any) -> str:
     return str(item or "").strip()
 
 
-def _rejected_tool_violations(raw_tools: Any) -> list[dict[str, str]]:
-    if not isinstance(raw_tools, list):
-        return []
-    violations: list[dict[str, str]] = []
-    for item in raw_tools:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "").strip()
-        kb_name = str(item.get("kb_name") or "").strip()
-        if name == "kb_search" and kb_name and kb_name not in ALLOWED_KBS:
-            violations.append(
-                {
-                    "task_type": "planner_tool_rejected",
-                    "subtype": "kb_search",
-                    "missing": f"unsupported_kb:{kb_name}",
-                    "note": "Planner may only call kb_search(case_studies). sales_talk_qa is currently disabled.",
-                }
-            )
-    return violations
-
-
 def _payment_consistency_violations(
     *,
     state: AgentState,
@@ -3099,24 +2924,6 @@ def _payment_consistency_violations(
     ]
 
 
-def _has_payment_collection(messages: list[dict[str, Any]]) -> bool:
-    return any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict))
-
-
-def _has_handoff_notice(messages: list[dict[str, Any]]) -> bool:
-    return any(
-        str(item.get("type") or "") in {"human_handoff", "human_handoff_notice"}
-        for item in messages
-        if isinstance(item, dict)
-    )
-
-
-def _remove_payment_collection_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return _renumber_reply_messages(
-        [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") != "payment_collection"]
-    )
-
-
 def _remove_advisory_health_handoff_notices(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
     output: list[dict[str, Any]] = []
     removed = False
@@ -3224,27 +3031,12 @@ def _has_paid_deposit_context(state: AgentState, *, payment_state: str = "unknow
 
 def _has_authoritative_paid_context(state: AgentState) -> bool:
     """Check structured current-order or successful screenshot evidence for payment."""
-    turn_context = _turn_context_for_guard(state)
-    if str(turn_context.get("deposit_state") or "") == "deposit_paid":
-        return True
-    turn_evidence = turn_context.get("turn_evidence") if isinstance(turn_context.get("turn_evidence"), dict) else {}
-    payment_evidence = turn_evidence.get("payment_evidence") if isinstance(turn_evidence.get("payment_evidence"), dict) else {}
-    if str(payment_evidence.get("structured_payment_state") or "") == "deposit_paid":
-        return True
-    structured = payment_evidence.get("structured_payment_fact") if isinstance(payment_evidence.get("structured_payment_fact"), dict) else {}
-    if str(structured.get("deposit_state") or "") in {"paid_by_order", "paid_by_screenshot"}:
-        return True
-    image = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
-    return image.get("image_type") == "payment_proof" and image.get("payment_result") == "success"
+    return _authoritative_paid_context(state, _turn_context_for_guard(state))
 
 
 def _has_current_unpaid_order(state: AgentState) -> bool:
     """Return whether the fresh current order explicitly remains unpaid."""
-    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
-    orders = [order for order in context.get("orders") or [] if isinstance(order, dict)]
-    current = [order for order in orders if order.get("is_current_order")]
-    candidates = current or orders[:1]
-    return any(str(order.get("deposit_state") or "") == "required_unpaid" for order in candidates)
+    return _current_unpaid_order(state)
 
 
 def _postpaid_scheduling_tool_violations(
@@ -3254,37 +3046,15 @@ def _postpaid_scheduling_tool_violations(
     required_tools: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     """Block formal availability and scheduling tools in the paid information-confirmation flow."""
-    if str(payment_decision.get("action") or "") != "after_paid_next_step" or not _has_authoritative_paid_context(state):
-        return []
-    violations: list[dict[str, str]] = []
-    for tool in required_tools:
-        name = str(tool.get("name") or "") if isinstance(tool, dict) else ""
-        if name not in {"available_time", "create_order_plan"}:
-            continue
-        violations.append(
-            {
-                "task_type": "tool_argument",
-                "subtype": name,
-                "missing": f"{name}_disabled_after_payment",
-                "note": "After payment, collect and confirm name, phone, store, visit date and time only; do not query slots or create a formal schedule.",
-            }
-        )
-    return violations
+    return _structured_postpaid_scheduling_tool_violations(
+        payment_decision=payment_decision,
+        required_tools=required_tools,
+        has_authoritative_paid=_has_authoritative_paid_context(state),
+    )
 
 
 def _compact_text(text: str) -> str:
     return "".join(str(text or "").split())
-
-
-def _renumber_reply_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    output: list[dict[str, Any]] = []
-    for item in messages:
-        if not isinstance(item, dict):
-            continue
-        normalized = dict(item)
-        normalized["order"] = len(output) + 1
-        output.append(normalized)
-    return output
 
 
 def _text_mentions_payment_entry(messages: list[dict[str, Any]]) -> bool:
@@ -3623,74 +3393,3 @@ def _normalize_memory_hint(raw: Any) -> dict[str, Any]:
         "store_preference": str(raw.get("store_preference") or "").strip()[:80],
         "appointment_signals": _clean_str_list(raw.get("appointment_signals") or [])[:6],
     }
-
-
-def _dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    unique: list[dict[str, Any]] = []
-    seen: set[tuple[str, ...]] = set()
-    for item in raw_tools:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "").strip()
-        kb_name = str(item.get("kb_name") or "").strip()
-        query = str(item.get("query") or "").strip()
-        key = (
-            name,
-            kb_name,
-            query,
-            str(item.get("store_id") or ""),
-            str(item.get("date") or item.get("appointment_time") or ""),
-            str(item.get("order_id") or ""),
-            str(item.get("prepay") or item.get("amount") or ""),
-        )
-        if name not in ALLOWED_TOOLS or key in seen:
-            continue
-        seen.add(key)
-        normalized = {"name": name, "purpose": str(item.get("purpose") or "").strip()}
-        if kb_name:
-            normalized["kb_name"] = kb_name
-        if query:
-            normalized["query"] = query
-        for extra_key in (
-            "origin",
-            "destination",
-            "candidate_store_ids",
-            "candidate_source",
-            "store_id",
-            "store_name",
-            "date",
-            "time",
-            "address",
-            "reason",
-            "scope",
-            "need_fields",
-            "for_distance",
-            "order_id",
-            "category_id",
-            "prepay",
-            "amount",
-            "mobile",
-            "customer_name",
-            "user_id",
-            "teacher_id",
-            "seat_check",
-            "store_confirmation_source",
-            "availability_source",
-            "target_time",
-            "appointment_time",
-        ):
-            if extra_key in item:
-                normalized[extra_key] = item.get(extra_key)
-        unique.append(normalized)
-    return unique
-
-
-def _clean_str_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    output: list[str] = []
-    for item in value:
-        text = str(item or "").strip()
-        if text:
-            output.append(text[:180])
-    return output

@@ -34,10 +34,13 @@ class ModelClient:
         *,
         tier: ModelTier = "balanced",
         temperature: float = 0.2,
+        deadline_monotonic: float | None = None,
     ) -> str:
         if not self.available:
             raise RuntimeError("No model API key configured")
         models = self._model_names(tier)
+        request_started_at = time.monotonic()
+        deadline = self._resolve_deadline(tier, deadline_monotonic)
 
         def build_payload(model: str) -> dict[str, Any]:
             payload = {
@@ -59,7 +62,10 @@ class ModelClient:
                 build_payload=build_payload,
                 consume=consume,
                 failure_label="All model candidates failed",
-            )
+                deadline_monotonic=deadline,
+            ),
+            deadline_monotonic=deadline,
+            deadline_seconds=max(0.0, deadline - request_started_at),
         )
 
     async def chat_json(
@@ -73,6 +79,8 @@ class ModelClient:
         if not self.available:
             raise RuntimeError("No model API key configured")
         models = self._model_names(tier)
+        request_started_at = time.monotonic()
+        deadline = self._resolve_deadline(tier, deadline_monotonic)
 
         def build_payload(model: str) -> dict[str, Any]:
             payload = {
@@ -98,9 +106,10 @@ class ModelClient:
                 build_payload=build_payload,
                 consume=consume,
                 failure_label="All JSON model candidates failed",
-                deadline_monotonic=deadline_monotonic,
+                deadline_monotonic=deadline,
             ),
-            deadline_monotonic=deadline_monotonic,
+            deadline_monotonic=deadline,
+            deadline_seconds=max(0.0, deadline - request_started_at),
         )
 
     async def vision_json(
@@ -110,6 +119,7 @@ class ModelClient:
         image_url: str,
         tier: ModelTier = "vision",
         temperature: float = 0.1,
+        deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         if not self.available:
             raise RuntimeError("No model API key configured")
@@ -123,6 +133,8 @@ class ModelClient:
             }
         ]
         models = self._model_names(tier)
+        request_started_at = time.monotonic()
+        deadline = self._resolve_deadline(tier, deadline_monotonic)
 
         def build_payload(model: str) -> dict[str, Any]:
             payload = {
@@ -144,7 +156,10 @@ class ModelClient:
                 build_payload=build_payload,
                 consume=consume,
                 failure_label="All vision model candidates failed",
-            )
+                deadline_monotonic=deadline,
+            ),
+            deadline_monotonic=deadline,
+            deadline_seconds=max(0.0, deadline - request_started_at),
         )
 
     async def _run_with_transient_retries(
@@ -152,6 +167,7 @@ class ModelClient:
         invoke: Callable[[], Awaitable[T]],
         *,
         deadline_monotonic: float | None = None,
+        deadline_seconds: float | None = None,
     ) -> T:
         """Retry provider and format failures without changing business decisions."""
         attempts = max(1, int(self.settings.model_request_retry_attempts or 1))
@@ -169,7 +185,10 @@ class ModelClient:
                 usage.update(
                     {
                         "request_attempt": attempt,
+                        "attempts": attempt,
                         "request_retry_errors": list(retry_errors),
+                        "deadline_seconds": deadline_seconds,
+                        "remaining_budget_ms": self._remaining_budget_ms(deadline_monotonic),
                     }
                 )
                 self.last_usage = usage
@@ -191,7 +210,10 @@ class ModelClient:
             usage.update(
                 {
                     "request_attempt": attempt,
+                    "attempts": attempt,
                     "request_retry_errors": list(retry_errors),
+                    "deadline_seconds": deadline_seconds,
+                    "remaining_budget_ms": self._remaining_budget_ms(deadline_monotonic),
                 }
             )
             self.last_usage = usage
@@ -219,28 +241,41 @@ class ModelClient:
         hedge_delay = self._hedge_delay_for_tier(tier)
         configured_total_timeout = self._total_timeout_for_tier(tier)
         started_at = time.perf_counter()
-        deadline = started_at + configured_total_timeout
+        started_at_monotonic = time.monotonic()
+        deadline = started_at_monotonic + configured_total_timeout
         if deadline_monotonic is not None:
             deadline = min(deadline, deadline_monotonic)
-        total_timeout = max(0.0, deadline - started_at)
+        total_timeout = max(0.0, deadline - started_at_monotonic)
         candidate_models = list(models)
         started_models: list[str] = []
+        cancelled_models: list[str] = []
         hedge_started = False
 
-        def enrich_last_usage() -> None:
+        def enrich_last_usage(winner_model: str = "") -> None:
             usage = self.last_usage if isinstance(self.last_usage, dict) else {}
             usage.update(
                 {
                     "candidate_models": candidate_models,
+                    "primary_model": candidate_models[0] if candidate_models else "",
+                    "hedge_model": candidate_models[1] if len(candidate_models) > 1 else "",
                     "started_models": list(started_models),
                     "hedge_started": bool(hedge_started),
+                    "winner_model": str(usage.get("model") or winner_model),
+                    "cancelled_models": list(cancelled_models),
                     "total_timeout_seconds": total_timeout,
                     "configured_total_timeout_seconds": configured_total_timeout,
                     "deadline_limited": deadline_monotonic is not None and total_timeout < configured_total_timeout,
                     "overall_duration_ms": int((time.perf_counter() - started_at) * 1000),
+                    "remaining_budget_ms": self._remaining_budget_ms(deadline),
+                    "timeout_stage": str(usage.get("timeout_stage") or ""),
                 }
             )
             self.last_usage = usage
+
+        def record_cancelled_pending() -> None:
+            for task, (_, model) in pending.items():
+                if not task.done() and model not in cancelled_models:
+                    cancelled_models.append(model)
 
         def record_failure(error: str) -> None:
             pending_models = [
@@ -258,12 +293,18 @@ class ModelClient:
                 "overall_duration_ms": int((time.perf_counter() - started_at) * 1000),
                 "usage": {},
                 "candidate_models": candidate_models,
+                "primary_model": candidate_models[0] if candidate_models else "",
+                "hedge_model": candidate_models[1] if len(candidate_models) > 1 else "",
                 "started_models": list(started_models),
                 "pending_models": pending_models,
                 "hedge_started": bool(hedge_started),
+                "winner_model": "",
+                "cancelled_models": list(cancelled_models),
                 "total_timeout_seconds": total_timeout,
                 "configured_total_timeout_seconds": configured_total_timeout,
                 "deadline_limited": deadline_monotonic is not None and total_timeout < configured_total_timeout,
+                "remaining_budget_ms": self._remaining_budget_ms(deadline),
+                "timeout_stage": "candidate_race" if "TimeoutError" in error else "",
                 "error": error,
             }
 
@@ -288,7 +329,7 @@ class ModelClient:
         last_launch_at = time.perf_counter()
         try:
             while pending:
-                remaining = deadline - time.perf_counter()
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     error = f"TimeoutError: total timeout {total_timeout:.1f}s"
                     record_failure(error)
@@ -318,21 +359,37 @@ class ModelClient:
                             last_launch_at = time.perf_counter()
                         continue
                     for other in pending:
+                        _, cancelled_model = pending[other]
+                        cancelled_models.append(cancelled_model)
                         other.cancel()
                     if pending:
                         await asyncio.gather(*pending.keys(), return_exceptions=True)
-                    enrich_last_usage()
+                    enrich_last_usage(model)
                     return result
             record_failure(f"{failure_label}: " + " | ".join(errors))
             raise RuntimeError(f"{failure_label}: " + " | ".join(errors))
         except Exception:
             if not isinstance(self.last_usage, dict):
                 record_failure(f"{failure_label}: " + " | ".join(errors))
+            record_cancelled_pending()
             for task in pending:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending.keys(), return_exceptions=True)
+            if isinstance(self.last_usage, dict):
+                self.last_usage["cancelled_models"] = list(cancelled_models)
             raise
+
+    def _resolve_deadline(self, tier: ModelTier, deadline_monotonic: float | None) -> float:
+        if deadline_monotonic is not None:
+            return float(deadline_monotonic)
+        return time.monotonic() + self._total_timeout_for_tier(tier)
+
+    @staticmethod
+    def _remaining_budget_ms(deadline_monotonic: float | None) -> int | None:
+        if deadline_monotonic is None:
+            return None
+        return max(0, int((deadline_monotonic - time.monotonic()) * 1000))
 
     async def _post_chat(
         self,
@@ -500,6 +557,8 @@ class ModelClient:
             return max(1.0, float(self.settings.model_planner_total_timeout_seconds or self.settings.model_timeout_seconds))
         if tier in {"reply", "strong"}:
             return max(1.0, float(self.settings.model_reply_total_timeout_seconds or self.settings.model_timeout_seconds))
+        if tier == "vision":
+            return max(1.0, float(self.settings.model_vision_total_timeout_seconds or self.settings.model_timeout_seconds))
         return max(1.0, float(self.settings.model_timeout_seconds))
 
     def _hedge_delay_for_tier(self, tier: ModelTier) -> float:

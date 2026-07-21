@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import time
 from typing import Any, Callable
 
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
@@ -17,6 +19,18 @@ from app.services.risk_hold import explicit_professional_assist_reason, health_r
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
+
+
+REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售回复模型。完整 Reply 已超时或未通过硬事实校验，请根据精简事实重新生成客户可见回复。
+
+要求：
+- 只输出 JSON 对象：{\"reply_messages\":[{\"type\":\"text\",\"order\":1,\"content\":\"...\"}]}。
+- 先直接解决客户当前问题，再自然承接上下文和 Planner 已选择的一个成交动作。
+- 只能使用输入中的工具、门店、订单、支付、图片和档期事实；没有事实就不要编。
+- 不输出公里、分钟、车程；不承诺绝对效果；没有真实预约事实不能说已经安排好。
+- payment_collection、store_address、image、human_handoff_notice 必须使用输入中已核验的结构事实。
+- 使用自然微信口吻，不解释系统故障，不输出 markdown 或内部分析。
+"""
 
 
 def create_synthesize_reply_node(
@@ -42,216 +56,46 @@ def create_synthesize_reply_node(
             reply_source = "main_model"
             model_call: dict[str, Any] | None = None
 
-            try:
-                planner_decision = str(state.get("planner_decision") or "").strip()
-                planner_messages = _normalize_planner_reply_messages(state.get("planner_reply_messages"), state=state)
-                planner_direct_valid = False
-                model_reply_ready = bool(
-                    model_client
-                    and model_client.available
-                    and should_use_model_reply(state)
-                )
-                if planner_decision == "direct_reply" and planner_messages and not state.get("tool_policy_violations"):
-                    try:
-                        validate_reply_consistency(planner_messages, state)
-                        planner_direct_valid = True
-                    except Exception as planner_validation_exc:
-                        warnings.append(
-                            {
-                                "node": "synthesize_reply",
-                                "message": "planner_direct_reply_rejected",
-                                "detail": f"{type(planner_validation_exc).__name__}: {planner_validation_exc}",
-                            }
-                        )
-                if planner_decision == "no_reply" and not state.get("tool_policy_violations"):
-                    reply_source = "planner_no_reply"
-                    model_call = {
-                        "name": "planner_direct_reply",
-                        "input": {"decision": planner_decision, "messages": 0},
-                        "output": {"messages": 0},
-                    }
-                elif planner_direct_valid and not model_reply_ready:
-                    messages = planner_messages
-                    reply_source = "planner_direct_reply_model_unavailable_fallback"
-                    model_call = {
-                        "name": "planner_direct_reply",
-                        "input": {
-                            "decision": planner_decision,
-                            "messages": len(planner_messages),
-                            "reason": "reply_model_unavailable",
-                        },
-                        "output": {"messages": len(messages)},
-                    }
-                else:
-                    if not model_reply_ready:
-                        raise RuntimeError("reply_synthesizer_model_required")
-                    reply_tier = _reply_model_tier(state)
-                    model_call = {"name": "reply_synthesizer_model", "input": {"tier": reply_tier, "required": True}}
-                    model_messages = reply_messages_for_model(state)
-                    model_call["input"]["messages"] = model_messages
-                    payload = await model_client.chat_json(model_messages, tier=reply_tier)
-                    model_call["raw_json_output"] = payload
-                    model_call["usage"] = model_usage_snapshot(model_client)
-                    try:
-                        messages = validated_model_messages(payload, state)
-                        validate_reply_consistency(messages, state)
-                    except Exception as validation_exc:
-                        retry_messages = _reply_retry_messages(model_messages, validation_exc)
-                        retry_payload = await model_client.chat_json(retry_messages, tier=reply_tier)
-                        model_call["retry"] = {
-                            "reason": f"{type(validation_exc).__name__}: {validation_exc}",
-                            "messages": retry_messages,
-                            "raw_json_output": retry_payload,
-                            "usage": model_usage_snapshot(model_client),
-                        }
-                        try:
-                            messages = validated_model_messages(retry_payload, state)
-                            validate_reply_consistency(messages, state)
-                        except Exception as retry_exc:
-                            retry_validation_exc = retry_exc
-                            required_payment_fallback = _maybe_build_required_payment_collection_fallback(
-                                state,
-                                retry_validation_exc,
-                                messages=messages,
-                            )
-                            if required_payment_fallback is not None:
-                                messages = required_payment_fallback
-                                validate_reply_consistency(messages, state)
-                            else:
-                                case_facts_fallback = _maybe_build_case_facts_fallback(state, retry_validation_exc)
-                                if case_facts_fallback is not None:
-                                    messages = case_facts_fallback
-                                    validate_reply_consistency(messages, state)
-                                else:
-                                    appointment_fallback = _maybe_build_unavailable_appointment_fallback(state, retry_validation_exc)
-                                    if appointment_fallback is not None:
-                                        messages = appointment_fallback
-                                        validate_reply_consistency(messages, state)
-                                        reply_source = "deterministic_unavailable_appointment_fallback"
-                                        model_call["fallback"] = {
-                                            "reason": f"{type(retry_validation_exc).__name__}: {retry_validation_exc}",
-                                            "strategy": "deterministic_unavailable_appointment",
-                                        }
-                                        model_call["output"] = {"messages": len(messages)}
-                                    else:
-                                        store_clarification_fallback = _maybe_build_store_location_clarification_fallback(
-                                            state,
-                                            retry_validation_exc,
-                                            messages=messages,
-                                        )
-                                        if store_clarification_fallback is not None:
-                                            messages = store_clarification_fallback
-                                            validate_reply_consistency(messages, state)
-                                            reply_source = "deterministic_store_location_clarification_fallback"
-                                            model_call["fallback"] = {
-                                                "reason": f"{type(retry_validation_exc).__name__}: {retry_validation_exc}",
-                                                "strategy": "deterministic_store_location_clarification",
-                                            }
-                                            model_call["output"] = {"messages": len(messages)}
-                                        else:
-                                            repaired_messages = _maybe_append_required_store_address(messages, state, retry_validation_exc)
-                                            if repaired_messages is not None:
-                                                messages = repaired_messages
-                                                validate_reply_consistency(messages, state)
-                                            else:
-                                                raise
-                        else:
-                            retry_validation_exc = None
-                        if retry_validation_exc is not None and _messages_have_handoff_notice(messages):
-                            model_call["fallback"] = {
-                                "reason": f"{type(retry_validation_exc).__name__}: {retry_validation_exc}",
-                                "strategy": "deterministic_handoff_notice",
-                            }
-                    messages = _filter_unsupported_images(messages, state, warnings)
-                    model_call["draft_messages"] = debug_message_contents(messages)
-                    model_call["output"] = {"messages": len(messages)}
-                messages = _normalize_payment_amount_text_messages(append_activity_intro_image(messages, state, warnings))
-                messages, planner_store_cards_preserved = _preserve_planner_store_address_actions(messages, state)
-                if planner_store_cards_preserved:
-                    warnings.append(
-                        {
-                            "node": "synthesize_reply",
-                            "message": "planner_store_address_action_preserved",
-                        }
+            planner_decision = str(state.get("planner_decision") or "").strip()
+            planner_messages = _normalize_planner_reply_messages(state.get("planner_reply_messages"), state=state)
+            planner_direct_valid = _planner_direct_reply_is_valid(planner_decision, planner_messages, state, warnings)
+            model_reply_ready = bool(model_client and model_client.available and should_use_model_reply(state))
+
+            if model_reply_ready and model_client is not None:
+                try:
+                    messages, model_call, reply_source = await _run_reply_model_pipeline(
+                        state=state,
+                        model_client=model_client,
+                        model_messages=reply_messages_for_model(state),
+                        validated_model_messages=validated_model_messages,
+                        debug_message_contents=debug_message_contents,
+                        warnings=warnings,
                     )
-                for warning in warnings:
-                    if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
-                        warning.setdefault("node", "synthesize_reply")
-            except Exception as exc:
-                model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
-                primary_error = f"{type(exc).__name__}: {exc}"
-                required_payment_fallback = _maybe_build_required_payment_collection_fallback(
-                    state,
-                    exc,
-                    messages=messages or planner_messages,
-                )
-                if required_payment_fallback is not None:
-                    messages = required_payment_fallback
-                    validate_reply_consistency(messages, state)
-                    reply_source = "deterministic_required_payment_collection_fallback"
-                    model_call["fallback"] = {
-                        "reason": primary_error,
-                        "strategy": "deterministic_required_payment_collection",
-                    }
-                    model_call["output"] = {"messages": len(messages)}
-                else:
-                    case_facts_fallback = _maybe_build_case_facts_fallback(state, exc)
-                    if case_facts_fallback is not None:
-                        messages = case_facts_fallback
+                except Exception as exc:
+                    primary_error = f"{type(exc).__name__}: {exc}"
+                    model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
+                    model_call["error"] = primary_error
+                    if planner_direct_valid:
+                        messages = _prepare_structural_messages(planner_messages, state, warnings)
                         validate_reply_consistency(messages, state)
-                        reply_source = "deterministic_case_facts_fallback"
-                        model_call["fallback"] = {
-                            "reason": primary_error,
-                            "strategy": "deterministic_case_facts",
-                        }
-                        model_call["output"] = {"messages": len(messages)}
+                        reply_source = "planner_direct_reply_after_model_failure"
+                        model_call["fallback"] = {"strategy": "validated_planner_direct_reply", "reason": primary_error}
                     else:
-                        store_clarification_fallback = _maybe_build_store_location_clarification_fallback(
-                            state,
-                            exc,
-                            messages=messages or planner_messages,
-                        )
-                        if store_clarification_fallback is not None:
-                            messages = store_clarification_fallback
-                            validate_reply_consistency(messages, state)
-                            reply_source = "deterministic_store_location_clarification_fallback"
-                            model_call["fallback"] = {
-                                "reason": primary_error,
-                                "strategy": "deterministic_store_location_clarification",
-                            }
-                            model_call["output"] = {"messages": len(messages)}
-                        else:
-                            repaired_messages = _maybe_append_required_store_address(messages or planner_messages, state, exc)
-                            if repaired_messages is not None:
-                                messages = repaired_messages
-                                validate_reply_consistency(messages, state)
-                                reply_source = "deterministic_store_address_append"
-                                model_call["fallback"] = {
-                                    "reason": primary_error,
-                                    "strategy": "deterministic_store_address_append",
-                                }
-                                model_call["output"] = {"messages": len(messages)}
-                            else:
-                                appointment_fallback = _maybe_build_unavailable_appointment_fallback(state, exc)
-                                if appointment_fallback is not None:
-                                    messages = appointment_fallback
-                                    validate_reply_consistency(messages, state)
-                                    reply_source = "deterministic_unavailable_appointment_fallback"
-                                    model_call["fallback"] = {
-                                        "reason": primary_error,
-                                        "strategy": "deterministic_unavailable_appointment",
-                                    }
-                                    model_call["output"] = {"messages": len(messages)}
-                                else:
-                                    model_call["error"] = primary_error
-                                    errors.append(
-                                        {
-                                            "node": "synthesize_reply",
-                                            "message": "final_reply_failed",
-                                            "detail": primary_error,
-                                        }
-                                    )
-                                    messages = []
+                        errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": primary_error})
+                        messages = []
+            elif planner_direct_valid:
+                messages = _prepare_structural_messages(planner_messages, state, warnings)
+                validate_reply_consistency(messages, state)
+                reply_source = "planner_direct_reply_model_unavailable_fallback"
+                model_call = {
+                    "name": "planner_direct_reply",
+                    "input": {"decision": planner_decision, "messages": len(planner_messages), "reason": "reply_model_unavailable"},
+                    "output": {"messages": len(messages)},
+                }
+            else:
+                reason = "planner_no_reply_not_allowed_for_customer_turn" if planner_decision == "no_reply" else "reply_model_unavailable"
+                errors.append({"node": "synthesize_reply", "message": "final_reply_failed", "detail": reason})
+                model_call = {"name": "reply_synthesizer_model", "input": {}, "error": reason}
 
             messages, handoff_notice_appended = _ensure_required_handoff_notice(messages, state)
             if handoff_notice_appended:
@@ -307,6 +151,244 @@ def create_synthesize_reply_node(
     return synthesize_reply
 
 
+def _planner_direct_reply_is_valid(
+    planner_decision: str,
+    planner_messages: list[dict[str, Any]],
+    state: AgentState,
+    warnings: list[dict[str, Any]],
+) -> bool:
+    if planner_decision != "direct_reply" or not planner_messages or state.get("tool_policy_violations"):
+        return False
+    try:
+        validate_reply_consistency(planner_messages, state)
+        return True
+    except Exception as exc:
+        warnings.append(
+            {
+                "node": "synthesize_reply",
+                "message": "planner_direct_reply_rejected",
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
+        )
+        return False
+
+
+async def _run_reply_model_pipeline(
+    *,
+    state: AgentState,
+    model_client: ModelClient,
+    model_messages: list[dict[str, Any]],
+    validated_model_messages: Callable[..., list[dict[str, Any]]],
+    debug_message_contents: Callable[[list[dict[str, Any]]], list[str]],
+    warnings: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    tier = _reply_model_tier(state)
+    primary_budget = _model_budget_seconds(model_client, "model_reply_primary_budget_seconds", 30.0)
+    recovery_budget = _model_budget_seconds(model_client, "model_reply_recovery_budget_seconds", 15.0)
+    started_at = time.monotonic()
+    primary_deadline = started_at + primary_budget
+    model_call: dict[str, Any] = {
+        "name": "reply_synthesizer_model",
+        "input": {"tier": tier, "required": True, "messages": model_messages},
+        "deadline": {
+            "primary_budget_seconds": primary_budget,
+            "recovery_budget_seconds": recovery_budget,
+        },
+    }
+    primary_error: Exception | None = None
+
+    try:
+        payload = await _chat_json_with_deadline(
+            model_client,
+            model_messages,
+            tier=tier,
+            deadline_monotonic=primary_deadline,
+        )
+        model_call["raw_json_output"] = payload
+        model_call["usage"] = model_usage_snapshot(model_client)
+        try:
+            messages = validated_model_messages(payload, state)
+            messages = _prepare_structural_messages(messages, state, warnings)
+            validate_reply_consistency(messages, state)
+        except Exception as validation_exc:
+            retry_messages = _reply_retry_messages(model_messages, validation_exc)
+            retry_payload = await _chat_json_with_deadline(
+                model_client,
+                retry_messages,
+                tier=tier,
+                deadline_monotonic=primary_deadline,
+            )
+            model_call["retry"] = {
+                "reason": f"{type(validation_exc).__name__}: {validation_exc}",
+                "messages": retry_messages,
+                "raw_json_output": retry_payload,
+                "usage": model_usage_snapshot(model_client),
+            }
+            messages = validated_model_messages(retry_payload, state)
+            messages = _prepare_structural_messages(messages, state, warnings)
+            validate_reply_consistency(messages, state)
+        model_call["draft_messages"] = debug_message_contents(messages)
+        model_call["output"] = {"messages": len(messages)}
+        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+        return messages, model_call, "main_model"
+    except Exception as exc:
+        primary_error = exc
+        model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
+
+    recovery_messages = _reply_recovery_messages(state)
+    recovery_deadline = time.monotonic() + recovery_budget
+    recovery_call: dict[str, Any] = {
+        "tier": "fast",
+        "messages": recovery_messages,
+        "reason": f"{type(primary_error).__name__}: {primary_error}",
+    }
+    try:
+        recovery_payload = await _chat_json_with_deadline(
+            model_client,
+            recovery_messages,
+            tier="fast",
+            deadline_monotonic=recovery_deadline,
+        )
+        recovery_call["raw_json_output"] = recovery_payload
+        recovery_call["usage"] = model_usage_snapshot(model_client)
+        messages = validated_model_messages(recovery_payload, state)
+        messages = _prepare_structural_messages(messages, state, warnings)
+        validate_reply_consistency(messages, state)
+    except Exception as recovery_exc:
+        recovery_call["error"] = f"{type(recovery_exc).__name__}: {recovery_exc}"
+        recovery_call["usage"] = model_usage_snapshot(model_client)
+        model_call["recovery"] = recovery_call
+        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+        raise RuntimeError(
+            f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
+            f"compact recovery failed: {type(recovery_exc).__name__}: {recovery_exc}"
+        ) from recovery_exc
+
+    model_call["recovery"] = recovery_call
+    model_call["draft_messages"] = debug_message_contents(messages)
+    model_call["output"] = {"messages": len(messages)}
+    model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+    return messages, model_call, "compact_recovery_model"
+
+
+def _prepare_structural_messages(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+    warnings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    prepared = _filter_unsupported_images(messages, state, warnings)
+    prepared = append_activity_intro_image(prepared, state, warnings)
+    prepared = _normalize_payment_amount_text_messages(prepared)
+    prepared = _maybe_append_planner_payment_structure(prepared, state)
+    prepared, planner_store_cards_preserved = _preserve_planner_store_address_actions(prepared, state)
+    if planner_store_cards_preserved:
+        warnings.append({"node": "synthesize_reply", "message": "planner_store_address_action_preserved"})
+    for warning in warnings:
+        if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
+            warning.setdefault("node", "synthesize_reply")
+    return prepared
+
+
+def _maybe_append_planner_payment_structure(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+) -> list[dict[str, Any]]:
+    if not messages or _messages_have_payment_collection(messages):
+        return messages
+    if not any(str(item.get("type") or "") == "text" for item in messages if isinstance(item, dict)):
+        return messages
+    if not _state_requires_payment_collection(state):
+        return messages
+    if is_hard_health_risk_hold(health_risk_hold(state)) or _state_has_paid_deposit_context(state):
+        return messages
+    context = payment_collection_context(state=state, messages=[])
+    if context.get("over_limit"):
+        return messages
+    amount = int(context.get("amount") or 10)
+    if not payment_collection_order_fact(state, amount=amount):
+        return messages
+    return _renumber(
+        [
+            *messages,
+            {
+                "type": "payment_collection",
+                "content": payment_collection_content({"amount": amount}, state=state, messages=messages),
+            },
+        ]
+    )
+
+
+def _reply_recovery_messages(state: AgentState) -> list[dict[str, Any]]:
+    raw_evidence = state.get("current_turn_context")
+    turn_evidence = raw_evidence if isinstance(raw_evidence, dict) else {}
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured_facts = fact_envelope.get("structured_facts") if isinstance(fact_envelope.get("structured_facts"), dict) else {}
+    payload = {
+        "current_message": state.get("normalized_content") or state.get("content") or "",
+        "conversation_history": list(state.get("conversation_history") or [])[-8:],
+        "image_info": state.get("image_info") or {},
+        "planner_decision": state.get("planner_decision") or "",
+        "planner_reply_messages": list(state.get("planner_reply_messages") or [])[:6],
+        "payment_decision": state.get("payment_decision") or {},
+        "store_binding_decision": state.get("store_binding_decision") or {},
+        "order_decision": state.get("order_decision") or {},
+        "appointment_decision": state.get("appointment_decision") or {},
+        "sales_progression": state.get("sales_progression") or {},
+        "turn_evidence": _compact_recovery_value(turn_evidence),
+        "tool_facts": _compact_recovery_value(structured_facts),
+        "reply_constraints": list(state.get("reply_constraints") or [])[:12],
+    }
+    return [
+        {"role": "system", "content": REPLY_RECOVERY_SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
+    ]
+
+
+def _compact_recovery_value(value: Any, *, depth: int = 0) -> Any:
+    if depth >= 4:
+        return str(value)[:240]
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_recovery_value(item, depth=depth + 1)
+            for key, item in list(value.items())[:24]
+            if item not in (None, "", [], {})
+        }
+    if isinstance(value, list):
+        return [_compact_recovery_value(item, depth=depth + 1) for item in value[-8:]]
+    if isinstance(value, str):
+        return value[:600]
+    return value
+
+
+async def _chat_json_with_deadline(
+    model_client: ModelClient,
+    messages: list[dict[str, Any]],
+    *,
+    tier: str,
+    deadline_monotonic: float,
+) -> dict[str, Any]:
+    try:
+        return await model_client.chat_json(
+            messages,
+            tier=tier,
+            temperature=0.0,
+            deadline_monotonic=deadline_monotonic,
+        )
+    except TypeError as exc:
+        if "deadline_monotonic" not in str(exc) and "temperature" not in str(exc):
+            raise
+        return await model_client.chat_json(messages, tier=tier)
+
+
+def _model_budget_seconds(model_client: ModelClient, name: str, default: float) -> float:
+    settings = getattr(model_client, "settings", None)
+    value = getattr(settings, name, default) if settings is not None else default
+    try:
+        return max(0.1, float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> list[dict[str, Any]]:
     repair_hint = _reply_repair_hint(str(exc))
     retry_instruction = (
@@ -350,131 +432,6 @@ def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
     return [{"type": "text", "order": 1, "content": "我在，继续帮您处理。"}]
 
 
-def _maybe_build_case_facts_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
-    error = str(exc)
-    if not any(
-        marker in error
-        for marker in (
-            "available_time_fact_required",
-            "appointment_confirmation_fact_required",
-            "unfinished_appointment_lookup_promise",
-            "case_image_required_for_effect_turn",
-            "effect_reply_confidence_order_required",
-        )
-    ):
-        return None
-    if not _state_requested_case_studies(state):
-        return None
-    image_urls = _case_image_urls(state)
-    if not image_urls:
-        return None
-    image_url = sorted(image_urls)[0]
-    return [
-        {
-            "type": "text",
-            "order": 1,
-            "content": "可以，这类斑点大多数客户都可以看改善，反馈也不错。",
-        },
-        {"type": "image", "order": 2, "content": {"url": image_url}},
-        {
-            "type": "text",
-            "order": 3,
-            "content": "到店先做专业检测，确认斑型和皮肤状态会更准确。",
-        },
-    ]
-
-
-def _maybe_build_unavailable_appointment_fallback(state: AgentState, exc: Exception) -> list[dict[str, Any]] | None:
-    error = str(exc)
-    if not any(
-        marker in error
-        for marker in (
-            "available_time_fact_required",
-            "unfinished_appointment_lookup_promise",
-            "appointment_confirmation_fact_required",
-        )
-    ):
-        return None
-    if not _has_unavailable_available_time_fact(state):
-        return None
-    store_name = _first_available_time_store_name(state)
-    date_label = _first_available_time_date_label(state)
-    prefix = f"{date_label}的实时空档这边暂时没拿到"
-    if store_name:
-        first = f"{prefix}，我先按{store_name}到店检测方向继续处理。"
-    else:
-        first = f"{prefix}，我先按到店检测方向继续处理。"
-    return [
-        {"type": "text", "order": 1, "content": first},
-        {"type": "text", "order": 2, "content": "您把大概到店时段发我，我再接着确认。"},
-    ]
-
-
-def _has_unavailable_available_time_fact(state: AgentState) -> bool:
-    facts = _available_time_facts(state)
-    if not facts:
-        return False
-    for item in facts:
-        if _available_time_fact_has_slot(item):
-            return False
-    return True
-
-
-def _available_time_facts(state: AgentState) -> list[dict[str, Any]]:
-    structured = _structured_facts(state)
-    appointment_facts = structured.get("appointment_facts")
-    if not isinstance(appointment_facts, list):
-        return []
-    return [
-        item
-        for item in appointment_facts
-        if isinstance(item, dict) and str(item.get("type") or "") == "available_time"
-    ]
-
-
-def _available_time_fact_has_slot(item: dict[str, Any]) -> bool:
-    if str(item.get("recommended_slot") or "").strip():
-        return True
-    backup_slots = item.get("backup_slots")
-    if isinstance(backup_slots, list) and any(str(slot or "").strip() for slot in backup_slots):
-        return True
-    if item.get("target_time_available") is True:
-        return True
-    nearby = item.get("nearby_times")
-    if isinstance(nearby, list) and bool(nearby):
-        return True
-    return False
-
-
-def _first_available_time_store_name(state: AgentState) -> str:
-    for item in _available_time_facts(state):
-        store = str(item.get("store") or item.get("store_name") or "").strip()
-        if store:
-            return store
-    return ""
-
-
-def _first_available_time_date_label(state: AgentState) -> str:
-    current_text = str(state.get("normalized_content") or state.get("content") or "")
-    for label in ("今天", "明天", "后天"):
-        if label in current_text:
-            return label
-    for item in _available_time_facts(state):
-        date = str(item.get("date") or "").strip()
-        if date:
-            return date
-    return "您说的时间"
-
-
-def _state_requested_case_studies(state: AgentState) -> bool:
-    for item in state.get("required_tools") or []:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("name") or "") == "kb_search" and str(item.get("kb_name") or "") == "case_studies":
-            return True
-    return False
-
-
 def _maybe_append_required_store_address(
     messages: list[dict[str, Any]],
     state: AgentState,
@@ -490,33 +447,6 @@ def _maybe_append_required_store_address(
     if _store_address_card_conflicts_with_visible_text(messages, state, store_id):
         return None
     return _renumber([*messages, {"type": "store_address", "content": {"store_id": store_id}}])
-
-
-def _maybe_build_store_location_clarification_fallback(
-    state: AgentState,
-    exc: Exception,
-    *,
-    messages: list[dict[str, Any]] | None = None,
-) -> list[dict[str, Any]] | None:
-    error = str(exc)
-    if not any(
-        marker in error
-        for marker in (
-            "unsupported_store_address_message",
-            "store_address_text_card_mismatch",
-            "store_address_fact_required",
-        )
-    ):
-        return None
-    if _single_store_fact_id(state):
-        return None
-    if _state_requires_payment_collection(state):
-        return None
-    content = str(state.get("normalized_content") or state.get("content") or "").strip()
-    if content and not _looks_like_store_location_turn(content):
-        return None
-    text = "亲，这个位置我还需要确认下城市或区域，确认后我给您匹配门店。"
-    return [{"type": "text", "order": 1, "content": text}]
 
 
 def _maybe_build_required_payment_collection_fallback(
@@ -573,30 +503,6 @@ def _state_requires_payment_collection(state: AgentState) -> bool:
     if str(state.get("payment_state") or "") == "customer_claimed_paid":
         return False
     return False
-
-
-def _looks_like_store_location_turn(text: str) -> bool:
-    compact = "".join(str(text or "").split())
-    if not compact:
-        return False
-    return any(
-        term in compact
-        for term in (
-            "门店",
-            "位置",
-            "地址",
-            "导航",
-            "定位",
-            "附近",
-            "地标",
-            "大厦",
-            "广场",
-            "商场",
-            "中心",
-            "街道",
-            "路线",
-        )
-    )
 
 
 def _state_has_paid_deposit_context(state: AgentState) -> bool:

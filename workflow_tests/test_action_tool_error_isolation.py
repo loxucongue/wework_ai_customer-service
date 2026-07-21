@@ -57,12 +57,17 @@ class ActionToolErrorIsolationTests(unittest.IsolatedAsyncioTestCase):
                 appointment_query_from_state=lambda _content, _store_lookup, _state: {},
             )
             duplicated_tool = {"name": "customer_store_lookup", "purpose": "address", "query": "厦门思明店"}
+            same_facts_different_purpose = {
+                "name": "customer_store_lookup",
+                "purpose": "navigation",
+                "query": "厦门思明店",
+            }
             state: dict[str, Any] = {
                 "request_id": "test-dedupe-invalid-tool",
                 "trace": [],
                 "errors": [],
                 "normalized_content": "这家地址发我一下",
-                "planner_tool_calls": [duplicated_tool, dict(duplicated_tool)],
+                "planner_tool_calls": [duplicated_tool, same_facts_different_purpose],
                 "tool_policy_violations": [
                     {
                         "subtype": "customer_store_lookup",

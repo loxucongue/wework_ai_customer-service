@@ -27,6 +27,7 @@ from app.services.trace_logger import TraceLogger
 
 
 _STORE_SNAPSHOT_CACHE: dict[str, Any] | None = None
+_ACTION_TOOL_TIMEOUT_SECONDS = 12.0
 
 
 def create_execute_actions_node(
@@ -71,7 +72,10 @@ def create_execute_actions_node(
             if _needs_customer_store_lookup(required_tools):
                 lookup_tool = _planned_tool(required_tools, "customer_store_lookup")
                 try:
-                    result = await _customer_store_lookup(lookup_tool, state, coze_client)
+                    result = await asyncio.wait_for(
+                        _customer_store_lookup(lookup_tool, state, coze_client),
+                        timeout=_ACTION_TOOL_TIMEOUT_SECONDS,
+                    )
                 except Exception as exc:
                     result = _tool_execution_error_result(
                         tool_name="customer_store_lookup",
@@ -85,7 +89,10 @@ def create_execute_actions_node(
             if _needs_distance_calculate(required_tools):
                 distance_tool = _planned_tool(required_tools, "distance_calculate")
                 try:
-                    result = await _distance_calculate(distance_tool, state, coze_client, tool_results)
+                    result = await asyncio.wait_for(
+                        _distance_calculate(distance_tool, state, coze_client, tool_results),
+                        timeout=_ACTION_TOOL_TIMEOUT_SECONDS,
+                    )
                 except Exception as exc:
                     result = _tool_execution_error_result(
                         tool_name="distance_calculate",
@@ -108,23 +115,44 @@ def create_execute_actions_node(
                 )
 
             if platform_agent_client:
-                _execute_platform_order_tools(
-                    required_tools=required_tools,
-                    state=state,
-                    platform_client=platform_agent_client,
-                    tool_results=tool_results,
-                    tool_calls=tool_calls,
-                )
+                platform_tool_results: dict[str, Any] = dict(tool_results)
+                platform_tool_calls: list[dict[str, Any]] = []
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            _execute_platform_order_tools,
+                            required_tools=required_tools,
+                            state=state,
+                            platform_client=platform_agent_client,
+                            tool_results=platform_tool_results,
+                            tool_calls=platform_tool_calls,
+                        ),
+                        timeout=_ACTION_TOOL_TIMEOUT_SECONDS,
+                    )
+                    tool_results.update(platform_tool_results)
+                    tool_calls.extend(platform_tool_calls)
+                except asyncio.TimeoutError:
+                    tool_calls.append(
+                        {
+                            "name": "platform_order_tools",
+                            "input": {"planned_tools": [str(item.get("name") or "") for item in required_tools]},
+                            "error": "TimeoutError: platform order tools deadline exceeded",
+                        }
+                    )
 
             if _needs_appointment_lookup(required_tools) and store_service:
                 try:
                     appointment_query = _appointment_query_from_planner(required_tools, state)
                     if _needs_available_time(required_tools):
                         if appointment_query.get("store_id") and appointment_query.get("date"):
-                            available = store_service.available_time(
-                                store_id=str(appointment_query["store_id"]),
-                                date=str(appointment_query["date"]),
-                                customer_context=state.get("customer_context") or {},
+                            available = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    store_service.available_time,
+                                    store_id=str(appointment_query["store_id"]),
+                                    date=str(appointment_query["date"]),
+                                    customer_context=state.get("customer_context") or {},
+                                ),
+                                timeout=_ACTION_TOOL_TIMEOUT_SECONDS,
                             )
                             available["store_name"] = appointment_query.get("store_name", "")
                             available["date"] = appointment_query.get("date", "")
@@ -806,46 +834,13 @@ def _dedupe_planned_tools(required_tools: list[dict[str, Any]]) -> list[dict[str
 
 def _planned_tool_dedupe_key(tool: dict[str, Any]) -> tuple[Any, ...]:
     name = str(tool.get("name") or "").strip()
-    purpose = str(tool.get("purpose") or "").strip()
-    if name == "customer_store_lookup":
-        return (
-            name,
-            purpose,
-            str(tool.get("query") or "").strip(),
-            str(tool.get("store_id") or "").strip(),
-            str(tool.get("store_name") or "").strip(),
-        )
-    if name == "distance_calculate":
-        candidate_ids = tool.get("candidate_store_ids")
-        if isinstance(candidate_ids, list):
-            normalized_ids = tuple(str(item or "").strip() for item in candidate_ids)
-        else:
-            normalized_ids = ()
-        return (
-            name,
-            purpose,
-            str(tool.get("origin") or "").strip(),
-            str(tool.get("query") or "").strip(),
-            str(tool.get("candidate_source") or "").strip(),
-            normalized_ids,
-        )
-    if name == "available_time":
-        return (
-            name,
-            purpose,
-            str(tool.get("store_id") or "").strip(),
-            str(tool.get("store_name") or "").strip(),
-            str(tool.get("date") or "").strip(),
-            str(tool.get("target_time") or tool.get("time") or tool.get("appointment_time") or "").strip(),
-        )
-    if name == "kb_search":
-        return (
-            name,
-            purpose,
-            str(tool.get("kb_name") or "").strip(),
-            str(tool.get("query") or "").strip(),
-        )
-    return (name, purpose, str(tool.get("query") or "").strip())
+    arguments = {
+        key: value
+        for key, value in tool.items()
+        if key not in {"name", "purpose", "order"} and value not in (None, "", [], {})
+    }
+    serialized = json.dumps(arguments, ensure_ascii=False, sort_keys=True, default=str, separators=(",", ":"))
+    return name, serialized
 
 
 def _invalid_tool_policy_by_name(state: AgentState) -> dict[str, dict[str, Any]]:
@@ -933,7 +928,15 @@ def _queue_planned_tool_tasks(
                 "purpose": str(tool.get("purpose") or "").strip(),
             },
         }
-        tool_tasks.append((kb_name, call, coze_client.search_kb(kb_name, query)))
+        tool_tasks.append(
+            (
+                kb_name,
+                call,
+                asyncio.create_task(
+                    asyncio.wait_for(coze_client.search_kb(kb_name, query), timeout=_ACTION_TOOL_TIMEOUT_SECONDS)
+                ),
+            )
+        )
         return
 
 

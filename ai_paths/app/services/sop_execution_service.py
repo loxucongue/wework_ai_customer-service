@@ -165,6 +165,8 @@ class SopExecutionService:
         event_model_retry_attempts: int = 3,
         event_model_retry_delay_seconds: float = 1.0,
         event_model_attempt_timeout_seconds: float = 45.0,
+        event_model_total_timeout_seconds: float = 60.0,
+        chat_gate_total_timeout_seconds: float = 12.0,
         event_model_max_concurrency: int = 2,
     ) -> None:
         self.repository = repository
@@ -175,6 +177,8 @@ class SopExecutionService:
         self.event_model_retry_attempts = max(1, int(event_model_retry_attempts or 1))
         self.event_model_retry_delay_seconds = max(0.0, float(event_model_retry_delay_seconds or 0.0))
         self.event_model_attempt_timeout_seconds = max(1.0, float(event_model_attempt_timeout_seconds or 45.0))
+        self.event_model_total_timeout_seconds = max(1.0, float(event_model_total_timeout_seconds or 60.0))
+        self.chat_gate_total_timeout_seconds = max(1.0, float(chat_gate_total_timeout_seconds or 12.0))
         self._event_model_semaphore = asyncio.Semaphore(max(1, int(event_model_max_concurrency or 1)))
 
     async def evaluate_chat_gate(
@@ -312,7 +316,10 @@ class SopExecutionService:
 
             selector_input = _chat_selector_input(request, unfinished)
             result["selector_input"] = compact(selector_input, max_chars=6000)
-            selector_output = await self._select_chat_sop(selector_input)
+            selector_output = await self._select_chat_sop(
+                selector_input,
+                deadline_monotonic=time.monotonic() + self.chat_gate_total_timeout_seconds,
+            )
             result["selector_output"] = selector_output
             result["model_usage"] = dict(self.model_client.last_usage or {})
             result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
@@ -563,7 +570,12 @@ class SopExecutionService:
             }
         )
 
-    async def _select_chat_sop(self, selector_input: dict[str, Any]) -> dict[str, Any]:
+    async def _select_chat_sop(
+        self,
+        selector_input: dict[str, Any],
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
         messages = [
             {
                 "role": "system",
@@ -659,7 +671,12 @@ class SopExecutionService:
                 ),
             },
         ]
-        data = await self.model_client.chat_json(messages, tier="reply", temperature=0)
+        data = await self.model_client.chat_json(
+            messages,
+            tier="reply",
+            temperature=0,
+            deadline_monotonic=deadline_monotonic,
+        )
         return data if isinstance(data, dict) else {}
 
     async def evaluate_event_suggestion(
@@ -779,9 +796,18 @@ class SopExecutionService:
     ) -> tuple[dict[str, Any], list[dict[str, Any]], str]:
         attempts: list[dict[str, Any]] = []
         last_error = ""
+        overall_started = time.monotonic()
+        overall_deadline = overall_started + self.event_model_total_timeout_seconds
         for attempt in range(1, self.event_model_retry_attempts + 1):
+            remaining_before_ms = max(0, int((overall_deadline - time.monotonic()) * 1000))
+            if remaining_before_ms <= 0:
+                last_error = "TimeoutError: event model total deadline exhausted"
+                break
             started = time.perf_counter()
-            deadline = time.monotonic() + self.event_model_attempt_timeout_seconds
+            deadline = min(
+                overall_deadline,
+                time.monotonic() + self.event_model_attempt_timeout_seconds,
+            )
             try:
                 async with self._event_model_semaphore:
                     output = await self._judge_event_sop(selector_input, deadline_monotonic=deadline)
@@ -795,17 +821,28 @@ class SopExecutionService:
                         "status": "failed",
                         "duration_ms": int((time.perf_counter() - started) * 1000),
                         "error": last_error,
+                        "remaining_budget_ms_before": remaining_before_ms,
+                        "remaining_budget_ms_after": max(0, int((overall_deadline - time.monotonic()) * 1000)),
+                        "total_deadline_seconds": self.event_model_total_timeout_seconds,
                         "model_usage": compact(self.model_client.last_usage or {}, max_chars=1800),
                     }
                 )
                 if attempt < self.event_model_retry_attempts and self.event_model_retry_delay_seconds:
-                    await asyncio.sleep(self.event_model_retry_delay_seconds)
+                    sleep_seconds = min(
+                        self.event_model_retry_delay_seconds,
+                        max(0.0, overall_deadline - time.monotonic()),
+                    )
+                    if sleep_seconds > 0:
+                        await asyncio.sleep(sleep_seconds)
                 continue
             attempts.append(
                 {
                     "attempt": attempt,
                     "status": "succeeded",
                     "duration_ms": int((time.perf_counter() - started) * 1000),
+                    "remaining_budget_ms_before": remaining_before_ms,
+                    "remaining_budget_ms_after": max(0, int((overall_deadline - time.monotonic()) * 1000)),
+                    "total_deadline_seconds": self.event_model_total_timeout_seconds,
                     "model_usage": compact(self.model_client.last_usage or {}, max_chars=1800),
                 }
             )
