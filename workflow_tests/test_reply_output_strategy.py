@@ -807,6 +807,25 @@ def test_planner_payload_keeps_context_for_low_information_message() -> None:
     assert payload["transaction_facts"]["store_anchor_fact"]["status"] == "none"
 
 
+def test_exact_store_name_wins_before_normalized_alias_matching() -> None:
+    payload = _planner_payload_for_model(
+        {
+            "normalized_content": "厦门思明店地址发我",
+            "conversation_history": [],
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "12", "store_name": "厦门思明店", "city": "厦门市", "district": "思明区"},
+                    {"store_id": "99", "store_name": "厦门百星", "city": "厦门市", "district": "思明区"},
+                ]
+            },
+        }
+    )
+
+    assert payload["current_known_store"]["store_id"] == "12"
+    assert payload["current_known_store"]["store_name"] == "厦门思明店"
+    assert payload["current_known_store"].get("ambiguous") is not True
+
+
 def test_planner_payload_does_not_send_long_sales_strategy_to_planner() -> None:
     payload = _planner_payload_for_model(
         {

@@ -529,8 +529,16 @@ def _store_from_current_message(state: AgentState) -> dict[str, Any]:
 def _stores_matching_text_for_planner(state: AgentState, text: str) -> list[dict[str, Any]]:
     if not text:
         return []
+    candidates = _known_store_candidates_for_planner(state)
+    exact = [
+        store
+        for store in candidates
+        if (name := _store_name_for_planner(store)) and name in text
+    ]
+    if exact:
+        return _without_subsumed_store_matches(_dedupe_store_matches(exact))
     matched: list[dict[str, Any]] = []
-    for store in _known_store_candidates_for_planner(state):
+    for store in candidates:
         name = _store_name_for_planner(store)
         if _store_name_matches_text_for_planner(name, text):
             matched.append(store)
