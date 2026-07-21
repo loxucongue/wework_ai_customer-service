@@ -122,7 +122,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_BUSINESS_RHYTHM_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert "evidence_summary" not in PLANNER_SYSTEM_PROMPT
-    assert len(PLANNER_SYSTEM_PROMPT) < 8_000
+    assert len(PLANNER_SYSTEM_PROMPT) < 9_000
 
 
 def test_runtime_business_fact_views_do_not_repeat_full_rule_packs() -> None:

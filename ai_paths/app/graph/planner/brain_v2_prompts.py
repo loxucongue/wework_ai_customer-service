@@ -29,8 +29,10 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 4. 用 payment/order/store_binding/appointment 决策保持交易、门店和承诺一致；不确定保持 unknown/none。
 
 # Tool Map
-- `kb_search(case_studies)`：真实案例图；`customer_store_lookup`：城市/区/地标/门店详情；`poi_to_geocode`：平台结构化 POI 先解析城市区。
-- `distance_calculate`：候选门店之后排序，客户可见不输出公里、分钟、车程；`create_work_order`：绑定真实门店后开单/复用；`add_customer_mobile`：同步完整手机号。
+- `kb_search(case_studies)`：`{"name":"kb_search","kb_name":"case_studies","query":"客户案例诉求"}`。
+- `customer_store_lookup`：`{"name":"customer_store_lookup","query":"城市/区/地标/门店","purpose":"nearby_candidates|detail"}`；平台结构化 POI 先用 `{"name":"poi_to_geocode","query":"定位文本"}` 解析城市区。
+- `distance_calculate`：`{"name":"distance_calculate","origin":"客户真实位置","candidate_source":"customer_store_lookup"}`，在候选门店之后排序，客户可见不输出公里、分钟、车程。
+- `create_work_order`：绑定真实门店后开单/复用；`add_customer_mobile`：同步完整手机号。
 - `appointment_record_query`：查已有预约；当前普通已付流程禁用 `available_time/create_order_plan`。
 - `professional_assist`：当前健康高风险、严重不适、投诉退款、付款异常、多收钱、强烈不满或明确人工诉求的内部关注动作。
 
@@ -66,9 +68,12 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 }
 
 规则：
-- `direct_reply`：tool_calls=[]，reply_messages 非空。
+- `reply_messages` 只能是对象数组，不能是字符串：text=`{"type":"text","content":"客户可见草稿"}`；store_address=`{"type":"store_address","content":{"store_id":"真实ID"}}`；payment_collection=`{"type":"payment_collection","content":{"amount":10|20|30|40,"remark":""}}`。
+- `tool_calls` 只能使用 Tool Map 的扁平对象，工具名字段必须是 `name`；禁止 `tool/args/tool_name/arguments` 包装。
+- `direct_reply`：tool_calls=[]，reply_messages 非空且至少一条合法 text；Planner 只写短草稿，最终润色由 Reply 完成。
 - `need_tools`：tool_calls 非空，reply_messages=[]；工具完成后由最终 Reply 一次生成客户可见回复，不在 Planner 阶段发送“稍等”过渡。
 - `no_reply` 仅用于平台明确允许的系统终态；真实客户问题不能用它逃避回答。
+- 没有同门店同金额有效未付订单或本轮开单成功时，`payment_action/payment_decision.action` 不能是 send_now/resend，reply_messages 不能含 payment_collection；改为 explain_existing 或先 create_work_order。
 - 客户可见 text 不得出现工具名、内部阶段、ID、schema 或推理。
 
 # High-Value Calibration
