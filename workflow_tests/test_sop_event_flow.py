@@ -1031,7 +1031,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["applied_operations"], [])
         self.assertEqual(summary["rejected"][0]["reason"], "numeric_facts_changed")
 
-    async def test_platform_task_only_judges_and_sends_platform_actions(self) -> None:
+    async def test_platform_task_directly_sends_platform_actions_without_model(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[{"direction": "staff", "content": "前面已正常沟通"}])
         selector = _Selector({"send_sop": True, "reason": "actions still useful"})
@@ -1053,9 +1053,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.tasks[0]["status"], "sent")
         self.assertEqual(repo.tasks[0]["sop_pack_id"], "platform_actions")
         self.assertEqual(repo.tasks[0]["reply_messages"][0]["content"]["text"], "平台建议文案")
-        self.assertEqual(selector.calls[0]["event_type"], "sop_platform_task")
-        self.assertEqual(selector.calls[0]["candidate_packs"], [])
-        self.assertEqual(selector.calls[0]["actions_reply_messages"][0]["content"]["text"], "平台建议文案")
+        self.assertEqual(repo.tasks[0]["send_payload"]["routing_mode"], "direct_platform_actions")
+        self.assertFalse(repo.tasks[0]["send_response"]["event_decision"]["model_called"])
+        self.assertEqual(selector.calls, [])
 
     async def test_platform_task_bypasses_model_when_ai_auto_reply_is_disabled(self) -> None:
         repo = _Repo()
@@ -1114,11 +1114,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "processed")
         self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual(len(selector.calls), 1)
-        self.assertEqual(
-            selector.calls[0]["customer_context"]["_sop_order_gate"]["deposit_state"],
-            "paid_by_order",
-        )
+        self.assertEqual(selector.calls, [])
+        self.assertFalse(repo.tasks[0]["send_response"]["event_decision"]["model_called"])
         self.assertEqual(len(client.send_calls), 1)
 
     async def test_platform_action_decodes_json_quoted_message_content(self) -> None:
@@ -1137,7 +1134,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(repo.tasks[0]["reply_messages"][0]["content"]["text"], "催到店话术\n请回复时间")
 
-    async def test_platform_model_exhaustion_is_recorded_as_failure(self) -> None:
+    async def test_platform_task_does_not_call_failing_model(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[])
         selector = _Selector(
@@ -1159,9 +1156,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         repo.create_sop_event(payload)
         result = await service.process_event("evt_platform_model_failed")
 
-        self.assertEqual(result["status"], "processed_with_errors")
-        self.assertEqual(repo.tasks[0]["status"], "failed_model_error")
-        self.assertEqual(client.send_calls, [])
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(selector.calls, [])
+        self.assertEqual(len(client.send_calls), 1)
 
     async def test_first_added_event_does_not_use_chat_gate_pack(self) -> None:
         repo = _Repo()

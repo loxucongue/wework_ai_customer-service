@@ -631,94 +631,6 @@ class SopEventService:
             )
 
         ai_auto_reply = _conversation_ai_auto_reply(customer)
-        if ai_auto_reply is False:
-            if not _sop_payment_collection_supported(messages, customer_memory, customer_context):
-                return self._create_task_record(
-                    payload,
-                    customer,
-                    index=index,
-                    identity=identity,
-                    sop_pack_id="platform_actions",
-                    sop_pack_name="platform_actions",
-                    sop_category="platform_actions",
-                    reply_messages=messages,
-                    status="skipped_unsafe_payment_collection",
-                    error="ai_auto_reply_disabled_but_payment_collection_not_safe",
-                    send_payload={
-                        "identity": identity,
-                        "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
-                        "conversation_activity": conversation_activity,
-                        "message_sanitize": sanitize_summary,
-                        "ai_auto_reply": False,
-                        "routing_mode": "direct_platform_actions",
-                    },
-                )
-            return self._create_task_record(
-                payload,
-                customer,
-                index=index,
-                identity=identity,
-                sop_pack_id="platform_actions",
-                sop_pack_name="platform_actions",
-                sop_category="platform_actions",
-                reply_messages=messages,
-                status="pending",
-                error="",
-                send_payload={
-                    "identity": identity,
-                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
-                    "conversation_activity": conversation_activity,
-                    "message_sanitize": sanitize_summary,
-                    "ai_auto_reply": False,
-                    "routing_mode": "direct_platform_actions",
-                },
-                send_response={"event_decision": {"mode": "direct_platform_actions", "model_called": False}},
-            )
-
-        decision = await self._event_decision(
-            payload=payload,
-            customer=customer,
-            identity=identity,
-            event_type="sop_platform_task",
-            conversation_messages=conversation_messages,
-            conversation_activity=conversation_activity,
-            customer_memory=customer_memory,
-            customer_context=customer_context,
-            candidate_packs=[],
-            actions_reply_messages=messages,
-        )
-        if not decision.get("send_sop"):
-            is_model_error = bool(decision.get("error"))
-            return self._create_task_record(
-                payload,
-                customer,
-                index=index,
-                identity=identity,
-                sop_pack_id="platform_actions",
-                sop_pack_name="platform_actions",
-                sop_category="platform_actions",
-                reply_messages=messages,
-                status="failed_model_error" if is_model_error else "skipped_model_rejected",
-                error=str(decision.get("error") or "") if is_model_error else "",
-                send_payload={
-                    "identity": identity,
-                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
-                    "conversation_activity": conversation_activity,
-                    "message_sanitize": sanitize_summary,
-                    "event_decision_input": decision.get("selector_input", {}),
-                },
-                send_response={"event_decision": decision},
-            )
-
-        adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
-            messages,
-            decision.get("text_adjustments"),
-            decision.get("message_operations"),
-        )
-        messages, sanitize_summary = sanitize_sop_reply_messages(
-            adjusted_messages,
-            conversation_messages=conversation_messages,
-        )
         if not _sop_payment_collection_supported(messages, customer_memory, customer_context):
             return self._create_task_record(
                 payload,
@@ -729,14 +641,16 @@ class SopEventService:
                 sop_pack_name="platform_actions",
                 sop_category="platform_actions",
                 reply_messages=[],
-                status="skipped_missing_payment_order",
-                error="payment_collection_requires_matching_current_order",
+                status="skipped_unsafe_payment_collection",
+                error="platform_payment_collection_requires_matching_current_order",
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_activity": conversation_activity,
+                    "message_sanitize": sanitize_summary,
+                    "ai_auto_reply": ai_auto_reply,
+                    "routing_mode": "direct_platform_actions",
                 },
-                send_response={"event_decision": decision},
             )
         return self._create_task_record(
             payload,
@@ -754,10 +668,16 @@ class SopEventService:
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                 "conversation_activity": conversation_activity,
                 "message_sanitize": sanitize_summary,
-                "message_adjustment": adjustment_summary,
-                "event_decision_input": decision.get("selector_input", {}),
+                "ai_auto_reply": ai_auto_reply,
+                "routing_mode": "direct_platform_actions",
             },
-            send_response={"event_decision": decision},
+            send_response={
+                "event_decision": {
+                    "mode": "direct_platform_actions",
+                    "model_called": False,
+                    "ai_auto_reply": ai_auto_reply,
+                }
+            },
         )
 
     async def _event_decision(
