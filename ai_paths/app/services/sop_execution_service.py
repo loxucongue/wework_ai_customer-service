@@ -889,6 +889,9 @@ class SopExecutionService:
                     "# Repair Task\n"
                     "上一份 JSON 违反主动 SOP 决策结构合同。只修正枚举、候选包数量、候选顺序、相邻关系、"
                     "已完成包幂等、结构消息发送资格和交接资格；"
+                    "若候选的 payment_collection_gate 是 missing_matching_current_order 或 paid_skip_card，"
+                    "且该阶段仍应触达，保留候选包并用 remove_message 删除每一张受限收款卡，同时改写相关 text；"
+                    "activity_intro_required 不能靠删卡绕过，必须选择合法前序候选或拒发。"
                     "不要改变输入事实，不要输出 schema 外字段。"
                 ),
             },

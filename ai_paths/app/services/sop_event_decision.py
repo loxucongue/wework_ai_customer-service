@@ -70,6 +70,10 @@ def normalize_event_decision(
             violations.append("merge_requires_adjacent_mainline_packs")
     if decision in {"send", "merge"} and any(
         _payment_gate_blocks_selection(candidate_by_id.get(pack_id)) for pack_id in selected_ids
+    ) and not _decision_removes_unsupported_payment_messages(
+        output,
+        selected_ids=selected_ids,
+        candidate_by_id=candidate_by_id,
     ):
         violations.append("selected_payment_pack_not_currently_supported")
     if decision in {"send", "merge"} and any(
@@ -243,6 +247,78 @@ def _payment_gate_blocks_selection(candidate: Any) -> bool:
     if not isinstance(gate, dict):
         return False
     return _text(gate.get("status")) not in {"", "not_required", "supported"}
+
+
+def _decision_removes_unsupported_payment_messages(
+    output: dict[str, Any],
+    *,
+    selected_ids: list[str],
+    candidate_by_id: dict[str, Any],
+) -> bool:
+    """Allow a model-selected pack only after its unsupported cards are structurally removed."""
+
+    removable_statuses = {"missing_matching_current_order", "paid_skip_card"}
+    unsupported_orders: set[int] = set()
+    combined_order = 0
+    has_editable_text = False
+
+    for pack_id in selected_ids:
+        candidate = candidate_by_id.get(pack_id)
+        if not isinstance(candidate, dict):
+            return False
+        gate = candidate.get("payment_collection_gate")
+        gate_status = _text(gate.get("status")) if isinstance(gate, dict) else ""
+        if gate_status not in {"", "not_required", "supported"} and gate_status not in removable_statuses:
+            return False
+
+        messages: list[tuple[int, str]] = []
+        for item in candidate.get("editable_text_messages") or []:
+            if isinstance(item, dict):
+                messages.append((_positive_int(item.get("order")), "text"))
+                has_editable_text = True
+        for item in candidate.get("readonly_messages") or []:
+            if isinstance(item, dict):
+                messages.append((_positive_int(item.get("order")), _text(item.get("type"))))
+
+        for _, message_type in sorted(messages, key=lambda item: item[0]):
+            combined_order += 1
+            if gate_status in removable_statuses and message_type == "payment_collection":
+                unsupported_orders.add(combined_order)
+
+    if not unsupported_orders:
+        return False
+
+    operations = output.get("message_operations") if isinstance(output.get("message_operations"), list) else []
+    removed_orders = {
+        _positive_int(item.get("order"))
+        for item in operations
+        if isinstance(item, dict) and _text(item.get("op") or item.get("operation")) == "remove_message"
+    }
+    if not unsupported_orders.issubset(removed_orders):
+        return False
+
+    if not has_editable_text:
+        return True
+    text_adjustments = output.get("text_adjustments") if isinstance(output.get("text_adjustments"), list) else []
+    text_operations = {
+        "replace_text",
+        "insert_text_before",
+        "insert_text_after",
+        "remove_text",
+        "merge_text",
+        "split_text",
+    }
+    return bool(text_adjustments) or any(
+        isinstance(item, dict) and _text(item.get("op") or item.get("operation")) in text_operations
+        for item in operations
+    )
+
+
+def _positive_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _frequency_guard_supported(event_policy: dict[str, Any]) -> bool:

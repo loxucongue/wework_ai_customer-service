@@ -767,6 +767,69 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("selected_payment_pack_not_currently_supported", send_violations)
         self.assertIn("selected_payment_pack_not_currently_supported", merge_violations)
 
+    def test_event_decision_allows_unbacked_card_only_when_model_removes_card_and_rewrites_text(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {
+                    "id": "activity",
+                    "order": 30,
+                    "editable_text_messages": [{"order": 1, "text": "活动介绍和付款说明"}],
+                    "readonly_messages": [
+                        {"order": 2, "type": "image", "facts": {"asset": "configured"}},
+                        {"order": 3, "type": "payment_collection", "facts": {"amount": 10}},
+                    ],
+                    "payment_collection_gate": {"status": "missing_matching_current_order"},
+                }
+            ],
+            "event_policy_evidence": {"ai_reply_policy": {"allowed": False}},
+        }
+
+        _, violations = normalize_event_decision(
+            {
+                "decision": "send",
+                "selected_pack_ids": ["activity"],
+                "message_operations": [
+                    {"op": "replace_text", "order": 1, "text": "活动介绍"},
+                    {"op": "remove_message", "order": 3},
+                ],
+            },
+            selector_input,
+        )
+
+        self.assertNotIn("selected_payment_pack_not_currently_supported", violations)
+
+    def test_event_decision_does_not_allow_card_removal_to_bypass_activity_intro(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {
+                    "id": "deposit",
+                    "order": 40,
+                    "editable_text_messages": [{"order": 1, "text": "预约金说明"}],
+                    "readonly_messages": [
+                        {"order": 2, "type": "payment_collection", "facts": {"amount": 10}},
+                    ],
+                    "payment_collection_gate": {"status": "activity_intro_required"},
+                }
+            ],
+            "event_policy_evidence": {"ai_reply_policy": {"allowed": False}},
+        }
+
+        _, violations = normalize_event_decision(
+            {
+                "decision": "send",
+                "selected_pack_ids": ["deposit"],
+                "message_operations": [
+                    {"op": "replace_text", "order": 1, "text": "活动介绍"},
+                    {"op": "remove_message", "order": 2},
+                ],
+            },
+            selector_input,
+        )
+
+        self.assertIn("selected_payment_pack_not_currently_supported", violations)
+
     def test_event_decision_rejects_pack_already_completed_by_id_or_category(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
