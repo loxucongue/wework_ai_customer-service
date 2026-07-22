@@ -41,6 +41,23 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(normalized, messages)
 
+    def test_json_messages_merge_adjacent_system_blocks_for_relay_compatibility(self) -> None:
+        messages = [
+            {"role": "system", "content": "Return valid JSON only."},
+            {"role": "system", "content": "Business contract"},
+            {"role": "user", "content": "hello"},
+            {"role": "system", "content": "Final gate"},
+        ]
+
+        normalized = ModelClient._prepare_json_messages(messages)
+
+        self.assertEqual(len(normalized), 3)
+        self.assertEqual(normalized[0]["role"], "system")
+        self.assertIn("Return valid json only.", normalized[0]["content"])
+        self.assertIn("Business contract", normalized[0]["content"])
+        self.assertEqual(normalized[1], {"role": "user", "content": "hello"})
+        self.assertEqual(normalized[2], {"role": "system", "content": "Final gate"})
+
     def test_round_budget_shadow_records_without_blocking_retry(self) -> None:
         now = time.monotonic()
         budget = build_runtime_budget(

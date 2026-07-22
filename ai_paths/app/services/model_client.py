@@ -97,7 +97,7 @@ class ModelClient:
         def build_payload(model: str) -> dict[str, Any]:
             payload = {
                 "model": model,
-                "messages": self._ensure_json_marker(messages),
+                "messages": self._prepare_json_messages(messages),
                 "temperature": temperature,
             }
             self._apply_max_tokens(payload, json_mode=True)
@@ -673,6 +673,10 @@ class ModelClient:
         return model_response.parse_json(text)
 
     @staticmethod
+    def _prepare_json_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return ModelClient._merge_adjacent_system_messages(ModelClient._ensure_json_marker(messages))
+
+    @staticmethod
     def _ensure_json_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # Some OpenAI-compatible gateways validate the lowercase literal before
         # accepting response_format=json_object. Do not lowercase only for the
@@ -682,3 +686,52 @@ class ModelClient:
             return messages
         marker = {"role": "system", "content": "Return valid json only."}
         return [marker, *messages]
+
+    @staticmethod
+    def _merge_adjacent_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        pending_system: dict[str, Any] | None = None
+        pending_parts: list[str] = []
+
+        def flush_system() -> None:
+            nonlocal pending_system, pending_parts
+            if pending_system is None:
+                return
+            item = dict(pending_system)
+            item["content"] = "\n\n".join(part for part in pending_parts if part)
+            merged.append(item)
+            pending_system = None
+            pending_parts = []
+
+        for message in messages:
+            if not isinstance(message, dict):
+                flush_system()
+                merged.append(message)
+                continue
+            role = str(message.get("role") or "").strip().lower()
+            if role != "system":
+                flush_system()
+                merged.append(message)
+                continue
+            if pending_system is None:
+                pending_system = dict(message)
+                pending_parts = []
+            pending_parts.append(ModelClient._message_content_to_text(message.get("content")))
+        flush_system()
+        return merged
+
+    @staticmethod
+    def _message_content_to_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if text is not None:
+                        parts.append(str(text))
+            return "\n".join(parts)
+        return str(content or "")
