@@ -111,6 +111,14 @@ class ChatRuntime:
 
         sop_gate = await self._evaluate_sop_gate(effective_request, request_id, effective_context)
         initial_state["sop_gate"] = sop_gate
+        initial_state["sop_gate_decision"] = {
+            "route": str(sop_gate.get("route") or sop_gate.get("mode") or ""),
+            "coverage": str(sop_gate.get("coverage") or ""),
+            "priority_question_id": str(sop_gate.get("priority_question_id") or ""),
+            "resume_stage": str(sop_gate.get("resume_stage") or ""),
+            "sop_pack_id": str(sop_gate.get("sop_pack_id") or ""),
+            "source": "chat_sop_gate_model",
+        }
         initial_state["sop_progress_evidence"] = dict(sop_gate.get("sop_progress_evidence") or {})
         _append_sop_gate_trace(initial_state, sop_gate)
         if sop_gate.get("send_sop"):
@@ -396,18 +404,33 @@ class ChatRuntime:
                 if self._platform_reply_coordinator:
                     await self._platform_reply_coordinator.complete(control_record)
                 return state
-            if not ai_messages:
-                ai_messages = _deterministic_final_fallback_messages(final_state)
-                final_state["reply_source"] = "deterministic_sop_sync_empty_ai_reply_fallback"
-                final_state.setdefault("warnings", []).append(
-                    {"node": "sop_gate_sync_ai_reply", "message": "empty_full_ai_reply_recovered_before_return"}
+            ai_reply_usable = _ai_reply_usable_before_sop(final_state, ai_messages)
+            if ai_reply_usable:
+                messages = _merge_reply_message_groups(ai_messages, sop_messages)
+                _confirm_deferred_chat_sop_task(
+                    self._sop_execution_service,
+                    sop_state,
+                    request_id=str(final_state.get("request_id") or initial_state.get("request_id") or ""),
+                    reply_messages=sop_messages,
                 )
-            messages = _merge_reply_message_groups(sop_messages, ai_messages)
+                result_reason = "ai_reply_then_sop_returned_with_response"
+            else:
+                messages = _deterministic_final_fallback_messages(final_state)
+                final_state["reply_source"] = "deterministic_sop_sync_empty_ai_reply_fallback"
+                _fail_deferred_chat_sop_task(
+                    self._sop_execution_service,
+                    sop_state,
+                    error="ai_reply_unavailable_before_sop_send",
+                )
+                final_state.setdefault("warnings", []).append(
+                    {"node": "sop_gate_sync_ai_reply", "message": "sop_withheld_because_ai_reply_unavailable"}
+                )
+                result_reason = "sop_withheld_after_empty_ai_reply"
             final_state["reply_messages"] = messages
             result = {
                 "scheduled": False,
                 "status": "completed_sync",
-                "reason": "sop_gate_ai_reply_returned_with_response",
+                "reason": result_reason,
                 "reply_messages": messages,
             }
             final_state["async_final_reply"] = result
@@ -419,12 +442,19 @@ class ChatRuntime:
             async_state.setdefault("errors", []).append(
                 {"node": "sop_gate_sync_ai_reply", "message": "sop_gate_sync_ai_failed", "detail": f"{type(exc).__name__}: {exc}"}
             )
-            fallback_messages = _merge_reply_message_groups(sop_messages, _deterministic_final_fallback_messages(async_state))
-            async_state["reply_messages"] = fallback_messages
+            fallback_messages = _deterministic_final_fallback_messages(async_state)
             async_state["reply_source"] = "deterministic_sop_sync_exception_fallback"
+            _fail_deferred_chat_sop_task(
+                self._sop_execution_service,
+                sop_state,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            result_reason = "sop_withheld_after_ai_exception"
+            async_state["reply_messages"] = fallback_messages
             result = {
                 "scheduled": False,
                 "status": "error_recovered_sync",
+                "reason": result_reason,
                 "error": f"{type(exc).__name__}: {exc}",
                 "reply_messages": fallback_messages,
             }
@@ -1140,6 +1170,43 @@ def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str,
             copied["order"] = len(messages) + 1
             messages.append(copied)
     return messages
+
+
+def _ai_reply_usable_before_sop(state: AgentState, messages: list[dict[str, Any]]) -> bool:
+    if not messages:
+        return False
+    source = str(state.get("reply_source") or "").strip().lower()
+    return not (source.startswith("deterministic_") or "fallback" in source)
+
+
+def _confirm_deferred_chat_sop_task(
+    service: Any,
+    sop_state: AgentState,
+    *,
+    request_id: str,
+    reply_messages: list[dict[str, Any]],
+) -> None:
+    if service is None or not hasattr(service, "confirm_chat_gate_task_sent"):
+        return
+    gate = sop_state.get("sop_gate") if isinstance(sop_state.get("sop_gate"), dict) else {}
+    task = gate.get("task") if isinstance(gate.get("task"), dict) else {}
+    if str(task.get("status") or "") != "pending":
+        return
+    gate["task"] = service.confirm_chat_gate_task_sent(
+        task,
+        request_id=request_id,
+        reply_messages=reply_messages,
+    )
+
+
+def _fail_deferred_chat_sop_task(service: Any, sop_state: AgentState, *, error: str) -> None:
+    if service is None or not hasattr(service, "fail_chat_gate_task"):
+        return
+    gate = sop_state.get("sop_gate") if isinstance(sop_state.get("sop_gate"), dict) else {}
+    task = gate.get("task") if isinstance(gate.get("task"), dict) else {}
+    if str(task.get("status") or "") != "pending":
+        return
+    gate["task"] = service.fail_chat_gate_task(task, error=error)
 
 
 def _record_sent_case_images(

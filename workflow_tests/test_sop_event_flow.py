@@ -1827,7 +1827,18 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                     ]
                 }
 
-        model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "static_pack", "need_ai_reply": False})
+        model = _PromptCaptureModel(
+            {
+                "route": "sop_only",
+                "coverage": "exact",
+                "priority_question_id": "",
+                "sop_pack_id": "static_pack",
+                "resume_stage": "",
+                "reason": "候选包完整覆盖当前问题",
+                "text_adjustments": [],
+                "message_operations": [],
+            }
+        )
         service = SopExecutionService(
             repository=_Repo(),
             sop_reply_pack_service=_PackService(),
@@ -1847,11 +1858,72 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             request_context={"source_protocol": "workflow-compatible"},
         )
 
-        self.assertEqual(result["mode"], "realtime_customer_ai_reply")
-        self.assertFalse(result["send_sop"])
-        self.assertTrue(result["need_ai_reply"])
-        self.assertEqual(model.messages, [])
+        self.assertEqual(result["mode"], "sop_only")
+        self.assertTrue(result["send_sop"])
+        self.assertFalse(result["need_ai_reply"])
+        self.assertNotEqual(model.messages, [])
         self.assertEqual(result["sop_progress_evidence"]["unfinished_sops"][0]["id"], "static_pack")
+
+    async def test_chat_gate_selects_precision_ai_then_sop_and_defers_send_record(self) -> None:
+        class _PrecisionPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_need_and_case",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "s10_need_and_case",
+                            "name": "需求与案例",
+                            "purpose": "发送真实案例并推进需求阶段",
+                            "order": 30,
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "我给您发一组同类案例参考。"}},
+                                {"type": "image", "order": 2, "content": {"url": "https://example.com/case.png"}},
+                            ],
+                        }
+                    ]
+                }
+
+        repository = _Repo()
+        model = _PromptCaptureModel(
+            {
+                "route": "ai_then_sop",
+                "coverage": "partial",
+                "priority_question_id": "one_session_effect",
+                "sop_pack_id": "s10_need_and_case",
+                "resume_stage": "need_and_case",
+                "reason": "先回答次数问题，再发送案例",
+                "text_adjustments": [],
+                "message_operations": [],
+            }
+        )
+        service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=_PrecisionPackService(),
+            model_client=model,
+        )
+
+        result = await service.evaluate_chat_gate(
+            ChatRequest(
+                content="是不是做一次就可以",
+                customer_id="customer",
+                corp_id="corp",
+                external_userid="external",
+                wechat="CS001",
+            ),
+            request_id="req_precision_then_sop",
+            request_context={"source_protocol": "workflow-compatible"},
+        )
+
+        self.assertEqual(result["mode"], "ai_then_sop")
+        self.assertEqual(result["priority_question_id"], "one_session_effect")
+        self.assertTrue(result["send_sop"])
+        self.assertTrue(result["need_ai_reply"])
+        self.assertEqual(result["task"]["status"], "pending")
+        selector_input = result["selector_input"]
+        self.assertIn("mainline", selector_input)
+        self.assertIn("precision_qa_index", selector_input)
 
     async def test_chat_gate_skips_platform_auto_opening_when_deposit_is_paid(self) -> None:
         repository = _Repo()
@@ -1915,9 +1987,11 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         model = _PromptCaptureModel(
             {
-                "send_sop": True,
+                "route": "sop_only",
+                "coverage": "exact",
+                "priority_question_id": "price_transparency",
                 "sop_pack_id": "context_pack",
-                "need_ai_reply": False,
+                "resume_stage": "",
                 "reason": "话术覆盖收费顾虑",
                 "text_adjustments": [
                     {"order": 1, "text": "您担心到店后乱收费，这个我直接说清楚：我们是明码标价，没有强制消费。"}
@@ -1946,7 +2020,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             "您担心到店后乱收费，这个我直接说清楚：我们是明码标价，没有强制消费。",
         )
         self.assertEqual(result["message_adjustment"]["applied_orders"], [1])
-        self.assertIn("最早一条可编辑 text", str(model.messages[0]["content"]))
+        self.assertIn("接在当前对话后自然", str(model.messages[0]["content"]))
 
     async def test_chat_gate_rejects_adjustment_that_changes_numeric_occurrences(self) -> None:
         class _NumericPackService:
@@ -2243,7 +2317,16 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         repository = _Repo()
         model = _PromptCaptureModel(
-            {"send_sop": False, "sop_pack_id": "", "need_ai_reply": True, "reason": "收费包不覆盖效果真实性"}
+            {
+                "route": "ai_only",
+                "coverage": "none",
+                "priority_question_id": "effect_authenticity",
+                "sop_pack_id": "",
+                "resume_stage": "need_and_case",
+                "reason": "收费包不覆盖效果真实性",
+                "text_adjustments": [],
+                "message_operations": [],
+            }
         )
         service = SopExecutionService(
             repository=repository,
@@ -2261,15 +2344,14 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.evaluate_chat_gate(request, request_id="req_effect_objection", request_context={})
 
-        self.assertEqual(result["mode"], "no_sop_selected")
+        self.assertEqual(result["mode"], "ai_only")
         self.assertTrue(result["need_ai_reply"])
         system_prompt = model.messages[0]["content"]
         user_prompt = model.messages[1]["content"]
-        self.assertIn("reply_messages 摘要能否真实回答当前问题", system_prompt)
-        self.assertIn("效果真实性、怕没效果、反黑、做坏、伤肤", system_prompt)
-        self.assertIn("收费、预约金、隐形消费或活动价格规则", system_prompt)
-        self.assertIn("具体门店地址/导航/真实档期", system_prompt)
-        self.assertIn("门店匹配槽位已补齐", system_prompt)
+        self.assertIn("候选 SOP 的实际消息", system_prompt)
+        self.assertIn("精准问题", system_prompt)
+        self.assertIn("门店、定位、图片、订单", system_prompt)
+        self.assertIn("支付异常", system_prompt)
         self.assertIn("收费与预约金顾虑处理", user_prompt)
         self.assertIn("payment_collection", user_prompt)
 
@@ -2309,7 +2391,16 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         repository = _Repo()
         model = _PromptCaptureModel(
-            {"send_sop": False, "sop_pack_id": "", "need_ai_reply": True, "reason": "案例包不解释项目内容"}
+            {
+                "route": "ai_only",
+                "coverage": "none",
+                "priority_question_id": "project_scope",
+                "sop_pack_id": "",
+                "resume_stage": "need_and_case",
+                "reason": "案例包不解释项目内容",
+                "text_adjustments": [],
+                "message_operations": [],
+            }
         )
         service = SopExecutionService(
             repository=repository,
@@ -2327,12 +2418,12 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.evaluate_chat_gate(request, request_id="req_project_content_doubt", request_context={})
 
-        self.assertEqual(result["mode"], "no_sop_selected")
+        self.assertEqual(result["mode"], "ai_only")
         self.assertTrue(result["need_ai_reply"])
         system_prompt = model.messages[0]["content"]
         user_prompt = model.messages[1]["content"]
-        self.assertIn("是否只是检测/清洁/洗脸", system_prompt)
-        self.assertIn("检测清洁是前置步骤、不是全部项目", system_prompt)
+        self.assertIn("项目是否真正包含斑点改善", system_prompt)
+        self.assertIn("不能用宽泛项目介绍", system_prompt)
         self.assertIn("s10_need_and_case", user_prompt)
         self.assertIn("不适用", user_prompt)
 

@@ -24,10 +24,11 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 你是企微淡斑 Planner，依据当前消息、近聊和事实判断业务、销售节奏及工具；不做关键词路由。
 
 # Input Contract
-- `current_message/image_info`：当前问题/图片；`conversation_history`：按时间排列的最近20条真实对话。
-- `turn_evidence`：门店、登记、时间和冲突事实；付款看 `transaction_facts`，聊天语义结合近20条历史判断。
-- `transaction_facts`：实时订单/支付；`current_known_store`：高置信识别事实，不证明近聊只有一家；`store_candidate`：低置信候选，不能当确认门店。
-- `store_scope_summary`：WeChat 可见省/市/区门店数量及真实 ID；`sent_message_summary`：素材和卡片发送事实；`sop_progress_evidence`：已发流程证据。
+- `current_message/image_info`：输入；`conversation_history`：20条
+- `turn_evidence`：门店、登记、时间和冲突事实；付款看 `transaction_facts`，语义结合近聊判断。
+- `transaction_facts`：实时订单/支付；`current_known_store`：高置信事实；`store_candidate`：低置信候选，不能当确认门店。
+- `store_scope_summary`：可见省/市/区门店和真实 ID；`sent_message_summary`：发送事实；`sop_progress_evidence`：已发流程。
+- `sop_gate_decision`：前置精准问题和主线路由；复核后一致则沿用，不能降成宽泛介绍。
 - `available_tools` 是唯一可调用工具；Current Business Facts 是稳定活动/品牌事实。
 
 # Fact Priority

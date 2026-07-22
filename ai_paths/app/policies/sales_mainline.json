@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "purpose": "定义新客销售主线的阶段目标、完成证据和恢复方式。它是模型的流程地图，不是代码路由表。",
+  "priority": [
+    "先精准回答客户当前问题",
+    "不得突破事实和安全边界",
+    "回答后恢复最早一个未完成主线目标",
+    "活动与价格铺垫完成前，不直接跳到预约金成交动作"
+  ],
+  "stages": [
+    {
+      "id": "opening_and_positioning",
+      "order": 10,
+      "goal": "让新客知道我们提供斑点改善服务，并建立基础专业信任。",
+      "candidate_pack_ids": ["s10_new_customer_opening"],
+      "completion_evidence": [
+        "对应 SOP 包已真实发送",
+        "近期聊天已经完整介绍项目方向和基础价值"
+      ],
+      "closed_question_examples": ["您主要是想改善脸上的斑点对吧？"]
+    },
+    {
+      "id": "location_capture",
+      "order": 20,
+      "goal": "获得客户当前城市、区域、地标或定位，为真实门店匹配准备必要事实。",
+      "candidate_pack_ids": ["s10_new_customer_opening"],
+      "completion_evidence": [
+        "客户当前或近期消息提供了城市、区域、地标或定位卡片",
+        "已有当前可信门店事实"
+      ],
+      "closed_question_examples": ["您现在是在成都这边对吧？具体哪个区我给您看下门店。"]
+    },
+    {
+      "id": "need_and_case",
+      "order": 30,
+      "goal": "承接斑点改善需求，建立效果信心，并用真实案例素材形成可感知的效果预期。",
+      "candidate_pack_ids": ["s10_need_and_case"],
+      "completion_evidence": [
+        "对应 SOP 包已真实发送",
+        "近期聊天已经回答改善方向，且存在真实案例图片发送证据"
+      ],
+      "closed_question_examples": ["您是看到我们线上淡斑活动进来的对吧？"]
+    },
+    {
+      "id": "activity_and_price",
+      "order": 40,
+      "goal": "完整说明线上活动内容、价格构成、预约金价值和退款口径，让客户知道活动真实且费用透明。",
+      "candidate_pack_ids": ["s10_activity_intro"],
+      "completion_evidence": [
+        "对应 SOP 包已真实发送",
+        "近期聊天已完整覆盖活动项目、总价、预约金抵扣和退款事实"
+      ],
+      "closed_question_examples": ["您就是看到线上这个活动价格进来的对吧？我把活动内容给您说清楚。"]
+    },
+    {
+      "id": "deposit_decision",
+      "order": 50,
+      "goal": "在前序价值和价格铺垫完成后，帮助客户决定是否用预约金保留活动资格。",
+      "candidate_pack_ids": ["s10_deposit_close"],
+      "completion_evidence": [
+        "客户明确接受或拒绝预约金",
+        "客户已完成预约金支付",
+        "客户进入付款方式选择或登记阶段"
+      ],
+      "closed_question_examples": ["那我按这次活动给您留一个名额，您直接用小程序收款卡还是转账方便？"]
+    },
+    {
+      "id": "post_paid_registration",
+      "order": 60,
+      "goal": "支付后登记姓名、电话、门店和到店日期时间意向，不把登记描述成正式预约。",
+      "candidate_pack_ids": [],
+      "completion_evidence": [
+        "姓名、电话、门店和到店时间意向已经收齐",
+        "客户明确暂时无法提供某项信息并已约定后续补充"
+      ],
+      "closed_question_examples": ["收到亲，登记用的姓名和电话一起发我就行。"]
+    }
+  ],
+  "conditional_support_stages": [
+    {
+      "id": "price_or_deposit_objection",
+      "candidate_pack_ids": ["s10_objection_resolution"],
+      "use_when": "客户当前核心顾虑确实是套路、隐形消费、价格真实性、预约金抵扣或退款规则，且该包能直接覆盖当前问题。",
+      "do_not_use_when": "客户问的是效果真实性、次数、反黑、项目是否真正包含斑点改善、门店实时事实或支付异常。"
+    }
+  ],
+  "resume_policy": {
+    "brief_side_question": "用一到两句回答后，回到最早未完成主线目标。",
+    "core_blocker": "先精准回答到客户真正担心的点，再用封闭式问题或下一主线 SOP 恢复主线。",
+    "tool_fact": "先查真实事实并回答；同轮不适合发送大包时，结尾必须埋一个明确的未完成主线桥接。",
+    "repeated_question": "客户重复问同一核心问题时加深解释，不复读第一次答案；解决后仍恢复主线。",
+    "sop_transition": "SOP 文案必须结合当前上下文自然衔接，不允许像切换流程或群发通知。"
+  }
+}

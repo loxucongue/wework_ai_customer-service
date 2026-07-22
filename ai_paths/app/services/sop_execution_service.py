@@ -6,7 +6,9 @@ import re
 import time
 from typing import Any
 
+from app.policies.sales_flow import mainline_stage_for_pack, precision_qa_index_for_gate, sales_mainline_for_model
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
+from app.prompts.sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
 from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, payment_collection_order_fact, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
@@ -303,18 +305,13 @@ class SopExecutionService:
             result["order_gate"] = order_gate.get("summary", {})
             if _apply_chat_order_gate_block(result, order_gate):
                 return _finish(result, started)
-            if _chat_gate_realtime_customer_message_should_use_ai(request, request_context):
-                result.update(
-                    {
-                        "mode": "realtime_customer_ai_reply",
-                        "send_sop": False,
-                        "need_ai_reply": True,
-                        "reason": "workflow_compatible_customer_message_use_ai_reply",
-                    }
-                )
-                return _finish(result, started)
-
-            selector_input = _chat_selector_input(request, unfinished)
+            selector_input = _chat_selector_input(
+                request,
+                unfinished,
+                sop_progress_evidence=result["sop_progress_evidence"],
+                customer_memory=customer_memory,
+                customer_context=order_gate.get("customer_context", {}),
+            )
             result["selector_input"] = compact(selector_input, max_chars=6000)
             selector_output = await self._select_chat_sop(
                 selector_input,
@@ -322,13 +319,18 @@ class SopExecutionService:
             )
             result["selector_output"] = selector_output
             result["model_usage"] = dict(self.model_client.last_usage or {})
+            route = _chat_gate_route(selector_output)
+            result["route"] = route
+            result["coverage"] = _chat_gate_coverage(selector_output)
+            result["priority_question_id"] = _string(selector_output.get("priority_question_id"))
+            result["resume_stage"] = _string(selector_output.get("resume_stage"))
             result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
             result["message_operations"] = _message_operations(selector_output.get("message_operations"))
             selected = _selected_pack(selector_output, unfinished)
             if not selected:
                 result.update(
                     {
-                        "mode": "no_sop_selected",
+                        "mode": route,
                         "need_ai_reply": True,
                         "reason": str(selector_output.get("reason") or "selector_did_not_choose_sop"),
                     }
@@ -383,8 +385,10 @@ class SopExecutionService:
                 identity=identity,
                 pack=selected,
                 reply_messages=messages,
+                mark_sent=route != "ai_then_sop",
             )
-            if task.get("status") != "sent":
+            expected_task_status = "pending" if route == "ai_then_sop" else "sent"
+            if task.get("status") != expected_task_status:
                 result.update(
                     {
                         "mode": "complete",
@@ -397,11 +401,11 @@ class SopExecutionService:
                 return _finish(result, started)
             result.update(
                 {
-                    "mode": "selected",
+                    "mode": route,
                     "send_sop": True,
                     "sop_pack_id": str(selected.get("id") or ""),
                     "sop_pack_name": str(selected.get("name") or ""),
-                    "need_ai_reply": bool(selector_output.get("need_ai_reply")),
+                    "need_ai_reply": route == "ai_then_sop",
                     "reason": str(selector_output.get("reason") or ""),
                     "reply_messages": messages,
                     "task": task,
@@ -576,108 +580,40 @@ class SopExecutionService:
         *,
         deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "# SOP Gate Role\n"
-                    "你是企业微信线上活动接待链路里的 SOP Gate，不是客服回复模型。\n"
-                    "你只判断“本轮是否先发送一个已配置 SOP 话术包”，以及“发送 SOP 后是否还必须继续异步 AI 回复”。\n"
-                    "你只能通过 text_adjustments 和 message_operations 调整所选话术包中的 text，让静态 SOP 更像真人顺着当前聊天发出；不能改变结构消息或调用工具，也不能补门店、价格、档期、案例或订单事实。\n\n"
-                    "# Business Mission\n"
-                    "当前业务目标是让新客按销冠主线完成前置认知：活动介绍、信任建立、效果/案例铺垫、费用规则、预约金价值和下一步成交动作。\n"
-                    "普通聊天 AI 负责回答复杂实时问题；SOP Gate 负责在新客 SOP 未完成前，优先把配置好的话术包按客户当前阶段铺出去。\n"
-                    "如果 SOP 已经覆盖客户当前关心点，不要再让 AI 补发，避免客户同一轮收到重复内容。\n\n"
-                    "# Source Priority\n"
-                    "判断时按当前消息、最近对话、unfinished_sops 的 purpose/order/tags/triggers/reply_messages 摘要排序。\n"
-                    "最终是否可发必须以 reply_messages 摘要能否真实回答当前问题为准；purpose 和 triggers 只是候选线索，不能替代消息内容匹配。\n"
-                    "SOP Gate 不拥有门店、档期、支付、订单、案例事实；这些事实缺失时不能自行补全，只能决定是否让普通 AI 继续。\n\n"
-                    "# Input\n"
-                    "你会收到：\n"
-                    "- current_message：客户当前消息。\n"
-                    "- conversation_history：最近极短对话。\n"
-                    "- conversation_activity：事件层整理的当前会话状态，只是事实证据，包含最新一条是否客户待回复、是否小贝/销售正在等客户、沉默时长和时间可靠性。\n"
-                    "- unfinished_sops：尚未发送过的 SOP 包，只包含 id/name/purpose/order/tags/triggers/reply_messages 摘要。\n"
-                    "你不会收到完整门店事实、档期事实、案例结果或订单详情，因此不能判断这些事实本身。\n\n"
-                    "# Task\n"
-                    "1. 先理解客户当前消息和最近对话处于哪个成交阶段。\n"
-                    "2. 从 unfinished_sops 中最多选择一个当前最该先发的 SOP。\n"
-                    "3. 逐条核对该 SOP 的 reply_messages 摘要：它是否真正回答客户当前问题，还是只覆盖相邻但不同的顾虑。\n"
-                    "4. 只有 SOP 无法覆盖、且客户问题必须实时答复时，才设置 need_ai_reply=true。\n"
-                    "5. 决定发送时，检查 editable_text_messages 的称呼、语气、条数和顺序是否自然承接当前消息；不自然时输出 text_adjustments 或 message_operations。\n\n"
-                    "# Decision Policy\n"
-                    "- 新客 SOP 没完成前，默认优先选择一个合适 SOP，不要轻易跳过直接进入普通 AI 聊天。\n"
-                    "- 选择 SOP 时先看 purpose/order/triggers 找候选，再用 reply_messages 摘要做最终覆盖判断；不要只按关键词或宽泛目的机械匹配。\n"
-                    "- 如果多个 SOP 都可用，选择最靠近当前成交阶段且 order 更靠前的一个。\n"
-                    "- 如果 conversation_activity.assistant_waiting_customer=true，说明上一轮小贝/销售已经发出问题或铺垫后客户沉默。客户沉默不是拒绝，也不是永久跳过 SOP；但下一步要像真人销售一样轻触承接，避免直接跳到大段报价、收款或无过渡的下一阶段。\n"
-                    "- 如果上一轮主要是在问城市、区域、门店、斑点情况、姓名电话或时间，客户未回复，本轮候选 SOP 必须能自然承接这个未完成问题；可以通过 text_adjustments/message_operations 加一句轻触或换一种问法，再衔接原包目标。不要一上来堆效果、报价和预约金。\n"
-                    "- 如果 conversation_activity.latest_customer_pending_ai_reply=true，正常情况下事件层会拦截；若仍进入这里，也应 send_sop=false、need_ai_reply=true，避免定时 SOP 抢在普通 AI 前面。\n"
-                    "- 发送 SOP 后默认 need_ai_reply=false。\n"
-                    "- 如果选中的 SOP 的实际消息已经覆盖价格、效果、活动、预约金、普通顾虑、品牌信任或成交推进诉求，即使客户问题明确，也保持 need_ai_reply=false。\n"
-                    "- 只有以下情况才允许 need_ai_reply=true：客户明确索要具体门店地址/导航/真实档期/预约或订单状态；投诉退款、身体不适、强人工诉求；客户在追问项目内容、费用包含、是否只是检测/清洁/洗脸、是否真正包含斑点改善，而候选 SOP 只是泛效果图/案例/能不能做铺垫；或客户同一句包含多个独立问题，而当前 SOP 只覆盖其中一部分。\n"
-                    "- 客户刚刚被问城市/区域/定位/附近门店后，本轮补充了城市、区、地标、定位或详细地址，这是“门店匹配槽位已补齐”，不属于静态 SOP 铺垫；必须 send_sop=false、need_ai_reply=true，交给普通 AI 基于门店工具匹配门店并承接节奏。\n"
-                    "- 客户一边给出位置，一边说正在上班、没时间、之后再联系、先加微信方便联系，本质仍是“位置事实 + 到店时间顾虑”；先让普通 AI 回应当前位置和时间顾虑、匹配门店或轻推名额，不要直接用活动介绍包覆盖。\n"
-                    "- 如果所有 unfinished_sops 都明显不适合当前客户状态，可以 send_sop=false，并让普通 AI 继续处理。\n\n"
-                    "# Contextual Text Adjustment\n"
-                    "- 只有 send_sop=true 时才能输出 text_adjustments/message_operations；每项 order 必须来自所选包的 editable_text_messages 或以 text order 为锚点。\n"
-                    "- 客户当前有明确顾虑、问题或不便时，最早一条可编辑 text 应先用一句短话直接承接，再自然衔接原包目标；原文已经承接时输出空数组。\n"
-                    "- 不要机械添加“理解您、确实不容易”；普通询问直接回答并衔接即可。\n"
-                    "- 必须保留原文的阶段目标、价格、金额、优惠、退款、门店、时间、支付及承诺边界。\n"
-                    "- 所有数字及其出现次数必须与对应原文完全一致，不能重复、删减或改写数字。\n"
-                    "- message_operations 只允许 replace_text、insert_text_before、insert_text_after、remove_text、merge_text、split_text、remove_message。插入 text 不能新增数字事实，删除 text 不能删除数字事实，合并/拆分必须保留全部数字事实。\n"
-                    "- image、video、store_address、human_handoff_notice 都是只读消息，不能改写、删除、重排、复制或由 text 转换生成。payment_collection 只有在 payment_collection_gate.status 不支持发送时才可用 remove_message 删除，不能改金额或复制生成。\n\n"
-                    "# Negative Cases\n"
-                    "- 客户只是沉默、刚加微后未回复、或上一阶段 SOP 正常铺垫后没有新 customer 消息：不算冲突，优先继续 SOP；但如果最近一轮刚问了一个关键问题而客户没答，优先轻触/承接这个问题，不要机械跳阶段。\n"
-                    "- 客户正在问具体门店地址、真实档期、订单/付款异常、投诉退款或身体不适：SOP 不足以覆盖，need_ai_reply=true。\n"
-                    "- 客户回复城市、区、商圈、地标或定位，是给普通 AI 做门店匹配的事实输入；即使候选 SOP 能讲活动、价格或预约金，也不能替代门店匹配回复。\n"
-                    "- 候选包只是和历史同属一个活动主题，不等于严重重合；只有同阶段核心目的和核心素材都已覆盖，才算严重重合。\n"
-                    "- 普通价格、效果、信任、隐形消费顾虑如果候选 SOP 的实际消息已覆盖，就不需要额外 AI 文案。\n"
-                    "- 如果客户当前问的是效果真实性、怕没效果、反黑、做坏、伤肤等效果/安全顾虑，而候选包实际消息主要是收费、预约金、隐形消费或活动价格规则，则该 SOP 没有覆盖当前问题；send_sop=false，need_ai_reply=true，交给普通 AI 结合历史案例和当前上下文回答并推进。\n"
-                    "- 如果客户当前问的是“268/活动价是否只包含检测、清洁、扫斑、洗脸，没有真正斑点改善”这类项目内容与费用包含顾虑，泛效果案例包不能覆盖；除非候选 SOP 的实际消息明确解释“检测清洁是前置步骤、不是全部项目、适合后会做斑点改善、费用透明”，否则 send_sop=false，need_ai_reply=true。\n"
-                    "- 如果客户当前问的是套路、乱收费、强制消费、预约金抵扣/可退或费用是否清楚，而候选包实际消息正是在解释明码标价和预约金规则，可以发送该 SOP。\n\n"
-                    "# Few-Shot Calibration\n"
-                    "- 新客未回复，1分钟介绍包已发，5分钟问地址包候选可用：send_sop=true，need_ai_reply=false，可以把文案润色成更轻的“亲，还在吗，我先确认下您在哪个城市/区域，方便给您匹配门店”。\n"
-                    "- 上一轮小贝问“您在哪个城市哪个区”，客户沉默 5 分钟，候选效果或报价包可用：不要直接跳到效果/报价；优先选择能追问位置或轻触承接的包，或调整当前包首条 text 先轻触未答问题。\n"
-                    "- 客户刚问“这家地址发我”：如果候选 SOP 不是门店地址事实，send_sop=false 或 need_ai_reply=true，交给普通 AI 查门店。\n"
-                    "- 上一轮小贝问“您在哪个城市哪个区，我把离您最近的门店位置发您”，客户回“我现在在黄浦区，现在上班没时间，先加微信后面联系”：send_sop=false，need_ai_reply=true，交给普通 AI 匹配黄浦区/同城门店并顺着没时间顾虑承接。\n"
-                    "- 客户问“效果怎么样”：候选效果案例/效果铺垫包可用且未发送过，send_sop=true，need_ai_reply=false。\n"
-                    "- 客户问“真有这么好的效果？”且历史已经发过效果图/案例，候选包是收费与预约金顾虑处理：该包没有回答效果真实性，send_sop=false，need_ai_reply=true。\n"
-                    "- 客户问“应该只是检测和洗脸，没有去斑吧？”且候选包是效果案例图：该包没有解释项目内容和费用包含，send_sop=false，need_ai_reply=true。\n"
-                    "- 客户问“是不是套路，会不会乱收费？”且候选包是收费与预约金顾虑处理：该包覆盖收费和信任顾虑，send_sop=true，need_ai_reply=false。\n"
-                    "- 客户说“我付款多扣了”：send_sop=false，need_ai_reply=true。\n\n"
-                    "# Do Not\n"
-                    "- 不生成独立客户回复；可以为承接自然插入少量 text，但不得新增 image/payment_collection/store_address/video/handoff。\n"
-                    "- 不改写所选包之外的文案，不补写新的话术包。\n"
-                    "- 不输出工具名、门店名、价格细节、档期承诺、案例描述。\n"
-                    "- 不因为客户问价格/效果/预约/顾虑就自动 need_ai_reply=true；先看 SOP 是否已覆盖。\n"
-                    "- 不输出旧链路字段、阶段分析长文或多余 JSON 字段。\n\n"
-                    "# Output\n"
-                    "只能输出 JSON，字段必须是 send_sop、sop_pack_id、need_ai_reply、reason、text_adjustments、message_operations。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    "请根据以下输入返回 JSON：\n"
-                    "{\n"
-                    '  "send_sop": true/false,\n'
-                    '  "sop_pack_id": "未完成 SOP 的 id 或空字符串",\n'
-                    '  "need_ai_reply": true/false,\n'
-                    '  "reason": "一句内部原因",\n'
-                    '  "text_adjustments": [{"order": 1, "text": "只改写所选包已有 text"}],\n'
-                    '  "message_operations": [{"op": "insert_text_after", "after_order": 1, "text": "只新增无新事实的 text"}]\n'
-                    "}\n"
-                    f"输入：{selector_input}"
-                ),
-            },
-        ]
         data = await self.model_client.chat_json(
-            messages,
+            build_sop_chat_gate_messages(selector_input),
             tier="reply",
             temperature=0,
             deadline_monotonic=deadline_monotonic,
         )
-        return data if isinstance(data, dict) else {}
+        output = data if isinstance(data, dict) else {}
+        violations = _chat_gate_output_violations(output, selector_input)
+        if not violations:
+            return output
+        repaired = await self.model_client.chat_json(
+            build_sop_chat_gate_repair_messages(selector_input, output, violations),
+            tier="reply",
+            temperature=0,
+            deadline_monotonic=deadline_monotonic,
+        )
+        repaired_output = repaired if isinstance(repaired, dict) else {}
+        repaired_violations = _chat_gate_output_violations(repaired_output, selector_input)
+        if not repaired_violations:
+            repaired_output["repair_applied"] = True
+            repaired_output["initial_violations"] = violations
+            return repaired_output
+        return {
+            "route": "ai_only",
+            "coverage": "none",
+            "priority_question_id": "",
+            "sop_pack_id": "",
+            "resume_stage": "",
+            "reason": "chat_gate_invalid_after_repair_continue_ai",
+            "text_adjustments": [],
+            "message_operations": [],
+            "initial_violations": violations,
+            "repair_violations": repaired_violations,
+        }
 
     async def evaluate_event_suggestion(
         self,
@@ -886,6 +822,7 @@ class SopExecutionService:
         pack: dict[str, Any],
         reply_messages: list[dict[str, Any]],
         trigger_source: str = "chat_gate",
+        mark_sent: bool = True,
     ) -> dict[str, Any]:
         event_id = f"{trigger_source}:{request_id}"
         self.repository.create_sop_event(
@@ -926,7 +863,7 @@ class SopExecutionService:
             status="pending",
             send_once_key=_send_once_key(identity, sop_pack_id),
         )
-        if task.get("id") and task.get("status") == "pending":
+        if mark_sent and task.get("id") and task.get("status") == "pending":
             created = bool(task.get("created"))
             task = self.repository.update_sop_send_task(
                 str(task["id"]),
@@ -941,6 +878,44 @@ class SopExecutionService:
             )
             task["created"] = created
         return task
+
+    def confirm_chat_gate_task_sent(
+        self,
+        task: dict[str, Any],
+        *,
+        request_id: str,
+        reply_messages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        task_id = _string(task.get("id")) if isinstance(task, dict) else ""
+        if not task_id or _string(task.get("status")) != "pending":
+            return task
+        created = bool(task.get("created"))
+        updated = self.repository.update_sop_send_task(
+            task_id,
+            status="sent",
+            send_payload={
+                "mode": "sync_http_response",
+                "request_id": request_id,
+                "reply_messages": reply_messages,
+            },
+            send_response={"accepted": True, "mode": "sync_http_response"},
+            sent_at=utc_now_iso(),
+        )
+        updated["created"] = created
+        return updated
+
+    def fail_chat_gate_task(self, task: dict[str, Any], *, error: str) -> dict[str, Any]:
+        task_id = _string(task.get("id")) if isinstance(task, dict) else ""
+        if not task_id or _string(task.get("status")) != "pending":
+            return task
+        created = bool(task.get("created"))
+        updated = self.repository.update_sop_send_task(
+            task_id,
+            status="failed",
+            send_response={"accepted": False, "error": str(error or "ai_reply_failed_before_sop_send")[:240]},
+        )
+        updated["created"] = created
+        return updated
 
 
 def _finish(result: dict[str, Any], started: float) -> dict[str, Any]:
@@ -1110,11 +1085,28 @@ def _final_close_context_matches(pack: dict[str, Any], delay_minutes: int, match
     return False
 
 
-def _chat_selector_input(request: ChatRequest, unfinished_packs: list[dict[str, Any]]) -> dict[str, Any]:
+def _chat_selector_input(
+    request: ChatRequest,
+    unfinished_packs: list[dict[str, Any]],
+    *,
+    sop_progress_evidence: dict[str, Any] | None = None,
+    customer_memory: dict[str, Any] | None = None,
+    customer_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "current_message": str(request.content or "").strip(),
         "recent_conversation": _recent_history(request.conversation_history),
-        "unfinished_sops": [_sop_summary(pack) for pack in unfinished_packs],
+        "mainline": sales_mainline_for_model(),
+        "mainline_progress": sop_progress_evidence or {},
+        "precision_qa_index": precision_qa_index_for_gate(),
+        "unfinished_sops": [
+            _sop_summary(
+                pack,
+                customer_memory=customer_memory or {},
+                customer_context=customer_context or {},
+            )
+            for pack in unfinished_packs
+        ],
     }
 
 
@@ -1194,6 +1186,12 @@ def _sop_summary(
         "name": str(pack.get("name") or ""),
         "purpose": str(pack.get("purpose") or "")[:240],
         "order": int(pack.get("order") or 0),
+        "mainline_stage": str(pack.get("mainline_stage") or mainline_stage_for_pack(str(pack.get("id") or ""))),
+        "direct_answer_capabilities": [
+            str(item)
+            for item in pack.get("direct_answer_capabilities") or []
+            if str(item or "").strip()
+        ],
         "candidate_group": _string(pack.get("_candidate_group")) or "due",
         "selection_reason_hint": _string(pack.get("_selection_reason_hint")),
         "tags": [str(item) for item in pack.get("triggers") or [] if str(item or "").strip()],
@@ -1218,6 +1216,12 @@ def _sop_progress_summary(pack: dict[str, Any]) -> dict[str, Any]:
         "name": str(pack.get("name") or ""),
         "purpose": str(pack.get("purpose") or "")[:240],
         "order": int(pack.get("order") or 0),
+        "mainline_stage": str(pack.get("mainline_stage") or mainline_stage_for_pack(str(pack.get("id") or ""))),
+        "direct_answer_capabilities": [
+            str(item)
+            for item in pack.get("direct_answer_capabilities") or []
+            if str(item or "").strip()
+        ],
         "triggers": [str(item) for item in pack.get("triggers") or [] if str(item or "").strip()],
     }
 
@@ -1547,7 +1551,7 @@ def _positive_int(value: Any, default: int) -> int:
 
 
 def _selected_pack(selector_output: dict[str, Any], packs: list[dict[str, Any]]) -> dict[str, Any]:
-    if not bool(selector_output.get("send_sop")):
+    if _chat_gate_route(selector_output) not in {"sop_only", "ai_then_sop"}:
         return {}
     selected_id = str(selector_output.get("sop_pack_id") or "").strip()
     if not selected_id:
@@ -1556,6 +1560,69 @@ def _selected_pack(selector_output: dict[str, Any], packs: list[dict[str, Any]])
         if str(pack.get("id") or "") == selected_id:
             return pack
     return {}
+
+
+def _chat_gate_route(selector_output: dict[str, Any]) -> str:
+    route = _string(selector_output.get("route"))
+    if route in {"sop_only", "ai_only", "ai_then_sop"}:
+        return route
+    if bool(selector_output.get("send_sop")):
+        return "ai_then_sop" if bool(selector_output.get("need_ai_reply")) else "sop_only"
+    return "ai_only"
+
+
+def _chat_gate_coverage(selector_output: dict[str, Any]) -> str:
+    coverage = _string(selector_output.get("coverage"))
+    if coverage in {"exact", "partial", "none"}:
+        return coverage
+    route = _chat_gate_route(selector_output)
+    return "exact" if route == "sop_only" else ("partial" if route == "ai_then_sop" else "none")
+
+
+def _chat_gate_output_violations(
+    selector_output: dict[str, Any],
+    selector_input: dict[str, Any],
+) -> list[str]:
+    route = _chat_gate_route(selector_output)
+    coverage = _chat_gate_coverage(selector_output)
+    pack_id = _string(selector_output.get("sop_pack_id"))
+    resume_stage = _string(selector_output.get("resume_stage"))
+    priority_question_id = _string(selector_output.get("priority_question_id"))
+    packs = {
+        _string(item.get("id")): item
+        for item in selector_input.get("unfinished_sops") or []
+        if isinstance(item, dict) and _string(item.get("id"))
+    }
+    question_ids = {
+        _string(item.get("id"))
+        for item in selector_input.get("precision_qa_index") or []
+        if isinstance(item, dict) and _string(item.get("id"))
+    }
+    violations: list[str] = []
+    expected_coverage = {
+        "sop_only": "exact",
+        "ai_then_sop": "partial",
+        "ai_only": "none",
+    }[route]
+    if coverage != expected_coverage:
+        violations.append(f"route_coverage_mismatch:{route}:{coverage}")
+    if priority_question_id and priority_question_id not in question_ids:
+        violations.append("unknown_priority_question_id")
+    if route in {"sop_only", "ai_then_sop"}:
+        if not pack_id or pack_id not in packs:
+            violations.append("selected_pack_missing_or_not_unfinished")
+        elif resume_stage != _string(packs[pack_id].get("mainline_stage")):
+            violations.append("resume_stage_must_match_selected_pack")
+    else:
+        if pack_id:
+            violations.append("ai_only_must_not_select_pack")
+        if resume_stage and resume_stage not in {
+            _string(item.get("id"))
+            for item in (selector_input.get("mainline") or {}).get("stages") or []
+            if isinstance(item, dict)
+        }:
+            violations.append("unknown_resume_stage")
+    return violations
 
 
 def _pack_messages(pack: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1718,25 +1785,6 @@ def _chat_sop_payment_collection_supported(
         "payment_decision": {"amount": content.get("amount")},
     }
     return bool(payment_collection_order_fact(state, amount=content.get("amount")))
-
-
-def _chat_gate_realtime_customer_message_should_use_ai(request: ChatRequest, request_context: dict[str, Any]) -> bool:
-    """Do not let chat-gate static packs replace realtime customer replies.
-
-    `/sop/events` owns proactive SOP touches. The workflow-compatible reply
-    endpoint receives an actual customer turn, so the normal Planner/Reply
-    chain should interpret the customer's current intent with SOP progress as
-    evidence instead of sending a static pack as the whole answer.
-    """
-    merged_context = dict(request.request_context or {})
-    merged_context.update(request_context or {})
-    if _string(merged_context.get("source_protocol")) != "workflow-compatible":
-        return False
-    if not _string(request.content):
-        return False
-    if is_platform_auto_opening_message(request.content):
-        return False
-    return True
 
 
 def _chat_gate_professional_assist_risk(request: ChatRequest) -> str:

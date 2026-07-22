@@ -132,6 +132,45 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(workflow_body["code"], 0)
         self.assertEqual(len(workflow_body["data"]["reply_messages"]), 1)
 
+    async def test_precision_ai_reply_precedes_selected_sop_and_confirms_task(self) -> None:
+        repository = _Repository()
+        gate = _PrecisionSopGate()
+        graph = _PrecisionReplyGraph()
+        runtime = ChatRuntime(
+            full_graph=graph,
+            planner_graph=graph,
+            trace_logger=_TraceLogger(),
+            repository=repository,
+            sop_execution_service=gate,
+        )
+
+        response = await runtime.run_platform_reply(_request("是不是做一次就可以"))
+
+        self.assertEqual(
+            [message.content["text"] for message in response.reply_messages],
+            ["多数客户做一次就能看到改善，具体程度要到店检测后判断。", "我给您发一组同类案例参考。"],
+        )
+        self.assertTrue(gate.confirmed)
+        self.assertFalse(gate.failed)
+        self.assertEqual(graph.states[0]["sop_gate_decision"]["priority_question_id"], "one_session_effect")
+
+    async def test_precision_ai_failure_withholds_sop_and_returns_nonempty_fallback(self) -> None:
+        repository = _Repository()
+        gate = _PrecisionSopGate()
+        runtime = ChatRuntime(
+            full_graph=_ErrorGraph(),
+            planner_graph=_ErrorGraph(),
+            trace_logger=_TraceLogger(),
+            repository=repository,
+            sop_execution_service=gate,
+        )
+
+        response = await runtime.run_platform_reply(_request("是不是做一次就可以"))
+
+        self.assertEqual([message.content["text"] for message in response.reply_messages], ["我在，继续帮您处理。"])
+        self.assertFalse(gate.confirmed)
+        self.assertTrue(gate.failed)
+
     async def test_finalize_empty_reply_is_recovered_and_returned_synchronously(self) -> None:
         repository = _Repository()
         outreach = _OutreachSendClient()
@@ -325,6 +364,68 @@ class _OpeningSopGate:
             "sop_pack_id": "s10_new_customer_opening",
             "reply_messages": [{"type": "text", "order": 1, "content": {"text": "新客破冰话术"}}],
         }
+
+
+class _PrecisionSopGate:
+    def __init__(self) -> None:
+        self.confirmed = False
+        self.failed = False
+
+    async def evaluate_chat_gate(
+        self,
+        request: ChatRequest,
+        *,
+        request_id: str,
+        request_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "mode": "ai_then_sop",
+            "route": "ai_then_sop",
+            "coverage": "partial",
+            "priority_question_id": "one_session_effect",
+            "resume_stage": "need_and_case",
+            "send_sop": True,
+            "need_ai_reply": True,
+            "sop_pack_id": "s10_need_and_case",
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "我给您发一组同类案例参考。"}}
+            ],
+            "task": {"id": "pending-task", "status": "pending", "created": True},
+            "sop_progress_evidence": {},
+        }
+
+    def confirm_chat_gate_task_sent(self, task: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        self.confirmed = True
+        return {**task, "status": "sent"}
+
+    def fail_chat_gate_task(self, task: dict[str, Any], *, error: str) -> dict[str, Any]:
+        self.failed = True
+        return {**task, "status": "failed", "error": error}
+
+
+class _PrecisionReplyGraph:
+    def __init__(self) -> None:
+        self.states: list[dict[str, Any]] = []
+
+    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        self.states.append(dict(state))
+        output = dict(state)
+        output.update(
+            {
+                "planner_decision": "direct_reply",
+                "reply_source": "reply_synthesizer",
+                "reply_messages": [
+                    {
+                        "type": "text",
+                        "order": 1,
+                        "content": {"text": "多数客户做一次就能看到改善，具体程度要到店检测后判断。"},
+                    }
+                ],
+                "trace": [],
+                "errors": [],
+            }
+        )
+        return output
 
 
 class _TraceLogger:

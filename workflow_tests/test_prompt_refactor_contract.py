@@ -306,28 +306,25 @@ def test_project_constitution_documents_define_two_reply_test_modes() -> None:
 
 
 def test_sop_gate_hands_location_slot_completion_to_ai() -> None:
-    source = (ROOT / "ai_paths/app/services/sop_execution_service.py").read_text(encoding="utf-8")
+    source = (ROOT / "ai_paths/app/prompts/sop_chat_gate.py").read_text(encoding="utf-8")
     for marker in [
-        "门店匹配槽位已补齐",
-        "必须 send_sop=false、need_ai_reply=true",
-        "位置事实 + 到店时间顾虑",
-        "不能替代门店匹配回复",
-        "客户回“我现在在黄浦区，现在上班没时间，先加微信后面联系”",
+        "客户回复城市、区、地标、定位",
+        "需要真实门店事实",
+        "选择 `ai_only`",
+        "门店、定位、图片、订单",
     ]:
         assert marker in source
 
 
 def test_sop_gate_requires_contextual_first_text_and_preserves_numeric_facts() -> None:
-    source = (ROOT / "ai_paths/app/services/sop_execution_service.py").read_text(encoding="utf-8")
+    prompt = (ROOT / "ai_paths/app/prompts/sop_chat_gate.py").read_text(encoding="utf-8")
+    source = prompt + (ROOT / "ai_paths/app/services/sop_execution_service.py").read_text(encoding="utf-8")
     for marker in [
-        "最早一条可编辑 text",
-        "先用一句短话直接承接",
-        "不要机械添加",
-        "所有数字及其出现次数",
+        "接在当前对话后自然",
+        "不得改变金额、价格、退款、时间、门店、效果边界",
         "text_adjustments",
         "message_operations",
         "insert_text_after",
-        "除 `remove_message` 删除不支持发送的 `payment_collection` 外",
         "payment_collection_gate.status",
         "remove_message",
         "payment_collection_requires_matching_current_order",
@@ -354,14 +351,12 @@ def test_paid_after_flow_prioritizes_name_and_phone_without_schedule_tools() -> 
 
 
 def test_sop_gate_does_not_use_case_pack_for_project_content_or_cleaning_doubt() -> None:
-    source = (ROOT / "ai_paths/app/services/sop_execution_service.py").read_text(encoding="utf-8")
+    source = (ROOT / "ai_paths/app/prompts/sop_chat_gate.py").read_text(encoding="utf-8")
     for marker in [
-        "项目内容、费用包含",
-        "是否只是检测/清洁/洗脸",
-        "真正包含斑点改善",
-        "泛效果案例包不能覆盖",
-        "检测清洁是前置步骤、不是全部项目",
-        "客户问“应该只是检测和洗脸，没有去斑吧？”",
+        "项目是否真正包含斑点改善",
+        "不能用宽泛项目介绍或案例包抢答",
+        "是不是只有检测洗脸，没有去斑",
+        "必须精准回答项目范围",
     ]:
         assert marker in source
 

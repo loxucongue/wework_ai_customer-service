@@ -345,6 +345,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         ),
         "sent_message_summary": sent_message_summary,
         "sop_progress_evidence": _sop_progress_evidence_for_planner(state),
+        "sop_gate_decision": _sop_gate_decision_for_planner(state),
         "precision_qa_playbook": precision_qa_context_for_planner(),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
@@ -368,6 +369,7 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "store_scope_summary": base.get("store_scope_summary"),
         "sent_message_summary": base.get("sent_message_summary"),
         "sop_progress_evidence": base.get("sop_progress_evidence"),
+        "sop_gate_decision": base.get("sop_gate_decision"),
         "precision_qa_playbook": base.get("precision_qa_playbook"),
         "available_tools": base.get("available_tools"),
         "timeout_recovery": {
@@ -691,6 +693,33 @@ def _compact_store_for_planner(store: dict[str, Any]) -> dict[str, Any]:
             "store_name": _store_name_for_planner(store),
             "city": str(store.get("city") or "").strip(),
             "district": str(store.get("district") or "").strip(),
+        }
+    )
+
+
+def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
+    raw = state.get("sop_gate_decision")
+    if not isinstance(raw, dict):
+        gate = state.get("sop_gate") if isinstance(state.get("sop_gate"), dict) else {}
+        raw = {
+            "route": gate.get("route") or gate.get("mode"),
+            "coverage": gate.get("coverage"),
+            "priority_question_id": gate.get("priority_question_id"),
+            "resume_stage": gate.get("resume_stage"),
+            "sop_pack_id": gate.get("sop_pack_id"),
+        }
+    return _drop_empty(
+        {
+            "route": raw.get("route"),
+            "coverage": raw.get("coverage"),
+            "priority_question_id": raw.get("priority_question_id"),
+            "resume_stage": raw.get("resume_stage"),
+            "sop_pack_id": raw.get("sop_pack_id"),
+            "source": raw.get("source") or "chat_sop_gate_model",
+            "instruction": (
+                "这是前置模型的语义路由证据，不是代码决定。请结合当前消息复核；"
+                "若语义一致，优先使用其精准问题和主线恢复方向。"
+            ),
         }
     )
 

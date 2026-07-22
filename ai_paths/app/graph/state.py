@@ -57,6 +57,7 @@ class AgentState(TypedDict, total=False):
     customer_store_knowledge: dict[str, Any]
     sent_message_summary: dict[str, Any]
     sop_gate: dict[str, Any]
+    sop_gate_decision: dict[str, Any]
     sop_progress_evidence: dict[str, Any]
     background_substeps: list[dict[str, Any]]
     background_fact_views: dict[str, Any]
