@@ -420,6 +420,19 @@ class ChatRuntime:
                     reply_messages=sop_messages,
                 )
                 result_reason = "ai_reply_then_sop_returned_with_response"
+            elif sop_messages:
+                messages = list(sop_messages)
+                final_state["reply_source"] = "sop_gate_sync_sop_fallback_after_ai_unavailable"
+                _confirm_deferred_chat_sop_task(
+                    self._sop_execution_service,
+                    sop_state,
+                    request_id=str(final_state.get("request_id") or initial_state.get("request_id") or ""),
+                    reply_messages=sop_messages,
+                )
+                final_state.setdefault("warnings", []).append(
+                    {"node": "sop_gate_sync_ai_reply", "message": "sop_sent_after_ai_reply_unavailable"}
+                )
+                result_reason = "sop_returned_after_ai_reply_unavailable"
             else:
                 messages = _deterministic_final_fallback_messages(final_state)
                 final_state["reply_source"] = "deterministic_sop_sync_empty_ai_reply_fallback"
