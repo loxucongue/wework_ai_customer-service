@@ -25,7 +25,8 @@ from app.graph.nodes.reply_nodes import (
     _preserve_planner_store_address_actions,
     _suppress_stale_handoff_notice,
 )
-from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency, validated_model_messages
+from app.graph.nodes.reply_quality import collect_reply_soft_warnings
+from app.graph.nodes.reply_validation import validate_reply_consistency, validated_model_messages
 from app.graph.planner.brain_v2 import _current_known_store_for_planner, _planner_payload_for_model, _should_suppress_planner_memory
 from app.graph.planner.brain_v2_normalizer import _clean_scoped_location_query, build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import PLANNER_SYSTEM_PROMPT

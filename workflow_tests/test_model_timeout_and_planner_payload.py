@@ -12,6 +12,13 @@ from app.graph.nodes.image_info import fallback_image_info
 from app.graph.planner.brain_v2 import _planner_payload_for_model, run_planner_brain_v2
 from app.services.model_client import ModelClient
 from app.services.model_selection import api_key, base_url, is_claude_model, model_names
+from app.services.runtime_budget import (
+    build_runtime_budget,
+    can_start_model_retry,
+    graph_deadline_monotonic,
+    model_deadline_monotonic,
+    runtime_budget_snapshot,
+)
 
 
 def _settings(**overrides: Any) -> Settings:
@@ -19,6 +26,68 @@ def _settings(**overrides: Any) -> Settings:
 
 
 class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
+    def test_round_budget_shadow_records_without_blocking_retry(self) -> None:
+        now = time.monotonic()
+        budget = build_runtime_budget(
+            _settings(
+                model_round_budget_enforced=False,
+                model_round_timeout_seconds=20,
+                model_reply_reserve_seconds=15,
+                model_min_retry_remaining_seconds=8,
+            ),
+            started_monotonic=now,
+        )
+        state = {"runtime_budget": budget}
+
+        snapshot = runtime_budget_snapshot(
+            state,
+            tier="planner",
+            reserve_reply=True,
+            now_monotonic=now,
+        )
+
+        self.assertEqual(snapshot["mode"], "shadow")
+        self.assertTrue(snapshot["would_skip_retry"])
+        self.assertTrue(can_start_model_retry(state, tier="planner", reserve_reply=True, now_monotonic=now))
+        self.assertIsNone(model_deadline_monotonic(state, tier="planner", reserve_reply=True))
+
+    def test_round_budget_enforced_reserves_reply_time_for_planner(self) -> None:
+        now = time.monotonic()
+        budget = build_runtime_budget(
+            _settings(
+                model_round_budget_enforced=True,
+                model_round_timeout_seconds=60,
+                model_reply_reserve_seconds=15,
+            ),
+            started_monotonic=now,
+        )
+        state = {"runtime_budget": budget}
+
+        planner_deadline = model_deadline_monotonic(state, tier="planner", reserve_reply=True)
+        reply_deadline = model_deadline_monotonic(state, tier="reply")
+
+        self.assertAlmostEqual(float(planner_deadline or 0), now + 45, places=3)
+        self.assertAlmostEqual(float(reply_deadline or 0), now + 60, places=3)
+
+    def test_round_budget_uses_strong_limit_only_for_strong_reply(self) -> None:
+        now = time.monotonic()
+        state = {
+            "runtime_budget": build_runtime_budget(
+                _settings(
+                    model_round_budget_enforced=True,
+                    model_round_timeout_seconds=60,
+                    model_strong_round_timeout_seconds=75,
+                ),
+                started_monotonic=now,
+            )
+        }
+
+        ordinary_deadline = graph_deadline_monotonic(state, phase="full", strong_reply=False)
+        strong_deadline = graph_deadline_monotonic(state, phase="full", strong_reply=True)
+
+        self.assertAlmostEqual(float(ordinary_deadline or 0), now + 60, places=3)
+        self.assertAlmostEqual(float(strong_deadline or 0), now + 75, places=3)
+
     async def test_model_client_uses_five_second_connect_timeout(self) -> None:
         client = ModelClient(_settings(model_timeout_seconds=45))
 

@@ -34,6 +34,7 @@ from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.customer_payment_state import normalize_prepay_facts
 from app.services.model_client import ModelClient
 from app.services.risk_hold import HEALTH_RISK_TERMS, current_health_risk_hold_for_model
+from app.services.runtime_budget import can_start_model_retry, model_deadline_monotonic, runtime_budget_snapshot
 from app.services.store_snapshot_service import store_snapshot_rows
 
 PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
@@ -133,7 +134,10 @@ async def run_planner_brain_v2(
     node_started_at = time.monotonic()
     primary_budget = _model_budget_seconds(model_client, "model_planner_primary_budget_seconds", 25.0)
     recovery_budget = _model_budget_seconds(model_client, "model_planner_recovery_budget_seconds", 10.0)
-    primary_deadline = node_started_at + primary_budget
+    primary_deadline = _capped_deadline(
+        node_started_at + primary_budget,
+        model_deadline_monotonic(planner_state, tier="planner", reserve_reply=True),
+    )
     try:
         payload = await _chat_json_with_deadline(
             model_client,
@@ -148,11 +152,41 @@ async def run_planner_brain_v2(
         initial_usage = model_usage_snapshot(model_client)
         retry_call: dict[str, Any] = {
             "name": "planner_brain_timeout_retry",
-            "input": {"tier": "fast", "previous_error": initial_error},
+            "input": {
+                "tier": "fast",
+                "previous_error": initial_error,
+                "runtime_budget": runtime_budget_snapshot(planner_state, tier="planner", reserve_reply=True),
+            },
         }
+        if not can_start_model_retry(planner_state, tier="planner", reserve_reply=True):
+            retry_call["skipped"] = "insufficient_round_budget"
+            nested_calls.append(retry_call)
+            plan = planner_unavailable_fallback_plan(
+                planner_state,
+                reason=f"{initial_error}; timeout_retry_skipped=insufficient_round_budget",
+            )
+            _attach_derived_planner_facts(plan, planner_state)
+            return plan, {
+                "name": "planner_brain_v2",
+                "input": {"tier": tier, "messages": initial_messages},
+                "error": f"{initial_error}; timeout_retry_skipped=insufficient_round_budget",
+                "raw_json_output": {},
+                "output": _planner_call_output(plan),
+                "usage": initial_usage,
+                "deadline": {
+                    "primary_budget_seconds": primary_budget,
+                    "recovery_budget_seconds": recovery_budget,
+                    "runtime_budget": runtime_budget_snapshot(planner_state, tier="planner", reserve_reply=True),
+                    "elapsed_ms": int((time.monotonic() - node_started_at) * 1000),
+                },
+                "nested_calls": nested_calls,
+            }
         retry_messages = planner_v2_timeout_retry_messages_for_model(planner_state, previous_error=initial_error)
         retry_call["input"]["messages"] = retry_messages
-        recovery_deadline = time.monotonic() + recovery_budget
+        recovery_deadline = _capped_deadline(
+            time.monotonic() + recovery_budget,
+            model_deadline_monotonic(planner_state, tier="planner", reserve_reply=True),
+        )
         try:
             payload = await _chat_json_with_deadline(
                 model_client,
@@ -194,9 +228,28 @@ async def run_planner_brain_v2(
         violations = list(plan.get("tool_policy_violations", []))
         if not violations:
             break
+        if not can_start_model_retry(planner_state, tier="planner", reserve_reply=True):
+            nested_calls.append(
+                {
+                    "name": "planner_brain_repair",
+                    "input": {
+                        "tier": tier,
+                        "attempt": repair_attempt,
+                        "violations": violations,
+                        "runtime_budget": runtime_budget_snapshot(planner_state, tier="planner", reserve_reply=True),
+                    },
+                    "skipped": "insufficient_round_budget",
+                }
+            )
+            break
         repair_call: dict[str, Any] = {
             "name": "planner_brain_repair",
-            "input": {"tier": tier, "attempt": repair_attempt, "violations": violations},
+            "input": {
+                "tier": tier,
+                "attempt": repair_attempt,
+                "violations": violations,
+                "runtime_budget": runtime_budget_snapshot(planner_state, tier="planner", reserve_reply=True),
+            },
         }
         try:
             repair_messages = planner_v2_repair_messages_for_model(
@@ -232,6 +285,7 @@ async def run_planner_brain_v2(
             "primary_budget_seconds": primary_budget,
             "recovery_budget_seconds": recovery_budget,
             "remaining_primary_budget_ms": max(0, int((primary_deadline - time.monotonic()) * 1000)),
+            "runtime_budget": runtime_budget_snapshot(planner_state, tier="planner", reserve_reply=True),
             "elapsed_ms": int((time.monotonic() - node_started_at) * 1000),
         },
     }
@@ -271,6 +325,10 @@ def _model_budget_seconds(model_client: ModelClient, name: str, default: float) 
         return max(0.1, float(value))
     except (TypeError, ValueError):
         return default
+
+
+def _capped_deadline(node_deadline: float, round_deadline: float | None) -> float:
+    return min(node_deadline, round_deadline) if round_deadline is not None else node_deadline
 
 
 def _planner_state_with_derived_facts(state: AgentState) -> AgentState:

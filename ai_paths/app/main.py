@@ -108,6 +108,7 @@ chat_runtime = ChatRuntime(
     platform_reply_coordinator=platform_reply_coordinator,
     sop_execution_service=sop_execution_service,
     profile_event_extractor=reply_graphs.profile_event_extractor,
+    settings=settings,
 )
 outreach_service = OutreachService(
     repository=repository,

@@ -17,6 +17,25 @@ from app.services.workflow_compat import workflow_response_from_chat
 
 
 class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_runtime_initial_state_contains_shared_round_budget(self) -> None:
+        runtime = ChatRuntime(
+            full_graph=_EmptyReplyGraph(),
+            trace_logger=_TraceLogger(),
+            repository=_Repository(),
+            settings=Settings(
+                _env_file=None,
+                model_round_budget_enforced=True,
+                model_round_timeout_seconds=60,
+                model_reply_reserve_seconds=15,
+            ),
+        )
+
+        state = runtime._initial_state(_request("测试"), "request-id", {})
+
+        self.assertEqual(state["runtime_budget"]["mode"], "enforced")
+        self.assertEqual(state["runtime_budget"]["ordinary_timeout_seconds"], 60)
+        self.assertEqual(state["runtime_budget"]["reply_reserve_seconds"], 15)
+
     async def test_second_platform_request_preempts_first_and_uses_merged_content(self) -> None:
         graph = _SlowPlannerGraph()
         runtime = ChatRuntime(

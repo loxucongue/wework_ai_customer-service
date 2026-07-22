@@ -10,6 +10,7 @@ from uuid import uuid4
 from app.chat_request_context import build_request_context, conversation_id_from_request, conversation_title
 from app.chat_runtime_helpers import failed_state_from_exception, safe_repository_call
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
+from app.config import Settings
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.state import AgentState
@@ -18,6 +19,7 @@ from app.services.customer_scope import customer_scope_from_state
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
+from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic
 from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
@@ -37,6 +39,7 @@ class ChatRuntime:
         platform_reply_coordinator: PlatformReplyCoordinator | None = None,
         sop_execution_service: SopExecutionService | None = None,
         profile_event_extractor: Any | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self._full_graph = full_graph
         self._planner_graph = planner_graph or full_graph
@@ -48,6 +51,7 @@ class ChatRuntime:
         self._platform_reply_coordinator = platform_reply_coordinator
         self._sop_execution_service = sop_execution_service
         self._profile_event_extractor = profile_event_extractor
+        self._settings = settings
 
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
         request_id = str(uuid4())
@@ -57,7 +61,7 @@ class ChatRuntime:
         initial_state = self._initial_state(request, request_id, request_context)
 
         try:
-            final_state: AgentState = await self._full_graph.ainvoke(initial_state)
+            final_state = await self._invoke_graph_with_budget(self._full_graph, initial_state, phase="full")
         except Exception as exc:
             final_state = self._handle_graph_exception(initial_state, exc)
 
@@ -276,8 +280,10 @@ class ChatRuntime:
         control_record: PlatformReplyRecord | None,
     ) -> AgentState:
         if not control_record:
-            return await self._planner_graph.ainvoke(initial_state)
-        graph_task = asyncio.create_task(self._planner_graph.ainvoke(initial_state))
+            return await self._invoke_graph_with_budget(self._planner_graph, initial_state, phase="planner")
+        graph_task = asyncio.create_task(
+            self._invoke_graph_with_budget(self._planner_graph, initial_state, phase="planner")
+        )
         cancel_task = asyncio.create_task(control_record.cancel_event.wait())
         done, pending = await asyncio.wait({graph_task, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
         if cancel_task in done and control_record.cancel_event.is_set():
@@ -325,7 +331,7 @@ class ChatRuntime:
                 if self._platform_reply_coordinator:
                     await self._platform_reply_coordinator.complete(control_record)
                 return state
-            final_state = await self._finalize_graph.ainvoke(final_state)
+            final_state = await self._invoke_graph_with_budget(self._finalize_graph, final_state, phase="reply")
             _preserve_reply_control(final_state, planner_state)
             messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
             if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
@@ -396,7 +402,7 @@ class ChatRuntime:
                 if self._platform_reply_coordinator:
                     await self._platform_reply_coordinator.complete(control_record)
                 return state
-            final_state: AgentState = await self._full_graph.ainvoke(async_state)
+            final_state = await self._invoke_graph_with_budget(self._full_graph, async_state, phase="full")
             _preserve_reply_control(final_state, initial_state)
             ai_messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
             if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
@@ -493,7 +499,7 @@ class ChatRuntime:
                     _append_async_send_trace(final_state, skipped)
                     self._save_state(conversation_id, final_state)
                     return
-                final_state = await self._finalize_graph.ainvoke(final_state)
+                final_state = await self._invoke_graph_with_budget(self._finalize_graph, final_state, phase="reply")
                 _preserve_reply_control(final_state, planner_state)
                 messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
                 if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
@@ -587,7 +593,7 @@ class ChatRuntime:
                     _append_async_send_trace(async_state, skipped)
                     self._save_state(conversation_id, async_state)
                     return
-                final_state: AgentState = await self._full_graph.ainvoke(async_state)
+                final_state = await self._invoke_graph_with_budget(self._full_graph, async_state, phase="full")
                 _preserve_reply_control(final_state, initial_state)
                 messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
                 if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
@@ -780,8 +786,29 @@ class ChatRuntime:
         )
         return conversation_id
 
-    @staticmethod
-    def _initial_state(request: ChatRequest, request_id: str, request_context: dict[str, Any]) -> AgentState:
+    async def _invoke_graph_with_budget(
+        self,
+        graph: Any,
+        state: AgentState,
+        *,
+        phase: str,
+    ) -> AgentState:
+        deadline = graph_deadline_monotonic(
+            state,
+            phase=phase,
+            strong_reply=_has_structured_professional_assist(state),
+        )
+        if deadline is None:
+            return await graph.ainvoke(state)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"{phase} graph round deadline exhausted")
+        try:
+            return await asyncio.wait_for(graph.ainvoke(state), timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(f"{phase} graph round deadline exhausted after {remaining:.1f}s") from exc
+
+    def _initial_state(self, request: ChatRequest, request_id: str, request_context: dict[str, Any]) -> AgentState:
         test_isolated = bool(request_context.get("test_isolated"))
         state: AgentState = {
             "request_id": request_id,
@@ -803,6 +830,7 @@ class ChatRuntime:
             "request_context": request_context,
             "test_isolated": test_isolated,
             "memory_persist_allowed": bool(request_context.get("memory_persist_allowed")),
+            "runtime_budget": build_runtime_budget(self._settings),
             "trace": [],
             "errors": [],
         }
@@ -968,6 +996,27 @@ def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
 def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
     del state
     return [{"type": "text", "order": 1, "content": {"text": "我在，继续帮您处理。"}}]
+
+
+def _has_structured_professional_assist(state: AgentState) -> bool:
+    handoff = state.get("handoff") if isinstance(state.get("handoff"), dict) else {}
+    if handoff.get("needed"):
+        return True
+    reply_strategy = state.get("reply_strategy") if isinstance(state.get("reply_strategy"), dict) else {}
+    risk_hold = reply_strategy.get("risk_hold")
+    if isinstance(risk_hold, dict) and (
+        str(risk_hold.get("risk_hold") or "") == "health_check_required"
+        or str(risk_hold.get("severity") or "") == "hard"
+    ):
+        return True
+    for key in ("required_tools", "planner_tool_calls"):
+        tools = state.get(key) if isinstance(state.get(key), list) else []
+        if any(isinstance(item, dict) and str(item.get("name") or "") == "professional_assist" for item in tools):
+            return True
+    fact_envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = fact_envelope.get("structured_facts") if isinstance(fact_envelope, dict) else {}
+    professional_assist = structured.get("professional_assist") if isinstance(structured, dict) else {}
+    return isinstance(professional_assist, dict) and professional_assist.get("status") == "requested"
 
 
 def _platform_reply_source(state: AgentState) -> str:

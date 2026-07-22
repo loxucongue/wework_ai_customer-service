@@ -6,7 +6,8 @@ from typing import Any, Callable
 
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
-from app.graph.nodes.reply_validation import collect_reply_soft_warnings, validate_reply_consistency
+from app.graph.nodes.reply_quality import collect_reply_soft_warnings
+from app.graph.nodes.reply_validation import validate_reply_consistency
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
 from app.graph.nodes.store_scope_summary import region_mentioned_in_text
 from app.policies.constants import KNOWN_STORE_NAMES
@@ -17,6 +18,7 @@ from app.services.payment_collection import (
 )
 from app.services.customer_payment_state import payment_collection_order_fact
 from app.services.risk_hold import explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
+from app.services.runtime_budget import can_start_model_retry, model_deadline_monotonic, runtime_budget_snapshot
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
@@ -212,13 +214,17 @@ async def _run_reply_model_pipeline(
     primary_budget = _model_budget_seconds(model_client, "model_reply_primary_budget_seconds", 30.0)
     recovery_budget = _model_budget_seconds(model_client, "model_reply_recovery_budget_seconds", 15.0)
     started_at = time.monotonic()
-    primary_deadline = started_at + primary_budget
+    primary_deadline = _capped_deadline(
+        started_at + primary_budget,
+        model_deadline_monotonic(state, tier=tier),
+    )
     model_call: dict[str, Any] = {
         "name": "reply_synthesizer_model",
         "input": {"tier": tier, "required": True, "messages": model_messages},
         "deadline": {
             "primary_budget_seconds": primary_budget,
             "recovery_budget_seconds": recovery_budget,
+            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
         },
     }
     primary_error: Exception | None = None
@@ -237,6 +243,13 @@ async def _run_reply_model_pipeline(
             messages = _prepare_structural_messages(messages, state, warnings)
             validate_reply_consistency(messages, state)
         except Exception as validation_exc:
+            if not can_start_model_retry(state, tier=tier):
+                model_call["retry"] = {
+                    "reason": f"{type(validation_exc).__name__}: {validation_exc}",
+                    "status": "skipped_insufficient_round_budget",
+                    "runtime_budget": runtime_budget_snapshot(state, tier=tier),
+                }
+                raise
             retry_messages = _reply_retry_messages(model_messages, validation_exc)
             retry_payload = await _chat_json_with_deadline(
                 model_client,
@@ -262,7 +275,17 @@ async def _run_reply_model_pipeline(
         model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
 
     recovery_messages = _reply_recovery_messages(state)
-    recovery_deadline = time.monotonic() + recovery_budget
+    if not can_start_model_retry(state, tier=tier):
+        model_call["recovery"] = {
+            "status": "skipped_insufficient_round_budget",
+            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
+        }
+        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+        raise RuntimeError(f"reply primary failed: {type(primary_error).__name__}: {primary_error}") from primary_error
+    recovery_deadline = _capped_deadline(
+        time.monotonic() + recovery_budget,
+        model_deadline_monotonic(state, tier=tier),
+    )
     recovery_call: dict[str, Any] = {
         "tier": "fast",
         "messages": recovery_messages,
@@ -395,6 +418,10 @@ def _model_budget_seconds(model_client: ModelClient, name: str, default: float) 
         return max(0.1, float(value))
     except (TypeError, ValueError):
         return default
+
+
+def _capped_deadline(node_deadline: float, round_deadline: float | None) -> float:
+    return min(node_deadline, round_deadline) if round_deadline is not None else node_deadline
 
 
 def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> list[dict[str, Any]]:
