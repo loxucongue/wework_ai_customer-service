@@ -4,7 +4,9 @@ import asyncio
 import json
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.policies.sales_flow import mainline_stage_for_pack, precision_qa_index_for_gate, sales_mainline_for_model
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
@@ -13,6 +15,7 @@ from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, payment_collection_order_fact, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
 from app.services.model_client import ModelClient
+from app.services.sop_event_decision import normalize_event_decision, selected_candidate_packs
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
@@ -52,14 +55,17 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `platform_actions`：平台任务中的完整可编辑 text 与只读结构消息。
 - `current_platform_task.message_content`：平台本轮明确要求触达的原始内容，是 `platform_actions` 模式下的当前任务目标。
 - `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
+- `event_policy_evidence`：代码整理的触达频率、夜间积压和普通 AI 接管资格事实。
+- `mainline`：当前配置的销售主线阶段，只用于判断未完成步骤和相邻步骤。
 - `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
 
 `editable_text_messages` 是主要可操作文本素材。`readonly_messages` 中的图片、视频、门店卡和内部 notice 都是结构事实，不能修改、删除、重排或复制。
 `payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `missing_matching_current_order` 或 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。
+选择 `merge` 时，文本 order 必须以 `adjacent_merge_options` 中对应组合的 `message_editing_context` 为准；不要沿用单包内部可能重复的 order。
 
 # Task
 1. 理解事件触发的 SOP 阶段、最近聊天和候选包的阶段目的。
-2. 判断是否发送：`first_add_flow` 只能选择一个 `candidate_sops.id`；`platform_actions` 只能决定平台 actions 是否发送。
+2. 输出 `send/merge/skip/defer/handoff_to_ai_reply` 之一；`first_add_flow` 的包 ID 必须来自 `candidate_sops.id`，`platform_actions` 只能决定平台 actions 是否发送。
 3. 如果发送内容与当前对话的称呼、语气、消息数量或承接顺序明显不自然，才输出 `text_adjustments` 或 `message_operations` 调整 text；正常时输出空数组。
 
 # Decision Policy
@@ -94,7 +100,29 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
   - `payment_collection_gate.status=supported`：可按正常 SOP 判断发送。
   - `payment_collection_gate.status=missing_matching_current_order`：不能原样发送预约金卡。若客户当前阶段适合继续主动触达，应删除该卡并把 text 改成轻触达、登记或解释活动价值；若删除卡后只剩不合适内容，才拒发。
   - `payment_collection_gate.status=paid_skip_card`：客户已付，不得再发预约金卡；只可保留/改写为已付后的姓名电话或到店安排轻触达。
+  - `payment_collection_gate.status=activity_intro_required`：完整活动介绍/价格铺垫还没有真实完成证据，不得发送预约金卡。此时应优先选择活动介绍、效果铺垫或其他非收款候选；如果候选里没有合适包，拒发并说明还需先补活动介绍。
+  - `event_s10_price_quote_60min` 这类短报价包不能单独替代 `s10_activity_intro` 的完整活动介绍。只有 `completed_sop_pack_ids` 含 `s10_activity_intro`，或 `completed_sop_categories` 含 `activity_intro/s10_activity_intro`，才算收款卡前置活动介绍已完成。
+- `payment_collection_gate` 必须逐个候选包独立判断。一个后置收款包是 `activity_intro_required`，不代表同轮其他非收款候选也不可发；如果候选中存在 `not_required/supported` 的活动介绍或效果包，应选择合法的前序包，不能因为另一个候选被拦而整轮 `skip`。
 - 只有在 `conversation_activity.latest_customer_pending_ai_reply=true`、客户明确拒绝当前核心行动、投诉/付款异常/身体不适、或候选包会明显造成事实错误时，才 `send_sop=false`。
+- 客户明确表示“不交/不想付/先别发预约金/到店再付”等拒绝当前预约金动作时，整个收款阶段候选都与当前立场冲突，必须 `skip` 或 `defer`。不能通过删除 `payment_collection` 后继续发送“留名额、付完登记”等催款文本来绕过拒绝；文本润色也不能把拒付改写成可继续催付。
+
+# Plan A Decision Contract
+- `send`：发送一个未完成主线包；这是进入主动触达判断后的默认动作。
+- `merge`：只用于夜间积压或节奏明显落后，且只可选择两个顺序相邻的未完成主线包。不能把三个以上包一次发出。
+- `strategy=continue_mainline/recover_backlog` 表示本轮实际推进，只能搭配 `send/merge`；若因客户立场、当前诉求或事实风险拒发，使用 `strategy=conflict_guard` 搭配 `skip/defer`；只有频率限制才使用 `frequency_guard`。不要一边声称继续主线，一边输出 skip。
+- `candidate_sops` 已按主线先后顺序排列。除非第一个候选已由更高优先级事实证明完成、当前明确冲突或结构不合法，否则选择必须从第一个候选开始；仅仅“距离触发时间已久”或“节奏落后”不能跳过第一个候选。
+- 夜间积压两个以上阶段时，只能发送第一个候选，或合并第一个与第二个候选；不能单独选择第二个，也不能绕过前序阶段挑后面的包。`backlog_count>=3` 仍然最多只恢复前两个，剩余阶段留给以后触达。
+- `skip`：当前频率过高、语义重复、客户立场硬冲突或没有合法候选时本次不发。
+- `defer`：内容仍应发送，但当前时段或顺序不合适；必须说明建议窗口，不能把它当永久跳过。
+- `handoff_to_ai_reply`：极少数异常分支。只有 `event_policy_evidence.ai_reply_policy.allowed=true` 才可选择；否则绝对禁止。
+
+普通 AI 交接不是“表达更自然”的替代方案。它必须同时具备未处理的新客户消息和可执行的普通 AI 接管链路。客户沉默、最后一条是小贝/销售/SOP、只回复短确认、未付但没有新问题、或候选 SOP 能覆盖当前阶段时，都不得交普通 AI。
+
+客户沉默时，平台事件本身就是“现在检查主动触达”的依据；没有客户新消息不等于不能发。只要近期不在连续聊天、没有明确拒绝/风险/重复、候选主线顺序正确，就应发送当前候选，不需要额外等待客户先表现出付款意愿或正向承接。
+
+触达频率只作为模型判断证据：优先看当前客户是否有新进展，再看今天发送次数和最近发送时间，最后才看历史累计。不能仅因历史累计次数较多永久停止触达。夜间积压最多融合两个相邻主线包，且不得跨过未完成的活动价格铺垫直接发收款卡。
+`touch_frequency.daily_soft_limit` 是平台可调整的当日软上限，不是代码硬禁令。输入会同时给出 `daily_soft_limit_reached`、`silent_soft_limit_reached` 和 `has_new_customer_progress_since_last_touch` 三个确定性比较事实。当两个 reached 都为 true、`has_new_customer_progress_since_last_touch=false`、`pending_backlog.has_pending=false` 时，本次必须 `skip` 或 `defer`，不要继续机械触达。只有存在新的客户进展、明确重发诉求或夜间 backlog 时才可说明例外理由后继续发送；历史累计次数本身仍不能永久阻止触达。
+- `has_new_customer_progress_since_last_touch=true` 是代码根据触达后真实客户消息计算的确定性事实，不等于“仍有待回复消息”。即使销售随后已经回答，客户的新开口、认可或状态推进仍然打破了连续沉默；当前候选正好是下一阶段且无冲突时，应允许本轮继续推进，不能重新推断成“没有新进展”再用软上限跳过。
 
 # Few-Shot Calibration
 - 客户明确表示想到店再付、暂时不交预约金，候选包的核心行动是立即发收款卡：客户立场与核心行动相反，拒发，不通过润色继续推卡。
@@ -106,14 +134,32 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 已经发过效果铺垫，客户仍沉默，后续候选里有活动报价包：推进报价和活动价值，不要因为客户没有回复效果图而空拒。
 - 已经发过效果铺垫、活动报价尚未发送，而同一批候选同时出现活动报价包和“未付款效果跟进”：选择活动报价包；若缺匹配订单，删除其中 payment_collection 并把收款承诺改成自然的活动价值轻触达，不能先发“未付款跟进”。
 - 已经报价，客户仍沉默，后续候选里有预约金价值或收款包：可推进预约金价值；如果客户明确拒付、已付、投诉/付款异常/身体不适，则不发该包。
+- 候选同时有 `s10_activity_intro` 和收款包，且收款包显示 `activity_intro_required`：发送 `s10_activity_intro`，不要合并收款包，也不要误判成“没有合规候选”。
+- `daily_soft_limit_reached=true` 且 `silent_soft_limit_reached=true`，同时没有夜间积压和触达后的客户新进展：本次必须跳过或延后，并在 `frequency_reason` 说明频率保护；不能因为还有未完成包就继续刷屏。
 
 # Text Adjustment Policy
 - 由你语义判断是否需要润色，不按关键词机械判断。
 - 调整目的仅限于让既有 SOP 更像真人顺着当前聊天自然发出：可调整称呼、语气、连接句、表达顺序，以及 text 消息的拆合和数量。
 - 这是企业微信一对一聊天，不是群发公告、短信通知或机构宣传稿。称呼可以用“您”或“亲”，也可以直接接上文；不要用“尊敬的客户/尊敬的顾客”这类式称呼。
 - 如果原文像系统通知或公告，不能只换一两个词；要在不改事实和阶段目标的前提下，改成销售正在微信里接着聊的短句。避免“您好，温馨提醒”“请及时参与”“本机构现隆重开展”“诚邀您参与”等通知体。
+- 润色只能承接输入中真实出现过的聊天、已发送步骤和事件事实。没有聊天或完成记录证明时，不得擅自写“前面和您说过”“刚才发您的”“还是那家”“您之前看过”“已经给您留了”等虚构历史；平台动作首次触达应直接自然表达当前内容。
 - 聊天口吻应该是短、直接、有上下文：先顺着客户刚才的问题或前序阶段，再说本包要推进的内容。不要写“温馨提醒、及时参与、感谢您的关注”这类客服模板句。
 - 最近一条真实客户消息包含明确顾虑、问题或不便，且最终决定发送时，最早一条可编辑 text 必须先用一句短话直接承接该内容，再衔接原话术包目标；原文已经自然承接时不必硬改。
+- 原消息已经完整提出城市、区域、斑点情况、姓名电话或付款等行动时，不要再插入一句同义追问，也不要把同一行动换个说法重复两遍。润色的目标是衔接自然，不是增加消息数量；原文自然时保持空调整。
+- `latest_messages` 为空且当前发送的是普通候选 SOP 包时，没有需要承接的客户原话；候选包本身可独立发送就必须保持 `text_adjustments=[]`、`message_operations=[]`。不得凭生命周期、阶段名或旧画像臆造“前面/刚才/那家”等上下文。
+- 同一条原始 text 不要同时执行 `insert_text_before/after` 和 `replace_text`；不得插入与原 text 目标、事实和行动基本相同的铺垫句。需要改写时只 replace，需要补充真实上下文时才 insert，两者不要重复同一句意思。
+- 主动触达的目标是让客户重新开口并继续主线，不要把本可直接介绍的内容改成“您要不要了解/想了解我再说”的被动征询；可直接自然说明当前内容，或只询问确实缺失的必要信息。
+- 对 `sop_platform_task`，平台传入的 `actions` 就是本轮受信发送内容，`selected_pack_ids` 可以为空；润色后必须仍是一条信息完整、可以单独发送的微信消息。不要只写“我简单跟您说下/我给您介绍一下/我接着发您”却没有本轮实际内容，也不要擅自再选择不存在的 SOP 包。
+
+平台公告润色正反例：
+- 输入只有“尊敬的客户您好，温馨提醒您及时参与本次活动”，且近期聊天/完成记录为空。
+- 正确：`亲，这次活动现在还可以参加，您有顾虑直接跟我说就行。`
+- 错误：`前面和您说的活动...`，因为输入没有证明前面说过。
+- 错误：`您是想了解活动对吧，我简单说下。`，因为它替客户假设意图，而且只预告、不提供本轮内容。
+
+频率与立场对照例：
+- 客户已明确“先别发预约金”，候选是收款包：必须 `skip/defer`，不能删掉卡片后发送剩余催付文本。
+- `today_count=2` 且两个软上限都达到，但 `has_new_customer_progress_since_last_touch=true`，销售已承接客户新进展，候选是顺序正确的下一阶段：软上限不再代表连续沉默，应发送下一阶段；不要因为最新一条是销售回复就否认客户刚产生过的新进展。
 - “共情”必须对应客户真实表达，不能机械添加“理解您、确实不容易”；客户只是普通询问时直接回答并衔接即可。
 - 只有 `send_sop=true` 时才能输出 `text_adjustments/message_operations`；调整不能把拒发冲突改写成可发，润色不能把拒发冲突改写成可发。
 - 可用 `message_operations`：
@@ -135,7 +181,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 上面只校准口吻和改写幅度，不是要求复读固定句子。根据输入上下文自然改写。
 
 # Do Not
-- 不输出普通 AI 回复；`need_ai_reply` 必须为 false。
+- 不输出普通 AI 的客户可见回复；只有合法 `handoff_to_ai_reply` 决策的兼容字段 `need_ai_reply` 才能为 true。
 - 不补门店、价格、档期、案例、订单或客户事实。
 - 不因为客户未回复、前序 SOP 已发或最近只有 staff 消息而拒发后续阶段。
 - 不输出内部分析、markdown 或 schema 之外的字段。
@@ -143,9 +189,14 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 # Output Schema
 只输出 JSON：
 {{
-  "send_sop": true,
-  "sop_pack_id": "first_add_flow 时必须来自 candidate_sops；platform_actions 时为空字符串",
-  "need_ai_reply": false,
+  "decision": "send | merge | skip | defer | handoff_to_ai_reply",
+  "strategy": "continue_mainline | recover_backlog | conflict_guard | frequency_guard | realtime_handoff",
+  "selected_pack_ids": ["first_add_flow 时来自 candidate_sops；send 只能1个，merge 必须是相邻2个"],
+  "merge_pack_ids": [],
+  "skip_reason": "skip/defer 时的内部原因",
+  "frequency_reason": "基于发送频率证据的判断",
+  "backlog_handling": "none | recover_one | merge_two",
+  "suggested_next_window": "defer 时给出建议窗口，否则空字符串",
   "reason": "一句内部判断原因",
   "text_adjustments": [{{"order": 1, "text": "仅改写已有 text 的润色结果"}}],
   "message_operations": [{{"op": "insert_text_after", "after_order": 1, "text": "只新增一句无新事实的承接 text"}}]
@@ -318,6 +369,13 @@ class SopExecutionService:
                 deadline_monotonic=time.monotonic() + self.chat_gate_total_timeout_seconds,
             )
             result["selector_output"] = selector_output
+            result["decision"] = _string(selector_output.get("decision"))
+            result["selected_pack_ids"] = [
+                _string(item) for item in selector_output.get("selected_pack_ids") or [] if _string(item)
+            ]
+            result["frequency_reason"] = _string(selector_output.get("frequency_reason"))
+            result["backlog_handling"] = _string(selector_output.get("backlog_handling"))
+            result["suggested_next_window"] = _string(selector_output.get("suggested_next_window"))
             result["model_usage"] = dict(self.model_client.last_usage or {})
             route = _chat_gate_route(selector_output)
             result["route"] = route
@@ -628,6 +686,7 @@ class SopExecutionService:
         customer_context: dict[str, Any] | None = None,
         candidate_packs: list[dict[str, Any]] | None = None,
         actions_reply_messages: list[dict[str, Any]] | None = None,
+        event_policy_evidence: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         candidate_packs = candidate_packs or []
@@ -669,6 +728,7 @@ class SopExecutionService:
                 actions_reply_messages=actions_reply_messages,
                 completed_sop_pack_ids=completed_ids,
                 completed_sop_categories=completed_categories,
+                event_policy_evidence=event_policy_evidence or {},
             )
             result["selector_input"] = compact(selector_input, max_chars=6000)
             selector_output, model_attempts, model_error = await self._judge_event_sop_with_retries(selector_input)
@@ -690,12 +750,12 @@ class SopExecutionService:
             result["message_operations"] = _message_operations(selector_output.get("message_operations"))
 
             if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}:
-                selected = _selected_pack(selector_output, candidate_packs)
+                selected = selected_candidate_packs(selector_output, candidate_packs)
                 send_sop = bool(selector_output.get("send_sop") and selected)
                 result.update(
                     {
-                        "sop_pack_id": str(selected.get("id") or ""),
-                        "sop_pack_name": str(selected.get("name") or ""),
+                        "sop_pack_id": str(selected[0].get("id") or "") if selected else "",
+                        "sop_pack_name": " + ".join(str(pack.get("name") or "") for pack in selected),
                         "send_sop": send_sop,
                     }
                 )
@@ -708,7 +768,15 @@ class SopExecutionService:
 
             result.update(
                 {
-                    "mode": "event_selected" if send_sop else "event_rejected",
+                    "mode": (
+                        "event_selected"
+                        if send_sop
+                        else "event_deferred"
+                        if selector_output.get("decision") == "defer"
+                        else "event_handoff"
+                        if selector_output.get("decision") == "handoff_to_ai_reply"
+                        else "event_rejected"
+                    ),
                     "need_ai_reply": bool(selector_output.get("need_ai_reply")),
                     "reason": str(selector_output.get("reason") or result.get("reason") or ""),
                 }
@@ -810,7 +878,61 @@ class SopExecutionService:
             temperature=0,
             deadline_monotonic=deadline_monotonic,
         )
-        return data if isinstance(data, dict) else {}
+        normalized, violations = normalize_event_decision(data if isinstance(data, dict) else {}, selector_input)
+        if not violations:
+            return normalized
+        repair_messages = [
+            {"role": "system", "content": SOP_EVENT_SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": (
+                    "# Repair Task\n"
+                    "上一份 JSON 违反主动 SOP 决策结构合同。只修正枚举、候选包数量、候选顺序、相邻关系、"
+                    "已完成包幂等、结构消息发送资格和交接资格；"
+                    "不要改变输入事实，不要输出 schema 外字段。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "selector_input": selector_input,
+                        "invalid_output": data if isinstance(data, dict) else {},
+                        "violations": violations,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        ]
+        repaired = await self.model_client.chat_json(
+            repair_messages,
+            tier="reply",
+            temperature=0,
+            deadline_monotonic=deadline_monotonic,
+        )
+        repaired_output, repaired_violations = normalize_event_decision(
+            repaired if isinstance(repaired, dict) else {},
+            selector_input,
+        )
+        if not repaired_violations:
+            repaired_output["repair_applied"] = True
+            repaired_output["initial_violations"] = violations
+            return repaired_output
+        return {
+            "decision": "skip",
+            "send_sop": False,
+            "sop_pack_id": "",
+            "selected_pack_ids": [],
+            "merge_pack_ids": [],
+            "need_ai_reply": False,
+            "reason": "event_decision_invalid_after_repair",
+            "error": "event_decision_invalid_after_repair:" + ",".join(repaired_violations),
+            "text_adjustments": [],
+            "message_operations": [],
+            "initial_violations": violations,
+            "repair_violations": repaired_violations,
+        }
 
     def _record_chat_gate_task(
         self,
@@ -1124,6 +1246,29 @@ def _event_summary(payload: dict[str, Any], customer: dict[str, Any]) -> dict[st
         "platform_task_id": _string(customer_sop.get("platform_task_id")) or _string(root_sop.get("platform_task_id")),
         "first_added_trace_id": _string(first_added.get("trace_id")),
         "ai_auto_reply": conversation.get("ai_auto_reply"),
+        "event_time": _event_time_summary(payload),
+    }
+
+
+def _event_time_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    raw = _string(payload.get("created_at") or payload.get("upstream_created_at"))
+    if not raw:
+        return {"source": "missing", "timezone": "Asia/Shanghai"}
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        utc_value = parsed.astimezone(timezone.utc)
+        local_value = parsed.astimezone(ZoneInfo("Asia/Shanghai"))
+    except (TypeError, ValueError):
+        return {"source": "payload", "raw": raw, "timezone": "Asia/Shanghai", "parse_status": "failed"}
+    return {
+        "source": "payload",
+        "utc": utc_value.isoformat(),
+        "local": local_value.isoformat(),
+        "timezone": "Asia/Shanghai",
+        "local_date": local_value.date().isoformat(),
+        "local_hour": local_value.hour,
     }
 
 
@@ -1253,6 +1398,7 @@ def _event_selector_input(
     actions_reply_messages: list[dict[str, Any]],
     completed_sop_pack_ids: list[str],
     completed_sop_categories: list[str],
+    event_policy_evidence: dict[str, Any],
 ) -> dict[str, Any]:
     memory_context = _customer_memory_context(customer_memory)
     due_count = sum(1 for pack in candidate_packs if _string(pack.get("_candidate_group")) != "next_step")
@@ -1274,11 +1420,14 @@ def _event_selector_input(
                 "再评估 next_step 候选。next_step 只用于继续同一新客 SOP 节奏，不能编造事实或绕过风险边界。"
             ),
         },
+        "mainline": sales_mainline_for_model(),
+        "event_policy_evidence": event_policy_evidence,
         **memory_context,
         "candidate_sops": [
             _sop_summary(pack, customer_memory=customer_memory, customer_context=customer_context)
             for pack in candidate_packs
         ],
+        "adjacent_merge_options": _adjacent_merge_options(candidate_packs),
         "platform_actions_summary": _messages_summary(actions_reply_messages),
         "platform_actions": _message_editing_context(actions_reply_messages),
         "platform_payment_collection_gate": _payment_collection_gate_summary(
@@ -1339,6 +1488,31 @@ def _payment_state_summary(customer_memory: dict[str, Any], customer_context: di
         "prepay_required": payment.get("prepay_required", order_gate.get("prepay_required")),
         "prepay_paid": payment.get("prepay_paid", order_gate.get("prepay_paid")),
     }
+
+
+def _adjacent_merge_options(candidate_packs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ordered = sorted(
+        (pack for pack in candidate_packs if isinstance(pack, dict)),
+        key=lambda item: (int(item.get("order") or 0), _string(item.get("id"))),
+    )
+    output: list[dict[str, Any]] = []
+    for index in range(max(0, len(ordered) - 1)):
+        pair = ordered[index : index + 2]
+        combined: list[dict[str, Any]] = []
+        order = 1
+        for pack in pair:
+            for message in sorted(_pack_messages(pack), key=lambda item: int(item.get("order") or 0)):
+                item = dict(message)
+                item["order"] = order
+                combined.append(item)
+                order += 1
+        output.append(
+            {
+                "pack_ids": [_string(pack.get("id")) for pack in pair],
+                "message_editing_context": _message_editing_context(combined),
+            }
+        )
+    return output
 
 
 def _customer_memory_context(memory: dict[str, Any]) -> dict[str, Any]:

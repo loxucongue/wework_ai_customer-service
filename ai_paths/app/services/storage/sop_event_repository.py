@@ -381,6 +381,50 @@ class SopEventRepositoryMixin:
             ).fetchall()
         return [self._decode_sop_send_task(dict(row)) for row in rows]
 
+    def list_recent_sop_send_tasks_for_customer(
+        self,
+        *,
+        customer_id: str,
+        external_userid: str,
+        corp_id: str = "",
+        wechat: str = "",
+        before: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if not str(wechat or "").strip():
+            return []
+        clauses = ["trigger_source='sop_event'"]
+        params: list[Any] = []
+        if external_userid:
+            clauses.append("external_userid=?")
+            params.append(external_userid)
+        elif customer_id:
+            clauses.append("customer_id=?")
+            params.append(customer_id)
+        else:
+            return []
+        if corp_id:
+            clauses.append("corp_id=?")
+            params.append(corp_id)
+        clauses.append("wechat=?")
+        params.append(wechat)
+        if before:
+            clauses.append("created_at<=?")
+            params.append(before)
+        safe_limit = max(1, min(int(limit or 100), 500))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM sop_send_tasks
+                WHERE {' AND '.join(clauses)}
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                [*params, safe_limit],
+            ).fetchall()
+        return [self._decode_sop_send_task(dict(row)) for row in rows]
+
     def get_sop_event_detail(self, event_id: str) -> dict[str, Any]:
         event = self.get_sop_event(event_id)
         if not event:
@@ -527,13 +571,23 @@ class SopEventRepositoryMixin:
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT sop_pack_id
+                SELECT sop_pack_id, send_payload_json
                 FROM sop_send_tasks
                 WHERE {' AND '.join(clauses)}
                 """,
                 params,
             ).fetchall()
-        return [str(row["sop_pack_id"]) for row in rows if str(row["sop_pack_id"] or "").strip()]
+        output: list[str] = []
+        for row in rows:
+            pack_id = str(row["sop_pack_id"] or "").strip()
+            if pack_id and not pack_id.startswith("merge:") and pack_id not in output:
+                output.append(pack_id)
+            send_payload = loads_dict(row["send_payload_json"])
+            for selected_id in send_payload.get("selected_sop_pack_ids") or []:
+                selected_id = str(selected_id or "").strip()
+                if selected_id and selected_id not in output:
+                    output.append(selected_id)
+        return output
 
     def list_sent_sop_categories_for_customer(
         self,
@@ -568,13 +622,23 @@ class SopEventRepositoryMixin:
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT DISTINCT sop_category
+                SELECT sop_category, send_payload_json
                 FROM sop_send_tasks
                 WHERE {' AND '.join(clauses)}
                 """,
                 params,
             ).fetchall()
-        return [str(row["sop_category"]) for row in rows if str(row["sop_category"] or "").strip()]
+        output: list[str] = []
+        for row in rows:
+            category = str(row["sop_category"] or "").strip()
+            if category and not category.startswith("merge:") and category not in output:
+                output.append(category)
+            send_payload = loads_dict(row["send_payload_json"])
+            for selected_category in send_payload.get("selected_sop_categories") or []:
+                selected_category = str(selected_category or "").strip()
+                if selected_category and selected_category not in output:
+                    output.append(selected_category)
+        return output
 
     @staticmethod
     def _decode_sop_event(row: dict[str, Any]) -> dict[str, Any]:

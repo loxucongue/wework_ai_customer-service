@@ -8,6 +8,11 @@ from tempfile import TemporaryDirectory
 
 from app.schemas import ChatRequest
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
+from app.services.sop_event_decision import (
+    build_event_ai_reply_policy,
+    combine_selected_pack_messages,
+    normalize_event_decision,
+)
 from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import (
     SOP_EVENT_SYSTEM_PROMPT,
@@ -224,6 +229,11 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quiet["window"], "00:00-08:00")
         self.assertEqual(quiet["quiet_activity_source"], "platform_auto_opening")
         self.assertEqual(quiet["inactivity_minutes"], 31)
+        self.assertTrue(repo.tasks[0]["send_payload"]["backlog_marker"]["pending"])
+        self.assertEqual(
+            repo.tasks[0]["send_payload"]["backlog_marker"]["reason"],
+            "suppressed_due_to_quiet_hours",
+        )
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
@@ -420,6 +430,21 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
+    def test_sop_event_daily_touch_soft_limit_is_exposed_as_model_evidence(self) -> None:
+        repo = _Repo()
+        service = _service(repo=repo, client=_OutreachClient(), daily_touch_soft_limit=4)
+
+        evidence = service._event_policy_evidence(
+            payload={"created_at": "2026-07-20T02:00:00+00:00"},
+            identity={"customer_id": "ext", "external_userid": "ext"},
+            conversation_activity={},
+        )
+
+        self.assertEqual(evidence["touch_frequency"]["daily_soft_limit"], 4)
+        self.assertFalse(evidence["touch_frequency"]["daily_soft_limit_reached"])
+        self.assertFalse(evidence["touch_frequency"]["silent_soft_limit_reached"])
+        self.assertFalse(evidence["touch_frequency"]["has_new_customer_progress_since_last_touch"])
+
     async def test_event_applies_model_text_adjustment_before_sending(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[])
@@ -511,7 +536,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls[0]["conversation_messages"], messages)
         self.assertEqual(repo.tasks[0]["send_payload"]["conversation_filter"]["kept_after_event_created"], 1)
 
-    async def test_first_added_event_continues_when_staff_is_waiting_after_customer_reply(self) -> None:
+    async def test_first_added_event_skips_when_staff_replied_within_active_chat_window(self) -> None:
         repo = _Repo()
         messages = [
             {
@@ -543,12 +568,397 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         result = await service.process_event("evt_staff_waiting_after_customer")
 
         self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "skipped_recent_active_conversation")
+        self.assertEqual(repo.tasks[0]["send_payload"]["recent_assistant_activity"]["threshold_minutes"], 30)
+        self.assertEqual(selector.calls, [])
+
+    def test_event_decision_rejects_unexecutable_ai_handoff(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [{"id": "effect", "order": 10}],
+            "ai_reply_policy": {"allowed": False},
+        }
+
+        output, violations = normalize_event_decision(
+            {"decision": "handoff_to_ai_reply", "reason": "普通 AI 更自然"},
+            selector_input,
+        )
+
+        self.assertFalse(output["send_sop"])
+        self.assertTrue(output["need_ai_reply"])
+        self.assertIn("handoff_to_ai_reply_not_allowed_for_proactive_event", violations)
+
+    def test_event_decision_allows_only_two_adjacent_packs_for_merge(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {"id": "store", "order": 10},
+                {"id": "effect", "order": 20},
+                {"id": "activity", "order": 30},
+            ],
+            "ai_reply_policy": {"allowed": False},
+        }
+
+        valid, valid_violations = normalize_event_decision(
+            {"decision": "merge", "selected_pack_ids": ["store", "effect"]},
+            selector_input,
+        )
+        _, invalid_violations = normalize_event_decision(
+            {"decision": "merge", "selected_pack_ids": ["store", "activity"]},
+            selector_input,
+        )
+
+        self.assertEqual(valid_violations, [])
+        self.assertTrue(valid["send_sop"])
+        self.assertIn("merge_requires_adjacent_mainline_packs", invalid_violations)
+
+    def test_event_decision_rejects_skipping_earliest_unfinished_pack(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {"id": "store", "order": 10},
+                {"id": "effect", "order": 20},
+                {"id": "activity", "order": 30},
+            ],
+            "ai_reply_policy": {"allowed": False},
+        }
+
+        _, send_violations = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["effect"]},
+            selector_input,
+        )
+        _, merge_violations = normalize_event_decision(
+            {"decision": "merge", "selected_pack_ids": ["effect", "activity"]},
+            selector_input,
+        )
+
+        self.assertIn("selected_packs_must_start_with_earliest_candidate", send_violations)
+        self.assertIn("selected_packs_must_start_with_earliest_candidate", merge_violations)
+
+    def test_event_decision_allows_next_pack_when_earliest_candidate_is_completed(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {"id": "store", "order": 10, "sop_category": "store_prompt"},
+                {"id": "effect", "order": 20, "sop_category": "effect_case"},
+            ],
+            "completed_sop_pack_ids": ["store"],
+            "completed_sop_categories": ["store_prompt"],
+            "ai_reply_policy": {"allowed": False},
+        }
+
+        output, violations = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["effect"]},
+            selector_input,
+        )
+
+        self.assertEqual(violations, [])
+        self.assertEqual(output["selected_pack_ids"], ["effect"])
+
+    def test_event_decision_validates_frequency_guard_against_structured_evidence(self) -> None:
+        unsupported = {
+            "mode": "first_add_flow",
+            "candidate_sops": [{"id": "effect", "order": 10}],
+            "event_policy_evidence": {
+                "touch_frequency": {
+                    "daily_soft_limit_reached": True,
+                    "silent_soft_limit_reached": True,
+                    "has_new_customer_progress_since_last_touch": True,
+                },
+                "pending_backlog": {"has_pending": False},
+            },
+        }
+        supported = {
+            **unsupported,
+            "event_policy_evidence": {
+                "touch_frequency": {
+                    "daily_soft_limit_reached": True,
+                    "silent_soft_limit_reached": True,
+                    "has_new_customer_progress_since_last_touch": False,
+                },
+                "pending_backlog": {"has_pending": False},
+            },
+        }
+
+        _, unsupported_violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "frequency_guard"},
+            unsupported,
+        )
+        _, supported_violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "frequency_guard"},
+            supported,
+        )
+
+        self.assertIn("frequency_guard_not_supported_by_event_evidence", unsupported_violations)
+        self.assertNotIn("frequency_guard_not_supported_by_event_evidence", supported_violations)
+
+    def test_event_decision_rejects_skip_with_send_strategy(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [{"id": "close", "order": 10}],
+            "event_policy_evidence": {},
+        }
+
+        _, invalid_violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "continue_mainline"},
+            selector_input,
+        )
+        _, valid_violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "conflict_guard"},
+            selector_input,
+        )
+
+        self.assertIn("non_send_decision_conflicts_with_send_strategy", invalid_violations)
+        self.assertNotIn("non_send_decision_conflicts_with_send_strategy", valid_violations)
+
+    def test_event_decision_requires_evidence_source_for_conflict_guard(self) -> None:
+        no_evidence = {
+            "mode": "first_add_flow",
+            "candidate_sops": [{"id": "close", "order": 10}],
+            "completed_sop_pack_ids": [],
+            "completed_sop_categories": [],
+            "recent_conversation": [],
+            "event_policy_evidence": {},
+        }
+        with_customer_evidence = {
+            **no_evidence,
+            "recent_conversation": [{"role": "customer", "content": "我先不考虑"}],
+        }
+
+        _, no_evidence_violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "conflict_guard"},
+            no_evidence,
+        )
+        _, customer_evidence_violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "conflict_guard"},
+            with_customer_evidence,
+        )
+
+        self.assertIn("conflict_guard_missing_evidence_source", no_evidence_violations)
+        self.assertNotIn("conflict_guard_missing_evidence_source", customer_evidence_violations)
+
+    def test_event_decision_rejects_payment_pack_when_structural_gate_is_not_supported(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {
+                    "id": "activity",
+                    "order": 30,
+                    "payment_collection_gate": {"status": "not_required"},
+                },
+                {
+                    "id": "deposit",
+                    "order": 40,
+                    "payment_collection_gate": {"status": "activity_intro_required"},
+                },
+            ],
+            "event_policy_evidence": {"ai_reply_policy": {"allowed": False}},
+        }
+
+        _, send_violations = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["deposit"]},
+            selector_input,
+        )
+        _, merge_violations = normalize_event_decision(
+            {"decision": "merge", "selected_pack_ids": ["activity", "deposit"]},
+            selector_input,
+        )
+
+        self.assertIn("selected_payment_pack_not_currently_supported", send_violations)
+        self.assertIn("selected_payment_pack_not_currently_supported", merge_violations)
+
+    def test_event_decision_rejects_pack_already_completed_by_id_or_category(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {"id": "effect_a", "order": 10, "sop_category": "effect_case"},
+                {"id": "effect_b", "order": 20, "sop_category": "effect_case"},
+            ],
+            "completed_sop_pack_ids": ["effect_a"],
+            "completed_sop_categories": ["effect_case"],
+            "event_policy_evidence": {"ai_reply_policy": {"allowed": False}},
+        }
+
+        _, by_id = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["effect_a"]},
+            selector_input,
+        )
+        _, by_category = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["effect_b"]},
+            selector_input,
+        )
+
+        self.assertIn("selected_sop_pack_already_completed", by_id)
+        self.assertIn("selected_sop_pack_already_completed", by_category)
+
+    def test_event_ai_reply_policy_requires_pending_message_and_runtime(self) -> None:
+        no_runtime = build_event_ai_reply_policy(
+            {"latest_customer_pending_ai_reply": True},
+            runtime_handoff_available=False,
+        )
+        allowed = build_event_ai_reply_policy(
+            {"latest_customer_pending_ai_reply": True},
+            runtime_handoff_available=True,
+        )
+
+        self.assertFalse(no_runtime["allowed"])
+        self.assertEqual(no_runtime["reason"], "ordinary_ai_reply_runtime_not_attached")
+        self.assertTrue(allowed["allowed"])
+
+    def test_merge_preserves_pack_order_and_reindexes_messages(self) -> None:
+        messages = combine_selected_pack_messages(
+            [
+                {
+                    "id": "activity",
+                    "order": 20,
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "活动"}}],
+                },
+                {
+                    "id": "effect",
+                    "order": 10,
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": "效果"}},
+                        {"type": "image", "order": 2, "content": {"url": "https://example.com/case.png"}},
+                    ],
+                },
+            ]
+        )
+
+        self.assertEqual([item["order"] for item in messages], [1, 2, 3])
+        self.assertEqual(messages[0]["content"]["text"], "效果")
+        self.assertEqual(messages[2]["content"]["text"], "活动")
+
+    def test_event_policy_evidence_separates_today_history_and_pending_backlog(self) -> None:
+        repo = _Repo()
+        repo.tasks = [
+            {
+                "id": "sent_today",
+                "event_id": "sent_today_event",
+                "status": "sent",
+                "sent_at": "2026-07-11T00:15:00+00:00",
+                "created_at": "2026-07-11T00:14:00+00:00",
+                "send_payload": {},
+            },
+            {
+                "id": "sent_prior",
+                "event_id": "sent_prior_event",
+                "status": "sent",
+                "sent_at": "2026-07-10T02:00:00+00:00",
+                "created_at": "2026-07-10T01:59:00+00:00",
+                "send_payload": {},
+            },
+            {
+                "id": "quiet_backlog",
+                "event_id": "quiet_event",
+                "status": "skipped_quiet_hours_inactive",
+                "created_at": "2026-07-11T00:30:00+00:00",
+                "send_payload": {
+                    "backlog_marker": {
+                        "pending": True,
+                        "reason": "suppressed_due_to_quiet_hours",
+                        "event": {"delay_minutes": 60, "stage_tag": "price_quote"},
+                    }
+                },
+            },
+        ]
+        service = _service(repo=repo, client=_OutreachClient())
+
+        evidence = service._event_policy_evidence(
+            payload={"created_at": "2026-07-11T01:00:00+00:00"},
+            identity={
+                "customer_id": "customer",
+                "external_userid": "external",
+                "corp_id": "ww943af61cd5d2afe4",
+                "wechat": "CS001",
+            },
+            conversation_activity={"latest_customer_message_at": "2026-07-10T01:00:00+00:00"},
+        )
+
+        frequency = evidence["touch_frequency"]
+        self.assertEqual(frequency["today_count"], 1)
+        self.assertEqual(frequency["prior_count"], 1)
+        self.assertEqual(frequency["total_count"], 2)
+        self.assertEqual(frequency["consecutive_silent_touch_count"], 2)
+        self.assertEqual(evidence["pending_backlog"]["count"], 1)
+        self.assertEqual(
+            evidence["pending_backlog"]["items"][0]["event"]["stage_tag"],
+            "price_quote",
+        )
+
+    async def test_event_merge_sends_two_adjacent_packs_as_one_sequence(self) -> None:
+        class _MergePackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "effect",
+                            "enabled": True,
+                            "scope": "event_first_add",
+                            "sop_category": "effect_case",
+                            "name": "效果铺垫",
+                            "order": 10,
+                            "event_type": "sop_friend_added_schedule_batch",
+                            "delay_minutes": 30,
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "先给您看效果。"}},
+                                {"type": "image", "order": 2, "content": {"url": "https://example.com/case.png"}},
+                            ],
+                        },
+                        {
+                            "id": "activity",
+                            "enabled": True,
+                            "scope": "event_first_add",
+                            "sop_category": "activity_intro",
+                            "name": "活动介绍",
+                            "order": 20,
+                            "event_type": "sop_friend_added_schedule_batch",
+                            "delay_minutes": 60,
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "新客活动是268。"}}
+                            ],
+                        },
+                    ]
+                }
+
+        repo = _Repo()
+        memory = _MemoryStore()
+        client = _OutreachClient(messages=[])
+        selector = _Selector(
+            {
+                "decision": "merge",
+                "send_sop": True,
+                "selected_pack_ids": ["effect", "activity"],
+                "text_adjustments": [],
+                "message_operations": [],
+                "reason": "recover adjacent backlog",
+            }
+        )
+        service = _service(
+            repo=repo,
+            client=client,
+            selector=selector,
+            pack_service=_MergePackService(),
+            memory_store=memory,
+        )
+        payload = _base_payload(
+            event_id="evt_merge",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
+            sop={"delay_minutes": 60},
+            customers=[{"first_added_event": {"trace_id": "trace_merge", "timestamp": "2026-07-11T01:00:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_merge")
+
+        self.assertEqual(result["status"], "processed")
         self.assertEqual(repo.tasks[0]["status"], "sent")
-        activity = selector.calls[0]["conversation_activity"]
-        self.assertTrue(activity["customer_replied"])
-        self.assertFalse(activity["latest_customer_pending_ai_reply"])
-        self.assertTrue(activity["assistant_waiting_customer"])
-        self.assertEqual(activity["reason"], "assistant_waiting_customer")
+        self.assertEqual(repo.tasks[0]["sop_pack_id"], "merge:effect+activity")
+        self.assertEqual(repo.tasks[0]["send_payload"]["selected_sop_pack_ids"], ["effect", "activity"])
+        sent_messages = client.send_calls[0]["reply_messages"]
+        self.assertEqual([item["order"] for item in sent_messages], [1, 2, 3])
+        self.assertEqual([item["type"] for item in sent_messages], ["text", "image", "text"])
+        self.assertEqual([item["sop_pack_id"] for item in memory.record_calls], ["effect", "activity"])
 
     async def test_first_added_event_ignores_platform_auto_opening_message(self) -> None:
         repo = _Repo()
@@ -631,7 +1041,13 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 result = await service.process_event(event_id)
 
                 self.assertEqual(result["status"], "processed")
-                expected_status = "skipped_missing_payment_order" if delay_minutes in {60, 70} else "sent"
+                expected_status = (
+                    "skipped_missing_payment_order"
+                    if delay_minutes == 60
+                    else "skipped_payment_collection_blocked"
+                    if delay_minutes == 70
+                    else "sent"
+                )
                 self.assertEqual(repo.tasks[0]["status"], expected_status)
                 self.assertEqual(repo.tasks[0]["sop_pack_id"], pack_id)
 
@@ -1472,6 +1888,50 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 ["before_category"],
             )
 
+    def test_repository_expands_merged_pack_progress_from_send_payload(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "ai_paths.db"))
+            store.initialize()
+            repo = AppRepository(store)
+            repo.create_sop_event({"event_id": "evt_merge", "event_type": "sop_friend_added_schedule_batch"})
+            task = repo.create_sop_send_task(
+                event_id="evt_merge",
+                idempotency_key="idem_merge",
+                customer_id="ext",
+                external_userid="ext",
+                corp_id="ww",
+                user_id="7294",
+                wechat="CS001",
+                sop_pack_id="merge:effect+activity",
+                sop_pack_name="效果铺垫 + 活动介绍",
+                sop_category="merge:effect+activity",
+                trigger_source="sop_event",
+                reply_messages=[],
+                status="pending",
+            )
+            repo.update_sop_send_task(
+                task["id"],
+                status="sent",
+                sent_at="2026-07-02T06:00:00+00:00",
+                send_payload={
+                    "selected_sop_pack_ids": ["effect", "activity"],
+                    "selected_sop_categories": ["effect_warmup", "activity_intro"],
+                },
+            )
+
+            self.assertEqual(
+                repo.list_sent_sop_pack_ids_for_customer(
+                    customer_id="ext", external_userid="ext", corp_id="ww", wechat="CS001"
+                ),
+                ["effect", "activity"],
+            )
+            self.assertEqual(
+                repo.list_sent_sop_categories_for_customer(
+                    customer_id="ext", external_userid="ext", corp_id="ww", wechat="CS001"
+                ),
+                ["effect_warmup", "activity_intro"],
+            )
+
     def test_current_sop_reply_pack_config_audit_has_no_errors(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
         config = service.load()
@@ -1564,7 +2024,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_PackService(), model_client=model)
 
         result = await service.evaluate_event_suggestion(
-            payload={"event_type": "sop_friend_added_schedule_batch"},
+            payload={
+                "event_type": "sop_friend_added_schedule_batch",
+                "created_at": "2026-07-20T04:00:00+00:00",
+            },
             customer={},
             identity={"customer_id": "customer", "external_userid": "external"},
             event_type="sop_friend_added_schedule_batch",
@@ -1580,9 +2043,21 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             conversation_activity={"customer_replied": False, "last_message_direction": "staff"},
             customer_memory={
                 "portrait": {"concern": "价格"},
-                "basic_info": {"city": "深圳"},
+                "basic_info": {"city": "深圳", "confirmed_store_id": "101"},
                 "lifecycle_stage": "new_customer",
                 "history_events": [{"event_id": "history_1", "event_type": "store_matched", "summary": "已匹配门店"}],
+            },
+            customer_context={
+                "orders": [
+                    {
+                        "id": "order_101",
+                        "store_id": "101",
+                        "status": "pending",
+                        "prepay_required": 10,
+                        "prepay_paid": 0,
+                        "is_current_order": True,
+                    }
+                ]
             },
             candidate_packs=[
                 {
@@ -1634,6 +2109,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("insert_text_after", system_prompt)
         self.assertIn("payment_collection_gate.status", system_prompt)
         self.assertIn("remove_message", system_prompt)
+        self.assertIn("handoff_to_ai_reply_not_allowed_for_proactive_event", Path("docs/sop_proactive_wakeup_ab_design_20260720.md").read_text(encoding="utf-8"))
+        self.assertIn("Plan A Decision Contract", system_prompt)
+        self.assertIn("event_policy_evidence.ai_reply_policy.allowed=true", system_prompt)
+        self.assertIn("adjacent_merge_options", system_prompt)
         self.assertIn("editable_text_messages", system_prompt)
         self.assertIn("readonly_messages", system_prompt)
         self.assertIn("最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件", system_prompt)
@@ -1644,13 +2123,17 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"message_type":"text"', user_prompt)
         self.assertIn('"message_time":1783728000000', user_prompt)
         self.assertIn('"customer_profile":{"concern":"价格"}', user_prompt)
-        self.assertIn('"customer_basic_info":{"city":"深圳"}', user_prompt)
+        self.assertIn('"customer_basic_info":{"city":"深圳","confirmed_store_id":"101"}', user_prompt)
         self.assertIn('"lifecycle_stage":"new_customer"', user_prompt)
         self.assertIn('"history_events":[{"event_id":"history_1"', user_prompt)
         self.assertIn('"candidate_policy"', user_prompt)
         self.assertIn('"candidate_group":"due"', user_prompt)
         self.assertIn('"payment_collection_gate"', user_prompt)
-        self.assertIn('"status":"missing_matching_current_order"', user_prompt)
+        self.assertIn('"status":"supported"', user_prompt)
+        self.assertIn('"event_policy_evidence":{}', user_prompt)
+        self.assertIn('"adjacent_merge_options"', user_prompt)
+        self.assertIn('"event_time"', user_prompt)
+        self.assertIn('"local_hour":12', user_prompt)
 
     async def test_event_selector_prioritizes_platform_message_content_and_paid_followup_boundary(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "reason": "arrival followup is compatible"})
@@ -2455,6 +2938,7 @@ def _service(
     default_identity: dict[str, Any] | None = None,
     memory_store: Any | None = None,
     customer_context_service: Any | None = None,
+    daily_touch_soft_limit: int = 2,
 ) -> SopEventService:
     return SopEventService(
         repository=repo,
@@ -2463,6 +2947,7 @@ def _service(
         sop_execution_service=selector or _Selector({"send_sop": False, "reason": "default reject"}),
         memory_store=memory_store,
         customer_context_service=customer_context_service or _CustomerContextService(),
+        daily_touch_soft_limit=daily_touch_soft_limit,
         default_identity=default_identity,
     )
 
@@ -2473,7 +2958,7 @@ def _base_payload(
     event_type: str,
     sop: dict[str, Any],
     customers: list[dict[str, Any]],
-    created_at: str = "",
+    created_at: str = "2026-07-20T02:00:00+00:00",
 ) -> dict[str, Any]:
     payload = {
         "event_id": event_id,
@@ -2816,6 +3301,18 @@ class _Repo:
     ) -> list[str]:
         return sorted(self.sent_categories)
 
+    def list_recent_sop_send_tasks_for_customer(
+        self,
+        *,
+        customer_id: str,
+        external_userid: str,
+        corp_id: str = "",
+        wechat: str = "",
+        before: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        return [dict(task) for task in reversed(self.tasks[-limit:])]
+
     def find_sop_event_identity(self, *, customer_id: str = "", external_userid: str = "", wechat: str = "") -> dict[str, str]:
         if self.identity_lookup_error:
             raise self.identity_lookup_error
@@ -2846,7 +3343,16 @@ class _Repo:
                     }
                     self.tasks.append(audit)
                     return dict(audit)
-        task = {"id": f"task_{len(self.tasks) + 1}", **kwargs, "created": True}
+        event_payload = self.events.get(str(kwargs.get("event_id") or ""), {}).get("raw_payload", {})
+        created_at = str(event_payload.get("created_at") or "2026-07-01T00:00:00+00:00")
+        task = {
+            "id": f"task_{len(self.tasks) + 1}",
+            **kwargs,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "sent_at": "",
+            "created": True,
+        }
         self.tasks.append(task)
         return dict(task)
 
@@ -2867,6 +3373,7 @@ class _Repo:
                 task["send_response"] = send_response or {}
                 task["error"] = error
                 task["sent_at"] = sent_at
+                task["updated_at"] = sent_at or task.get("updated_at", "")
                 if status == "sent" and task.get("sop_pack_id"):
                     self.sent_ids.add(str(task["sop_pack_id"]))
                 if status == "sent" and task.get("sop_category"):

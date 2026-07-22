@@ -74,6 +74,7 @@ sop_event_service = SopEventService(
     sop_execution_service=sop_execution_service,
     memory_store=memory_store,
     customer_context_service=customer_context_service,
+    daily_touch_soft_limit=settings.sop_event_daily_touch_soft_limit,
     default_identity={
         "corp_id": settings.platform_agent_default_corp_id,
         "user_id": settings.platform_agent_default_user_id,

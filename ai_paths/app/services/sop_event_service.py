@@ -12,6 +12,11 @@ from fastapi import BackgroundTasks
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.customer_payment_state import is_paid_deposit_state, payment_collection_order_fact, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
+from app.services.sop_event_decision import (
+    build_event_ai_reply_policy,
+    combine_selected_pack_messages,
+    selected_candidate_packs,
+)
 from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs, is_platform_auto_opening_message
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
 from app.services.sop_reply_pack_service import ALLOWED_MESSAGE_TYPES, SopReplyPackService
@@ -24,7 +29,7 @@ SOP_QUIET_TIMEZONE = ZoneInfo("Asia/Shanghai")
 SOP_QUIET_START_HOUR = 0
 SOP_QUIET_END_HOUR = 8
 SOP_QUIET_INACTIVITY_MINUTES = 30
-SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES = 3
+SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES = 30
 
 
 class SopEventService:
@@ -37,6 +42,7 @@ class SopEventService:
         sop_execution_service: SopExecutionService | None = None,
         memory_store: Any | None = None,
         customer_context_service: Any | None = None,
+        daily_touch_soft_limit: int = 2,
         default_identity: dict[str, Any] | None = None,
         persistent_retry_attempts: int = 4,
         persistent_retry_base_delay_seconds: float = 30.0,
@@ -49,6 +55,7 @@ class SopEventService:
         self.sop_execution_service = sop_execution_service
         self.memory_store = memory_store
         self.customer_context_service = customer_context_service
+        self.daily_touch_soft_limit = max(1, int(daily_touch_soft_limit or 2))
         self.persistent_retry_attempts = max(0, int(persistent_retry_attempts or 0))
         self.persistent_retry_base_delay_seconds = max(0.0, float(persistent_retry_base_delay_seconds or 0.0))
         self.persistent_retry_max_delay_seconds = max(
@@ -216,6 +223,15 @@ class SopEventService:
             first_added_at=_first_added_at(customer) if event_type in FIRST_ADD_EVENT_TYPES else None,
             event_at=_parse_time(payload.get("created_at") or payload.get("upstream_created_at")),
         )
+        event_policy_evidence = (
+            self._event_policy_evidence(
+                payload=payload,
+                identity=identity,
+                conversation_activity=conversation_activity,
+            )
+            if event_type in FIRST_ADD_EVENT_TYPES
+            else {}
+        )
         if event_type in FIRST_ADD_EVENT_TYPES and conversation_activity["uncertain_customer_timing"]:
             return self._create_task_record(
                 payload,
@@ -232,6 +248,7 @@ class SopEventService:
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_filter": conversation_filter,
                     "conversation_activity": conversation_activity,
+                    "event_policy_evidence": event_policy_evidence,
                 },
             )
         if event_type in FIRST_ADD_EVENT_TYPES and conversation_activity["latest_customer_pending_ai_reply"]:
@@ -250,6 +267,7 @@ class SopEventService:
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_filter": conversation_filter,
                     "conversation_activity": conversation_activity,
+                    "event_policy_evidence": event_policy_evidence,
                 },
             )
         recent_assistant_activity = _recent_assistant_activity_summary(conversation_activity)
@@ -270,11 +288,12 @@ class SopEventService:
                     "conversation_filter": conversation_filter,
                     "conversation_activity": conversation_activity,
                     "recent_assistant_activity": recent_assistant_activity,
+                    "event_policy_evidence": event_policy_evidence,
                 },
             )
 
         quiet_hours = _quiet_hours_summary(payload, conversation_messages)
-        if quiet_hours["skip"]:
+        if event_type in FIRST_ADD_EVENT_TYPES and quiet_hours["skip"]:
             return self._create_task_record(
                 payload,
                 customer,
@@ -291,6 +310,12 @@ class SopEventService:
                     "conversation_filter": conversation_filter,
                     "conversation_activity": conversation_activity,
                     "quiet_hours": quiet_hours,
+                    "event_policy_evidence": event_policy_evidence,
+                    "backlog_marker": {
+                        "pending": True,
+                        "reason": "suppressed_due_to_quiet_hours",
+                        "event": _event_backlog_summary(payload, customer),
+                    },
                 },
             )
 
@@ -364,6 +389,7 @@ class SopEventService:
                 conversation_activity=conversation_activity,
                 customer_memory=customer_memory,
                 customer_context=customer_context,
+                event_policy_evidence=event_policy_evidence,
             )
         if event_type == "sop_platform_task":
             return await self._create_platform_task(
@@ -451,6 +477,55 @@ class SopEventService:
             "summary": summary,
         }
 
+    def _event_policy_evidence(
+        self,
+        *,
+        payload: dict[str, Any],
+        identity: dict[str, str],
+        conversation_activity: dict[str, Any],
+    ) -> dict[str, Any]:
+        event_at = _parse_time(payload.get("created_at") or payload.get("upstream_created_at")) or datetime.now(timezone.utc)
+        list_recent = getattr(self.repository, "list_recent_sop_send_tasks_for_customer", None)
+        tasks: list[dict[str, Any]] = []
+        if callable(list_recent):
+            try:
+                tasks = list_recent(
+                    customer_id=identity.get("customer_id", ""),
+                    external_userid=identity.get("external_userid", ""),
+                    corp_id=identity.get("corp_id", ""),
+                    wechat=identity.get("wechat", ""),
+                    before="",
+                    limit=100,
+                )
+            except Exception:
+                tasks = []
+        touch_frequency, pending_backlog = _event_touch_evidence(
+            tasks,
+            event_at=event_at,
+            latest_customer_message_at=_parse_time(conversation_activity.get("latest_customer_message_at")),
+        )
+        touch_frequency["daily_soft_limit"] = self.daily_touch_soft_limit
+        touch_frequency["daily_soft_limit_reached"] = (
+            int(touch_frequency.get("today_count") or 0) >= self.daily_touch_soft_limit
+        )
+        touch_frequency["silent_soft_limit_reached"] = (
+            int(touch_frequency.get("consecutive_silent_touch_count") or 0) >= self.daily_touch_soft_limit
+        )
+        latest_customer_progress_at = _parse_time(touch_frequency.get("latest_customer_message_at"))
+        last_touch_at = _parse_time(touch_frequency.get("last_sent_at"))
+        touch_frequency["has_new_customer_progress_since_last_touch"] = bool(
+            latest_customer_progress_at
+            and (last_touch_at is None or latest_customer_progress_at > last_touch_at)
+        )
+        return {
+            "touch_frequency": touch_frequency,
+            "pending_backlog": pending_backlog,
+            "ai_reply_policy": build_event_ai_reply_policy(
+                conversation_activity,
+                runtime_handoff_available=False,
+            ),
+        }
+
     def _complete_identity(self, identity: dict[str, str]) -> dict[str, str]:
         lookup = getattr(self.repository, "find_sop_event_identity", None)
         merged = dict(identity)
@@ -500,6 +575,7 @@ class SopEventService:
         conversation_activity: dict[str, Any],
         customer_memory: dict[str, Any],
         customer_context: dict[str, Any],
+        event_policy_evidence: dict[str, Any],
     ) -> dict[str, Any]:
         sent_before = _event_created_at(payload)
         completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
@@ -553,10 +629,21 @@ class SopEventService:
             customer_context=customer_context,
             candidate_packs=candidates,
             actions_reply_messages=[],
+            event_policy_evidence=event_policy_evidence,
         )
-        selected = _pack_by_id(candidates, str(decision.get("sop_pack_id") or ""))
-        if not decision.get("send_sop") or not selected:
+        selected_packs = selected_candidate_packs(decision, candidates)
+        if not decision.get("send_sop") or not selected_packs:
             is_model_error = bool(decision.get("error"))
+            decision_name = _string(decision.get("decision"))
+            rejected_status = (
+                "deferred_model"
+                if decision_name == "defer"
+                else "skipped_handoff_to_ai_reply"
+                if decision_name == "handoff_to_ai_reply"
+                else "failed_model_error"
+                if is_model_error
+                else "skipped_model_rejected"
+            )
             return self._create_task_record(
                 payload,
                 customer,
@@ -565,20 +652,31 @@ class SopEventService:
                 sop_pack_id=str(decision.get("sop_pack_id") or "first_add_model_rejected"),
                 sop_pack_name=str(decision.get("sop_pack_name") or "first_add_model_rejected"),
                 reply_messages=[],
-                status="failed_model_error" if is_model_error else "skipped_model_rejected",
+                status=rejected_status,
                 error=str(decision.get("error") or "") if is_model_error else "",
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_filter": conversation_filter,
                     "conversation_activity": conversation_activity,
+                    "event_policy_evidence": event_policy_evidence,
                     "event_decision_input": decision.get("selector_input", {}),
                 },
                 send_response={"event_decision": decision},
             )
 
+        selected_pack_ids = [_string(pack.get("id")) for pack in selected_packs]
+        selected_categories = [_pack_category(pack) for pack in selected_packs]
+        selected_messages = combine_selected_pack_messages(selected_packs)
+        selected_id = selected_pack_ids[0] if len(selected_pack_ids) == 1 else "merge:" + "+".join(selected_pack_ids)
+        selected_name = (
+            _string(selected_packs[0].get("name"))
+            if len(selected_packs) == 1
+            else " + ".join(_string(pack.get("name")) for pack in selected_packs)
+        )
+        selected_category = selected_categories[0] if len(selected_categories) == 1 else "merge:" + "+".join(selected_categories)
         adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
-            _pack_messages(selected),
+            selected_messages,
             decision.get("text_adjustments"),
             decision.get("message_operations"),
         )
@@ -592,9 +690,9 @@ class SopEventService:
                 customer,
                 index=index,
                 identity=identity,
-                sop_pack_id=str(selected.get("id") or ""),
-                sop_pack_name=str(selected.get("name") or ""),
-                sop_category=_pack_category(selected),
+                sop_pack_id=selected_id,
+                sop_pack_name=selected_name,
+                sop_category=selected_category,
                 reply_messages=[],
                 status="skipped_empty_reply_messages",
                 error="selected_sop_messages_empty_after_sanitize",
@@ -605,26 +703,42 @@ class SopEventService:
                     "conversation_activity": conversation_activity,
                     "message_sanitize": sanitize_summary,
                     "message_adjustment": adjustment_summary,
+                    "event_policy_evidence": event_policy_evidence,
+                    "selected_sop_pack_ids": selected_pack_ids,
+                    "selected_sop_categories": selected_categories,
                     "event_decision_input": decision.get("selector_input", {}),
                 },
                 send_response={"event_decision": decision},
             )
-        if not _sop_payment_collection_supported(messages, customer_memory, customer_context):
+        final_payment_gate = _sop_payment_collection_gate(
+            messages,
+            customer_memory,
+            customer_context,
+            completed_sop_pack_ids=completed_ids,
+            completed_sop_categories=completed_categories,
+            require_activity_intro="s10_activity_intro" not in selected_pack_ids,
+        )
+        if final_payment_gate.get("status") not in {"not_required", "supported"}:
+            activity_intro_blocked = final_payment_gate.get("status") == "activity_intro_required"
             return self._create_task_record(
                 payload,
                 customer,
                 index=index,
                 identity=identity,
-                sop_pack_id=str(selected.get("id") or ""),
-                sop_pack_name=str(selected.get("name") or ""),
-                sop_category=_pack_category(selected),
+                sop_pack_id=selected_id,
+                sop_pack_name=selected_name,
+                sop_category=selected_category,
                 reply_messages=[],
-                status="skipped_missing_payment_order",
-                error="payment_collection_requires_matching_current_order",
+                status=("skipped_payment_collection_blocked" if activity_intro_blocked else "skipped_missing_payment_order"),
+                error=str(final_payment_gate.get("reason") or "payment_collection_not_supported"),
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_activity": conversation_activity,
+                    "payment_collection_gate": final_payment_gate,
+                    "event_policy_evidence": event_policy_evidence,
+                    "selected_sop_pack_ids": selected_pack_ids,
+                    "selected_sop_categories": selected_categories,
                 },
                 send_response={"event_decision": decision},
             )
@@ -633,13 +747,13 @@ class SopEventService:
             customer,
             index=index,
             identity=identity,
-            sop_pack_id=str(selected.get("id") or ""),
-            sop_pack_name=str(selected.get("name") or ""),
-            sop_category=_pack_category(selected),
+            sop_pack_id=selected_id,
+            sop_pack_name=selected_name,
+            sop_category=selected_category,
             reply_messages=messages,
             status="pending",
             error="",
-            send_once_key=_send_once_key(identity, str(selected.get("id") or "")),
+            send_once_key=_send_once_key(identity, selected_id),
             send_payload={
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
@@ -647,6 +761,10 @@ class SopEventService:
                 "conversation_activity": conversation_activity,
                 "message_sanitize": sanitize_summary,
                 "message_adjustment": adjustment_summary,
+                "payment_collection_gate": final_payment_gate,
+                "event_policy_evidence": event_policy_evidence,
+                "selected_sop_pack_ids": selected_pack_ids,
+                "selected_sop_categories": selected_categories,
                 "event_decision_input": decision.get("selector_input", {}),
             },
             send_response={"event_decision": decision},
@@ -753,6 +871,7 @@ class SopEventService:
         customer_context: dict[str, Any],
         candidate_packs: list[dict[str, Any]],
         actions_reply_messages: list[dict[str, Any]],
+        event_policy_evidence: dict[str, Any],
     ) -> dict[str, Any]:
         if not self.sop_execution_service:
             if event_type == "sop_platform_task":
@@ -775,6 +894,7 @@ class SopEventService:
             customer_context=customer_context,
             candidate_packs=candidate_packs,
             actions_reply_messages=actions_reply_messages,
+            event_policy_evidence=event_policy_evidence,
         )
 
     def _create_task_record(
@@ -905,18 +1025,35 @@ class SopEventService:
             return
         messages = task.get("reply_messages") if isinstance(task.get("reply_messages"), list) else []
         message_types = [_string(item.get("type")) for item in messages if isinstance(item, dict) and _string(item.get("type"))]
-        try:
-            self.memory_store.record_sop_pack_sent(
-                scope.sales_contact_key,
-                sop_pack_id=_string(task.get("sop_pack_id")),
-                sop_category=_string(task.get("sop_category")),
-                source_event_id=_string(task.get("event_id")),
-                message_types=message_types,
-                sent_at=sent_at,
-                task_id=_string(task.get("id")),
-            )
-        except Exception:
-            pass
+        send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+        selected_ids = [
+            _string(item)
+            for item in send_payload.get("selected_sop_pack_ids") or []
+            if _string(item)
+        ]
+        selected_categories = [
+            _string(item)
+            for item in send_payload.get("selected_sop_categories") or []
+            if _string(item)
+        ]
+        if not selected_ids:
+            selected_ids = [_string(task.get("sop_pack_id"))]
+        for index, pack_id in enumerate(selected_ids):
+            if not pack_id:
+                continue
+            category = selected_categories[index] if index < len(selected_categories) else _string(task.get("sop_category"))
+            try:
+                self.memory_store.record_sop_pack_sent(
+                    scope.sales_contact_key,
+                    sop_pack_id=pack_id,
+                    sop_category=category,
+                    source_event_id=_string(task.get("event_id")),
+                    message_types=message_types,
+                    sent_at=sent_at,
+                    task_id=_string(task.get("id")),
+                )
+            except Exception:
+                pass
 
 
 def _customer_identity(payload: dict[str, Any], customer: dict[str, Any]) -> dict[str, str]:
@@ -1133,19 +1270,84 @@ def _sop_payment_collection_supported(
     customer_memory: dict[str, Any],
     customer_context: dict[str, Any],
 ) -> bool:
-    """Allow a SOP payment card only when a matching current unpaid order exists."""
+    """Allow a SOP payment card only when every card has a matching current unpaid order."""
+    return _sop_payment_collection_gate(messages, customer_memory, customer_context).get("status") in {
+        "not_required",
+        "supported",
+    }
+
+
+def _sop_payment_collection_gate(
+    messages: list[dict[str, Any]],
+    customer_memory: dict[str, Any],
+    customer_context: dict[str, Any],
+    *,
+    completed_sop_pack_ids: list[str] | None = None,
+    completed_sop_categories: list[str] | None = None,
+    require_activity_intro: bool = False,
+) -> dict[str, Any]:
+    """Summarize deterministic SOP card eligibility without deciding sales intent."""
     cards = [item for item in messages if isinstance(item, dict) and item.get("type") == "payment_collection"]
     if not cards:
-        return True
-    content = cards[0].get("content") if isinstance(cards[0].get("content"), dict) else {}
+        return {"has_payment_collection": False, "status": "not_required"}
     basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
-    state = {
-        "customer_basic_info": basic,
-        "customer_context": customer_context,
-        "confirmed_store_id": basic.get("confirmed_store_id"),
-        "payment_decision": {"amount": content.get("amount")},
-    }
-    return bool(payment_collection_order_fact(state, amount=content.get("amount")))
+    payment_fact = resolved_payment_fact(
+        orders=customer_context.get("orders") if isinstance(customer_context, dict) else [],
+        existing_state=_string(basic.get("deposit_state")),
+        existing_source=_string(basic.get("deposit_source")),
+        existing_fact=basic.get("deposit_fact"),
+    )
+    amounts = [_payment_card_amount(card) for card in cards]
+    if is_paid_deposit_state(payment_fact.get("deposit_state")) or is_paid_deposit_state(basic.get("deposit_state")):
+        return {
+            "has_payment_collection": True,
+            "status": "paid_skip_card",
+            "amounts": amounts,
+            "reason": "payment_collection_blocked_by_paid_state",
+            "source": payment_fact.get("source") or "customer_memory",
+        }
+    if require_activity_intro and not _activity_intro_completed(
+        completed_sop_pack_ids or [], completed_sop_categories or []
+    ):
+        return {
+            "has_payment_collection": True,
+            "status": "activity_intro_required",
+            "amounts": amounts,
+            "reason": "payment_collection_requires_completed_activity_intro",
+            "required_completed_pack_id": "s10_activity_intro",
+        }
+    unsupported: list[int] = []
+    for amount in amounts:
+        state = {
+            "customer_basic_info": basic,
+            "customer_context": customer_context,
+            "confirmed_store_id": basic.get("confirmed_store_id"),
+            "payment_decision": {"amount": amount},
+        }
+        if not payment_collection_order_fact(state, amount=amount):
+            unsupported.append(amount)
+    if unsupported:
+        return {
+            "has_payment_collection": True,
+            "status": "missing_matching_current_order",
+            "amounts": amounts,
+            "unsupported_amounts": unsupported,
+            "reason": "payment_collection_requires_matching_current_order",
+        }
+    return {"has_payment_collection": True, "status": "supported", "amounts": amounts}
+
+
+def _payment_card_amount(message: dict[str, Any]) -> int:
+    content = message.get("content") if isinstance(message.get("content"), dict) else {}
+    return _int(content.get("amount"), 10)
+
+
+def _activity_intro_completed(completed_sop_pack_ids: list[str], completed_sop_categories: list[str]) -> bool:
+    completed_ids = {_string(item).lower() for item in completed_sop_pack_ids}
+    completed_categories = {_string(item).lower() for item in completed_sop_categories}
+    return "s10_activity_intro" in completed_ids or bool(
+        completed_categories.intersection({"activity_intro", "s10_activity_intro"})
+    )
 
 
 def _content_has_value(content: dict[str, Any]) -> bool:
@@ -1215,6 +1417,87 @@ def _quiet_hours_summary(payload: dict[str, Any], messages: list[dict[str, Any]]
         "inactivity_minutes": inactivity_minutes,
         "skip": bool(in_quiet_window and inactive),
         "reason": "quiet_hours_customer_inactive" if in_quiet_window and inactive else "",
+    }
+
+
+def _event_touch_evidence(
+    tasks: list[dict[str, Any]],
+    *,
+    event_at: datetime,
+    latest_customer_message_at: datetime | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    sent_tasks = [task for task in tasks if _string(task.get("status")) == "sent"]
+    sent_times = [time for time in (_task_time(task) for task in sent_tasks) if time]
+    local_event_date = event_at.astimezone(SOP_QUIET_TIMEZONE).date()
+    today_count = sum(1 for sent_at in sent_times if sent_at.astimezone(SOP_QUIET_TIMEZONE).date() == local_event_date)
+    last_sent_at = max(sent_times) if sent_times else None
+    consecutive_silent_touch_count = sum(
+        1
+        for sent_at in sent_times
+        if latest_customer_message_at is None or sent_at > latest_customer_message_at
+    )
+
+    quiet_tasks: list[tuple[datetime, dict[str, Any]]] = []
+    for task in tasks:
+        if _string(task.get("status")) != "skipped_quiet_hours_inactive":
+            continue
+        task_at = _task_time(task)
+        if not task_at:
+            continue
+        if last_sent_at and task_at <= last_sent_at:
+            continue
+        quiet_tasks.append((task_at, task))
+    quiet_tasks.sort(key=lambda item: item[0])
+    backlog_items: list[dict[str, Any]] = []
+    for task_at, task in quiet_tasks[-8:]:
+        send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+        marker = send_payload.get("backlog_marker") if isinstance(send_payload.get("backlog_marker"), dict) else {}
+        backlog_items.append(
+            {
+                "event_id": _string(task.get("event_id")),
+                "suppressed_at": task_at.isoformat(),
+                "reason": _string(marker.get("reason")) or "suppressed_due_to_quiet_hours",
+                "event": marker.get("event") if isinstance(marker.get("event"), dict) else {},
+            }
+        )
+
+    return (
+        {
+            "timezone": "Asia/Shanghai",
+            "today_count": today_count,
+            "prior_count": max(0, len(sent_tasks) - today_count),
+            "total_count": len(sent_tasks),
+            "last_sent_at": last_sent_at.isoformat() if last_sent_at else "",
+            "latest_customer_message_at": latest_customer_message_at.isoformat() if latest_customer_message_at else "",
+            "consecutive_silent_touch_count": consecutive_silent_touch_count,
+            "count_confidence": "authoritative_tasks" if tasks else "no_task_history",
+        },
+        {
+            "count": len(backlog_items),
+            "has_pending": bool(backlog_items),
+            "items": backlog_items,
+            "max_merge_pack_count": 2,
+        },
+    )
+
+
+def _task_time(task: dict[str, Any]) -> datetime | None:
+    for key in ("sent_at", "updated_at", "created_at"):
+        parsed = _parse_time(task.get(key))
+        if parsed:
+            return parsed
+    return None
+
+
+def _event_backlog_summary(payload: dict[str, Any], customer: dict[str, Any]) -> dict[str, Any]:
+    root_sop = payload.get("sop") if isinstance(payload.get("sop"), dict) else {}
+    customer_sop = customer.get("sop") if isinstance(customer.get("sop"), dict) else {}
+    return {
+        "event_type": _string(payload.get("event_type")),
+        "delay_minutes": _int(customer_sop.get("delay_minutes") or root_sop.get("delay_minutes"), 0),
+        "day_stage": _string(customer_sop.get("day_stage") or root_sop.get("day_stage")),
+        "customer_state": _string(customer_sop.get("customer_state") or root_sop.get("customer_state")),
+        "stage_tag": _string(customer_sop.get("stage_tag") or root_sop.get("stage_tag")),
     }
 
 
