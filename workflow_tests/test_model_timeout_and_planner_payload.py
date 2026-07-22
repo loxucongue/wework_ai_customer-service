@@ -26,6 +26,21 @@ def _settings(**overrides: Any) -> Settings:
 
 
 class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
+    def test_json_marker_is_injected_when_prompt_only_contains_uppercase_json(self) -> None:
+        messages = [{"role": "user", "content": "Return valid JSON only."}]
+
+        normalized = ModelClient._ensure_json_marker(messages)
+
+        self.assertEqual(normalized[0], {"role": "system", "content": "Return valid json only."})
+        self.assertEqual(normalized[1:], messages)
+
+    def test_json_marker_is_not_duplicated_when_lowercase_literal_is_present(self) -> None:
+        messages = [{"role": "user", "content": "Return valid json only."}]
+
+        normalized = ModelClient._ensure_json_marker(messages)
+
+        self.assertIs(normalized, messages)
+
     def test_round_budget_shadow_records_without_blocking_retry(self) -> None:
         now = time.monotonic()
         budget = build_runtime_budget(

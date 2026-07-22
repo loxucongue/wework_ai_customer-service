@@ -674,7 +674,10 @@ class ModelClient:
 
     @staticmethod
     def _ensure_json_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        combined = json.dumps(messages, ensure_ascii=False).lower()
+        # Some OpenAI-compatible gateways validate the lowercase literal before
+        # accepting response_format=json_object. Do not lowercase only for the
+        # check: that would leave an uppercase-only prompt unchanged on the wire.
+        combined = json.dumps(messages, ensure_ascii=False)
         if "json" in combined:
             return messages
         marker = {"role": "system", "content": "Return valid json only."}
