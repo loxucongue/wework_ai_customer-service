@@ -1,5 +1,9 @@
 ﻿from typing import Any
 
+import asyncio
+import logging
+from contextlib import suppress
+
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
 
@@ -71,6 +75,10 @@ sop_event_service = SopEventService(
         "user_id": settings.platform_agent_default_user_id,
         "wechat": settings.platform_agent_default_wechat,
     },
+    persistent_retry_attempts=settings.sop_event_persistent_retry_attempts,
+    persistent_retry_base_delay_seconds=settings.sop_event_persistent_retry_base_delay_seconds,
+    persistent_retry_max_delay_seconds=settings.sop_event_persistent_retry_max_delay_seconds,
+    retry_batch_size=settings.sop_event_retry_batch_size,
 )
 reply_graphs = build_reply_graphs(
     coze_client,
@@ -103,15 +111,38 @@ outreach_service = OutreachService(
 )
 
 app = FastAPI(title=settings.app_name)
+logger = logging.getLogger(__name__)
+sop_event_retry_worker: asyncio.Task[None] | None = None
+
+
+async def _run_sop_event_retry_worker() -> None:
+    while True:
+        try:
+            await sop_event_service.process_due_model_retries()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("SOP event retry worker iteration failed")
+        await asyncio.sleep(max(1.0, settings.sop_event_retry_poll_seconds))
 
 
 @app.on_event("startup")
 async def startup() -> None:
+    global sop_event_retry_worker
     sqlite_store.initialize()
+    repository.recover_interrupted_sop_event_model_retries()
+    if sop_event_retry_worker is None or sop_event_retry_worker.done():
+        sop_event_retry_worker = asyncio.create_task(_run_sop_event_retry_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    global sop_event_retry_worker
+    if sop_event_retry_worker is not None:
+        sop_event_retry_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await sop_event_retry_worker
+        sop_event_retry_worker = None
     await model_client.aclose()
     await coze_client.aclose()
     await outreach_send_client.aclose()

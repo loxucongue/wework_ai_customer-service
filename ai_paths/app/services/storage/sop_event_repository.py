@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -125,12 +126,105 @@ class SopEventRepositoryMixin:
             conn.execute(
                 """
                 UPDATE sop_events
-                SET status=?, error=?, updated_at=?
+                SET status=?, error=?, next_retry_at='', updated_at=?
                 WHERE event_id=?
                 """,
                 (status, error, now, event_id),
             )
         return self.get_sop_event(event_id)
+
+    def schedule_sop_event_model_retry(
+        self,
+        event_id: str,
+        *,
+        error: str,
+        max_attempts: int,
+        base_delay_seconds: float,
+        max_delay_seconds: float,
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT retry_count FROM sop_events WHERE event_id=?",
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                return {}
+            retry_count = int(row["retry_count"] or 0) + 1
+            if retry_count > max(0, int(max_attempts)):
+                status = "retry_exhausted_model"
+                next_retry_at = ""
+                event_error = error
+            else:
+                status = "retry_pending_model"
+                event_error = ""
+                delay = min(
+                    max(0.0, float(max_delay_seconds)),
+                    max(0.0, float(base_delay_seconds)) * (2 ** max(0, retry_count - 1)),
+                )
+                next_retry_at = (now + timedelta(seconds=delay)).isoformat()
+            conn.execute(
+                """
+                UPDATE sop_events
+                SET status=?, error=?, retry_count=?, next_retry_at=?, last_retry_error=?, updated_at=?
+                WHERE event_id=?
+                """,
+                (status, event_error, retry_count, next_retry_at, error, now.isoformat(), event_id),
+            )
+        return self.get_sop_event(event_id)
+
+    def claim_due_sop_event_model_retries(self, *, limit: int = 5) -> list[dict[str, Any]]:
+        now = utc_now_iso()
+        safe_limit = max(1, min(int(limit or 5), 50))
+        claimed: list[dict[str, Any]] = []
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_id FROM sop_events
+                WHERE status='retry_pending_model' AND next_retry_at<>'' AND next_retry_at<=?
+                ORDER BY next_retry_at ASC
+                LIMIT ?
+                """,
+                (now, safe_limit),
+            ).fetchall()
+            for row in rows:
+                event_id = str(row["event_id"] or "")
+                updated = conn.execute(
+                    """
+                    UPDATE sop_events SET status='retry_processing_model', updated_at=?
+                    WHERE event_id=? AND status='retry_pending_model'
+                    """,
+                    (now, event_id),
+                )
+                if updated.rowcount:
+                    claimed.append({"event_id": event_id})
+        return claimed
+
+    def recover_interrupted_sop_event_model_retries(self) -> int:
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE sop_events
+                SET status='retry_pending_model', next_retry_at=?, updated_at=?
+                WHERE status='retry_processing_model'
+                """,
+                (now, now),
+            )
+        return int(result.rowcount or 0)
+
+    def resolve_sop_event_model_retry_tasks(self, event_id: str) -> int:
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE sop_send_tasks
+                SET status='model_retry_resolved', error='', updated_at=?
+                WHERE event_id=? AND status='failed_model_error'
+                """,
+                (now, event_id),
+            )
+        return int(result.rowcount or 0)
 
     def create_sop_send_task(
         self,

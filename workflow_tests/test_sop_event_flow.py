@@ -1161,6 +1161,40 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls, [])
         self.assertEqual(len(client.send_calls), 1)
 
+    async def test_first_add_model_failure_is_persisted_and_retried(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        selector = _Selector(
+            {
+                "send_sop": False,
+                "reason": "event_sop_model_retries_exhausted",
+                "error": "TimeoutError: total timeout 45.0s",
+            }
+        )
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_first_add_model_retry",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
+            sop={"delay_minutes": 1},
+            customers=[{"first_added_event": {"trace_id": "trace_retry", "timestamp": "2026-07-11T01:00:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        first = await service.process_event("evt_first_add_model_retry")
+
+        self.assertEqual(first["status"], "retry_pending_model")
+        self.assertEqual(repo.events["evt_first_add_model_retry"]["retry_count"], 1)
+        self.assertEqual(client.send_calls, [])
+
+        selector.output = {"send_sop": True, "sop_pack_id": "opening", "reason": "retry recovered"}
+        retried = await service.process_due_model_retries()
+
+        self.assertEqual(retried[0]["status"], "processed")
+        self.assertEqual(len(client.send_calls), 1)
+        self.assertEqual(repo.events["evt_first_add_model_retry"]["status"], "processed")
+        self.assertTrue(any(task.get("status") == "model_retry_resolved" for task in repo.tasks))
+
     async def test_first_added_event_does_not_use_chat_gate_pack(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[])
@@ -1286,6 +1320,74 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(second["duplicate_of_task_id"], first["id"])
             self.assertEqual(second["send_once_key"], "")
             self.assertEqual(repo.list_sop_send_tasks_for_event("evt_second")[0]["status"], "skipped_send_once_duplicate")
+
+    def test_repository_model_retry_queue_persists_recovers_and_exhausts(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "ai_paths.db"))
+            store.initialize()
+            repo = AppRepository(store)
+            repo.create_sop_event({"event_id": "evt_retry_queue", "event_type": "sop_friend_added_schedule_batch"})
+
+            first = repo.schedule_sop_event_model_retry(
+                "evt_retry_queue",
+                error="TimeoutError: first",
+                max_attempts=2,
+                base_delay_seconds=0,
+                max_delay_seconds=0,
+            )
+            self.assertEqual(first["status"], "retry_pending_model")
+            self.assertEqual(first["retry_count"], 1)
+            self.assertEqual(first["last_retry_error"], "TimeoutError: first")
+
+            claimed = repo.claim_due_sop_event_model_retries(limit=1)
+            self.assertEqual(claimed, [{"event_id": "evt_retry_queue"}])
+            self.assertEqual(repo.get_sop_event("evt_retry_queue")["status"], "retry_processing_model")
+
+            self.assertEqual(repo.recover_interrupted_sop_event_model_retries(), 1)
+            self.assertEqual(repo.get_sop_event("evt_retry_queue")["status"], "retry_pending_model")
+
+            second = repo.schedule_sop_event_model_retry(
+                "evt_retry_queue",
+                error="TimeoutError: second",
+                max_attempts=2,
+                base_delay_seconds=0,
+                max_delay_seconds=0,
+            )
+            self.assertEqual(second["status"], "retry_pending_model")
+            self.assertEqual(second["retry_count"], 2)
+
+            exhausted = repo.schedule_sop_event_model_retry(
+                "evt_retry_queue",
+                error="TimeoutError: third",
+                max_attempts=2,
+                base_delay_seconds=0,
+                max_delay_seconds=0,
+            )
+            self.assertEqual(exhausted["status"], "retry_exhausted_model")
+            self.assertEqual(exhausted["retry_count"], 3)
+            self.assertEqual(exhausted["next_retry_at"], "")
+            self.assertEqual(exhausted["error"], "TimeoutError: third")
+            self.assertEqual(repo.claim_due_sop_event_model_retries(limit=1), [])
+
+    def test_repository_success_clears_pending_model_retry_time(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "ai_paths.db"))
+            store.initialize()
+            repo = AppRepository(store)
+            repo.create_sop_event({"event_id": "evt_retry_resolved", "event_type": "sop_friend_added_schedule_batch"})
+            pending = repo.schedule_sop_event_model_retry(
+                "evt_retry_resolved",
+                error="TimeoutError: retry me",
+                max_attempts=2,
+                base_delay_seconds=30,
+                max_delay_seconds=30,
+            )
+            self.assertTrue(pending["next_retry_at"])
+
+            resolved = repo.update_sop_event_status("evt_retry_resolved", status="processed")
+
+            self.assertEqual(resolved["status"], "processed")
+            self.assertEqual(resolved["next_retry_at"], "")
 
     def test_repository_wechat_identity_lookup_is_case_insensitive(self) -> None:
         with TemporaryDirectory() as tmpdir:
@@ -2554,6 +2656,7 @@ class _Repo:
         self.identity_lookup: dict[str, str] = {}
         self.identity_lookup_error: Exception | None = None
         self.message_times: list[dict[str, str]] = []
+        self.retry_queue: list[str] = []
 
     def create_sop_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         event_id = str(payload["event_id"])
@@ -2573,6 +2676,32 @@ class _Repo:
         self.events[event_id]["status"] = status
         self.events[event_id]["error"] = error
         return dict(self.events[event_id])
+
+    def schedule_sop_event_model_retry(self, event_id: str, **kwargs: Any) -> dict[str, Any]:
+        event = self.events[event_id]
+        event["retry_count"] = int(event.get("retry_count") or 0) + 1
+        max_attempts = int(kwargs.get("max_attempts") or 0)
+        event["status"] = "retry_pending_model" if event["retry_count"] <= max_attempts else "retry_exhausted_model"
+        event["last_retry_error"] = str(kwargs.get("error") or "")
+        if event["status"] == "retry_pending_model" and event_id not in self.retry_queue:
+            self.retry_queue.append(event_id)
+        return dict(event)
+
+    def claim_due_sop_event_model_retries(self, *, limit: int = 5) -> list[dict[str, str]]:
+        claimed = self.retry_queue[:limit]
+        self.retry_queue = self.retry_queue[limit:]
+        for event_id in claimed:
+            self.events[event_id]["status"] = "retry_processing_model"
+        return [{"event_id": event_id} for event_id in claimed]
+
+    def resolve_sop_event_model_retry_tasks(self, event_id: str) -> int:
+        resolved = 0
+        for task in self.tasks:
+            if task.get("event_id") == event_id and task.get("status") == "failed_model_error":
+                task["status"] = "model_retry_resolved"
+                task["error"] = ""
+                resolved += 1
+        return resolved
 
     def list_sent_sop_pack_ids_for_customer(
         self,

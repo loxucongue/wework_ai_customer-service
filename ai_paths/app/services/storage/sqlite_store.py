@@ -65,12 +65,18 @@ class SQLiteStore:
         }
         columns = {
             "id": "TEXT NOT NULL DEFAULT ''",
+            "retry_count": "INTEGER NOT NULL DEFAULT 0",
+            "next_retry_at": "TEXT NOT NULL DEFAULT ''",
+            "last_retry_error": "TEXT NOT NULL DEFAULT ''",
         }
         for name, definition in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE sop_events ADD COLUMN {name} {definition}")
         conn.execute("UPDATE sop_events SET id=event_id WHERE id=''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_sop_events_id ON sop_events(id)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sop_events_retry ON sop_events(status, next_retry_at)"
+        )
 
     @staticmethod
     def _ensure_sop_send_task_columns(conn: sqlite3.Connection) -> None:

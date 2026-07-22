@@ -180,6 +180,9 @@ CREATE TABLE IF NOT EXISTS sop_events (
     raw_payload_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'accepted',
     error TEXT NOT NULL DEFAULT '',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TEXT NOT NULL DEFAULT '',
+    last_retry_error TEXT NOT NULL DEFAULT '',
     received_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );

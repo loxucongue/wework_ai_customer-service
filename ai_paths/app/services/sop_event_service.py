@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import datetime, timezone
@@ -37,6 +38,10 @@ class SopEventService:
         memory_store: Any | None = None,
         customer_context_service: Any | None = None,
         default_identity: dict[str, Any] | None = None,
+        persistent_retry_attempts: int = 4,
+        persistent_retry_base_delay_seconds: float = 30.0,
+        persistent_retry_max_delay_seconds: float = 300.0,
+        retry_batch_size: int = 5,
     ) -> None:
         self.repository = repository
         self.sop_reply_pack_service = sop_reply_pack_service
@@ -44,6 +49,13 @@ class SopEventService:
         self.sop_execution_service = sop_execution_service
         self.memory_store = memory_store
         self.customer_context_service = customer_context_service
+        self.persistent_retry_attempts = max(0, int(persistent_retry_attempts or 0))
+        self.persistent_retry_base_delay_seconds = max(0.0, float(persistent_retry_base_delay_seconds or 0.0))
+        self.persistent_retry_max_delay_seconds = max(
+            self.persistent_retry_base_delay_seconds,
+            float(persistent_retry_max_delay_seconds or 0.0),
+        )
+        self.retry_batch_size = max(1, int(retry_batch_size or 1))
         self.default_identity = {
             "corp_id": _string((default_identity or {}).get("corp_id")),
             "user_id": _string((default_identity or {}).get("user_id")),
@@ -92,6 +104,24 @@ class SopEventService:
                 continue
             task_results.append(await self._send_task(task))
 
+        model_errors = [item for item in task_results if _string(item.get("status")) == "failed_model_error"]
+        if model_errors and _string(payload.get("event_type")) != "sop_platform_task":
+            schedule_retry = getattr(self.repository, "schedule_sop_event_model_retry", None)
+            if callable(schedule_retry):
+                retry_event = schedule_retry(
+                    event_id,
+                    error=_string(model_errors[-1].get("error")) or "event_model_failed",
+                    max_attempts=self.persistent_retry_attempts,
+                    base_delay_seconds=self.persistent_retry_base_delay_seconds,
+                    max_delay_seconds=self.persistent_retry_max_delay_seconds,
+                )
+                retry_status = _string(retry_event.get("status")) or "processed_with_errors"
+                return {"status": retry_status, "tasks": task_results, "retry": compact(retry_event, max_chars=1200)}
+
+        resolve_retries = getattr(self.repository, "resolve_sop_event_model_retry_tasks", None)
+        if callable(resolve_retries):
+            resolve_retries(event_id)
+
         status = "processed"
         if any(_task_has_processing_error(item) for item in task_results):
             status = "processed_with_errors"
@@ -99,6 +129,36 @@ class SopEventService:
             status = "skipped_no_tasks"
         self.repository.update_sop_event_status(event_id, status=status)
         return {"status": status, "tasks": task_results}
+
+    async def process_due_model_retries(self) -> list[dict[str, Any]]:
+        claim_due = getattr(self.repository, "claim_due_sop_event_model_retries", None)
+        if not callable(claim_due):
+            return []
+        claimed = claim_due(limit=self.retry_batch_size)
+
+        async def process_claimed(item: dict[str, Any]) -> dict[str, Any]:
+            event_id = _string(item.get("event_id"))
+            if not event_id:
+                return {"event_id": "", "status": "skipped_missing_event_id"}
+            try:
+                result = await self.process_event(event_id)
+            except Exception as exc:
+                schedule_retry = getattr(self.repository, "schedule_sop_event_model_retry", None)
+                if callable(schedule_retry):
+                    retry_event = schedule_retry(
+                        event_id,
+                        error=f"{type(exc).__name__}: {exc}",
+                        max_attempts=self.persistent_retry_attempts,
+                        base_delay_seconds=self.persistent_retry_base_delay_seconds,
+                        max_delay_seconds=self.persistent_retry_max_delay_seconds,
+                    )
+                    return {"event_id": event_id, "status": retry_event.get("status"), "error": str(exc)}
+                return {"event_id": event_id, "status": "retry_worker_failed", "error": str(exc)}
+            return {"event_id": event_id, **result}
+
+        if not claimed:
+            return []
+        return list(await asyncio.gather(*(process_claimed(item) for item in claimed)))
 
     async def _create_customer_task(self, payload: dict[str, Any], customer: dict[str, Any], *, index: int) -> dict[str, Any]:
         event_type = _string(payload.get("event_type"))
@@ -763,6 +823,20 @@ class SopEventService:
                 error=task_error,
             )
             task["created"] = created
+        elif (
+            task.get("id")
+            and not task.get("created")
+            and _string(task.get("status")) in {"failed_model_error", "model_retry_resolved"}
+            and status in {"failed_model_error", "skipped_model_rejected"}
+        ):
+            task = self.repository.update_sop_send_task(
+                str(task["id"]),
+                status=status,
+                send_payload=send_payload or task.get("send_payload") or {},
+                send_response=send_response or task.get("send_response") or {},
+                error=error,
+            )
+            task["created"] = False
         return task
 
     async def _send_task(self, task: dict[str, Any]) -> dict[str, Any]:

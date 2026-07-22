@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     sop_event_model_total_timeout_seconds: float = Field(default=60.0, alias="SOP_EVENT_MODEL_TOTAL_TIMEOUT_SECONDS")
     sop_chat_gate_total_timeout_seconds: float = Field(default=12.0, alias="SOP_CHAT_GATE_TOTAL_TIMEOUT_SECONDS")
     sop_event_model_max_concurrency: int = Field(default=2, alias="SOP_EVENT_MODEL_MAX_CONCURRENCY")
+    sop_event_persistent_retry_attempts: int = Field(default=4, alias="SOP_EVENT_PERSISTENT_RETRY_ATTEMPTS")
+    sop_event_persistent_retry_base_delay_seconds: float = Field(
+        default=30.0,
+        alias="SOP_EVENT_PERSISTENT_RETRY_BASE_DELAY_SECONDS",
+    )
+    sop_event_persistent_retry_max_delay_seconds: float = Field(
+        default=300.0,
+        alias="SOP_EVENT_PERSISTENT_RETRY_MAX_DELAY_SECONDS",
+    )
+    sop_event_retry_poll_seconds: float = Field(default=5.0, alias="SOP_EVENT_RETRY_POLL_SECONDS")
+    sop_event_retry_batch_size: int = Field(default=5, alias="SOP_EVENT_RETRY_BATCH_SIZE")
     model_json_max_tokens: int = 2048
     model_text_max_tokens: int = 2048
     memory_dir: Path = Path("logs/memory")
