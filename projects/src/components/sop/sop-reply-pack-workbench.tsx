@@ -285,7 +285,7 @@ export function SopReplyPackWorkbench() {
 
   return (
     <main className="min-h-screen bg-zinc-50 text-zinc-950">
-      <header className="sticky top-12 z-20 border-b bg-white/95 backdrop-blur">
+      <header className="sticky top-16 z-20 border-b bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3">
           <div className="flex items-center gap-3">
             <Button asChild variant="outline" size="icon" aria-label="返回">

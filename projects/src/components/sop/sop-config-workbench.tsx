@@ -10,28 +10,42 @@ export type SopConfigSection = "packs" | "precision";
 export function SopConfigWorkbench({ section }: { section: SopConfigSection }) {
   return (
     <div>
-      <div className="sticky top-0 z-50 border-b bg-background px-5 py-2">
-        <div className="flex items-center gap-2">
-          <Button
-            asChild
-            size="sm"
-            variant={section === "packs" ? "default" : "ghost"}
+      <div className="sticky top-0 z-50 h-16 border-b bg-background/95 px-5 backdrop-blur">
+        <div className="mx-auto flex h-full max-w-7xl items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold">客户回复配置</div>
+            <div className="hidden text-xs text-muted-foreground sm:block">
+              管理固定 SOP 话术包与精准问题回答策略
+            </div>
+          </div>
+          <nav
+            className="flex shrink-0 items-center gap-1 rounded-md border bg-muted/40 p-1"
+            aria-label="客户回复配置"
           >
-            <Link href="/sop">
-              <MessagesSquare />
-              话术包
-            </Link>
-          </Button>
-          <Button
-            asChild
-            size="sm"
-            variant={section === "precision" ? "default" : "ghost"}
-          >
-            <Link href="/sop/precision">
-              <BookOpenText />
-              精准回复
-            </Link>
-          </Button>
+            <Button
+              asChild
+              size="sm"
+              variant={section === "packs" ? "default" : "ghost"}
+            >
+              <Link href="/sop" aria-current={section === "packs" ? "page" : undefined}>
+                <MessagesSquare />
+                话术包
+              </Link>
+            </Button>
+            <Button
+              asChild
+              size="sm"
+              variant={section === "precision" ? "default" : "ghost"}
+            >
+              <Link
+                href="/sop/precision"
+                aria-current={section === "precision" ? "page" : undefined}
+              >
+                <BookOpenText />
+                精准回复
+              </Link>
+            </Button>
+          </nav>
         </div>
       </div>
       {section === "packs" ? <SopReplyPackWorkbench /> : <PrecisionQaPlaybookWorkbench />}
