@@ -21,6 +21,7 @@ from app.services.outreach_send_client import OutreachSendClient
 from app.services.outreach_system_client import OutreachSystemClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
 from app.services.platform_agent_client import PlatformAgentClient
+from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository, SQLiteStore
@@ -50,6 +51,7 @@ store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
 customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_client, store_snapshot_service)
 store_service = StoreService(platform_agent_client)
 sop_reply_pack_service = SopReplyPackService(settings)
+precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
 sop_execution_service = SopExecutionService(
     repository=repository,
     sop_reply_pack_service=sop_reply_pack_service,
@@ -226,6 +228,19 @@ async def admin_update_sop_reply_packs(payload: dict[str, Any] = Body(...)) -> d
 async def admin_append_event_first_add_templates() -> dict[str, Any]:
     try:
         return sop_reply_pack_service.append_missing_event_first_add_templates()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/admin/precision-qa-playbook", dependencies=[Depends(require_api_key)])
+async def admin_precision_qa_playbook() -> dict[str, Any]:
+    return precision_qa_playbook_service.load()
+
+
+@app.put("/admin/precision-qa-playbook", dependencies=[Depends(require_api_key)])
+async def admin_update_precision_qa_playbook(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    try:
+        return precision_qa_playbook_service.save(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

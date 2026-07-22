@@ -14,6 +14,7 @@ from app.graph.planner.runtime_plan import (
 )
 from app.graph.state import AgentState
 from app.policies.business_rules import reply_business_rules_for_model
+from app.policies.sales_flow import precision_qa_context_for_planner
 from app.policies.compliance_terms import (
     QUALIFICATION_CONTEXT_SAFE_NOTE,
     SERVICE_COMMITMENT_CONTEXT_SAFE_NOTE,
@@ -68,6 +69,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "order_decision": state.get("order_decision", {}),
         "appointment_decision": state.get("appointment_decision", {}),
         "sales_progression": state.get("sales_progression", {}),
+        "precision_qa_decision": state.get("precision_qa_decision", {}),
         "reply_constraints": state.get("reply_constraints", []),
         "planner_tool_policy_violations": _compact_planner_violations(state.get("tool_policy_violations", [])),
         "planner_direct_reply_draft": _planner_direct_reply_draft_for_reply(state),
@@ -87,6 +89,9 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "business_rules": reply_business_rules_for_model(
             stage=str(state.get("planner_stage") or ""),
             sub_rule_id=str(state.get("planner_sub_rule_id") or ""),
+        ),
+        "precision_qa_playbook": precision_qa_context_for_planner(
+            str((state.get("precision_qa_decision") or {}).get("question_id") or "")
         ),
         "tool_facts": _tool_facts_for_reply(fact_envelope),
         "fact_notes": _fact_notes_for_model(
@@ -119,6 +124,7 @@ def reply_recovery_payload_for_model(state: AgentState) -> dict[str, Any]:
         "order_decision",
         "appointment_decision",
         "sales_progression",
+        "precision_qa_decision",
         "planner_direct_reply_draft",
         "turn_evidence",
         "transaction_facts",
@@ -128,6 +134,7 @@ def reply_recovery_payload_for_model(state: AgentState) -> dict[str, Any]:
         "sent_message_summary",
         "sop_progress",
         "business_rules",
+        "precision_qa_playbook",
         "tool_facts",
         "fact_notes",
         "reply_constraints",

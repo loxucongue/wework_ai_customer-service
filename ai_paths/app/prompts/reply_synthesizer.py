@@ -119,9 +119,20 @@ REPLY_TRANSACTION_PATCH_PROMPT = """
 """.strip()
 
 
+REPLY_PRECISION_QA_PROMPT = """
+# Precision Reply Contract
+- `precision_qa_playbook` 是回答边界和优秀表达参考，不是固定模板。先理解客户当前真正的问题，再自然作答。
+- `selected_question` 与当前语义一致时，完整覆盖其 must_answer，避开 must_not_substitute 和 forbidden_claims；示例只能校准尺度，不能逐字复读。
+- 若 Planner 未选中或选错，可根据 question_index 和当前历史自行纠正；不要强行套用不匹配的问题。
+- 先精准解决当前顾虑，再用一条自然过渡恢复其 resume_mainline_stage 或 Planner 的 sales_progression，不能只答疑后停住。
+- 客户重复追问时换角度加深，不重复上一轮原句；需要案例、门店、支付或预约事实时只使用 tool_facts 和结构化事实。
+""".strip()
+
+
 def build_reply_messages(user_payload: dict[str, Any], *, json_dumps) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": REPLY_SYSTEM_PROMPT},
+        {"role": "system", "content": REPLY_PRECISION_QA_PROMPT},
         {"role": "user", "content": json_dumps(user_payload)},
         {"role": "system", "content": REPLY_TRANSACTION_PATCH_PROMPT},
     ]

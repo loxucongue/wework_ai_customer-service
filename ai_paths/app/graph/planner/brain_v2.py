@@ -20,6 +20,7 @@ from app.graph.nodes.turn_evidence_view import turn_evidence_for_model
 from app.graph.planner.planner_contract import ALLOWED_TOOLS
 from app.graph.planner.brain_v2_prompts import (
     PLANNER_REPAIR_PROMPT,
+    PLANNER_PRECISION_QA_CONTRACT,
     PLANNER_RISK_PATCH_PROMPT,
     PLANNER_SYSTEM_PROMPT,
     PLANNER_TRANSACTION_PATCH_PROMPT,
@@ -28,6 +29,7 @@ from app.graph.planner.brain_v2_prompts import (
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, planner_unavailable_fallback_plan, safety_fallback_plan
 from app.graph.state import AgentState
 from app.policies.business_rules import planner_business_rules_prompt_section
+from app.policies.sales_flow import precision_qa_context_for_planner
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.customer_payment_state import normalize_prepay_facts
 from app.services.model_client import ModelClient
@@ -79,6 +81,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
     payload = _planner_payload_for_model(state)
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": PLANNER_PRECISION_QA_CONTRACT},
         {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
         {"role": "system", "content": PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT},
@@ -98,6 +101,7 @@ def planner_v2_repair_messages_for_model(
     }
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": PLANNER_PRECISION_QA_CONTRACT},
         {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
@@ -341,6 +345,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         ),
         "sent_message_summary": sent_message_summary,
         "sop_progress_evidence": _sop_progress_evidence_for_planner(state),
+        "precision_qa_playbook": precision_qa_context_for_planner(),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
     return _drop_empty(payload)
@@ -363,6 +368,7 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "store_scope_summary": base.get("store_scope_summary"),
         "sent_message_summary": base.get("sent_message_summary"),
         "sop_progress_evidence": base.get("sop_progress_evidence"),
+        "precision_qa_playbook": base.get("precision_qa_playbook"),
         "available_tools": base.get("available_tools"),
         "timeout_recovery": {
             "previous_error": str(previous_error or "")[:240],

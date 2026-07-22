@@ -44,6 +44,7 @@ from app.graph.planner.planner_transaction_guards import (
 )
 from app.graph.state import AgentState
 from app.policies.constants import KNOWN_STORE_FACTS, KNOWN_STORE_NAMES
+from app.policies.sales_flow import precision_qa_for_id
 from app.services.payment_collection import (
     payment_amount_for_party_size,
     payment_collection_content,
@@ -142,6 +143,8 @@ ALLOWED_SALES_PROGRESSION_TARGETS = (
     "close",
     "risk",
 )
+ALLOWED_PRECISION_QA_CONFIDENCE = ("high", "medium", "low")
+ALLOWED_PRECISION_QA_DEPTH = ("brief", "standard", "deep")
 
 
 def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> dict[str, Any]:
@@ -207,6 +210,9 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     )
     sales_progression = _normalize_sales_progression(
         model_payload.get("sales_progression") if isinstance(model_payload, dict) else {},
+    )
+    precision_qa_decision = _normalize_precision_qa_decision(
+        model_payload.get("precision_qa_decision") if isinstance(model_payload, dict) else {},
     )
     unverified_paid_claim = (
         str(payment_decision.get("action") or "") == "after_paid_next_step"
@@ -496,6 +502,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "order_decision": order_decision,
         "appointment_decision": appointment_decision,
         "sales_progression": sales_progression,
+        "precision_qa_decision": precision_qa_decision,
         "planner_reply_messages": planner_reply_messages,
         "planner_tool_calls": executable_tools,
         "reply_constraints": reply_constraints,
@@ -1408,6 +1415,29 @@ def _normalize_order_decision(value: Any) -> dict[str, Any]:
     if basis:
         output["basis"] = basis[:6]
     return output
+
+
+def _normalize_precision_qa_decision(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    question_id = str(raw.get("question_id") or raw.get("id") or "").strip()
+    if question_id and not precision_qa_for_id(question_id):
+        question_id = ""
+    confidence = _normalize_enum(
+        raw.get("confidence"),
+        ALLOWED_PRECISION_QA_CONFIDENCE,
+        "low",
+    )
+    answer_depth = _normalize_enum(
+        raw.get("answer_depth"),
+        ALLOWED_PRECISION_QA_DEPTH,
+        "standard",
+    )
+    return {
+        "question_id": question_id,
+        "confidence": confidence if question_id else "low",
+        "answer_depth": answer_depth,
+        "basis": _clean_str_list(raw.get("basis"))[:5],
+    }
 
 
 def _normalize_store_binding_decision(

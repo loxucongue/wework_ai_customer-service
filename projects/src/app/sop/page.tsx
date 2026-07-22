@@ -1,5 +1,5 @@
-import { SopReplyPackWorkbench } from "@/components/sop/sop-reply-pack-workbench";
+import { SopConfigWorkbench } from "@/components/sop/sop-config-workbench";
 
 export default function SopPage() {
-  return <SopReplyPackWorkbench />;
+  return <SopConfigWorkbench />;
 }

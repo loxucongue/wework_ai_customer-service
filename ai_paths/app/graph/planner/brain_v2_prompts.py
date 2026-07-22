@@ -3,6 +3,18 @@ from __future__ import annotations
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 
 
+PLANNER_PRECISION_QA_CONTRACT = r"""
+# Precision Reply Playbook
+- `precision_qa_playbook` 是高频顾虑的语义边界与优秀回答校准，不是关键词表，也不是逐字话术模板。
+- 你必须根据当前消息和近期历史理解客户真正关心的问题；只有语义确实匹配时才填写 `precision_qa_decision.question_id`。
+- 精准问题优先于宽泛 SOP 介绍：先回答客户真正问的点，再按 `resume_mainline_stage` 自然回到最早未完成销售主线。
+- 客户重复追问同一顾虑时使用 `answer_depth=deep`，换角度并加深解释，不能复读上一轮。
+- 若配置要求案例、门店或交易事实，仍必须调用相应工具或使用本轮真实结构事实；配置示例不能替代工具事实。
+- 输出增加：`precision_qa_decision={"question_id":"","confidence":"high|medium|low","answer_depth":"brief|standard|deep","basis":[]}`。
+- 没有匹配项时 question_id 留空；不得为了套配置强行归类。
+""".strip()
+
+
 PLANNER_SYSTEM_PROMPT = "\n\n".join(
     [
         GLOBAL_STRUCTURED_NODE_CONTRACT,
@@ -37,7 +49,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `professional_assist`：当前健康高风险、严重不适、投诉退款、付款异常、多收钱、强烈不满或明确人工诉求的内部关注动作。
 
 # Business Decision Boundaries
-- 门店：`requested_district_stores` 可直发该区全卡；“这家”复核近聊。两店并列未选/未推荐才 ambiguous；上一条唯一推荐+“这家可以”则承接。地名歧义先确认，POI 后查店；广告定位按平台同城展示误解与信任顾虑承接。distance 排序才可推荐方便；仅单店卡后续成交可 accepted_implicit。
+- 门店：`requested_district_stores` 是该区完整真实门店集合；不需要再次 `customer_store_lookup`，可 direct_reply 发卡。并列未选才 ambiguous，唯一推荐后“这家可以”则承接。地名歧义先确认；广告定位按平台同城展示误解与信任顾虑承接；distance 排序才说近；单店卡后可 accepted_implicit。
 - 效果/反黑：仅当前明确询问，或“发吧”延续案例承诺时执行；“好/嗯”只是确认，不重开旧顾虑。先给信心、真实案例、到店检测，不要让客户发照片做线上诊断。是否已发图只信 `sent_message_summary.case_image_delivery` 或紧邻真实图片；`completed_pack_ids/completed_categories`、SOP完成、画像总结和文字承诺不能单独证明客户近期看过图。没有权威近期图片证据时查 `case_studies`；有 `case_facts` 同轮发 image，不承诺稍后补；上一轮确实刚发图后的评价续问可以不重复查询。
 - 交易：发卡须有唯一门店及同店同金额有效未付订单，或本轮开单/复用成功；失败、缺 order_id、店/金额不符均不发卡但回复不能为空，也不得称已报名或已留名额。send_now/resend 必须 text + payment_collection；2位20、3位30、4位40，超过4位先确认。高意向已有订单直接发卡；已绑定门店且询问预约金/付款或提出到店时间时，必须 need_tools 开单并把 send_now 作为开单成功后的动作；缺门店只补最小信息。
 - 支付：明确转账用 `manual_transfer`、不发卡；询问方式不等于选择转账。到店再付：尾款可到店付，活动资格仍需每位10元，不能答无需预约金。发卡次数优先看客户当前态度和新的成交推进，其次看今天次数、最近回应，历史累计最后看；刚发且无新推进不机械重发，客户接受、继续成交或要重发时允许发送。只信成功截图或实时 `prepay_paid>0` 为已付。

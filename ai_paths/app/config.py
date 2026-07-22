@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     store_snapshot_ttl_hours: int = 24
     platform_filter_words_path: Path = Path("config/platform_filter_words.json")
     sop_reply_packs_path: Path = Field(default=Path("config/sop_reply_packs.json"), alias="SOP_REPLY_PACKS_PATH")
+    precision_qa_playbook_path: Path = Field(
+        default=Path("config/precision_qa_playbook.json"),
+        alias="PRECISION_QA_PLAYBOOK_PATH",
+    )
     outreach_send_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SEND_BASE_URL")
     outreach_send_agent_token: str = Field(default="", alias="OUTREACH_SEND_AGENT_TOKEN", repr=False)
     outreach_send_timeout_seconds: int = Field(default=12, alias="OUTREACH_SEND_TIMEOUT_SECONDS")
