@@ -187,7 +187,7 @@ def order_created_at_value(order: dict[str, Any]) -> Any:
 
 
 def payment_collection_order_fact(state: dict[str, Any], *, amount: Any = None) -> dict[str, Any]:
-    """Return the matching active unpaid order that can authorize a payment card."""
+    """Return the matching active unpaid order for backend linkage when available."""
     expected_amount = _numeric_amount(amount or _payment_decision_value(state, "amount"))
     expected_store_id = _payment_store_id(state)
     if expected_amount not in {10, 20, 30, 40} or not expected_store_id:

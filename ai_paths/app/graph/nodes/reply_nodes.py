@@ -16,7 +16,6 @@ from app.services.payment_collection import (
     payment_collection_content,
     payment_collection_context,
 )
-from app.services.customer_payment_state import payment_collection_order_fact
 from app.services.risk_hold import explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
 from app.services.runtime_budget import can_start_model_retry, model_deadline_monotonic, runtime_budget_snapshot
 from app.graph.state import AgentState
@@ -354,8 +353,6 @@ def _maybe_append_planner_payment_structure(
     if context.get("over_limit"):
         return messages
     amount = int(context.get("amount") or 10)
-    if not payment_collection_order_fact(state, amount=amount):
-        return messages
     return _renumber(
         [
             *messages,
@@ -505,8 +502,6 @@ def _maybe_build_required_payment_collection_fallback(
     if context.get("over_limit"):
         return None
     amount = int(context.get("amount") or 10)
-    if not payment_collection_order_fact(state, amount=amount):
-        return None
     return _renumber(
         [
             *source_messages,

@@ -72,8 +72,8 @@
     ]
   },
   "transaction_policy": {
-    "payment_order_policy": "matching_current_order_required",
-    "payment_order_policy_description": "预约金卡必须关联同门店、同金额的有效未付订单，或本轮开单/复用成功并取得真实order_id；开单失败、订单查询失败、门店或金额不匹配时禁止发卡，但客户回复不能因此为空。",
+    "payment_order_policy": "order_link_not_required_for_card",
+    "payment_order_policy_description": "活动报价已完成或已铺垫后，Planner可根据成交节奏发送预约金卡；订单和开单只用于后台关联，不作为发卡前置。开单失败、订单查询失败、门店或金额不匹配不得导致空回复，也不得对客户说入口没对上。",
     "payment_order_link_states": ["linked", "pending_link", "unlinked", "not_applicable"],
     "appointment_flow_mode": "registration_only",
     "post_paid_registration_fields": ["customer_name", "customer_mobile", "store", "visit_date", "visit_time"],

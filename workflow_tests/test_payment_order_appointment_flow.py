@@ -135,7 +135,7 @@ def test_platform_unknown_message_placeholder_is_treated_as_transfer_success() -
     assert payment["source"] == "platform.unknown_message_transfer"
 
 
-def test_payment_card_requires_matching_order_fact_in_full_planner_state() -> None:
+def test_payment_card_does_not_require_matching_order_fact_in_full_planner_state() -> None:
     state = {
         **_base_state(),
         "normalized_content": "就这家，我报名",
@@ -157,12 +157,11 @@ def test_payment_card_requires_matching_order_fact_in_full_planner_state() -> No
             "tool_calls": [],
         },
     )
-    assert any(item.get("missing") == "work_order_required_before_payment_collection" for item in plan["tool_policy_violations"])
-    with pytest.raises(ValueError, match="work_order_required_before_payment_collection"):
-        validate_reply_consistency(
-            plan["planner_reply_messages"],
-            {**state, **plan, "fact_envelope": {"structured_facts": {"order_facts": []}}},
-        )
+    assert not any(item.get("missing") == "work_order_required_before_payment_collection" for item in plan["tool_policy_violations"])
+    validate_reply_consistency(
+        plan["planner_reply_messages"],
+        {**state, **plan, "fact_envelope": {"structured_facts": {"order_facts": []}}},
+    )
 
 
 def test_planner_reuses_matching_active_order_instead_of_incomplete_create_tool() -> None:
@@ -234,7 +233,7 @@ def test_planner_reuses_required_unpaid_order_when_platform_omits_lifecycle_stat
     assert not any(item.get("missing", "").startswith("create_work_order_missing") for item in plan["tool_policy_violations"])
 
 
-def test_active_order_from_another_store_cannot_authorize_payment_card() -> None:
+def test_active_order_from_another_store_does_not_block_payment_card() -> None:
     state = {
         **_base_state(),
         "confirmed_store_id": "386",
@@ -264,7 +263,7 @@ def test_active_order_from_another_store_cannot_authorize_payment_card() -> None
         },
     )
 
-    assert any(item.get("missing") == "work_order_required_before_payment_collection" for item in plan["tool_policy_violations"])
+    assert not any(item.get("missing") == "work_order_required_before_payment_collection" for item in plan["tool_policy_violations"])
 
 
 def test_payment_state_uses_marked_current_order_instead_of_other_paid_order() -> None:

@@ -12,7 +12,6 @@ from app.services.payment_collection import (
     payment_collection_content,
     payment_collection_context,
 )
-from app.services.customer_payment_state import payment_collection_order_fact
 from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
@@ -458,14 +457,6 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         ):
             raise ValueError("payment_participant_count_confirm_required")
         return
-    if (
-        needs_payment
-        and _payment_order_guard_enabled(state)
-        and not payment_collection_order_fact(state, amount=payment_context.get("amount"))
-    ):
-        if has_payment or _promises_payment_entry(text):
-            raise ValueError("work_order_required_before_payment_collection")
-        return
     if needs_payment and not has_payment:
         raise ValueError("payment_collection_required_when_reply_promises_payment_entry")
 
@@ -479,20 +470,6 @@ def _paid_deposit_context(state: dict[str, Any]) -> bool:
     if not isinstance(turn_context, dict):
         return False
     return str(turn_context.get("deposit_state") or "") == "deposit_paid"
-
-
-def _payment_order_guard_enabled(state: dict[str, Any]) -> bool:
-    """Enable transaction-order validation only for a full runtime state."""
-    return any(
-        key in state
-        for key in (
-            "customer_context",
-            "order_decision",
-            "tool_results",
-            "confirmed_store_id",
-            "current_turn_context",
-        )
-    )
 
 
 def _validate_no_payment_after_current_appointment_created(

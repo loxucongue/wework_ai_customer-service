@@ -257,7 +257,7 @@ def _decision_removes_unsupported_payment_messages(
 ) -> bool:
     """Allow a model-selected pack only after its unsupported cards are structurally removed."""
 
-    removable_statuses = {"missing_matching_current_order", "paid_skip_card"}
+    removable_statuses = {"paid_skip_card"}
     unsupported_orders: set[int] = set()
     combined_order = 0
     has_editable_text = False

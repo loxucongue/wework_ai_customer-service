@@ -767,7 +767,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("selected_payment_pack_not_currently_supported", send_violations)
         self.assertIn("selected_payment_pack_not_currently_supported", merge_violations)
 
-    def test_event_decision_allows_unbacked_card_only_when_model_removes_card_and_rewrites_text(self) -> None:
+    def test_event_decision_does_not_allow_activity_intro_blocked_card_removal(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
             "candidate_sops": [
@@ -779,7 +779,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                         {"order": 2, "type": "image", "facts": {"asset": "configured"}},
                         {"order": 3, "type": "payment_collection", "facts": {"amount": 10}},
                     ],
-                    "payment_collection_gate": {"status": "missing_matching_current_order"},
+                    "payment_collection_gate": {"status": "activity_intro_required"},
                 }
             ],
             "event_policy_evidence": {"ai_reply_policy": {"allowed": False}},
@@ -797,7 +797,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             selector_input,
         )
 
-        self.assertNotIn("selected_payment_pack_not_currently_supported", violations)
+        self.assertIn("selected_payment_pack_not_currently_supported", violations)
 
     def test_event_decision_does_not_allow_card_removal_to_bypass_activity_intro(self) -> None:
         selector_input = {
@@ -1104,13 +1104,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 result = await service.process_event(event_id)
 
                 self.assertEqual(result["status"], "processed")
-                expected_status = (
-                    "skipped_missing_payment_order"
-                    if delay_minutes == 60
-                    else "skipped_payment_collection_blocked"
-                    if delay_minutes == 70
-                    else "sent"
-                )
+                expected_status = "skipped_payment_collection_blocked" if delay_minutes == 70 else "sent"
                 self.assertEqual(repo.tasks[0]["status"], expected_status)
                 self.assertEqual(repo.tasks[0]["sop_pack_id"], pack_id)
 
@@ -2697,7 +2691,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(paid["send_sop"])
         self.assertEqual(paid_model.messages, [])
 
-    async def test_chat_gate_payment_card_requires_matching_current_order(self) -> None:
+    async def test_chat_gate_payment_card_does_not_require_matching_current_order(self) -> None:
         class _PaymentPackService:
             def load(self) -> dict[str, Any]:
                 return {
@@ -2743,8 +2737,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         missing = await missing_service.evaluate_chat_gate(request, request_id="req_payment_missing", request_context={})
 
-        self.assertEqual(missing["mode"], "skipped_missing_payment_order")
-        self.assertFalse(missing["send_sop"])
+        self.assertTrue(missing["send_sop"])
+        self.assertEqual([item["type"] for item in missing["reply_messages"]], ["text", "payment_collection"])
 
         valid_service = SopExecutionService(
             repository=_Repo(),

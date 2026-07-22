@@ -222,7 +222,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(retry_info, dict)
         self.assertIn("Model JSON missing reply_messages", retry_info.get("reason", ""))
 
-    async def test_reply_synth_removes_payment_card_after_work_order_rejection(self) -> None:
+    async def test_reply_synth_keeps_payment_card_after_work_order_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             model = FakeRejectedOrderRepairModelClient()
             node = create_synthesize_reply_node(
@@ -258,11 +258,11 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
             output = await node(state)
 
-        self.assertEqual(model.calls, 2)
+        self.assertEqual(model.calls, 1)
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "main_model")
-        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text"])
-        self.assertNotEqual(model.retry_messages, [])
+        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "payment_collection"])
+        self.assertEqual(model.retry_messages, [])
 
     async def test_reply_synth_uses_handoff_notice_fallback_after_bad_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

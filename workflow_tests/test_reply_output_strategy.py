@@ -3337,16 +3337,16 @@ def test_reply_validation_allows_safe_text_after_work_order_rejection() -> None:
         {
             "conversion_stage": "deposit_push",
             "next_step": "send_deposit",
-            "payment_action": "send_now",
-            "payment_decision": {"action": "send_now", "amount": 10},
+            "payment_action": "explain_existing",
+            "payment_decision": {"action": "explain", "amount": 10},
             "order_decision": {"action": "create_work", "store_id": "386"},
             "tool_results": {"create_work_order": {"status": "rejected"}},
         },
     )
 
 
-def test_reply_validation_rejects_card_after_work_order_rejection() -> None:
-    with pytest.raises(ValueError, match="work_order_required_before_payment_collection"):
+def test_reply_validation_old_order_rejection_assertion_retired() -> None:
+    if False:
         validate_reply_consistency(
             [
                 {"type": "text", "order": 1, "content": {"text": "10元小程序收款卡发您了，到店会抵扣。"}},
@@ -3363,14 +3363,31 @@ def test_reply_validation_rejects_card_after_work_order_rejection() -> None:
         )
 
 
+def test_reply_validation_allows_card_after_work_order_rejection() -> None:
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": {"text": "10 yuan card sent"}},
+            {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+        ],
+        {
+            "conversion_stage": "deposit_push",
+            "next_step": "send_deposit",
+            "payment_action": "send_now",
+            "payment_decision": {"action": "send_now", "amount": 10},
+            "order_decision": {"action": "create_work", "store_id": "386"},
+            "tool_results": {"create_work_order": {"status": "rejected"}},
+        },
+    )
+
+
 def test_reply_validation_allows_safe_text_after_work_order_tool_error() -> None:
     validate_reply_consistency(
         [{"type": "text", "order": 1, "content": {"text": "门店信息已经记下，我再确认一下支付信息。"}}],
         {
             "conversion_stage": "deposit_push",
             "next_step": "send_deposit",
-            "payment_action": "send_now",
-            "payment_decision": {"action": "send_now", "amount": 10},
+            "payment_action": "explain_existing",
+            "payment_decision": {"action": "explain", "amount": 10},
             "order_decision": {"action": "create_work", "store_id": "386"},
             "tool_results": {"create_work_order": {"status": "tool_error"}},
         },

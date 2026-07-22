@@ -51,7 +51,7 @@ from app.services.payment_collection import (
     payment_collection_context,
     payment_party_size_for_amount,
 )
-from app.services.customer_payment_state import normalize_prepay_facts, payment_collection_order_fact
+from app.services.customer_payment_state import normalize_prepay_facts
 from app.services.risk_hold import HEALTH_RISK_TERMS, explicit_professional_assist_reason, health_risk_hold, is_hard_health_risk_hold
 
 
@@ -2888,18 +2888,6 @@ def _payment_consistency_violations(
     if decision != "direct_reply":
         return []
     needs_payment = decision_action in {"send_now", "resend"} or payment_action == "send_now"
-    if needs_payment and not payment_collection_order_fact(state, amount=payment_context.get("amount")):
-        return [
-            {
-                "task_type": "reply_schema_consistency",
-                "subtype": "payment_collection",
-                "missing": "work_order_required_before_payment_collection",
-                "note": (
-                    "payment_collection requires a matching active unpaid work order for the confirmed store and amount. "
-                    "Create or update the work order first; do not send the card when that tool fails."
-                ),
-            }
-        ]
     if needs_payment and payment_context["over_limit"]:
         return [
             {
@@ -3025,8 +3013,6 @@ def _append_required_payment_collection(
         return messages
     payment_context = payment_collection_context(state=state, messages=messages)
     if payment_context["over_limit"]:
-        return messages
-    if not payment_collection_order_fact(state, amount=payment_context.get("amount")):
         return messages
     return [
         *_renumber_reply_messages(messages),

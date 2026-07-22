@@ -64,12 +64,12 @@ def test_prompt_files_do_not_contain_common_encoding_damage() -> None:
             assert marker not in text, f"{path} contains possible encoding damage: {marker}"
 
 
-def test_transaction_prompts_require_order_and_keep_postpaid_information_only() -> None:
+def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_information_only() -> None:
     assert "create_work_order" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "payment_result=success" in PLANNER_TRANSACTION_PATCH_PROMPT
-    assert "缺少成功 order_id 或开单失败必须取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
-    assert "同门店、同金额有效未付订单" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "缺少成功 order_id 或开单失败不得取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "订单和开单只用于后台关联" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不调用 available_time/create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "客户口头说“我付了”不能单独确认已付" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "姓名、电话、门店、到店日期和时间" in REPLY_TRANSACTION_PATCH_PROMPT
@@ -84,10 +84,9 @@ def test_transaction_prompts_require_order_and_keep_postpaid_information_only() 
     assert "尊敬的客户" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "成交推进不是无限循环" in GLOBAL_REPLY_CONTRACT
     assert "排客完成终态" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
-    assert "不要求先确认门店、先有订单或开单成功" not in PLANNER_TRANSACTION_PATCH_PROMPT
-    assert "缺少成功 order_id 或开单失败都不得取消卡片" not in REPLY_TRANSACTION_PATCH_PROMPT
-    assert "已有同门店、同金额有效未付订单时" in PLANNER_TRANSACTION_PATCH_PROMPT
-    assert "不得调用 `create_work_order`" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "不是发卡前置" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "缺少成功 order_id 或开单失败不得取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "没有订单或开单失败时仍可由模型判断本轮发卡" in PLANNER_TRANSACTION_PATCH_PROMPT
 
 
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
@@ -148,7 +147,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "答清后仍无门店就问城市区域",
         "健康、孕期或过敏只引导到店专业检测",
         "隐形消费或收费透明顾虑答清、活动已说明但无门店",
-        "把 send_now 作为开单成功后的动作",
+        "发卡前置是活动报价已完成/已铺垫",
         "短消息须承接最近未完动作",
         "不列选项重问意图",
         "不能答无需预约金",
@@ -546,7 +545,7 @@ def test_sop_gate_requires_contextual_first_text_and_preserves_numeric_facts() -
         "insert_text_after",
         "payment_collection_gate.status",
         "remove_message",
-        "payment_collection_requires_matching_current_order",
+        "payment_collection_blocked_by_paid_state",
         "skipped_deposit_paid",
         "failed_order_fetch",
     ]:

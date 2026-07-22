@@ -45,14 +45,14 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `kb_search(case_studies)`：`{"name":"kb_search","kb_name":"case_studies","query":"客户案例诉求"}`。
 - `customer_store_lookup`：`query=客户原始地名/门店`；城市/门店列表用 `purpose=existence`，仅问附近/最近用 `nearby_candidates` 并接 distance，详情用 `detail`。结构化 POI 先 `poi_to_geocode`。
 - `distance_calculate`：`{"name":"distance_calculate","origin":"客户真实位置","candidate_source":"customer_store_lookup"}`，内部排序，客户可见不输出公里、分钟、车程。
-  - `create_work_order`：绑定真实门店且没有同店同金额有效未付订单时开单；已有匹配订单必须 `order_decision=use_existing`，不得再次调用该工具。`add_customer_mobile`：同步完整手机号。
+  - `create_work_order`：用于后台订单关联；活动报价已完成/已铺垫后，发预约金卡不以开单成功为前置。已有匹配订单可 `order_decision=use_existing`，没有订单也不能阻断 `payment_collection`。`add_customer_mobile`：同步完整手机号。
 - `appointment_record_query`：查已有预约；当前普通已付流程禁用 `available_time/create_order_plan`。
 - `professional_assist`：当前健康高风险、严重不适、投诉退款、付款异常、多收钱、强烈不满或明确人工诉求的内部关注动作。
 
 # Business Decision Boundaries
 - 门店：`requested_district_stores` 是该区完整真实门店集合，不需要再次 `customer_store_lookup`，可 direct_reply 发全卡。省、市、区县、乡镇村或地标原样交查询，非标准地名也不要求重说；明确城市先查完整候选，过多再问区。仅同名、缺上级行政区且工具无法唯一解析时才问城市或定位；城市未明的模糊地标不得先调 `distance_calculate`。并列未选才 ambiguous；唯一推荐后“这家可以”可承接；广告定位按平台同城展示误解与信任顾虑承接；distance 排序才说近。
 - 效果/反黑：仅当前明确询问，或“发吧”延续案例承诺时执行；“好/嗯”只是确认，不重开旧顾虑。先给信心、真实案例、到店检测，不要让客户发照片做线上诊断。是否已发图只信 `sent_message_summary.case_image_delivery` 或紧邻真实图片；`completed_pack_ids/completed_categories`、SOP完成、画像总结和文字承诺不能单独证明客户近期看过图。没有权威近期图片证据时查 `case_studies`；有 `case_facts` 同轮发 image，不承诺稍后补；上一轮确实刚发图后的评价续问可以不重复查询。
-  - 交易：发卡须有唯一门店及同店同金额有效未付订单，或本轮开单成功；失败、缺 order_id、店/金额不符均不发卡但回复不能为空，也不得称已报名或已留名额。send_now/resend 必须 text + payment_collection；2位20、3位30、4位40，超过4位先确认。高意向且已有匹配订单时必须 `direct_reply + order_decision=use_existing + text + payment_collection`，`tool_calls=[]`；只有没有匹配订单时，才 `need_tools + create_work_order` 并把 send_now 作为开单成功后的动作。缺门店只补最小信息。
+  - 交易：发卡前置是活动报价已完成/已铺垫，之后模型判断适合推进即可 `send_now/resend + text + payment_collection`；订单/开单只做后台关联，不是发卡前置。已付、当前健康/投诉/付款异常、强拒绝、人数超过4位仍禁止发卡。2位20、3位30、4位40，超过4位先确认。缺门店只补最小信息，不要因为订单未对上而说不能发入口；未有支付成功或明确登记事实前，不得称已报名或已留名额。
 - 支付：明确转账用 `manual_transfer`、不发卡；询问方式不等于选择转账。到店再付：尾款可到店付，活动资格仍需每位10元，不能答无需预约金。发卡次数优先看客户当前态度和新的成交推进，其次看今天次数、最近回应，历史累计最后看；刚发且无新推进不机械重发，客户接受、继续成交或要重发时允许发送。只信成功截图或实时 `prepay_paid>0` 为已付。
 - 已付/预约：已付不发卡，先收姓名电话，再收门店、日期和时间。当前普通已付流程只登记到店意向，不调用 available_time/create_order_plan。没有预约/档期事实时，连“可以继续约”也不能确认；只有 appointment_created/confirmed 是终态。
 - 风险：当前风险才用 professional_assist；text 正面承接并追加 `human_handoff_notice`。健康、孕期或过敏只引导到店专业检测；不在线追问用药或症状（含“平时还是最近、现在是否不舒服”），不诊断、不列护理方案。无距离排序只说同城门店。已答风险在普通门店/时间轮完全不复述；风险中不发卡，不承诺结果或时效。
@@ -88,7 +88,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `need_tools`：tool_calls 非空，reply_messages=[]；工具完成后由最终 Reply 一次生成客户可见回复，不在 Planner 阶段发送“稍等”过渡。
 - 需要依赖工具链时一次列全并保持依赖顺序；不得写成 `direct_reply + tool_calls`，也不得只列前半段工具后在客户文案里承诺后半段结果。
 - `no_reply` 仅用于平台明确允许的系统终态；真实客户问题不能用它逃避回答。
-- 没有同门店同金额有效未付订单或本轮开单成功时，`payment_action/payment_decision.action` 不能是 send_now/resend，reply_messages 不能含 payment_collection；改为 explain_existing 或先 create_work_order。
+- 活动报价已完成/已铺垫后，`payment_action/payment_decision.action=send_now/resend` 可以直接携带 payment_collection；不得因为没有同店同金额订单或开单失败而改成 explain_existing。
 - 付款字段职责不能混用：`payment_action` 只能取它自己的枚举，`payment_decision.action` 只能取它自己的枚举。客户声称已付但尚未由成功截图或订单核实时，使用 `payment_state=customer_claimed_paid`、`payment_action=confirm_next_step`、`payment_decision.action=after_paid_next_step`；不得把 `after_paid_next_step` 填进 `payment_action`。该状态只表示按客户声明继续登记，不得声称平台已核实到账。
 - 客户可见 text 不得出现工具名、内部阶段、ID、schema 或推理。
 
@@ -125,8 +125,8 @@ PLANNER_TRANSACTION_PATCH_PROMPT = """
 # Current Transaction Gate
 - `store_address_delivery.unique_latest_store_id` 只证明最近权威批次为单店；是否沿该店成交由你结合后续对话输出 `store_binding_decision=accepted_explicit/accepted_implicit`。
 - `create_work_order` 需要真实客户、真实门店和10/20/30/40金额；辅助字段可缺失。辅助字段缺失或平台开单失败时，本轮仍正常回答，不暴露接口错误。
-- 发卡要求同门店、同金额有效未付订单；本轮开单成功后才可发送。开单成功本身不自动发卡。
-- 已有同门店、同金额有效未付订单时，使用 `order_decision=use_existing` 并直接输出本轮卡片；不得调用 `create_work_order`，也不得把“复用订单”写成 need_tools。
+- 发卡前置是活动报价已完成/已铺垫、客户未付、无风险/强拒绝且人数金额合法；订单和开单只用于后台关联，不是发卡前置。
+- 已有同门店、同金额有效未付订单时，可以使用 `order_decision=use_existing`；没有订单或开单失败时仍可由模型判断本轮发卡，不得让客户翻旧入口或说“入口没对上”。
 - `image_info.payment_result=success` 或实时订单 `prepay_paid>0` 可确认已付；客户口头说“我付了”不能单独确认已付。
 - 已付后先收姓名和完整11位电话，再确认门店、日期和时间；不调用 available_time/create_order_plan。
 - 当前普通已付流程不创建 `create_order_plan`。既有 appointment_created/confirmed 属于终态，以感谢和欢迎到店收尾，不得新调 create_order_plan。
@@ -137,8 +137,8 @@ PLANNER_TRANSACTION_PATCH_PROMPT = """
 PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT = """
 # Final JSON Gate
 Before returning JSON, verify:
-- payment_collection requires a matching active unpaid order for the same store and amount; a rejected or failed result blocks the card.
-- 若 SOP 需求/案例和活动铺垫已完成、store_binding 已接受、客户未付且无风险/强拒绝/终态，也没有近期重复卡，则 explain-only direct_reply 不完整；改为 need_tools + create_work_order，并把 send_now 作为开单成功后的动作。
+- payment_collection does not require a matching active unpaid order; order creation/linking is only a backend association fact.
+- 若 SOP 需求/案例和活动铺垫已完成、客户未付且无风险/强拒绝/终态，也没有更自然的登记或答疑动作，则 explain-only direct_reply 不完整；可直接输出 send_now/resend + text + payment_collection。
 - store_address IDs belong to current store scope or authoritative tool facts.
 - appointment commitment=confirmed requires a real appointment fact.
 - “这家/刚才那家”对应两个并列未选、未推荐门店时，只澄清哪家并设 `store_binding=ambiguous`，不查店、不发卡；上一条唯一推荐某店后客户接受“这家”则绑定该店。`current_known_store` 单店本身不代表客户已选。

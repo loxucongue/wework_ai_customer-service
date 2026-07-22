@@ -12,7 +12,7 @@ from app.policies.sales_flow import mainline_stage_for_pack, precision_qa_index_
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.prompts.sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
 from app.schemas import ChatRequest
-from app.services.customer_payment_state import is_paid_deposit_state, payment_collection_order_fact, resolved_payment_fact
+from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
 from app.services.model_client import ModelClient
 from app.services.sop_event_decision import normalize_event_decision, selected_candidate_packs
@@ -60,7 +60,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
 
 `editable_text_messages` 是主要可操作文本素材。`readonly_messages` 中的图片、视频、门店卡和内部 notice 都是结构事实，不能修改、删除、重排或复制。
-`payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `missing_matching_current_order` 或 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。
+`payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。`activity_intro_required` 不能靠删卡绕过，必须选择活动介绍等合法前序候选或拒发。
 选择 `merge` 时，文本 order 必须以 `adjacent_merge_options` 中对应组合的 `message_editing_context` 为准；不要沿用单包内部可能重复的 order。
 
 # Task
@@ -85,7 +85,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `first_add_flow` 按破冰/介绍 -> 需求与门店 -> 效果案例 -> 活动报价 -> 登记与预约金的阶段推进；`delay_minutes` 只表示这次可以检查到哪个候选范围，不等于必须发送该时间点最高阶段的包。
 - `candidate_sops.candidate_group` 可能是 `due` 或 `next_step`：`due` 是当前已到期/逾期的未完成包；`next_step` 是最近的下一阶段未完成包，只是给你在 due 包重复、冲突或已经被最近聊天覆盖时继续 SOP 节奏的备选，不是强制跳阶段。
 - `stage_tag/customer_state` 是阶段前置语义，不只是描述文字。`payment_followup/deposit_push/quoted_no_deposit/deposit_unpaid_*` 这类后续包，必须由最近对话、completed_sop_pack_ids/categories 或客户状态证明活动报价/预约金已经真实触达；不能仅因它和报价包同一时刻到期就越过未完成的 `price_quote`。
-- 如果 `price_quote` 仍未完成且近期只完成效果/门店铺垫，应优先选择活动报价包。它的 `payment_collection_gate=missing_matching_current_order` 只表示删除收款卡并同步调整 text，不是跳过报价、改选未付款跟进包的理由。
+- 如果 `price_quote` 仍未完成且近期只完成效果/门店铺垫，应优先选择活动报价包。活动报价真实完成后，预约金卡不再要求先有匹配订单；订单只用于后台关联，不是发送前置。
 - 选择包时按“最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标”判断。客户正在聊且最新客户消息等待普通 AI/销售回复时，不发 SOP；客户沉默时，优先推进下一个合理 SOP 价值点。
 - 某个步骤已经被问过或轻触过一次，例如已经问过城市/区域、斑点情况、姓名电话或预约金，客户继续沉默时，不要无限重复追问同一个问题；应往后推进到下一个未完成且不会制造事实错误的 SOP 包，并用第一条 text 自然承接“这个信息后面您方便再补，我先给您看/说下一步”。
 - 只有这个必要信息从未触达过，或当前候选只有该步骤，才继续轻触该问题；已经触达过但客户沉默，不得因为“任务未解决”而空拒。
@@ -98,7 +98,6 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 若候选 SOP 与当前未完成问题不完全一致，但没有硬冲突：仍应选择最合适的下一步候选并用 `text_adjustments/message_operations` 做过渡。例如门店城市还没补齐但已经问过一次且客户沉默，可以先承接“门店后面您发城市/定位我再匹配”，再衔接效果图、活动报价或预约金价值。
 - 候选包如果包含 `payment_collection`：
   - `payment_collection_gate.status=supported`：可按正常 SOP 判断发送。
-  - `payment_collection_gate.status=missing_matching_current_order`：不能原样发送预约金卡。若客户当前阶段适合继续主动触达，应删除该卡并把 text 改成轻触达、登记或解释活动价值；若删除卡后只剩不合适内容，才拒发。
   - `payment_collection_gate.status=paid_skip_card`：客户已付，不得再发预约金卡；只可保留/改写为已付后的姓名电话或到店安排轻触达。
   - `payment_collection_gate.status=activity_intro_required`：完整活动介绍/价格铺垫还没有真实完成证据，不得发送预约金卡。此时应优先选择活动介绍、效果铺垫或其他非收款候选；如果候选里没有合适包，拒发并说明还需先补活动介绍。
   - `event_s10_price_quote_60min` 这类短报价包不能单独替代 `s10_activity_intro` 的完整活动介绍。只有 `completed_sop_pack_ids` 含 `s10_activity_intro`，或 `completed_sop_categories` 含 `activity_intro/s10_activity_intro`，才算收款卡前置活动介绍已完成。
@@ -428,10 +427,10 @@ class SopExecutionService:
             ):
                 result.update(
                     {
-                        "mode": "skipped_missing_payment_order",
+                        "mode": "skipped_deposit_paid",
                         "send_sop": False,
                         "need_ai_reply": True,
-                        "reason": "payment_collection_requires_matching_current_order",
+                        "reason": "payment_collection_blocked_by_paid_state",
                     }
                 )
                 return _finish(result, started)
@@ -889,7 +888,7 @@ class SopExecutionService:
                     "# Repair Task\n"
                     "上一份 JSON 违反主动 SOP 决策结构合同。只修正枚举、候选包数量、候选顺序、相邻关系、"
                     "已完成包幂等、结构消息发送资格和交接资格；"
-                    "若候选的 payment_collection_gate 是 missing_matching_current_order 或 paid_skip_card，"
+                    "若候选的 payment_collection_gate 是 paid_skip_card，"
                     "且该阶段仍应触达，保留候选包并用 remove_message 删除每一张受限收款卡，同时改写相关 text；"
                     "activity_intro_required 不能靠删卡绕过，必须选择合法前序候选或拒发。"
                     "不要改变输入事实，不要输出 schema 外字段。"
@@ -1606,32 +1605,12 @@ def _payment_collection_gate_summary(
             "amounts": [_payment_message_amount(card) for card in cards],
             "source": payment_fact.get("source") or "customer_memory",
         }
-    unsupported: list[int] = []
-    supported: list[int] = []
-    for card in cards:
-        amount = _payment_message_amount(card)
-        state = {
-            "customer_context": customer_context if isinstance(customer_context, dict) else {},
-            "customer_basic_info": basic,
-            "confirmed_store_id": _string(basic.get("confirmed_store_id")),
-            "payment_decision": {"amount": amount},
-        }
-        if payment_collection_order_fact(state, amount=amount):
-            supported.append(amount)
-        else:
-            unsupported.append(amount)
-    if unsupported:
-        return {
-            "has_payment_collection": True,
-            "status": "missing_matching_current_order",
-            "amounts": supported + unsupported,
-            "supported_amounts": supported,
-            "unsupported_amounts": unsupported,
-        }
+    amounts = [_payment_message_amount(card) for card in cards]
     return {
         "has_payment_collection": True,
         "status": "supported",
-        "amounts": supported,
+        "amounts": amounts,
+        "reason": "activity_intro_completed_or_not_required",
     }
 
 
@@ -1940,28 +1919,24 @@ def _chat_sop_payment_collection_supported(
     customer_memory: dict[str, Any],
     customer_context: dict[str, Any],
 ) -> bool:
-    """Require a matching active unpaid order before a chat-gate payment card."""
+    """Allow chat-gate payment cards once activity quote has been paved; paid state is blocked earlier."""
     payment_message = next(
         (item for item in messages if isinstance(item, dict) and _string(item.get("type")) == "payment_collection"),
         None,
     )
     if not payment_message:
         return True
-    content = payment_message.get("content") if isinstance(payment_message.get("content"), dict) else {}
     basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
-    confirmed_store_id = str(
-        request.confirmed_store_id
-        or request.store_id
-        or basic.get("confirmed_store_id")
-        or ""
-    ).strip()
-    state = {
-        "customer_context": customer_context,
-        "customer_basic_info": basic,
-        "confirmed_store_id": confirmed_store_id,
-        "payment_decision": {"amount": content.get("amount")},
-    }
-    return bool(payment_collection_order_fact(state, amount=content.get("amount")))
+    payment_fact = resolved_payment_fact(
+        orders=customer_context.get("orders") if isinstance(customer_context, dict) else [],
+        existing_state=_string(basic.get("deposit_state")),
+        existing_source=_string(basic.get("deposit_source")),
+        existing_fact=basic.get("deposit_fact"),
+    )
+    return not (
+        is_paid_deposit_state(payment_fact.get("deposit_state"))
+        or is_paid_deposit_state(basic.get("deposit_state"))
+    )
 
 
 def _chat_gate_professional_assist_risk(request: ChatRequest) -> str:

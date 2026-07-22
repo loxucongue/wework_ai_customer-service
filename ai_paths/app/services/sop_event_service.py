@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from fastapi import BackgroundTasks
 
 from app.services.outreach_send_client import OutreachSendClient
-from app.services.customer_payment_state import is_paid_deposit_state, payment_collection_order_fact, resolved_payment_fact
+from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
 from app.services.sop_event_decision import (
     build_event_ai_reply_policy,
@@ -733,7 +733,7 @@ class SopEventService:
                 sop_pack_name=selected_name,
                 sop_category=selected_category,
                 reply_messages=[],
-                status=("skipped_payment_collection_blocked" if activity_intro_blocked else "skipped_missing_payment_order"),
+                status="skipped_payment_collection_blocked",
                 error=str(final_payment_gate.get("reason") or "payment_collection_not_supported"),
                 send_payload={
                     "identity": identity,
@@ -824,7 +824,7 @@ class SopEventService:
                 sop_category="platform_actions",
                 reply_messages=[],
                 status="skipped_unsafe_payment_collection",
-                error="platform_payment_collection_requires_matching_current_order",
+                error="platform_payment_collection_blocked_by_paid_state",
                 send_payload={
                     "identity": identity,
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
@@ -1320,25 +1320,12 @@ def _sop_payment_collection_gate(
             "reason": "payment_collection_requires_completed_activity_intro",
             "required_completed_pack_id": "s10_activity_intro",
         }
-    unsupported: list[int] = []
-    for amount in amounts:
-        state = {
-            "customer_basic_info": basic,
-            "customer_context": customer_context,
-            "confirmed_store_id": basic.get("confirmed_store_id"),
-            "payment_decision": {"amount": amount},
-        }
-        if not payment_collection_order_fact(state, amount=amount):
-            unsupported.append(amount)
-    if unsupported:
-        return {
-            "has_payment_collection": True,
-            "status": "missing_matching_current_order",
-            "amounts": amounts,
-            "unsupported_amounts": unsupported,
-            "reason": "payment_collection_requires_matching_current_order",
-        }
-    return {"has_payment_collection": True, "status": "supported", "amounts": amounts}
+    return {
+        "has_payment_collection": True,
+        "status": "supported",
+        "amounts": amounts,
+        "reason": "activity_intro_completed_or_not_required",
+    }
 
 
 def _payment_card_amount(message: dict[str, Any]) -> int:
