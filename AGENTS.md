@@ -15,6 +15,14 @@ Full-chain online tests are used after deployment to verify the whole runtime: S
 
 Both modes are required for reply-quality changes. Single-node tests answer “is this model prompt/context good enough?” Full-chain tests answer “does the deployed system work end to end?”
 
+## Branch Policy
+
+- `main` is the only long-lived development and deployment branch for this single-developer project.
+- Do not create persistent feature branches for routine work. Use a temporary `codex/*` branch only for an explicitly requested or genuinely high-risk isolated experiment.
+- A temporary branch must be merged after verification and then deleted locally and remotely. Do not let an older branch become an alternative source of business rules.
+- Before merging a divergent branch, audit its business rules and runtime contracts against current `main`; never merge an older branch wholesale when it would restore superseded prompts, payment rules, SOP routing, or fact handling.
+- Production releases must map to a verified commit on `main`.
+
 ## Long-Term Lessons
 
 - Phenomenon: 同一企业客户在不同客服 WeChat 账号下共享画像、SOP 进度或发送次数，导致新客服接待时被当成老客、跳过完整 SOP 或错误去重。
