@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -29,7 +30,10 @@ SOP_QUIET_TIMEZONE = ZoneInfo("Asia/Shanghai")
 SOP_QUIET_START_HOUR = 0
 SOP_QUIET_END_HOUR = 8
 SOP_QUIET_INACTIVITY_MINUTES = 30
-SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES = 30
+SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES = max(
+    1,
+    int(os.getenv("SOP_RECENT_ASSISTANT_ACTIVITY_MINUTES", "8") or "8"),
+)
 
 
 class SopEventService:

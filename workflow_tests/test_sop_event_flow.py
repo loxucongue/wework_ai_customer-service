@@ -569,7 +569,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "processed")
         self.assertEqual(repo.tasks[0]["status"], "skipped_recent_active_conversation")
-        self.assertEqual(repo.tasks[0]["send_payload"]["recent_assistant_activity"]["threshold_minutes"], 30)
+        self.assertEqual(repo.tasks[0]["send_payload"]["recent_assistant_activity"]["threshold_minutes"], 8)
         self.assertEqual(selector.calls, [])
 
     def test_event_decision_rejects_unexecutable_ai_handoff(self) -> None:
