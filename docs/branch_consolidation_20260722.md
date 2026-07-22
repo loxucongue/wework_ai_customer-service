@@ -14,7 +14,7 @@
 
 | 分支 | 最后提交（北京时间） | 最后提交 | 与最终候选关系 | 主要功能差异 | 处理结论 |
 |---|---|---|---|---|---|
-| `codex/platform-task-direct-forward-20260722` | 2026-07-22 14:06 | `a27fffe8d` | 最终候选 | 汇总最新门店、付款、SOP、精准回复、语音、模型恢复，并增加整轮预算和 Reply 质量门分层 | 快进为 `main` |
+| `codex/platform-task-direct-forward-20260722` | 2026-07-22 14:29 | `316af3308` | 最终候选 | 汇总最新门店、付款、SOP、精准回复、语音、模型恢复，并增加整轮预算、Reply 质量门分层和精准回复可见入口 | 快进为 `main` |
 | `codex/sop-event-routing-20260721` | 2026-07-22 09:46 | `b17c78b14` | 分叉 1 个补丁，但 patch 已等价包含 | `sop_platform_task` 直接转发，不进入模型 | 当前 `c09f145bc` 已等价实现，删除分支 |
 | `codex/reply-latency-quality-v2` | 2026-07-22 03:15 | `f50687225` | 最终候选祖先 | 模型事实输入、结构输出、短消息、旧风险、门店指代、候选店与真实距离边界 | 全部已继承，删除分支 |
 | `codex/closeout-context-sop-20260703` | 2026-07-21 10:37 | `cc039d89f` | 最终候选祖先 | 企微账号隔离、预约金订单闭环、门店/SOP 共用报价、跨城市卡片保护 | 全部已继承，删除分支 |
@@ -65,13 +65,17 @@
 8. 效果问题只有近期真实案例图片发送证据才允许不重复查图；SOP 完成标记不能替代图片事实。
 9. 门店地址卡必须来自真实 store ID；距离推荐必须有可比较的真实排序，不输出公里、分钟或车程。
 10. 普通业务语义和销售节奏交给模型；代码只处理事实、工具、schema、幂等、安全和不可空兜底。
+11. 无匹配订单或客户已付时，SOP Event 只能在模型明确删除全部受限 `payment_collection` 并同步调整文本后继续发送非收款内容；`activity_intro_required` 不得通过删卡绕过。
+12. 精准回复配置从主界面“回复配置”进入；`/sop` 固定展示“话术包 / 精准回复”导航，精准回复直达路径为 `/sop/precision`。
 
 ## 验证证据
 
 - 后端编译：`python -m compileall -q ai_paths/app` 通过。
-- 后端全量：`PYTHONPATH=ai_paths python -m pytest workflow_tests -q`，`546 passed, 1 warning`。
+- 后端全量：`PYTHONPATH=ai_paths python -m pytest workflow_tests -q`，`548 passed, 1 warning`。
+- SOP Event 单节点模型矩阵：`29/29` 通过，P50 `5058ms`，P90 `7262ms`。
 - 前端：`pnpm run ts-check`、`pnpm run lint:build` 通过。
 - Next.js 生产构建通过，路由包含 `/sop`、`/sop/precision`、`/api/precision-qa-playbook`。
+- Playwright 已验证桌面与 `390x844` 窄屏均可看到“话术包 / 精准回复”导航并进入精准回复配置页。
 - `git diff --check` 通过。
 
 ## 后续分支策略
