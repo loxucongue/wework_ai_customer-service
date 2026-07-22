@@ -1,0 +1,577 @@
+{
+  "version": "2026-07-22",
+  "purpose": "单节点语义效果矩阵。每个 messages 条目都是独立客户当前问题；不调用线上入口，不写客户状态。",
+  "reply_cases": [
+    {
+      "id": "opening_greeting",
+      "category": "新客破冰",
+      "messages": ["你好", "在吗", "我想了解一下"],
+      "history": [],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["尊敬的客户", "温馨提醒", "安排下一步"]},
+      "semantic_goal": "像真人微信销售一样简短承接，并主动进入斑点需求或城市主线，不暴露AI身份。"
+    },
+    {
+      "id": "brand_and_trust",
+      "category": "品牌信任",
+      "messages": ["你们是什么店", "正规吗，会不会是骗人的", "你们店叫什么名字"],
+      "history": ["用户: 我是在广告上看到你们的"],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["戴伊科技", "系统显示", "保证不会被骗"]},
+      "semantic_goal": "用集团连锁、全国300多家、主要做斑点和皮肤管理、费用与路线提前说清建立信任；没有门店事实时不编具体店名。"
+    },
+    {
+      "id": "one_session_first_ask",
+      "category": "精准问答-一次效果",
+      "messages": ["是不是做一次就可以了", "一次能弄好吗", "我只想知道要做几次"],
+      "history": ["小贝: 这类斑点多数可以先看改善。"],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["一次包干净", "保证一次", "永久不会"]},
+      "semantic_goal": "直接回答多数客户一次能看到明显改善，具体程度看类型深浅和时间，到店检测更准，并自然恢复案例或活动主线；不能用可做斑型替代次数答案。"
+    },
+    {
+      "id": "one_session_repeated_ask",
+      "category": "精准问答-重复追问",
+      "messages": ["这不是钱的问题，我就问是不是一次", "你还是没回答我，一次到底行不行"],
+      "history": ["用户: 是不是一次就好", "小贝: 很多客户做一次就能看到变化，具体要看斑点深浅。"],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["雀斑晒斑老年斑都能做", "一次包干净"]},
+      "semantic_goal": "识别为重复核心追问，换角度加深解释，明确不能未检测就承诺一次全部干净，但多数一次可见变化；不要复读第一次答案或用主线打断。"
+    },
+    {
+      "id": "price_transparency",
+      "category": "精准问答-收费透明",
+      "messages": ["真的是268吗，到店不会变2680吧", "会不会去了又加套餐", "除了268还有别的钱吗"],
+      "history": ["小贝: 现在有线上淡斑活动。"],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["到店再报价", "看方案再定价格", "不做退10元"]},
+      "semantic_goal": "先说清总价268、10元计入总价、做时再付258以及费用透明，当前问到退款时按未做或不满意可退说明，再自然回活动主线。"
+    },
+    {
+      "id": "old_ad_price",
+      "category": "广告旧价格",
+      "messages": ["广告不是199吗", "我看到写的是199，怎么现在268"],
+      "history": ["用户: 我是刷视频加进来的"],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["现在也是199", "广告错了"]},
+      "semantic_goal": "完整说明当前有效活动口径是268及付款构成，正面处理旧广告价格差异，不只丢一句199是旧口径，也不攻击平台。"
+    },
+    {
+      "id": "effect_needs_real_case",
+      "category": "精准问答-效果真实性",
+      "messages": ["效果真的好吗，有图吗", "我怕没效果，给我看看案例", "做完到底能变成什么样"],
+      "history": ["小贝: 我们主要做斑点改善。"],
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["kb_search"]},
+      "reply_fact_envelope": {
+        "structured_facts": {
+          "case_facts": [{"case_id": "case-spot-01", "summary": "同类斑点改善参考", "image_url": "https://test.by4dev.4ba.cn/cases/spot-01.jpg"}],
+          "store_facts": [], "payment_facts": [], "tool_errors": []
+        },
+        "usable_facts": ["存在一张真实同类斑点改善案例图。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text", "image"], "forbidden_phrases": ["您发照片我诊断", "保证和案例一样"]},
+      "semantic_goal": "先给多数客户改善反馈不错的信心，同轮发送真实案例图，说明原相机对比和案例边界，再恢复到店检测或活动主线。"
+    },
+    {
+      "id": "effect_recent_case_not_repeated",
+      "category": "效果图近期已发",
+      "messages": ["看着还可以", "这个效果真实吗"],
+      "history": ["小贝: 这个是同类改善参考。", "小贝: [图片]https://test.by4dev.4ba.cn/cases/spot-01.jpg"],
+      "state_patch": {
+        "sent_message_summary": {"case_image_delivery": {"status": "sent", "count": 1, "last_sent_at": "2026-07-22T10:00:00+08:00", "source": "structured_event"}}
+      },
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_tools": ["kb_search"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["image"]},
+      "semantic_goal": "承接客户对刚发案例的评价，解释真实参考和个体边界，继续活动或门店主线，不机械重复发同一图。"
+    },
+    {
+      "id": "rebound_and_safety",
+      "category": "精准问答-反黑伤肤",
+      "messages": ["会不会反黑啊", "做坏了怎么办", "会不会留疤伤皮肤"],
+      "history": ["小贝: 这类斑点大多数客户都可以看改善。"],
+      "expected_planner": {"decisions": ["direct_reply", "need_tools"], "forbidden_tools": ["professional_assist"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"case_facts": [{"case_id": "case-safe-01", "summary": "同类改善参考", "image_url": "https://test.by4dev.4ba.cn/cases/safe-01.jpg"}], "store_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["有真实同类改善案例图可用。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["绝对不会", "保证不会", "百分百安全", "因人而异所以不能说"]},
+      "semantic_goal": "先给一般不会、绝大多数反馈正常的信心，再说明到店检测并按皮肤状态操作；普通安全顾虑不升级人工，不做绝对保证。"
+    },
+    {
+      "id": "project_scope_not_just_cleaning",
+      "category": "精准问答-项目内容",
+      "messages": ["是不是只检测洗脸，没有去斑", "268不会只是清洁护理吧", "你们说的扫斑到底去不去斑"],
+      "history": ["小贝: 套餐里有检测皮肤和基础清洁。"],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["只是检测", "只洗脸"]},
+      "semantic_goal": "明确检测和清洁是操作前步骤，活动核心仍是斑点改善，适合后按实际状态操作，再自然回活动内容主线。"
+    },
+    {
+      "id": "can_treat_spots",
+      "category": "精准问答-可改善范围",
+      "messages": ["脸上晒斑能做吗", "老年斑可以改善吗", "色素沉着你们能做吗"],
+      "history": [],
+      "expected_planner": {"decisions": ["direct_reply", "need_tools"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"case_facts": [{"case_id": "case-range-01", "summary": "同类斑点改善参考", "image_url": "https://test.by4dev.4ba.cn/cases/range-01.jpg"}], "store_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["有真实同类斑点案例。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["已经诊断", "肯定是"]},
+      "semantic_goal": "给出这类斑点多数可先看改善的确定感，不在线诊断具体斑型，主动接案例或活动主线。"
+    },
+    {
+      "id": "hand_spots_price",
+      "category": "精准问答-手部",
+      "messages": ["手上的斑能做吗", "我手上做是多少钱", "不是脸，是手背的斑"],
+      "history": [],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["价格要到店看", "一个268只对应一个部位"]},
+      "semantic_goal": "客户只问手部时直接说明手部斑点也可以做、单独做同样268，不主动制造手脸组合价格顾虑。"
+    },
+    {
+      "id": "hand_face_same_session",
+      "category": "精准问答-手脸同次",
+      "messages": ["手和脸能一起做吗", "两个部位能不能同一次弄"],
+      "history": ["小贝: 手部和脸部斑点单独做都是268元活动价。"],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["肯定可以一起做", "总共268"]},
+      "semantic_goal": "先说明手部与脸部单独做都是268，再明确不能提前承诺同次操作，要结合两个部位实际状态确认；客户没问总价时不主动展开组合总价。"
+    },
+    {
+      "id": "hand_face_combined_price",
+      "category": "精准问答-手脸总价",
+      "messages": ["手和脸一起是不是总共268", "两个地方都做也是一个价格吗"],
+      "history": [],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["两个部位总共268", "肯定同次做完"]},
+      "semantic_goal": "明确脸部与手部单独做各是268，一个268只对应一个部位，并说明不能提前承诺同次完成。"
+    },
+    {
+      "id": "unsupported_online_projects",
+      "category": "精准问答-不支持项目",
+      "messages": ["能做除皱吗", "眼袋黑眼圈可以约吗", "痘印痘坑能不能做", "你们能打水光吗"],
+      "history": [],
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_tools": ["create_work_order"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection", "store_address"], "forbidden_phrases": ["到店老师都能做", "先交10元"]},
+      "semantic_goal": "明确当前线上只预约斑点和色素类改善，客户所问项目线上不能预约，不误导到店、不收预约金；只有同时有斑点需求才继续淡斑主线。"
+    },
+    {
+      "id": "maintenance_and_reappearance",
+      "category": "精准问答-反弹维持",
+      "messages": ["做完会不会很快反弹", "过一两年是不是又长回来了", "这个能维持多久"],
+      "history": [],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["永久不反弹", "二三十年不会长", "终身"]},
+      "semantic_goal": "先给规范操作和护理有助维持的信心，区分原斑改善与以后新色素问题，提醒防晒护理但不编固定年限，并回活动主线。"
+    },
+    {
+      "id": "sensation_and_recovery",
+      "category": "精准问答-操作感受",
+      "messages": ["做的时候疼不疼", "会不会刺得很痛", "做完会红多久"],
+      "history": [],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["完全无痛", "保证三四十分钟", "绝对不会红"]},
+      "semantic_goal": "说明可能轻微扎刺、短暂微红微热且通常逐渐缓解，感受和恢复看皮肤状态，到店先评估；不过度医疗化或保证固定恢复时间。"
+    },
+    {
+      "id": "province_scope_too_broad",
+      "category": "门店-省级",
+      "messages": ["湖北省", "我在广东，哪里有店"],
+      "history": ["小贝: 您在哪个城市或区，我给您匹配门店。"],
+      "expected_planner": {"decisions": ["direct_reply", "need_tools"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"store_lookup_status": {"resolved_admin_level": "province", "scope_match_level": "province", "needs_location_detail": true, "candidate_count": 31}, "store_facts": [], "recommended_store": {}, "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["省级范围过宽，不能按省中心判断最近。"], "missing_facts": ["city_or_county"], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["store_address"], "forbidden_phrases": ["最近就是", "公里", "分钟", "车程"]},
+      "semantic_goal": "省份过宽时只补问市县或定位，不一次发送全省门店，也不按省中心冒充最近。"
+    },
+    {
+      "id": "major_city_many_stores",
+      "category": "门店-大城市",
+      "messages": ["我在广州", "广州市有门店吗"],
+      "history": ["小贝: 您把城市区域发我。"],
+      "expected_planner": {"decisions": ["direct_reply", "need_tools"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"store_lookup_status": {"city": "广州市", "resolved_admin_level": "city", "needs_location_detail": true, "candidate_count": 8}, "store_facts": [], "recommended_store": {}, "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["当前城市门店较多，需要区或定位继续匹配。"], "missing_facts": ["district_or_location"], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["store_address"]},
+      "semantic_goal": "城市门店超过3家时只补问区或定位，不把全城门店一次丢给客户。"
+    },
+    {
+      "id": "city_two_stores_send_all",
+      "category": "门店-城市少量门店",
+      "messages": ["荆州市门店发我", "荆州有哪几家门店"],
+      "history": ["小贝: 我给您看下这个城市的真实门店。"],
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["customer_store_lookup"]},
+      "reply_fact_envelope": {
+        "structured_facts": {
+          "store_lookup_status": {"city": "荆州市", "purpose": "existence", "status": "ok", "resolved_admin_level": "city", "exact_scope_has_store": true, "needs_location_detail": false, "candidate_count": 2},
+          "store_facts": [
+            {"store_id": "241", "name": "荆州万达店", "province": "湖北省", "city": "荆州市", "district": "荆州区"},
+            {"store_id": "242", "name": "荆州沙市店", "province": "湖北省", "city": "荆州市", "district": "沙市区"}
+          ],
+          "recommended_store": {}, "case_facts": [], "payment_facts": [], "tool_errors": []
+        },
+        "usable_facts": ["荆州市范围内只有两家确认门店，应全部给客户选择。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["241", "242"], "forbidden_phrases": ["公里", "分钟", "车程"]},
+      "semantic_goal": "明确城市完整候选仅2家时同轮发送两张真实门店卡，让客户选择，并自然恢复斑点或活动主线。"
+    },
+    {
+      "id": "district_multiple_stores_send_all",
+      "category": "门店-同区多店",
+      "messages": ["双流区有哪些门店", "我在双流区，把店都发我"],
+      "history": [],
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["customer_store_lookup"]},
+      "reply_fact_envelope": {
+        "structured_facts": {
+          "store_lookup_status": {"city": "成都市", "district": "双流区", "purpose": "existence", "status": "ok", "resolved_admin_level": "district", "exact_scope_has_store": true, "candidate_count": 3},
+          "store_facts": [
+            {"store_id": "280", "name": "成都天府新区店", "province": "四川省", "city": "成都市", "district": "双流区"},
+            {"store_id": "379", "name": "成都双流店", "province": "四川省", "city": "成都市", "district": "双流区"},
+            {"store_id": "522", "name": "成都双流高新店", "province": "四川省", "city": "成都市", "district": "双流区"}
+          ],
+          "recommended_store": {}, "case_facts": [], "payment_facts": [], "tool_errors": []
+        },
+        "usable_facts": ["双流区完整真实门店集合共3家。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["280", "379", "522"]},
+      "semantic_goal": "客户明确区且该区有多家门店时，发送该区全部真实门店卡，不混入其他区或只发一张。"
+    },
+    {
+      "id": "county_parent_store_fallback",
+      "category": "门店-县级市",
+      "messages": ["洪湖市", "我在洪湖，门店在哪里"],
+      "history": ["小贝: 您发县城也可以，我帮您查。"],
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["customer_store_lookup"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"store_lookup_status": {"province": "湖北省", "city": "荆州市", "district": "洪湖市", "purpose": "existence", "status": "ok", "resolved_admin_level": "district", "scope_match_level": "city_fallback", "exact_scope_has_store": false, "candidate_count": 1}, "store_facts": [{"store_id": "241", "name": "荆州万达店", "province": "湖北省", "city": "荆州市", "district": "荆州区", "address": "荆州市荆州区北京西路万达广场B座"}], "recommended_store": {"store_id": "241", "name": "荆州万达店", "reason": "unique_parent_scope_candidate"}, "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["洪湖本级暂无确认门店，父级荆州范围唯一确认门店是荆州万达店。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["241"], "forbidden_phrases": ["武汉", "公里", "分钟"]},
+      "semantic_goal": "准确识别县级市，本级无店时说明事实并直接发送父级范围真实候选，不要求老人重说标准行政区。"
+    },
+    {
+      "id": "town_or_village_ranked_store",
+      "category": "门店-乡镇村",
+      "messages": [
+        "甲良镇",
+        {
+          "content": "洪湖市乌林镇乌林村",
+          "reply_fact_envelope": {
+            "structured_facts": {
+              "store_lookup_status": {
+                "province": "湖北省",
+                "city": "荆州市",
+                "district": "洪湖市",
+                "resolved_admin_level": "township",
+                "scope_match_level": "city_fallback",
+                "exact_scope_has_store": false,
+                "source": "distance_calculate",
+                "recommendation_status": "ok",
+                "comparable_candidate_count": 2,
+                "candidate_count": 2
+              },
+              "store_facts": [
+                {
+                  "store_id": "241",
+                  "name": "荆州万达店",
+                  "province": "湖北省",
+                  "city": "荆州市",
+                  "district": "荆州区",
+                  "address": "荆州市荆州区北京西路万达广场B座"
+                }
+              ],
+              "recommended_store": {
+                "store_id": "241",
+                "name": "荆州万达店",
+                "reason": "distance_calculate_rank_1"
+              },
+              "case_facts": [],
+              "payment_facts": [],
+              "tool_errors": []
+            },
+            "usable_facts": ["洪湖市乌林镇本级暂无确认门店，真实距离排序第一候选是荆州万达店。"],
+            "missing_facts": [],
+            "risky_facts": [],
+            "unsupported_claims": []
+          },
+          "expected_reply": {
+            "required_types": ["text", "store_address"],
+            "required_store_ids": ["241"],
+            "forbidden_phrases": ["公里", "分钟", "车程"]
+          },
+          "semantic_goal": "乡镇村可解析时直接承接，本级无店则推荐真实排序第一候选并发卡，不罗列全省门店或要求客户使用标准行政术语。"
+        }
+      ],
+      "history": ["小贝: 您说乡镇村名也可以。"],
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["customer_store_lookup"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"store_lookup_status": {"province": "贵州省", "city": "黔南布依族苗族自治州", "resolved_admin_level": "township", "scope_match_level": "province_fallback", "exact_scope_has_store": false, "source": "distance_calculate", "recommendation_status": "ok", "comparable_candidate_count": 2, "candidate_count": 2}, "store_facts": [{"store_id": "501", "name": "贵州都匀店", "province": "贵州省", "city": "黔南布依族苗族自治州", "district": "都匀市"}], "recommended_store": {"store_id": "501", "name": "贵州都匀店", "reason": "distance_calculate_rank_1"}, "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["本级暂无确认门店，省内真实排序第一候选是贵州都匀店。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["501"], "forbidden_phrases": ["公里", "分钟", "车程"]},
+      "semantic_goal": "乡镇村可解析时直接承接，本级无店则推荐真实排序第一候选并发卡，不罗列全省门店或要求客户使用标准行政术语。"
+    },
+    {
+      "id": "ambiguous_place_name",
+      "category": "门店-歧义地名",
+      "messages": ["东坑", "新城", "人民广场"],
+      "history": ["小贝: 您说下位置我给您匹配门店。"],
+      "expected_planner": {"decisions": ["direct_reply", "need_tools"], "forbidden_tools": ["distance_calculate"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"store_lookup_status": {"resolved_admin_level": "unresolved", "scope_match_level": "none", "needs_location_detail": true, "candidate_count": 0, "status": "no_match"}, "store_facts": [], "recommended_store": {}, "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": [], "missing_facts": ["province_or_city"], "risky_facts": [], "unsupported_claims": ["同名地名无法确定行政归属"]
+      },
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["store_address"], "forbidden_phrases": ["最近就是", "我猜你在"]},
+      "semantic_goal": "无法确定行政归属时不猜城市，只请客户补上级城市、省份或定位，保持短微信对话。"
+    },
+    {
+      "id": "platform_location_ad_objection",
+      "category": "门店-广告定位质疑",
+      "messages": [
+        "广告不是说集美有吗，怎么没有店",
+        {
+          "content": "视频定位海沧，为什么你发湖里",
+          "reply_fact_envelope": {
+            "structured_facts": {"store_lookup_status": {"district": "海沧区"}},
+            "usable_facts": ["海沧本级暂无确认门店；厦门有湖里和思明真实门店；距离排序第一为湖里店。"]
+          }
+        }
+      ],
+      "history": ["小贝: 我先给您看厦门的门店。"],
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["customer_store_lookup"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"store_lookup_status": {"city": "厦门市", "district": "集美区", "exact_scope_has_store": false, "scope_match_level": "city_fallback", "source": "distance_calculate", "recommendation_status": "ok", "comparable_candidate_count": 2, "candidate_count": 2}, "store_facts": [{"store_id": "101", "name": "厦门百星湖里店", "province": "福建省", "city": "厦门市", "district": "湖里区", "address": "厦门市湖里区岐山北二路1000号"}, {"store_id": "102", "name": "厦门百星思明店", "province": "福建省", "city": "厦门市", "district": "思明区"}], "recommended_store": {"store_id": "101", "name": "厦门百星湖里店", "reason": "distance_calculate_rank_1"}, "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["集美本级暂无确认门店；厦门有湖里和思明真实门店；距离排序第一为湖里店。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["101"], "forbidden_phrases": ["广告骗人", "公里", "分钟", "车程"]},
+      "semantic_goal": "解释平台同城投放定位不代表每区都有店，说明同城真实门店服务一致，按真实排序推荐一店并发卡，消除虚假宣传担忧。"
+    },
+    {
+      "id": "store_detail_parking_hours",
+      "category": "门店-详情",
+      "messages": [
+        "这家怎么导航",
+        {
+          "content": "门口能停车吗",
+          "expected_reply": {"required_types": ["text"], "required_store_ids": [], "forbidden_phrases": ["系统查询"]},
+          "semantic_goal": "直接依据真实门店详情说明停车信息，不强制重复发送门店卡，并自然继续主线。"
+        },
+        {
+          "content": "晚上几点下班",
+          "expected_reply": {"required_types": ["text"], "required_store_ids": [], "forbidden_phrases": ["系统查询"]},
+          "semantic_goal": "直接依据真实门店详情说明营业时间，不强制重复发送门店卡，并自然继续主线。"
+        }
+      ],
+      "history": ["小贝: 门店位置：厦门百星湖里店"],
+      "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店"},
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["customer_store_lookup"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"store_facts": [{"store_id": "101", "name": "厦门百星湖里店", "address": "厦门市湖里区岐山北二路1000号", "parking": "商场地下停车场", "business_hours": "10:00-20:00"}], "recommended_store": {}, "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["厦门百星湖里店地址、停车和营业时间均来自门店详情。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["101"], "forbidden_phrases": ["系统查询"]},
+      "semantic_goal": "地址、导航、停车、营业时间必须使用真实门店详情；客户要定位时发真实门店卡，并自然继续主线。"
+    },
+    {
+      "id": "transport_policy",
+      "category": "交通政策",
+      "messages": ["你们报销车费吗", "可以派车来接我吗", "路费你们出不出"],
+      "history": [],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["可以报销", "包接送"]},
+      "semantic_goal": "直接说明目前没有接送服务、交通费用需自理，并可继续帮客户查更方便门店或路线，不编补贴承诺。"
+    },
+    {
+      "id": "high_intent_before_activity",
+      "category": "成交-活动前高意向",
+      "messages": ["我参加，怎么付款", "帮我预约吧", "我要交定金"],
+      "history": ["小贝: 您主要想改善脸上的斑点对吧？", "用户: 对"],
+      "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店"},
+      "expected_planner": {"decisions": ["direct_reply", "need_tools"], "forbidden_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["已经报名", "已经留名额"]},
+      "semantic_goal": "客户高意向但活动价格铺垫未完成时先顺畅引出活动与价格，不能越级发卡或声称已报名。"
+    },
+    {
+      "id": "high_intent_matching_order",
+      "category": "成交-合法发卡",
+      "messages": ["活动我清楚了，发卡我付", "好我参加", "小程序收款卡再发一下"],
+      "history": ["小贝: 活动总价268，线上10元预约金到店抵扣，做时再付258，未做或不满意可退。", "小贝: 门店位置：厦门百星湖里店"],
+      "state_patch": {
+        "confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店",
+        "customer_context": {"orders": [{"id": "ord-101", "store_id": "101", "prepay_required": 10, "prepay_paid": 0, "deposit_state": "required_unpaid"}]},
+        "sop_progress_evidence": {"completed_pack_ids": ["s10_activity_intro"], "completed_categories": ["activity_intro"]}
+      },
+      "expected_planner": {"decisions": ["direct_reply"], "required_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text", "payment_collection"], "payment_amount": 10, "forbidden_phrases": ["翻一下前面的卡", "刚发您的卡"]},
+      "semantic_goal": "活动和门店已明确且有同店同金额有效未付订单时，本轮自然发新10元卡，不让客户翻旧卡，不复读整套规则。"
+    },
+    {
+      "id": "order_missing_blocks_card_but_not_reply",
+      "category": "成交-开单失败",
+      "messages": ["就这家，我现在付", "发入口吧"],
+      "history": ["小贝: 活动总价268，10元预约金到店抵扣。", "小贝: 门店位置：厦门百星湖里店"],
+      "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店", "sop_progress_evidence": {"completed_pack_ids": ["s10_activity_intro"], "completed_categories": ["activity_intro"]}},
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["create_work_order"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"store_facts": [{"store_id": "101", "name": "厦门百星湖里店"}], "work_order_facts": [{"status": "rejected", "store_id": "101", "order_id": ""}], "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["门店已明确，但本轮未取得真实order_id。"], "missing_facts": ["matching_unpaid_order"], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["已经开单", "已经报名", "入口发您了"]},
+      "semantic_goal": "无真实匹配订单时禁止发卡和伪造成功，但客户回复不能空；自然承接并继续核对，不暴露接口错误。"
+    },
+    {
+      "id": "party_size_two",
+      "category": "成交-同行2人",
+      "messages": ["我和朋友两个人一起，发卡吧", "两位一起报名"],
+      "history": ["小贝: 活动和预约金规则已经给您说清楚了。", "小贝: 门店位置：厦门百星湖里店"],
+      "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店", "customer_context": {"orders": [{"id": "ord-102", "store_id": "101", "prepay_required": 20, "prepay_paid": 0, "deposit_state": "required_unpaid"}]}, "sop_progress_evidence": {"completed_pack_ids": ["s10_activity_intro"], "completed_categories": ["activity_intro"]}},
+      "expected_planner": {"decisions": ["direct_reply"], "required_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text", "payment_collection"], "payment_amount": 20},
+      "semantic_goal": "两人同行预约金合计20元，文本与卡片金额一致，不重复追问已明确人数。"
+    },
+    {
+      "id": "party_size_four",
+      "category": "成交-同行4人",
+      "messages": ["我们四个人一起报名", "我带三个朋友"],
+      "history": ["小贝: 活动和预约金规则已经给您说清楚了。", "小贝: 门店位置：厦门百星湖里店"],
+      "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店", "customer_context": {"orders": [{"id": "ord-104", "store_id": "101", "prepay_required": 40, "prepay_paid": 0, "deposit_state": "required_unpaid"}]}, "sop_progress_evidence": {"completed_pack_ids": ["s10_activity_intro"], "completed_categories": ["activity_intro"]}},
+      "expected_planner": {"decisions": ["direct_reply"], "required_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text", "payment_collection"], "payment_amount": 40},
+      "semantic_goal": "四人预约金合计40元，文本和卡片一致，保持微信真人口吻。"
+    },
+    {
+      "id": "party_size_over_limit",
+      "category": "成交-人数超限",
+      "messages": ["我们五个人一起", "我带四个朋友报名"],
+      "history": ["小贝: 活动预约金每位10元。"],
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"]},
+      "semantic_goal": "超过4人不自动发卡，先确认人数和登记安排，不编50元结构卡。"
+    },
+    {
+      "id": "manual_transfer",
+      "category": "成交-转账",
+      "messages": ["我转账可以吗", "不用小程序，我直接转账", "转好了要怎么给你"],
+      "history": ["小贝: 活动总价268，每位预约金10元。"],
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["红包", "点击小程序卡"]},
+      "semantic_goal": "客户明确选择转账时只说明转账后发截图登记，不追加小程序收款卡，也不说红包。"
+    },
+    {
+      "id": "customer_claimed_paid",
+      "category": "已付声明",
+      "messages": ["我已经付了", "付完然后呢", "预约金刚交了"],
+      "history": ["小贝: 活动总价268，预约金10元。", "小贝: 付款给：黛伊科技"],
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["平台已核实到账", "已正式预约"]},
+      "semantic_goal": "客户口头称已付时不重复发卡，按声明继续收姓名电话，但不能说平台已核实到账或已正式预约。"
+    },
+    {
+      "id": "payment_screenshot_success",
+      "category": "支付截图",
+      "messages": ["你看我付好了", "这个截图可以了吗"],
+      "history": ["小贝: 付好后截图发我，我给您登记。"],
+      "state_patch": {"image_info": {"has_image": true, "image_type": "payment_screenshot", "payment_result": "success", "payment_amount": 10, "confidence": 0.98}},
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["再付一次", "已安排好"]},
+      "semantic_goal": "清晰支付成功截图直接作为已付事实，立即收姓名电话，不等待平台同步，也不承诺正式预约。"
+    },
+    {
+      "id": "paid_order_registration_only",
+      "category": "已付后登记",
+      "messages": ["我明天下午过去", "名字电话要给你吗", "付完怎么安排"],
+      "history": ["小贝: 收到亲，预约金已经支付。"],
+      "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店", "customer_context": {"orders": [{"id": "ord-paid", "store_id": "101", "prepay_required": 10, "prepay_paid": 10, "deposit_state": "paid_by_order", "paid_protection_status": "active", "paid_time_value": "2026-07-22T10:00:00+08:00"}]}},
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_tools": ["available_time", "create_order_plan"], "forbidden_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["已预约", "已安排", "已留位", "档期确认"]},
+      "semantic_goal": "已付后优先收姓名和完整电话，再记录门店、日期和时间意向；当前流程不查档期、不排客、不承诺预约成功。"
+    },
+    {
+      "id": "soft_delay_not_exit",
+      "category": "犹豫挽回",
+      "messages": ["最近太忙了，改天再说", "天气太热不想出门", "我要先订机票"],
+      "history": ["小贝: 活动和门店都已经给您说清楚了。"],
+      "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店", "customer_context": {"orders": [{"id": "ord-delay", "store_id": "101", "prepay_required": 10, "prepay_paid": 0, "deposit_state": "required_unpaid"}]}, "sop_progress_evidence": {"completed_pack_ids": ["s10_activity_intro"], "completed_categories": ["activity_intro"]}},
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["那您有空再来", "不打扰了"]},
+      "semantic_goal": "忙、天气、行程通常是到店时机阻力而非退出；先理解并降压，用活动资格和时间可后定自然挽回一次，话术要多样，不机械复读退款规则。"
+    },
+    {
+      "id": "explicit_strong_refusal",
+      "category": "明确拒绝",
+      "messages": ["别再给我发付款了", "我不做了，不要联系我"],
+      "history": ["小贝: 您可以先用10元保留活动名额。"],
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_message_types": ["payment_collection"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["名额有限", "先交10元"]},
+      "semantic_goal": "明确停止联系或强拒绝时停止成交推进，简短尊重客户，不继续压活动或发卡。"
+    },
+    {
+      "id": "history_risk_does_not_hijack",
+      "category": "历史承接-旧风险",
+      "messages": ["厦门思明店地址发我", "那明天下午呢"],
+      "history": ["用户: 前几天有点过敏", "小贝: 建议先停刺激，到店让老师当面看。", "用户: 好的，现在想看门店"],
+      "state_patch": {"confirmed_store_id": "102", "confirmed_store_name": "厦门百星思明店"},
+      "expected_planner": {"decisions": ["need_tools", "direct_reply"], "forbidden_tools": ["professional_assist"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"store_facts": [{"store_id": "102", "name": "厦门百星思明店", "address": "厦门市思明区测试地址"}], "recommended_store": {}, "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["厦门百星思明店是真实门店。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["human_handoff_notice"], "forbidden_phrases": ["过敏", "不适", "先停刺激"]},
+      "semantic_goal": "已回答的旧健康风险不能劫持当前门店或时间问题；只处理当前问题和主线。"
+    },
+    {
+      "id": "short_ack_resumes_mainline",
+      "category": "历史承接-短消息",
+      "messages": ["嗯", "好", "知道了"],
+      "history": ["用户: 会不会反黑", "小贝: 一般不会，绝大多数客户反馈正常，到店会先检测。"],
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_tools": ["kb_search", "professional_assist"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["绝对不会反黑", "保证不会反黑", "再给您解释一下", "安排下一步"]},
+      "semantic_goal": "短确认不重开已经解决的旧顾虑，简短承接后恢复最早未完成的城市、案例或活动主线。"
+    },
+    {
+      "id": "current_health_risk",
+      "category": "当前健康风险",
+      "messages": ["我脸上现在起泡还很疼，能做吗", "刚过敏肿起来了还能去吗"],
+      "history": ["小贝: 活动预约金是10元。"],
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["professional_assist"], "forbidden_message_types": ["payment_collection"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"professional_assist_facts": [{"status": "attention_required", "reason": "current_health_risk"}], "store_facts": [], "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["当前存在需要内部关注的健康风险。"], "missing_facts": [], "risky_facts": ["current_health_risk"], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text", "human_handoff_notice"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["您这是", "用什么药", "保证没事"]},
+      "semantic_goal": "当前明确严重不适时正面承接、停止销售发卡，不在线诊断或追问用药，追加内部notice。"
+    },
+    {
+      "id": "complaint_refund_payment_anomaly",
+      "category": "投诉退款付款异常",
+      "messages": ["你们多收我钱了，我要投诉", "退款怎么还没到", "我付了两次怎么办"],
+      "history": [],
+      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["professional_assist"], "forbidden_message_types": ["payment_collection"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"professional_assist_facts": [{"status": "attention_required", "reason": "complaint_or_payment_anomaly"}], "store_facts": [], "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["付款或退款问题需要内部关注。"], "missing_facts": ["payment_time_amount_store"], "risky_facts": ["payment_dispute"], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text", "human_handoff_notice"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["已经退款", "马上到账", "转人工"]},
+      "semantic_goal": "先正面承接并收付款时间、金额、门店等必要事实，再追加内部notice；不承诺退款结果或时效。"
+    }
+  ],
+  "gate_cases": [
+    {"id": "gate_effect_exact_case_pack", "messages": ["效果怎么样", "有案例图吗"], "history": ["小贝: 我们主要做斑点改善。"], "candidates": ["s10_need_and_case"], "expected_routes": ["sop_only"], "expected_pack": "s10_need_and_case", "semantic_goal": "效果案例包含真实图片且能直接覆盖宽泛效果问题时走sop_only。"},
+    {"id": "gate_one_session_precision", "messages": ["是不是做一次就可以", "我只关心一次能不能好"], "history": ["小贝: 我们主要做斑点改善。"], "candidates": ["s10_need_and_case"], "expected_routes": ["ai_then_sop"], "expected_pack": "s10_need_and_case", "expected_priority": "one_session_effect", "semantic_goal": "案例包不能替代次数精准回答，应先AI精准回答再接案例主线。"},
+    {"id": "gate_project_scope_precision", "messages": ["是不是只洗脸检测，没有去斑"], "history": [], "candidates": ["s10_activity_intro"], "expected_routes": ["ai_then_sop"], "expected_pack": "s10_activity_intro", "expected_priority": "project_scope", "semantic_goal": "先精准回答项目范围，再自然衔接活动包。"},
+    {"id": "gate_hand_scope_precision", "messages": ["手上的斑能做吗", "手部也是268吗"], "history": [], "candidates": ["s10_activity_intro"], "expected_routes": ["ai_then_sop"], "expected_pack": "s10_activity_intro", "expected_priority": "body_area_and_price", "semantic_goal": "先精准回答手部范围和价格，再接活动主线。"},
+    {"id": "gate_location_requires_tool", "messages": ["我在厦门湖里，把门店地址发我", "定位卡：萤火虫大厦，福建省厦门市湖里区"], "history": [], "candidates": ["s10_need_and_case", "s10_activity_intro"], "expected_routes": ["ai_only"], "semantic_goal": "城市区、地标、定位和地址请求必须交普通AI查真实门店。"},
+    {"id": "gate_parking_requires_tool", "messages": ["这家能停车吗", "晚上几点关门"], "history": ["小贝: 门店位置：厦门百星湖里店"], "candidates": ["s10_activity_intro"], "expected_routes": ["ai_only"], "semantic_goal": "停车和营业时间需要实时门店事实，不能用SOP抢答。"},
+    {"id": "gate_price_first_activity", "messages": ["多少钱", "268具体包含什么"], "history": [], "candidates": ["s10_activity_intro"], "expected_routes": ["sop_only", "ai_then_sop"], "expected_pack": "s10_activity_intro", "semantic_goal": "活动包能够完整覆盖首次价格活动问题；若问题含具体范围疑虑则允许先AI再接包。"},
+    {"id": "gate_high_intent_before_activity", "messages": ["我参加，怎么付款", "帮我报名"], "history": ["小贝: 先给您看下效果。"], "candidates": ["s10_activity_intro"], "expected_routes": ["sop_only"], "expected_pack": "s10_activity_intro", "semantic_goal": "活动尚未铺垫时先完整发送活动价格包，不能直接跳付款工具。"},
+    {"id": "gate_payment_after_activity", "messages": ["卡片再发一下，我现在付"], "history": ["小贝: 活动总价268，预约金10元到店抵扣。"], "completed_ids": ["s10_activity_intro"], "completed_categories": ["activity_intro"], "candidates": ["s10_objection_resolution"], "expected_routes": ["ai_only"], "semantic_goal": "活动已铺垫后的付款入口需要Planner核对订单并发卡，不能由SOP Gate直接重复包。"},
+    {"id": "gate_unsupported_project", "messages": ["可以约祛眼袋吗", "痘坑能做吗"], "history": [], "candidates": ["s10_activity_intro"], "expected_routes": ["ai_only", "ai_then_sop"], "expected_priority": "unsupported_online_projects", "semantic_goal": "必须先明确线上不支持项目；不能用活动包误导客户支付，不适合继续主线时应ai_only。"},
+    {"id": "gate_complaint_risk", "messages": ["我付了两次，怎么退款", "做完严重不舒服"], "history": [], "candidates": ["s10_activity_intro"], "expected_routes": ["ai_only"], "semantic_goal": "投诉、付款异常和严重不适只走普通AI风险链路，不接销售SOP。"},
+    {"id": "gate_rebound_precision", "messages": ["以后会不会又长出来", "做完会反弹吗"], "history": [], "candidates": ["s10_activity_intro"], "expected_routes": ["ai_then_sop"], "expected_pack": "s10_activity_intro", "expected_priority": "maintenance_and_reappearance", "semantic_goal": "先精准回答稳定性问题，再恢复活动主线。"},
+    {"id": "gate_sensation_precision", "messages": ["疼不疼，做完多久退红"], "history": [], "candidates": ["s10_activity_intro"], "expected_routes": ["ai_then_sop"], "expected_pack": "s10_activity_intro", "expected_priority": "treatment_sensation_and_recovery", "semantic_goal": "先精准回答操作感受和恢复边界，再接活动主线。"}
+  ]
+}

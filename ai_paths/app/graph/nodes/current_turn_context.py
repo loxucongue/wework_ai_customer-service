@@ -475,13 +475,13 @@ def _payment_evidence(state: dict[str, Any], *, sent_summary: dict[str, Any], la
     for item in history[-12:]:
         text = _conversation_item_text(item)
         if text and _looks_payment_related(text):
-            recent_payment_texts.append(text[:160])
+            recent_payment_texts.append(text[:600])
     evidence = {
         "sent_payment_collection": bool(sent_summary.get("payment_collection_sent") or event_count),
         "payment_collection_count": sent_count,
         "payment_collection_frequency": frequency,
-        "last_assistant_payment_text": last_assistant[:160] if _looks_payment_related(last_assistant) else "",
-        "current_payment_text": current_text[:160] if _looks_payment_related(current_text) else "",
+        "last_assistant_payment_text": last_assistant[:600] if _looks_payment_related(last_assistant) else "",
+        "current_payment_text": current_text[:600] if _looks_payment_related(current_text) else "",
         "recent_payment_texts": recent_payment_texts[-6:],
         "source_policy": "evidence_only_planner_decides_payment_state",
         "structured_payment_fact": _resolved_payment_fact_for_state(state),

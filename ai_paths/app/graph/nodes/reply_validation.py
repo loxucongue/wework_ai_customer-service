@@ -93,12 +93,12 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
 
 
 def _max_visible_messages(state: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> int:
-    if _is_same_district_store_sequence(messages or [], state):
+    if _is_same_requested_scope_store_sequence(messages or [], state):
         return max(MAX_VISIBLE_MESSAGES, _visible_message_count(messages or []))
     return MAX_SOP_SEQUENCE_VISIBLE_MESSAGES if _is_sop_sequence_state(state) else MAX_VISIBLE_MESSAGES
 
 
-def _is_same_district_store_sequence(messages: list[dict[str, Any]], state: dict[str, Any]) -> bool:
+def _is_same_requested_scope_store_sequence(messages: list[dict[str, Any]], state: dict[str, Any]) -> bool:
     visible = [item for item in messages if isinstance(item, dict) and str(item.get("type") or "") in VISIBLE_MESSAGE_TYPES]
     card_ids = {
         message_content_store_id(item.get("content"))
@@ -110,7 +110,7 @@ def _is_same_district_store_sequence(messages: list[dict[str, Any]], state: dict
     text_count = sum(1 for item in visible if str(item.get("type") or "") == "text")
     if text_count > 2:
         return False
-    return _store_ids_in_requested_district(card_ids, state)
+    return _store_ids_in_requested_scope(card_ids, state)
 
 
 def _visible_message_count(messages: list[dict[str, Any]]) -> int:
@@ -133,6 +133,59 @@ def _requested_district_regions(state: dict[str, Any]) -> list[set[str]]:
         if ids:
             output.append(ids)
     return output
+
+
+def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
+    output = list(_requested_district_regions(state))
+    for region in _store_scope_summary_regions(state):
+        try:
+            store_count = int(region.get("store_count") or 0)
+        except (TypeError, ValueError):
+            store_count = 0
+        requested_areas = region.get("requested_areas") if isinstance(region.get("requested_areas"), list) else []
+        if requested_areas or not (2 <= store_count <= 3):
+            continue
+        ids = {
+            str(store.get("store_id") or store.get("id") or "").strip()
+            for store in region.get("stores") or []
+            if isinstance(store, dict) and str(store.get("store_id") or store.get("id") or "").strip()
+        }
+        if ids:
+            output.append(ids)
+
+    structured = _structured_facts(state)
+    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    stores = [item for item in structured.get("store_facts") or [] if isinstance(item, dict)]
+    level = str(lookup.get("resolved_admin_level") or "").strip().lower()
+    if lookup.get("exact_scope_has_store") is False or level not in {"city", "district"} or not stores:
+        return output
+    if level == "city":
+        try:
+            candidate_count = int(lookup.get("candidate_count") or 0)
+        except (TypeError, ValueError):
+            candidate_count = 0
+        if not (2 <= candidate_count <= 3):
+            return output
+    scope_value = str(lookup.get(level) or "").strip()
+    if not scope_value:
+        return output
+    ids = {
+        str(store.get("store_id") or store.get("id") or "").strip()
+        for store in stores
+        if str(store.get("store_id") or store.get("id") or "").strip()
+        and _regions_match(scope_value, str(store.get(level) or ""))
+    }
+    if ids:
+        output.append(ids)
+    return output
+
+
+def _regions_match(left: str, right: str) -> bool:
+    return bool(
+        left
+        and right
+        and (region_mentioned_in_text(left, right) or region_mentioned_in_text(right, left))
+    )
 
 
 def _is_sop_sequence_state(state: dict[str, Any]) -> bool:
@@ -186,6 +239,8 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_appointment_confirmation_facts(messages, state)
     _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
     _validate_fact_boundaries(messages, state)
+    _validate_complete_store_listing_delivery(messages, state)
+    _validate_recommended_store_delivery(messages, state)
 
 
 def _validate_health_reply_boundaries(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -537,6 +592,54 @@ def _validate_store_address_message_facts(messages: list[dict[str, Any]], state:
         raise ValueError("store_address_text_card_mismatch")
 
 
+def _validate_complete_store_listing_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """Require cards when the completed lookup fact is a small, complete store listing."""
+
+    structured = _structured_facts(state)
+    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    if str(lookup.get("purpose") or "") != "existence" or str(lookup.get("status") or "") != "ok":
+        return
+    store_ids = _store_fact_ids(structured)
+    try:
+        candidate_count = int(lookup.get("candidate_count") or 0)
+    except (TypeError, ValueError):
+        candidate_count = 0
+    if not (1 <= candidate_count <= 3) or len(store_ids) != candidate_count:
+        return
+    if not store_ids.issubset(_emitted_store_address_ids(messages)):
+        raise ValueError("complete_store_listing_cards_required")
+
+
+def _validate_recommended_store_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """Require the model-selected distance recommendation to be delivered as a real card."""
+
+    structured = _structured_facts(state)
+    if not _has_distance_ranking_fact(structured):
+        return
+    recommended = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
+    store_id = str(recommended.get("store_id") or recommended.get("id") or "").strip()
+    if store_id and store_id not in _emitted_store_address_ids(messages):
+        raise ValueError("recommended_store_card_required")
+
+
+def _store_fact_ids(structured: dict[str, Any]) -> set[str]:
+    return {
+        str(item.get("store_id") or item.get("id") or "").strip()
+        for item in structured.get("store_facts") or []
+        if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
+    }
+
+
+def _emitted_store_address_ids(messages: list[dict[str, Any]]) -> set[str]:
+    return {
+        message_content_store_id(item.get("content"))
+        for item in messages
+        if isinstance(item, dict)
+        and str(item.get("type") or "") == "store_address"
+        and message_content_store_id(item.get("content"))
+    }
+
+
 def _validate_multi_store_address_same_district(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     store_ids = {
         message_content_store_id(item.get("content"))
@@ -546,12 +649,12 @@ def _validate_multi_store_address_same_district(messages: list[dict[str, Any]], 
     store_ids.discard("")
     if len(store_ids) < 2:
         return
-    if not _store_ids_in_requested_district(store_ids, state):
-        raise ValueError("multiple_store_address_cards_must_share_requested_district")
+    if not _store_ids_in_requested_scope(store_ids, state):
+        raise ValueError("multiple_store_address_cards_must_share_requested_scope")
 
 
-def _store_ids_in_requested_district(store_ids: set[str], state: dict[str, Any]) -> bool:
-    return any(store_ids.issubset(region) for region in _requested_district_regions(state))
+def _store_ids_in_requested_scope(store_ids: set[str], state: dict[str, Any]) -> bool:
+    return any(store_ids.issubset(region) for region in _requested_store_scope_regions(state))
 
 
 def _validate_store_address_card_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -808,24 +911,38 @@ def _store_address_card_conflicts_with_visible_text(
     if not text:
         return False
     records = _known_store_records_for_validation(state)
+    emitted_store_ids = set(store_ids)
+    emitted_store_names = {
+        name
+        for record in records
+        if str(record.get("store_id") or record.get("id") or "").strip() in emitted_store_ids
+        for name in _store_record_names(record)
+    }
     for store_id in store_ids:
         target = _store_record_for_id(records, store_id)
         if not target:
             continue
         target_names = _store_record_names(target)
-        target_tokens = {_compact_text(item) for item in [*target_names, *_store_record_regions(target)] if _compact_text(item)}
+        target_visible = any(name and name in text for name in target_names) or any(
+            region_mentioned_in_text(region, text) for region in _store_record_regions(target)
+        )
         for record in records:
-            if str(record.get("store_id") or record.get("id") or "").strip() == store_id:
+            record_store_id = str(record.get("store_id") or record.get("id") or "").strip()
+            if record_store_id in emitted_store_ids:
                 continue
             for name in _store_record_names(record):
                 if name and name in text and not _store_name_matches_target(name, target_names):
                     return True
             other_region_hit = any(region_mentioned_in_text(region, text) for region in _store_record_regions(record))
-            if other_region_hit and target_tokens and not any(token and token in _compact_text(text) for token in target_tokens):
+            if other_region_hit and not target_visible:
                 return True
         for name in KNOWN_STORE_NAMES:
             store_name = str(name or "").strip()
-            if store_name and store_name in text and not _store_name_matches_target(store_name, target_names):
+            if (
+                store_name
+                and store_name in text
+                and not _store_name_matches_target(store_name, list(emitted_store_names))
+            ):
                 return True
     return False
 
@@ -965,7 +1082,9 @@ def _asserts_distance_ranking(text: str, state: dict[str, Any]) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
     if _asks_location_before_distance_matching(compact):
         return False
-    if any(term in compact for term in ("最近的是", "离您最近", "离你最近", "距离最近", "就近门店", "就近的门店")):
+    if _asks_customer_to_choose_by_convenience(compact):
+        return False
+    if any(term in compact for term in ("最近的是", "离您最近", "离你最近", "距离最近")):
         return True
     if any(term in compact for term in ("优先这家", "先看这家")):
         return True
@@ -983,6 +1102,14 @@ def _asserts_distance_ranking(text: str, state: dict[str, Any]) -> bool:
     return any(term in compact for term in ("更近", "近一些", "近一点", "较近")) and any(
         term in compact for term in ("门店", "店", "地址", "导航", "位置", "离您", "离你")
     )
+
+
+def _asks_customer_to_choose_by_convenience(compact: str) -> bool:
+    """Distinguish a customer-choice question from an unsupported distance claim."""
+
+    if not any(term in compact for term in ("方便", "顺路", "好去")):
+        return False
+    return "还是" in compact or any(term in compact for term in ("哪家", "哪个店", "哪个区", "哪个位置"))
 
 
 def _asks_location_before_distance_matching(compact: str) -> bool:

@@ -858,6 +858,10 @@ def _reply_repair_hint(error: str) -> str:
         return "没有门店详情事实时，不要输出具体地址。"
     if "unsupported_store_address_message" in error:
         return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时，不要输出 store_address，只能用文字说明暂时没查到并继续确认城市、区域或门店。"
+    if "complete_store_listing_cards_required" in error:
+        return "本轮门店工具已经返回 purpose=existence 的完整 1 至 3 家真实门店。请保留自然说明，并为 tool_facts.store_facts 中每个 store_id 各输出一条 store_address；不能只用编号或文字列出门店来代替卡片。"
+    if "recommended_store_card_required" in error:
+        return "本轮 distance_calculate 已产生唯一 recommended_store。请基于该事实自然承接，并追加一条 content.store_id 等于 recommended_store.store_id 的 store_address；不要只在文字里承诺稍后发卡。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
         return "你已经在文本里承诺发地址、位置或让客户点开导航；如果本轮有门店事实，必须追加对应 store_address 卡片。若不想发卡，就删除“我发您/点开导航/位置卡”等承诺。"
     if "distance_value_not_customer_visible" in error:

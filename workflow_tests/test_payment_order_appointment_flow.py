@@ -200,6 +200,40 @@ def test_planner_reuses_matching_active_order_instead_of_incomplete_create_tool(
     assert not any(item.get("missing", "").startswith("create_work_order_missing") for item in plan["tool_policy_violations"])
 
 
+def test_planner_reuses_required_unpaid_order_when_platform_omits_lifecycle_status() -> None:
+    state = {
+        **_base_state(),
+        "confirmed_store_id": "386",
+        "customer_context": {
+            **_base_state()["customer_context"],
+            "orders": [
+                {
+                    "id": "order-without-status",
+                    "store_id": "386",
+                    "prepay_required": 10,
+                    "prepay_paid": 0,
+                    "deposit_state": "required_unpaid",
+                }
+            ],
+        },
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "need_tools",
+            "payment_decision": {"action": "send_now", "amount": 10},
+            "order_decision": {"action": "use_existing", "order_id": "order-without-status", "store_id": "386", "amount": 10},
+            "reply_messages": [],
+            "tool_calls": [{"name": "create_work_order", "store_id": "386", "amount": 10}],
+        },
+    )
+
+    assert plan["order_decision"]["action"] == "use_existing"
+    assert plan["order_decision"]["order_id"] == "order-without-status"
+    assert not any(item.get("name") == "create_work_order" for item in plan["planner_tool_calls"])
+    assert not any(item.get("missing", "").startswith("create_work_order_missing") for item in plan["tool_policy_violations"])
+
+
 def test_active_order_from_another_store_cannot_authorize_payment_card() -> None:
     state = {
         **_base_state(),

@@ -970,7 +970,16 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                 )
             continue
         if name == "customer_store_lookup":
-            if _ambiguous_reference_store_lookup_query(query, state):
+            if not query:
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "customer_store_lookup",
+                        "missing": "store_lookup_missing_query",
+                        "note": "customer_store_lookup requires the customer's non-empty location or store query.",
+                    }
+                )
+            elif _ambiguous_reference_store_lookup_query(query, state):
                 violations.append(
                     {
                         "task_type": "tool_argument",
@@ -997,8 +1006,6 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                         ),
                     }
                 )
-            elif not _location_query_has_scope_region(query, state) and not _query_matches_scope_store_name(query, state):
-                violations.append(_ambiguous_location_tool_violation("customer_store_lookup"))
             continue
         if name == "distance_calculate":
             origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or "").strip()
@@ -1830,7 +1837,11 @@ def _matching_active_order_for_payment(
     candidates: list[dict[str, Any]] = []
     for order in source_orders:
         status = str(order.get("status") or "").strip().lower()
-        if status not in {"1", "pending", "waiting_schedule", "scheduled"}:
+        deposit_state = str(order.get("deposit_state") or normalize_prepay_facts(order).get("deposit_state") or "")
+        # Some platform order payloads omit a lifecycle status but still expose the
+        # authoritative required_unpaid payment state. Explicit terminal statuses
+        # remain ineligible; absence of status must not force a duplicate work order.
+        if status and status not in {"1", "pending", "waiting_schedule", "scheduled"}:
             continue
         order_id = str(order.get("id") or order.get("order_id") or "").strip()
         if not order_id:
@@ -1841,7 +1852,6 @@ def _matching_active_order_for_payment(
         required_amount = _numeric_payment_amount(order.get("prepay_required") or order.get("fee_required"))
         if amount and required_amount and required_amount != amount:
             continue
-        deposit_state = str(order.get("deposit_state") or normalize_prepay_facts(order).get("deposit_state") or "")
         if deposit_state != "required_unpaid":
             continue
         candidates.append(order)

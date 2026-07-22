@@ -800,7 +800,8 @@ def test_planner_payload_keeps_context_for_low_information_message() -> None:
     assert "open_task" not in payload["turn_evidence"]
     assert "binding_source" not in payload["turn_evidence"]
     assert "context_hints" not in payload["turn_evidence"]
-    assert "payment_evidence" not in payload["turn_evidence"]
+    assert payload["turn_evidence"]["payment_evidence"]["sent_payment_collection"] is True
+    assert payload["turn_evidence"]["payment_evidence"]["payment_collection_count"] == 1
     assert payload["turn_evidence"]["history_evidence"]["is_short_message"] is True
     assert payload["turn_evidence"]["history_evidence"]["history_window_size"] == 20
     assert payload["turn_evidence"]["appointment_evidence"]["store_name"] == "广州白云三店"
@@ -2399,7 +2400,7 @@ def test_direct_store_parking_text_requires_store_lookup() -> None:
     assert any(item.get("missing") == "store_detail_tool_required" for item in plan["tool_policy_violations"])
 
 
-def test_generic_store_lookup_query_requires_city_or_store_name() -> None:
+def test_generic_store_lookup_query_is_left_to_store_tool_resolution() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": _u(r"\u95e8\u5e97\u5728\u54ea\u91cc"),
@@ -2421,8 +2422,8 @@ def test_generic_store_lookup_query_requires_city_or_store_name() -> None:
     assert plan["planner_tool_calls"] == [
         {"name": "customer_store_lookup", "purpose": "existence", "query": _u(r"\u95e8\u5e97\u5728\u54ea\u91cc")}
     ]
-    assert any(
-        item.get("missing") == "location_query_missing_city_or_region"
+    assert not any(
+        item.get("missing") in {"location_query_missing_city_or_region", "store_lookup_missing_query"}
         for item in plan["tool_policy_violations"]
     )
 
@@ -4195,6 +4196,49 @@ def test_reply_validation_rejects_store_card_when_visible_city_omits_suffix() ->
         )
 
 
+def test_reply_validation_allows_card_when_visible_regions_omit_suffixes_but_match_target() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "厦门这边有湖里和思明两家，按排序先看湖里这家。"},
+            },
+            {"type": "store_address", "order": 2, "content": {"store_id": "101"}},
+        ],
+        {
+            "fact_envelope": {
+                "structured_facts": {
+                    "store_facts": [
+                        {
+                            "store_id": "101",
+                            "store_name": "厦门百星湖里店",
+                            "city": "厦门市",
+                            "district": "湖里区",
+                        },
+                        {
+                            "store_id": "102",
+                            "store_name": "厦门百星思明店",
+                            "city": "厦门市",
+                            "district": "思明区",
+                        },
+                    ],
+                    "recommended_store": {
+                        "store_id": "101",
+                        "store_name": "厦门百星湖里店",
+                        "reason": "distance_calculate_rank_1",
+                    },
+                    "store_lookup_status": {
+                        "source": "distance_calculate",
+                        "recommendation_status": "ok",
+                        "comparable_candidate_count": 2,
+                    },
+                }
+            }
+        },
+    )
+
+
 def test_distance_fact_output_hides_customer_visible_numbers() -> None:
     output = build_planner_fact_output(
         {
@@ -4234,7 +4278,10 @@ def test_distance_fact_output_hides_customer_visible_numbers() -> None:
 
 def test_reply_validation_allows_distance_rank_without_numeric_value() -> None:
     validate_reply_consistency(
-        [{"type": "text", "order": 1, "content": {"text": "按您这个位置，优先看厦门思明店，这家更近一些。"}}],
+        [
+            {"type": "text", "order": 1, "content": {"text": "按您这个位置，优先看厦门思明店，这家更近一些。"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "227"}},
+        ],
         {
             "fact_envelope": {
                 "structured_facts": {
@@ -4253,6 +4300,94 @@ def test_reply_validation_allows_distance_rank_without_numeric_value() -> None:
                 }
             }
         },
+    )
+
+
+def test_reply_validation_requires_all_cards_for_small_complete_store_listing() -> None:
+    state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {
+                    "purpose": "existence",
+                    "status": "ok",
+                    "city": "荆州市",
+                    "resolved_admin_level": "city",
+                    "exact_scope_has_store": True,
+                    "candidate_count": 2,
+                },
+                "store_facts": [
+                    {"store_id": "241", "store_name": "荆州万达店", "city": "荆州市"},
+                    {"store_id": "242", "store_name": "荆州沙市店", "city": "荆州市"},
+                ],
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="complete_store_listing_cards_required"):
+        validate_reply_consistency([{"type": "text", "order": 1, "content": "荆州有两家门店。"}], state)
+
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": "荆州有两家门店，我都发您。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "241"}},
+            {"type": "store_address", "order": 3, "content": {"store_id": "242"}},
+        ],
+        state,
+    )
+
+
+def test_reply_validation_does_not_force_all_cards_for_large_or_failed_listing() -> None:
+    large_state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {"purpose": "existence", "status": "ok", "candidate_count": 8},
+                "store_facts": [{"store_id": str(index)} for index in range(1, 9)],
+            }
+        }
+    }
+    validate_reply_consistency([{"type": "text", "order": 1, "content": "这个城市门店较多，您发下区域。"}], large_state)
+
+    no_match_state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {"purpose": "existence", "status": "no_match", "candidate_count": 0},
+                "store_facts": [],
+            }
+        }
+    }
+    validate_reply_consistency([{"type": "text", "order": 1, "content": "这个地名还需要补一下城市。"}], no_match_state)
+
+
+def test_reply_validation_requires_distance_recommended_store_card() -> None:
+    state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {
+                    "source": "distance_calculate",
+                    "recommendation_status": "ok",
+                    "candidate_count": 2,
+                    "comparable_candidate_count": 2,
+                },
+                "store_facts": [
+                    {"store_id": "101", "store_name": "厦门百星湖里店"},
+                    {"store_id": "102", "store_name": "厦门百星思明店"},
+                ],
+                "recommended_store": {
+                    "store_id": "101",
+                    "store_name": "厦门百星湖里店",
+                    "reason": "distance_calculate_rank_1",
+                },
+            }
+        }
+    }
+    with pytest.raises(ValueError, match="recommended_store_card_required"):
+        validate_reply_consistency([{"type": "text", "order": 1, "content": "优先看湖里这家。"}], state)
+
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": "优先看湖里这家。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "101"}},
+        ],
+        state,
     )
 
 
@@ -4296,6 +4431,54 @@ def test_reply_validation_allows_asking_location_before_nearby_matching() -> Non
         ],
         {"normalized_content": "我想淡斑，效果怎么样", "planner_decision": "direct_reply"},
     )
+
+
+def test_reply_validation_allows_customer_to_choose_nearby_store_intent_without_ranking_fact() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "您是想看活动效果，还是想看下就近门店？"}}],
+        {"normalized_content": "你好", "planner_decision": "direct_reply"},
+    )
+
+
+def test_reply_validation_distinguishes_store_choice_question_from_distance_claim() -> None:
+    state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {
+                    "purpose": "existence",
+                    "status": "ok",
+                    "city": "荆州市",
+                    "resolved_admin_level": "city",
+                    "exact_scope_has_store": True,
+                    "candidate_count": 2,
+                },
+                "store_facts": [
+                    {"store_id": "241", "store_name": "荆州万达店", "city": "荆州市"},
+                    {"store_id": "242", "store_name": "荆州沙市店", "city": "荆州市"},
+                ],
+            }
+        }
+    }
+    cards = [
+        {"type": "store_address", "order": 2, "content": {"store_id": "241"}},
+        {"type": "store_address", "order": 3, "content": {"store_id": "242"}},
+    ]
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "荆州有两家，您看荆州区还是沙市区过去更方便？",
+            },
+            *cards,
+        ],
+        state,
+    )
+    with pytest.raises(ValueError, match="distance_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "荆州万达店过去更方便。"}, *cards],
+            state,
+        )
 
 
 def test_reply_validation_allows_look_at_time_phrase_without_schedule_lookup() -> None:
@@ -5233,7 +5416,8 @@ def test_reply_payload_keeps_context_for_low_information_message() -> None:
     assert payload["transaction_facts"]["appointments"]
     assert "binding_source" not in payload["turn_evidence"]
     assert "context_hints" not in payload["turn_evidence"]
-    assert "payment_evidence" not in payload["turn_evidence"]
+    assert payload["turn_evidence"]["payment_evidence"]["sent_payment_collection"] is True
+    assert payload["turn_evidence"]["payment_evidence"]["payment_collection_count"] == 1
     assert payload["turn_evidence"]["store_evidence"]["unique_recent_store"]["store_name"] == "广州白云三店"
     assert "open_task" not in payload["turn_evidence"]
     assert "evidence_summary" not in payload["turn_evidence"]

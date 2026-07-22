@@ -18,6 +18,7 @@ def turn_evidence_for_model(value: Any) -> dict[str, Any]:
     registration = _registration_evidence(
         nested.get("registration_evidence") or value.get("registration_evidence")
     )
+    payment = _payment_evidence(nested.get("payment_evidence") or value.get("payment_evidence"))
     conflicts = _evidence_conflicts(nested.get("evidence_conflicts") or value.get("evidence_conflicts"))
 
     output = _drop_empty(
@@ -25,6 +26,7 @@ def turn_evidence_for_model(value: Any) -> dict[str, Any]:
             "history_evidence": history,
             "store_evidence": store,
             "appointment_evidence": appointment,
+            "payment_evidence": payment,
             "registration_evidence": registration,
             "evidence_conflicts": conflicts,
         }
@@ -42,8 +44,41 @@ def _history_evidence(value: Any) -> dict[str, Any]:
             "is_short_message": value.get("is_short_message") if "is_short_message" in value else None,
             "is_deictic_message": value.get("is_deictic_message") if "is_deictic_message" in value else None,
             "recent_assistant_action": _text(value.get("recent_assistant_action")),
-            "recent_assistant_text": _text(value.get("recent_assistant_text"))[:160],
+            "recent_assistant_text": _text(value.get("recent_assistant_text"))[:600],
             "history_window_size": value.get("history_window_size"),
+        }
+    )
+
+
+def _payment_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    recent_texts = [
+        _text(item)[:600]
+        for item in value.get("recent_payment_texts") or []
+        if _text(item)
+    ]
+    frequency = value.get("payment_collection_frequency")
+    structured_fact = value.get("structured_payment_fact")
+    return _drop_empty(
+        {
+            "sent_payment_collection": value.get("sent_payment_collection")
+            if "sent_payment_collection" in value
+            else None,
+            "payment_collection_count": value.get("payment_collection_count"),
+            "payment_collection_frequency": frequency if isinstance(frequency, dict) else {},
+            "last_assistant_payment_text": _text(value.get("last_assistant_payment_text"))[:600],
+            "current_payment_text": _text(value.get("current_payment_text"))[:600],
+            "recent_payment_texts": recent_texts[-6:],
+            "structured_payment_state": _text(value.get("structured_payment_state")),
+            "structured_payment_fact": structured_fact if isinstance(structured_fact, dict) else {},
+            "link_sent_evidence": value.get("link_sent_evidence")
+            if "link_sent_evidence" in value
+            else None,
+            "blocked_payment_collection_by_structure": value.get("blocked_payment_collection_by_structure")
+            if "blocked_payment_collection_by_structure" in value
+            else None,
+            "source_policy": _text(value.get("source_policy")),
         }
     )
 

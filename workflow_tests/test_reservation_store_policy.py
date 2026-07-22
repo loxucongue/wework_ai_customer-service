@@ -143,5 +143,92 @@ def test_multi_store_cards_reject_mixed_districts() -> None:
         {"type": "store_address", "order": 3, "content": {"store_id": "99"}},
     ]
 
-    with pytest.raises(ValueError, match="multiple_store_address_cards_must_share_requested_district"):
+    with pytest.raises(ValueError, match="multiple_store_address_cards_must_share_requested_scope"):
         validate_reply_consistency(messages, state)
+
+
+def test_city_level_two_store_cards_can_span_districts_when_tool_facts_prove_scope() -> None:
+    state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {
+                    "city": "荆州市",
+                    "resolved_admin_level": "city",
+                    "exact_scope_has_store": True,
+                    "candidate_count": 2,
+                },
+                "store_facts": [
+                    {"store_id": "241", "store_name": "荆州万达店", "city": "荆州市", "district": "荆州区"},
+                    {"store_id": "242", "store_name": "荆州沙市店", "city": "荆州市", "district": "沙市区"},
+                ],
+            }
+        }
+    }
+    payload = {
+        "reply_messages": [
+            {"type": "text", "content": "荆州市这两家都发您看下。"},
+            {"type": "store_address", "content": {"store_id": "241"}},
+            {"type": "store_address", "content": {"store_id": "242"}},
+            {"type": "text", "content": "您按路线选一家就行。"},
+        ]
+    }
+
+    messages = validated_model_messages(payload, state)
+    validate_reply_consistency(messages, state)
+
+    assert [item["content"]["store_id"] for item in messages if item["type"] == "store_address"] == ["241", "242"]
+
+
+def test_district_store_cards_can_use_completed_tool_fact_scope() -> None:
+    state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {
+                    "city": "成都市",
+                    "district": "双流区",
+                    "resolved_admin_level": "district",
+                    "exact_scope_has_store": True,
+                    "candidate_count": 3,
+                },
+                "store_facts": [
+                    {"store_id": str(store_id), "city": "成都市", "district": "双流区"}
+                    for store_id in (280, 379, 522)
+                ],
+            }
+        }
+    }
+    messages = [
+        {"type": "text", "order": 1, "content": "双流区这三家都发您。"},
+        *[
+            {"type": "store_address", "order": index + 2, "content": {"store_id": str(store_id)}}
+            for index, store_id in enumerate((280, 379, 522))
+        ],
+    ]
+
+    validate_reply_consistency(messages, state)
+
+
+def test_multi_store_cards_allow_text_to_name_every_emitted_store() -> None:
+    state = {
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {
+                    "city": "荆州市",
+                    "resolved_admin_level": "city",
+                    "exact_scope_has_store": True,
+                    "candidate_count": 2,
+                },
+                "store_facts": [
+                    {"store_id": "241", "store_name": "荆州万达店", "city": "荆州市", "district": "荆州区"},
+                    {"store_id": "242", "store_name": "荆州沙市店", "city": "荆州市", "district": "沙市区"},
+                ],
+            }
+        }
+    }
+    messages = [
+        {"type": "text", "order": 1, "content": "荆州有荆州万达店和荆州沙市店，我都发您。"},
+        {"type": "store_address", "order": 2, "content": {"store_id": "241"}},
+        {"type": "store_address", "order": 3, "content": {"store_id": "242"}},
+    ]
+
+    validate_reply_consistency(messages, state)

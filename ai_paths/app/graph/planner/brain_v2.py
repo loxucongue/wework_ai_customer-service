@@ -28,7 +28,10 @@ from app.graph.planner.brain_v2_prompts import (
 )
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2, planner_unavailable_fallback_plan, safety_fallback_plan
 from app.graph.state import AgentState
-from app.policies.business_rules import planner_business_rules_prompt_section
+from app.policies.business_rules import (
+    planner_business_rules_prompt_section,
+    planner_recovery_business_rules_prompt_section,
+)
 from app.policies.sales_flow import precision_qa_context_for_planner
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.customer_payment_state import normalize_prepay_facts
@@ -46,9 +49,12 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 不编造门店、地址、停车、营业时间、距离、档期、案例图、价格、支付状态、订单状态或医疗结论。
 - 需要具体门店/地址/停车/营业时间/导航/附近候选时，用 customer_store_lookup。
 - 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；客户可见不要输出公里、分钟、车程。
-- 需要真实可约时间时，必须有真实 store_id 和 date 才能用 available_time；没有工具事实不能承诺能约、已安排或已留位。
+- 当前普通流程只登记到店日期和时间意向，不调用 available_time/create_order_plan；没有既有正式预约事实不能承诺已安排或已留位。
 - 效果、怕没效果、怕反黑、要效果图时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。
 - 预约金由 payment_decision 决定；客户口头声称已付不能确认到账，只有当前订单 `prepay_paid>0` 或清晰支付成功截图才能推进付款后信息确认。
+- `stage/sub_rule_id` 必须从 Current Recovery Business Rules 的 `scene_index` 选择，不能自造英文场景名。
+- `need_tools` 必须提供可执行的扁平 `tool_calls`，工具名字段只能是 `name`；禁止 `tool_name/arguments/tool/args` 包装。门店查询示例：`{"name":"customer_store_lookup","query":"双流区","purpose":"existence"}`。
+- `direct_reply` 必须有对象数组 reply_messages 且 tool_calls=[]；`need_tools` 必须 reply_messages=[] 且 tool_calls 非空。
 
 # Output JSON Schema
 只输出 JSON：
@@ -61,8 +67,8 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "main_blocker": "price | effect | distance | time | risk | trust | logistics | none",
   "next_step": "ask_intent | solve_blocker | lookup_store | confirm_time | send_deposit | no_action",
   "payment_state": "unknown | link_sent | customer_claimed_paid | resend_requested | payment_failed | needs_payment",
-  "payment_action": "unknown | none | send_now | offer_resend | explain_existing | confirm_next_step",
-  "payment_decision": {"action":"none | explain | send_now | resend | after_paid_next_step | ask_party_size","party_size":1,"amount":10,"source":"","confidence":"high | medium | low","basis":[]},
+  "payment_action": "unknown | none | send_now | manual_transfer | offer_resend | explain_existing | confirm_next_step",
+  "payment_decision": {"action":"none | explain | send_now | resend | manual_transfer | after_paid_next_step | ask_party_size","party_size":1,"amount":10,"source":"","confidence":"high | medium | low","basis":[]},
   "store_binding_decision": {"status":"none | accepted_explicit | accepted_implicit | exploring | rejected | ambiguous","store_id":"","confidence":"high | medium | low","source":"","basis":[]},
   "order_decision": {"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
@@ -84,6 +90,8 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_PRECISION_QA_CONTRACT},
         {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
+        {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
+        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
         {"role": "system", "content": PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT},
     ]
@@ -104,6 +112,8 @@ def planner_v2_repair_messages_for_model(
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
         {"role": "system", "content": PLANNER_PRECISION_QA_CONTRACT},
         {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
+        {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
+        {"role": "system", "content": PLANNER_TRANSACTION_PATCH_PROMPT},
         {"role": "system", "content": PLANNER_REPAIR_PROMPT},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
         {"role": "system", "content": PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT},
@@ -118,6 +128,7 @@ def planner_v2_timeout_retry_messages_for_model(
     payload = _compact_timeout_retry_payload_for_model(state, previous_error=previous_error)
     return [
         {"role": "system", "content": PLANNER_TIMEOUT_RECOVERY_PROMPT},
+        {"role": "system", "content": "# Current Recovery Business Rules\n" + planner_recovery_business_rules_prompt_section()},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]
 
@@ -404,7 +415,9 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "sent_message_summary": sent_message_summary,
         "sop_progress_evidence": _sop_progress_evidence_for_planner(state),
         "sop_gate_decision": _sop_gate_decision_for_planner(state),
-        "precision_qa_playbook": precision_qa_context_for_planner(),
+        "precision_qa_playbook": precision_qa_context_for_planner(
+            include_answer_details_in_index=False
+        ),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
     return _drop_empty(payload)
@@ -428,7 +441,10 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "sent_message_summary": base.get("sent_message_summary"),
         "sop_progress_evidence": base.get("sop_progress_evidence"),
         "sop_gate_decision": base.get("sop_gate_decision"),
-        "precision_qa_playbook": base.get("precision_qa_playbook"),
+        "precision_qa_playbook": _compact_precision_qa_for_timeout(
+            base.get("precision_qa_playbook"),
+            base.get("sop_gate_decision"),
+        ),
         "available_tools": base.get("available_tools"),
         "timeout_recovery": {
             "previous_error": str(previous_error or "")[:240],
@@ -436,6 +452,32 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         },
     }
     return _drop_empty(payload)
+
+
+def _compact_precision_qa_for_timeout(value: Any, gate_decision: Any) -> dict[str, Any]:
+    playbook = value if isinstance(value, dict) else {}
+    gate = gate_decision if isinstance(gate_decision, dict) else {}
+    priority_question_id = str(gate.get("priority_question_id") or "").strip()
+    question_index: list[dict[str, str]] = []
+    selected_question = (
+        precision_qa_context_for_planner(priority_question_id).get("selected_question") or {}
+        if priority_question_id
+        else {}
+    )
+    for item in playbook.get("question_index") or []:
+        if not isinstance(item, dict):
+            continue
+        question_id = str(item.get("id") or "").strip()
+        intent_definition = str(item.get("intent_definition") or "").strip()
+        if question_id:
+            question_index.append(_drop_empty({"id": question_id, "intent_definition": intent_definition}))
+    return _drop_empty(
+        {
+            "global_answer_policy": playbook.get("global_answer_policy") or {},
+            "question_index": question_index,
+            "selected_question": selected_question,
+        }
+    )
 
 
 def _turn_evidence_for_planner(value: Any) -> dict[str, Any]:

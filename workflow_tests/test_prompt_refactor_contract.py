@@ -3,9 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.config import Settings
 from app.graph.nodes.image_info import build_vision_prompt
+from app.graph.nodes.turn_evidence_view import turn_evidence_for_model
+from app.graph.planner.brain_v2 import (
+    planner_v2_messages_for_model,
+    planner_v2_repair_messages_for_model,
+    planner_v2_timeout_retry_messages_for_model,
+)
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import (
+    PLANNER_RISK_PATCH_PROMPT,
     PLANNER_SYSTEM_PROMPT,
     PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT,
     PLANNER_TRANSACTION_PATCH_PROMPT,
@@ -17,7 +25,11 @@ from app.prompts.global_contract import (
 )
 from app.prompts.profile_analyzer import PROFILE_ANALYZER_SYSTEM_PROMPT
 from app.prompts.reply_synthesizer import REPLY_SYSTEM_PROMPT, REPLY_TRANSACTION_PATCH_PROMPT
-from app.policies.business_rules import planner_business_rules_prompt_section, reply_business_rules_for_model
+from app.policies.business_rules import (
+    load_business_rules,
+    planner_business_rules_prompt_section,
+    reply_business_rules_for_model,
+)
 from app.services.outreach_prompts import OUTREACH_MESSAGE_SYSTEM_PROMPT, OUTREACH_PLAN_SYSTEM_PROMPT
 
 
@@ -72,6 +84,8 @@ def test_transaction_prompts_require_order_and_keep_postpaid_information_only() 
     assert "排客完成终态" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
     assert "不要求先确认门店、先有订单或开单成功" not in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "缺少成功 order_id 或开单失败都不得取消卡片" not in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "已有同门店、同金额有效未付订单时" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "不得调用 `create_work_order`" in PLANNER_TRANSACTION_PATCH_PROMPT
 
 
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
@@ -145,27 +159,97 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_BUSINESS_RHYTHM_CONTRACT in PLANNER_SYSTEM_PROMPT
     assert "evidence_summary" not in PLANNER_SYSTEM_PROMPT
-    assert len(PLANNER_SYSTEM_PROMPT) < 9_000
     assert "explain-only direct_reply 不完整" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "`store_binding=ambiguous`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "上一条唯一推荐某店后客户接受“这家”" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "不得在草稿中复述健康、过敏、检测或适配提醒" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
 
 
-def test_runtime_business_fact_views_do_not_repeat_full_rule_packs() -> None:
-    planner_facts = planner_business_rules_prompt_section()
-    reply_facts = json.dumps(
-        reply_business_rules_for_model(stage="S3", sub_rule_id="S3_PAYMENT_COLLECTION"),
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
+def test_runtime_business_fact_views_preserve_all_current_rule_semantics() -> None:
+    authoritative = load_business_rules()
+    planner_facts = json.loads(planner_business_rules_prompt_section())
+    reply_facts = reply_business_rules_for_model(stage="S3", sub_rule_id="S3_PAYMENT_COLLECTION")
+    expected_ids = {
+        str(rule.get("id") or "")
+        for stage in authoritative.get("stages") or []
+        if isinstance(stage, dict)
+        for rule in stage.get("rules") or []
+        if isinstance(rule, dict)
+    }
 
-    assert len(GLOBAL_BUSINESS_RHYTHM_CONTRACT) < 4_000
-    assert len(planner_facts) < 2_000
-    assert len(reply_facts) < 2_000
-    assert "case_image_fallback_urls" not in planner_facts
-    assert "case_image_fallback_urls" not in reply_facts
-    assert "conversion_psychology" not in reply_facts
+    catalog = planner_facts.get("scene_catalog") or []
+    assert len(catalog) == 14
+    assert {str(item.get("id") or "") for item in catalog} == expected_ids
+    for item in catalog:
+        for field in ("stage", "stage_goal", "id", "scenes", "decision", "tools", "reply_focus", "fact_boundary"):
+            assert field in item
+    assert planner_facts.get("conversion_psychology", {}).get("principles")
+    assert planner_facts.get("conversion_psychology", {}).get("customer_types")
+    assert planner_facts.get("transaction_policy", {}).get("appointment_flow_mode") == "registration_only"
+    assert planner_facts.get("tool_policy", {}).get("boundaries")
+
+    current_rules = reply_facts.get("current_stage_rules", {}).get("rules") or []
+    assert len(current_rules) == 1
+    for field in ("id", "scenes", "decision", "tools", "reply_focus", "fact_boundary"):
+        assert field in current_rules[0]
+    assert reply_facts.get("conversion_psychology", {}).get("principles")
+    assert reply_facts.get("transaction_policy", {}).get("payment_order_policy")
+    assert reply_facts.get("customer_visible_evidence_policy")
+    assert reply_facts.get("tool_policy", {}).get("boundaries")
+
+    planner_text = json.dumps(planner_facts, ensure_ascii=False, separators=(",", ":"))
+    reply_text = json.dumps(reply_facts, ensure_ascii=False, separators=(",", ":"))
+    assert "case_image_fallback_urls" not in planner_text
+    assert "case_image_fallback_urls" not in reply_text
+    assert "activity_intro_image_url" not in planner_text
+    assert "activity_intro_image_url" not in reply_text
+
+
+def test_planner_actual_messages_include_risk_transaction_and_rule_contracts() -> None:
+    state = {
+        "normalized_content": "厦门湖里有门店吗",
+        "conversation_history": ["小贝: 您在哪个城市或区？", "用户: 厦门湖里"],
+    }
+    initial = planner_v2_messages_for_model(state)
+    repair = planner_v2_repair_messages_for_model(
+        state,
+        original_plan={"decision": "direct_reply", "reply_messages": []},
+        violations=[{"code": "empty_direct_reply"}],
+    )
+    for messages in (initial, repair):
+        joined = "\n".join(str(item.get("content") or "") for item in messages)
+        assert PLANNER_RISK_PATCH_PROMPT in joined
+        assert PLANNER_TRANSACTION_PATCH_PROMPT in joined
+        assert '"scene_catalog"' in joined
+        assert '"conversion_psychology"' in joined
+        assert '"transaction_policy"' in joined
+
+
+def test_planner_timeout_recovery_keeps_current_scene_and_flat_tool_contracts() -> None:
+    messages = planner_v2_timeout_retry_messages_for_model(
+        {"normalized_content": "洪湖市有门店吗", "conversation_history": []},
+        previous_error="TimeoutError",
+    )
+    joined = "\n".join(str(item.get("content") or "") for item in messages)
+
+    assert "Current Recovery Business Rules" in joined
+    assert '"id":"S2_CITY_ONLY"' in joined
+    assert '"name":"customer_store_lookup"' in joined
+    assert "禁止 `tool_name/arguments/tool/args`" in joined
+    assert "不调用 available_time/create_order_plan" in joined
+
+    selected_messages = planner_v2_timeout_retry_messages_for_model(
+        {
+            "normalized_content": "是不是一次就能做好",
+            "conversation_history": [],
+            "sop_gate_decision": {"priority_question_id": "one_session_effect"},
+        },
+        previous_error="TimeoutError",
+    )
+    selected_payload = json.loads(selected_messages[-1]["content"])
+    selected = selected_payload["precision_qa_playbook"]["selected_question"]
+    assert selected["id"] == "one_session_effect"
+    assert selected.get("must_answer")
 
 
 def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
@@ -225,10 +309,14 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "planner_direct_reply_draft" in REPLY_SYSTEM_PROMPT
     assert "不能删掉草稿里的具体回答、付款选择、保留名额、登记或门店动作" in REPLY_SYSTEM_PROMPT
     assert "不能删掉其中的具体成交动作" in REPLY_SYSTEM_PROMPT
-    assert len(REPLY_SYSTEM_PROMPT) < 9_000
     assert "历史风险视为已处理背景" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "严禁自行复活健康、过敏、检测或适配提醒" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "`current_known_store` 不覆盖歧义" in REPLY_TRANSACTION_PATCH_PROMPT
+    assert "unresolved/no_match" in REPLY_SYSTEM_PROMPT
+    assert "不得用常识、相似地名或猜测补成某个城市" in REPLY_SYSTEM_PROMPT
+    assert "`store_address` 数量必须恰好为1" in REPLY_SYSTEM_PROMPT
+    assert "孤立地名" in PLANNER_SYSTEM_PROMPT
+    assert "禁止 `nearby_candidates/distance_calculate`" in PLANNER_SYSTEM_PROMPT
 
 
 def test_reply_runtime_does_not_generate_business_candidates_in_python() -> None:
@@ -250,7 +338,6 @@ def test_model_visible_turn_evidence_excludes_python_business_conclusions() -> N
     for forbidden in [
         '"context_hints"',
         '"binding_source"',
-        '"payment_evidence"',
         '"resolved_slots"',
         '"missing_slots"',
         '"blocked_actions"',
@@ -261,10 +348,52 @@ def test_model_visible_turn_evidence_excludes_python_business_conclusions() -> N
         '"recent_assistant_action"',
         '"store_evidence"',
         '"appointment_evidence"',
+        '"payment_evidence"',
         '"registration_evidence"',
         '"evidence_conflicts"',
     ]:
         assert required in view_source
+
+
+def test_model_visible_turn_evidence_keeps_facts_without_business_conclusions() -> None:
+    recent_text = "上一轮客服说明" * 100
+    value = {
+        "open_task": "deposit_push",
+        "reply_anchor": "请直接催客户付款",
+        "turn_evidence": {
+            "history_evidence": {
+                "is_short_message": True,
+                "recent_assistant_action": "sent_payment_collection",
+                "recent_assistant_text": recent_text,
+            },
+            "payment_evidence": {
+                "sent_payment_collection": True,
+                "payment_collection_count": 2,
+                "last_assistant_payment_text": "我把10元预约金卡发您了",
+                "recent_payment_texts": ["预约金10元，到店抵扣"],
+                "source_policy": "evidence_only_planner_decides_payment_state",
+            },
+        },
+    }
+    evidence = turn_evidence_for_model(value)
+
+    assert len(evidence["history_evidence"]["recent_assistant_text"]) == 600
+    assert evidence["payment_evidence"]["payment_collection_count"] == 2
+    assert evidence["payment_evidence"]["last_assistant_payment_text"] == "我把10元预约金卡发您了"
+    assert "open_task" not in evidence
+    assert "reply_anchor" not in evidence
+
+
+def test_default_text_models_use_openai_family() -> None:
+    settings = Settings(_env_file=None)
+    for model in (
+        settings.model_fast,
+        settings.model_planner,
+        settings.model_balanced,
+        settings.model_strong,
+        settings.model_reply,
+    ):
+        assert model.startswith("gpt-")
 
 
 def test_structured_model_nodes_use_zero_temperature() -> None:
@@ -284,6 +413,19 @@ def test_planner_requires_authoritative_recent_case_image_evidence() -> None:
     assert "completed_pack_ids/completed_categories" in PLANNER_SYSTEM_PROMPT
     assert "不能单独证明客户近期看过图" in PLANNER_SYSTEM_PROMPT
     assert "没有权威近期图片证据时查 `case_studies`" in PLANNER_SYSTEM_PROMPT
+    assert "做完到底能变成什么样" in PLANNER_SYSTEM_PROMPT
+
+
+def test_planner_calibrates_current_severe_risk_without_hijacking_normal_safety_objections() -> None:
+    assert "起泡且疼" in PLANNER_RISK_PATCH_PROMPT
+    assert "过敏肿胀" in PLANNER_RISK_PATCH_PROMPT
+    assert "会不会反黑/做坏/留疤" in PLANNER_RISK_PATCH_PROMPT
+    assert "必须调用 professional_assist" in PLANNER_RISK_PATCH_PROMPT
+
+
+def test_reply_safety_objection_keeps_one_natural_progression_action() -> None:
+    assert "不要突然整段复述268、10、258和退款规则" in REPLY_SYSTEM_PROMPT
+    assert "不要反问“更担心安全还是想看案例”" in REPLY_SYSTEM_PROMPT
 
 
 def test_runtime_prompts_no_longer_carry_legacy_non_refund_policy() -> None:

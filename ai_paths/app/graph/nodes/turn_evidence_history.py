@@ -18,7 +18,7 @@ def build_history_evidence(
             "is_deictic_message": is_reference_message,
             "binding_source": binding_source,
             "recent_assistant_action": last_assistant_action if last_assistant_action != "none" else "",
-            "recent_assistant_text": str(last_assistant_text or "")[:160],
+            "recent_assistant_text": str(last_assistant_text or "")[:600],
             "history_window_size": len(history[-20:]) if isinstance(history, list) else 0,
         }
     )

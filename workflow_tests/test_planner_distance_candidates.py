@@ -62,7 +62,47 @@ class PlannerModelOwnershipTests(unittest.TestCase):
 
         self.assertEqual(
             [item["missing"] for item in plan["tool_policy_violations"]],
-            ["location_query_missing_city_or_region", "location_query_missing_city_or_region"],
+            ["location_query_missing_city_or_region"],
+        )
+
+    def test_planner_allows_raw_town_name_for_store_lookup(self) -> None:
+        plan = build_planner_plan_v2(
+            {"normalized_content": "甲良镇"},
+            {
+                "decision": "need_tools",
+                "stage": "S2",
+                "sub_rule_id": "S2_CITY_ONLY",
+                "tool_calls": [
+                    {"name": "customer_store_lookup", "query": "甲良镇", "purpose": "existence"}
+                ],
+            },
+        )
+
+        self.assertFalse(
+            any(
+                item.get("missing") == "location_query_missing_city_or_region"
+                for item in plan["tool_policy_violations"]
+            )
+        )
+
+    def test_planner_rejects_empty_store_lookup_query(self) -> None:
+        plan = build_planner_plan_v2(
+            {"normalized_content": "帮我查门店"},
+            {
+                "decision": "need_tools",
+                "stage": "S2",
+                "sub_rule_id": "S2_CITY_ONLY",
+                "tool_calls": [
+                    {"name": "customer_store_lookup", "query": "", "purpose": "existence"}
+                ],
+            },
+        )
+
+        self.assertTrue(
+            any(
+                item.get("missing") == "store_lookup_missing_query"
+                for item in plan["tool_policy_violations"]
+            )
         )
 
     def test_planner_store_address_without_tool_is_grounded_by_lookup(self) -> None:

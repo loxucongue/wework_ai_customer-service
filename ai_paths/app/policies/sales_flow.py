@@ -33,26 +33,28 @@ def load_precision_qa_playbook() -> dict[str, Any]:
     return payload
 
 
-def precision_qa_context_for_planner(question_id: str = "") -> dict[str, Any]:
+def precision_qa_context_for_planner(
+    question_id: str = "",
+    *,
+    include_answer_details_in_index: bool = True,
+) -> dict[str, Any]:
     playbook = load_precision_qa_playbook()
     questions: list[dict[str, Any]] = []
     for item in playbook.get("questions") or []:
         if not isinstance(item, dict):
             continue
-        questions.append(
-            _drop_empty(
-                {
-                    "id": item.get("id"),
-                    "intent_definition": item.get("intent_definition"),
-                    "customer_psychology": item.get("customer_psychology"),
-                    "question_role": item.get("question_role"),
-                    "must_answer": item.get("must_answer") or [],
-                    "must_not_substitute": item.get("must_not_substitute") or [],
-                    "evidence_requirement": item.get("evidence_requirement"),
-                    "resume_mainline_stage": item.get("resume_mainline_stage"),
-                }
-            )
-        )
+        question = {
+            "id": item.get("id"),
+            "intent_definition": item.get("intent_definition"),
+            "customer_psychology": item.get("customer_psychology"),
+            "question_role": item.get("question_role"),
+            "must_not_substitute": item.get("must_not_substitute") or [],
+            "evidence_requirement": item.get("evidence_requirement"),
+            "resume_mainline_stage": item.get("resume_mainline_stage"),
+        }
+        if include_answer_details_in_index:
+            question["must_answer"] = item.get("must_answer") or []
+        questions.append(_drop_empty(question))
     return _drop_empty(
         {
             "purpose": playbook.get("purpose"),
