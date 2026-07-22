@@ -255,6 +255,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     if is_hard_health_risk_hold(risk_hold):
         reply_strategy["risk_hold"] = risk_hold
     required_tools = _dedupe_tools(planner_tool_calls)
+    required_tools = _complete_explicit_kb_search_arguments(required_tools, state)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
     required_tools = _normalize_available_time_dates_from_context(required_tools, state)
@@ -1187,6 +1188,27 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
             continue
 
     return violations
+
+
+def _complete_explicit_kb_search_arguments(
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+) -> list[dict[str, Any]]:
+    """Complete schema fields after Planner has explicitly selected the case-study KB."""
+    current_query = str(state.get("normalized_content") or state.get("content") or "").strip()
+    completed: list[dict[str, Any]] = []
+    for item in required_tools:
+        tool = dict(item)
+        if (
+            str(tool.get("name") or "").strip() == "kb_search"
+            and str(tool.get("purpose") or "").strip() == "case_studies"
+        ):
+            if not str(tool.get("kb_name") or "").strip():
+                tool["kb_name"] = "case_studies"
+            if current_query and not str(tool.get("query") or "").strip():
+                tool["query"] = current_query[:600]
+        completed.append(tool)
+    return completed
 
 
 def _ambiguous_reference_store_lookup_query(query: str, state: AgentState) -> bool:

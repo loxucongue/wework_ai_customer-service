@@ -1243,6 +1243,58 @@ def test_need_tools_does_not_emit_intermediate_customer_reply() -> None:
     assert plan["planner_reply_messages"] == []
 
 
+def test_explicit_case_studies_tool_completes_missing_schema_arguments() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "show me a similar result"},
+        {
+            "decision": "need_tools",
+            "stage": "S1",
+            "sub_rule_id": "S1_CASE_REQUEST",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "effect",
+            "main_blocker": "effect",
+            "next_step": "solve_blocker",
+            "reply_messages": [],
+            "tool_calls": [{"name": "kb_search", "purpose": "case_studies"}],
+        },
+    )
+
+    assert plan["required_tools"] == [
+        {
+            "name": "kb_search",
+            "purpose": "case_studies",
+            "kb_name": "case_studies",
+            "query": "show me a similar result",
+        }
+    ]
+    assert not any(
+        str(item.get("missing") or "").startswith("kb_search_missing")
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_kb_search_without_explicit_case_purpose_keeps_missing_argument_violation() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "find something"},
+        {
+            "decision": "need_tools",
+            "stage": "S1",
+            "sub_rule_id": "S1_CASE_REQUEST",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "unknown",
+            "main_blocker": "none",
+            "next_step": "solve_blocker",
+            "reply_messages": [],
+            "tool_calls": [{"name": "kb_search", "purpose": ""}],
+        },
+    )
+
+    assert any(
+        str(item.get("missing") or "").startswith("kb_search_missing")
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_effect_question_direct_reply_is_not_forced_to_case_tool_by_normalizer() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "会不会没效果"},
