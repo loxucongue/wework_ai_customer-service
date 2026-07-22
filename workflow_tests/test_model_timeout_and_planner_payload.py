@@ -34,8 +34,16 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized[0], {"role": "system", "content": "Return valid json only."})
         self.assertEqual(normalized[1:], messages)
 
-    def test_json_marker_is_not_duplicated_when_lowercase_literal_is_present(self) -> None:
+    def test_json_marker_is_forced_to_first_system_message_even_when_lowercase_literal_is_present(self) -> None:
         messages = [{"role": "user", "content": "Return valid json only."}]
+
+        normalized = ModelClient._ensure_json_marker(messages)
+
+        self.assertEqual(normalized[0], {"role": "system", "content": "Return valid json only."})
+        self.assertEqual(normalized[1:], messages)
+
+    def test_json_marker_is_not_duplicated_when_already_in_first_system_message(self) -> None:
+        messages = [{"role": "system", "content": "Return valid json only.\n\nBusiness contract"}]
 
         normalized = ModelClient._ensure_json_marker(messages)
 

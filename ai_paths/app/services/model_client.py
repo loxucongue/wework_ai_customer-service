@@ -18,6 +18,8 @@ T = TypeVar("T")
 
 
 class ModelClient:
+    _JSON_MODE_MARKER = "Return valid json only."
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self._last_usage: ContextVar[dict[str, Any] | None] = ContextVar(
@@ -674,17 +676,34 @@ class ModelClient:
 
     @staticmethod
     def _prepare_json_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return ModelClient._merge_adjacent_system_messages(ModelClient._ensure_json_marker(messages))
+        return ModelClient._ensure_json_marker(
+            ModelClient._merge_adjacent_system_messages(ModelClient._ensure_json_marker(messages))
+        )
 
     @staticmethod
     def _ensure_json_marker(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        # Some OpenAI-compatible gateways validate the lowercase literal before
-        # accepting response_format=json_object. Do not lowercase only for the
-        # check: that would leave an uppercase-only prompt unchanged on the wire.
-        combined = json.dumps(messages, ensure_ascii=False)
-        if "json" in combined:
+        # Some OpenAI-compatible gateways validate the lowercase literal in the
+        # raw input before accepting response_format=json_object. Always keep an
+        # explicit lowercase marker in the first system message; do not rely on
+        # business prompts, which may say uppercase JSON or be transformed by a
+        # relay before provider-side validation.
+        marker_text = ModelClient._JSON_MODE_MARKER
+        if messages and str(messages[0].get("role") or "").lower() == "system":
+            content = messages[0].get("content")
+            if isinstance(content, str) and marker_text in content:
+                return messages
+            item = dict(messages[0])
+            item["content"] = f"{marker_text}\n\n{content or ''}".strip()
+            return [item, *messages[1:]]
+        if any(
+            isinstance(item, dict)
+            and str(item.get("role") or "").lower() == "system"
+            and isinstance(item.get("content"), str)
+            and marker_text in str(item.get("content"))
+            for item in messages
+        ):
             return messages
-        marker = {"role": "system", "content": "Return valid json only."}
+        marker = {"role": "system", "content": marker_text}
         return [marker, *messages]
 
     @staticmethod
