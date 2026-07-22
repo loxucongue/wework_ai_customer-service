@@ -25,6 +25,8 @@ from app.prompts.global_contract import (
 )
 from app.prompts.profile_analyzer import PROFILE_ANALYZER_SYSTEM_PROMPT
 from app.prompts.reply_synthesizer import REPLY_SYSTEM_PROMPT, REPLY_TRANSACTION_PATCH_PROMPT
+from app.prompts.reply_synthesizer import build_reply_messages
+from app.prompts.sop_chat_gate import build_sop_chat_gate_messages
 from app.policies.business_rules import (
     load_business_rules,
     planner_business_rules_prompt_section,
@@ -224,6 +226,79 @@ def test_planner_actual_messages_include_risk_transaction_and_rule_contracts() -
         assert '"scene_catalog"' in joined
         assert '"conversion_psychology"' in joined
         assert '"transaction_policy"' in joined
+
+
+def test_chat_gate_actual_messages_keep_sop_precision_and_ai_boundaries() -> None:
+    messages = build_sop_chat_gate_messages(
+        {
+            "current_message": "是不是做一次就可以",
+            "recent_conversation": ["用户: 脸上有斑", "小贝: 我先给您看下活动"],
+            "precision_qa_index": [
+                {"id": "one_session_effect", "resume_mainline_stage": "activity_intro"}
+            ],
+            "unfinished_sops": [
+                {
+                    "id": "s10_activity_intro",
+                    "mainline_stage": "activity_intro",
+                    "reply_messages": [{"type": "text", "content": "活动价268"}],
+                }
+            ],
+        }
+    )
+    joined = "\n".join(str(item.get("content") or "") for item in messages)
+    for marker in [
+        "sop_only",
+        "ai_then_sop",
+        "ai_only",
+        "精准回答",
+        "回到最早未完成销售主线",
+        "SOP 是阶段素材，不是不能改的原稿",
+        "调整、删除、拆分、合并或插入普通 text",
+        "客户回复城市、区、地标、定位，或索要地址导航",
+        "选择 `ai_only`",
+        "不能用宽泛项目介绍或案例包抢答",
+    ]:
+        assert marker in joined
+
+
+def test_reply_actual_messages_keep_precision_rules_and_stage_business_rules() -> None:
+    payload = {
+        "current_message": "一二公里",
+        "conversation_history": [
+            "用户: 双流区",
+            "小贝: 已发成都双流店和成都双流高新店地址卡",
+        ],
+        "planner_decision": "direct_reply",
+        "planner_stage": "S2",
+        "planner_sub_rule_id": "S2_DISTRICT_OR_LANDMARK",
+        "sales_progression": {
+            "status": "continue",
+            "target_stage": "need_and_case",
+            "action": "ask_need_context",
+        },
+        "business_rules": reply_business_rules_for_model(
+            stage="S2",
+            sub_rule_id="S2_DISTRICT_OR_LANDMARK",
+        ),
+    }
+    messages = build_reply_messages(
+        payload,
+        json_dumps=lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+    )
+    joined = "\n".join(str(item.get("content") or "") for item in messages)
+    for marker in [
+        "Precision Reply Contract",
+        "先精准解决当前顾虑",
+        "business_rules",
+        "conversion_psychology",
+        "transaction_policy",
+        "current_stage_rules",
+        "近轮已经发过真实门店卡",
+        "恢复下一主线",
+        "不要再让客户选择门店",
+        "直接用一句自然过渡进入活动或价格铺垫",
+    ]:
+        assert marker in joined
 
 
 def test_planner_timeout_recovery_keeps_current_scene_and_flat_tool_contracts() -> None:
