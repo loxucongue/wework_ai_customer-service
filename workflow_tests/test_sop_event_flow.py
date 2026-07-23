@@ -1263,6 +1263,65 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["selected_pack_ids"], ["deposit"])
         self.assertIn("completed_activity_with_deposit_candidate_should_continue", output["initial_violations"])
 
+    def test_backlog_touch_requires_mainline_candidate_when_available(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {"id": "effect", "order": 20, "sop_category": "s10_need_and_case", "mainline_stage": "need_and_case"},
+                {"id": "activity", "order": 30, "sop_category": "s10_activity_intro", "mainline_stage": "activity_and_price"},
+            ],
+            "completed_sop_pack_ids": ["opening"],
+            "completed_sop_categories": ["s10_new_customer_opening"],
+            "recent_conversation": [],
+            "event_policy_evidence": {"quiet_hour_backlog": True, "backlog_count": 3},
+        }
+
+        _, violations = normalize_event_decision(
+            {
+                "decision": "send_ai_touch",
+                "strategy": "soft_touch",
+                "ai_touch_messages": [{"type": "text", "content": {"text": "亲，方便时回我一下"}}],
+            },
+            selector_input,
+        )
+
+        self.assertIn("backlog_should_use_mainline_candidate", violations)
+
+    async def test_backlog_repair_failure_falls_back_to_mainline_candidate(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {"id": "effect", "order": 20, "sop_category": "s10_need_and_case", "mainline_stage": "need_and_case"},
+                {"id": "activity", "order": 30, "sop_category": "s10_activity_intro", "mainline_stage": "activity_and_price"},
+            ],
+            "completed_sop_pack_ids": ["opening"],
+            "completed_sop_categories": ["s10_new_customer_opening"],
+            "recent_conversation": [],
+            "event_policy_evidence": {"quiet_hour_backlog": True, "backlog_count": 3},
+        }
+        model = _SequenceModel(
+            [
+                {
+                    "decision": "send_ai_touch",
+                    "strategy": "soft_touch",
+                    "ai_touch_messages": [{"type": "text", "content": {"text": "亲，方便时回我一下"}}],
+                },
+                {
+                    "decision": "send_ai_touch",
+                    "strategy": "soft_touch",
+                    "ai_touch_messages": [{"type": "text", "content": {"text": "亲，还是方便时回我一下"}}],
+                },
+            ]
+        )
+        service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_PackService(), model_client=model)
+
+        output = await service._judge_event_sop(selector_input)
+
+        self.assertEqual(output["decision"], "merge")
+        self.assertEqual(output["selected_pack_ids"], ["effect", "activity"])
+        self.assertEqual(output["strategy"], "recover_backlog")
+        self.assertIn("backlog_should_use_mainline_candidate", output["initial_violations"])
+
     def test_completed_activity_with_deposit_candidate_cannot_skip(self) -> None:
         selector_input = {
             "mode": "first_add_flow",

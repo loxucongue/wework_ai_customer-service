@@ -163,6 +163,14 @@ def normalize_event_decision(
         strategy=strategy,
     ):
         violations.append("completed_activity_with_deposit_candidate_should_continue")
+    if decision == "send_ai_touch" and _backlog_should_use_mainline_candidate(
+        selector_input=selector_input,
+        candidates=candidate_sops,
+        completed_ids=completed_ids,
+        completed_categories=completed_categories,
+        event_policy=event_policy,
+    ):
+        violations.append("backlog_should_use_mainline_candidate")
 
     if decision not in {"send", "merge"}:
         output["text_adjustments"] = []
@@ -613,6 +621,46 @@ def _repeated_candidates_should_be_ai_touch(
         or mainline_stage_for_event_pack(candidate_by_id.get(pack_id) or {}) in completed_stages
         for pack_id in candidate_ids
     )
+
+
+def _backlog_should_use_mainline_candidate(
+    *,
+    selector_input: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    completed_ids: set[str],
+    completed_categories: set[str],
+    event_policy: dict[str, Any],
+) -> bool:
+    if _text(selector_input.get("mode")) != "first_add_flow":
+        return False
+    if _has_customer_or_policy_block(selector_input, event_policy):
+        return False
+    pending_backlog = (
+        event_policy.get("pending_backlog")
+        if isinstance(event_policy.get("pending_backlog"), dict)
+        else {}
+    )
+    backlog_count = _positive_int(event_policy.get("backlog_count"))
+    has_backlog = bool(event_policy.get("quiet_hour_backlog")) or backlog_count >= 2 or bool(
+        pending_backlog.get("has_pending")
+    )
+    if not has_backlog:
+        return False
+    completed_stages = _completed_mainline_stages(selector_input)
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        pack_id = _text(item.get("id"))
+        if not pack_id or pack_id in completed_ids:
+            continue
+        if _text(item.get("sop_category")) in completed_categories:
+            continue
+        if mainline_stage_for_event_pack(item) in completed_stages:
+            continue
+        if _payment_gate_blocks_selection(item):
+            continue
+        return True
+    return False
 
 
 def _has_customer_or_policy_block(selector_input: dict[str, Any], event_policy: dict[str, Any]) -> bool:
