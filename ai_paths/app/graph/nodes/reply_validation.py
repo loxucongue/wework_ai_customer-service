@@ -29,6 +29,7 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
     result: list[dict[str, Any]] = []
     visible_count = 0
     has_handoff = False
+    has_payment_collection = False
     for item in messages:
         if not isinstance(item, dict):
             continue
@@ -49,6 +50,8 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
             has_handoff = True
             continue
         if msg_type == "payment_collection":
+            if has_payment_collection:
+                continue
             if visible_count >= max_visible_messages:
                 continue
             result.append(
@@ -59,6 +62,7 @@ def validated_model_messages(payload: dict[str, Any], state: dict[str, Any] | No
                 }
             )
             visible_count += 1
+            has_payment_collection = True
             continue
         if msg_type == "store_address":
             if visible_count >= max_visible_messages:
@@ -225,6 +229,7 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_no_customer_visible_internal_language(messages)
     _validate_offer_total_and_tail_amount(messages)
     _validate_payment_not_during_health_risk_hold(messages, state)
+    _validate_single_payment_collection(messages)
     _validate_payment_collection_consistency(messages, state)
     _validate_payment_collection_amount_text(messages, state)
     _validate_no_payment_after_current_appointment_created(messages, state)
@@ -416,6 +421,16 @@ def _validate_offer_total_and_tail_amount(messages: list[dict[str, Any]]) -> Non
 
 def debug_message_contents(messages: list[dict[str, Any]]) -> list[str]:
     return [message_content_text(message.get("content"))[:240] for message in messages[:4] if isinstance(message, dict)]
+
+
+def _validate_single_payment_collection(messages: list[dict[str, Any]]) -> None:
+    count = sum(
+        1
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "") == "payment_collection"
+    )
+    if count > 1:
+        raise ValueError("duplicate_payment_collection_in_single_turn")
 
 
 def _validate_payment_collection_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:

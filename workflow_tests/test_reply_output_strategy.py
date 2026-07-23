@@ -3472,6 +3472,53 @@ def test_reply_validation_allows_card_after_work_order_rejection() -> None:
     )
 
 
+def test_validated_model_messages_keeps_single_payment_collection_per_turn() -> None:
+    messages = validated_model_messages(
+        {
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "10 yuan card sent"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+                {"type": "payment_collection", "order": 3, "content": {"amount": 10, "remark": ""}},
+            ]
+        },
+        {"payment_action": "send_now", "payment_decision": {"action": "send_now", "amount": 10}},
+    )
+
+    assert [item["type"] for item in messages] == ["text", "payment_collection"]
+    assert [item["order"] for item in messages] == [1, 2]
+
+
+def test_planner_reply_messages_keep_single_payment_collection_per_turn() -> None:
+    messages = _normalize_planner_reply_messages(
+        [
+            {"type": "text", "content": "10 yuan card sent"},
+            {"type": "payment_collection", "content": {"amount": 10}},
+            {"type": "payment_collection", "content": {"amount": 10}},
+        ],
+        state={"payment_action": "send_now", "payment_decision": {"action": "send_now", "amount": 10}},
+    )
+
+    assert [item["type"] for item in messages] == ["text", "payment_collection"]
+    assert [item["order"] for item in messages] == [1, 2]
+
+
+def test_reply_validation_blocks_duplicate_payment_collection_per_turn() -> None:
+    with pytest.raises(ValueError, match="duplicate_payment_collection_in_single_turn"):
+        validate_reply_consistency(
+            [
+                {"type": "text", "order": 1, "content": {"text": "10 yuan card sent"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+                {"type": "payment_collection", "order": 3, "content": {"amount": 10, "remark": ""}},
+            ],
+            {
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+                "payment_action": "send_now",
+                "payment_decision": {"action": "send_now", "amount": 10},
+            },
+        )
+
+
 def test_reply_validation_allows_safe_text_after_work_order_tool_error() -> None:
     validate_reply_consistency(
         [{"type": "text", "order": 1, "content": {"text": "门店信息已经记下，我再确认一下支付信息。"}}],

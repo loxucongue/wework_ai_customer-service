@@ -354,8 +354,14 @@ def _prepare_structural_messages(
 ) -> list[dict[str, Any]]:
     prepared = _filter_unsupported_images(messages, state, warnings)
     prepared = append_activity_intro_image(prepared, state, warnings)
+    prepared, duplicate_payment_removed = _dedupe_payment_collection_messages(prepared)
+    if duplicate_payment_removed:
+        warnings.append({"node": "synthesize_reply", "message": "duplicate_payment_collection_removed"})
     prepared = _normalize_payment_amount_text_messages(prepared)
     prepared = _maybe_append_planner_payment_structure(prepared, state)
+    prepared, duplicate_payment_removed = _dedupe_payment_collection_messages(prepared)
+    if duplicate_payment_removed:
+        warnings.append({"node": "synthesize_reply", "message": "duplicate_payment_collection_removed"})
     prepared, planner_store_cards_preserved = _preserve_planner_store_address_actions(prepared, state)
     if planner_store_cards_preserved:
         warnings.append({"node": "synthesize_reply", "message": "planner_store_address_action_preserved"})
@@ -1010,7 +1016,25 @@ def _normalize_planner_reply_messages(value: Any, *, state: AgentState | None = 
             store_id = str(content.get("store_id") if isinstance(content, dict) else content or "").strip()
             if store_id:
                 messages.append({"type": "store_address", "order": int(item.get("order") or index), "content": {"store_id": store_id}})
+    messages, _ = _dedupe_payment_collection_messages(messages)
     return _normalize_payment_amount_text_messages(messages)
+
+
+def _dedupe_payment_collection_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    output: list[dict[str, Any]] = []
+    seen_payment = False
+    changed = False
+    for item in messages:
+        if not isinstance(item, dict):
+            changed = True
+            continue
+        if str(item.get("type") or "") == "payment_collection":
+            if seen_payment:
+                changed = True
+                continue
+            seen_payment = True
+        output.append(item)
+    return _renumber(output), changed
 
 
 def _normalize_payment_amount_text_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
