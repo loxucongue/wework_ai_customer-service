@@ -723,15 +723,13 @@ class SopExecutionService:
             "error": "",
         }
         try:
-            sent_before = _event_created_at(payload)
             completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
                 customer_id=identity.get("customer_id", ""),
                 external_userid=identity.get("external_userid", ""),
                 corp_id=identity.get("corp_id", ""),
                 wechat=identity.get("wechat", ""),
-                sent_before=sent_before,
             )
-            completed_categories = _sent_categories(self.repository, identity, sent_before=sent_before)
+            completed_categories = _sent_categories(self.repository, identity)
             result["completed_sop_pack_ids"] = completed_ids
             result["completed_sop_categories"] = completed_categories
             selector_input = _event_selector_input(

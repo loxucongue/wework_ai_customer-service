@@ -393,7 +393,7 @@ class SopEventRepositoryMixin:
     ) -> list[dict[str, Any]]:
         if not str(wechat or "").strip():
             return []
-        clauses = ["trigger_source='sop_event'"]
+        clauses = ["trigger_source IN ('sop_event','platform_auto_opening')"]
         params: list[Any] = []
         if external_userid:
             clauses.append("external_userid=?")

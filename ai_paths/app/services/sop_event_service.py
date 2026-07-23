@@ -581,15 +581,13 @@ class SopEventService:
         customer_context: dict[str, Any],
         event_policy_evidence: dict[str, Any],
     ) -> dict[str, Any]:
-        sent_before = _event_created_at(payload)
         completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
             customer_id=identity["customer_id"],
             external_userid=identity["external_userid"],
             corp_id=identity.get("corp_id", ""),
             wechat=identity.get("wechat", ""),
-            sent_before=sent_before,
         )
-        completed_categories = _sent_categories(self.repository, identity, sent_before=sent_before)
+        completed_categories = _sent_categories(self.repository, identity)
         match_context = _match_context(payload, customer)
         delay_minutes = match_context["delay_minutes"]
         candidates = first_add_candidate_packs(

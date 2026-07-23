@@ -2030,6 +2030,62 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 ["before_category"],
             )
 
+    def test_repository_current_sop_progress_includes_platform_auto_opening(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "ai_paths.db"))
+            store.initialize()
+            repo = AppRepository(store)
+            repo.create_sop_event({"event_id": "platform_auto_opening:req", "event_type": "chat_gate"})
+            task = repo.create_sop_send_task(
+                event_id="platform_auto_opening:req",
+                idempotency_key="idem_auto_opening",
+                customer_id="customer",
+                external_userid="ext",
+                corp_id="ww",
+                user_id="7294",
+                wechat="CS001",
+                sop_pack_id="s10_new_customer_opening",
+                sop_pack_name="new customer opening",
+                sop_category="s10_new_customer_opening",
+                trigger_source="platform_auto_opening",
+                reply_messages=[],
+                status="pending",
+            )
+            repo.update_sop_send_task(
+                task["id"],
+                status="sent",
+                sent_at="2026-07-02T07:00:00+00:00",
+            )
+
+            self.assertEqual(
+                repo.list_sent_sop_pack_ids_for_customer(
+                    customer_id="customer",
+                    external_userid="ext",
+                    corp_id="ww",
+                    wechat="CS001",
+                    sent_before="2026-07-02T06:30:00+00:00",
+                ),
+                [],
+            )
+            self.assertEqual(
+                repo.list_sent_sop_pack_ids_for_customer(
+                    customer_id="customer",
+                    external_userid="ext",
+                    corp_id="ww",
+                    wechat="CS001",
+                ),
+                ["s10_new_customer_opening"],
+            )
+            self.assertEqual(
+                repo.list_recent_sop_send_tasks_for_customer(
+                    customer_id="customer",
+                    external_userid="ext",
+                    corp_id="ww",
+                    wechat="CS001",
+                )[0]["trigger_source"],
+                "platform_auto_opening",
+            )
+
     def test_repository_expands_merged_pack_progress_from_send_payload(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "ai_paths.db"))
