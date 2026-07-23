@@ -191,6 +191,32 @@ def test_store_lookup_snapshot_fallback_reads_env_path(monkeypatch, tmp_path) ->
     assert output["stores"][0]["store_id"] == "301"
 
 
+def test_store_lookup_cross_city_candidates_trigger_distance_enrichment() -> None:
+    result = {
+        "status": "ok",
+        "geocode": {"city": "Test Prefecture", "district": "Test County", "location": "107.1,25.1"},
+        "candidate_stores": [
+            {"store_id": "301", "city": "Store City A"},
+            {"store_id": "302", "city": "Store City B"},
+        ],
+    }
+
+    assert action_nodes._lookup_result_needs_distance_enrichment(result)
+
+
+def test_store_lookup_same_city_candidates_do_not_trigger_distance_enrichment() -> None:
+    result = {
+        "status": "ok",
+        "geocode": {"city": "Test City", "district": "Test District", "location": "107.1,25.1"},
+        "candidate_stores": [
+            {"store_id": "301", "city": "Test City"},
+            {"store_id": "302", "city": "Test City"},
+        ],
+    }
+
+    assert not action_nodes._lookup_result_needs_distance_enrichment(result)
+
+
 def test_store_lookup_uses_snapshot_region_fallback_when_scope_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(
         action_nodes,

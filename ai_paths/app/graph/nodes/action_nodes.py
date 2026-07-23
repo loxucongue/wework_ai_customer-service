@@ -86,6 +86,27 @@ def create_execute_actions_node(
                     )
                 tool_results["customer_store_lookup"] = result
                 tool_calls.append({"name": "customer_store_lookup", "input": lookup_tool, "output": result})
+                if not _needs_distance_calculate(required_tools) and _lookup_result_needs_distance_enrichment(result):
+                    distance_tool = {
+                        "name": "distance_calculate",
+                        "origin": str(result.get("query") or lookup_tool.get("query") or content or "").strip(),
+                        "candidate_source": "customer_store_lookup",
+                        "purpose": "auto_rank_cross_region_store_candidates",
+                    }
+                    try:
+                        result = await asyncio.wait_for(
+                            _distance_calculate(distance_tool, state, coze_client, tool_results),
+                            timeout=_ACTION_TOOL_TIMEOUT_SECONDS,
+                        )
+                    except Exception as exc:
+                        result = _tool_execution_error_result(
+                            tool_name="distance_calculate",
+                            tool=distance_tool,
+                            state=state,
+                            exc=exc,
+                        )
+                    tool_results["distance_calculate"] = result
+                    tool_calls.append({"name": "distance_calculate", "input": distance_tool, "output": result, "auto_enriched": True})
 
             if _needs_distance_calculate(required_tools):
                 distance_tool = _planned_tool(required_tools, "distance_calculate")
@@ -1055,6 +1076,31 @@ def _tool_execution_error_result(
 
 def _needs_distance_calculate(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "distance_calculate" for item in required_tools if isinstance(item, dict))
+
+
+def _lookup_result_needs_distance_enrichment(result: dict[str, Any]) -> bool:
+    """Add ranking facts for resolved small places that only matched cross-city provincial candidates."""
+    if not isinstance(result, dict) or str(result.get("status") or "") != "ok":
+        return False
+    geocode = result.get("geocode") if isinstance(result.get("geocode"), dict) else {}
+    if not str(geocode.get("location") or "").strip():
+        return False
+    if not (str(geocode.get("city") or "").strip() or str(geocode.get("district") or "").strip()):
+        return False
+    candidates = result.get("candidate_stores") if isinstance(result.get("candidate_stores"), list) else []
+    if len(candidates) < 2:
+        return False
+    cities = {
+        str(item.get("city") or "").strip()
+        for item in candidates
+        if isinstance(item, dict) and str(item.get("city") or "").strip()
+    }
+    if len(cities) <= 1:
+        return False
+    geocode_city = str(geocode.get("city") or "").strip()
+    if geocode_city and geocode_city in cities:
+        return False
+    return True
 
 
 def _needs_customer_store_lookup(required_tools: list[dict[str, Any]]) -> bool:
