@@ -3,6 +3,7 @@
 import asyncio
 import json
 import math
+import os
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -1664,15 +1665,45 @@ def _normalize_store_name_for_match(value: str) -> str:
 def _snapshot_store_values() -> list[dict[str, Any]]:
     global _STORE_SNAPSHOT_CACHE
     if _STORE_SNAPSHOT_CACHE is None:
-        path = Path("data/store_snapshot.json")
-        try:
-            _STORE_SNAPSHOT_CACHE = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            _STORE_SNAPSHOT_CACHE = {}
+        snapshot: dict[str, Any] = {}
+        for path in _snapshot_store_candidate_paths():
+            try:
+                snapshot = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(snapshot, dict):
+                    break
+            except (OSError, json.JSONDecodeError):
+                snapshot = {}
+        _STORE_SNAPSHOT_CACHE = snapshot
     stores_by_id = _STORE_SNAPSHOT_CACHE.get("stores_by_id") if isinstance(_STORE_SNAPSHOT_CACHE, dict) else {}
     if isinstance(stores_by_id, dict) and stores_by_id:
         return [store for store in stores_by_id.values() if isinstance(store, dict)]
     return [dict(item) for item in KNOWN_STORE_FACTS]
+
+
+def _snapshot_store_candidate_paths() -> list[Path]:
+    paths: list[Path] = []
+    env_path = str(os.getenv("STORE_SNAPSHOT_PATH") or "").strip()
+    if env_path:
+        paths.append(Path(env_path))
+    paths.extend(
+        [
+            Path("data/store_snapshot.json"),
+            Path(__file__).resolve().parents[3] / "data" / "store_snapshot.json",
+            Path("/opt/ai-paths/data/store_snapshot.json"),
+        ]
+    )
+    output: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        try:
+            key = str(path.resolve())
+        except OSError:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(path)
+    return output
 
 
 def _dedupe_snapshot_stores(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 from app.graph.nodes import action_nodes
@@ -153,6 +154,41 @@ def test_store_scope_retries_customer_info_business_error() -> None:
     assert output["customer_id"] == "p1"
     assert output["customer_add_wechat_id"] == "a1"
     assert output["store_count"] == 1
+
+
+def test_store_lookup_snapshot_fallback_reads_env_path(monkeypatch, tmp_path) -> None:
+    snapshot_path = tmp_path / "store_snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "stores_by_id": {
+                    "301": {
+                        "store_id": "301",
+                        "store_name": "Test Parent Store",
+                        "province": "Test Province",
+                        "city": "Test City",
+                        "district": "Test District",
+                        "store_address": "Test City Test District Road 1",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("STORE_SNAPSHOT_PATH", str(snapshot_path))
+    monkeypatch.setattr(action_nodes, "_STORE_SNAPSHOT_CACHE", None)
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "Test City", "purpose": "existence"},
+            {"customer_store_knowledge": {"source": "missing_customer_store_scope", "stores": [], "error": "temporary"}},
+            _FakeCoze(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["source"] == "store_snapshot_region_fallback"
+    assert output["stores"][0]["store_id"] == "301"
 
 
 def test_store_lookup_uses_snapshot_region_fallback_when_scope_unavailable(monkeypatch) -> None:
