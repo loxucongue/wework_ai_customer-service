@@ -1274,7 +1274,7 @@ def _sop_payment_collection_supported(
     customer_memory: dict[str, Any],
     customer_context: dict[str, Any],
 ) -> bool:
-    """Allow a SOP payment card only when every card has a matching current unpaid order."""
+    """Allow SOP payment cards after activity intro unless paid/risk gates block them."""
     return _sop_payment_collection_gate(messages, customer_memory, customer_context).get("status") in {
         "not_required",
         "supported",

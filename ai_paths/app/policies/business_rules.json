@@ -37,7 +37,7 @@
     "quota": "限30名，名额满恢复原价1980",
     "scarcity_reasons": [
       "活动名额有限，名额满恢复原价1980",
-      "总监或主任老师到店只在当前上下文或业务配置明确提供时才能使用，不能自行编造"
+      "近期门店有主任/总监老师到店操作机会，可作为活动价值和名额紧张理由；不能承诺指定老师、固定日期或一定由指定老师接待"
     ],
     "payment_message_type": "payment_collection",
     "activity_intro_image_url": "https://test.by4dev.4ba.cn/assets/activity/anniversary-268.jpg",
@@ -73,11 +73,11 @@
   },
   "transaction_policy": {
     "payment_order_policy": "order_link_not_required_for_card",
-    "payment_order_policy_description": "活动报价已完成或已铺垫后，Planner可根据成交节奏发送预约金卡；订单和开单只用于后台关联，不作为发卡前置。开单失败、订单查询失败、门店或金额不匹配不得导致空回复，也不得对客户说入口没对上。",
+    "payment_order_policy_description": "活动报价已完成或已铺垫后，Planner可根据成交节奏发送预约金卡；订单和开单不作为发卡前置。客户支付预约金后，先询问姓名和电话，再尝试创建或关联预约金订单用于后台记录。开单失败、订单查询失败、门店或金额不匹配不得导致空回复，也不得对客户说入口没对上。",
     "payment_order_link_states": ["linked", "pending_link", "unlinked", "not_applicable"],
     "appointment_flow_mode": "registration_only",
     "post_paid_registration_fields": ["customer_name", "customer_mobile", "store", "visit_date", "visit_time"],
-    "post_paid_flow_description": "普通预约金已付后只登记姓名、电话、门店、到店日期和时间意向；不查询档期、不创建排客、不承诺正式预约成功。",
+    "post_paid_flow_description": "普通预约金已付后先登记姓名和电话，再确认门店、到店日期和时间意向；姓名电话齐全后可尝试创建或关联后台预约金订单。当前不查询档期、不创建排客、不承诺正式预约成功。",
     "payment_hard_blocks": [
       "authoritative_paid",
       "current_health_risk",
@@ -243,9 +243,9 @@
         {
           "id": "S3_PAYMENT_COLLECTION",
           "scenes": ["付款入口", "怎么交10元", "我付", "先锁名额", "就这个时间", "报名", "怎么约", "怎么预约", "我要预约", "你帮我预约", "帮我报名", "可以约", "要交钱吗", "预约金怎么抵扣", "能不能退", "尾款多少", "是不是额外收费", "不交预约金可以直接去吗", "到店再付"],
-          "decision": "只有conversion_stage=deposit_push且存在成功创建或复用的预约金订单时才可以发送payment_collection；客户对预约金用途、退款、抵扣、尾款或额外收费轻度疑问时，若当前已处于预约推进、已明确门店/到店意向、历史已完成活动报价铺垫或画像deposit_state可正式推定金，可以解释规则后同轮轻推10元入口；明确强拒绝时不硬推",
+          "decision": "活动报价已完成或已铺垫，且conversion_stage=deposit_push、客户未付、无风险/强拒绝、人数金额合法时，可以发送payment_collection；不要求先成功创建或复用预约金订单。客户对预约金用途、退款、抵扣、尾款或额外收费轻度疑问时，若当前已处于预约推进、已明确门店/到店意向、历史已完成活动报价铺垫或画像deposit_state可正式推定金，可以解释规则后同轮轻推10元入口；明确强拒绝时不硬推",
           "tools": [],
-          "reply_focus": "先说明10元预约金用于锁活动名额、到店抵扣、未做或不满意可退且不限制到店时间，再发送入口；客户有明确预约或报名意向但缺门店时，先补真实门店并开单；强拒绝时允许安排到店"
+          "reply_focus": "先说明10元预约金用于锁活动名额、到店抵扣、未做或不满意可退且不限制到店时间，再按成交节奏发送入口；客户有明确预约或报名意向但缺门店时，只补最小必要门店信息，不因未开单阻断发卡。支付后再收姓名电话并做后台开单或关联；强拒绝时不硬推"
         },
         {
           "id": "S3_APPOINTMENT_TIME",

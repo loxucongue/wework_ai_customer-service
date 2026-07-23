@@ -69,7 +69,7 @@ def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_informat
     assert "create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "payment_result=success" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "缺少成功 order_id 或开单失败不得取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
-    assert "订单和开单只用于后台关联" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "订单和开单不是发卡前置" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不调用 available_time/create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "客户口头说“我付了”不能单独确认已付" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "姓名、电话、门店、到店日期和时间" in REPLY_TRANSACTION_PATCH_PROMPT
@@ -90,7 +90,7 @@ def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_informat
 
 
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
-    assert "唯一可信交易门店锚点" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
+    assert "发预约金卡不要求先创建或复用订单" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
     assert "store_address_delivery.unique_latest_store_id" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "最近发过多家" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "上一条唯一推荐+“这家可以”则承接" in REPLY_TRANSACTION_PATCH_PROMPT
@@ -358,7 +358,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "requested_district_stores",
         "不要问“要不要了解、要不要看、是否需要、要不要我发”",
         "降压挽回",
-        "主任、总监、专家或特殊老师只有工具事实",
+        "近期门店有主任/总监老师到店操作机会属于当前活动事实",
         "绝不能因为开单未成功而输出空回复",
         "不查 `available_time`",
         "不能停在费用说明",
@@ -696,9 +696,10 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
         assert "message_types" in item["expected"]
 
     planner_card_case = next(item for item in planner_cases if item["id"] == "planner_card_entry_friend_party")
-    assert set(planner_card_case["expected_decision"]["allowed_payment_actions"]) == {"none", "explain_existing"}
-    assert "payment_collection" in planner_card_case["expected_decision"]["must_not_message_types"]
-    assert "有效订单" in planner_card_case["expected_decision"]["notes"]
+    assert set(planner_card_case["expected_decision"]["allowed_payment_actions"]) == {"send_now", "offer_resend"}
+    assert "payment_collection" in planner_card_case["expected_decision"]["expected_message_types"]
+    assert planner_card_case["expected_decision"]["payment_amount"] == 20
+    assert "不要求先确认门店或开单" in planner_card_case["expected_decision"]["notes"]
 
     planner_transfer_case = next(item for item in planner_cases if item["id"] == "planner_transfer_payment_method")
     assert planner_transfer_case["expected_decision"]["payment_action"] == "manual_transfer"
@@ -710,8 +711,8 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
     assert "payment_collection" not in reply_transfer_case["expected"]["message_types"]
 
     planner_options_case = next(item for item in planner_cases if item["id"] == "planner_payment_options_send_card")
-    assert set(planner_options_case["expected_decision"]["allowed_payment_actions"]) == {"none", "explain_existing"}
-    assert "payment_collection" in planner_options_case["expected_decision"]["must_not_message_types"]
+    assert set(planner_options_case["expected_decision"]["allowed_payment_actions"]) == {"send_now", "offer_resend"}
+    assert "payment_collection" in planner_options_case["expected_decision"]["expected_message_types"]
 
     planner_ack_case = next(
         item for item in planner_cases if item["id"] == "planner_ack_after_payment_explanation_frequency"
@@ -763,8 +764,8 @@ def test_single_node_sop_aftercare_datasets_are_split_and_comprehensive() -> Non
     assert "payment_collection" in reply_card_case["expected"]["message_types"]
 
     no_director_case = next(item for item in reply_cases if item["id"] == "reply_director_pressure_without_fact")
-    assert "主任" in no_director_case["expected"]["must_not_include"]
-    assert not no_director_case["input_payload"]["fact_envelope"]["structured_facts"]["operator_facts"]
+    assert "指定老师" in no_director_case["expected"]["must_not_include"]
+    assert "一定亲自" in no_director_case["expected"]["must_not_include"]
 
     director_case = next(item for item in reply_cases if item["id"] == "reply_director_pressure_with_fact")
     assert director_case["input_payload"]["fact_envelope"]["structured_facts"]["operator_facts"]

@@ -367,6 +367,13 @@ def _planner_result_has_transient_recovery_failure(result: tuple[dict[str, Any],
         return False
     if str(plan.get("planner_sub_rule_id") or "") == "PLANNER_SYSTEM_UNAVAILABLE":
         return True
+    violations = plan.get("tool_policy_violations") or []
+    if any(
+        isinstance(item, dict)
+        and str(item.get("missing") or "") in {"need_tools_requires_executable_tool"}
+        for item in violations
+    ):
+        return True
     # Match production behavior: a recovered Planner plan with policy
     # violations is still passed to Reply, where hard facts and customer-visible
     # text are validated or repaired. The matrix should fail only when Planner

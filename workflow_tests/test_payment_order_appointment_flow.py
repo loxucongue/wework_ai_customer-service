@@ -705,7 +705,7 @@ def test_planner_store_binding_exploring_blocks_work_order_tool() -> None:
     )
 
 
-def test_planner_accepted_store_binding_requires_order_resolution_without_forcing_payment() -> None:
+def test_planner_accepted_store_binding_does_not_require_order_resolution_before_payment() -> None:
     state = {
         **_base_state(),
         "normalized_content": "这个活动具体多少钱",
@@ -740,10 +740,11 @@ def test_planner_accepted_store_binding_requires_order_resolution_without_forcin
         },
     )
 
-    assert any(
+    assert not any(
         item.get("missing") == "accepted_store_binding_requires_order_resolution"
         for item in plan["tool_policy_violations"]
     )
+    assert not any(item.get("name") == "create_work_order" for item in plan["planner_tool_calls"])
     assert not any(
         item.get("missing") == "available_time_required_for_availability_claim"
         for item in plan["tool_policy_violations"]

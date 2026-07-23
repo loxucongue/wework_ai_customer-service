@@ -474,10 +474,10 @@
       }
     },
     "expected": {
-      "must_include_semantics": ["先检测", "按皮肤状态操作", "门店专业人员"],
-      "must_not_include": ["主任", "总监", "专家亲自", "保证"],
+      "must_include_semantics": ["主任或总监机会", "先检测", "按皮肤状态操作"],
+      "must_not_include": ["指定老师", "固定日期", "一定亲自", "保证"],
       "message_types": ["text"],
-      "style": ["给专业感", "不编事实"]
+      "style": ["给专业感", "不夸大承诺"]
     }
   },
   {

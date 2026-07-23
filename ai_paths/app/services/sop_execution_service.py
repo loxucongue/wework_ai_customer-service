@@ -60,7 +60,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
 
 `editable_text_messages` 是主要可操作文本素材。`readonly_messages` 中的图片、视频、门店卡和内部 notice 都是结构事实，不能修改、删除、重排或复制。
-`payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。`activity_intro_required` 不能靠删卡绕过，必须选择活动介绍等合法前序候选或拒发。
+`payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。缺匹配订单不是删卡理由；活动介绍包本身可以配置并发送 `payment_collection`。`activity_intro_required` 不能靠删卡绕过，必须选择活动介绍等合法前序候选或拒发。
 选择 `merge` 时，文本 order 必须以 `adjacent_merge_options` 中对应组合的 `message_editing_context` 为准；不要沿用单包内部可能重复的 order。
 
 # Task
@@ -131,7 +131,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 刚破冰后还没有问过城市/区域，5分钟问地址包候选可用：发送问地址包，轻触客户补城市/区域。
 - 已经问过城市/区域或定位，客户仍沉默，后续事件候选里有效果铺垫包：不要再次卡在门店步骤，也不要空拒；发送效果铺垫包，并可在第一条 text 前半句承接“门店后面您发城市/定位我再匹配”，再发效果参考。
 - 已经发过效果铺垫，客户仍沉默，后续候选里有活动报价包：推进报价和活动价值，不要因为客户没有回复效果图而空拒。
-- 已经发过效果铺垫、活动报价尚未发送，而同一批候选同时出现活动报价包和“未付款效果跟进”：选择活动报价包；若缺匹配订单，删除其中 payment_collection 并把收款承诺改成自然的活动价值轻触达，不能先发“未付款跟进”。
+- 已经发过效果铺垫、活动报价尚未发送，而同一批候选同时出现活动报价包和“未付款效果跟进”：选择活动报价包；活动报价包可直接包含 payment_collection，不需要先有匹配订单；不能先发“未付款跟进”。
 - 已经报价，客户仍沉默，后续候选里有预约金价值或收款包：可推进预约金价值；如果客户明确拒付、已付、投诉/付款异常/身体不适，则不发该包。
 - 候选同时有 `s10_activity_intro` 和收款包，且收款包显示 `activity_intro_required`：发送 `s10_activity_intro`，不要合并收款包，也不要误判成“没有合规候选”。
 - `daily_soft_limit_reached=true` 且 `silent_soft_limit_reached=true`，同时没有夜间积压和触达后的客户新进展：本次必须跳过或延后，并在 `frequency_reason` 说明频率保护；不能因为还有未完成包就继续刷屏。

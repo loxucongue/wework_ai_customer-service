@@ -163,7 +163,7 @@ def _tool_policy(rules: dict[str, Any]) -> dict[str, Any]:
             "customer_store_lookup": "保留客户原始地名；具体门店、地址、停车和营业时间只来自真实结果。",
             "distance_calculate": "只排序真实候选；客户可见不输出公里、分钟或车程；有推荐结果时只发推荐门店卡。",
             "appointment_record_query": "只查既有预约；无记录不能承诺改约、取消或已安排。",
-            "create_work_order": str(transaction.get("payment_order_policy_description") or "必须返回真实 order_id 才能关联收款卡。"),
+            "create_work_order": str(transaction.get("payment_order_policy_description") or "订单和开单不作为发卡前置；支付后再收姓名电话并尝试后台关联。"),
             "add_customer_mobile": "只同步客户明确提供的完整11位手机号；失败不能让回复为空。",
             "available_time/create_order_plan": str(transaction.get("post_paid_flow_description") or "当前普通流程不查询档期、不创建排客。"),
             "professional_assist": "只处理当前明确风险、投诉、退款、付款异常或强人工诉求；旧风险不得劫持普通问题。",
@@ -190,7 +190,7 @@ def _fact_boundary_for_rule(
     if rule_id == "S3_PRICE":
         return "价格、预约金、尾款、退款和名额事实只能使用 offer_facts 当前口径。"
     if rule_id == "S3_PAYMENT_COLLECTION":
-        return str(transaction_policy.get("payment_order_policy_description") or "收款卡必须关联真实有效订单。")
+        return str(transaction_policy.get("payment_order_policy_description") or "活动报价已完成或已铺垫后可按成交节奏发卡；订单和开单不作为发卡前置。")
     if rule_id == "S3_APPOINTMENT_TIME":
         return str(transaction_policy.get("post_paid_flow_description") or "当前普通流程只登记到店意向。")
     if rule_id == "S1_BRAND_TRUST":

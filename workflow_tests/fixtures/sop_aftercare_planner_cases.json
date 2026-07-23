@@ -441,17 +441,17 @@
       ]
     },
     "expected_decision": {
-      "decision": "need_tools",
+      "decision": "direct_reply",
       "payment_action": "send_now",
       "payment_amount": 10,
-      "expected_message_types": [],
-      "required_tools": [
-        {"name": "create_work_order"}
-      ],
-      "must_not_message_types": [
+      "expected_message_types": [
+        "text",
         "payment_collection"
       ],
-      "notes": "客户说改天看看是到店时机阻力，不代表放弃活动。没有有效订单时先开单；本轮不得直回发卡或承诺已安排。"
+      "forbidden_tools": [
+        "create_work_order"
+      ],
+      "notes": "客户说改天看看是到店时机阻力，不代表放弃活动。活动已铺垫后可直接发卡，不要求先开单；不得承诺已安排。"
     }
   },
   {
@@ -494,16 +494,14 @@
     "expected_decision": {
       "decision": "direct_reply",
       "allowed_payment_actions": [
-        "none",
-        "explain_existing"
+        "send_now",
+        "offer_resend"
       ],
       "expected_message_types": [
-        "text"
-      ],
-      "must_not_message_types": [
+        "text",
         "payment_collection"
       ],
-      "notes": "客户已给姓名电话但尚无确认门店、有效订单或开单工具；只能先说明资料已收并补门店，不能发无法关联订单的卡。"
+      "notes": "客户已主动给姓名电话且前面已说明活动/预约金，可直接发预约金卡；支付后再做后台订单关联。"
     }
   },
   {
@@ -586,16 +584,18 @@
     "expected_decision": {
       "decision": "direct_reply",
       "allowed_payment_actions": [
-        "none",
-        "explain_existing"
+        "send_now",
+        "offer_resend"
       ],
       "expected_message_types": [
-        "text"
-      ],
-      "must_not_message_types": [
+        "text",
         "payment_collection"
       ],
-      "notes": "客户明确要卡片但尚无确认门店、有效订单或开单工具；先补门店，不能发送无法关联订单的卡。"
+      "payment_amount": 10,
+      "forbidden_tools": [
+        "create_work_order"
+      ],
+      "notes": "客户明确要卡片且活动已铺垫，可直接发送10元卡，不要求先确认门店或开单。"
     }
   },
   {
@@ -634,16 +634,18 @@
     "expected_decision": {
       "decision": "direct_reply",
       "allowed_payment_actions": [
-        "none",
-        "explain_existing"
+        "send_now",
+        "offer_resend"
       ],
       "expected_message_types": [
-        "text"
-      ],
-      "must_not_message_types": [
+        "text",
         "payment_collection"
       ],
-      "notes": "本人和朋友一起金额应为20元，但尚无确认门店、有效订单或开单工具；先补门店，不能发送无法关联订单的卡。"
+      "payment_amount": 20,
+      "forbidden_tools": [
+        "create_work_order"
+      ],
+      "notes": "本人和朋友一起金额应为20元；活动已铺垫后可直接发20元卡，不要求先确认门店或开单。"
     }
   },
   {
@@ -734,10 +736,11 @@
         "text"
       ],
       "must_not_include": [
-        "主任",
-        "总监"
+        "指定老师",
+        "固定日期",
+        "一定亲自"
       ],
-      "notes": "没有主任/总监事实时，只能说门店专业检测和按肤况操作，不能编操作者。"
+      "notes": "主任/总监到店机会是当前活动事实，可作为价值点；不能承诺指定老师、固定日期或一定亲自接待。"
     }
   },
   {
@@ -791,7 +794,7 @@
       "may_include": [
         "主任到店"
       ],
-      "notes": "只有上下文有明确操作者事实时，才允许把主任到店作为压单点。"
+      "notes": "上下文有具体操作者事实时，可以更具体承接该门店；仍不能承诺指定老师、固定日期或一定亲自接待。"
     }
   },
   {
@@ -820,10 +823,9 @@
     },
     "expected_decision": {
       "decision": "direct_reply",
-      "allowed_payment_actions": ["none", "explain_existing"],
-      "expected_message_types": ["text"],
-      "must_not_message_types": ["payment_collection"],
-      "notes": "客户已问支付方式，但尚无确认门店、有效订单或开单工具；可说明小程序收款卡或转账，先补门店后再发卡。"
+      "allowed_payment_actions": ["send_now", "offer_resend"],
+      "expected_message_types": ["text", "payment_collection"],
+      "notes": "客户已问支付方式且活动已铺垫；可说明小程序收款卡或转账并直接发卡，不要求先确认门店或开单。"
     }
   },
   {

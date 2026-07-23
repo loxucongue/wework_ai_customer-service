@@ -1636,18 +1636,6 @@ def _store_binding_order_consistency_violations(
         return []
     if _has_authoritative_paid_context(state):
         return []
-    if order_action == "none" and not create_tool:
-        return [
-            {
-                "task_type": "transaction_consistency",
-                "subtype": "store_binding",
-                "missing": "accepted_store_binding_requires_order_resolution",
-                "note": (
-                    "The Planner has decided that the customer accepted a unique transaction store. Resolve the order "
-                    "with use_existing or need_tools + create_work_order. This does not force payment_collection."
-                ),
-            }
-        ]
     return []
 
 
