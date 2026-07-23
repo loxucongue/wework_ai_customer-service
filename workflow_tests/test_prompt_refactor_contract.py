@@ -183,6 +183,25 @@ def test_store_location_prompts_do_not_expose_local_no_store_wording() -> None:
     assert "当前给您匹配到的是这家/这几家" in REPLY_SYSTEM_PROMPT
 
 
+def test_acne_marks_and_scars_remain_in_online_offer_scope() -> None:
+    rules = load_business_rules()
+    offer = rules.get("offer") or {}
+    supported = set(offer.get("supported_online_scope") or [])
+    unsupported = set(offer.get("unsupported_online_projects") or [])
+    planner_facts = planner_business_rules_prompt_section()
+    reply_facts = reply_business_rules_for_model(stage="S1", sub_rule_id="S1_PROJECT_DIRECTION")
+    runtime_text = json.dumps(
+        {"planner": json.loads(planner_facts), "reply": reply_facts},
+        ensure_ascii=False,
+    )
+
+    assert {"痘印改善", "痘坑改善"} <= supported
+    assert "痘印" not in unsupported
+    assert "痘坑" not in unsupported
+    assert "痘印、痘坑改善" in runtime_text
+    assert "痘印、痘坑属于当前线上淡斑活动改善范围" in REPLY_SYSTEM_PROMPT
+
+
 def test_runtime_business_fact_views_preserve_all_current_rule_semantics() -> None:
     authoritative = load_business_rules()
     planner_facts = json.loads(planner_business_rules_prompt_section())
