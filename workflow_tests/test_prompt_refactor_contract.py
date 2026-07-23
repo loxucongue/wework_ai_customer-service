@@ -91,6 +91,8 @@ def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_informat
 
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
     assert "发预约金卡不要求先创建或复用订单" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
+    assert "礼貌短句" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
+    assert "不能把礼貌回应当结束语" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
     assert "store_address_delivery.unique_latest_store_id" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "最近发过多家" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "上一条唯一推荐+“这家可以”则承接" in REPLY_TRANSACTION_PATCH_PROMPT
@@ -398,6 +400,8 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "sales_progression" in REPLY_SYSTEM_PROMPT
     assert "planner_direct_reply_draft" in REPLY_SYSTEM_PROMPT
     assert "不能删掉草稿里的具体回答、付款选择、保留名额、登记或门店动作" in REPLY_SYSTEM_PROMPT
+    assert "不能客套收尾" in REPLY_SYSTEM_PROMPT
+    assert "方便时去看看" in REPLY_SYSTEM_PROMPT
     assert "不能删掉其中的具体成交动作" in REPLY_SYSTEM_PROMPT
     assert "历史风险视为已处理背景" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "严禁自行复活健康、过敏、检测或适配提醒" in REPLY_TRANSACTION_PATCH_PROMPT

@@ -410,6 +410,32 @@
       "semantic_goal": "活动和门店已明确且有同店同金额有效未付订单时，本轮自然发新10元卡，不让客户翻旧卡，不复读整套规则。"
     },
     {
+      "id": "polite_ack_after_activity_unpaid",
+      "category": "成交-礼貌短句压单",
+      "messages": ["谢谢", "好的谢谢", "嗯知道了"],
+      "history": [
+        "小贝: 现在活动总价268元，每位先付10元预约金锁活动资格，到店抵扣，做时再付258元。",
+        "小贝: 到店时间后面按您方便安排，未做或不满意可退，实际按付款记录核对。",
+        "小贝: 付款给：黛伊科技"
+      ],
+      "state_patch": {
+        "sop_progress_evidence": {
+          "completed_pack_ids": ["s10_activity_intro"],
+          "completed_categories": ["activity_intro"]
+        }
+      },
+      "expected_planner": {
+        "decisions": ["direct_reply"],
+        "required_message_types": ["payment_collection"]
+      },
+      "expected_reply": {
+        "required_types": ["text", "payment_collection"],
+        "payment_amount": 10,
+        "forbidden_phrases": ["方便的时候去看看", "有空再来", "后面需要再说", "到店前如果想再了解"]
+      },
+      "semantic_goal": "活动和预约金已铺垫、客户未付时，礼貌短句不是结束语。真人销售应简短承接，用一个真实理由推动当下支付，并附10元预约金卡；不能放客或复读整套规则。"
+    },
+    {
       "id": "order_missing_blocks_card_but_not_reply",
       "category": "成交-开单失败",
       "messages": ["就这家，我现在付", "发入口吧"],
