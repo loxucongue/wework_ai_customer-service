@@ -953,6 +953,9 @@ class SopExecutionService:
                     "若候选的 payment_collection_gate 是 paid_skip_card，"
                     "且该阶段仍应触达，保留候选包并用 remove_message 删除每一张受限收款卡，同时改写相关 text；"
                     "activity_intro_required 不能靠删卡绕过，必须选择合法前序候选或拒发。"
+                    "如果 violations 包含 repeated_candidates_should_use_ai_touch，说明候选包已重复但没有客户立场、风险或频率硬阻断；"
+                    "此时必须改成 decision=send_ai_touch，输出一条简短自然的 ai_touch_messages，引导客户继续开口或接上活动流程，"
+                    "不要继续 skip/defer，也不要选择重复候选包。"
                     "不要改变输入事实，不要输出 schema 外字段。"
                 ),
             },
@@ -983,6 +986,19 @@ class SopExecutionService:
             repaired_output["repair_applied"] = True
             repaired_output["initial_violations"] = violations
             return repaired_output
+        if "completed_activity_with_deposit_candidate_should_continue" in set(violations + repaired_violations):
+            fallback = _completed_activity_deposit_fallback(
+                selector_input,
+                initial_violations=violations,
+                repair_violations=repaired_violations,
+            )
+            if fallback:
+                return fallback
+        if "repeated_candidates_should_use_ai_touch" in set(violations + repaired_violations):
+            return _repeated_candidate_ai_touch_fallback(
+                initial_violations=violations,
+                repair_violations=repaired_violations,
+            )
         return {
             "decision": "skip",
             "send_sop": False,
@@ -1107,6 +1123,81 @@ class SopExecutionService:
 def _finish(result: dict[str, Any], started: float) -> dict[str, Any]:
     result["duration_ms"] = int((time.perf_counter() - started) * 1000)
     return result
+
+
+def _repeated_candidate_ai_touch_fallback(
+    *,
+    initial_violations: list[str],
+    repair_violations: list[str],
+) -> dict[str, Any]:
+    return {
+        "decision": "send_ai_touch",
+        "strategy": "soft_touch",
+        "selected_pack_ids": [],
+        "merge_pack_ids": [],
+        "send_sop": False,
+        "sop_pack_id": "",
+        "need_ai_reply": False,
+        "touch_goal": "resume_mainline",
+        "ai_touch_messages": [
+            {
+                "type": "text",
+                "content": {
+                    "text": "亲，您这边如果还有顾虑可以直接跟我说，我继续帮您按活动流程接着安排。"
+                },
+            }
+        ],
+        "reason": "repeated_candidates_ai_touch_fallback",
+        "error": "",
+        "text_adjustments": [],
+        "message_operations": [],
+        "initial_violations": initial_violations,
+        "repair_violations": repair_violations,
+        "fallback_applied": True,
+    }
+
+
+def _completed_activity_deposit_fallback(
+    selector_input: dict[str, Any],
+    *,
+    initial_violations: list[str],
+    repair_violations: list[str],
+) -> dict[str, Any]:
+    candidates = selector_input.get("candidate_sops")
+    if not isinstance(candidates, list):
+        return {}
+    for pack in sorted(
+        [item for item in candidates if isinstance(item, dict)],
+        key=mainline_pack_sort_key,
+    ):
+        if mainline_stage_for_event_pack(pack) != "deposit_decision":
+            continue
+        payment_gate = pack.get("payment_collection_gate") if isinstance(pack.get("payment_collection_gate"), dict) else {}
+        gate_status = _string(payment_gate.get("status"))
+        if gate_status in {"paid_skip_card", "activity_intro_required", "unsupported", "blocked"}:
+            continue
+        pack_id = _string(pack.get("id"))
+        if not pack_id:
+            continue
+        return {
+            "decision": "send",
+            "strategy": "continue_mainline",
+            "selected_pack_ids": [pack_id],
+            "merge_pack_ids": [],
+            "send_sop": True,
+            "sop_pack_id": pack_id,
+            "need_ai_reply": False,
+            "touch_goal": "payment_followup",
+            "ai_touch_messages": [],
+            "reason": "completed_activity_deposit_candidate_fallback",
+            "error": "",
+            "text_adjustments": [],
+            "message_operations": [],
+            "initial_violations": initial_violations,
+            "repair_violations": repair_violations,
+            "fallback_applied": True,
+        }
+    return {}
 
 
 def is_platform_auto_opening_message(content: str) -> bool:

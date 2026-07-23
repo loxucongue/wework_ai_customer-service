@@ -1211,6 +1211,58 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotIn("repeated_candidates_should_use_ai_touch", customer_block_violations)
 
+    async def test_repeated_candidates_repair_failure_falls_back_to_ai_touch(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [{"id": "close", "order": 10, "sop_category": "final_close"}],
+            "completed_sop_pack_ids": ["close"],
+            "completed_sop_categories": ["final_close"],
+            "recent_conversation": [],
+            "event_policy_evidence": {},
+        }
+        model = _SequenceModel(
+            [
+                {"decision": "skip", "strategy": "conflict_guard", "reason": "duplicate"},
+                {"decision": "skip", "strategy": "conflict_guard", "reason": "still duplicate"},
+            ]
+        )
+        service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_PackService(), model_client=model)
+
+        output = await service._judge_event_sop(selector_input)
+
+        self.assertEqual(output["decision"], "send_ai_touch")
+        self.assertEqual(output["touch_goal"], "resume_mainline")
+        self.assertEqual(output["sop_pack_id"], "")
+        self.assertTrue(output["ai_touch_messages"])
+        self.assertIn("repeated_candidates_should_use_ai_touch", output["initial_violations"])
+
+    async def test_completed_activity_repair_failure_falls_back_to_deposit_candidate(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {"id": "deposit", "order": 40, "sop_category": "deposit_push", "mainline_stage": "deposit_decision"}
+            ],
+            "completed_sop_pack_ids": [],
+            "completed_sop_categories": [],
+            "mainline_stage_status": {"activity_and_price": {"structural_completed": True}},
+            "recent_conversation": [],
+            "event_policy_evidence": {},
+        }
+        model = _SequenceModel(
+            [
+                {"decision": "skip", "strategy": "conflict_guard", "reason": "duplicate"},
+                {"decision": "skip", "strategy": "conflict_guard", "reason": "still duplicate"},
+            ]
+        )
+        service = SopExecutionService(repository=_Repo(), sop_reply_pack_service=_PackService(), model_client=model)
+
+        output = await service._judge_event_sop(selector_input)
+
+        self.assertEqual(output["decision"], "send")
+        self.assertEqual(output["sop_pack_id"], "deposit")
+        self.assertEqual(output["selected_pack_ids"], ["deposit"])
+        self.assertIn("completed_activity_with_deposit_candidate_should_continue", output["initial_violations"])
+
     def test_completed_activity_with_deposit_candidate_cannot_skip(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
