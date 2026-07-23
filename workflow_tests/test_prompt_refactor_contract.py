@@ -488,6 +488,8 @@ def test_planner_requires_authoritative_recent_case_image_evidence() -> None:
     assert "sent_message_summary.case_image_delivery" in PLANNER_SYSTEM_PROMPT
     assert "completed_pack_ids/completed_categories" in PLANNER_SYSTEM_PROMPT
     assert "不能单独证明客户近期看过图" in PLANNER_SYSTEM_PROMPT
+    assert "客户本轮明确说“有没有图/发图/效果图/看案例”" in PLANNER_SYSTEM_PROMPT
+    assert "旧 SOP 图片、旧历史图片、画像摘要和文字承诺都不能阻止本轮查 `case_studies`" in PLANNER_SYSTEM_PROMPT
     assert "没有权威近期图片证据时查 `case_studies`" in PLANNER_SYSTEM_PROMPT
     assert "做完到底能变成什么样" in PLANNER_SYSTEM_PROMPT
 
