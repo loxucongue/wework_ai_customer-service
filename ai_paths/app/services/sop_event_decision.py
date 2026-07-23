@@ -50,6 +50,16 @@ def normalize_event_decision(
     }
     mode = _text(selector_input.get("mode"))
     selected_ids = _selected_pack_ids(output)
+    if mode == "platform_actions" and decision in {"skip", "defer", "send_ai_touch"} and _platform_actions_have_sendable_content(selector_input):
+        decision = "send"
+        output["decision"] = "send"
+        output["strategy"] = _text(output.get("strategy")) or "platform_actions"
+        output["reason"] = (
+            _text(output.get("reason") or output.get("skip_reason"))
+            or "platform_actions_have_sendable_content"
+        )
+        output["ai_touch_messages"] = []
+        output["reply_messages"] = []
 
     if mode == "platform_actions":
         if selected_ids:
@@ -186,6 +196,21 @@ def _ai_touch_messages(output: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         messages.append({"type": "text", "order": index, "content": {"text": text[:500]}})
     return messages
+
+
+def _platform_actions_have_sendable_content(selector_input: dict[str, Any]) -> bool:
+    raw = selector_input.get("platform_actions_summary")
+    if isinstance(raw, dict) and _positive_int(raw.get("message_count")) > 0:
+        return True
+    actions = selector_input.get("platform_actions")
+    if not isinstance(actions, dict):
+        return False
+    editable = actions.get("editable_text_messages")
+    readonly = actions.get("readonly_messages")
+    return bool(
+        (isinstance(editable, list) and editable)
+        or (isinstance(readonly, list) and readonly)
+    )
 
 
 def build_event_ai_reply_policy(

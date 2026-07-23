@@ -1122,6 +1122,30 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("non_send_decision_conflicts_with_send_strategy", invalid_violations)
         self.assertNotIn("non_send_decision_conflicts_with_send_strategy", valid_violations)
 
+    def test_platform_actions_with_content_cannot_be_downgraded_to_ai_touch(self) -> None:
+        output, violations = normalize_event_decision(
+            {
+                "decision": "send_ai_touch",
+                "strategy": "soft_touch",
+                "ai_touch_messages": [{"type": "text", "content": "平台文案"}],
+            },
+            {
+                "mode": "platform_actions",
+                "candidate_sops": [],
+                "platform_actions_summary": {"message_count": 1},
+                "platform_actions": {
+                    "editable_text_messages": [{"order": 1, "text": "平台文案"}],
+                    "readonly_messages": [],
+                },
+            },
+        )
+
+        self.assertEqual(violations, [])
+        self.assertEqual(output["decision"], "send")
+        self.assertTrue(output["send_sop"])
+        self.assertEqual(output["selected_pack_ids"], [])
+        self.assertEqual(output["ai_touch_messages"], [])
+
     def test_event_decision_requires_evidence_source_for_conflict_guard(self) -> None:
         no_evidence = {
             "mode": "first_add_flow",
