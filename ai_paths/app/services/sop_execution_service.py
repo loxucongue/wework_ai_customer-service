@@ -8,7 +8,14 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from app.policies.sales_flow import mainline_stage_for_pack, precision_qa_index_for_gate, sales_mainline_for_model
+from app.policies.sales_flow import (
+    mainline_pack_sort_key,
+    mainline_stage_for_event_pack,
+    mainline_stage_for_event_values,
+    mainline_stage_for_pack,
+    precision_qa_index_for_gate,
+    sales_mainline_for_model,
+)
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
 from app.prompts.sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
 from app.schemas import ChatRequest
@@ -52,6 +59,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `recent_conversation`：最近 30 条已发生聊天，保留方向、来源、消息类型和时间。
 - `conversation_activity`：基于最新会话计算的客户回复、最后消息方向和时间可靠性摘要。
 - `candidate_sops`：可选的新客 SOP；每个包有阶段目的、候选分组、完整 `editable_text_messages` 与只读 `readonly_messages`。
+- `mainline_stage_status`：按销售主线整理的阶段状态、结构完成证据和本轮候选包。它用于判断最早未完成阶段，不能被 raw `order` 覆盖。
 - `platform_actions`：平台任务中的完整可编辑 text 与只读结构消息。
 - `current_platform_task.message_content`：平台本轮明确要求触达的原始内容，是 `platform_actions` 模式下的当前任务目标。
 - `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
@@ -110,6 +118,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `merge`：只用于夜间积压或节奏明显落后，且只可选择两个顺序相邻的未完成主线包。不能把三个以上包一次发出。
 - `strategy=continue_mainline/recover_backlog` 表示本轮实际推进，只能搭配 `send/merge`；若因客户立场、当前诉求或事实风险拒发，使用 `strategy=conflict_guard` 搭配 `skip/defer`；只有频率限制才使用 `frequency_guard`。不要一边声称继续主线，一边输出 skip。
 - `candidate_sops` 已按主线先后顺序排列。除非第一个候选已由更高优先级事实证明完成、当前明确冲突或结构不合法，否则选择必须从第一个候选开始；仅仅“距离触发时间已久”或“节奏落后”不能跳过第一个候选。
+- 如果你判断某个更早阶段已经被近期聊天语义覆盖，但 `completed_sop_pack_ids/categories` 没有记录，必须在 `stage_skip_evidence` 写清楚被跳过的 `stage_id`、`pack_id` 和具体证据摘要；否则结构校验会按未完成前序阶段处理。
 - 夜间积压两个以上阶段时，只能发送第一个候选，或合并第一个与第二个候选；不能单独选择第二个，也不能绕过前序阶段挑后面的包。`backlog_count>=3` 仍然最多只恢复前两个，剩余阶段留给以后触达。
 - `skip`：当前频率过高、语义重复、客户立场硬冲突或没有合法候选时本次不发。
 - `defer`：内容仍应发送，但当前时段或顺序不合适；必须说明建议窗口，不能把它当永久跳过。
@@ -197,6 +206,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
   "backlog_handling": "none | recover_one | merge_two",
   "suggested_next_window": "defer 时给出建议窗口，否则空字符串",
   "reason": "一句内部判断原因",
+  "stage_skip_evidence": [{{"stage_id": "被近期聊天覆盖的前序阶段", "pack_id": "被跳过的候选包", "evidence": "近期聊天中覆盖该阶段的事实摘要"}}],
   "text_adjustments": [{{"order": 1, "text": "仅改写已有 text 的润色结果"}}],
   "message_operations": [{{"op": "insert_text_after", "after_order": 1, "text": "只新增一句无新事实的承接 text"}}]
 }}
@@ -1125,7 +1135,7 @@ def first_add_candidate_packs(
                 reason_hint="currently_due_or_overdue",
             )
         )
-    candidates = sorted(candidates, key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")))
+    candidates = _sort_first_add_candidates(candidates)
 
     if delay_minutes <= 0:
         return candidates
@@ -1160,13 +1170,17 @@ def first_add_candidate_packs(
     next_delay = min(_int(pack.get("delay_minutes"), 0) for pack in future_candidates)
     next_step_candidates = sorted(
         [pack for pack in future_candidates if _int(pack.get("delay_minutes"), 0) == next_delay],
-        key=lambda item: (int(item.get("order") or 0), str(item.get("id") or "")),
+        key=mainline_pack_sort_key,
     )[:FIRST_ADD_NEXT_STEP_MAX_CANDIDATES]
     if not candidates:
         return next_step_candidates
     if next_delay - delay_minutes <= FIRST_ADD_NEXT_STEP_LOOKAHEAD_MINUTES:
-        return candidates + next_step_candidates
+        return _sort_first_add_candidates(candidates + next_step_candidates)
     return candidates
+
+
+def _sort_first_add_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(candidates, key=mainline_pack_sort_key)
 
 
 def _annotated_first_add_candidate(pack: dict[str, Any], *, group: str, reason_hint: str) -> dict[str, Any]:
@@ -1323,6 +1337,7 @@ def _sop_summary(
     *,
     customer_memory: dict[str, Any] | None = None,
     customer_context: dict[str, Any] | None = None,
+    event_scope: bool = False,
 ) -> dict[str, Any]:
     messages = _pack_messages(pack)
     return {
@@ -1333,7 +1348,9 @@ def _sop_summary(
         "name": str(pack.get("name") or ""),
         "purpose": str(pack.get("purpose") or "")[:240],
         "order": int(pack.get("order") or 0),
-        "mainline_stage": str(pack.get("mainline_stage") or mainline_stage_for_pack(str(pack.get("id") or ""))),
+        "mainline_stage": mainline_stage_for_event_pack(pack)
+        if event_scope
+        else str(pack.get("mainline_stage") or mainline_stage_for_pack(str(pack.get("id") or ""))),
         "direct_answer_capabilities": [
             str(item)
             for item in pack.get("direct_answer_capabilities") or []
@@ -1418,15 +1435,21 @@ def _event_selector_input(
             "due_candidates": due_count,
             "next_step_candidates": next_step_count,
             "selection_rule": (
-                "优先评估 due 候选；如果 due 候选与最近聊天重复、冲突或已被覆盖，"
-                "再评估 next_step 候选。next_step 只用于继续同一新客 SOP 节奏，不能编造事实或绕过风险边界。"
+                "candidate_sops 已按销售主线阶段排序，而不是按配置 raw order 排序。优先评估最早未完成主线阶段；"
+                "如果前序阶段与最近聊天重复、冲突或已被覆盖，必须在 stage_skip_evidence 写明证据后再评估后续候选。"
+                "next_step 只用于继续同一新客 SOP 节奏，不能编造事实或绕过风险边界。"
             ),
         },
         "mainline": sales_mainline_for_model(),
+        "mainline_stage_status": _mainline_stage_status(
+            candidate_packs=candidate_packs,
+            completed_sop_pack_ids=completed_sop_pack_ids,
+            completed_sop_categories=completed_sop_categories,
+        ),
         "event_policy_evidence": event_policy_evidence,
         **memory_context,
         "candidate_sops": [
-            _sop_summary(pack, customer_memory=customer_memory, customer_context=customer_context)
+            _sop_summary(pack, customer_memory=customer_memory, customer_context=customer_context, event_scope=True)
             for pack in candidate_packs
         ],
         "adjacent_merge_options": _adjacent_merge_options(candidate_packs),
@@ -1441,6 +1464,60 @@ def _event_selector_input(
         "completed_sop_pack_ids": completed_sop_pack_ids,
         "completed_sop_categories": completed_sop_categories,
     }
+
+
+def _mainline_stage_status(
+    *,
+    candidate_packs: list[dict[str, Any]],
+    completed_sop_pack_ids: list[str],
+    completed_sop_categories: list[str],
+) -> list[dict[str, Any]]:
+    completed_ids = {_string(item) for item in completed_sop_pack_ids if _string(item)}
+    completed_categories = {_string(item) for item in completed_sop_categories if _string(item)}
+    candidate_by_stage: dict[str, list[str]] = {}
+    for pack in candidate_packs:
+        if not isinstance(pack, dict):
+            continue
+        stage_id = mainline_stage_for_event_pack(pack)
+        if not stage_id:
+            continue
+        candidate_by_stage.setdefault(stage_id, []).append(_string(pack.get("id")))
+
+    completed_by_stage: dict[str, dict[str, list[str]]] = {}
+    for pack_id in completed_ids:
+        stage_id = mainline_stage_for_event_values(pack_id=pack_id)
+        if stage_id:
+            completed_by_stage.setdefault(stage_id, {"pack_ids": [], "categories": []})["pack_ids"].append(pack_id)
+    for category in completed_categories:
+        stage_id = mainline_stage_for_event_values(category=category)
+        if stage_id:
+            completed_by_stage.setdefault(stage_id, {"pack_ids": [], "categories": []})["categories"].append(category)
+
+    output: list[dict[str, Any]] = []
+    for stage in (sales_mainline_for_model().get("stages") or []):
+        if not isinstance(stage, dict):
+            continue
+        stage_id = _string(stage.get("id"))
+        if not stage_id:
+            continue
+        completed = completed_by_stage.get(stage_id, {"pack_ids": [], "categories": []})
+        candidate_ids = [item for item in candidate_by_stage.get(stage_id, []) if item]
+        structural_completed = bool(completed.get("pack_ids") or completed.get("categories"))
+        output.append(
+            _drop_empty(
+                {
+                    "stage_id": stage_id,
+                    "order": stage.get("order"),
+                    "goal": _string(stage.get("goal"))[:180],
+                    "candidate_pack_ids": candidate_ids,
+                    "structural_completed": structural_completed,
+                    "completed_pack_ids": sorted(set(completed.get("pack_ids") or [])),
+                    "completed_categories": sorted(set(completed.get("categories") or [])),
+                    "model_semantic_review_required": bool(candidate_ids and not structural_completed),
+                }
+            )
+        )
+    return output
 
 
 def _platform_task_message_content(payload: dict[str, Any], customer: dict[str, Any]) -> list[dict[str, str]]:
@@ -1495,7 +1572,7 @@ def _payment_state_summary(customer_memory: dict[str, Any], customer_context: di
 def _adjacent_merge_options(candidate_packs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ordered = sorted(
         (pack for pack in candidate_packs if isinstance(pack, dict)),
-        key=lambda item: (int(item.get("order") or 0), _string(item.get("id"))),
+        key=mainline_pack_sort_key,
     )
     output: list[dict[str, Any]] = []
     for index in range(max(0, len(ordered) - 1)):
@@ -1989,6 +2066,10 @@ def _string(value: Any) -> str:
     if value is None:
         return ""
     return str(value).strip()
+
+
+def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
 def _int(value: Any, default: int) -> int:

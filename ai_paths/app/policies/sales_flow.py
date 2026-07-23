@@ -151,6 +151,109 @@ def mainline_stage_for_pack(pack_id: str) -> str:
     return ""
 
 
+EVENT_MAINLINE_STAGE_BY_PACK_ID = {
+    "s10_new_customer_opening": "opening_and_positioning",
+    "s10_need_and_case": "need_and_case",
+    "s10_activity_intro": "activity_and_price",
+    "event_s10_store_prompt_5min": "location_capture",
+    "event_s10_effect_warmup_30min": "need_and_case",
+    "event_s10_deposit_push_70min": "deposit_decision",
+    "event_s10_unpaid_effect_1h": "deposit_decision",
+    "event_s10_unpaid_video_2h": "deposit_decision",
+    "event_s10_day1_final_close": "deposit_decision",
+}
+
+
+EVENT_MAINLINE_STAGE_BY_CATEGORY = {
+    "opening": "opening_and_positioning",
+    "s10_new_customer_opening": "opening_and_positioning",
+    "store_prompt": "location_capture",
+    "store_address": "location_capture",
+    "effect_case": "need_and_case",
+    "s10_need_and_case": "need_and_case",
+    "activity_intro": "activity_and_price",
+    "s10_activity_intro": "activity_and_price",
+    "price_quote": "activity_and_price",
+    "deposit_push": "deposit_decision",
+    "payment_followup": "deposit_decision",
+    "operation_video": "deposit_decision",
+    "final_close": "deposit_decision",
+}
+
+
+EVENT_MAINLINE_STAGE_BY_STAGE_TAG = {
+    "first_add_ai_notice": "opening_and_positioning",
+    "store_prompt": "location_capture",
+    "effect_warmup": "need_and_case",
+    "price_quote": "activity_and_price",
+    "deposit_push": "deposit_decision",
+    "payment_followup": "deposit_decision",
+    "operation_video": "deposit_decision",
+    "final_close": "deposit_decision",
+}
+
+
+def mainline_stage_for_event_pack(pack: dict[str, Any]) -> str:
+    explicit = str(pack.get("mainline_stage") or "").strip()
+    if explicit:
+        return explicit
+    return mainline_stage_for_event_values(
+        pack_id=pack.get("id"),
+        category=pack.get("sop_category"),
+        stage_tag=pack.get("stage_tag"),
+    )
+
+
+def mainline_stage_for_event_values(
+    *,
+    pack_id: Any = "",
+    category: Any = "",
+    stage_tag: Any = "",
+) -> str:
+    target = str(pack_id or "").strip()
+    if target:
+        mapped = mainline_stage_for_pack(target) or EVENT_MAINLINE_STAGE_BY_PACK_ID.get(target, "")
+        if mapped:
+            return mapped
+    category_text = str(category or "").strip()
+    if category_text:
+        mapped = EVENT_MAINLINE_STAGE_BY_CATEGORY.get(category_text, "")
+        if mapped:
+            return mapped
+    stage_tag_text = str(stage_tag or "").strip()
+    if stage_tag_text:
+        mapped = EVENT_MAINLINE_STAGE_BY_STAGE_TAG.get(stage_tag_text, "")
+        if mapped:
+            return mapped
+    return ""
+
+
+def mainline_stage_order(stage_id: str) -> int:
+    target = str(stage_id or "").strip()
+    if not target:
+        return 9999
+    for stage in load_sales_mainline().get("stages") or []:
+        if isinstance(stage, dict) and str(stage.get("id") or "").strip() == target:
+            try:
+                return int(stage.get("order") or 9999)
+            except (TypeError, ValueError):
+                return 9999
+    return 9999
+
+
+def mainline_pack_sort_key(pack: dict[str, Any]) -> tuple[int, int, int, str]:
+    stage_order = mainline_stage_order(mainline_stage_for_event_pack(pack))
+    try:
+        delay = int(pack.get("delay_minutes") or 0)
+    except (TypeError, ValueError):
+        delay = 0
+    try:
+        order = int(pack.get("order") or 0)
+    except (TypeError, ValueError):
+        order = 0
+    return stage_order, order, delay, str(pack.get("id") or "")
+
+
 def _json_policy_path(filename: str) -> Path:
     path = Path(__file__).with_name(filename)
     if filename == "precision_qa_playbook.json" and _precision_qa_playbook_path:

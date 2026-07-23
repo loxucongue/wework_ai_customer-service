@@ -655,6 +655,55 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(violations, [])
         self.assertEqual(output["selected_pack_ids"], ["effect"])
 
+    def test_event_decision_requires_evidence_when_skipping_earlier_mainline_stage(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {
+                    "id": "s10_need_and_case",
+                    "order": 20,
+                    "sop_category": "s10_need_and_case",
+                    "mainline_stage": "need_and_case",
+                },
+                {
+                    "id": "s10_activity_intro",
+                    "order": 30,
+                    "sop_category": "s10_activity_intro",
+                    "mainline_stage": "activity_and_price",
+                },
+            ],
+            "completed_sop_pack_ids": ["s10_new_customer_opening"],
+            "completed_sop_categories": ["s10_new_customer_opening"],
+            "mainline_stage_status": [
+                {"stage_id": "need_and_case", "structural_completed": False},
+                {"stage_id": "activity_and_price", "structural_completed": False},
+            ],
+            "ai_reply_policy": {"allowed": False},
+        }
+
+        _, no_evidence = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["s10_activity_intro"]},
+            selector_input,
+        )
+        output, with_evidence = normalize_event_decision(
+            {
+                "decision": "send",
+                "selected_pack_ids": ["s10_activity_intro"],
+                "stage_skip_evidence": [
+                    {
+                        "stage_id": "need_and_case",
+                        "pack_id": "s10_need_and_case",
+                        "evidence": "近期已发真实案例图并承接了斑点改善效果。",
+                    }
+                ],
+            },
+            selector_input,
+        )
+
+        self.assertIn("selected_packs_must_start_with_earliest_candidate", no_evidence)
+        self.assertEqual(with_evidence, [])
+        self.assertEqual(output["stage_skip_evidence"][0]["stage_id"], "need_and_case")
+
     def test_event_decision_validates_frequency_guard_against_structured_evidence(self) -> None:
         unsupported = {
             "mode": "first_add_flow",
@@ -2036,6 +2085,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("event_first_add", opening["scopes"])
         self.assertEqual(opening["event_type"], "")
         self.assertEqual(opening["delay_minutes"], 0)
+        need_and_case = next(item for item in config["packs"] if item["id"] == "s10_need_and_case")
+        self.assertTrue(need_and_case["enabled"])
+        self.assertIn("event_first_add", need_and_case["scopes"])
 
     def test_final_close_pack_requires_late_or_explicit_stage_context(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
@@ -2080,7 +2132,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             match_context={"delay_minutes": 10},
         )
 
-        self.assertEqual([item["id"] for item in candidates], ["event_s10_effect_warmup_30min"])
+        self.assertEqual(
+            [item["id"] for item in candidates],
+            ["s10_need_and_case", "event_s10_effect_warmup_30min"],
+        )
 
     def test_first_add_candidates_include_next_step_when_due_pack_may_repeat(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
@@ -2103,6 +2158,25 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(groups["event_s10_effect_warmup_30min"], "next_step")
         next_step = [item for item in candidates if item.get("_candidate_group") == "next_step"]
         self.assertLessEqual(len(next_step), 1)
+
+    def test_first_add_candidates_keep_need_and_case_before_activity_after_opening(self) -> None:
+        service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
+        config = service.load()
+
+        for delay_minutes in (30, 60, 70):
+            with self.subTest(delay_minutes=delay_minutes):
+                candidates = first_add_candidate_packs(
+                    config,
+                    completed_sop_pack_ids=["s10_new_customer_opening"],
+                    completed_sop_categories=["s10_new_customer_opening"],
+                    delay_minutes=delay_minutes,
+                    match_context={"delay_minutes": delay_minutes},
+                )
+                ids = [item["id"] for item in candidates]
+
+                self.assertIn("s10_need_and_case", ids)
+                self.assertIn("s10_activity_intro", ids)
+                self.assertLess(ids.index("s10_need_and_case"), ids.index("s10_activity_intro"))
 
     async def test_event_judge_prompt_defaults_to_platform_sop_unless_conflict_or_overlap(self) -> None:
         model = _PromptCaptureModel(
@@ -2227,6 +2301,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"adjacent_merge_options"', user_prompt)
         self.assertIn('"event_time"', user_prompt)
         self.assertIn('"local_hour":12', user_prompt)
+        self.assertIn('"mainline_stage_status"', user_prompt)
+        self.assertIn("stage_skip_evidence", system_prompt)
 
     async def test_event_selector_prioritizes_platform_message_content_and_paid_followup_boundary(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "reason": "arrival followup is compatible"})

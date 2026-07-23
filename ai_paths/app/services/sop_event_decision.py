@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.policies.sales_flow import mainline_pack_sort_key, mainline_stage_for_event_pack
+
 
 ALLOWED_EVENT_DECISIONS = {"send", "merge", "skip", "defer", "handoff_to_ai_reply"}
 MAX_MERGED_SOP_PACKS = 2
@@ -54,6 +56,8 @@ def normalize_event_decision(
         elif selected_ids and not _packs_start_at_first_candidate(
             selected_ids,
             candidate_sops,
+            selector_input=selector_input,
+            model_output=output,
             completed_ids=completed_ids,
             completed_categories=completed_categories,
         ):
@@ -135,6 +139,7 @@ def normalize_event_decision(
             "sop_pack_id": selected_ids[0] if selected_ids else "",
             "need_ai_reply": decision == "handoff_to_ai_reply",
             "reason": _text(output.get("reason") or output.get("skip_reason")),
+            "stage_skip_evidence": _stage_skip_evidence(output),
             "skip_reason": _text(output.get("skip_reason")),
             "frequency_reason": _text(output.get("frequency_reason")),
             "backlog_handling": _text(output.get("backlog_handling")) or "none",
@@ -172,7 +177,7 @@ def combine_selected_pack_messages(packs: list[dict[str, Any]]) -> list[dict[str
 
     output: list[dict[str, Any]] = []
     order = 1
-    for pack in sorted(packs, key=lambda item: (int(item.get("order") or 0), _text(item.get("id")))):
+    for pack in sorted(packs, key=mainline_pack_sort_key):
         messages = pack.get("reply_messages") if isinstance(pack.get("reply_messages"), list) else []
         for message in sorted(
             (item for item in messages if isinstance(item, dict)),
@@ -210,7 +215,7 @@ def _packs_are_adjacent(selected_ids: list[str], candidates: list[dict[str, Any]
         _text(item.get("id"))
         for item in sorted(
             (item for item in candidates if isinstance(item, dict) and _text(item.get("id"))),
-            key=lambda item: (int(item.get("order") or 0), _text(item.get("id"))),
+            key=mainline_pack_sort_key,
         )
     ]
     try:
@@ -224,26 +229,104 @@ def _packs_start_at_first_candidate(
     selected_ids: list[str],
     candidates: list[dict[str, Any]],
     *,
+    selector_input: dict[str, Any],
+    model_output: dict[str, Any],
     completed_ids: set[str],
     completed_categories: set[str],
 ) -> bool:
-    ordered_ids = [
-        _text(item.get("id"))
-        for item in sorted(
-            (
-                item
-                for item in candidates
-                if isinstance(item, dict)
-                and _text(item.get("id"))
-                and _text(item.get("id")) not in completed_ids
-                and _text(item.get("sop_category")) not in completed_categories
-            ),
-            key=lambda item: (int(item.get("order") or 0), _text(item.get("id"))),
-        )
-    ]
+    stage_status = _stage_status(selector_input)
+    stage_skip_evidence = _stage_skip_evidence(model_output)
+    ordered_ids = []
+    for item in sorted(
+        (
+            item
+            for item in candidates
+            if isinstance(item, dict)
+            and _text(item.get("id"))
+            and _text(item.get("id")) not in completed_ids
+            and _text(item.get("sop_category")) not in completed_categories
+        ),
+        key=mainline_pack_sort_key,
+    ):
+        pack_id = _text(item.get("id"))
+        stage_id = mainline_stage_for_event_pack(item)
+        if _stage_structurally_completed(stage_id, stage_status):
+            continue
+        ordered_ids.append(pack_id)
     if not selected_ids or not ordered_ids:
         return False
-    return selected_ids == ordered_ids[: len(selected_ids)]
+    if selected_ids == ordered_ids[: len(selected_ids)]:
+        return True
+    try:
+        first_selected_position = ordered_ids.index(selected_ids[0])
+    except ValueError:
+        return False
+    skipped = ordered_ids[:first_selected_position]
+    if not skipped:
+        return False
+    candidate_by_id = {
+        _text(item.get("id")): item
+        for item in candidates
+        if isinstance(item, dict) and _text(item.get("id"))
+    }
+    for pack_id in skipped:
+        stage_id = mainline_stage_for_event_pack(candidate_by_id.get(pack_id) or {})
+        if not _has_stage_skip_evidence(stage_skip_evidence, stage_id=stage_id, pack_id=pack_id):
+            return False
+    return selected_ids == ordered_ids[first_selected_position : first_selected_position + len(selected_ids)]
+
+
+def _stage_status(selector_input: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = selector_input.get("mainline_stage_status")
+    if not isinstance(raw, list):
+        return {}
+    output: dict[str, dict[str, Any]] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        stage_id = _text(item.get("stage_id"))
+        if stage_id:
+            output[stage_id] = item
+    return output
+
+
+def _stage_structurally_completed(stage_id: str, stage_status: dict[str, dict[str, Any]]) -> bool:
+    if not stage_id:
+        return False
+    item = stage_status.get(stage_id)
+    return isinstance(item, dict) and bool(item.get("structural_completed"))
+
+
+def _stage_skip_evidence(output: dict[str, Any]) -> list[dict[str, str]]:
+    raw = output.get("stage_skip_evidence")
+    if not isinstance(raw, list):
+        return []
+    evidence: list[dict[str, str]] = []
+    for item in raw[:5]:
+        if not isinstance(item, dict):
+            continue
+        stage_id = _text(item.get("stage_id"))
+        pack_id = _text(item.get("pack_id"))
+        text = _text(item.get("evidence") or item.get("reason"))
+        if not text:
+            continue
+        if stage_id or pack_id:
+            evidence.append({"stage_id": stage_id, "pack_id": pack_id, "evidence": text[:240]})
+    return evidence
+
+
+def _has_stage_skip_evidence(
+    evidence: list[dict[str, str]],
+    *,
+    stage_id: str,
+    pack_id: str,
+) -> bool:
+    for item in evidence:
+        if pack_id and _text(item.get("pack_id")) == pack_id:
+            return True
+        if stage_id and _text(item.get("stage_id")) == stage_id:
+            return True
+    return False
 
 
 def _payment_gate_blocks_selection(candidate: Any) -> bool:

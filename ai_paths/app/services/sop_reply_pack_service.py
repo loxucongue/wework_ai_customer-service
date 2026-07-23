@@ -52,6 +52,7 @@ DEFAULT_SOP_REPLY_PACKS: dict[str, Any] = {
             "id": "s10_need_and_case",
             "enabled": False,
             "scope": "chat_gate",
+            "scopes": ["chat_gate", "event_first_add"],
             "sop_category": "effect_case",
             "name": "需求与效果承接",
             "purpose": "客户第一次问斑点、效果或是否能做时，承接需求、发送效果案例参考，并衔接客户是否来自线上推广活动。",
@@ -592,6 +593,17 @@ def _audit_first_add_candidates(packs: list[Any], issues: list[dict[str, Any]]) 
         issues.append(_audit_issue("error", "first_add_opening_disabled", "s10_new_customer_opening", "首次加微必须启用 s10_new_customer_opening。"))
     elif "event_first_add" not in _normalize_scopes(opening):
         issues.append(_audit_issue("error", "first_add_opening_scope_missing", "s10_new_customer_opening", "s10_new_customer_opening 必须支持 event_first_add 执行范围。"))
+
+    need_and_case = next((pack for pack in packs if isinstance(pack, dict) and str(pack.get("id") or "") == "s10_need_and_case"), {})
+    if bool(need_and_case.get("enabled")) and "event_first_add" not in _normalize_scopes(need_and_case):
+        issues.append(
+            _audit_issue(
+                "error",
+                "first_add_need_and_case_scope_missing",
+                "s10_need_and_case",
+                "s10_need_and_case 必须支持 event_first_add，避免主动触达跳过需求案例阶段直接发活动。",
+            )
+        )
 
     immediate = [
         pack
