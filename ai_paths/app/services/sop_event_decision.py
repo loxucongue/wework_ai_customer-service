@@ -5,7 +5,15 @@ from typing import Any
 from app.policies.sales_flow import mainline_pack_sort_key, mainline_stage_for_event_pack
 
 
-ALLOWED_EVENT_DECISIONS = {"send", "merge", "skip", "defer", "handoff_to_ai_reply"}
+ALLOWED_EVENT_DECISIONS = {
+    "send",
+    "merge",
+    "send_ai_touch",
+    "handoff_or_safety_notice",
+    "skip",
+    "defer",
+    "handoff_to_ai_reply",
+}
 MAX_MERGED_SOP_PACKS = 2
 
 
@@ -92,8 +100,13 @@ def normalize_event_decision(
         for pack_id in selected_ids
     ):
         violations.append("selected_sop_pack_already_completed")
-    if decision in {"skip", "defer", "handoff_to_ai_reply"} and selected_ids:
+    if decision in {"skip", "defer", "handoff_to_ai_reply", "send_ai_touch", "handoff_or_safety_notice"} and selected_ids:
         violations.append("non_send_decision_must_not_select_pack")
+    ai_touch_messages = _ai_touch_messages(output)
+    if decision in {"send_ai_touch", "handoff_or_safety_notice"} and not ai_touch_messages:
+        violations.append("ai_touch_messages_required")
+    if decision not in {"send_ai_touch", "handoff_or_safety_notice"} and ai_touch_messages:
+        violations.append("ai_touch_messages_only_allowed_for_touch_decision")
 
     event_policy = (
         selector_input.get("event_policy_evidence")
@@ -138,6 +151,8 @@ def normalize_event_decision(
             "send_sop": decision in {"send", "merge"},
             "sop_pack_id": selected_ids[0] if selected_ids else "",
             "need_ai_reply": decision == "handoff_to_ai_reply",
+            "ai_touch_messages": ai_touch_messages if decision in {"send_ai_touch", "handoff_or_safety_notice"} else [],
+            "touch_goal": _text(output.get("touch_goal")),
             "reason": _text(output.get("reason") or output.get("skip_reason")),
             "stage_skip_evidence": _stage_skip_evidence(output),
             "skip_reason": _text(output.get("skip_reason")),
@@ -147,6 +162,30 @@ def normalize_event_decision(
         }
     )
     return output, _unique(violations)
+
+
+def _ai_touch_messages(output: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = output.get("ai_touch_messages")
+    if not isinstance(raw, list):
+        raw = output.get("reply_messages")
+    if not isinstance(raw, list):
+        return []
+    messages: list[dict[str, Any]] = []
+    for index, item in enumerate(raw[:2], start=1):
+        if not isinstance(item, dict):
+            continue
+        message_type = _text(item.get("type")) or "text"
+        if message_type != "text":
+            continue
+        content = item.get("content")
+        if isinstance(content, dict):
+            text = _text(content.get("text") or content.get("content"))
+        else:
+            text = _text(content)
+        if not text:
+            continue
+        messages.append({"type": "text", "order": index, "content": {"text": text[:500]}})
+    return messages
 
 
 def build_event_ai_reply_policy(

@@ -73,7 +73,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 
 # Task
 1. 理解事件触发的 SOP 阶段、最近聊天和候选包的阶段目的。
-2. 输出 `send/merge/skip/defer/handoff_to_ai_reply` 之一；`first_add_flow` 的包 ID 必须来自 `candidate_sops.id`，`platform_actions` 只能决定平台 actions 是否发送。
+2. 输出 `send/merge/send_ai_touch/handoff_or_safety_notice/skip/defer/handoff_to_ai_reply` 之一；`first_add_flow` 的包 ID 必须来自 `candidate_sops.id`，`platform_actions` 只能决定平台 actions 是否发送。
 3. 如果发送内容与当前对话的称呼、语气、消息数量或承接顺序明显不自然，才输出 `text_adjustments` 或 `message_operations` 调整 text；正常时输出空数组。
 
 # Decision Policy
@@ -118,6 +118,10 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `send`：发送一个未完成主线包；这是进入主动触达判断后的默认动作。
 - `merge`：只用于夜间积压或节奏明显落后，且只可选择两个顺序相邻的未完成主线包。不能把三个以上包一次发出。
 - `strategy=continue_mainline/recover_backlog` 表示本轮实际推进，只能搭配 `send/merge`；若因客户立场、当前诉求或事实风险拒发，使用 `strategy=conflict_guard` 搭配 `skip/defer`；只有频率限制才使用 `frequency_guard`。不要一边声称继续主线，一边输出 skip。
+- 当固定 SOP 包都不适合，但当前仍应该主动触达客户开口时，使用 `send_ai_touch`，并在 `ai_touch_messages` 输出 1-2 条自然微信 text。它用于软拒绝、候选包重复、已问过同一问题但客户沉默、已付后的到店/登记提醒等场景；目标是重新开口、回到主线或推进下一步，不是复读整套 SOP。
+- 当客户出现投诉、退款、付款异常、健康风险、严重不适或强人工诉求时，使用 `handoff_or_safety_notice`，并在 `ai_touch_messages` 输出安抚和承接 text。该分支禁止预约金压单、禁止发营销包、禁止承诺效果；只能降低风险、收集必要事实或引导人工处理。
+- `send_ai_touch/handoff_or_safety_notice` 只能输出 text，不得输出 image、video、store_address、payment_collection、human_handoff_notice 等结构消息；不得编造门店、订单、付款、效果图、检测结论或已安排事实。
+- `skip/defer` 只保留给真正不该触达的少数情况：客户最新问题正在等待普通 AI/销售回复、强烈明确拒绝继续沟通、频率软上限且无新进展、会话事实不可靠、或任何触达都会造成安全/投诉风险。不要因为固定 SOP 重复就直接 skip，先考虑 `send_ai_touch`。
 - `candidate_sops` 已按主线先后顺序排列。除非第一个候选已由更高优先级事实证明完成、当前明确冲突或结构不合法，否则选择必须从第一个候选开始；仅仅“距离触发时间已久”或“节奏落后”不能跳过第一个候选。
 - 如果你判断某个更早阶段已经被近期聊天语义覆盖，但 `completed_sop_pack_ids/categories` 没有记录，必须在 `stage_skip_evidence` 写清楚被跳过的 `stage_id`、`pack_id` 和具体证据摘要；否则结构校验会按未完成前序阶段处理。
 - 近期聊天语义覆盖的判断要服务于“不重复、不越级”：
@@ -206,10 +210,12 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 # Output Schema
 只输出 JSON：
 {{
-  "decision": "send | merge | skip | defer | handoff_to_ai_reply",
-  "strategy": "continue_mainline | recover_backlog | conflict_guard | frequency_guard | realtime_handoff",
+  "decision": "send | merge | send_ai_touch | handoff_or_safety_notice | skip | defer | handoff_to_ai_reply",
+  "strategy": "continue_mainline | recover_backlog | soft_touch | safety_notice | conflict_guard | frequency_guard | realtime_handoff",
   "selected_pack_ids": ["first_add_flow 时来自 candidate_sops；send 只能1个，merge 必须是相邻2个"],
   "merge_pack_ids": [],
+  "touch_goal": "resume_mainline | soften_objection | collect_info | payment_followup | visit_followup | safety_handoff | none",
+  "ai_touch_messages": [{{"type": "text", "content": {{"text": "send_ai_touch/handoff_or_safety_notice 时才输出的客户可见短句"}}}}],
   "skip_reason": "skip/defer 时的内部原因",
   "frequency_reason": "基于发送频率证据的判断",
   "backlog_handling": "none | recover_one | merge_two",

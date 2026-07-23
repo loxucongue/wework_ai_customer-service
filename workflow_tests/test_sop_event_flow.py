@@ -588,6 +588,37 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(output["need_ai_reply"])
         self.assertIn("handoff_to_ai_reply_not_allowed_for_proactive_event", violations)
 
+    def test_event_decision_allows_ai_touch_without_selected_pack(self) -> None:
+        output, violations = normalize_event_decision(
+            {
+                "decision": "send_ai_touch",
+                "strategy": "soft_touch",
+                "touch_goal": "resume_mainline",
+                "selected_pack_ids": [],
+                "ai_touch_messages": [
+                    {"type": "text", "content": {"text": "亲，前面的内容我先不重复发了，您主要担心效果还是门店？"}}
+                ],
+            },
+            {
+                "mode": "first_add_flow",
+                "candidate_sops": [{"id": "effect", "order": 10, "sop_category": "effect_case"}],
+                "event_policy_evidence": {},
+            },
+        )
+
+        self.assertEqual(violations, [])
+        self.assertFalse(output["send_sop"])
+        self.assertEqual(output["touch_goal"], "resume_mainline")
+        self.assertEqual(output["ai_touch_messages"][0]["type"], "text")
+
+    def test_event_decision_requires_ai_touch_text(self) -> None:
+        _, violations = normalize_event_decision(
+            {"decision": "handoff_or_safety_notice", "strategy": "safety_notice"},
+            {"mode": "first_add_flow", "candidate_sops": [], "event_policy_evidence": {}},
+        )
+
+        self.assertIn("ai_touch_messages_required", violations)
+
     def test_event_decision_allows_only_two_adjacent_packs_for_merge(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
@@ -1186,6 +1217,42 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 expected_status = "skipped_payment_collection_blocked" if delay_minutes == 70 else "sent"
                 self.assertEqual(repo.tasks[0]["status"], expected_status)
                 self.assertEqual(repo.tasks[0]["sop_pack_id"], pack_id)
+
+    async def test_first_add_event_can_send_ai_touch_when_fixed_pack_is_unsuitable(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        selector = _Selector(
+            {
+                "decision": "send_ai_touch",
+                "strategy": "soft_touch",
+                "touch_goal": "resume_mainline",
+                "send_sop": False,
+                "ai_touch_messages": [
+                    {
+                        "type": "text",
+                        "content": {"text": "亲，前面的内容我先不重复发了，您主要担心效果还是门店？"},
+                    }
+                ],
+                "reason": "fixed pack repeats recent conversation; use light touch",
+            }
+        )
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_ai_touch",
+            event_type="sop_friend_added_schedule_batch",
+            created_at="2026-07-11T02:00:00+00:00",
+            sop={"delay_minutes": 30},
+            customers=[{"first_added_event": {"trace_id": "trace_ai_touch", "timestamp": "2026-07-11T01:00:00+00:00"}}],
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_ai_touch")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(repo.tasks[0]["sop_pack_id"], "send_ai_touch")
+        self.assertEqual(repo.tasks[0]["sop_category"], "sop_ai_touch")
+        self.assertEqual(client.send_calls[0]["reply_messages"][0]["type"], "text")
 
     async def test_supported_event_payment_pack_cannot_be_downgraded_for_missing_order(self) -> None:
         repo = _Repo()

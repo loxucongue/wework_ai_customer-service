@@ -634,9 +634,41 @@ class SopEventService:
             event_policy_evidence=event_policy_evidence,
         )
         selected_packs = selected_candidate_packs(decision, candidates)
+        decision_name = _string(decision.get("decision"))
+        if decision_name in {"send_ai_touch", "handoff_or_safety_notice"}:
+            touch_messages = decision.get("ai_touch_messages") if isinstance(decision.get("ai_touch_messages"), list) else []
+            messages, sanitize_summary = sanitize_sop_reply_messages(
+                touch_messages,
+                conversation_messages=conversation_messages,
+            )
+            status = "pending" if messages else "skipped_empty_ai_touch_messages"
+            category = "sop_ai_touch" if decision_name == "send_ai_touch" else "sop_safety_notice"
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id=decision_name,
+                sop_pack_name=decision_name,
+                sop_category=category,
+                reply_messages=messages,
+                status=status,
+                error="" if messages else "ai_touch_messages_empty_after_sanitize",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_filter": conversation_filter,
+                    "conversation_activity": conversation_activity,
+                    "message_sanitize": sanitize_summary,
+                    "event_policy_evidence": event_policy_evidence,
+                    "event_decision_input": decision.get("selector_input", {}),
+                    "touch_goal": _string(decision.get("touch_goal")),
+                    "touch_decision": decision_name,
+                },
+                send_response={"event_decision": decision},
+            )
         if not decision.get("send_sop") or not selected_packs:
             is_model_error = bool(decision.get("error"))
-            decision_name = _string(decision.get("decision"))
             rejected_status = (
                 "deferred_model"
                 if decision_name == "defer"
