@@ -830,6 +830,36 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("selected_payment_pack_not_currently_supported", violations)
 
+    def test_event_decision_does_not_allow_supported_payment_card_removal(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {
+                    "id": "deposit",
+                    "order": 40,
+                    "editable_text_messages": [{"order": 1, "text": "payment intro"}],
+                    "readonly_messages": [
+                        {"order": 2, "type": "payment_collection", "facts": {"amount": 10}},
+                    ],
+                    "payment_collection_gate": {"status": "supported"},
+                }
+            ],
+            "event_policy_evidence": {"ai_reply_policy": {"allowed": False}},
+            "completed_sop_pack_ids": ["s10_activity_intro"],
+            "completed_sop_categories": ["activity_intro"],
+        }
+
+        _, violations = normalize_event_decision(
+            {
+                "decision": "send",
+                "selected_pack_ids": ["deposit"],
+                "message_operations": [{"op": "remove_message", "order": 2}],
+            },
+            selector_input,
+        )
+
+        self.assertIn("supported_payment_collection_must_not_be_removed", violations)
+
     def test_event_decision_rejects_pack_already_completed_by_id_or_category(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
@@ -1108,14 +1138,16 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(repo.tasks[0]["status"], expected_status)
                 self.assertEqual(repo.tasks[0]["sop_pack_id"], pack_id)
 
-    async def test_unbacked_event_payment_pack_can_be_downgraded_to_text_touch_by_model(self) -> None:
+    async def test_supported_event_payment_pack_cannot_be_downgraded_for_missing_order(self) -> None:
         repo = _Repo()
+        repo.sent_ids.add("s10_activity_intro")
+        repo.sent_categories.add("activity_intro")
         client = _OutreachClient(messages=[])
         selector = _Selector(
             {
                 "send_sop": True,
                 "sop_pack_id": "deposit_pack",
-                "reason": "收款卡缺订单，改成轻触达",
+                "reason": "unsupported downgrade attempt",
                 "message_operations": [
                     {"op": "remove_message", "order": 2},
                     {
@@ -1140,7 +1172,11 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "processed")
         self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual([item["type"] for item in repo.tasks[0]["reply_messages"]], ["text"])
+        self.assertEqual([item["type"] for item in repo.tasks[0]["reply_messages"]], ["text", "payment_collection"])
+        self.assertEqual(
+            repo.tasks[0]["send_payload"]["message_adjustment"]["rejected"][0]["reason"],
+            "payment_collection_not_removable",
+        )
         self.assertEqual(len(client.send_calls), 1)
 
     async def test_paid_current_order_skips_sop_before_model_and_send(self) -> None:

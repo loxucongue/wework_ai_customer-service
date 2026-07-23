@@ -76,6 +76,12 @@ def normalize_event_decision(
         candidate_by_id=candidate_by_id,
     ):
         violations.append("selected_payment_pack_not_currently_supported")
+    if decision in {"send", "merge"} and _decision_removes_supported_payment_messages(
+        output,
+        selected_ids=selected_ids,
+        candidate_by_id=candidate_by_id,
+    ):
+        violations.append("supported_payment_collection_must_not_be_removed")
     if decision in {"send", "merge"} and any(
         pack_id in completed_ids
         or _text((candidate_by_id.get(pack_id) or {}).get("sop_category")) in completed_categories
@@ -312,6 +318,42 @@ def _decision_removes_unsupported_payment_messages(
         isinstance(item, dict) and _text(item.get("op") or item.get("operation")) in text_operations
         for item in operations
     )
+
+
+def _decision_removes_supported_payment_messages(
+    output: dict[str, Any],
+    *,
+    selected_ids: list[str],
+    candidate_by_id: dict[str, Any],
+) -> bool:
+    removed_orders = {
+        _positive_int(item.get("order"))
+        for item in output.get("message_operations") or []
+        if isinstance(item, dict) and _text(item.get("op") or item.get("operation")) == "remove_message"
+    }
+    if not removed_orders:
+        return False
+
+    protected_orders: set[int] = set()
+    combined_order = 0
+    for pack_id in selected_ids:
+        candidate = candidate_by_id.get(pack_id)
+        if not isinstance(candidate, dict):
+            continue
+        gate = candidate.get("payment_collection_gate")
+        gate_status = _text(gate.get("status")) if isinstance(gate, dict) else ""
+        messages: list[tuple[int, str]] = []
+        for item in candidate.get("editable_text_messages") or []:
+            if isinstance(item, dict):
+                messages.append((_positive_int(item.get("order")), "text"))
+        for item in candidate.get("readonly_messages") or []:
+            if isinstance(item, dict):
+                messages.append((_positive_int(item.get("order")), _text(item.get("type"))))
+        for _, message_type in sorted(messages, key=lambda item: item[0]):
+            combined_order += 1
+            if message_type == "payment_collection" and gate_status != "paid_skip_card":
+                protected_orders.add(combined_order)
+    return bool(removed_orders & protected_orders)
 
 
 def _positive_int(value: Any) -> int:

@@ -679,10 +679,18 @@ class SopEventService:
             else " + ".join(_string(pack.get("name")) for pack in selected_packs)
         )
         selected_category = selected_categories[0] if len(selected_categories) == 1 else "merge:" + "+".join(selected_categories)
+        removable_payment_orders = _removable_payment_message_orders_for_selected_packs(
+            selected_packs,
+            customer_memory=customer_memory,
+            customer_context=customer_context,
+            completed_sop_pack_ids=completed_ids,
+            completed_sop_categories=completed_categories,
+        )
         adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
             selected_messages,
             decision.get("text_adjustments"),
             decision.get("message_operations"),
+            removable_payment_message_orders=removable_payment_orders,
         )
         messages, sanitize_summary = sanitize_sop_reply_messages(
             adjusted_messages,
@@ -1326,6 +1334,37 @@ def _sop_payment_collection_gate(
         "amounts": amounts,
         "reason": "activity_intro_completed_or_not_required",
     }
+
+
+def _removable_payment_message_orders_for_selected_packs(
+    packs: list[dict[str, Any]],
+    *,
+    customer_memory: dict[str, Any],
+    customer_context: dict[str, Any],
+    completed_sop_pack_ids: list[str],
+    completed_sop_categories: list[str],
+) -> set[int]:
+    output: set[int] = set()
+    combined_order = 0
+    for pack in sorted(
+        (item for item in packs if isinstance(item, dict)),
+        key=lambda item: (int(item.get("order") or 0), _string(item.get("id"))),
+    ):
+        pack_messages = _pack_messages(pack)
+        gate = _sop_payment_collection_gate(
+            pack_messages,
+            customer_memory,
+            customer_context,
+            completed_sop_pack_ids=completed_sop_pack_ids,
+            completed_sop_categories=completed_sop_categories,
+            require_activity_intro=_string(pack.get("id")) != "s10_activity_intro",
+        )
+        gate_status = _string(gate.get("status"))
+        for message in sorted(pack_messages, key=lambda item: int(item.get("order") or 0)):
+            combined_order += 1
+            if gate_status == "paid_skip_card" and _string(message.get("type")) == "payment_collection":
+                output.add(combined_order)
+    return output
 
 
 def _payment_card_amount(message: dict[str, Any]) -> int:

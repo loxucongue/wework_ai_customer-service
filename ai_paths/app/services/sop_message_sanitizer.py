@@ -60,6 +60,7 @@ def apply_sop_text_adjustments(
     messages: list[dict[str, Any]],
     adjustments: Any,
     message_operations: Any = None,
+    removable_payment_message_orders: set[int] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Apply model-proposed text operations without changing structured SOP facts."""
 
@@ -72,6 +73,7 @@ def apply_sop_text_adjustments(
         if str(message.get("type") or "") == "text"
     }
     requested = adjustments if isinstance(adjustments, list) else []
+    removable_payment_orders = set(removable_payment_message_orders or set())
     applied_orders: list[int] = []
     applied_operations: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -100,7 +102,11 @@ def apply_sop_text_adjustments(
     for operation in message_operations if isinstance(message_operations, list) else []:
         if not isinstance(operation, dict):
             continue
-        applied, reason = _apply_text_message_operation(normalized, operation)
+        applied, reason = _apply_text_message_operation(
+            normalized,
+            operation,
+            removable_payment_message_orders=removable_payment_orders,
+        )
         if applied:
             applied_operations.append(applied)
         else:
@@ -114,7 +120,12 @@ def apply_sop_text_adjustments(
     }
 
 
-def _apply_text_message_operation(messages: list[dict[str, Any]], operation: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+def _apply_text_message_operation(
+    messages: list[dict[str, Any]],
+    operation: dict[str, Any],
+    *,
+    removable_payment_message_orders: set[int] | None = None,
+) -> tuple[dict[str, Any] | None, str]:
     op = _operation_name(operation)
     if op == "replace_text":
         order = _positive_int(operation.get("order"), 0)
@@ -166,6 +177,8 @@ def _apply_text_message_operation(messages: list[dict[str, Any]], operation: dic
         message_type = str(messages[index].get("type") or "")
         if message_type != "payment_collection":
             return None, "unsupported_message_type"
+        if order not in set(removable_payment_message_orders or set()):
+            return None, "payment_collection_not_removable"
         del messages[index]
         return {"op": op, "order": order, "type": message_type}, ""
 
