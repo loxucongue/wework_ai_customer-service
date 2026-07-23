@@ -390,7 +390,7 @@
       "category": "成交-活动前高意向",
       "messages": ["我参加，怎么付款", "帮我预约吧", "我要交定金"],
       "history": ["小贝: 您主要想改善脸上的斑点对吧？", "用户: 对"],
-      "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店"},
+      "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店", "sop_progress_evidence": {"completed_pack_ids": [], "completed_categories": [], "unfinished_sops": [{"id": "s10_activity_intro", "sop_category": "activity_intro", "name": "活动介绍"}]}},
       "expected_planner": {"decisions": ["direct_reply", "need_tools"], "forbidden_message_types": ["payment_collection"]},
       "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["已经报名", "已经留名额"]},
       "semantic_goal": "客户高意向但活动价格铺垫未完成时先顺畅引出活动与价格，不能越级发卡或声称已报名。"
@@ -415,13 +415,13 @@
       "messages": ["就这家，我现在付", "发入口吧"],
       "history": ["小贝: 活动总价268，10元预约金到店抵扣。", "小贝: 门店位置：厦门百星湖里店"],
       "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店", "sop_progress_evidence": {"completed_pack_ids": ["s10_activity_intro"], "completed_categories": ["activity_intro"]}},
-      "expected_planner": {"decisions": ["need_tools"], "required_tools": ["create_work_order"]},
+      "expected_planner": {"decisions": ["direct_reply", "need_tools"]},
       "reply_fact_envelope": {
         "structured_facts": {"store_facts": [{"store_id": "101", "name": "厦门百星湖里店"}], "work_order_facts": [{"status": "rejected", "store_id": "101", "order_id": ""}], "case_facts": [], "payment_facts": [], "tool_errors": []},
         "usable_facts": ["门店已明确，但本轮未取得真实order_id。"], "missing_facts": ["matching_unpaid_order"], "risky_facts": [], "unsupported_claims": []
       },
-      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["已经开单", "已经报名", "入口发您了"]},
-      "semantic_goal": "无真实匹配订单时禁止发卡和伪造成功，但客户回复不能空；自然承接并继续核对，不暴露接口错误。"
+      "expected_reply": {"required_types": ["text", "payment_collection"], "payment_amount": 10, "forbidden_phrases": ["已经开单", "已经报名", "已留名额", "入口没对上", "先不能直接给您发收款卡"]},
+      "semantic_goal": "活动报价和门店已明确后，开单失败或缺订单不阻断预约金卡；但不能伪造已开单、已报名或暴露接口错误。"
     },
     {
       "id": "party_size_two",

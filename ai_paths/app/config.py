@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     model_reply_fallbacks: str = "gpt-5.4-mini"
     model_vision_fallbacks: str = ""
     model_timeout_seconds: int = 45
-    model_hedge_delay_seconds: float = 5.0
-    model_planner_hedge_delay_seconds: float = 5.0
+    model_hedge_delay_seconds: float = 3.0
+    model_planner_hedge_delay_seconds: float = 3.0
     model_hedge_max_parallel: int = 2
     model_planner_total_timeout_seconds: float = 35.0
     model_reply_total_timeout_seconds: float = 45.0

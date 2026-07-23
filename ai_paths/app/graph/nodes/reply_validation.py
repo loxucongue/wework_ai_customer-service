@@ -8,6 +8,7 @@ from app.graph.nodes.common import renumber_messages
 from app.graph.nodes.store_scope_summary import region_mentioned_in_text, store_scope_ids
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
+    activity_intro_completed_for_payment,
     payment_amount_matches_text,
     payment_collection_content,
     payment_collection_context,
@@ -439,6 +440,15 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
             raise ValueError("payment_collection_blocked_by_paid_deposit_context")
         return
     text = _combined_text(messages)
+    if (
+        has_payment
+        or decision_action in {"send_now", "resend"}
+        or payment_action == "send_now"
+        or str(state.get("conversion_stage") or "") == "deposit_push"
+        or str(state.get("next_step") or "") == "send_deposit"
+        or _promises_payment_entry(text)
+    ) and not activity_intro_completed_for_payment(state):
+        raise ValueError("payment_collection_requires_activity_intro")
     payment_context = payment_collection_context(state=state, messages=messages)
     needs_payment = False
     if not _explains_previous_payment_entry(text):

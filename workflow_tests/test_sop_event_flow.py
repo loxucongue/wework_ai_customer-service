@@ -2967,6 +2967,119 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("s10_need_and_case", user_prompt)
         self.assertIn("不适用", user_prompt)
 
+    async def test_chat_gate_activity_question_selects_activity_intro_pack(self) -> None:
+        class _ActivityPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_activity_intro",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "s10_activity_intro",
+                            "name": "活动介绍",
+                            "purpose": "客户第一次了解活动、价格或预约金时，完整说明活动、价格和预约金规则。",
+                            "order": 30,
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "活动价268，10元预约金到店抵扣。"}},
+                                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+                            ],
+                        }
+                    ]
+                }
+
+        model = _PromptCaptureModel(
+            {
+                "route": "sop_only",
+                "coverage": "exact",
+                "priority_question_id": "",
+                "sop_pack_id": "s10_activity_intro",
+                "resume_stage": "activity_and_price",
+                "reason": "活动包完整覆盖首次活动价格问题",
+                "text_adjustments": [],
+                "message_operations": [],
+            }
+        )
+        service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_ActivityPackService(),
+            model_client=model,
+        )
+
+        result = await service.evaluate_chat_gate(
+            ChatRequest(
+                content="活动怎么参加，怎么付费",
+                customer_id="customer",
+                corp_id="corp",
+                external_userid="ext",
+                wechat="CS001",
+            ),
+            request_id="req_activity_intro",
+            request_context={"source_protocol": "workflow-compatible"},
+        )
+
+        self.assertEqual(result["mode"], "sop_only")
+        self.assertEqual(result["sop_pack_id"], "s10_activity_intro")
+        user_prompt = model.messages[1]["content"]
+        self.assertIn("s10_activity_intro", user_prompt)
+        self.assertIn("活动怎么参加", user_prompt)
+
+    async def test_chat_gate_precision_question_can_resume_activity_intro(self) -> None:
+        class _ActivityPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_activity_intro",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "s10_activity_intro",
+                            "name": "活动介绍",
+                            "purpose": "客户第一次了解活动、价格或预约金时，完整说明活动、价格和预约金规则。",
+                            "order": 30,
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "活动价268，10元预约金到店抵扣。"}},
+                            ],
+                        }
+                    ]
+                }
+
+        model = _PromptCaptureModel(
+            {
+                "route": "ai_then_sop",
+                "coverage": "partial",
+                "priority_question_id": "price_transparency",
+                "sop_pack_id": "s10_activity_intro",
+                "resume_stage": "activity_and_price",
+                "reason": "先回答隐形消费，再接活动价格主线",
+                "text_adjustments": [{"order": 1, "text": "我把这次活动价和预约金规则给您说清楚。"}],
+                "message_operations": [],
+            }
+        )
+        service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_ActivityPackService(),
+            model_client=model,
+        )
+
+        result = await service.evaluate_chat_gate(
+            ChatRequest(
+                content="不会到店又加价吧",
+                customer_id="customer",
+                corp_id="corp",
+                external_userid="ext",
+                wechat="CS001",
+            ),
+            request_id="req_precision_activity",
+            request_context={"source_protocol": "workflow-compatible"},
+        )
+
+        self.assertEqual(result["mode"], "ai_then_sop")
+        self.assertTrue(result["need_ai_reply"])
+        self.assertEqual(result["priority_question_id"], "price_transparency")
+        self.assertEqual(result["sop_pack_id"], "s10_activity_intro")
+        self.assertEqual(result["task"]["status"], "pending")
+
     def test_objection_resolution_pack_metadata_excludes_effect_objection(self) -> None:
         import json
 

@@ -19,6 +19,46 @@ DEPOSIT_REFUND_CONTEXT_TERMS = (
 )
 
 
+def activity_intro_completed_for_payment(state: dict[str, Any] | None) -> bool:
+    """Return whether the customer has already seen the activity price context.
+
+    This is a structural payment-card gate. It uses only visible SOP/progress
+    facts and recent assistant history; it does not decide whether the customer
+    wants to pay.
+    """
+    if not isinstance(state, dict):
+        return False
+    for source in (
+        state.get("sop_progress_evidence"),
+        (state.get("sop_gate") or {}).get("sop_progress_evidence") if isinstance(state.get("sop_gate"), dict) else None,
+    ):
+        if _activity_intro_completed_from_progress(source):
+            return True
+    summary = state.get("sent_message_summary") if isinstance(state.get("sent_message_summary"), dict) else {}
+    if summary.get("activity_intro_image_sent"):
+        return True
+    for event in state.get("history_events") or []:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or "").strip().lower()
+        pack_id = str(event.get("pack_id") or event.get("sop_pack_id") or event.get("send_once_key") or "").strip().lower()
+        category = str(event.get("sop_category") or event.get("category") or "").strip().lower()
+        if event_type in {"activity_intro_image_sent", "offer_explained"}:
+            return True
+        if pack_id == "s10_activity_intro" or category in {"activity_intro", "s10_activity_intro"}:
+            return True
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    if any(_looks_like_visible_activity_quote(item) for item in history[-12:]):
+        return True
+    return not any(
+        _activity_intro_known_unfinished(source)
+        for source in (
+            state.get("sop_progress_evidence"),
+            (state.get("sop_gate") or {}).get("sop_progress_evidence") if isinstance(state.get("sop_gate"), dict) else None,
+        )
+    )
+
+
 def payment_collection_content(
     content: Any,
     *,
@@ -114,6 +154,46 @@ def payment_participants_from_text(text: str) -> tuple[int, bool]:
     return 1, False
 
 
+def _activity_intro_completed_from_progress(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    completed_ids = {str(item or "").strip().lower() for item in value.get("completed_pack_ids") or []}
+    completed_categories = {str(item or "").strip().lower() for item in value.get("completed_categories") or []}
+    return "s10_activity_intro" in completed_ids or bool(
+        completed_categories.intersection({"activity_intro", "s10_activity_intro"})
+    )
+
+
+def _activity_intro_known_unfinished(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    for item in value.get("unfinished_sops") or value.get("candidate_sops") or []:
+        if not isinstance(item, dict):
+            continue
+        pack_id = str(item.get("id") or item.get("pack_id") or item.get("sop_pack_id") or "").strip().lower()
+        category = str(item.get("sop_category") or item.get("category") or "").strip().lower()
+        if pack_id == "s10_activity_intro" or category in {"activity_intro", "s10_activity_intro"}:
+            return True
+    return False
+
+
+def _looks_like_visible_activity_quote(item: Any) -> bool:
+    if isinstance(item, dict):
+        content = item.get("content")
+        if isinstance(content, dict):
+            raw = " ".join(str(content.get(key) or "") for key in ("text", "content", "summary"))
+        else:
+            raw = str(content or "")
+    else:
+        raw = str(item or "")
+    compact = re.sub(r"\s+", "", raw)
+    if not compact:
+        return False
+    if "268" not in compact:
+        return False
+    return any(term in compact for term in ("活动价", "活动总价", "总价", "预约金", "10元", "到店抵扣", "线上活动"))
+
+
 def payment_amount_matches_text(messages: list[dict[str, Any]]) -> bool:
     amount = _first_payment_amount(messages)
     text = _messages_text(messages)
@@ -130,7 +210,7 @@ def payment_amount_matches_text(messages: list[dict[str, Any]]) -> bool:
         return False
     if _mentions_total_amount(compact, amount):
         return True
-    if "每位10" in compact or "每人10" in compact or "一人10" in compact or "每位10元" in compact or "每人10元" in compact:
+    if _mentions_per_person_ten_yuan(compact):
         return True
     return not bool(_single_person_payment_total_pattern().search(compact))
 
@@ -344,7 +424,9 @@ def _mentions_conflicting_total_amount(compact: str, expected_amount: int) -> bo
             if amount == expected_amount:
                 continue
             prefix = compact[max(0, match.start() - 4) : match.start()]
-            if amount == PAYMENT_COLLECTION_UNIT_AMOUNT and any(marker in prefix for marker in ("每位", "每人", "一人", "每个")):
+            if amount == PAYMENT_COLLECTION_UNIT_AMOUNT and any(
+                marker in prefix for marker in ("每位", "每人", "一人", "每个", "各付", "各交", "各留", "各自")
+            ):
                 continue
             return True
     return False
@@ -355,11 +437,32 @@ def _mentions_larger_payment_total(compact: str) -> bool:
 
 
 def _mentions_per_person_ten_yuan(compact: str) -> bool:
-    return any(term in compact for term in ("每位10", "每人10", "一人10", "每个10", "每位10元", "每人10元"))
+    return any(
+        term in compact
+        for term in (
+            "每位10",
+            "每人10",
+            "一人10",
+            "每个10",
+            "每位10元",
+            "每人10元",
+            "各付10",
+            "各交10",
+            "各留10",
+            "各自付10",
+            "各付10元",
+            "各交10元",
+            "各留10元",
+            "各自付10元",
+        )
+    )
 
 
 def _single_person_payment_total_pattern() -> re.Pattern[str]:
-    return re.compile(r"(?<!每位)(?<!每人)(?<!一人)(?<!每个)10\s*元\s*(?:的)?(?:预约金入口|预约入口|报名入口|付款入口|收款入口|入口|预约金|订金|定金)")
+    return re.compile(
+        r"(?<!每位)(?<!每人)(?<!一人)(?<!每个)(?<!各付)(?<!各交)(?<!各留)(?<!各自付)"
+        r"10\s*元\s*(?:的)?(?:预约金入口|预约入口|报名入口|付款入口|收款入口|入口|预约金|订金|定金)"
+    )
 
 
 def _mentions_deposit_refund_context(text: str) -> bool:

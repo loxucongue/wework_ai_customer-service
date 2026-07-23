@@ -17,7 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_precision_playbook_is_available_to_planner_and_reply() -> None:
     configure_precision_qa_playbook_path(None)
     context = precision_qa_context_for_planner()
-    assert len(context["question_index"]) == 10
+    assert len(context["question_index"]) == 14
+    assert any(item["id"] == "age_eligibility" for item in context["question_index"])
+    assert any(item["id"] == "treatment_method" for item in context["question_index"])
+    assert any(item["id"] == "aftercare_guidance" for item in context["question_index"])
+    assert any(item["id"] == "companion_party_size" for item in context["question_index"])
 
     messages = planner_v2_messages_for_model(
         {

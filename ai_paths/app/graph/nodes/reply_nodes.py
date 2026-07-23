@@ -184,10 +184,18 @@ def _planner_direct_reply_is_valid(
     state: AgentState,
     warnings: list[dict[str, Any]],
 ) -> bool:
-    if planner_decision != "direct_reply" or not planner_messages or state.get("tool_policy_violations"):
+    if planner_decision != "direct_reply" or not planner_messages:
         return False
     try:
         validate_reply_consistency(planner_messages, state)
+        if state.get("tool_policy_violations"):
+            warnings.append(
+                {
+                    "node": "synthesize_reply",
+                    "message": "planner_direct_reply_used_despite_non_visible_tool_policy_violations",
+                    "detail": "Planner draft passed final reply consistency; violations remain in trace for repair analysis.",
+                }
+            )
         return True
     except Exception as exc:
         warnings.append(
@@ -241,6 +249,7 @@ async def _run_reply_model_pipeline(
             messages = validated_model_messages(payload, state)
             messages = _prepare_structural_messages(messages, state, warnings)
             validate_reply_consistency(messages, state)
+            _raise_repairable_reply_quality_issues(messages, state)
         except Exception as validation_exc:
             if not can_start_model_retry(state, tier=tier):
                 model_call["retry"] = {
@@ -250,11 +259,15 @@ async def _run_reply_model_pipeline(
                 }
                 raise
             retry_messages = _reply_retry_messages(model_messages, validation_exc)
+            retry_deadline = _capped_deadline(
+                time.monotonic() + recovery_budget,
+                model_deadline_monotonic(state, tier=tier),
+            )
             retry_payload = await _chat_json_with_deadline(
                 model_client,
                 retry_messages,
                 tier=tier,
-                deadline_monotonic=primary_deadline,
+                deadline_monotonic=retry_deadline,
             )
             model_call["retry"] = {
                 "reason": f"{type(validation_exc).__name__}: {validation_exc}",
@@ -265,6 +278,7 @@ async def _run_reply_model_pipeline(
             messages = validated_model_messages(retry_payload, state)
             messages = _prepare_structural_messages(messages, state, warnings)
             validate_reply_consistency(messages, state)
+            _raise_repairable_reply_quality_issues(messages, state)
         model_call["draft_messages"] = debug_message_contents(messages)
         model_call["output"] = {"messages": len(messages)}
         model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
@@ -302,6 +316,7 @@ async def _run_reply_model_pipeline(
         messages = validated_model_messages(recovery_payload, state)
         messages = _prepare_structural_messages(messages, state, warnings)
         validate_reply_consistency(messages, state)
+        _raise_repairable_reply_quality_issues(messages, state)
     except Exception as recovery_exc:
         recovery_call["error"] = f"{type(recovery_exc).__name__}: {recovery_exc}"
         recovery_call["usage"] = model_usage_snapshot(model_client)
@@ -317,6 +332,19 @@ async def _run_reply_model_pipeline(
     model_call["output"] = {"messages": len(messages)}
     model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
     return messages, model_call, "compact_recovery_model"
+
+
+def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state: AgentState) -> None:
+    repairable_details = {
+        "precision_reply_passive_mainline_closure",
+        "precision_reply_missing_mainline_action",
+        "manual_transfer_missing_screenshot_registration",
+        "nearby_store_claim_without_location_fact",
+    }
+    for warning in collect_reply_soft_warnings(messages, state):
+        detail = str(warning.get("detail") or "")
+        if detail in repairable_details:
+            raise ValueError(detail)
 
 
 def _prepare_structural_messages(
@@ -811,6 +839,12 @@ def _compact_text(value: Any) -> str:
 
 
 def _reply_repair_hint(error: str) -> str:
+    if "precision_reply_passive_mainline_closure" in error:
+        return "精准支线问题已经回答到点，但收尾不能等待客户许可。请删除“如果您想/如果您愿意/我可以继续/要不要/是否需要”等表达，直接落一个主线动作：问城市或区域、主动接活动、发案例、推进预约金或登记。没有真实图片或门店卡事实时，直接问城市/区或接活动，不要承诺稍后发。"
+    if "precision_reply_missing_mainline_action" in error:
+        return "精准支线问题不能只答疑后停住。请保留当前问题的正面回答，再补一条明确主线动作句：问城市或区域、主动接活动名额、发案例、推进预约金或登记到店时间。动作句要具体、像微信销售，不要写“继续处理/安排下一步/如果您想”。"
+    if "precision_reply_weak_one_session_confidence" in error:
+        return "客户问一次效果时，先给正向信心：大多数客户一次能看到明显改善方向。不要用“不是完全没变化”这类弱安慰；再说明具体程度看斑点深浅和时间，到店会做原相机对比，最后接一个主线动作。"
     if "health_online_symptom_question_not_allowed" in error:
         return "不要在线追问客户症状、出现频率或用药情况。健康、过敏或孕期只正面承接并引导到店专业检测；严重不适收原门店、项目和时间。"
     if "health_specific_care_advice_not_allowed" in error:
@@ -821,6 +855,8 @@ def _reply_repair_hint(error: str) -> str:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_blocked_by_payment_action" in error:
         return "planner 的 payment_action 表示本轮不直接发预约金入口时，不要输出 payment_collection，也不要在 text 里说马上发入口；改成自然承接、询问是否需要重发或推进下一步。"
+    if "payment_collection_requires_activity_intro" in error:
+        return "客户还没有看到完整活动报价/预约金规则时，不要输出 payment_collection，也不要说入口或卡片已发，不要写“付好截图发我”。先用自然话术补活动价268、每位10元预约金到店抵扣、未做或不满意可退，再用“您确认按这个活动参加的话，我马上给您发小程序收款卡”这类封闭式动作承接。"
     if "payment_collection_required" in error:
         return "如果 payment_action=send_now、文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
     if "payment_collection_amount_text_mismatch" in error:
@@ -863,6 +899,10 @@ def _reply_repair_hint(error: str) -> str:
         return "distance_calculate 只用于内部排序门店。客户可见回复只说优先哪家或哪家更近一些，不要输出几公里、几分钟、车程或步行时长。"
     if "distance_fact_required" in error:
         return "没有 distance_calculate 排序事实时，不要输出最近、离您最近、较近、就近等距离排序表达。只回答门店名、地址、停车或营业时间等已有门店事实，再问客户哪个区域/哪家更方便。"
+    if "nearby_store_claim_without_location_fact" in error:
+        return "没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”。请改成“我给您看下门店/对下城市或区域”，不要编距离感。"
+    if "manual_transfer_missing_screenshot_registration" in error:
+        return "客户明确选择转账时，不要发 payment_collection。必须说清楚“转好截图发我，我给您登记/备注”，然后只补一个必要主线字段。"
     if "available_time_fact_required" in error:
         return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“多数可以看改善 + 发送 case_facts.image_url + 到店专业检测更准”。"
     if "appointment_confirmation_fact_required" in error:

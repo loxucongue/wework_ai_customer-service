@@ -96,14 +96,14 @@ class ModelClient:
         request_started_at = time.monotonic()
         deadline = self._resolve_deadline(tier, deadline_monotonic)
 
-        def build_payload(model: str) -> dict[str, Any]:
+        def build_payload(model: str, *, include_response_format: bool = True) -> dict[str, Any]:
             payload = {
                 "model": model,
                 "messages": self._prepare_json_messages(messages),
                 "temperature": temperature,
             }
             self._apply_max_tokens(payload, json_mode=True)
-            if self.settings.model_response_format_enabled:
+            if include_response_format and self.settings.model_response_format_enabled:
                 payload["response_format"] = {"type": "json_object"}
             self._apply_relay_reasoning(payload, json_mode=True)
             if self.settings.model_provider.lower() == "aliyun":
@@ -113,18 +113,52 @@ class ModelClient:
         async def consume(raw: dict[str, Any]) -> dict[str, Any]:
             return self._parse_json(self._extract_text(raw))
 
-        return await self._run_with_transient_retries(
-            lambda: self._run_model_candidates(
-                models,
-                tier=tier,
-                build_payload=build_payload,
-                consume=consume,
-                failure_label="All JSON model candidates failed",
+        deadline_seconds = max(0.0, deadline - request_started_at)
+        try:
+            return await self._run_with_transient_retries(
+                lambda: self._run_model_candidates(
+                    models,
+                    tier=tier,
+                    build_payload=lambda model: build_payload(model, include_response_format=True),
+                    consume=consume,
+                    failure_label="All JSON model candidates failed",
+                    deadline_monotonic=deadline,
+                ),
                 deadline_monotonic=deadline,
-            ),
-            deadline_monotonic=deadline,
-            deadline_seconds=max(0.0, deadline - request_started_at),
-        )
+                deadline_seconds=deadline_seconds,
+            )
+        except Exception as exc:
+            strict_error = f"{type(exc).__name__}: {exc}"
+            if (
+                not self.settings.model_response_format_enabled
+                or not self._should_retry_json_without_response_format(exc)
+                or (deadline_monotonic is not None and time.monotonic() >= deadline_monotonic)
+            ):
+                raise
+            try:
+                result = await self._run_with_transient_retries(
+                    lambda: self._run_model_candidates(
+                        models,
+                        tier=tier,
+                        build_payload=lambda model: build_payload(model, include_response_format=False),
+                        consume=consume,
+                        failure_label="All JSON no-response-format model candidates failed",
+                        deadline_monotonic=deadline,
+                    ),
+                    deadline_monotonic=deadline,
+                    deadline_seconds=max(0.0, deadline - request_started_at),
+                )
+            except Exception:
+                raise
+            usage = self.last_usage if isinstance(self.last_usage, dict) else {}
+            usage.update(
+                {
+                    "json_response_format_fallback": True,
+                    "json_response_format_strict_error": strict_error[:800],
+                }
+            )
+            self.last_usage = usage
+            return result
 
     async def vision_json(
         self,
@@ -665,6 +699,22 @@ class ModelClient:
         if "jsondecodeerror" in message or "total timeout" in message:
             return True
         return any(f"http {status}" in message for status in (429, 500, 502, 503, 504))
+
+    @staticmethod
+    def _should_retry_json_without_response_format(exc: Exception) -> bool:
+        message = str(exc).lower()
+        protocol_markers = (
+            "json_object",
+            "text.format",
+            "contain the word",
+            "response input messages must contain",
+        )
+        if any(marker in message for marker in protocol_markers):
+            return True
+        if "model http 502" not in message:
+            return False
+        gateway_markers = ("bad gateway", "cloudflare", "linkai.shop")
+        return any(marker in message for marker in gateway_markers)
 
     @staticmethod
     def _extract_text(raw: dict[str, Any]) -> str:

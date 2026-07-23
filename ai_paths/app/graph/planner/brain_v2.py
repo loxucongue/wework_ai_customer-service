@@ -269,11 +269,17 @@ async def run_planner_brain_v2(
                 violations=violations,
             )
             repair_call["input"]["messages"] = repair_messages
+            repair_tier = "fast" if initial_error else tier
+            repair_call["input"]["tier"] = repair_tier
+            repair_deadline = _capped_deadline(
+                time.monotonic() + recovery_budget,
+                model_deadline_monotonic(planner_state, tier="planner", reserve_reply=True),
+            )
             repaired_payload = await _chat_json_with_deadline(
                 model_client,
                 repair_messages,
-                tier=tier,
-                deadline_monotonic=primary_deadline,
+                tier=repair_tier,
+                deadline_monotonic=repair_deadline,
             )
             repaired_plan = build_planner_plan_v2(planner_state, repaired_payload)
             plan = repaired_plan
@@ -416,7 +422,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "sop_progress_evidence": _sop_progress_evidence_for_planner(state),
         "sop_gate_decision": _sop_gate_decision_for_planner(state),
         "precision_qa_playbook": precision_qa_context_for_planner(
-            include_answer_details_in_index=False
+            include_answer_details_in_index=True
         ),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }

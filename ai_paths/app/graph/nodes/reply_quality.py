@@ -26,6 +26,9 @@ def collect_reply_soft_warnings(messages: list[dict[str, Any]], state: dict[str,
         _validate_appointment_time_option_count,
         _validate_repeat_similarity,
         _validate_two_text_rhythm,
+        _validate_precision_reply_active_mainline_closure,
+        _validate_manual_transfer_screenshot_registration,
+        _validate_nearby_store_claim_has_fact,
     )
     warnings: list[dict[str, str]] = []
     for check in checks:
@@ -131,6 +134,68 @@ def _validate_two_text_rhythm(messages: list[dict[str, Any]], state: dict[str, A
         raise ValueError("two_text_required_for_answer_with_next_step")
 
 
+def _validate_precision_reply_active_mainline_closure(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    precision = state.get("precision_qa_decision") if isinstance(state.get("precision_qa_decision"), dict) else {}
+    question_id = str(precision.get("question_id") or "").strip()
+    if not question_id or str(question_id).lower() in {"none", "unknown"}:
+        return
+    sales_progression = state.get("sales_progression") if isinstance(state.get("sales_progression"), dict) else {}
+    if str(sales_progression.get("status") or "").strip().lower() == "terminal":
+        return
+    text = _combined_text(messages)
+    if not text:
+        return
+    passive_phrases = (
+        "如果您想",
+        "如果你想",
+        "如果您愿意",
+        "如果你愿意",
+        "我可以继续给您",
+        "我可以继续给你",
+        "要不要了解",
+        "是否需要",
+        "您看要不要",
+        "你看要不要",
+    )
+    if any(phrase in text for phrase in passive_phrases):
+        raise ValueError("precision_reply_passive_mainline_closure")
+    if question_id == "one_session_effect" and any(
+        phrase in text for phrase in ("不是那种做了完全没变化", "不是完全没变化")
+    ):
+        raise ValueError("precision_reply_weak_one_session_confidence")
+    if not _precision_reply_has_mainline_action(messages, text):
+        raise ValueError("precision_reply_missing_mainline_action")
+
+
+def _validate_manual_transfer_screenshot_registration(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
+    is_manual_transfer = (
+        str(payment_decision.get("action") or "") == "manual_transfer"
+        or str(state.get("payment_action") or "") == "manual_transfer"
+    )
+    if not is_manual_transfer:
+        return
+    text = _combined_text(messages)
+    if not text or "截图" not in text:
+        raise ValueError("manual_transfer_missing_screenshot_registration")
+    if not any(term in text for term in ("登记", "备注", "接上", "核对")):
+        raise ValueError("manual_transfer_missing_screenshot_registration")
+
+
+def _validate_nearby_store_claim_has_fact(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    text = _combined_text(messages)
+    if "附近门店" not in text and "附近的门店" not in text:
+        return
+    if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
+        return
+    structured = _structured_facts(state)
+    if structured.get("store_facts") or structured.get("recommended_store"):
+        return
+    if str(state.get("normalized_content") or state.get("content") or "").strip().startswith("定位卡"):
+        return
+    raise ValueError("nearby_store_claim_without_location_fact")
+
+
 def _first_text(messages: list[dict[str, Any]]) -> str:
     for item in messages:
         if isinstance(item, dict) and str(item.get("type") or "text") == "text":
@@ -138,6 +203,40 @@ def _first_text(messages: list[dict[str, Any]]) -> str:
             if text:
                 return text
     return ""
+
+
+def _precision_reply_has_mainline_action(messages: list[dict[str, Any]], text: str) -> bool:
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        message_type = str(item.get("type") or "")
+        if message_type in {"payment_collection", "store_address", "image"}:
+            return True
+    value = str(text or "")
+    action_patterns = (
+        r"您在哪个城市",
+        r"你在哪个城市",
+        r"哪个城市.*哪个区",
+        r"在哪个区",
+        r"我(?:先|这边)?给您(?:对|匹配|发|留|登记|接)",
+        r"我(?:先|这边)?帮您(?:对|匹配|发|留|登记|接)",
+        r"活动名额",
+        r"活动价",
+        r"名额.{0,8}(?:留|锁|占)",
+        r"预约金",
+        r"收款卡",
+        r"截图发我",
+        r"您是.{0,6}(?:两位|几位)",
+        r"几位一起",
+        r"到店时间",
+        r"哪天",
+        r"上午|下午|周末",
+        r"同类.{0,8}(?:案例|效果|参考)",
+        r"(?:案例|效果参考).{0,8}发您",
+        r"满了我就",
+        r"确定参加",
+    )
+    return any(re.search(pattern, value) for pattern in action_patterns)
 
 
 def _last_assistant_text(state: dict[str, Any]) -> str:

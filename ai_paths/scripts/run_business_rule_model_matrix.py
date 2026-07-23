@@ -40,10 +40,11 @@ TRANSIENT_MODEL_ERROR_MARKERS = (
     "http 504",
     "timeout",
     "timed out",
+    "connecterror",
     "connection reset",
     "connection error",
+    "networkerror",
 )
-
 
 def _is_transient_model_error(exc: Exception) -> bool:
     detail = f"{type(exc).__name__}:{exc}".lower()
@@ -366,7 +367,12 @@ def _planner_result_has_transient_recovery_failure(result: tuple[dict[str, Any],
         return False
     if str(plan.get("planner_sub_rule_id") or "") == "PLANNER_SYSTEM_UNAVAILABLE":
         return True
-    return bool(plan.get("tool_policy_violations"))
+    # Match production behavior: a recovered Planner plan with policy
+    # violations is still passed to Reply, where hard facts and customer-visible
+    # text are validated or repaired. The matrix should fail only when Planner
+    # cannot produce a usable plan at all, not when it produces a plan plus
+    # repair guidance.
+    return False
 
 
 async def _run_planner_for_matrix(state: dict[str, Any], client: ModelClient) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -480,18 +486,24 @@ def _review_messages(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
                 "decision": row.get("planner_plan", {}).get("planner_decision"),
                 "payment_decision": row.get("planner_plan", {}).get("payment_decision"),
                 "sales_progression": row.get("planner_plan", {}).get("sales_progression"),
+                "precision_qa_decision": row.get("planner_plan", {}).get("precision_qa_decision"),
             },
             "reply_messages": row.get("reply_messages") or [],
             "tool_facts": (row.get("reply_payload") or {}).get("tool_facts") or {},
             "transaction_facts": (row.get("reply_payload") or {}).get("transaction_facts") or {},
             "business_rules": (row.get("reply_payload") or {}).get("business_rules") or {},
+            "precision_qa_playbook": (row.get("reply_payload") or {}).get("precision_qa_playbook") or {},
             "hard_errors": row.get("hard_errors") or [],
         }
         for row in rows
     ]
     system = """
 你是独立的中文微信销售回复质检模型。按每个 case 的 semantic_goal 和完整历史评估最终回复，不做关键词命中评分。
-事实依据包括 tool_facts、transaction_facts 和当前 business_rules；business_rules 中的当前价格、项目范围、预约金与退款政策是已提供事实，不能因为聊天历史未逐字出现就判成编造。
+事实依据包括 tool_facts、transaction_facts、当前 business_rules，以及 precision_qa_playbook.selected_question 中的精准回复业务边界；这些字段中的当前价格、项目范围、年龄边界、预约金与退款政策是已提供事实，不能因为聊天历史未逐字出现就判成编造。
+reply_messages 是最终结构化消息数组；如果数组里有 {"type":"payment_collection"}，就代表本轮确实发了收款卡，不要再说“文本提到卡片但没有可验证卡片”。如果数组里有 {"type":"store_address"}，就代表本轮确实发了真实门店卡，但仍要检查文本是否承诺了未经工具证明的“最近/更方便/本地有店”。
+客户口头说“付款成功/付好了”不是权威已付事实；回复不能说到账、核实成功或支付已确认。但如果回复只是顺着客户声明继续收姓名电话/到店意向，同时没有重复发卡、没有说已正式排期，可以按事实安全通过，最多扣表达分。
+不支持线上预约的项目（黑眼圈、痘坑、水光等）必须先明确拒绝该项目预约，不能发 payment_collection；若同时用封闭式问题询问客户是否也有斑点需求，可视为合适的轻主线承接，不应因没有强成交闭环而直接判失败。
+门店场景不要强迫销售话术主动说“这不代表最近/距离未知”这类负面免责声明；只要回复没有承诺最近、更近、方便、车程、公里或分钟，并且真实发出 store_address，就不能因未声明负面边界扣到 3 分以下。若评论判断“整体可上线/基本合格”，各项分数应至少为 4。
 每项1到5分：current_question、history_continuity、business_accuracy、sales_progression、human_tone、fact_safety。
 4分表示可以上线，5分表示优秀。任何事实编造、金额/卡片错误、空回复、答非所问、违反明确禁止项，都必须 overall_pass=false。
 只输出 JSON：{"evaluations":[{"run_id":"...","current_question":1,"history_continuity":1,"business_accuracy":1,"sales_progression":1,"human_tone":1,"fact_safety":1,"overall_pass":false,"issues":["..."],"comment":"..."}]}

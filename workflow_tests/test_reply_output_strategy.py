@@ -31,6 +31,7 @@ from app.graph.planner.brain_v2 import _current_known_store_for_planner, _planne
 from app.graph.planner.brain_v2_normalizer import _clean_scoped_location_query, build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import PLANNER_SYSTEM_PROMPT
 from app.schemas import ChatResponse, ReplyMessage
+from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
 from app.services.workflow_compat import workflow_response_from_chat
 
 
@@ -767,6 +768,12 @@ def test_current_turn_context_current_health_risk_still_hard_blocks_payment() ->
     assert context["resolved_slots"]["health_check"] == "required"
     assert "payment_collection" in context["blocked_actions"]
     assert "recommended_next_action" not in context
+
+
+def test_age_eligibility_question_is_not_health_risk_hold() -> None:
+    risk = health_risk_hold({"normalized_content": "我是未成年，能不能做啊"})
+
+    assert not is_hard_health_risk_hold(risk)
 
 
 def test_model_payloads_keep_current_hard_health_risk_fact() -> None:
@@ -4065,6 +4072,16 @@ def test_reply_validation_allows_group_payment_text_with_per_person_wording() ->
     )
 
 
+def test_reply_validation_allows_group_payment_text_with_each_pay_wording() -> None:
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": {"text": "可以的，两位先各付10元预约金，一共20元，到店抵扣。"}},
+            {"type": "payment_collection", "order": 2, "content": {"amount": 20, "remark": ""}},
+        ],
+        {"conversion_stage": "deposit_push", "next_step": "send_deposit"},
+    )
+
+
 def test_reply_validation_rejects_payment_collection_when_participants_over_limit() -> None:
     with pytest.raises(ValueError, match="payment_participant_count_confirm_required"):
         validate_reply_consistency(
@@ -5110,6 +5127,65 @@ def test_effect_case_soft_warning_keeps_reply_non_blocking() -> None:
     warnings = collect_reply_soft_warnings(messages, state)
 
     assert any("case_image_required_for_effect_turn" in item["detail"] for item in warnings)
+
+
+def test_precision_reply_passive_mainline_closure_is_soft_warning() -> None:
+    messages = [
+        {
+            "type": "text",
+            "order": 1,
+            "content": "不是普通洗脸，核心是斑点改善。到店会先检测斑点深浅和皮肤状态，适合再操作。",
+        },
+        {
+            "type": "text",
+            "order": 2,
+            "content": "如果您想，我可以继续给您把附近门店一起接上。",
+        },
+    ]
+    state = {
+        "precision_qa_decision": {"question_id": "treatment_method", "confidence": "high"},
+        "sales_progression": {"status": "continue", "target_stage": "store"},
+    }
+
+    warnings = collect_reply_soft_warnings(messages, state)
+
+    assert any(item.get("detail") == "precision_reply_passive_mainline_closure" for item in warnings)
+
+
+def test_precision_reply_missing_mainline_action_is_soft_warning() -> None:
+    messages = [
+        {
+            "type": "text",
+            "order": 1,
+            "content": "做完后一般注意基础护理就可以，重点是防晒、补水，先别频繁去角质或用太刺激的护肤方式。",
+        }
+    ]
+    state = {
+        "precision_qa_decision": {"question_id": "aftercare_guidance", "confidence": "high"},
+        "sales_progression": {"status": "continue", "target_stage": "activity", "action": "deliver_value"},
+    }
+
+    warnings = collect_reply_soft_warnings(messages, state)
+
+    assert any(item.get("detail") == "precision_reply_missing_mainline_action" for item in warnings)
+
+
+def test_one_session_weak_confidence_is_soft_warning() -> None:
+    messages = [
+        {
+            "type": "text",
+            "order": 1,
+            "content": "很多客户做一次就能看到改善，不是那种做了完全没变化的。",
+        },
+    ]
+    state = {
+        "precision_qa_decision": {"question_id": "one_session_effect", "confidence": "high"},
+        "sales_progression": {"status": "continue", "target_stage": "need_and_case"},
+    }
+
+    warnings = collect_reply_soft_warnings(messages, state)
+
+    assert any(item.get("detail") == "precision_reply_weak_one_session_confidence" for item in warnings)
 
 
 def _u(value: str) -> str:

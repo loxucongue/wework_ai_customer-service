@@ -49,6 +49,8 @@ def precision_qa_context_for_planner(
             "customer_psychology": item.get("customer_psychology"),
             "question_role": item.get("question_role"),
             "must_not_substitute": item.get("must_not_substitute") or [],
+            "first_ask_strategy": item.get("first_ask_strategy"),
+            "allowed_confidence": item.get("allowed_confidence") or [],
             "evidence_requirement": item.get("evidence_requirement"),
             "resume_mainline_stage": item.get("resume_mainline_stage"),
         }
@@ -114,10 +116,14 @@ def precision_qa_index_for_gate() -> list[dict[str, Any]]:
             _drop_empty(
                 {
                     "id": item.get("id"),
-                    "intent_definition": item.get("intent_definition"),
-                    "customer_psychology": item.get("customer_psychology"),
+                    "intent_definition": _compact_text(item.get("intent_definition"), max_chars=120),
+                    "customer_psychology": _compact_text(item.get("customer_psychology"), max_chars=90),
                     "question_role": item.get("question_role"),
-                    "must_not_substitute": item.get("must_not_substitute") or [],
+                    "must_not_substitute": [
+                        _compact_text(value, max_chars=80)
+                        for value in (item.get("must_not_substitute") or [])[:2]
+                        if _compact_text(value, max_chars=80)
+                    ],
                     "evidence_requirement": item.get("evidence_requirement"),
                     "resume_mainline_stage": item.get("resume_mainline_stage"),
                 }
@@ -160,3 +166,10 @@ def _load_json_policy_from_path(path: Path) -> dict[str, Any]:
 
 def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
+
+
+def _compact_text(value: Any, *, max_chars: int) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= max_chars:
+        return text
+    return text[: max(0, max_chars - 1)].rstrip() + "…"

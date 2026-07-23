@@ -534,6 +534,37 @@ def test_sop_gate_hands_location_slot_completion_to_ai() -> None:
         assert marker in source
 
 
+def test_sop_gate_prefers_activity_pack_for_activity_and_payment_questions() -> None:
+    source = (ROOT / "ai_paths/app/prompts/sop_chat_gate.py").read_text(encoding="utf-8")
+    for marker in [
+        "活动、优惠、价格、多少钱、怎么参加、怎么预约、怎么付预约金、怎么报名",
+        "s10_activity_intro",
+        "不要只返回 `ai_only` 让普通 AI 空泛解释",
+        "活动已经铺垫后再交 `ai_only` 给 Planner 处理发卡和交易事实",
+    ]:
+        assert marker in source
+
+
+def test_store_distance_feedback_must_resume_mainline_without_reasking_store() -> None:
+    sources = [
+        (ROOT / "ai_paths/app/prompts/global_contract.py").read_text(encoding="utf-8"),
+        (ROOT / "ai_paths/app/graph/planner/brain_v2_prompts.py").read_text(encoding="utf-8"),
+        (ROOT / "ai_paths/app/prompts/reply_synthesizer.py").read_text(encoding="utf-8"),
+        (ROOT / "ai_paths/app/prompts/sop_chat_gate.py").read_text(encoding="utf-8"),
+    ]
+    combined = "\n".join(sources)
+    for marker in [
+        "客户只是反馈远近",
+        "不要继续追问",
+        "恢复下一主线",
+        "需求案例",
+        "活动价格",
+    ]:
+        assert marker in combined
+    assert "我再接着给您发流程" in combined
+    assert "入口没对上" in sources[2]
+
+
 def test_sop_gate_requires_contextual_first_text_and_preserves_numeric_facts() -> None:
     prompt = (ROOT / "ai_paths/app/prompts/sop_chat_gate.py").read_text(encoding="utf-8")
     source = prompt + (ROOT / "ai_paths/app/services/sop_execution_service.py").read_text(encoding="utf-8")

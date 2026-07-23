@@ -154,6 +154,13 @@ class FakeFinalReplyModelClient:
         }
 
 
+class FakeAlwaysFailReplyModelClient:
+    available = True
+
+    async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
+        raise RuntimeError("Model HTTP 502: upstream unavailable")
+
+
 class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_valid_planner_direct_reply_still_uses_final_reply_model_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -187,6 +194,54 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, 1)
         self.assertEqual(output["reply_source"], "main_model")
         self.assertEqual(output["reply_messages"][0]["content"], "这是最终回复模型生成的成品。")
+
+    async def test_reply_model_failure_can_use_valid_planner_draft_with_non_visible_tool_policy_violations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=FakeAlwaysFailReplyModelClient(),
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-direct-fallback-with-policy-warning",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "planner_decision": "direct_reply",
+                "planner_reply_messages": [
+                    {
+                        "type": "text",
+                        "order": 1,
+                        "content": {"text": "收到亲，姓名和电话我看到了。您大概想今天、明天还是周末到店？"},
+                    }
+                ],
+                "tool_policy_violations": [
+                    {
+                        "task_type": "transaction_consistency",
+                        "missing": "accepted_implicit_requires_eligible_store_anchor_fact",
+                    }
+                ],
+                "fact_envelope": {},
+                "required_tools": [],
+            }
+
+            output = await node(state)
+
+        self.assertEqual(output["reply_source"], "planner_direct_reply_after_model_failure")
+        self.assertEqual(output["errors"], [])
+        self.assertEqual(output["reply_messages"][0]["content"]["text"], "收到亲，姓名和电话我看到了。您大概想今天、明天还是周末到店？")
+        self.assertTrue(
+            any(
+                item.get("message") == "planner_direct_reply_used_despite_non_visible_tool_policy_violations"
+                for item in output["warnings"]
+            )
+        )
 
     async def test_reply_synth_retries_once_when_json_missing_reply_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

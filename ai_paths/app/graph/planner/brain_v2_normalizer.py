@@ -46,6 +46,7 @@ from app.graph.state import AgentState
 from app.policies.constants import KNOWN_STORE_FACTS, KNOWN_STORE_NAMES
 from app.policies.sales_flow import precision_qa_for_id
 from app.services.payment_collection import (
+    activity_intro_completed_for_payment,
     payment_amount_for_party_size,
     payment_collection_content,
     payment_collection_context,
@@ -396,6 +397,47 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "order_decision": order_decision,
         "planner_tool_calls": required_tools,
     }
+    if _payment_send_requires_activity_intro(
+        conversion_stage=conversion_stage,
+        next_step=next_step,
+        payment_action=payment_action,
+        payment_decision=payment_decision,
+        messages=planner_reply_messages,
+    ) and not activity_intro_completed_for_payment(state_for_payment):
+        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        payment_decision = _with_payment_decision_action(
+            payment_decision,
+            "explain",
+            source="activity_intro_required",
+            confidence="high",
+            basis="payment_collection requires completed activity intro evidence",
+        )
+        payment_action = "explain_existing"
+        if conversion_stage == "deposit_push":
+            conversion_stage = "interest_capture"
+        if next_step == "send_deposit":
+            next_step = "introduce_activity"
+        state_for_payment = {
+            **state,
+            "payment_decision": payment_decision,
+            "order_decision": order_decision,
+            "planner_tool_calls": required_tools,
+        }
+        normalizer_policy_violations.append(
+            {
+                "task_type": "reply_schema_consistency",
+                "subtype": "payment_collection",
+                "missing": "payment_collection_requires_activity_intro",
+                "note": (
+                    "The customer has not yet seen a completed activity price intro. "
+                    "Do not send payment_collection or promise the payment card yet; first explain the 268 activity, "
+                    "10 yuan deposit, offset, and refundable boundary, then continue the sales rhythm."
+                ),
+            }
+        )
+        reply_constraints.append(
+            "活动报价/预约金规则尚无已完成证据时，不发送 payment_collection，也不要承诺本轮已发入口；先补活动价和预约金口径。"
+        )
     planner_reply_messages = _append_required_payment_collection(
         state=state_for_payment,
         decision=decision,
@@ -2842,6 +2884,24 @@ def _payment_consistency_violations(
             ]
         return []
     payment_context = payment_collection_context(state={**state, "payment_decision": payment_decision}, messages=messages)
+    if _payment_send_requires_activity_intro(
+        conversion_stage=conversion_stage,
+        next_step=next_step,
+        payment_action=payment_action,
+        payment_decision=payment_decision,
+        messages=messages,
+    ) and not activity_intro_completed_for_payment(state):
+        return [
+            {
+                "task_type": "reply_schema_consistency",
+                "subtype": "payment_collection",
+                "missing": "payment_collection_requires_activity_intro",
+                "note": (
+                    "Activity price intro is not completed yet. First explain the activity price and deposit policy; "
+                    "do not send or promise payment_collection in this turn."
+                ),
+            }
+        ]
     if (conversion_stage == "deposit_push" or next_step == "send_deposit" or _text_mentions_payment_entry(messages)) and payment_context["over_limit"]:
         return [
             {
@@ -2930,6 +2990,25 @@ def _payment_consistency_violations(
     ]
 
 
+def _payment_send_requires_activity_intro(
+    *,
+    conversion_stage: str,
+    next_step: str,
+    payment_action: str,
+    payment_decision: dict[str, Any],
+    messages: list[dict[str, Any]],
+) -> bool:
+    decision_action = str(payment_decision.get("action") or "")
+    return (
+        decision_action in {"send_now", "resend"}
+        or payment_action == "send_now"
+        or conversion_stage == "deposit_push"
+        or next_step == "send_deposit"
+        or _has_payment_collection(messages)
+        or _text_mentions_payment_entry(messages)
+    )
+
+
 def _remove_advisory_health_handoff_notices(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
     output: list[dict[str, Any]] = []
     removed = False
@@ -3006,6 +3085,8 @@ def _append_required_payment_collection(
     if decision_action in {"none", "explain", "manual_transfer", "after_paid_next_step", "ask_party_size"}:
         return _remove_payment_collection_messages(messages)
     if payment_action in {"none", "manual_transfer", "offer_resend", "explain_existing", "confirm_next_step"} and decision_action not in {"send_now", "resend"}:
+        return _remove_payment_collection_messages(messages)
+    if not activity_intro_completed_for_payment(state):
         return _remove_payment_collection_messages(messages)
     if not messages or _has_payment_collection(messages) or _text_explains_previous_payment_entry(messages):
         return messages
