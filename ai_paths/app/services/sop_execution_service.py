@@ -80,6 +80,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 事实优先级必须是：最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件。低优先级信息不得覆盖高优先级事实。
 - `platform_actions` 模式下，`current_platform_task.message_content` 是平台根据当前流程选出的本轮触达任务。除最新聊天或订单/支付等硬事实与它明确冲突外，必须优先分析它的阶段目的，不能因旧画像、历史累计或“客户已付”而整体忽略。
 - `platform_actions` 模式不受 `first_add_flow` 的新客主线前置限制。只要 `current_platform_task.message_content` 有完整 text/image，且没有正在聊天、明确拒绝、已付禁收款、健康投诉等硬冲突，就应 `send`；不要因为缺门店定位、缺活动铺垫或缺候选 SOP 而拒发平台任务。
+- `platform_actions` 模式如果输入已有可发送的 text/image 内容，不能改成 `send_ai_touch` 来替代平台任务；`send_ai_touch` 只用于 `first_add_flow` 固定候选都不合适但仍要轻触的场景。平台任务需要润色时，使用 `send + text_adjustments/message_operations`。
 - 已支付预约金只禁止再次发送预约金卡或催付，不禁止催到店、姓名电话登记、活动服务说明及其他与已付状态一致的后续触达。平台内容属于后续到店推进时，应保留其目标并按上下文自然润色。
 - 客户画像和旧事件不是当前对话事实，不能成为强制发送依据，也不能覆盖近期聊天中的城市、问题、顾虑、拒绝或已经完成的行动。
 - 固定首次加微流程中，只有“最新真实客户消息还没被普通 AI/销售回复”会在代码层阻断。客户之前回复过、但最近是小贝/销售发完后客户沉默，属于主动触达场景，必须尽量发 SOP 或轻触，不得因为“客户曾回复过/之前追问过”而空拒。
@@ -111,6 +112,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
   - `payment_collection_gate.status=paid_skip_card`：客户已付，不得再发预约金卡；只可保留/改写为已付后的姓名电话或到店安排轻触达。
   - `payment_collection_gate.status=activity_intro_required`：完整活动介绍/价格铺垫还没有真实完成证据，不得发送预约金卡。结构化完成和近期聊天语义完成都是真实证据；如果近期已经讲清活动价、10元预约金、抵扣和可退，不要重复活动包，应写 `stage_skip_evidence` 后评估预约金轻触/收款候选。若没有这些证据，应优先选择活动介绍、效果铺垫或其他非收款候选；如果候选里没有合适包，拒发并说明还需先补活动介绍。
   - `event_s10_price_quote_60min` 这类短报价包不能单独替代 `s10_activity_intro` 的完整活动介绍。结构化 `completed_sop_pack_ids/categories` 是最强完成证据；如果近期真实聊天已经完整讲过活动价、10元预约金、到店抵扣、未做或不满意可退、到店时间可按客户方便安排，也可作为语义完成证据，但必须在 `stage_skip_evidence` 写清楚，不能再重复发送 `s10_activity_intro`。
+- 当 `mainline_stage_status.activity_and_price.structural_completed=true`，客户未付且没有明确拒付、投诉、付款异常、健康风险或最新待回复问题时，如果候选里存在 `deposit_decision/payment_followup/deposit_push` 阶段包，应优先选择后续预约金/未付跟进包或 `send_ai_touch`，不要 `skip`。这类场景的目标是继续推动客户决策，而不是重复活动介绍，也不是空触达。
 - `payment_collection_gate` 必须逐个候选包独立判断。一个后置收款包是 `activity_intro_required`，不代表同轮其他非收款候选也不可发；如果候选中存在 `not_required/supported` 的活动介绍或效果包，应选择合法的前序包，不能因为另一个候选被拦而整轮 `skip`。
 - 只有在 `conversation_activity.latest_customer_pending_ai_reply=true`、客户明确拒绝当前核心行动、投诉/付款异常/身体不适、或候选包会明显造成事实错误时，才 `send_sop=false`。
 - 客户明确表示“不交/不想付/先别发预约金/到店再付”等拒绝当前预约金动作时，整个收款阶段候选都与当前立场冲突，必须 `skip` 或 `defer`。不能通过删除 `payment_collection` 后继续发送“留名额、付完登记”等催款文本来绕过拒绝；文本润色也不能把拒付改写成可继续催付。
@@ -1461,6 +1463,8 @@ def _event_selector_input(
             completed_sop_categories=completed_sop_categories,
             conversation_messages=conversation_messages,
             conversation_activity=conversation_activity,
+            customer_memory=customer_memory,
+            customer_context=customer_context,
         ),
         "event_policy_evidence": event_policy_evidence,
         **memory_context,
@@ -1489,6 +1493,8 @@ def _mainline_stage_status(
     completed_sop_categories: list[str],
     conversation_messages: list[dict[str, Any]] | None = None,
     conversation_activity: dict[str, Any] | None = None,
+    customer_memory: dict[str, Any] | None = None,
+    customer_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     completed_ids = {_string(item) for item in completed_sop_pack_ids if _string(item)}
     completed_categories = {_string(item) for item in completed_sop_categories if _string(item)}
@@ -1511,6 +1517,24 @@ def _mainline_stage_status(
         if stage_id:
             completed_by_stage.setdefault(stage_id, {"pack_ids": [], "categories": []})["categories"].append(category)
 
+    payment_progress = _mainline_payment_progress_evidence(customer_memory or {}, customer_context or {})
+    for stage_id, evidence in payment_progress.items():
+        if evidence:
+            completed_by_stage.setdefault(stage_id, {"pack_ids": [], "categories": []})
+
+    stage_order_by_id = {
+        _string(stage.get("id")): _int(stage.get("order"), 9999)
+        for stage in (sales_mainline_for_model().get("stages") or [])
+        if isinstance(stage, dict) and _string(stage.get("id"))
+    }
+    completed_stage_order = max(
+        (
+            stage_order_by_id.get(stage_id, 0)
+            for stage_id, completed in completed_by_stage.items()
+            if completed.get("pack_ids") or completed.get("categories") or payment_progress.get(stage_id)
+        ),
+        default=0,
+    )
     timeline_evidence = _mainline_timeline_evidence(
         conversation_messages or [],
         conversation_activity or {},
@@ -1525,7 +1549,15 @@ def _mainline_stage_status(
         completed = completed_by_stage.get(stage_id, {"pack_ids": [], "categories": []})
         candidate_ids = [item for item in candidate_by_stage.get(stage_id, []) if item]
         timeline_completed = bool(timeline_evidence.get(stage_id))
-        structural_completed = bool(completed.get("pack_ids") or completed.get("categories") or timeline_completed)
+        payment_completed = bool(payment_progress.get(stage_id))
+        progression_completed = bool(completed_stage_order and _int(stage.get("order"), 9999) < completed_stage_order)
+        structural_completed = bool(
+            completed.get("pack_ids")
+            or completed.get("categories")
+            or timeline_completed
+            or payment_completed
+            or progression_completed
+        )
         output.append(
             _drop_empty(
                 {
@@ -1536,6 +1568,17 @@ def _mainline_stage_status(
                     "structural_completed": structural_completed,
                     "timeline_completed": timeline_completed,
                     "timeline_evidence": timeline_evidence.get(stage_id),
+                    "payment_completed": payment_completed,
+                    "payment_evidence": payment_progress.get(stage_id),
+                    "progression_completed": progression_completed,
+                    "progression_evidence": _drop_empty(
+                        {
+                            "source": "later_structural_stage",
+                            "completed_stage_order": completed_stage_order,
+                        }
+                    )
+                    if progression_completed
+                    else {},
                     "completed_pack_ids": sorted(set(completed.get("pack_ids") or [])),
                     "completed_categories": sorted(set(completed.get("categories") or [])),
                     "model_semantic_review_required": bool(candidate_ids and not structural_completed),
@@ -1551,10 +1594,18 @@ def _mainline_timeline_evidence(
 ) -> dict[str, dict[str, Any]]:
     """Expose time-ordered conversation facts without deciding normal sales semantics."""
 
+    output: dict[str, dict[str, Any]] = {}
+    location_evidence = _recent_location_capture_evidence(conversation_messages)
+    if location_evidence:
+        output["location_capture"] = location_evidence
+    activity_evidence = _recent_activity_price_evidence(conversation_messages)
+    if activity_evidence:
+        output["activity_and_price"] = activity_evidence
+
     real_customer_count = _int(conversation_activity.get("real_customer_message_count"), 0)
     customer_replied = bool(conversation_activity.get("customer_replied"))
     if real_customer_count <= 0 and not customer_replied:
-        return {}
+        return output
     customer_samples: list[str] = []
     for item in conversation_messages[-30:]:
         if not isinstance(item, dict):
@@ -1576,7 +1627,94 @@ def _mainline_timeline_evidence(
         "last_message_direction": _string(conversation_activity.get("last_message_direction")),
         "sample_customer_messages": customer_samples,
     }
-    return {"opening_and_positioning": _drop_empty(evidence)}
+    output["opening_and_positioning"] = _drop_empty(evidence)
+    return output
+
+
+def _recent_location_capture_evidence(conversation_messages: list[dict[str, Any]]) -> dict[str, Any]:
+    assistant_texts: list[str] = []
+    for item in conversation_messages[-12:]:
+        if not isinstance(item, dict):
+            continue
+        direction = _string(item.get("direction") or item.get("role") or item.get("sender_type") or item.get("from")).lower()
+        if direction not in {"assistant", "staff", "ai", "agent"}:
+            continue
+        text = _message_text(item.get("content"))
+        if text:
+            assistant_texts.append(text)
+    if not assistant_texts:
+        return {}
+    combined = "\n".join(assistant_texts)[-900:]
+    compact = combined.replace(" ", "")
+    asked_scope = any(term in compact for term in ("城市", "哪个区", "区域", "定位", "门店位置", "附近门店"))
+    asked_customer = any(term in compact for term in ("您在", "您是", "发我", "给我", "方便发", "在哪"))
+    if not (asked_scope and asked_customer):
+        return {}
+    return _drop_empty(
+        {
+            "source": "recent_assistant_location_capture_prompt",
+            "reason": "recent_chat_already_asked_customer_for_city_district_or_location",
+            "sample_assistant_text": combined[-240:],
+        }
+    )
+
+
+def _recent_activity_price_evidence(conversation_messages: list[dict[str, Any]]) -> dict[str, Any]:
+    assistant_texts: list[str] = []
+    for item in conversation_messages[-30:]:
+        if not isinstance(item, dict):
+            continue
+        direction = _string(item.get("direction") or item.get("role") or item.get("sender_type") or item.get("from")).lower()
+        if direction not in {"assistant", "staff", "ai", "agent"}:
+            continue
+        text = _message_text(item.get("content"))
+        if text:
+            assistant_texts.append(text)
+    if not assistant_texts:
+        return {}
+    combined = "\n".join(assistant_texts)[-1800:]
+    compact = combined.replace(" ", "")
+    facts = {
+        "activity_price_268": "268" in compact,
+        "deposit_10": "10" in compact and any(term in compact for term in ("预约金", "定金", "报名", "收款卡", "小程序")),
+        "deduct_at_store": "抵扣" in compact,
+        "refund_or_satisfaction": any(term in compact for term in ("可退", "退", "不满意")),
+    }
+    if not all(facts.values()):
+        return {}
+    return _drop_empty(
+        {
+            "source": "recent_assistant_activity_price_facts",
+            "reason": "recent_chat_contains_complete_activity_price_and_deposit_facts",
+            "facts": facts,
+            "sample_assistant_text": combined[-360:],
+        }
+    )
+
+
+def _mainline_payment_progress_evidence(
+    customer_memory: dict[str, Any],
+    customer_context: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    payment = _payment_state_summary(customer_memory, customer_context)
+    deposit_state = _string(payment.get("deposit_state"))
+    if not is_paid_deposit_state(deposit_state):
+        return {}
+    evidence = _drop_empty(
+        {
+            "source": "current_payment_state",
+            "reason": "deposit_paid_enters_post_paid_registration",
+            "deposit_state": deposit_state,
+            "payment_source": _string(payment.get("source")),
+        }
+    )
+    return {
+        "opening_and_positioning": evidence,
+        "location_capture": evidence,
+        "need_and_case": evidence,
+        "activity_and_price": evidence,
+        "deposit_decision": evidence,
+    }
 
 
 def _platform_task_message_content(payload: dict[str, Any], customer: dict[str, Any]) -> list[dict[str, str]]:
@@ -1611,16 +1749,24 @@ def _platform_content_text(value: Any) -> str:
 
 def _payment_state_summary(customer_memory: dict[str, Any], customer_context: dict[str, Any]) -> dict[str, Any]:
     basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
+    stored_deposit_state = _string(basic.get("deposit_state"))
     payment = resolved_payment_fact(
         orders=customer_context.get("orders") if isinstance(customer_context, dict) else [],
-        existing_state=_string(basic.get("deposit_state")),
+        existing_state=stored_deposit_state,
         existing_source=_string(basic.get("deposit_source")),
         existing_fact=basic.get("deposit_fact"),
     )
     order_gate = customer_context.get("_sop_order_gate") if isinstance(customer_context.get("_sop_order_gate"), dict) else {}
+    fallback_paid_state = stored_deposit_state if is_paid_deposit_state(stored_deposit_state) else ""
     return {
-        "deposit_state": _string(payment.get("deposit_state")) or _string(order_gate.get("deposit_state")) or "unknown",
-        "source": _string(payment.get("source")) or _string(order_gate.get("source")) or "unknown",
+        "deposit_state": _string(payment.get("deposit_state"))
+        or _string(order_gate.get("deposit_state"))
+        or fallback_paid_state
+        or "unknown",
+        "source": _string(payment.get("source"))
+        or _string(order_gate.get("source"))
+        or (_string(basic.get("deposit_source")) if fallback_paid_state else "")
+        or "unknown",
         "order_id": _string(payment.get("order_id")) or _string(order_gate.get("order_id")),
         "store_id": _string(payment.get("store_id")) or _string(order_gate.get("store_id")),
         "prepay_required": payment.get("prepay_required", order_gate.get("prepay_required")),

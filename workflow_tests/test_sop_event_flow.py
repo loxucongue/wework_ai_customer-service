@@ -792,6 +792,231 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(opening["timeline_evidence"]["source"], "recent_conversation_timeline")
         self.assertEqual(opening["timeline_evidence"]["real_customer_message_count"], 1)
 
+    def test_event_selector_treats_later_completed_stage_as_prior_progress(self) -> None:
+        selector_input = _event_selector_input(
+            payload={"event_type": "sop_friend_added_schedule_batch"},
+            customer={},
+            event_type="sop_friend_added_schedule_batch",
+            conversation_messages=[],
+            conversation_activity={},
+            customer_memory={},
+            customer_context={},
+            candidate_packs=[
+                {
+                    "id": "event_s10_store_prompt_5min",
+                    "order": 15,
+                    "sop_category": "store_prompt",
+                    "mainline_stage": "location_capture",
+                    "reply_messages": [{"type": "text", "content": {"text": "城市"}}],
+                },
+                {
+                    "id": "event_s10_deposit_push_70min",
+                    "order": 50,
+                    "sop_category": "deposit_push",
+                    "mainline_stage": "deposit_decision",
+                    "reply_messages": [{"type": "text", "content": {"text": "预约金"}}],
+                },
+            ],
+            actions_reply_messages=[],
+            completed_sop_pack_ids=["s10_activity_intro"],
+            completed_sop_categories=["s10_activity_intro"],
+            event_policy_evidence={},
+        )
+
+        stage_status = {
+            item["stage_id"]: item
+            for item in selector_input["mainline_stage_status"]
+        }
+        self.assertTrue(stage_status["location_capture"]["structural_completed"])
+        self.assertTrue(stage_status["location_capture"]["progression_completed"])
+        self.assertTrue(stage_status["need_and_case"]["progression_completed"])
+        self.assertTrue(stage_status["activity_and_price"]["structural_completed"])
+
+        output, violations = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["event_s10_deposit_push_70min"]},
+            selector_input,
+        )
+
+        self.assertEqual(violations, [])
+        self.assertEqual(output["selected_pack_ids"], ["event_s10_deposit_push_70min"])
+
+    def test_event_selector_marks_activity_complete_from_recent_assistant_facts(self) -> None:
+        selector_input = _event_selector_input(
+            payload={"event_type": "sop_friend_added_schedule_batch"},
+            customer={},
+            event_type="sop_friend_added_schedule_batch",
+            conversation_messages=[
+                {
+                    "direction": "assistant",
+                    "message_type": "text",
+                    "content": "现在活动价268，每位10元预约金锁活动名额，到店抵扣，未做或不满意可退。",
+                }
+            ],
+            conversation_activity={},
+            customer_memory={},
+            customer_context={},
+            candidate_packs=[
+                {
+                    "id": "s10_activity_intro",
+                    "order": 40,
+                    "sop_category": "s10_activity_intro",
+                    "mainline_stage": "activity_and_price",
+                    "reply_messages": [{"type": "text", "content": {"text": "活动"}}],
+                },
+                {
+                    "id": "event_s10_deposit_push_70min",
+                    "order": 50,
+                    "sop_category": "deposit_push",
+                    "mainline_stage": "deposit_decision",
+                    "reply_messages": [{"type": "text", "content": {"text": "预约金"}}],
+                },
+            ],
+            actions_reply_messages=[],
+            completed_sop_pack_ids=["s10_new_customer_opening", "s10_need_and_case"],
+            completed_sop_categories=["s10_new_customer_opening", "s10_need_and_case"],
+            event_policy_evidence={},
+        )
+
+        stage_status = {
+            item["stage_id"]: item
+            for item in selector_input["mainline_stage_status"]
+        }
+        self.assertTrue(stage_status["activity_and_price"]["structural_completed"])
+        self.assertTrue(stage_status["activity_and_price"]["timeline_completed"])
+        self.assertEqual(
+            stage_status["activity_and_price"]["timeline_evidence"]["source"],
+            "recent_assistant_activity_price_facts",
+        )
+
+        output, violations = normalize_event_decision(
+            {
+                "decision": "send",
+                "selected_pack_ids": ["event_s10_deposit_push_70min"],
+                "stage_skip_evidence": [
+                    {
+                        "stage_id": "activity_and_price",
+                        "pack_id": "s10_activity_intro",
+                        "evidence": "近期聊天已完整讲过268、10元预约金、到店抵扣和可退。",
+                    }
+                ],
+            },
+            selector_input,
+        )
+
+        self.assertEqual(violations, [])
+        self.assertEqual(output["selected_pack_ids"], ["event_s10_deposit_push_70min"])
+
+    def test_event_selector_marks_location_complete_from_recent_assistant_prompt(self) -> None:
+        selector_input = _event_selector_input(
+            payload={"event_type": "sop_friend_added_schedule_batch"},
+            customer={},
+            event_type="sop_friend_added_schedule_batch",
+            conversation_messages=[
+                {
+                    "direction": "assistant",
+                    "message_type": "text",
+                    "content": "亲，您在哪个城市哪个区呢？我帮您看附近门店。",
+                }
+            ],
+            conversation_activity={},
+            customer_memory={},
+            customer_context={},
+            candidate_packs=[
+                {
+                    "id": "event_s10_store_prompt_5min",
+                    "order": 15,
+                    "sop_category": "store_prompt",
+                    "mainline_stage": "location_capture",
+                    "reply_messages": [{"type": "text", "content": {"text": "城市"}}],
+                },
+                {
+                    "id": "s10_need_and_case",
+                    "order": 30,
+                    "sop_category": "s10_need_and_case",
+                    "mainline_stage": "need_and_case",
+                    "reply_messages": [{"type": "text", "content": {"text": "案例"}}],
+                },
+            ],
+            actions_reply_messages=[],
+            completed_sop_pack_ids=["s10_new_customer_opening"],
+            completed_sop_categories=["s10_new_customer_opening"],
+            event_policy_evidence={},
+        )
+
+        stage_status = {
+            item["stage_id"]: item
+            for item in selector_input["mainline_stage_status"]
+        }
+        self.assertTrue(stage_status["location_capture"]["structural_completed"])
+        self.assertTrue(stage_status["location_capture"]["timeline_completed"])
+        self.assertEqual(
+            stage_status["location_capture"]["timeline_evidence"]["source"],
+            "recent_assistant_location_capture_prompt",
+        )
+
+        output, violations = normalize_event_decision(
+            {
+                "decision": "send",
+                "selected_pack_ids": ["s10_need_and_case"],
+                "stage_skip_evidence": [
+                    {
+                        "stage_id": "location_capture",
+                        "pack_id": "event_s10_store_prompt_5min",
+                        "evidence": "近期助手已问过城市区域或定位。",
+                    }
+                ],
+            },
+            selector_input,
+        )
+
+        self.assertEqual(violations, [])
+        self.assertEqual(output["selected_pack_ids"], ["s10_need_and_case"])
+
+    def test_event_selector_paid_state_completes_pre_payment_stages(self) -> None:
+        selector_input = _event_selector_input(
+            payload={"event_type": "sop_friend_added_schedule_batch"},
+            customer={},
+            event_type="sop_friend_added_schedule_batch",
+            conversation_messages=[],
+            conversation_activity={},
+            customer_memory={"basic_info": {"deposit_state": "paid_by_order"}},
+            customer_context={},
+            candidate_packs=[
+                {
+                    "id": "event_s10_store_prompt_5min",
+                    "order": 15,
+                    "sop_category": "store_prompt",
+                    "mainline_stage": "location_capture",
+                    "reply_messages": [{"type": "text", "content": {"text": "城市"}}],
+                },
+                {
+                    "id": "event_s10_unpaid_effect_1h",
+                    "order": 60,
+                    "sop_category": "payment_followup",
+                    "mainline_stage": "deposit_decision",
+                    "reply_messages": [{"type": "text", "content": {"text": "付款"}}],
+                },
+            ],
+            actions_reply_messages=[],
+            completed_sop_pack_ids=[],
+            completed_sop_categories=[],
+            event_policy_evidence={},
+        )
+
+        stage_status = {
+            item["stage_id"]: item
+            for item in selector_input["mainline_stage_status"]
+        }
+        for stage_id in [
+            "opening_and_positioning",
+            "location_capture",
+            "need_and_case",
+            "activity_and_price",
+            "deposit_decision",
+        ]:
+            self.assertTrue(stage_status[stage_id]["structural_completed"])
+            self.assertTrue(stage_status[stage_id]["payment_completed"])
+
     def test_event_decision_requires_evidence_when_skipping_earlier_mainline_stage(self) -> None:
         selector_input = {
             "mode": "first_add_flow",
