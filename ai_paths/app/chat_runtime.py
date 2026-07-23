@@ -1171,8 +1171,10 @@ def _consume_task_result(task: asyncio.Task[Any]) -> None:
 def _should_run_async_finalize(state: AgentState) -> bool:
     planner_decision = str(state.get("planner_decision") or "").strip()
     if planner_decision == "direct_reply":
-        violations = state.get("tool_policy_violations") if isinstance(state.get("tool_policy_violations"), list) else []
-        return bool(violations)
+        # Planner owns the decision; Reply owns all ordinary customer-visible text.
+        # Keeping one finalization path prevents planner drafts from bypassing schema
+        # and factual consistency checks.
+        return True
     if planner_decision != "need_tools":
         return False
     tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []

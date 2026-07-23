@@ -80,6 +80,17 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(_should_run_async_finalize(state))
 
+    async def test_valid_direct_reply_also_waits_for_final_reply_model(self) -> None:
+        state = {
+            "planner_decision": "direct_reply",
+            "tool_policy_violations": [],
+            "planner_reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "planner draft"}}
+            ],
+        }
+
+        self.assertTrue(_should_run_async_finalize(state))
+
     async def test_professional_assist_waits_for_final_reply(self) -> None:
         messages = _planner_sync_reply_messages(
             {

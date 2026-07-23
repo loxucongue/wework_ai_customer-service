@@ -446,20 +446,9 @@ def _structured_deposit_state(state: dict[str, Any], *, sent_summary: dict[str, 
         return "deposit_paid"
     if resolved.get("deposit_state") == "required_unpaid":
         return "required_unpaid"
-    for mapping in _deposit_signal_mappings(state):
-        for key, value in mapping.items():
-            key_text = str(key or "").lower()
-            value_text = str(value or "")
-            if key_text in {"deposit_paid", "payment_paid", "has_paid_deposit"} and _truthy_flag(value):
-                return "deposit_paid"
-            if key_text in {"deposit_failed", "payment_failed"} and _failed_flag(value):
-                return "payment_failed"
-            if any(marker in key_text for marker in ("deposit", "payment", "预约金", "付款", "支付")):
-                normalized = value_text.strip().lower()
-                if normalized in STRUCTURED_DEPOSIT_PAID_VALUES:
-                    return "deposit_paid"
-                if normalized in STRUCTURED_DEPOSIT_FAILED_VALUES:
-                    return "payment_failed"
+    image_info = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
+    if str(image_info.get("payment_result") or "").strip().lower() == "failed":
+        return "payment_failed"
     if sent_summary.get("payment_collection_sent") or _payment_collection_sent_from_events(state):
         return "payment_link_sent"
     return "unknown"

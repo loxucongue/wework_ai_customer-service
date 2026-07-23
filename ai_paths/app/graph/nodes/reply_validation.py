@@ -383,6 +383,29 @@ def _validate_structured_delivery_promises(messages: list[dict[str, Any]], state
         )
     ) and any(term in text for term in ("效果", "案例", "改善参考", "同类淡斑"))
     if not promises_case_image:
+        delivery_terms = (
+            "\u7ed9\u60a8\u53d1",
+            "\u7ed9\u4f60\u53d1",
+            "\u53d1\u60a8",
+            "\u53d1\u4f60",
+            "\u7ee7\u7eed\u7ed9\u60a8\u770b",
+            "\u7ee7\u7eed\u7ed9\u4f60\u770b",
+            "\u518d\u7ed9\u60a8\u63a5\u4e00\u7ec4",
+            "\u518d\u7ed9\u4f60\u63a5\u4e00\u7ec4",
+        )
+        media_terms = (
+            "\u6548\u679c\u56fe",
+            "\u6848\u4f8b",
+            "\u6539\u5584\u53c2\u8003",
+            "\u5b9e\u9645\u53c2\u8003\u56fe",
+            "\u53c2\u8003\u56fe",
+            "\u540c\u7c7b\u6de1\u6591",
+            "\u540c\u7c7b\u6539\u5584\u53c2\u8003",
+        )
+        promises_case_image = any(term in text for term in delivery_terms) and any(
+            term in text for term in media_terms
+        )
+    if not promises_case_image:
         return
     if any(str(item.get("type") or "") == "image" for item in messages if isinstance(item, dict)):
         return

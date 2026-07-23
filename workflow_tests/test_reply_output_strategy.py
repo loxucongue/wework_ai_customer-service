@@ -144,6 +144,18 @@ def test_reply_validation_blocks_case_image_promise_without_image_structure() ->
         )
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "我先把同类改善参考继续给您看。",
+        "脸上的可以看，我再给您接一组脸部的实际参考图。",
+    ],
+)
+def test_reply_validation_blocks_additional_case_image_promises_without_image(text: str) -> None:
+    with pytest.raises(ValueError, match="case_image_structure_required_when_reply_promises_delivery"):
+        validate_reply_consistency([{"type": "text", "order": 1, "content": text}], {})
+
+
 def test_reply_validation_blocks_customer_visible_internal_fact_language() -> None:
     with pytest.raises(ValueError, match="customer_visible_internal_language"):
         validate_reply_consistency(
@@ -279,6 +291,31 @@ def test_current_turn_context_binds_renne_to_deposit_push() -> None:
     assert context["turn_evidence"]["history_evidence"]["is_short_message"] is True
     assert context["turn_evidence"]["payment_evidence"]["link_sent_evidence"] is True
     assert "reply_anchor" not in context["turn_evidence"]
+
+
+def test_sent_payment_link_in_profile_does_not_become_paid_fact() -> None:
+    context = build_current_turn_context(
+        {
+            "normalized_content": "脸上的",
+            "customer_profile": {"deposit_state": "deposit_paid"},
+            "customer_basic_info": {
+                "deposit_state": {
+                    "status": "payment_link_sent",
+                    "source": "payment_collection_sent",
+                }
+            },
+            "history_events": [
+                {
+                    "event_type": "payment_collection_sent",
+                    "facts": {"message_type": "payment_collection", "amount": 10},
+                }
+            ],
+            "customer_context": {"orders": []},
+        }
+    )
+
+    assert context["deposit_state"] == "payment_link_sent"
+    assert "structured_payment_state" not in context["turn_evidence"]["payment_evidence"]
 
 
 def test_sent_message_summary_separates_today_and_prior_without_double_counting() -> None:
@@ -591,7 +628,12 @@ def test_current_turn_context_post_deposit_time_confirmation_missing_store() -> 
                 "用户: 我已经付款了，预约金已付",
                 "小贝: 好的，您明天还是后天方便到店检测？",
             ],
-            "customer_profile": {"deposit_state": "已支付"},
+            "customer_basic_info": {
+                "deposit_state": {
+                    "status": "paid_by_screenshot",
+                    "source": "vision.payment_proof",
+                }
+            },
         }
     )
 
