@@ -17,6 +17,7 @@ from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import (
     SOP_EVENT_SYSTEM_PROMPT,
     SopExecutionService,
+    _event_selector_input,
     first_add_candidate_packs,
     is_platform_auto_opening_message,
 )
@@ -685,6 +686,111 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(violations, [])
         self.assertEqual(output["selected_pack_ids"], ["effect"])
+
+    def test_event_decision_rejects_opening_when_timeline_completed_it(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {
+                    "id": "s10_new_customer_opening",
+                    "order": 10,
+                    "sop_category": "s10_new_customer_opening",
+                    "mainline_stage": "opening_and_positioning",
+                },
+                {
+                    "id": "s10_need_and_case",
+                    "order": 20,
+                    "sop_category": "s10_need_and_case",
+                    "mainline_stage": "need_and_case",
+                },
+            ],
+            "completed_sop_pack_ids": [],
+            "completed_sop_categories": [],
+            "mainline_stage_status": [
+                {
+                    "stage_id": "opening_and_positioning",
+                    "structural_completed": True,
+                    "timeline_completed": True,
+                },
+                {"stage_id": "need_and_case", "structural_completed": False},
+            ],
+            "ai_reply_policy": {"allowed": False},
+        }
+
+        _, opening_violations = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["s10_new_customer_opening"]},
+            selector_input,
+        )
+        output, next_violations = normalize_event_decision(
+            {"decision": "send", "selected_pack_ids": ["s10_need_and_case"]},
+            selector_input,
+        )
+
+        self.assertIn("selected_packs_must_start_with_earliest_candidate", opening_violations)
+        self.assertEqual(next_violations, [])
+        self.assertEqual(output["selected_pack_ids"], ["s10_need_and_case"])
+
+    def test_event_selector_marks_opening_completed_from_customer_timeline(self) -> None:
+        selector_input = _event_selector_input(
+            payload={"event_type": "sop_friend_added_schedule_batch"},
+            customer={},
+            event_type="sop_friend_added_schedule_batch",
+            conversation_messages=[
+                {
+                    "direction": "customer",
+                    "source": "archive_history",
+                    "message_type": "text",
+                    "content": "苗儿19539465093",
+                    "message_time": 1784817876425,
+                },
+                {
+                    "direction": "staff",
+                    "source": "system_task",
+                    "message_type": "text",
+                    "content": "姓名手机号已记，门店先按上海静安店登记。",
+                    "message_time": 1784817912564,
+                },
+            ],
+            conversation_activity={
+                "customer_replied": True,
+                "real_customer_message_count": 1,
+                "latest_customer_message_at": "2026-07-23T14:49:34.265000+00:00",
+                "latest_assistant_message_at": "2026-07-23T14:54:28.232000+00:00",
+                "last_message_direction": "staff",
+            },
+            customer_memory={},
+            customer_context={},
+            candidate_packs=[
+                {
+                    "id": "s10_new_customer_opening",
+                    "order": 10,
+                    "sop_category": "s10_new_customer_opening",
+                    "mainline_stage": "opening_and_positioning",
+                    "reply_messages": [{"type": "text", "content": {"text": "你好"}}],
+                },
+                {
+                    "id": "s10_need_and_case",
+                    "order": 20,
+                    "sop_category": "s10_need_and_case",
+                    "mainline_stage": "need_and_case",
+                    "reply_messages": [{"type": "text", "content": {"text": "案例"}}],
+                },
+            ],
+            actions_reply_messages=[],
+            completed_sop_pack_ids=[],
+            completed_sop_categories=[],
+            event_policy_evidence={},
+        )
+
+        stage_status = {
+            item["stage_id"]: item
+            for item in selector_input["mainline_stage_status"]
+        }
+        opening = stage_status["opening_and_positioning"]
+        self.assertTrue(opening["structural_completed"])
+        self.assertTrue(opening["timeline_completed"])
+        self.assertEqual(opening["timeline_evidence"]["source"], "recent_conversation_timeline")
+        self.assertEqual(opening["timeline_evidence"]["real_customer_message_count"], 1)
 
     def test_event_decision_requires_evidence_when_skipping_earlier_mainline_stage(self) -> None:
         selector_input = {

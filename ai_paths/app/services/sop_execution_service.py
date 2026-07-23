@@ -59,7 +59,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `recent_conversation`：最近 30 条已发生聊天，保留方向、来源、消息类型和时间。
 - `conversation_activity`：基于最新会话计算的客户回复、最后消息方向和时间可靠性摘要。
 - `candidate_sops`：可选的新客 SOP；每个包有阶段目的、候选分组、完整 `editable_text_messages` 与只读 `readonly_messages`。
-- `mainline_stage_status`：按销售主线整理的阶段状态、结构完成证据和本轮候选包。它用于判断最早未完成阶段，不能被 raw `order` 覆盖。
+- `mainline_stage_status`：按销售主线整理的阶段状态、结构完成证据、按时间线整理的聊天覆盖证据和本轮候选包。它用于判断最早未完成阶段，不能被 raw `order` 覆盖。
 - `platform_actions`：平台任务中的完整可编辑 text 与只读结构消息。
 - `current_platform_task.message_content`：平台本轮明确要求触达的原始内容，是 `platform_actions` 模式下的当前任务目标。
 - `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
@@ -83,6 +83,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 已支付预约金只禁止再次发送预约金卡或催付，不禁止催到店、姓名电话登记、活动服务说明及其他与已付状态一致的后续触达。平台内容属于后续到店推进时，应保留其目标并按上下文自然润色。
 - 客户画像和旧事件不是当前对话事实，不能成为强制发送依据，也不能覆盖近期聊天中的城市、问题、顾虑、拒绝或已经完成的行动。
 - 固定首次加微流程中，只有“最新真实客户消息还没被普通 AI/销售回复”会在代码层阻断。客户之前回复过、但最近是小贝/销售发完后客户沉默，属于主动触达场景，必须尽量发 SOP 或轻触，不得因为“客户曾回复过/之前追问过”而空拒。
+- 但客户已经真实开口、提供信息或进入后续登记/门店/支付/到店承接后，不能再发送 `s10_new_customer_opening`。这类情况应把破冰阶段视为已由聊天时间线覆盖，再选择下一主线包或 `send_ai_touch`。
 - 当 `conversation_activity.latest_customer_pending_ai_reply=true` 时，这是客户最新问题等待普通 AI/销售回答的硬边界，必须 `send_sop=false`；不能改选 `next_step` 绕过，也不能用润色把 SOP 当成答复。
 - 小贝/销售刚刚回复完客户的几分钟保护窗口会在代码层阻断，防止 SOP 紧贴上一条回复刷屏。进入本节点通常表示已经过了最近活跃保护窗口，或不存在刚回复完的活跃聊天。
 - 先做拒发审查，通过后才考虑“默认按 SOP 全流程发送”；不能用流程目标覆盖客户当前明确立场。
@@ -1458,6 +1459,8 @@ def _event_selector_input(
             candidate_packs=candidate_packs,
             completed_sop_pack_ids=completed_sop_pack_ids,
             completed_sop_categories=completed_sop_categories,
+            conversation_messages=conversation_messages,
+            conversation_activity=conversation_activity,
         ),
         "event_policy_evidence": event_policy_evidence,
         **memory_context,
@@ -1484,6 +1487,8 @@ def _mainline_stage_status(
     candidate_packs: list[dict[str, Any]],
     completed_sop_pack_ids: list[str],
     completed_sop_categories: list[str],
+    conversation_messages: list[dict[str, Any]] | None = None,
+    conversation_activity: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     completed_ids = {_string(item) for item in completed_sop_pack_ids if _string(item)}
     completed_categories = {_string(item) for item in completed_sop_categories if _string(item)}
@@ -1506,6 +1511,10 @@ def _mainline_stage_status(
         if stage_id:
             completed_by_stage.setdefault(stage_id, {"pack_ids": [], "categories": []})["categories"].append(category)
 
+    timeline_evidence = _mainline_timeline_evidence(
+        conversation_messages or [],
+        conversation_activity or {},
+    )
     output: list[dict[str, Any]] = []
     for stage in (sales_mainline_for_model().get("stages") or []):
         if not isinstance(stage, dict):
@@ -1515,7 +1524,8 @@ def _mainline_stage_status(
             continue
         completed = completed_by_stage.get(stage_id, {"pack_ids": [], "categories": []})
         candidate_ids = [item for item in candidate_by_stage.get(stage_id, []) if item]
-        structural_completed = bool(completed.get("pack_ids") or completed.get("categories"))
+        timeline_completed = bool(timeline_evidence.get(stage_id))
+        structural_completed = bool(completed.get("pack_ids") or completed.get("categories") or timeline_completed)
         output.append(
             _drop_empty(
                 {
@@ -1524,6 +1534,8 @@ def _mainline_stage_status(
                     "goal": _string(stage.get("goal"))[:180],
                     "candidate_pack_ids": candidate_ids,
                     "structural_completed": structural_completed,
+                    "timeline_completed": timeline_completed,
+                    "timeline_evidence": timeline_evidence.get(stage_id),
                     "completed_pack_ids": sorted(set(completed.get("pack_ids") or [])),
                     "completed_categories": sorted(set(completed.get("categories") or [])),
                     "model_semantic_review_required": bool(candidate_ids and not structural_completed),
@@ -1531,6 +1543,40 @@ def _mainline_stage_status(
             )
         )
     return output
+
+
+def _mainline_timeline_evidence(
+    conversation_messages: list[dict[str, Any]],
+    conversation_activity: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Expose time-ordered conversation facts without deciding normal sales semantics."""
+
+    real_customer_count = _int(conversation_activity.get("real_customer_message_count"), 0)
+    customer_replied = bool(conversation_activity.get("customer_replied"))
+    if real_customer_count <= 0 and not customer_replied:
+        return {}
+    customer_samples: list[str] = []
+    for item in conversation_messages[-30:]:
+        if not isinstance(item, dict):
+            continue
+        direction = _string(item.get("direction") or item.get("role") or item.get("sender_type") or item.get("from")).lower()
+        if direction != "customer":
+            continue
+        text = _message_text(item.get("content"))
+        if text:
+            customer_samples.append(text[:80])
+        if len(customer_samples) >= 3:
+            break
+    evidence = {
+        "source": "recent_conversation_timeline",
+        "reason": "customer_has_real_messages_after_first_add",
+        "real_customer_message_count": real_customer_count,
+        "latest_customer_message_at": _string(conversation_activity.get("latest_customer_message_at")),
+        "latest_assistant_message_at": _string(conversation_activity.get("latest_assistant_message_at")),
+        "last_message_direction": _string(conversation_activity.get("last_message_direction")),
+        "sample_customer_messages": customer_samples,
+    }
+    return {"opening_and_positioning": _drop_empty(evidence)}
 
 
 def _platform_task_message_content(payload: dict[str, Any], customer: dict[str, Any]) -> list[dict[str, str]]:
