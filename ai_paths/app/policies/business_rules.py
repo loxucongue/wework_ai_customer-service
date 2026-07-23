@@ -180,9 +180,9 @@ def _fact_boundary_for_rule(
     if "kb_search(case_studies)" in tools:
         return "案例与效果图必须来自真实 case_studies 工具事实；旧 SOP 完成状态不能替代近期真实发图证据。"
     if "distance_calculate" in tools:
-        return "门店存在性和详情来自 customer_store_lookup；最近或方便排序来自 distance_calculate；有 recommended_store 时只发推荐门店卡，无排序且完整候选仅1至3家时才可发全部；客户可见不输出公里、分钟或车程。"
+        return "门店存在性和详情来自 customer_store_lookup；最近或方便排序来自 distance_calculate；有 recommended_store 时只发推荐门店卡，无排序且完整候选仅1至3家时才可发全部；客户可见不输出公里、分钟或车程。本级无店事实只作内部依据，客户可见不说“当地没有/暂无门店”，改为承接当前匹配到的真实候选。"
     if "customer_store_lookup" in tools:
-        return "具体门店、地址、停车和营业时间必须来自 customer_store_lookup；只有工具确认歧义或无法解析才补问位置。"
+        return "具体门店、地址、停车和营业时间必须来自 customer_store_lookup；只有工具确认歧义或无法解析才补问位置。本级无店事实只作内部依据，客户可见不说“当地没有/暂无门店”，改为承接当前匹配到的真实候选。"
     if "appointment_record_query" in tools:
         return "既有预约、改约和取消必须以 appointment_record_query 的真实结果为准。"
     if "professional_assist" in tools:

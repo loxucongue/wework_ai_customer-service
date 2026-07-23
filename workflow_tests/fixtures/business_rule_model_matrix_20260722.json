@@ -250,8 +250,8 @@
         "structured_facts": {"store_lookup_status": {"province": "湖北省", "city": "荆州市", "district": "洪湖市", "purpose": "existence", "status": "ok", "resolved_admin_level": "district", "scope_match_level": "city_fallback", "exact_scope_has_store": false, "candidate_count": 1}, "store_facts": [{"store_id": "241", "name": "荆州万达店", "province": "湖北省", "city": "荆州市", "district": "荆州区", "address": "荆州市荆州区北京西路万达广场B座"}], "recommended_store": {"store_id": "241", "name": "荆州万达店", "reason": "unique_parent_scope_candidate"}, "case_facts": [], "payment_facts": [], "tool_errors": []},
         "usable_facts": ["洪湖本级暂无确认门店，父级荆州范围唯一确认门店是荆州万达店。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
       },
-      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["241"], "forbidden_phrases": ["武汉", "公里", "分钟"]},
-      "semantic_goal": "准确识别县级市，本级无店时说明事实并直接发送父级范围真实候选，不要求老人重说标准行政区。"
+      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["241"], "forbidden_phrases": ["武汉", "公里", "分钟", "没有门店", "暂无门店", "本地没有", "当地没有"]},
+      "semantic_goal": "准确识别县级市，本级无店事实只作内部依据，客户可见直接承接当前匹配到的真实候选并发卡，不要求老人重说标准行政区。"
     },
     {
       "id": "town_or_village_ranked_store",
@@ -303,7 +303,7 @@
             "required_store_ids": ["241"],
             "forbidden_phrases": ["公里", "分钟", "车程"]
           },
-          "semantic_goal": "乡镇村可解析时直接承接，本级无店则推荐真实排序第一候选并发卡，不罗列全省门店或要求客户使用标准行政术语。"
+          "semantic_goal": "乡镇村可解析时直接承接，本级无店事实只作内部依据，客户可见推荐真实排序第一候选并发卡，不罗列全省门店或要求客户使用标准行政术语。"
         }
       ],
       "history": ["小贝: 您说乡镇村名也可以。"],
@@ -312,8 +312,8 @@
         "structured_facts": {"store_lookup_status": {"province": "贵州省", "city": "黔南布依族苗族自治州", "resolved_admin_level": "township", "scope_match_level": "province_fallback", "exact_scope_has_store": false, "source": "distance_calculate", "recommendation_status": "ok", "comparable_candidate_count": 2, "candidate_count": 2}, "store_facts": [{"store_id": "501", "name": "贵州都匀店", "province": "贵州省", "city": "黔南布依族苗族自治州", "district": "都匀市"}], "recommended_store": {"store_id": "501", "name": "贵州都匀店", "reason": "distance_calculate_rank_1"}, "case_facts": [], "payment_facts": [], "tool_errors": []},
         "usable_facts": ["本级暂无确认门店，省内真实排序第一候选是贵州都匀店。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
       },
-      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["501"], "forbidden_phrases": ["公里", "分钟", "车程"]},
-      "semantic_goal": "乡镇村可解析时直接承接，本级无店则推荐真实排序第一候选并发卡，不罗列全省门店或要求客户使用标准行政术语。"
+      "expected_reply": {"required_types": ["text", "store_address"], "required_store_ids": ["501"], "forbidden_phrases": ["公里", "分钟", "车程", "没有门店", "暂无门店", "本地没有", "当地没有"]},
+      "semantic_goal": "乡镇村可解析时直接承接，本级无店事实只作内部依据，客户可见推荐真实排序第一候选并发卡，不罗列全省门店或要求客户使用标准行政术语。"
     },
     {
       "id": "ambiguous_place_name",

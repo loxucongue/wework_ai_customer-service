@@ -156,6 +156,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "不得称已报名或已留名额",
         "仅客户当前询问可退或退款时主动展开",
         "“好/嗯”只是确认，不重开旧顾虑",
+        "武平、武平车站附近",
+        "不能先反问“哪个城市”",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
@@ -165,6 +167,18 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     assert "`store_binding=ambiguous`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "上一条唯一推荐某店后客户接受“这家”" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "不得在草稿中复述健康、过敏、检测或适配提醒" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
+
+
+def test_store_location_prompts_do_not_expose_local_no_store_wording() -> None:
+    rules = load_business_rules()
+    rules_text = json.dumps(rules, ensure_ascii=False)
+    planner_facts = json.dumps(planner_business_rules_prompt_section(), ensure_ascii=False)
+
+    assert "本级无店时客户可见不说" in rules_text
+    assert "武平、武平车站附近" in PLANNER_SYSTEM_PROMPT
+    assert "客户可见不说“当地没有/暂无门店”" in planner_facts
+    assert "也不要说“XX没有门店/当地暂无门店/本地没有门店”" in REPLY_SYSTEM_PROMPT
+    assert "当前给您匹配到的是这家/这几家" in REPLY_SYSTEM_PROMPT
 
 
 def test_runtime_business_fact_views_preserve_all_current_rule_semantics() -> None:
