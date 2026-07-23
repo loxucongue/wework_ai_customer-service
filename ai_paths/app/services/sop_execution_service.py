@@ -107,8 +107,8 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 候选包如果包含 `payment_collection`：
   - `payment_collection_gate.status=supported`：可按正常 SOP 判断发送。
   - `payment_collection_gate.status=paid_skip_card`：客户已付，不得再发预约金卡；只可保留/改写为已付后的姓名电话或到店安排轻触达。
-  - `payment_collection_gate.status=activity_intro_required`：完整活动介绍/价格铺垫还没有真实完成证据，不得发送预约金卡。此时应优先选择活动介绍、效果铺垫或其他非收款候选；如果候选里没有合适包，拒发并说明还需先补活动介绍。
-  - `event_s10_price_quote_60min` 这类短报价包不能单独替代 `s10_activity_intro` 的完整活动介绍。只有 `completed_sop_pack_ids` 含 `s10_activity_intro`，或 `completed_sop_categories` 含 `activity_intro/s10_activity_intro`，才算收款卡前置活动介绍已完成。
+  - `payment_collection_gate.status=activity_intro_required`：完整活动介绍/价格铺垫还没有真实完成证据，不得发送预约金卡。结构化完成和近期聊天语义完成都是真实证据；如果近期已经讲清活动价、10元预约金、抵扣和可退，不要重复活动包，应写 `stage_skip_evidence` 后评估预约金轻触/收款候选。若没有这些证据，应优先选择活动介绍、效果铺垫或其他非收款候选；如果候选里没有合适包，拒发并说明还需先补活动介绍。
+  - `event_s10_price_quote_60min` 这类短报价包不能单独替代 `s10_activity_intro` 的完整活动介绍。结构化 `completed_sop_pack_ids/categories` 是最强完成证据；如果近期真实聊天已经完整讲过活动价、10元预约金、到店抵扣、未做或不满意可退、到店时间可按客户方便安排，也可作为语义完成证据，但必须在 `stage_skip_evidence` 写清楚，不能再重复发送 `s10_activity_intro`。
 - `payment_collection_gate` 必须逐个候选包独立判断。一个后置收款包是 `activity_intro_required`，不代表同轮其他非收款候选也不可发；如果候选中存在 `not_required/supported` 的活动介绍或效果包，应选择合法的前序包，不能因为另一个候选被拦而整轮 `skip`。
 - 只有在 `conversation_activity.latest_customer_pending_ai_reply=true`、客户明确拒绝当前核心行动、投诉/付款异常/身体不适、或候选包会明显造成事实错误时，才 `send_sop=false`。
 - 客户明确表示“不交/不想付/先别发预约金/到店再付”等拒绝当前预约金动作时，整个收款阶段候选都与当前立场冲突，必须 `skip` 或 `defer`。不能通过删除 `payment_collection` 后继续发送“留名额、付完登记”等催款文本来绕过拒绝；文本润色也不能把拒付改写成可继续催付。
@@ -150,7 +150,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 已经发过效果铺垫，客户仍沉默，后续候选里有活动报价包：推进报价和活动价值，不要因为客户没有回复效果图而空拒。
 - 已经发过效果铺垫、活动报价尚未发送，而同一批候选同时出现活动报价包和“未付款效果跟进”：选择活动报价包；活动报价包可直接包含 payment_collection，不需要先有匹配订单；不能先发“未付款跟进”。
 - 已经报价，客户仍沉默，后续候选里有预约金价值或收款包：可推进预约金价值；如果客户明确拒付、已付、投诉/付款异常/身体不适，则不发该包。
-- 候选同时有 `s10_activity_intro` 和收款包，且收款包显示 `activity_intro_required`：发送 `s10_activity_intro`，不要合并收款包，也不要误判成“没有合规候选”。
+- 候选同时有 `s10_activity_intro` 和收款包，且收款包显示 `activity_intro_required`：如果近期没有完整活动价格铺垫，发送 `s10_activity_intro`，不要合并收款包，也不要误判成“没有合规候选”；如果近期聊天已经完整讲过活动价、预约金、抵扣和可退，则跳过重复活动包，选择后续预约金/轻触达候选。
 - `daily_soft_limit_reached=true` 且 `silent_soft_limit_reached=true`，同时没有夜间积压和触达后的客户新进展：本次必须跳过或延后，并在 `frequency_reason` 说明频率保护；不能因为还有未完成包就继续刷屏。
 
 # Text Adjustment Policy
