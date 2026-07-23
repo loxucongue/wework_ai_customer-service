@@ -732,6 +732,20 @@ class SopExecutionService:
             "error": "",
         }
         try:
+            event_policy = event_policy_evidence or {}
+            if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"} and _event_suggestion_activity_block(
+                conversation_activity or {},
+                event_policy,
+            ):
+                result.update(
+                    {
+                        "mode": "event_rejected",
+                        "send_sop": False,
+                        "need_ai_reply": False,
+                        "reason": "event_suggestion_active_chat_or_pending_customer_reply",
+                    }
+                )
+                return _finish(result, started)
             completed_ids = self.repository.list_sent_sop_pack_ids_for_customer(
                 customer_id=identity.get("customer_id", ""),
                 external_userid=identity.get("external_userid", ""),
@@ -753,7 +767,7 @@ class SopExecutionService:
                 actions_reply_messages=actions_reply_messages,
                 completed_sop_pack_ids=completed_ids,
                 completed_sop_categories=completed_categories,
-                event_policy_evidence=event_policy_evidence or {},
+                event_policy_evidence=event_policy,
             )
             result["selector_input"] = compact(selector_input, max_chars=6000)
             selector_output, model_attempts, model_error = await self._judge_event_sop_with_retries(selector_input)
@@ -773,17 +787,39 @@ class SopExecutionService:
             result["model_usage"] = dict(self.model_client.last_usage or {})
             result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
             result["message_operations"] = _message_operations(selector_output.get("message_operations"))
+            decision_name = _string(selector_output.get("decision"))
 
             if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}:
-                selected = selected_candidate_packs(selector_output, candidate_packs)
-                send_sop = bool(selector_output.get("send_sop") and selected)
-                result.update(
-                    {
-                        "sop_pack_id": str(selected[0].get("id") or "") if selected else "",
-                        "sop_pack_name": " + ".join(str(pack.get("name") or "") for pack in selected),
-                        "send_sop": send_sop,
-                    }
-                )
+                if decision_name in {"send_ai_touch", "handoff_or_safety_notice"}:
+                    touch_messages = (
+                        selector_output.get("ai_touch_messages")
+                        if isinstance(selector_output.get("ai_touch_messages"), list)
+                        else []
+                    )
+                    messages, sanitize_summary = sanitize_sop_reply_messages(
+                        touch_messages,
+                        conversation_messages=conversation_messages,
+                    )
+                    send_sop = bool(messages)
+                    result.update(
+                        {
+                            "sop_pack_id": decision_name,
+                            "sop_pack_name": decision_name,
+                            "send_sop": send_sop,
+                            "reply_messages": messages,
+                            "message_sanitize": sanitize_summary,
+                        }
+                    )
+                else:
+                    selected = selected_candidate_packs(selector_output, candidate_packs)
+                    send_sop = bool(selector_output.get("send_sop") and selected)
+                    result.update(
+                        {
+                            "sop_pack_id": str(selected[0].get("id") or "") if selected else "",
+                            "sop_pack_name": " + ".join(str(pack.get("name") or "") for pack in selected),
+                            "send_sop": send_sop,
+                        }
+                    )
             elif event_type == "sop_platform_task":
                 send_sop = bool(selector_output.get("send_sop"))
                 result.update({"sop_pack_id": "platform_actions", "sop_pack_name": "platform_actions", "send_sop": send_sop})
@@ -797,9 +833,9 @@ class SopExecutionService:
                         "event_selected"
                         if send_sop
                         else "event_deferred"
-                        if selector_output.get("decision") == "defer"
+                        if decision_name == "defer"
                         else "event_handoff"
-                        if selector_output.get("decision") == "handoff_to_ai_reply"
+                        if decision_name == "handoff_to_ai_reply"
                         else "event_rejected"
                     ),
                     "need_ai_reply": bool(selector_output.get("need_ai_reply")),
@@ -2166,6 +2202,20 @@ def _apply_chat_order_gate_block(result: dict[str, Any], order_gate: dict[str, A
         )
         return True
     return False
+
+
+def _event_suggestion_activity_block(conversation_activity: dict[str, Any], event_policy: dict[str, Any]) -> bool:
+    if any(
+        bool(conversation_activity.get(key))
+        for key in (
+            "latest_customer_pending_ai_reply",
+            "recent_active_chat",
+            "active_chat_window",
+            "uncertain_customer_timing",
+        )
+    ):
+        return True
+    return bool(event_policy.get("active_chat_window"))
 
 
 def _chat_order_request_context(

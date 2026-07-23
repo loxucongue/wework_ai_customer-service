@@ -1172,6 +1172,69 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("conflict_guard_missing_evidence_source", no_evidence_violations)
         self.assertNotIn("conflict_guard_missing_evidence_source", customer_evidence_violations)
 
+    def test_repeated_candidates_need_ai_touch_unless_customer_or_policy_blocks(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [{"id": "close", "order": 10, "sop_category": "final_close"}],
+            "completed_sop_pack_ids": ["close"],
+            "completed_sop_categories": ["final_close"],
+            "recent_conversation": [],
+            "event_policy_evidence": {},
+        }
+
+        _, violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "conflict_guard"},
+            selector_input,
+        )
+        self.assertIn("repeated_candidates_should_use_ai_touch", violations)
+
+        _, stage_repeat_violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "conflict_guard"},
+            {
+                "mode": "first_add_flow",
+                "candidate_sops": [{"id": "effect_warmup", "order": 10, "sop_category": "effect_case"}],
+                "completed_sop_pack_ids": [],
+                "completed_sop_categories": [],
+                "mainline_stage_status": {"need_and_case": {"structural_completed": True}},
+                "recent_conversation": [],
+                "event_policy_evidence": {},
+            },
+        )
+        self.assertIn("repeated_candidates_should_use_ai_touch", stage_repeat_violations)
+
+        _, customer_block_violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "conflict_guard"},
+            {
+                **selector_input,
+                "event_policy_evidence": {"customer_rejection": True},
+            },
+        )
+        self.assertNotIn("repeated_candidates_should_use_ai_touch", customer_block_violations)
+
+    def test_completed_activity_with_deposit_candidate_cannot_skip(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "candidate_sops": [
+                {"id": "deposit", "order": 40, "sop_category": "deposit_push"},
+            ],
+            "completed_sop_pack_ids": [],
+            "completed_sop_categories": [],
+            "recent_conversation": [],
+            "mainline_stage_status": {
+                "activity_and_price": {
+                    "semantic_completed": True,
+                    "evidence": [{"source": "recent_chat"}],
+                }
+            },
+            "event_policy_evidence": {},
+        }
+
+        _, violations = normalize_event_decision(
+            {"decision": "skip", "strategy": "conflict_guard"},
+            selector_input,
+        )
+        self.assertIn("completed_activity_with_deposit_candidate_should_continue", violations)
+
     def test_event_decision_rejects_payment_pack_when_structural_gate_is_not_supported(self) -> None:
         selector_input = {
             "mode": "first_add_flow",

@@ -147,6 +147,22 @@ def normalize_event_decision(
         and not _conflict_guard_supported(selector_input, candidate_sops, completed_ids, completed_categories)
     ):
         violations.append("conflict_guard_missing_evidence_source")
+    if decision in {"skip", "defer"} and _repeated_candidates_should_be_ai_touch(
+        selector_input=selector_input,
+        candidates=candidate_sops,
+        completed_ids=completed_ids,
+        completed_categories=completed_categories,
+        event_policy=event_policy,
+        strategy=strategy,
+    ):
+        violations.append("repeated_candidates_should_use_ai_touch")
+    if decision in {"skip", "defer"} and _completed_activity_with_deposit_candidate_should_continue(
+        selector_input=selector_input,
+        candidates=candidate_sops,
+        event_policy=event_policy,
+        strategy=strategy,
+    ):
+        violations.append("completed_activity_with_deposit_candidate_should_continue")
 
     if decision not in {"send", "merge"}:
         output["text_adjustments"] = []
@@ -559,6 +575,119 @@ def _conflict_guard_supported(
         "not_required",
         "supported",
     }
+
+
+def _repeated_candidates_should_be_ai_touch(
+    *,
+    selector_input: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    completed_ids: set[str],
+    completed_categories: set[str],
+    event_policy: dict[str, Any],
+    strategy: str,
+) -> bool:
+    if _text(selector_input.get("mode")) != "first_add_flow":
+        return False
+    if not candidates:
+        return False
+    if strategy == "frequency_guard" and _frequency_guard_supported(event_policy):
+        return False
+    if _has_customer_or_policy_block(selector_input, event_policy):
+        return False
+    candidate_ids = [
+        _text(item.get("id"))
+        for item in candidates
+        if isinstance(item, dict) and _text(item.get("id"))
+    ]
+    if not candidate_ids:
+        return False
+    candidate_by_id = {
+        _text(item.get("id")): item
+        for item in candidates
+        if isinstance(item, dict) and _text(item.get("id"))
+    }
+    completed_stages = _completed_mainline_stages(selector_input)
+    return all(
+        pack_id in completed_ids
+        or _text((candidate_by_id.get(pack_id) or {}).get("sop_category")) in completed_categories
+        or mainline_stage_for_event_pack(candidate_by_id.get(pack_id) or {}) in completed_stages
+        for pack_id in candidate_ids
+    )
+
+
+def _has_customer_or_policy_block(selector_input: dict[str, Any], event_policy: dict[str, Any]) -> bool:
+    activity = selector_input.get("conversation_activity")
+    if not isinstance(activity, dict):
+        activity = {}
+    if any(
+        bool(activity.get(key))
+        for key in (
+            "latest_customer_pending_ai_reply",
+            "recent_active_chat",
+            "active_chat_window",
+        )
+    ):
+        return True
+    if any(
+        bool(event_policy.get(key))
+        for key in (
+            "customer_rejection",
+            "active_chat_window",
+            "health_or_medical_risk",
+            "complaint_or_payment_risk",
+            "payment_anomaly",
+        )
+    ):
+        return True
+    ai_reply_policy = event_policy.get("ai_reply_policy") if isinstance(event_policy.get("ai_reply_policy"), dict) else {}
+    return bool(ai_reply_policy.get("has_unhandled_customer_message"))
+
+
+def _completed_activity_with_deposit_candidate_should_continue(
+    *,
+    selector_input: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    event_policy: dict[str, Any],
+    strategy: str,
+) -> bool:
+    if _text(selector_input.get("mode")) != "first_add_flow":
+        return False
+    if strategy == "frequency_guard" and _frequency_guard_supported(event_policy):
+        return False
+    if _has_customer_or_policy_block(selector_input, event_policy):
+        return False
+    stages = selector_input.get("mainline_stage_status")
+    if not isinstance(stages, dict):
+        return False
+    activity = stages.get("activity_and_price")
+    if not isinstance(activity, dict):
+        return False
+    activity_completed = bool(
+        activity.get("structural_completed")
+        or activity.get("semantic_completed")
+        or activity.get("completed")
+    )
+    if not activity_completed:
+        return False
+    return any(
+        isinstance(item, dict) and mainline_stage_for_event_pack(item) == "deposit_decision"
+        for item in candidates
+    )
+
+
+def _completed_mainline_stages(selector_input: dict[str, Any]) -> set[str]:
+    stages = selector_input.get("mainline_stage_status")
+    if not isinstance(stages, dict):
+        return set()
+    output: set[str] = set()
+    for stage_id, payload in stages.items():
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("structural_completed") or payload.get("semantic_completed") or payload.get("completed"):
+            stage = _text(stage_id)
+            if stage:
+                output.add(stage)
+    return output
 
 
 def _unique(values: list[str]) -> list[str]:
