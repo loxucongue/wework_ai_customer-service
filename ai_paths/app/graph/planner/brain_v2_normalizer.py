@@ -367,6 +367,45 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             basis="结构化证据或 planner payment_state 表示客户已付",
         )
         state_for_payment = {**state, "payment_decision": payment_decision}
+    precision_question_id = str(precision_qa_decision.get("question_id") or "").strip()
+    if precision_question_id in {"unsupported_online_projects", "body_area_and_price"}:
+        removed_payment = _has_payment_collection(planner_reply_messages)
+        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        payment_decision = _with_payment_decision_action(
+            payment_decision,
+            "none" if precision_question_id == "unsupported_online_projects" else "explain",
+            source="precision_qa_boundary",
+            confidence="high",
+            basis=(
+                "线上不支持项目只回答预约边界，不发送预约金卡"
+                if precision_question_id == "unsupported_online_projects"
+                else "手脸/两个部位问题先回答部位和同次操作边界，不把部位当作同行人数发卡"
+            ),
+        )
+        payment_action = "none" if precision_question_id == "unsupported_online_projects" else "explain_existing"
+        if conversion_stage == "deposit_push":
+            conversion_stage = "objection_resolution"
+            removed_payment = True
+        if next_step == "send_deposit":
+            next_step = "answer_question"
+            removed_payment = True
+        state_for_payment = {**state, "payment_decision": payment_decision}
+        if removed_payment:
+            normalizer_policy_violations.append(
+                {
+                    "task_type": "reply_schema_consistency",
+                    "subtype": "payment_collection",
+                    "missing": "payment_collection_blocked_by_precision_qa_boundary",
+                    "note": (
+                        "The planner marked the turn as a precision QA boundary. Do not send payment_collection "
+                        "until the unsupported-project or body-area boundary is answered and the customer separately "
+                        "continues into payment."
+                    ),
+                }
+            )
+        reply_constraints.append(
+            "当前是精准问答边界；不支持项目不得发卡，手脸/两个部位问题不得把身体部位当同行人数发卡。"
+        )
     if payment_action in {"none", "manual_transfer", "offer_resend", "explain_existing", "confirm_next_step"}:
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)

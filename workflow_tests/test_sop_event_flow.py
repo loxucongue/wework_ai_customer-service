@@ -3063,7 +3063,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(model.calls), 2)
         self.assertTrue(all(call.get("deadline_monotonic") for call in model.calls))
 
-    async def test_event_model_exhaustion_is_failure_not_skip(self) -> None:
+    async def test_platform_task_model_exhaustion_forwards_platform_actions(self) -> None:
         model = _SequenceModel([TimeoutError("timeout 1"), TimeoutError("timeout 2"), TimeoutError("timeout 3")])
         service = SopExecutionService(
             repository=_Repo(),
@@ -3082,9 +3082,41 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             actions_reply_messages=[{"type": "text", "order": 1, "content": {"text": "触达内容"}}],
         )
 
-        self.assertEqual(result["mode"], "event_model_error")
-        self.assertEqual(result["reason"], "event_sop_model_retries_exhausted")
+        self.assertEqual(result["mode"], "event_selected")
+        self.assertTrue(result["send_sop"])
+        self.assertEqual(result["sop_pack_id"], "platform_actions")
+        self.assertEqual(result["reason"], "event_model_error_platform_actions_fallback")
         self.assertEqual(len(result["model_attempts"]), 3)
+        self.assertIn("TimeoutError", result["error"])
+
+    async def test_first_add_model_exhaustion_falls_back_to_first_eligible_mainline_pack(self) -> None:
+        model = _SequenceModel([TimeoutError("timeout 1"), TimeoutError("timeout 2")])
+        service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_PackService(),
+            model_client=model,
+            event_model_retry_attempts=2,
+            event_model_retry_delay_seconds=0,
+        )
+
+        result = await service.evaluate_event_suggestion(
+            payload={"event_type": "sop_friend_added_schedule_batch"},
+            customer={},
+            identity={"customer_id": "customer", "external_userid": "external"},
+            event_type="sop_friend_added_schedule_batch",
+            conversation_messages=[],
+            candidate_packs=[
+                {"id": "store_prompt", "name": "门店轻触", "sop_category": "store_prompt", "order": 120},
+                {"id": "activity", "name": "活动介绍", "sop_category": "activity_intro", "order": 140},
+            ],
+            event_policy_evidence={},
+        )
+
+        self.assertEqual(result["mode"], "event_selected")
+        self.assertTrue(result["send_sop"])
+        self.assertEqual(result["sop_pack_id"], "store_prompt")
+        self.assertEqual(result["reason"], "event_model_error_candidate_fallback")
+        self.assertIn("TimeoutError", result["error"])
 
     async def test_event_judge_keeps_selector_contract_for_direct_prompt_inspection(self) -> None:
         model = _PromptCaptureModel({"send_sop": True, "sop_pack_id": "effect_followup", "need_ai_reply": False, "reason": "ok"})

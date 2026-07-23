@@ -773,6 +773,53 @@ class SopExecutionService:
             selector_output, model_attempts, model_error = await self._judge_event_sop_with_retries(selector_input)
             result["model_attempts"] = model_attempts
             if model_error:
+                fallback_output = _model_error_event_fallback(
+                    selector_input,
+                    event_type=event_type,
+                    actions_reply_messages=actions_reply_messages,
+                    model_error=model_error,
+                )
+                if fallback_output:
+                    selector_output = fallback_output
+                    result["selector_output"] = selector_output
+                    result["model_usage"] = dict(self.model_client.last_usage or {})
+                    result["text_adjustments"] = []
+                    result["message_operations"] = []
+                    result["error"] = model_error
+                    decision_name = _string(selector_output.get("decision"))
+                    if event_type in {"sop_friend_added_schedule_batch", "sop_friend_added_immediate"}:
+                        selected = selected_candidate_packs(selector_output, candidate_packs)
+                        send_sop = bool(selector_output.get("send_sop") and selected)
+                        result.update(
+                            {
+                                "sop_pack_id": str(selected[0].get("id") or "") if selected else "",
+                                "sop_pack_name": " + ".join(str(pack.get("name") or "") for pack in selected),
+                                "send_sop": send_sop,
+                                "mode": "event_selected" if send_sop else "event_rejected",
+                                "need_ai_reply": False,
+                                "reason": str(selector_output.get("reason") or "event_model_error_candidate_fallback"),
+                            }
+                        )
+                        return _finish(result, started)
+                    if event_type == "sop_platform_task":
+                        messages, sanitize_summary = sanitize_sop_reply_messages(
+                            actions_reply_messages,
+                            conversation_messages=conversation_messages,
+                        )
+                        send_sop = bool(messages)
+                        result.update(
+                            {
+                                "sop_pack_id": "platform_actions",
+                                "sop_pack_name": "platform_actions",
+                                "send_sop": send_sop,
+                                "reply_messages": messages,
+                                "message_sanitize": sanitize_summary,
+                                "mode": "event_selected" if send_sop else "event_rejected",
+                                "need_ai_reply": False,
+                                "reason": str(selector_output.get("reason") or "event_model_error_platform_actions_fallback"),
+                            }
+                        )
+                        return _finish(result, started)
                 result.update(
                     {
                         "mode": "event_model_error",
@@ -1270,6 +1317,97 @@ def _backlog_mainline_candidate_fallback(
         "repair_violations": repair_violations,
         "fallback_applied": True,
     }
+
+
+def _model_error_event_fallback(
+    selector_input: dict[str, Any],
+    *,
+    event_type: str,
+    actions_reply_messages: list[dict[str, Any]] | None,
+    model_error: str,
+) -> dict[str, Any]:
+    """Non-business fallback for model outages: use already-built structural candidates."""
+
+    if event_type == "sop_platform_task":
+        if actions_reply_messages:
+            return {
+                "decision": "send",
+                "strategy": "platform_actions_model_error_fallback",
+                "selected_pack_ids": [],
+                "merge_pack_ids": [],
+                "send_sop": True,
+                "sop_pack_id": "platform_actions",
+                "need_ai_reply": False,
+                "reason": "event_model_error_platform_actions_fallback",
+                "error": model_error,
+                "text_adjustments": [],
+                "message_operations": [],
+                "fallback_applied": True,
+            }
+        return {}
+
+    event_policy = (
+        selector_input.get("event_policy_evidence")
+        if isinstance(selector_input.get("event_policy_evidence"), dict)
+        else {}
+    )
+    if any(
+        bool(event_policy.get(key))
+        for key in (
+            "customer_rejection",
+            "active_chat_window",
+            "pending_customer_reply",
+            "customer_pending_ai_reply",
+            "health_risk",
+            "complaint_or_payment_risk",
+        )
+    ):
+        return {}
+    candidates = selector_input.get("candidate_sops")
+    if not isinstance(candidates, list):
+        return {}
+    completed_ids = {
+        _string(item)
+        for item in selector_input.get("completed_sop_pack_ids") or []
+        if _string(item)
+    }
+    completed_categories = {
+        _string(item)
+        for item in selector_input.get("completed_sop_categories") or []
+        if _string(item)
+    }
+    completed_stages = _completed_mainline_stage_ids(selector_input)
+    for pack in sorted(
+        [item for item in candidates if isinstance(item, dict)],
+        key=mainline_pack_sort_key,
+    ):
+        pack_id = _string(pack.get("id"))
+        if not pack_id or pack_id in completed_ids:
+            continue
+        if _pack_category(pack) in completed_categories:
+            continue
+        if mainline_stage_for_event_pack(pack) in completed_stages:
+            continue
+        payment_gate = pack.get("payment_collection_gate") if isinstance(pack.get("payment_collection_gate"), dict) else {}
+        if _string(payment_gate.get("status")) in {"paid_skip_card", "activity_intro_required", "unsupported", "blocked"}:
+            continue
+        return {
+            "decision": "send",
+            "strategy": "model_error_candidate_fallback",
+            "selected_pack_ids": [pack_id],
+            "merge_pack_ids": [],
+            "send_sop": True,
+            "sop_pack_id": pack_id,
+            "need_ai_reply": False,
+            "touch_goal": "resume_mainline",
+            "ai_touch_messages": [],
+            "reason": "event_model_error_candidate_fallback",
+            "error": model_error,
+            "text_adjustments": [],
+            "message_operations": [],
+            "fallback_applied": True,
+        }
+    return {}
 
 
 def _completed_mainline_stage_ids(selector_input: dict[str, Any]) -> set[str]:

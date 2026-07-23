@@ -861,6 +861,8 @@ def _reply_repair_hint(error: str) -> str:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_blocked_by_payment_action" in error:
         return "planner 的 payment_action 表示本轮不直接发预约金入口时，不要输出 payment_collection，也不要在 text 里说马上发入口；改成自然承接、询问是否需要重发或推进下一步。"
+    if "payment_collection_blocked_by_precision_qa_boundary" in error:
+        return "当前是精准问答边界：不支持项目不能发预约金卡；手脸/两个部位问题不能把部位当同行人数发卡。先把当前边界答清，再自然回到淡斑主线，不要承诺本轮发入口。"
     if "payment_collection_requires_activity_intro" in error:
         return "客户还没有看到完整活动报价/预约金规则时，不要输出 payment_collection，也不要说入口或卡片已发，不要写“付好截图发我”。先用自然话术补活动价268、每位10元预约金到店抵扣、未做或不满意可退，再用“您确认按这个活动参加的话，我马上给您发小程序收款卡”这类封闭式动作承接。"
     if "payment_collection_required" in error:

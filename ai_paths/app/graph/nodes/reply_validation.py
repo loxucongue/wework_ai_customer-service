@@ -478,6 +478,15 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         if has_payment:
             raise ValueError("payment_collection_blocked_by_paid_deposit_context")
         return
+    precision_decision = state.get("precision_qa_decision") if isinstance(state.get("precision_qa_decision"), dict) else {}
+    precision_question_id = str(precision_decision.get("question_id") or "").strip()
+    if precision_question_id in {"unsupported_online_projects", "body_area_and_price"}:
+        text_for_precision = _combined_text(messages)
+        if has_payment:
+            raise ValueError("payment_collection_blocked_by_precision_qa_boundary")
+        if _promises_payment_entry(text_for_precision):
+            raise ValueError("payment_collection_blocked_by_precision_qa_boundary")
+        return
     text = _combined_text(messages)
     if (
         has_payment

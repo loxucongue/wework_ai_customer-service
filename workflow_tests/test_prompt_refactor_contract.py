@@ -183,7 +183,7 @@ def test_store_location_prompts_do_not_expose_local_no_store_wording() -> None:
     assert "当前给您匹配到的是这家/这几家" in REPLY_SYSTEM_PROMPT
 
 
-def test_acne_marks_and_scars_remain_in_online_offer_scope() -> None:
+def test_acne_marks_and_scars_are_not_online_bookable_scope() -> None:
     rules = load_business_rules()
     offer = rules.get("offer") or {}
     supported = set(offer.get("supported_online_scope") or [])
@@ -195,11 +195,11 @@ def test_acne_marks_and_scars_remain_in_online_offer_scope() -> None:
         ensure_ascii=False,
     )
 
-    assert {"痘印改善", "痘坑改善"} <= supported
-    assert "痘印" not in unsupported
-    assert "痘坑" not in unsupported
-    assert "痘印、痘坑改善" in runtime_text
-    assert "痘印、痘坑属于当前线上淡斑活动改善范围" in REPLY_SYSTEM_PROMPT
+    assert "痘印改善" not in supported
+    assert "痘坑改善" not in supported
+    assert {"痘印", "痘坑"} <= unsupported
+    assert "痘印、痘坑和水光项目不属于线上可预约范围" in runtime_text
+    assert "痘印、痘坑、除皱、祛眼袋、黑眼圈和水光项目不属于当前线上可预约范围" in REPLY_SYSTEM_PROMPT
 
 
 def test_runtime_business_fact_views_preserve_all_current_rule_semantics() -> None:

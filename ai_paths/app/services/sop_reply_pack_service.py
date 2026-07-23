@@ -149,7 +149,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
                 "type": "text",
                 "order": 2,
                 "content": {
-                    "text": "您主要是脸上斑点、晒斑、老年斑，还是色沉痘印这类？我先按您的情况给您看适合的方向。"
+                    "text": "您主要是脸上斑点、晒斑、老年斑，还是色沉这类？我先按您的情况给您看适合的方向。"
                 },
             },
         ],
