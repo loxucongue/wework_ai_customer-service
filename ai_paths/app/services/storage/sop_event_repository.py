@@ -406,7 +406,7 @@ class SopEventRepositoryMixin:
         if corp_id:
             clauses.append("corp_id=?")
             params.append(corp_id)
-        clauses.append("wechat=?")
+        clauses.append("LOWER(wechat)=LOWER(?)")
         params.append(wechat)
         if before:
             clauses.append("created_at<=?")
@@ -526,7 +526,7 @@ class SopEventRepositoryMixin:
             params.append(customer_id)
         else:
             return False
-        clauses.append("wechat=?")
+        clauses.append("LOWER(wechat)=LOWER(?)")
         params.append(wechat)
         if corp_id:
             clauses.append("corp_id=?")
@@ -563,7 +563,7 @@ class SopEventRepositoryMixin:
             clauses.append("corp_id=?")
             params.append(corp_id)
         if wechat:
-            clauses.append("wechat=?")
+            clauses.append("LOWER(wechat)=LOWER(?)")
             params.append(wechat)
         if sent_before:
             clauses.append("COALESCE(NULLIF(sent_at, ''), updated_at)<=?")
@@ -614,7 +614,7 @@ class SopEventRepositoryMixin:
             clauses.append("corp_id=?")
             params.append(corp_id)
         if wechat:
-            clauses.append("wechat=?")
+            clauses.append("LOWER(wechat)=LOWER(?)")
             params.append(wechat)
         if sent_before:
             clauses.append("COALESCE(NULLIF(sent_at, ''), updated_at)<=?")

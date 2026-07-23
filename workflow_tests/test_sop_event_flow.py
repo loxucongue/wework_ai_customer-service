@@ -2142,6 +2142,55 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(identity["wechat"], "CS001")
             self.assertEqual(identity["identity_source"], "conversations")
 
+    def test_repository_sop_progress_queries_are_wechat_case_insensitive(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "ai_paths.db"))
+            store.initialize()
+            repo = AppRepository(store)
+            repo.create_sop_event({"event_id": "evt_case_sop", "event_type": "chat_gate"})
+            task = repo.create_sop_send_task(
+                event_id="evt_case_sop",
+                idempotency_key="idem_case_sop",
+                customer_id="external_case",
+                external_userid="external_case",
+                corp_id="ww",
+                user_id="7294",
+                wechat="DY258",
+                sop_pack_id="s10_new_customer_opening",
+                sop_pack_name="新客破冰",
+                sop_category="s10_new_customer_opening",
+                trigger_source="platform_auto_opening",
+                reply_messages=[],
+                status="pending",
+            )
+            repo.update_sop_send_task(task["id"], status="sent", sent_at="2026-07-23T15:05:27+00:00")
+
+            self.assertEqual(
+                repo.list_sent_sop_pack_ids_for_customer(
+                    customer_id="external_case",
+                    external_userid="external_case",
+                    corp_id="ww",
+                    wechat="dy258",
+                ),
+                ["s10_new_customer_opening"],
+            )
+            self.assertEqual(
+                repo.list_sent_sop_categories_for_customer(
+                    customer_id="external_case",
+                    external_userid="external_case",
+                    corp_id="ww",
+                    wechat="dy258",
+                ),
+                ["s10_new_customer_opening"],
+            )
+            recent = repo.list_recent_sop_send_tasks_for_customer(
+                customer_id="external_case",
+                external_userid="external_case",
+                corp_id="ww",
+                wechat="dy258",
+            )
+            self.assertEqual([item["id"] for item in recent], [task["id"]])
+
     def test_repository_sent_sop_lists_respect_sent_before(self) -> None:
         with TemporaryDirectory() as tmpdir:
             store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "ai_paths.db"))
