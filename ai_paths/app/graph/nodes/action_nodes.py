@@ -92,6 +92,7 @@ def create_execute_actions_node(
                         "origin": str(result.get("query") or lookup_tool.get("query") or content or "").strip(),
                         "candidate_source": "customer_store_lookup",
                         "purpose": "auto_rank_cross_region_store_candidates",
+                        "lookup_scope": _store_lookup_scope_fields(result),
                     }
                     try:
                         result = await asyncio.wait_for(
@@ -1079,7 +1080,7 @@ def _needs_distance_calculate(required_tools: list[dict[str, Any]]) -> bool:
 
 
 def _lookup_result_needs_distance_enrichment(result: dict[str, Any]) -> bool:
-    """Add ranking facts for resolved small places that only matched cross-city provincial candidates."""
+    """Add ranking facts when lookup falls back outside the customer's exact area."""
     if not isinstance(result, dict) or str(result.get("status") or "") != "ok":
         return False
     geocode = result.get("geocode") if isinstance(result.get("geocode"), dict) else {}
@@ -1090,6 +1091,8 @@ def _lookup_result_needs_distance_enrichment(result: dict[str, Any]) -> bool:
     candidates = result.get("candidate_stores") if isinstance(result.get("candidate_stores"), list) else []
     if len(candidates) < 2:
         return False
+    if result.get("exact_scope_has_store") is False:
+        return True
     cities = {
         str(item.get("city") or "").strip()
         for item in candidates
@@ -1219,8 +1222,34 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     if not candidates and scope_unavailable and _snapshot_region_fallback_allowed(query, geocode):
         candidates = _snapshot_stores_for_region_query(query, geocode, purpose)
         source = "store_snapshot_region_fallback"
+    augmented = False
+    pre_scope_fields = _store_lookup_scope_fields(
+        {
+            "query": query,
+            "geocode": geocode,
+            "candidate_stores": [_store_lookup_item(store) for store in candidates[:60]],
+        }
+    )
+    if (
+        candidates
+        and not geocode_conflict
+        and (
+            pre_scope_fields.get("resolved_admin_level") == "city"
+            or pre_scope_fields.get("exact_scope_has_store") is False
+        )
+    ):
+        candidates, augmented = _augment_with_snapshot_city_candidates(candidates, geocode, purpose)
+    if augmented:
+        source = f"{source}+store_snapshot_city"
 
     normalized = [_store_lookup_item(store) for store in candidates[:60]]
+    scope_fields = _store_lookup_scope_fields(
+        {
+            "query": query,
+            "geocode": geocode,
+            "candidate_stores": normalized,
+        }
+    )
     status = "ok" if normalized else "no_match"
     return {
         "status": status,
@@ -1229,7 +1258,8 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         "purpose": purpose,
         "source": source,
         "geocode_conflict_ignored": geocode_conflict,
-        "geocode": {key: geocode.get(key) for key in ("formatted_address", "province", "city", "district", "location") if geocode.get(key)},
+        "geocode": {key: geocode.get(key) for key in ("formatted_address", "province", "city", "district", "township", "location") if geocode.get(key)},
+        **scope_fields,
         "stores": normalized[:12],
         "candidate_stores": normalized,
         "candidate_store_count": len(normalized),
@@ -1319,6 +1349,7 @@ async def _distance_calculate(
             "status": "ok",
             "ranked_stores": ranked_stores,
             "candidate_store_count": len(candidates),
+            **_distance_lookup_scope_fields(tool, tool_results or {}),
         }
     except Exception as exc:
         return {
@@ -1475,6 +1506,8 @@ def _store_text_match_score(text: str, store: dict[str, Any]) -> int:
             continue
         for token in _region_tokens(str(store.get(key) or "")):
             compact_token = _compact_text(token)
+            if len(compact_token) < 2:
+                continue
             if compact_token and compact_token in text:
                 score += weight
                 break
@@ -1654,6 +1687,146 @@ def _snapshot_stores_for_region_query(query: str, geocode: dict[str, Any], purpo
     if not candidates:
         candidates = _stores_for_geocode(geocode, stores, purpose)
     return _dedupe_snapshot_stores(candidates)[:60]
+
+
+def _augment_with_snapshot_city_candidates(
+    candidates: list[dict[str, Any]],
+    geocode: dict[str, Any],
+    purpose: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    city = str(geocode.get("city") or "").strip() if isinstance(geocode, dict) else ""
+    province = str(geocode.get("province") or "").strip() if isinstance(geocode, dict) else ""
+    if not city:
+        return candidates, False
+    snapshot_candidates = [
+        store
+        for store in _usable_snapshot_store_values()
+        if (not province or _region_equal(store.get("province"), province))
+        and _region_equal(store.get("city"), city)
+    ]
+    merged = _dedupe_snapshot_stores([*candidates, *snapshot_candidates])
+    return merged[:60], len(merged) > len(_dedupe_snapshot_stores(candidates))
+
+
+def _store_lookup_scope_fields(result: dict[str, Any]) -> dict[str, Any]:
+    geocode = result.get("geocode") if isinstance(result.get("geocode"), dict) else {}
+    candidates = result.get("candidate_stores") if isinstance(result.get("candidate_stores"), list) else []
+    resolved_level = _geocode_resolved_admin_level(str(result.get("query") or ""), geocode)
+    exact_has_store = _geocode_exact_scope_has_store(geocode, candidates, resolved_level)
+    return {
+        "province": str(geocode.get("province") or "").strip(),
+        "city": str(geocode.get("city") or "").strip(),
+        "district": str(geocode.get("district") or "").strip(),
+        "township": str(geocode.get("township") or "").strip(),
+        "resolved_admin_level": resolved_level,
+        "scope_match_level": _geocode_scope_match_level(geocode, candidates, resolved_level, exact_has_store),
+        "exact_scope_has_store": exact_has_store,
+    }
+
+
+def _distance_lookup_scope_fields(tool: dict[str, Any], tool_results: dict[str, Any]) -> dict[str, Any]:
+    explicit = tool.get("lookup_scope") if isinstance(tool.get("lookup_scope"), dict) else {}
+    if explicit:
+        return {key: explicit.get(key) for key in _STORE_LOOKUP_SCOPE_FIELD_NAMES if key in explicit}
+    lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results.get("customer_store_lookup"), dict) else {}
+    return {key: lookup.get(key) for key in _STORE_LOOKUP_SCOPE_FIELD_NAMES if key in lookup}
+
+
+_STORE_LOOKUP_SCOPE_FIELD_NAMES = (
+    "province",
+    "city",
+    "district",
+    "township",
+    "resolved_admin_level",
+    "scope_match_level",
+    "exact_scope_has_store",
+)
+
+
+def _geocode_resolved_admin_level(query: str, geocode: dict[str, Any]) -> str:
+    text = _compact_text(query)
+    if str(geocode.get("township") or "").strip() or text.endswith(("镇", "乡", "村", "街道", "社区")):
+        return "township"
+    if str(geocode.get("district") or "").strip():
+        return "district"
+    if str(geocode.get("city") or "").strip():
+        return "city"
+    if str(geocode.get("province") or "").strip():
+        return "province"
+    return "unknown"
+
+
+def _geocode_exact_scope_has_store(geocode: dict[str, Any], candidates: list[Any], resolved_level: str) -> bool | None:
+    if not candidates:
+        return False
+    province = str(geocode.get("province") or "").strip()
+    city = str(geocode.get("city") or "").strip()
+    district = str(geocode.get("district") or "").strip()
+    township = str(geocode.get("township") or "").strip()
+    if resolved_level == "township":
+        if township:
+            return any(
+                isinstance(store, dict)
+                and _region_equal(store.get("province"), province)
+                and _region_equal(store.get("city"), city)
+                and _region_equal(store.get("district"), district)
+                and _store_contains_region_text(store, township)
+                for store in candidates
+            )
+        return any(
+            isinstance(store, dict)
+            and _region_equal(store.get("province"), province)
+            and _region_equal(store.get("city"), city)
+            and _region_equal(store.get("district"), district)
+            for store in candidates
+        )
+    if resolved_level == "district":
+        return any(
+            isinstance(store, dict)
+            and _region_equal(store.get("province"), province)
+            and _region_equal(store.get("city"), city)
+            and _region_equal(store.get("district"), district)
+            for store in candidates
+        )
+    if resolved_level == "city":
+        return any(
+            isinstance(store, dict)
+            and _region_equal(store.get("province"), province)
+            and _region_equal(store.get("city"), city)
+            for store in candidates
+        )
+    if resolved_level == "province":
+        return any(isinstance(store, dict) and _region_equal(store.get("province"), province) for store in candidates)
+    return None
+
+
+def _geocode_scope_match_level(
+    geocode: dict[str, Any],
+    candidates: list[Any],
+    resolved_level: str,
+    exact_has_store: bool | None,
+) -> str:
+    if exact_has_store:
+        return resolved_level
+    if not candidates:
+        return "none"
+    province = str(geocode.get("province") or "").strip()
+    city = str(geocode.get("city") or "").strip()
+    if city and any(isinstance(store, dict) and _region_equal(store.get("city"), city) for store in candidates):
+        return "city_fallback"
+    if province and any(isinstance(store, dict) and _region_equal(store.get("province"), province) for store in candidates):
+        return "province_fallback"
+    return "unknown"
+
+
+def _store_contains_region_text(store: dict[str, Any], region: str) -> bool:
+    text = _compact_text(
+        " ".join(
+            str(store.get(key) or "")
+            for key in ("store_name", "store_address", "address", "parking_name", "parking_address")
+        )
+    )
+    return bool(_compact_text(region) and _compact_text(region) in text)
 
 
 def _snapshot_region_fallback_allowed(query: str, geocode: dict[str, Any]) -> bool:

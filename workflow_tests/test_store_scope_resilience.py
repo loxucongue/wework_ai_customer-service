@@ -204,6 +204,21 @@ def test_store_lookup_cross_city_candidates_trigger_distance_enrichment() -> Non
     assert action_nodes._lookup_result_needs_distance_enrichment(result)
 
 
+def test_store_lookup_local_scope_missing_triggers_distance_enrichment() -> None:
+    result = {
+        "status": "ok",
+        "geocode": {"city": "荆州市", "district": "洪湖市", "location": "113.4,29.8"},
+        "exact_scope_has_store": False,
+        "scope_match_level": "city_fallback",
+        "candidate_stores": [
+            {"store_id": "241", "city": "荆州市", "district": "荆州区"},
+            {"store_id": "589", "city": "荆州市", "district": "荆州区"},
+        ],
+    }
+
+    assert action_nodes._lookup_result_needs_distance_enrichment(result)
+
+
 def test_store_lookup_same_city_candidates_do_not_trigger_distance_enrichment() -> None:
     result = {
         "status": "ok",
@@ -215,6 +230,116 @@ def test_store_lookup_same_city_candidates_do_not_trigger_distance_enrichment() 
     }
 
     assert not action_nodes._lookup_result_needs_distance_enrichment(result)
+
+
+def test_store_lookup_city_query_augments_customer_scope_with_snapshot_city_stores(monkeypatch) -> None:
+    monkeypatch.setattr(
+        action_nodes,
+        "_STORE_SNAPSHOT_CACHE",
+        {
+            "stores_by_id": {
+                "241": {
+                    "store_id": "241",
+                    "store_name": "荆州万达店",
+                    "province": "湖北省",
+                    "city": "荆州市",
+                    "district": "荆州区",
+                    "store_address": "荆州市荆州区北京西路万达广场B座",
+                },
+                "589": {
+                    "store_id": "589",
+                    "store_name": "荆州万达二店",
+                    "province": "湖北省",
+                    "city": "荆州市",
+                    "district": "荆州区",
+                    "store_address": "湖北省荆州市荆州区北京西路万达广场写字楼B栋",
+                },
+            }
+        },
+    )
+    coze = _FakeGeocodeCoze(
+        {
+            "荆州市": {
+                "province": "湖北省",
+                "city": "荆州市",
+                "formatted_address": "湖北省荆州市",
+                "location": "112.239,30.335",
+            }
+        }
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "荆州市", "purpose": "existence"},
+            {
+                "customer_store_knowledge": {
+                    "stores": [
+                        {
+                            "store_id": "589",
+                            "store_name": "荆州万达二店",
+                            "province": "湖北省",
+                            "city": "荆州市",
+                            "district": "荆州区",
+                            "store_address": "湖北省荆州市荆州区北京西路万达广场写字楼B栋",
+                        }
+                    ]
+                }
+            },
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["source"] == "customer_scope_geocode+store_snapshot_city"
+    assert {item["store_id"] for item in output["stores"]} == {"241", "589"}
+    assert output["resolved_admin_level"] == "city"
+    assert output["exact_scope_has_store"] is True
+
+
+def test_store_lookup_short_place_does_not_match_one_character_region_token() -> None:
+    coze = _FakeGeocodeCoze(
+        {
+            "东坑": {
+                "province": "江西省",
+                "city": "赣州市",
+                "district": "章贡区",
+                "formatted_address": "江西省赣州市章贡区东坑",
+                "location": "114.9,25.8",
+            }
+        }
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "东坑", "purpose": "existence"},
+            {
+                "customer_store_knowledge": {
+                    "stores": [
+                        {
+                            "store_id": "168",
+                            "store_name": "中山石岐店",
+                            "province": "广东省",
+                            "city": "中山市",
+                            "district": "东区",
+                            "store_address": "中山市东区街道",
+                        },
+                        {
+                            "store_id": "588",
+                            "store_name": "攀枝花东区二店",
+                            "province": "四川省",
+                            "city": "攀枝花市",
+                            "district": "东区",
+                            "store_address": "攀枝花市东区",
+                        },
+                    ]
+                }
+            },
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "no_match"
+    assert output["stores"] == []
 
 
 def test_store_lookup_uses_snapshot_region_fallback_when_scope_unavailable(monkeypatch) -> None:

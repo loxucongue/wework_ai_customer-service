@@ -51,16 +51,22 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             stores = value.get("stores") or []
             structured_facts["store_lookup_status"] = {
                 "query": str(value.get("query") or ""),
-                "city": str(value.get("city") or ""),
+                "province": str(value.get("province") or (value.get("geocode") or {}).get("province") or ""),
+                "city": str(value.get("city") or (value.get("geocode") or {}).get("city") or ""),
+                "district": str(value.get("district") or (value.get("geocode") or {}).get("district") or ""),
+                "township": str(value.get("township") or (value.get("geocode") or {}).get("township") or ""),
                 "purpose": str(value.get("purpose") or ""),
                 "requested_store": str(value.get("requested_store") or ""),
                 "location_preference": str(value.get("location_preference") or ""),
                 "distance_origin": str(value.get("distance_origin") or ""),
                 "distance_lookup_required": bool(value.get("distance_lookup_required")),
                 "recommendation_status": str(value.get("recommendation_status") or ""),
+                "resolved_admin_level": str(value.get("resolved_admin_level") or ""),
+                "scope_match_level": str(value.get("scope_match_level") or ""),
+                "exact_scope_has_store": value.get("exact_scope_has_store"),
                 "source": str(value.get("source") or ""),
                 "status": str(value.get("status") or ""),
-                "candidate_count": len(stores) if isinstance(stores, list) else 0,
+                "candidate_count": int(value.get("candidate_store_count") or (len(stores) if isinstance(stores, list) else 0)),
             }
             if value.get("distance_lookup_required"):
                 facts.append(
@@ -99,12 +105,19 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             has_real_ranking = len(comparable_stores) >= 2
             structured_facts["store_lookup_status"] = {
                 "query": str(value.get("origin") or ""),
+                "province": str(value.get("province") or ""),
+                "city": str(value.get("city") or ""),
+                "district": str(value.get("district") or ""),
+                "township": str(value.get("township") or ""),
                 "location_preference": str(value.get("origin") or ""),
                 "distance_origin": str(value.get("origin") or ""),
                 "distance_lookup_required": bool(value.get("status") == "distance_tool_unavailable"),
                 "recommendation_status": (
                     str(value.get("status") or "") if has_real_ranking else "insufficient_comparable_candidates"
                 ),
+                "resolved_admin_level": str(value.get("resolved_admin_level") or ""),
+                "scope_match_level": str(value.get("scope_match_level") or ""),
+                "exact_scope_has_store": value.get("exact_scope_has_store"),
                 "source": "distance_calculate",
                 "candidate_count": int(value.get("candidate_store_count") or len(value.get("ranked_stores") or value.get("candidate_stores") or [])),
                 "comparable_candidate_count": len(comparable_stores),

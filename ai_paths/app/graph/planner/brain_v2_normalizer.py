@@ -468,6 +468,12 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             required_tools=required_tools,
             state=state,
         ),
+        *_explicit_location_store_lookup_violations(
+            decision=decision,
+            messages=planner_reply_messages,
+            required_tools=required_tools,
+            state=state,
+        ),
         *_distance_tool_violations(required_tools),
         *_direct_reply_message_violations(
             decision=decision,
@@ -2269,6 +2275,151 @@ def _store_detail_tool_violations(
     ]
 
 
+def _explicit_location_store_lookup_violations(
+    *,
+    decision: str,
+    messages: list[dict[str, Any]],
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+) -> list[dict[str, str]]:
+    if decision != "direct_reply" or _has_tool(required_tools, "customer_store_lookup"):
+        return []
+    current_text = str(state.get("normalized_content") or state.get("content") or "")
+    if not _current_message_has_explicit_location_for_lookup(current_text, state):
+        return []
+    if _current_message_is_province_only_location(current_text):
+        return []
+    text = " ".join(
+        _message_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    if _direct_text_is_store_scope_clarification(text) and _location_question_can_clarify_without_lookup(current_text, state):
+        return []
+    if _has_store_address_message(messages) and _store_address_messages_are_requested_district_backed(messages, state):
+        return []
+    message_ids = {
+        _store_address_id(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
+    }
+    message_ids.discard("")
+    expected_ids = _snapshot_store_ids_for_current_location(current_text)
+    if expected_ids and message_ids == expected_ids:
+        return []
+    if _fact_envelope_store_ids(state):
+        return []
+    return [
+        {
+            "task_type": "tool_required",
+            "subtype": "customer_store_lookup",
+            "missing": "store_location_lookup_required_before_direct_reply",
+            "note": (
+                "The customer provided a concrete city, district, county, town, village, or landmark. Do not direct_reply from "
+                "profile or partial scope facts. Use need_tools + customer_store_lookup(query=current customer location). "
+                "If the tool reports ambiguity or no exact local store, the reply model can ask for a higher-level city/location "
+                "or recommend verified fallback candidates from tool facts."
+            ),
+        }
+    ]
+
+
+def _current_message_has_explicit_location_for_lookup(text: str, state: AgentState) -> bool:
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    if _looks_like_specific_region(compact):
+        return True
+    return bool(_matching_current_message_region_tokens(compact, state))
+
+
+def _current_message_is_province_only_location(text: str) -> bool:
+    compact = _strip_store_question_words(_compact_text(text))
+    return bool(compact.endswith("省") and not re.search(r"(市|区|县|镇|乡|村|街道|自治州|地区|盟|旗)", compact[:-1]))
+
+
+def _location_question_can_clarify_without_lookup(text: str, state: AgentState) -> bool:
+    compact = _strip_store_question_words(_compact_text(text))
+    if max(_snapshot_city_store_count_for_query(compact), _state_city_store_count_for_query(compact, state)) > 3:
+        return True
+    return False
+
+
+def _strip_store_question_words(text: str) -> str:
+    return re.sub(
+        r"(你们|我们|门店|店|地址|位置|定位|导航|发我|发一下|给我|在哪|在哪里|哪家|哪个|"
+        r"有吗|有没有|附近|最近|帮我|帮您|查一下|看一下|看下|这边|那里|哪里|吗|呢|呀|的|有)",
+        "",
+        text,
+    )
+
+
+def _snapshot_store_ids_for_current_location(text: str) -> set[str]:
+    city = _snapshot_city_token_for_query(text)
+    if city:
+        return {
+            str(store.get("store_id") or store.get("id") or "").strip()
+            for store in _snapshot_store_values_for_guard()
+            if _region_name_matches(store.get("city"), city)
+            and str(store.get("store_id") or store.get("id") or "").strip()
+        }
+    return set()
+
+
+def _snapshot_city_store_count_for_query(text: str) -> int:
+    city = _snapshot_city_token_for_query(text)
+    if not city:
+        return 0
+    return sum(1 for store in _snapshot_store_values_for_guard() if _region_name_matches(store.get("city"), city))
+
+
+def _state_city_store_count_for_query(text: str, state: AgentState) -> int:
+    city = _state_city_token_for_query(text, state)
+    if not city:
+        return 0
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    return sum(1 for store in stores if isinstance(store, dict) and _region_name_matches(store.get("city"), city))
+
+
+def _snapshot_city_token_for_query(text: str) -> str:
+    compact = _compact_text(text)
+    best = ""
+    for store in _snapshot_store_values_for_guard():
+        city = str(store.get("city") or "").strip()
+        if not city:
+            continue
+        for token in _region_token_variants(city):
+            token_compact = _compact_text(token)
+            if len(token_compact) >= 2 and token_compact in compact and len(token_compact) > len(_compact_text(best)):
+                best = city
+    return best
+
+
+def _state_city_token_for_query(text: str, state: AgentState) -> str:
+    compact = _compact_text(text)
+    best = ""
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    for store in stores:
+        if not isinstance(store, dict):
+            continue
+        city = str(store.get("city") or "").strip()
+        if not city:
+            continue
+        for token in _region_token_variants(city):
+            token_compact = _compact_text(token)
+            if len(token_compact) >= 2 and token_compact in compact and len(token_compact) > len(_compact_text(best)):
+                best = city
+    return best
+
+
+def _region_name_matches(value: Any, expected: str) -> bool:
+    left = {_compact_text(token) for token in _region_token_variants(value) if _compact_text(token)}
+    right = {_compact_text(token) for token in _region_token_variants(expected) if _compact_text(token)}
+    return bool(left & right)
+
+
 def _store_address_messages_are_requested_district_backed(messages: list[dict[str, Any]], state: AgentState) -> bool:
     message_ids = {
         _store_address_id(item.get("content"))
@@ -2431,7 +2582,7 @@ def _direct_text_is_store_scope_clarification(text: str) -> bool:
     compact = _compact_text(text)
     if not compact:
         return False
-    ask_terms = ("哪家", "哪个店", "哪边", "哪个门店", "哪一个门店", "哪座城市", "哪个城市", "哪个区域")
+    ask_terms = ("哪家", "哪个店", "哪边", "哪个门店", "哪一个门店", "哪座城市", "哪个城市", "哪个区域", "哪个区")
     return any(term in compact for term in ask_terms)
 
 

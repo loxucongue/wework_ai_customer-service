@@ -2576,6 +2576,70 @@ def test_scoped_city_store_question_is_left_to_planner_not_forced_by_normalizer(
     assert plan["planner_tool_calls"] == []
 
 
+def test_city_with_limited_snapshot_stores_requires_lookup_before_direct_reply() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "荆州市",
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "589", "store_name": "荆州万达二店", "city": "荆州市", "district": "荆州区"}
+                ]
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "confirm_store",
+            "reply_messages": [
+                {"type": "store_address", "content": {"store_id": "589"}},
+                {"type": "text", "content": {"text": "您看这家方便吗？"}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "store_location_lookup_required_before_direct_reply"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_many_store_city_can_ask_district_without_lookup() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "广州",
+            "customer_store_knowledge": {
+                "stores": [
+                    {"store_id": "1", "store_name": "广州A店", "city": "广州市"},
+                    {"store_id": "2", "store_name": "广州B店", "city": "广州市"},
+                    {"store_id": "3", "store_name": "广州C店", "city": "广州市"},
+                    {"store_id": "4", "store_name": "广州D店", "city": "广州市"},
+                ]
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION_NEEDS_SCOPE",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "logistics",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "您在广州哪个区？我给您匹配门店。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert not any(
+        item.get("missing") == "store_location_lookup_required_before_direct_reply"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_scoped_city_store_question_does_not_override_legal_planner_tool_query() -> None:
     plan = build_planner_plan_v2(
         {
