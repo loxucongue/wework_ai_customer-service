@@ -5032,6 +5032,19 @@ def test_reply_validation_rejects_time_can_book_without_available_time_fact() ->
         )
 
 
+def test_reply_validation_allows_unsupported_project_not_bookable_wording() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "眼袋和黑眼圈当前线上不能预约，我们这次线上活动只做斑点和色素类改善。"},
+            }
+        ],
+        {"fact_envelope": {"structured_facts": {"appointment_facts": []}}},
+    )
+
+
 def test_reply_validation_rejects_hold_wording_without_appointment_fact() -> None:
     with pytest.raises(ValueError, match="appointment_confirmation_fact_required"):
         validate_reply_consistency(

@@ -143,7 +143,7 @@
       "messages": ["手和脸一起是不是总共268", "两个地方都做也是一个价格吗"],
       "history": [],
       "expected_planner": {"decisions": ["direct_reply"]},
-      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["两个部位总共268", "肯定同次做完"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["手和脸一起就是268", "一起只要268", "两个地方共268", "两项总共268", "肯定同次做完"]},
       "semantic_goal": "明确脸部与手部单独做各是268，一个268只对应一个部位，并说明不能提前承诺同次完成。"
     },
     {

@@ -1296,6 +1296,8 @@ def _store_like_names_from_text(text: str) -> list[str]:
 
 def _asserts_time_available(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
+    if _negates_appointment_availability(compact):
+        return False
     if any(
         term in compact
         for term in (
@@ -1317,6 +1319,24 @@ def _asserts_time_available(text: str) -> bool:
     return bool(
         re.search(r"(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?).{0,8}(?:可以|有空|有时间|有名额|有位置|能约|可约|安排)", compact)
         or re.search(r"(?:有空|有时间|有名额|有位置|能约|可约|安排).{0,8}(?:今天|明天|后天|上午|下午|晚上|\d{1,2}点(?:半|左右)?)", compact)
+    )
+
+
+def _negates_appointment_availability(compact: str) -> bool:
+    return any(
+        term in compact
+        for term in (
+            "不能预约",
+            "无法预约",
+            "不开放预约",
+            "没有开放预约",
+            "线上不能预约",
+            "线上无法预约",
+            "不能帮您约",
+            "不能帮你约",
+            "不在预约范围",
+            "不属于预约范围",
+        )
     )
 
 

@@ -113,7 +113,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 18. `sales_progression.action=close` 只能搭配 `status=terminal` 和 `target_stage=close`。如果客户明确未满14周岁，不要输出 `status=continue`，也不要把 `target_stage` 设为 activity/deposit/store。
 19. “怎么祛斑/怎么操作/是不是只洗脸”必须命中 `precision_qa_decision.question_id=treatment_method` 或 `project_scope`：回答方法后回到城市门店、案例或活动主线；客户没问部位时，不要新增脸/手选择。`sales_progression` 不能只写抽象的 `deliver_value`，必须给可执行动作：没有真实案例/门店事实可直接发送时，优先问城市或区域来匹配门店，或承接“线上活动”进入活动主线；禁止让 Reply 生成“如果您想，我可以继续...”。
 20. “是不是一次就好/一次就可以吗”必须命中 `precision_qa_decision.question_id=one_session_effect`，回答后必须接一个主线动作；先给正向信心“大多数客户一次能看到明显改善方向”，再讲斑点深浅和原相机对比；不能说“不是完全没变化”这种弱安慰，也不能只解释检测和原相机对比后停住。
-21. “手上的斑能不能做/手部价格”必须命中 `precision_qa_decision.question_id=body_area_and_price`，只问手部时直接回答手部也能做、也是268活动价；不要用“如果您愿意，我继续讲”收尾。
+21. “手上的斑能不能做/手部价格/手和脸能不能同次做/两个地方是不是一个价”必须命中 `precision_qa_decision.question_id=body_area_and_price`。只问手部时直接回答手部也能做、也是268活动价；问手和脸同次时必须说明不能提前承诺同次完成，要结合两个部位实际状态确认；问两个部位是否一个总价时必须同时说明“一个268只对应一个部位”和“能不能同次操作不能提前承诺”。不要用“如果您愿意，我继续讲”收尾。
 22. 反弹、反黑、护理、一次、手部等精准问题回答后，不要用“如果您想继续了解/如果您愿意/我可以继续给您讲”这类等待客户许可的话术；直接进入最早未完成主线动作。若当前没有可直接发送的结构素材，下一步就问必要槽位（城市/区、到店时间、人数、姓名电话），不要输出等待许可式空动作。
 """.strip(),
     ]
