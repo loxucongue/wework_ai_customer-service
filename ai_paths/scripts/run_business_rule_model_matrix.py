@@ -578,7 +578,7 @@ async def _run(args: argparse.Namespace) -> int:
         update={"model_balanced": args.reviewer_model, "model_balanced_fallbacks": "gpt-5.4-mini"}
     )
     reviewer = ModelClient(reviewer_settings)
-    effective_concurrency = max(1, min(2, args.concurrency))
+    effective_concurrency = max(1, min(20, args.concurrency))
     effective_attempts = max(1, min(3, args.attempts))
     semaphore = asyncio.Semaphore(effective_concurrency)
     reply_jobs = []

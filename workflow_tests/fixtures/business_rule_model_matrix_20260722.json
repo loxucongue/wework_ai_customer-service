@@ -103,7 +103,7 @@
       "messages": ["是不是只检测洗脸，没有去斑", "268不会只是清洁护理吧", "你们说的扫斑到底去不去斑"],
       "history": ["小贝: 套餐里有检测皮肤和基础清洁。"],
       "expected_planner": {"decisions": ["direct_reply"]},
-      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["只是检测", "只洗脸"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["只是检测", "只是洗脸", "只做洗脸"]},
       "semantic_goal": "明确检测和清洁是操作前步骤，活动核心仍是斑点改善，适合后按实际状态操作，再自然回活动内容主线。"
     },
     {
