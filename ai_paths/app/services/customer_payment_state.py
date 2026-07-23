@@ -7,6 +7,7 @@ from typing import Any
 
 PAID_DEPOSIT_STATES = {"paid_by_order", "paid_by_screenshot"}
 ACTIVE_ORDER_STATUSES = {"1", "2", "3", "pending", "waiting_schedule", "scheduled"}
+COMPLETED_ORDER_STATUSES = {"finished", "completed", "done", "closed", "complete", "已完成"}
 PAID_ORDER_PROTECTION_MONTHS = 3
 
 
@@ -22,9 +23,12 @@ def normalize_prepay_facts(order: dict[str, Any]) -> dict[str, Any]:
     required = _positive_number(required_raw)
     paid = _positive_number(paid_raw)
     needs_binding = paid and _order_binding_missing(order, required=required)
+    completed = is_completed_order(order)
     protection = paid_order_protection_fact(order) if paid else {}
     deposit_state = "paid_by_order" if paid else ("required_unpaid" if required else "unknown")
-    if protection.get("paid_protection_status") == "expired":
+    if paid and completed:
+        deposit_state = "historical_paid_completed"
+    elif protection.get("paid_protection_status") == "expired":
         deposit_state = "historical_paid_expired"
     return {
         "prepay_required": required_raw,
@@ -40,6 +44,12 @@ def paid_order_protection_fact(order: dict[str, Any], *, now: datetime | None = 
     """Classify a paid order using order creation time as the agreed temporary proxy."""
     if not _positive_number(order.get("prepay_paid") if order.get("prepay_paid") not in (None, "") else order.get("fee_paid")):
         return {}
+    if is_completed_order(order):
+        return {
+            "paid_protection_status": "completed_order_expired",
+            "paid_time_source": "order_status",
+            "paid_time_value": str(order.get("status") or ""),
+        }
     raw_created_at = order_created_at_value(order)
     created_at = _parse_datetime(raw_created_at)
     if created_at is None:
@@ -92,9 +102,12 @@ def resolved_payment_fact(
     for order in orders if isinstance(orders, list) else []:
         if not isinstance(order, dict):
             continue
+        normalized_payment = normalize_prepay_facts(order)
         state = str(order.get("deposit_state") or "").strip()
+        if state in PAID_DEPOSIT_STATES and is_completed_order(order):
+            state = str(normalized_payment.get("deposit_state") or "historical_paid_completed")
         if not state:
-            state = str(normalize_prepay_facts(order).get("deposit_state") or "unknown")
+            state = str(normalized_payment.get("deposit_state") or "unknown")
         order_facts.append(
             {
                 "order_id": str(order.get("id") or order.get("order_id") or ""),
@@ -108,13 +121,13 @@ def resolved_payment_fact(
                 "prepay_required": order.get("prepay_required"),
                 "prepay_paid": order.get("prepay_paid"),
                 "order_binding_state": order.get("order_binding_state")
-                or normalize_prepay_facts(order).get("order_binding_state"),
+                or normalized_payment.get("order_binding_state"),
                 "paid_protection_status": order.get("paid_protection_status")
-                or normalize_prepay_facts(order).get("paid_protection_status"),
+                or normalized_payment.get("paid_protection_status"),
                 "paid_time_source": order.get("paid_time_source")
-                or normalize_prepay_facts(order).get("paid_time_source"),
+                or normalized_payment.get("paid_time_source"),
                 "paid_time_value": order.get("paid_time_value")
-                or normalize_prepay_facts(order).get("paid_time_value"),
+                or normalized_payment.get("paid_time_value"),
                 "is_current_order": bool(order.get("is_current_order")),
             }
         )
@@ -158,6 +171,12 @@ def resolved_payment_fact(
 
 def is_paid_deposit_state(value: Any) -> bool:
     return str(value or "").strip() in {*PAID_DEPOSIT_STATES, "deposit_paid"}
+
+
+def is_completed_order(order: dict[str, Any]) -> bool:
+    """Return whether an order is a finished historical service, not a current deposit hold."""
+    status = str(order.get("status") or "").strip().lower()
+    return status in COMPLETED_ORDER_STATUSES
 
 
 def order_created_at_value(order: dict[str, Any]) -> Any:

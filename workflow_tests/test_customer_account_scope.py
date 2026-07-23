@@ -115,6 +115,23 @@ def test_expired_paid_order_is_not_current_paid_fact() -> None:
     assert resolved_payment_fact(orders=[{**old_order, **normalized}]) == {}
 
 
+def test_finished_paid_order_is_historical_not_current_deposit() -> None:
+    finished_order = {
+        "id": "finished-paid",
+        "status": "finished",
+        "prepay_required": 10,
+        "prepay_paid": 10,
+        "created_at": "2026-07-22T02:20:57+00:00",
+        "store_id": "91",
+        "store_name": "上海静安店",
+    }
+
+    normalized = normalize_prepay_facts(finished_order)
+    assert normalized["deposit_state"] == "historical_paid_completed"
+    assert normalized["paid_protection_status"] == "completed_order_expired"
+    assert resolved_payment_fact(orders=[{**finished_order, **normalized}]) == {}
+
+
 def test_admin_clear_only_removes_selected_wechat_memory_and_sop(tmp_path: Path) -> None:
     store = SQLiteStore(SimpleNamespace(db_path=tmp_path / "scope.db"))
     store.initialize()
