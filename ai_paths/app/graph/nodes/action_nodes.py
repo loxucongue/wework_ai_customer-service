@@ -1238,9 +1238,9 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             or pre_scope_fields.get("exact_scope_has_store") is False
         )
     ):
-        candidates, augmented = _augment_with_snapshot_city_candidates(candidates, geocode, purpose)
+        candidates, augmented = _augment_with_snapshot_region_candidates(candidates, geocode, purpose)
     if augmented:
-        source = f"{source}+store_snapshot_city"
+        source = f"{source}+store_snapshot_region"
 
     normalized = [_store_lookup_item(store) for store in candidates[:60]]
     scope_fields = _store_lookup_scope_fields(
@@ -1340,7 +1340,12 @@ async def _distance_calculate(
 
         ranked = await asyncio.gather(*(rank_store(store) for store in candidates[:12]), return_exceptions=True)
         ranked_stores = [item for item in ranked if isinstance(item, dict)]
-        ranked_stores.sort(key=lambda item: float(item.get("distance_km") if item.get("distance_km") is not None else 999999))
+        ranked_stores.sort(
+            key=lambda item: (
+                float(item.get("distance_km") if item.get("distance_km") is not None else 999999),
+                _store_id_sort_key(item),
+            )
+        )
         return {
             "origin": origin,
             "geocode_origin": geocode_origin,
@@ -1551,6 +1556,13 @@ def _store_lookup_candidate_for_distance(item: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _store_id_sort_key(item: dict[str, Any]) -> int:
+    try:
+        return int(str(item.get("store_id") or item.get("id") or "").strip())
+    except ValueError:
+        return 999999
+
+
 def _region_equal(left: Any, right: Any) -> bool:
     left_tokens = {_compact_text(token) for token in _region_tokens(str(left or "")) if _compact_text(token)}
     right_tokens = {_compact_text(token) for token in _region_tokens(str(right or "")) if _compact_text(token)}
@@ -1689,21 +1701,29 @@ def _snapshot_stores_for_region_query(query: str, geocode: dict[str, Any], purpo
     return _dedupe_snapshot_stores(candidates)[:60]
 
 
-def _augment_with_snapshot_city_candidates(
+def _augment_with_snapshot_region_candidates(
     candidates: list[dict[str, Any]],
     geocode: dict[str, Any],
     purpose: str,
 ) -> tuple[list[dict[str, Any]], bool]:
     city = str(geocode.get("city") or "").strip() if isinstance(geocode, dict) else ""
     province = str(geocode.get("province") or "").strip() if isinstance(geocode, dict) else ""
-    if not city:
+    if not province and not city:
         return candidates, False
-    snapshot_candidates = [
+    same_city_candidates = [
         store
         for store in _usable_snapshot_store_values()
         if (not province or _region_equal(store.get("province"), province))
+        and city
         and _region_equal(store.get("city"), city)
     ]
+    snapshot_candidates = same_city_candidates
+    if not snapshot_candidates and province:
+        snapshot_candidates = [
+            store
+            for store in _usable_snapshot_store_values()
+            if _region_equal(store.get("province"), province)
+        ]
     merged = _dedupe_snapshot_stores([*candidates, *snapshot_candidates])
     return merged[:60], len(merged) > len(_dedupe_snapshot_stores(candidates))
 

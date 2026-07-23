@@ -2640,6 +2640,27 @@ def test_many_store_city_can_ask_district_without_lookup() -> None:
     )
 
 
+def test_multi_store_city_text_cannot_promise_store_info_without_cards() -> None:
+    with pytest.raises(ValueError, match="multi_store_info_text_without_scope_or_cards"):
+        validate_reply_consistency(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "广州这边有门店，我先把当前查到的广州门店信息发您。您在哪个区？"},
+                }
+            ],
+            {
+                "fact_envelope": {
+                    "structured_facts": {
+                        "store_lookup_status": {"status": "ok", "purpose": "existence", "candidate_count": 8},
+                        "store_facts": [{"store_id": str(index), "city": "广州市"} for index in range(1, 9)],
+                    }
+                }
+            },
+        )
+
+
 def test_scoped_city_store_question_does_not_override_legal_planner_tool_query() -> None:
     plan = build_planner_plan_v2(
         {

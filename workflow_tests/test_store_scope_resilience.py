@@ -290,10 +290,77 @@ def test_store_lookup_city_query_augments_customer_scope_with_snapshot_city_stor
     )
 
     assert output["status"] == "ok"
-    assert output["source"] == "customer_scope_geocode+store_snapshot_city"
+    assert output["source"] == "customer_scope_geocode+store_snapshot_region"
     assert {item["store_id"] for item in output["stores"]} == {"241", "589"}
     assert output["resolved_admin_level"] == "city"
     assert output["exact_scope_has_store"] is True
+
+
+def test_store_lookup_town_without_local_store_augments_same_province_snapshot_candidates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        action_nodes,
+        "_STORE_SNAPSHOT_CACHE",
+        {
+            "stores_by_id": {
+                "185": {
+                    "store_id": "185",
+                    "store_name": "贵阳花溪店",
+                    "province": "贵州省",
+                    "city": "贵阳市",
+                    "district": "花溪区",
+                    "store_address": "贵阳花溪区万科大都会写字楼A座",
+                },
+                "581": {
+                    "store_id": "581",
+                    "store_name": "贵阳花溪二店",
+                    "province": "贵州省",
+                    "city": "贵阳市",
+                    "district": "花溪区",
+                    "store_address": "贵州省贵阳市经济技术开发区珠江路万科大都会万科写字楼B座",
+                },
+            }
+        },
+    )
+    coze = _FakeGeocodeCoze(
+        {
+            "甲良镇": {
+                "province": "贵州省",
+                "city": "黔南布依族苗族自治州",
+                "district": "荔波县",
+                "township": "甲良镇",
+                "formatted_address": "贵州省黔南布依族苗族自治州荔波县甲良镇",
+                "location": "107.728,25.577",
+            }
+        }
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "甲良镇", "purpose": "existence"},
+            {
+                "customer_store_knowledge": {
+                    "stores": [
+                        {
+                            "store_id": "581",
+                            "store_name": "贵阳花溪二店",
+                            "province": "贵州省",
+                            "city": "贵阳市",
+                            "district": "花溪区",
+                            "store_address": "贵州省贵阳市经济技术开发区珠江路万科大都会万科写字楼B座",
+                        }
+                    ]
+                }
+            },
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["source"] == "customer_scope_geocode+store_snapshot_region"
+    assert {item["store_id"] for item in output["candidate_stores"]} == {"185", "581"}
+    assert output["resolved_admin_level"] == "township"
+    assert output["exact_scope_has_store"] is False
+    assert output["scope_match_level"] == "province_fallback"
 
 
 def test_store_lookup_short_place_does_not_match_one_character_region_token() -> None:

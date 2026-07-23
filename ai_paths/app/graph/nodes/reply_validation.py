@@ -241,6 +241,7 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_fact_boundaries(messages, state)
     _validate_complete_store_listing_delivery(messages, state)
     _validate_recommended_store_delivery(messages, state)
+    _validate_store_delivery_text_matches_cards(messages, state)
 
 
 def _validate_health_reply_boundaries(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -577,6 +578,41 @@ def _validate_store_address_message_facts(messages: list[dict[str, Any]], state:
         raise ValueError("unsupported_store_address_message")
     if _store_address_card_conflicts_with_visible_text(messages, state, store_ids):
         raise ValueError("store_address_text_card_mismatch")
+
+
+def _validate_store_delivery_text_matches_cards(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if _emitted_store_address_ids(messages):
+        return
+    text = _combined_text(messages)
+    if not text:
+        return
+    if _promises_store_address_card(text):
+        raise ValueError("store_address_text_without_card")
+    structured = _structured_facts(state)
+    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    try:
+        candidate_count = int(lookup.get("candidate_count") or 0)
+    except (TypeError, ValueError):
+        candidate_count = 0
+    if candidate_count > 3 and _promises_store_info_delivery_without_cards(text):
+        raise ValueError("multi_store_info_text_without_scope_or_cards")
+
+
+def _promises_store_info_delivery_without_cards(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    return any(
+        term in compact
+        for term in (
+            "门店信息发您",
+            "门店信息发你",
+            "把门店信息发您",
+            "把门店信息发你",
+            "发您门店信息",
+            "发你门店信息",
+            "当前查到的门店信息发您",
+            "当前查到的门店信息发你",
+        )
+    )
 
 
 def _validate_complete_store_listing_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
