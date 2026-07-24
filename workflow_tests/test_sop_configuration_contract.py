@@ -73,6 +73,9 @@ def test_activity_quote_uses_separate_chat_and_silent_event_packs() -> None:
 
 
 def test_activity_quote_send_once_key_is_shared_across_both_entrypoints() -> None:
+    config = _load_config()
+    chat_pack = _pack(config, "s10_activity_intro")
+    event_pack = _pack(config, "event_s10_price_quote_60min")
     identity = {
         "corp_id": "ww943af61cd5d2afe4",
         "wechat": "CS001",
@@ -80,10 +83,32 @@ def test_activity_quote_send_once_key_is_shared_across_both_entrypoints() -> Non
         "customer_id": "customer-1",
     }
 
-    assert chat_send_once_key(identity, "s10_activity_intro") == event_send_once_key(
+    assert chat_pack["send_once_group"] == event_pack["send_once_group"] == "activity_price_quote"
+    assert chat_send_once_key(identity, chat_pack["send_once_group"]) == event_send_once_key(
         identity,
-        "s10_activity_intro",
+        event_pack["send_once_group"],
     )
+
+
+def test_activity_quote_content_and_image_match_across_entrypoints() -> None:
+    config = _load_config()
+    chat_pack = _pack(config, "s10_activity_intro")
+    event_pack = _pack(config, "event_s10_price_quote_60min")
+
+    assert chat_pack["reply_messages"][0]["content"]["text"] == event_pack["reply_messages"][0]["content"]["text"]
+    assert _image_urls(chat_pack) == _image_urls(event_pack) == [ACTIVITY_AD_IMAGE]
+
+
+def test_chat_quote_completion_removes_silent_event_quote_candidate() -> None:
+    config = _load_config()
+    candidates = first_add_candidate_packs(
+        config,
+        completed_sop_pack_ids=["s10_activity_intro"],
+        completed_sop_categories=["s10_activity_intro"],
+        delay_minutes=60,
+    )
+
+    assert "event_s10_price_quote_60min" not in [item["id"] for item in candidates]
 
 
 def test_activity_quote_configuration_has_no_canonicalization_error() -> None:

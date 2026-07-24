@@ -53,6 +53,7 @@ type SopPack = {
   purpose: string;
   order: number;
   send_once: boolean;
+  send_once_group: string;
   event_type: string;
   delay_minutes: number;
   schedule_basis: string;
@@ -245,6 +246,7 @@ export function SopReplyPackWorkbench() {
       purpose: "",
       order: nextOrder,
       send_once: true,
+      send_once_group: "",
       event_type: "sop_friend_added_schedule_batch",
       delay_minutes: 0,
       schedule_basis: "friend_added",
@@ -546,6 +548,13 @@ function PackEditor({
                 <option key={item} value={item} />
               ))}
             </datalist>
+          </Field>
+          <Field label="跨入口去重组">
+            <Input
+              value={pack.send_once_group}
+              onChange={(event) => onChange({ send_once_group: cleanIdentifier(event.target.value) })}
+              placeholder="例如 activity_price_quote"
+            />
           </Field>
           <Field label="目的" className="col-span-2">
             <Textarea
@@ -1011,6 +1020,7 @@ function normalizePack(value: unknown): SopPack {
     purpose: stringValue(record.purpose),
     order: numberValue(record.order, 10),
     send_once: record.send_once !== false,
+    send_once_group: cleanIdentifier(stringValue(record.send_once_group)),
     event_type: stringValue(record.event_type),
     delay_minutes: nonNegativeNumber(record.delay_minutes, 0),
     schedule_basis: ["friend_added", "previous_stage_sent", "payment_card_sent", "local_clock"].includes(

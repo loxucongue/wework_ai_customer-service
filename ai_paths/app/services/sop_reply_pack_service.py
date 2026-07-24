@@ -475,6 +475,7 @@ class SopReplyPackService:
             "purpose": _checked_text(item.get("purpose"), ""),
             "order": _positive_int(item.get("order"), (index + 1) * 10),
             "send_once": bool(item.get("send_once", True)),
+            "send_once_group": _clean_identifier(item.get("send_once_group")),
             "event_type": _checked_text(item.get("event_type"), ""),
             "delay_minutes": _non_negative_int(item.get("delay_minutes"), 0),
             "schedule_basis": _choice_text(
@@ -683,6 +684,41 @@ def _audit_shared_activity_quote(packs: list[Any], issues: list[dict[str, Any]])
                 "沉默事件轨必须启用独立的 60 分钟活动报价包。",
             )
         )
+    canonical_group = _clean_identifier(canonical.get("send_once_group"))
+    event_group = _clean_identifier(legacy.get("send_once_group"))
+    if not canonical_group or canonical_group != event_group:
+        issues.append(
+            _audit_issue(
+                "error",
+                "activity_quote_send_once_group_mismatch",
+                "s10_activity_intro",
+                "聊天轨和沉默事件轨的活动报价包必须配置同一个非空跨入口去重组。",
+            )
+        )
+    canonical_messages = canonical.get("reply_messages") if isinstance(canonical.get("reply_messages"), list) else []
+    event_messages = legacy.get("reply_messages") if isinstance(legacy.get("reply_messages"), list) else []
+    canonical_text = _first_message_value(canonical_messages, "text", "text")
+    event_text = _first_message_value(event_messages, "text", "text")
+    if not canonical_text or canonical_text != event_text:
+        issues.append(
+            _audit_issue(
+                "error",
+                "activity_quote_core_text_mismatch",
+                "s10_activity_intro",
+                "两个入口的活动报价核心正文必须保持一致。",
+            )
+        )
+    canonical_image = _first_message_value(canonical_messages, "image", "url")
+    event_image = _first_message_value(event_messages, "image", "url")
+    if not canonical_image or canonical_image != event_image:
+        issues.append(
+            _audit_issue(
+                "error",
+                "activity_quote_image_mismatch",
+                "s10_activity_intro",
+                "两个入口的活动报价必须使用同一张活动图。",
+            )
+        )
 
 
 def _audit_issue(severity: str, code: str, pack_id: str, message: str, *, order: int | None = None) -> dict[str, Any]:
@@ -695,6 +731,17 @@ def _audit_issue(severity: str, code: str, pack_id: str, message: str, *, order:
     if order is not None:
         issue["message_order"] = order
     return issue
+
+
+def _first_message_value(messages: list[Any], message_type: str, field: str) -> str:
+    for message in messages:
+        if not isinstance(message, dict) or str(message.get("type") or "") != message_type:
+            continue
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        value = str(content.get(field) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _choice_text(value: Any, default: str, choices: set[str], *, allow_custom: bool = False) -> str:

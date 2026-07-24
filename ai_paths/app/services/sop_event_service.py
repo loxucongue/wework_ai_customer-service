@@ -804,7 +804,10 @@ class SopEventService:
             reply_messages=messages,
             status="pending",
             error="",
-            send_once_key=_send_once_key(identity, selected_id),
+            send_once_key=_send_once_key(
+                identity,
+                _selected_send_once_identity(selected_packs, selected_id),
+            ),
             send_payload={
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
@@ -1194,6 +1197,17 @@ def _pack_messages(pack: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _pack_category(pack: dict[str, Any]) -> str:
     return _string(pack.get("sop_category")) or _string(pack.get("id"))
+
+
+def _selected_send_once_identity(packs: list[dict[str, Any]], fallback_id: str) -> str:
+    groups = {
+        _string(pack.get("send_once_group")).lower()
+        for pack in packs
+        if _string(pack.get("send_once_group"))
+    }
+    if len(groups) == 1:
+        return next(iter(groups))
+    return _string(fallback_id)
 
 
 def _send_once_key(identity: dict[str, str], sop_pack_id: str) -> str:

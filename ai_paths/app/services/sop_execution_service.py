@@ -356,11 +356,19 @@ class SopExecutionService:
                 )
             )
             completed_categories = set(_sent_categories(self.repository, identity))
+            completed_mainline_stages = _completed_mainline_stages(
+                completed_ids,
+                completed_categories,
+            )
             unfinished = [
                 pack
                 for pack in enabled_packs
                 if _string(pack.get("id")) not in completed_ids
                 and _pack_category(pack) not in completed_categories
+                and not (
+                    mainline_stage_for_event_pack(pack) == "activity_and_price"
+                    and "activity_and_price" in completed_mainline_stages
+                )
             ]
             result["completed_sop_pack_ids"] = sorted(completed_ids)
             result["completed_sop_categories"] = sorted(completed_categories)
@@ -1121,7 +1129,10 @@ class SopExecutionService:
             trigger_source=trigger_source,
             reply_messages=reply_messages,
             status="pending",
-            send_once_key=_send_once_key(identity, sop_pack_id),
+            send_once_key=_send_once_key(
+                identity,
+                str(pack.get("send_once_group") or sop_pack_id),
+            ),
         )
         if mark_sent and task.get("id") and task.get("status") == "pending":
             created = bool(task.get("created"))
@@ -1484,6 +1495,7 @@ def first_add_candidate_packs(
     packs = config.get("packs") if isinstance(config.get("packs"), list) else []
     completed = set(completed_sop_pack_ids)
     completed_categories = set(completed_sop_categories or [])
+    completed_mainline_stages = _completed_mainline_stages(completed, completed_categories)
     candidates: list[dict[str, Any]] = []
     for pack in packs:
         if not isinstance(pack, dict) or not bool(pack.get("enabled")) or not _pack_messages(pack):
@@ -1497,6 +1509,11 @@ def first_add_candidate_packs(
         if pack_id in completed:
             continue
         if _pack_category(pack) in completed_categories:
+            continue
+        if (
+            mainline_stage_for_event_pack(pack) == "activity_and_price"
+            and "activity_and_price" in completed_mainline_stages
+        ):
             continue
         if not _event_pack_schedule_eligible(
             pack,
@@ -1958,6 +1975,23 @@ def _event_selector_input(
         "completed_sop_pack_ids": completed_sop_pack_ids,
         "completed_sop_categories": completed_sop_categories,
     }
+
+
+def _completed_mainline_stages(
+    completed_pack_ids: set[str],
+    completed_categories: set[str],
+) -> set[str]:
+    stages = {
+        mainline_stage_for_event_values(pack_id=_string(pack_id))
+        for pack_id in completed_pack_ids
+        if _string(pack_id)
+    }
+    stages.update(
+        mainline_stage_for_event_values(category=_string(category))
+        for category in completed_categories
+        if _string(category)
+    )
+    return {stage for stage in stages if stage}
 
 
 def _mainline_stage_status(
