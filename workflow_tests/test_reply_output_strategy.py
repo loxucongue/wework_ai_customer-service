@@ -4368,6 +4368,24 @@ def test_reply_validation_allows_store_address_from_store_fact() -> None:
     )
 
 
+def test_reply_validation_rejects_store_address_outside_customer_scope_even_if_in_store_fact() -> None:
+    with pytest.raises(ValueError, match="unsupported_store_address_message"):
+        validate_reply_consistency(
+            [{"type": "store_address", "order": 1, "content": {"store_id": "557"}}],
+            {
+                "customer_store_knowledge": {
+                    "source": "platform_agent.store_index+store_snapshot",
+                    "stores": [{"store_id": "350", "store_name": "苏州姑苏店"}],
+                },
+                "fact_envelope": {
+                    "structured_facts": {
+                        "store_facts": [{"store_id": "557", "store_name": "苏州工业园二店"}]
+                    }
+                },
+            },
+        )
+
+
 def test_reply_validation_merges_same_store_id_facts_before_card_consistency_check() -> None:
     validate_reply_consistency(
         [

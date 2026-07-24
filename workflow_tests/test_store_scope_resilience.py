@@ -290,13 +290,13 @@ def test_store_lookup_city_query_augments_customer_scope_with_snapshot_city_stor
     )
 
     assert output["status"] == "ok"
-    assert output["source"] == "customer_scope_geocode+store_snapshot_region"
-    assert {item["store_id"] for item in output["stores"]} == {"241", "589"}
+    assert output["source"] == "customer_scope_geocode"
+    assert {item["store_id"] for item in output["stores"]} == {"589"}
     assert output["resolved_admin_level"] == "city"
     assert output["exact_scope_has_store"] is True
 
 
-def test_store_lookup_town_without_local_store_augments_same_province_snapshot_candidates(monkeypatch) -> None:
+def test_store_lookup_town_without_local_store_uses_customer_scope_province_candidates(monkeypatch) -> None:
     monkeypatch.setattr(
         action_nodes,
         "_STORE_SNAPSHOT_CACHE",
@@ -356,11 +356,113 @@ def test_store_lookup_town_without_local_store_augments_same_province_snapshot_c
     )
 
     assert output["status"] == "ok"
-    assert output["source"] == "customer_scope_geocode+store_snapshot_region"
-    assert {item["store_id"] for item in output["candidate_stores"]} == {"185", "581"}
+    assert output["source"] == "customer_scope_geocode"
+    assert {item["store_id"] for item in output["candidate_stores"]} == {"581"}
     assert output["resolved_admin_level"] == "township"
     assert output["exact_scope_has_store"] is False
     assert output["scope_match_level"] == "province_fallback"
+
+
+def test_store_lookup_does_not_expand_customer_scope_with_snapshot_same_city(monkeypatch) -> None:
+    monkeypatch.setattr(
+        action_nodes,
+        "_STORE_SNAPSHOT_CACHE",
+        {
+            "stores_by_id": {
+                "557": {
+                    "store_id": "557",
+                    "store_name": "苏州工业园二店",
+                    "province": "江苏省",
+                    "city": "苏州市",
+                    "district": "吴中区",
+                    "store_address": "苏州市工业园区星港街283号中园大厦",
+                },
+                "350": {
+                    "store_id": "350",
+                    "store_name": "苏州姑苏店",
+                    "province": "江苏省",
+                    "city": "苏州市",
+                    "district": "姑苏区",
+                    "store_address": "苏州市姑苏区广济南路19号永捷峰汇写字楼",
+                },
+            }
+        },
+    )
+    coze = _FakeGeocodeCoze(
+        {
+            "苏州相城区": {
+                "province": "江苏省",
+                "city": "苏州市",
+                "district": "相城区",
+                "formatted_address": "江苏省苏州市相城区",
+                "location": "120.642,31.369",
+            }
+        }
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "苏州相城区", "purpose": "existence"},
+            {
+                "customer_store_knowledge": {
+                    "source": "platform_agent.store_index+store_snapshot",
+                    "stores": [
+                        {
+                            "store_id": "350",
+                            "store_name": "苏州姑苏店",
+                            "province": "江苏省",
+                            "city": "苏州市",
+                            "district": "姑苏区",
+                            "store_address": "苏州市姑苏区广济南路19号永捷峰汇写字楼",
+                        },
+                        {
+                            "store_id": "216",
+                            "store_name": "苏州昆山店",
+                            "province": "江苏省",
+                            "city": "苏州市",
+                            "district": "昆山市",
+                            "store_address": "苏州昆山市周市镇218号万达广场金街6号门",
+                        },
+                    ],
+                }
+            },
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["source"] == "customer_scope_geocode"
+    assert {item["store_id"] for item in output["candidate_stores"]} == {"350", "216"}
+    assert "557" not in {item["store_id"] for item in output["candidate_stores"]}
+
+
+def test_planner_fact_output_filters_store_facts_to_customer_scope() -> None:
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "source": "customer_scope_geocode",
+                "candidate_store_count": 2,
+                "stores": [
+                    {"store_id": "350", "store_name": "苏州姑苏店", "city": "苏州市"},
+                    {"store_id": "557", "store_name": "苏州工业园二店", "city": "苏州市"},
+                ],
+            }
+        },
+        {
+            "customer_store_knowledge": {
+                "source": "platform_agent.store_index+store_snapshot",
+                "stores": [{"store_id": "350", "store_name": "苏州姑苏店"}],
+            }
+        },
+    )
+
+    store_ids = {
+        item["store_id"]
+        for item in output["structured_facts"]["store_facts"]
+    }
+    assert store_ids == {"350"}
+    assert output["structured_facts"]["store_facts"][0]["scope_authorized"] is True
 
 
 def test_store_lookup_short_place_does_not_match_one_character_region_token() -> None:

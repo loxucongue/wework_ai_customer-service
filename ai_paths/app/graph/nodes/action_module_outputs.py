@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.graph.nodes.appointment_time_utils import summarize_available_slots, target_time_status
+from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.graph.state import AgentState
 from app.policies.business_rules import load_business_rules
 from app.services.customer_payment_state import resolved_payment_fact
@@ -74,14 +75,19 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     f"{value.get('distance_origin') or value.get('location_preference') or ''}"
                 )
             if stores:
-                structured_facts["store_facts"] = [_store_fact_from_lookup_item(item) for item in stores[:5] if isinstance(item, dict)]
+                authorized_stores = _authorized_customer_scope_store_items(stores, state)
+                structured_facts["store_facts"] = [
+                    _store_fact_from_lookup_item(item, state=state)
+                    for item in authorized_stores[:5]
+                    if isinstance(item, dict)
+                ]
                 names = [item["name"] for item in structured_facts["store_facts"][:3] if item.get("name")]
                 if names:
                     facts.append(f"{key}: matched_stores={', '.join(names)}")
             recommended = value.get("recommended_store") or {}
-            if isinstance(recommended, dict) and recommended:
+            if isinstance(recommended, dict) and recommended and _store_item_is_customer_scope_authorized(recommended, state):
                 structured_facts["recommended_store"] = {
-                    **_store_fact_from_lookup_item(recommended),
+                    **_store_fact_from_lookup_item(recommended, state=state),
                     "reason": str(recommended.get("reason") or value.get("recommend_reason") or ""),
                 }
                 facts.append(
@@ -122,20 +128,22 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 "candidate_count": int(value.get("candidate_store_count") or len(value.get("ranked_stores") or value.get("candidate_stores") or [])),
                 "comparable_candidate_count": len(comparable_stores),
             }
+            authorized_candidate_stores = _authorized_customer_scope_store_items(candidate_stores, state)
             structured_facts["store_facts"] = [
                 {
-                    **_store_fact_from_lookup_item(item),
+                    **_store_fact_from_lookup_item(item, state=state),
                     "distance_source": str(item.get("distance_source") or ""),
                     "distance_error": str(item.get("distance_error") or ""),
                 }
-                for item in candidate_stores[:5]
+                for item in authorized_candidate_stores[:5]
                 if isinstance(item, dict)
             ]
-            if has_real_ranking:
-                top_store = _store_fact_from_lookup_item(comparable_stores[0])
+            authorized_comparable_stores = _authorized_customer_scope_store_items(comparable_stores, state)
+            if has_real_ranking and authorized_comparable_stores:
+                top_store = _store_fact_from_lookup_item(authorized_comparable_stores[0], state=state)
                 structured_facts["recommended_store"] = {
                     **top_store,
-                    "distance_source": str(comparable_stores[0].get("distance_source") or ""),
+                    "distance_source": str(authorized_comparable_stores[0].get("distance_source") or ""),
                     "distance_error": "",
                     "reason": "distance_calculate_rank_1",
                 }
@@ -360,10 +368,11 @@ def _payment_fact_from_state(state: AgentState) -> dict[str, Any]:
     )
 
 
-def _store_fact_from_lookup_item(item: dict[str, Any]) -> dict[str, Any]:
+def _store_fact_from_lookup_item(item: dict[str, Any], *, state: AgentState | dict[str, Any] | None = None) -> dict[str, Any]:
     parking_name = str(item.get("parking_name") or "").strip()
     parking_address = str(item.get("parking_address") or "").strip()
     parking = str(item.get("parking") or item.get("parking_info") or parking_name or parking_address or "").strip()
+    scope_authorized = _store_item_is_customer_scope_authorized(item, state or {})
     return {
         "id": str(item.get("id") or item.get("store_id") or "").strip(),
         "store_id": str(item.get("store_id") or item.get("id") or "").strip(),
@@ -382,7 +391,26 @@ def _store_fact_from_lookup_item(item: dict[str, Any]) -> dict[str, Any]:
         "map_url": str(item.get("map_url") or "").strip(),
         "location": str(item.get("location") or "").strip(),
         "geocode_formatted_address": str(item.get("geocode_formatted_address") or "").strip(),
+        "scope_authorized": scope_authorized,
     }
+
+
+def _authorized_customer_scope_store_items(items: list[Any], state: AgentState) -> list[dict[str, Any]]:
+    return [item for item in items if isinstance(item, dict) and _store_item_is_customer_scope_authorized(item, state)]
+
+
+def _store_item_is_customer_scope_authorized(item: dict[str, Any], state: AgentState | dict[str, Any]) -> bool:
+    store_id = str(item.get("store_id") or item.get("id") or "").strip()
+    if not store_id:
+        return False
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    scope_ids = store_scope_ids(knowledge)
+    if scope_ids:
+        return store_id in scope_ids
+    source = str(knowledge.get("source") or "").strip() if isinstance(knowledge, dict) else ""
+    # No customer scope loaded in synthetic/unit contexts: keep facts usable.
+    # Real customer scope with zero allowed IDs must not authorize arbitrary snapshot stores.
+    return not source
 
 
 def _image_url_from_content(content: str) -> str:

@@ -1216,13 +1216,12 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     if not candidates:
         candidates = _stores_for_text_query(query, stores, purpose)
         source = "customer_scope_text_match"
-    if not candidates:
+    if not candidates and scope_unavailable:
         candidates = _snapshot_stores_for_exact_query(query)
         source = "store_snapshot_exact_name"
     if not candidates and scope_unavailable and _snapshot_region_fallback_allowed(query, geocode):
         candidates = _snapshot_stores_for_region_query(query, geocode, purpose)
         source = "store_snapshot_region_fallback"
-    augmented = False
     pre_scope_fields = _store_lookup_scope_fields(
         {
             "query": query,
@@ -1230,17 +1229,6 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "candidate_stores": [_store_lookup_item(store) for store in candidates[:60]],
         }
     )
-    if (
-        candidates
-        and not geocode_conflict
-        and (
-            pre_scope_fields.get("resolved_admin_level") == "city"
-            or pre_scope_fields.get("exact_scope_has_store") is False
-        )
-    ):
-        candidates, augmented = _augment_with_snapshot_region_candidates(candidates, geocode, purpose)
-    if augmented:
-        source = f"{source}+store_snapshot_region"
 
     normalized = [_store_lookup_item(store) for store in candidates[:60]]
     scope_fields = _store_lookup_scope_fields(

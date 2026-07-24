@@ -669,7 +669,11 @@ def _validate_complete_store_listing_delivery(messages: list[dict[str, Any]], st
     lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
     if str(lookup.get("purpose") or "") != "existence" or str(lookup.get("status") or "") != "ok":
         return
-    store_ids = _store_fact_ids(structured)
+    store_ids = {
+        str(item.get("store_id") or item.get("id") or "").strip()
+        for item in _authorized_store_facts_for_validation(state)
+        if str(item.get("store_id") or item.get("id") or "").strip()
+    }
     try:
         candidate_count = int(lookup.get("candidate_count") or 0)
     except (TypeError, ValueError):
@@ -698,6 +702,18 @@ def _store_fact_ids(structured: dict[str, Any]) -> set[str]:
         for item in structured.get("store_facts") or []
         if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
     }
+
+
+def _authorized_store_facts_for_validation(state: dict[str, Any]) -> list[dict[str, Any]]:
+    structured = _structured_facts(state)
+    store_facts = structured.get("store_facts") if isinstance(structured.get("store_facts"), list) else []
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    scope_ids = store_scope_ids(knowledge)
+    return [
+        item
+        for item in store_facts
+        if isinstance(item, dict) and _store_fact_allowed_by_customer_scope(item, scope_ids)
+    ]
 
 
 def _emitted_store_address_ids(messages: list[dict[str, Any]]) -> set[str]:
@@ -827,8 +843,13 @@ def _validate_fact_boundaries(messages: list[dict[str, Any]], state: dict[str, A
     if not text:
         return
     structured = _structured_facts(state)
-    store_facts = structured.get("store_facts") if isinstance(structured.get("store_facts"), list) else []
+    store_facts = _authorized_store_facts_for_validation(state)
     recommended_store = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
+    if recommended_store and not _store_fact_allowed_by_customer_scope(
+        recommended_store,
+        store_scope_ids(state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}),
+    ):
+        recommended_store = {}
     has_store_detail = bool(store_facts or recommended_store)
     has_parking = any(
         isinstance(item, dict) and any(str(item.get(key) or "").strip() for key in ("parking_name", "parking_address", "parking_url", "parking"))
@@ -949,11 +970,13 @@ def _has_distance_ranking_fact(structured: dict[str, Any]) -> bool:
 def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
     structured = _structured_facts(state)
     allowed: set[str] = set()
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    scope_ids = store_scope_ids(knowledge)
     for item in structured.get("store_facts") or []:
-        if isinstance(item, dict):
+        if isinstance(item, dict) and _store_fact_allowed_by_customer_scope(item, scope_ids):
             _add_store_id(allowed, item)
     recommended = structured.get("recommended_store")
-    if isinstance(recommended, dict):
+    if isinstance(recommended, dict) and _store_fact_allowed_by_customer_scope(recommended, scope_ids):
         _add_store_id(allowed, recommended)
     for item in structured.get("appointment_facts") or []:
         if isinstance(item, dict):
@@ -962,7 +985,6 @@ def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
         value = str(state.get(key) or "").strip()
         if value and value != "0":
             allowed.add(value)
-    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
     allowed.update(store_scope_ids(knowledge))
     for region in _store_scope_summary_regions(state):
         for key in ("stores", "requested_district_stores"):
@@ -970,6 +992,15 @@ def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
                 if isinstance(item, dict):
                     _add_store_id(allowed, item)
     return allowed
+
+
+def _store_fact_allowed_by_customer_scope(item: dict[str, Any], scope_ids: set[str]) -> bool:
+    store_id = str(item.get("store_id") or item.get("id") or "").strip()
+    if not store_id:
+        return False
+    if not scope_ids:
+        return bool(item.get("scope_authorized", True))
+    return store_id in scope_ids
 
 
 def _store_address_card_conflicts_with_visible_text(
