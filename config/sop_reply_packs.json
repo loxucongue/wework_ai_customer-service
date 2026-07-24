@@ -7,8 +7,7 @@
       "enabled": true,
       "scope": "chat_gate",
       "scopes": [
-        "chat_gate",
-        "event_first_add"
+        "chat_gate"
       ],
       "sop_category": "s10_new_customer_opening",
       "name": "新客破冰",
@@ -52,8 +51,7 @@
       "enabled": true,
       "scope": "chat_gate",
       "scopes": [
-        "chat_gate",
-        "event_first_add"
+        "chat_gate"
       ],
       "sop_category": "s10_need_and_case",
       "name": "需求与效果承接",
@@ -74,7 +72,7 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "好的亲，像雀斑、晒斑、老年斑、遗传斑、痘印、痘坑、混合斑点、色素沉着这类问题，大多数都是可以先看改善方向的，现在很多顾客都会选择这种方式，反馈也不错"
+            "text": "亲，像雀斑、晒斑、老年斑、遗传斑、痘印、痘坑、混合斑点、色素沉着这类斑点和色素问题，大多数都是可以先看改善方向的，现在很多顾客都会选择这种方式，反馈也不错"
           }
         },
         {
@@ -95,19 +93,12 @@
           "type": "image",
           "order": 4,
           "content": {
-            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/0a6b56f5b46105e8-1329752764320508_1780495762081910231_hroUm72iti.png"
-          }
-        },
-        {
-          "type": "image",
-          "order": 5,
-          "content": {
             "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/972ba51fb3eb0fed-1329752764320508_1780495762650549425_IPXfQYnsyV.png"
           }
         },
         {
           "type": "text",
-          "order": 6,
+          "order": 5,
           "content": {
             "text": "您是看到我们线上推广活动加进来的是吗?"
           }
@@ -119,8 +110,7 @@
       "enabled": true,
       "scope": "chat_gate",
       "scopes": [
-        "chat_gate",
-        "event_first_add"
+        "chat_gate"
       ],
       "sop_category": "s10_activity_intro",
       "name": "活动介绍",
@@ -161,18 +151,18 @@
           }
         },
         {
-          "type": "text",
-          "order": 4,
-          "content": {
-            "text": "亲，您看要保留一个名额吗？活动就这两天，预约之后名额一直有效，不限制您到店时间的，您什么时候有空过来都可以"
-          }
-        },
-        {
           "type": "payment_collection",
-          "order": 5,
+          "order": 4,
           "content": {
             "amount": 10,
             "remark": ""
+          }
+        },
+        {
+          "type": "text",
+          "order": 5,
+          "content": {
+            "text": "亲，您看要保留一个名额吗？活动就这两天，预约之后名额一直有效，不限制您到店时间的，您什么时候有空过来都可以"
           }
         }
       ]
@@ -282,7 +272,7 @@
           "type": "text",
           "order": 2,
           "content": {
-            "text": "您主要是脸上斑点、晒斑、老年斑、痘印痘坑，还是色沉这类？我先按您的情况给您看适合的方向。"
+            "text": "您主要是脸上斑点、晒斑、老年斑，还是色沉痘印这类？我先按您的情况给您看适合的方向。"
           }
         }
       ]
@@ -291,6 +281,9 @@
       "id": "event_s10_store_prompt_5min",
       "enabled": true,
       "scope": "event_first_add",
+      "scopes": [
+        "event_first_add"
+      ],
       "sop_category": "store_prompt",
       "name": "事件-5分钟问地址",
       "purpose": "介绍后客户未回复时，追问城市或区域，为门店匹配做铺垫。",
@@ -298,6 +291,13 @@
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
       "delay_minutes": 5,
+      "schedule_basis": "friend_added",
+      "min_gap_minutes": 0,
+      "requires_completed_categories": [],
+      "forbidden_before_categories": [],
+      "requires_payment_state": "",
+      "max_daily_sends": 6,
+      "silence_only": true,
       "day_stage": "day1",
       "customer_state": "intro_sent_no_reply",
       "stage_tag": "store_prompt",
@@ -319,6 +319,9 @@
       "id": "event_s10_effect_warmup_30min",
       "enabled": true,
       "scope": "event_first_add",
+      "scopes": [
+        "event_first_add"
+      ],
       "sop_category": "effect_case",
       "name": "事件-30分钟效果铺垫",
       "purpose": "门店或地址沟通后未回复时，发送效果参考，强化客户价值预期。",
@@ -326,6 +329,15 @@
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
       "delay_minutes": 30,
+      "schedule_basis": "friend_added",
+      "min_gap_minutes": 0,
+      "requires_completed_categories": [
+        "store_prompt"
+      ],
+      "forbidden_before_categories": [],
+      "requires_payment_state": "",
+      "max_daily_sends": 6,
+      "silence_only": true,
       "day_stage": "day1",
       "customer_state": "store_prompt_no_reply",
       "stage_tag": "effect_warmup",
@@ -352,7 +364,7 @@
     },
     {
       "id": "event_s10_price_quote_60min",
-      "enabled": false,
+      "enabled": true,
       "scope": "event_first_add",
       "scopes": [
         "event_first_add"
@@ -364,6 +376,15 @@
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
       "delay_minutes": 60,
+      "schedule_basis": "friend_added",
+      "min_gap_minutes": 0,
+      "requires_completed_categories": [
+        "effect_case"
+      ],
+      "forbidden_before_categories": [],
+      "requires_payment_state": "",
+      "max_daily_sends": 6,
+      "silence_only": true,
       "day_stage": "day1",
       "customer_state": "effect_warmup_no_reply",
       "stage_tag": "price_quote",
@@ -392,6 +413,9 @@
       "id": "event_s10_deposit_push_70min",
       "enabled": true,
       "scope": "event_first_add",
+      "scopes": [
+        "event_first_add"
+      ],
       "sop_category": "deposit_push",
       "name": "事件-70分钟通单收款",
       "purpose": "报价后客户未成交时，轻推预约金入口，完成活动名额锁定。",
@@ -399,6 +423,17 @@
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
       "delay_minutes": 70,
+      "schedule_basis": "previous_stage_sent",
+      "min_gap_minutes": 10,
+      "requires_completed_categories": [
+        "price_quote"
+      ],
+      "forbidden_before_categories": [
+        "price_quote"
+      ],
+      "requires_payment_state": "unpaid",
+      "max_daily_sends": 6,
+      "silence_only": true,
       "day_stage": "day1",
       "customer_state": "quoted_no_deposit",
       "stage_tag": "deposit_push",
@@ -426,7 +461,7 @@
           "type": "text",
           "order": 3,
           "content": {
-            "text": "付完我这边就按活动价给您登记，后面您有空再安排到店时间就行。"
+            "text": "预定金10参与活动到店再付258，现在登记预约还有赠送价值180的美白管理，截止恢复原价1980，给您预约登记一个吗？"
           }
         }
       ]
@@ -435,6 +470,9 @@
       "id": "event_s10_unpaid_effect_1h",
       "enabled": true,
       "scope": "event_first_add",
+      "scopes": [
+        "event_first_add"
+      ],
       "sop_category": "payment_followup",
       "name": "事件-未付款1小时效果跟进",
       "purpose": "客户未付预约金时，继续用效果参考和到店抵扣规则降低付款压力。",
@@ -442,6 +480,17 @@
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
       "delay_minutes": 60,
+      "schedule_basis": "payment_card_sent",
+      "min_gap_minutes": 60,
+      "requires_completed_categories": [
+        "deposit_push"
+      ],
+      "forbidden_before_categories": [
+        "price_quote"
+      ],
+      "requires_payment_state": "unpaid",
+      "max_daily_sends": 6,
+      "silence_only": true,
       "day_stage": "day1",
       "customer_state": "deposit_unpaid_1h",
       "stage_tag": "payment_followup",
@@ -477,6 +526,9 @@
       "id": "event_s10_unpaid_video_2h",
       "enabled": true,
       "scope": "event_first_add",
+      "scopes": [
+        "event_first_add"
+      ],
       "sop_category": "operation_video",
       "name": "事件-未付款2小时操作视频",
       "purpose": "客户未付预约金且未回复时，发送操作视频缓解效果和安全顾虑。",
@@ -484,6 +536,17 @@
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
       "delay_minutes": 120,
+      "schedule_basis": "payment_card_sent",
+      "min_gap_minutes": 120,
+      "requires_completed_categories": [
+        "deposit_push"
+      ],
+      "forbidden_before_categories": [
+        "price_quote"
+      ],
+      "requires_payment_state": "unpaid",
+      "max_daily_sends": 6,
+      "silence_only": true,
       "day_stage": "day1",
       "customer_state": "deposit_unpaid_2h",
       "stage_tag": "operation_video",
@@ -512,6 +575,9 @@
       "id": "event_s10_day1_final_close",
       "enabled": true,
       "scope": "event_first_add",
+      "scopes": [
+        "event_first_add"
+      ],
       "sop_category": "final_close",
       "name": "事件-当天18点最后收单",
       "purpose": "加微当天未付款时，做当天最后一次活动名额提醒。",
@@ -519,6 +585,17 @@
       "send_once": true,
       "event_type": "sop_friend_added_schedule_batch",
       "delay_minutes": 0,
+      "schedule_basis": "local_clock",
+      "min_gap_minutes": 0,
+      "requires_completed_categories": [
+        "price_quote"
+      ],
+      "forbidden_before_categories": [
+        "price_quote"
+      ],
+      "requires_payment_state": "unpaid",
+      "max_daily_sends": 6,
+      "silence_only": true,
       "day_stage": "day1_evening",
       "customer_state": "day1_unpaid",
       "stage_tag": "final_close",

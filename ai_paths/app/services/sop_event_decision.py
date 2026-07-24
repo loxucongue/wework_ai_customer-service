@@ -91,7 +91,8 @@ def normalize_event_decision(
         elif not _packs_are_adjacent(selected_ids, candidate_sops):
             violations.append("merge_requires_adjacent_mainline_packs")
     if decision in {"send", "merge"} and any(
-        _payment_gate_blocks_selection(candidate_by_id.get(pack_id)) for pack_id in selected_ids
+        _payment_gate_blocks_selection(candidate_by_id.get(pack_id), model_output=output)
+        for pack_id in selected_ids
     ) and not _decision_removes_unsupported_payment_messages(
         output,
         selected_ids=selected_ids,
@@ -417,13 +418,31 @@ def _has_stage_skip_evidence(
     return False
 
 
-def _payment_gate_blocks_selection(candidate: Any) -> bool:
+def _payment_gate_blocks_selection(candidate: Any, *, model_output: dict[str, Any] | None = None) -> bool:
     if not isinstance(candidate, dict):
         return False
     gate = candidate.get("payment_collection_gate")
     if not isinstance(gate, dict):
         return False
-    return _text(gate.get("status")) not in {"", "not_required", "supported"}
+    status = _text(gate.get("status"))
+    if status in {"", "not_required", "supported"}:
+        return False
+    if status == "activity_intro_required" and _activity_intro_skip_evidence(model_output or {}):
+        return False
+    return True
+
+
+def _activity_intro_skip_evidence(output: dict[str, Any]) -> bool:
+    evidence = _stage_skip_evidence(output)
+    return _has_stage_skip_evidence(
+        evidence,
+        stage_id="activity_and_price",
+        pack_id="event_s10_price_quote_60min",
+    ) or _has_stage_skip_evidence(
+        evidence,
+        stage_id="activity_and_price",
+        pack_id="s10_activity_intro",
+    )
 
 
 def _decision_removes_unsupported_payment_messages(

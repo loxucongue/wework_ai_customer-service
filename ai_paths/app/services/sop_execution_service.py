@@ -29,7 +29,7 @@ from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
 
 
-FIRST_ADD_NEXT_STEP_LOOKAHEAD_MINUTES = 30
+FIRST_ADD_NEXT_STEP_LOOKAHEAD_MINUTES = 0
 FIRST_ADD_NEXT_STEP_MAX_CANDIDATES = 1
 
 
@@ -49,6 +49,8 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 客户是通过企业微信进入的活动新客。平台已经按时间和客户阶段触发 SOP；你的目标是让已配置 SOP 按销售节奏自然发送，建立信任、解决阶段顾虑，并逐步推进到真实门店、登记、预约金和到店。
 
 `/sop/events` 被触发，本身就表示平台提醒现在应该主动触达客户。它不是要求你机械按 `delay_minutes` 强制发送对应时间点的话术包。除非客户刚发了新消息正在等普通 AI/销售回复，或小贝/销售刚刚在最近几分钟内回复过客户，或者候选包会和客户当前明确立场硬冲突，否则不能空拒。你的核心任务是判断“当前应该发哪一个未完成步骤的包、如何加过渡话术，让客户重新开口”。
+
+聊天轨和沉默事件轨是两套节奏。聊天轨可以随客户回应连续推进；沉默事件轨只能从已经通过计时基准、阶段前置、付款状态和当天频率资格的 `candidate_sops` 中选择。沉默事件轨按“门店轻触 -> 效果铺垫 -> 活动报价 -> 预约金 -> 未付跟进”渐进，不能把完整聊天包当成沉默跟进包，也不能在活动报价前发送预约金卡或催付。
 
 {GLOBAL_BUSINESS_RHYTHM_CONTRACT}
 
@@ -94,14 +96,13 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 客户未回复、只有 staff 消息、前序 SOP 已正常发送、同一活动主题或仅发过普通图片，都不构成拒发。
 
 - `first_add_flow` 按破冰/介绍 -> 需求与门店 -> 效果案例 -> 活动报价 -> 登记与预约金的阶段推进；`delay_minutes` 只表示这次可以检查到哪个候选范围，不等于必须发送该时间点最高阶段的包。
-- `candidate_sops.candidate_group` 可能是 `due` 或 `next_step`：`due` 是当前已到期/逾期的未完成包；`next_step` 是最近的下一阶段未完成包，只是给你在 due 包重复、冲突或已经被最近聊天覆盖时继续 SOP 节奏的备选，不是强制跳阶段。
+- `candidate_sops` 已经通过结构资格过滤；模型只能在这些到期候选中判断当前最自然的内容，不得自行选择未到时间或未满足前置的下一阶段。
 - `stage_tag/customer_state` 是阶段前置语义，不只是描述文字。`payment_followup/deposit_push/quoted_no_deposit/deposit_unpaid_*` 这类后续包，必须由最近对话、completed_sop_pack_ids/categories 或客户状态证明活动报价/预约金已经真实触达；不能仅因它和报价包同一时刻到期就越过未完成的 `price_quote`。
 - 如果 `price_quote` 仍未完成且近期只完成效果/门店铺垫，应优先选择活动报价包。活动报价真实完成后，预约金卡不再要求先有匹配订单；订单只用于后台关联，不是发送前置。
 - 选择包时按“最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标”判断。客户正在聊且最新客户消息等待普通 AI/销售回复时，不发 SOP；客户沉默时，优先推进下一个合理 SOP 价值点。
 - 某个步骤已经被问过或轻触过一次，例如已经问过城市/区域、斑点情况、姓名电话或预约金，客户继续沉默时，不要无限重复追问同一个问题；应往后推进到下一个未完成且不会制造事实错误的 SOP 包，并用第一条 text 自然承接“这个信息后面您方便再补，我先给您看/说下一步”。
 - 只有这个必要信息从未触达过，或当前候选只有该步骤，才继续轻触该问题；已经触达过但客户沉默，不得因为“任务未解决”而空拒。
-- 当 due 候选和最近聊天严重重合，或客户已被轻触过同一问题但仍沉默时，不要直接 `send_sop=false`；应继续评估 `next_step` 候选，选择一个不编造事实、不涉及风险和支付冲突、能让客户继续开口的下一阶段包。
-- 只有在 due 与 next_step 都不适合发送时，才拒发；拒发理由必须说明是客户最新消息待回复、明确冲突、健康/投诉/支付异常、事实错误风险，还是所有候选都严重重复。
+- 当到期候选和最近聊天严重重合时，不要编造下一个尚未合格的阶段；可在允许边界内润色当前包，确实重复或冲突时再 `send_ai_touch/defer/skip`，并写清原因。
 - 客户刚提出一个问题并不当然拒发。只有销售正在实时处理该问题，或本包会明显答非所问、硬打断时才拒发。
 - 不把活动图、门店图、品牌图当成效果案例；不把“同一活动”误判为严重重合。
 - 平台自动加好友开场不是有效客户咨询；没有后续客户消息时，仍按未回复的 SOP 跟进判断。
@@ -111,7 +112,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
   - `payment_collection_gate.status=supported`：可按正常 SOP 判断发送。
   - `payment_collection_gate.status=paid_skip_card`：客户已付，不得再发预约金卡；只可保留/改写为已付后的姓名电话或到店安排轻触达。
   - `payment_collection_gate.status=activity_intro_required`：完整活动介绍/价格铺垫还没有真实完成证据，不得发送预约金卡。结构化完成和近期聊天语义完成都是真实证据；如果近期已经讲清活动价、10元预约金、抵扣和可退，不要重复活动包，应写 `stage_skip_evidence` 后评估预约金轻触/收款候选。若没有这些证据，应优先选择活动介绍、效果铺垫或其他非收款候选；如果候选里没有合适包，拒发并说明还需先补活动介绍。
-  - `event_s10_price_quote_60min` 这类短报价包不能单独替代 `s10_activity_intro` 的完整活动介绍。结构化 `completed_sop_pack_ids/categories` 是最强完成证据；如果近期真实聊天已经完整讲过活动价、10元预约金、到店抵扣、未做或不满意可退、到店时间可按客户方便安排，也可作为语义完成证据，但必须在 `stage_skip_evidence` 写清楚，不能再重复发送 `s10_activity_intro`。
+  - 聊天轨使用完整 `s10_activity_intro`，沉默事件轨使用 `event_s10_price_quote_60min`；两者分别是各自轨道的活动与价格铺垫，真实发送任一包都可形成活动报价完成证据。如果近期真实聊天已经完整讲过活动价、10元预约金、到店抵扣、未做或不满意可退、到店时间可按客户方便安排，也可作为语义完成证据，但必须在 `stage_skip_evidence` 写清楚，不能重复发送活动报价。
 - 当 `mainline_stage_status.activity_and_price.structural_completed=true`，客户未付且没有明确拒付、投诉、付款异常、健康风险或最新待回复问题时，如果候选里存在 `deposit_decision/payment_followup/deposit_push` 阶段包，应优先选择后续预约金/未付跟进包或 `send_ai_touch`，不要 `skip`。这类场景的目标是继续推动客户决策，而不是重复活动介绍，也不是空触达。
 - `payment_collection_gate` 必须逐个候选包独立判断。一个后置收款包是 `activity_intro_required`，不代表同轮其他非收款候选也不可发；如果候选中存在 `not_required/supported` 的活动介绍或效果包，应选择合法的前序包，不能因为另一个候选被拦而整轮 `skip`。
 - 只有在 `conversation_activity.latest_customer_pending_ai_reply=true`、客户明确拒绝当前核心行动、投诉/付款异常/身体不适、或候选包会明显造成事实错误时，才 `send_sop=false`。
@@ -1477,6 +1478,8 @@ def first_add_candidate_packs(
     delay_minutes: int,
     event_type: str = "sop_friend_added_schedule_batch",
     match_context: dict[str, Any] | None = None,
+    delivery_evidence: dict[str, Any] | None = None,
+    payment_state: str = "",
 ) -> list[dict[str, Any]]:
     packs = config.get("packs") if isinstance(config.get("packs"), list) else []
     completed = set(completed_sop_pack_ids)
@@ -1495,10 +1498,14 @@ def first_add_candidate_packs(
             continue
         if _pack_category(pack) in completed_categories:
             continue
-        pack_delay = _int(pack.get("delay_minutes"), 0)
-        if delay_minutes <= 0 and pack_delay > 0:
-            continue
-        if delay_minutes > 0 and pack_delay > delay_minutes:
+        if not _event_pack_schedule_eligible(
+            pack,
+            delay_minutes=delay_minutes,
+            match_context=match_context,
+            delivery_evidence=delivery_evidence or {},
+            payment_state=payment_state,
+            completed_categories=completed_categories,
+        ):
             continue
         if _is_final_close_pack(pack) and not _final_close_context_matches(pack, delay_minutes, match_context):
             continue
@@ -1507,11 +1514,12 @@ def first_add_candidate_packs(
                 pack,
                 group="due",
                 reason_hint="currently_due_or_overdue",
+                prerequisite_status=_event_pack_prerequisite_status(pack, completed_categories),
             )
         )
     candidates = _sort_first_add_candidates(candidates)
 
-    if delay_minutes <= 0:
+    if delay_minutes <= 0 or FIRST_ADD_NEXT_STEP_LOOKAHEAD_MINUTES <= 0:
         return candidates
     future_candidates: list[dict[str, Any]] = []
     for pack in packs:
@@ -1553,14 +1561,110 @@ def first_add_candidate_packs(
     return candidates
 
 
+def _event_pack_schedule_eligible(
+    pack: dict[str, Any],
+    *,
+    delay_minutes: int,
+    match_context: dict[str, Any] | None,
+    delivery_evidence: dict[str, Any],
+    payment_state: str,
+    completed_categories: set[str],
+) -> bool:
+    basis = _string(pack.get("schedule_basis")) or "friend_added"
+    pack_delay = _int(pack.get("delay_minutes"), 0)
+    min_gap = _int(pack.get("min_gap_minutes"), 0)
+    required = {
+        _string(item)
+        for item in [
+            *(pack.get("requires_completed_categories") or []),
+            *(pack.get("forbidden_before_categories") or []),
+        ]
+        if _string(item)
+    }
+    required_payment_state = _string(pack.get("requires_payment_state"))
+    if required_payment_state and required_payment_state != payment_state:
+        return False
+    max_daily_sends = _int(pack.get("max_daily_sends"), 0)
+    if max_daily_sends > 0 and _int(delivery_evidence.get("today_count"), 0) >= max_daily_sends:
+        return False
+    if basis == "local_clock":
+        return _final_close_context_matches(pack, delay_minutes, match_context)
+    if basis == "payment_card_sent":
+        anchor = _parse_prompt_time(delivery_evidence.get("payment_card_last_sent_at"))
+        return bool(anchor and _elapsed_minutes(anchor, delivery_evidence.get("event_at")) >= min_gap)
+    if basis == "previous_stage_sent":
+        category_times = (
+            delivery_evidence.get("category_last_sent_at")
+            if isinstance(delivery_evidence.get("category_last_sent_at"), dict)
+            else {}
+        )
+        anchors = [
+            _parse_prompt_time(category_times.get(category))
+            for category in required
+            if category in completed_categories
+        ]
+        anchors = [anchor for anchor in anchors if anchor]
+        if anchors:
+            return _elapsed_minutes(max(anchors), delivery_evidence.get("event_at")) >= min_gap
+        # Keep the due candidate visible when the structured send record is
+        # incomplete. The event model may only skip the prerequisite with
+        # explicit stage_skip_evidence from the recent conversation.
+        return pack_delay <= delay_minutes
+    if delay_minutes <= 0:
+        return pack_delay <= 0
+    return pack_delay <= delay_minutes
+
+
+def _parse_prompt_time(value: Any) -> datetime | None:
+    text = _string(value)
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _elapsed_minutes(anchor: datetime, event_at: Any) -> int:
+    current = _parse_prompt_time(event_at) or datetime.now(timezone.utc)
+    return max(0, int((current - anchor).total_seconds() // 60))
+
+
 def _sort_first_add_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(candidates, key=mainline_pack_sort_key)
 
 
-def _annotated_first_add_candidate(pack: dict[str, Any], *, group: str, reason_hint: str) -> dict[str, Any]:
+def _event_pack_prerequisite_status(
+    pack: dict[str, Any],
+    completed_categories: set[str],
+) -> str:
+    required = {
+        _string(item)
+        for item in [
+            *(pack.get("requires_completed_categories") or []),
+            *(pack.get("forbidden_before_categories") or []),
+        ]
+        if _string(item)
+    }
+    if not required:
+        return "not_required"
+    if required.issubset(completed_categories):
+        return "structurally_completed"
+    return "semantic_evidence_required"
+
+
+def _annotated_first_add_candidate(
+    pack: dict[str, Any],
+    *,
+    group: str,
+    reason_hint: str,
+    prerequisite_status: str = "",
+) -> dict[str, Any]:
     candidate = dict(pack)
     candidate["_candidate_group"] = group
     candidate["_selection_reason_hint"] = reason_hint
+    candidate["_prerequisite_status"] = prerequisite_status or "not_required"
     return candidate
 
 
@@ -1732,9 +1836,21 @@ def _sop_summary(
         ],
         "candidate_group": _string(pack.get("_candidate_group")) or "due",
         "selection_reason_hint": _string(pack.get("_selection_reason_hint")),
+        "prerequisite_status": _string(pack.get("_prerequisite_status")) or "not_required",
         "tags": [str(item) for item in pack.get("triggers") or [] if str(item or "").strip()],
         "event_type": str(pack.get("event_type") or ""),
         "delay_minutes": int(pack.get("delay_minutes") or 0),
+        "schedule_basis": _string(pack.get("schedule_basis")) or "friend_added",
+        "min_gap_minutes": _int(pack.get("min_gap_minutes"), 0),
+        "requires_completed_categories": [
+            _string(item) for item in pack.get("requires_completed_categories") or [] if _string(item)
+        ],
+        "forbidden_before_categories": [
+            _string(item) for item in pack.get("forbidden_before_categories") or [] if _string(item)
+        ],
+        "requires_payment_state": _string(pack.get("requires_payment_state")),
+        "max_daily_sends": _int(pack.get("max_daily_sends"), 0),
+        "silence_only": bool(pack.get("silence_only")),
         "stage_tag": str(pack.get("stage_tag") or ""),
         "reply_messages_summary": _messages_summary(messages),
         "payment_collection_gate": _payment_collection_gate_summary(

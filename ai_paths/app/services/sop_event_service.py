@@ -508,6 +508,7 @@ class SopEventService:
             event_at=event_at,
             latest_customer_message_at=_parse_time(conversation_activity.get("latest_customer_message_at")),
         )
+        delivery_history = _event_delivery_history(tasks, event_at=event_at)
         touch_frequency["daily_soft_limit"] = self.daily_touch_soft_limit
         touch_frequency["daily_soft_limit_reached"] = (
             int(touch_frequency.get("today_count") or 0) >= self.daily_touch_soft_limit
@@ -523,6 +524,7 @@ class SopEventService:
         )
         return {
             "touch_frequency": touch_frequency,
+            "delivery_history": delivery_history,
             "pending_backlog": pending_backlog,
             "ai_reply_policy": build_event_ai_reply_policy(
                 conversation_activity,
@@ -597,6 +599,10 @@ class SopEventService:
             delay_minutes=delay_minutes,
             event_type=_string(payload.get("event_type")),
             match_context=match_context,
+            delivery_evidence=event_policy_evidence.get("delivery_history")
+            if isinstance(event_policy_evidence.get("delivery_history"), dict)
+            else {},
+            payment_state=_event_payment_state(customer_memory, customer_context),
         )
         if not candidates:
             return self._create_task_record(
@@ -757,7 +763,10 @@ class SopEventService:
             customer_memory,
             customer_context,
             completed_sop_pack_ids=completed_ids,
-            completed_sop_categories=completed_categories,
+            completed_sop_categories=_effective_event_completed_categories(
+                completed_categories,
+                decision,
+            ),
             require_activity_intro="s10_activity_intro" not in selected_pack_ids,
         )
         if final_payment_gate.get("status") not in {"not_required", "supported"}:
@@ -1405,9 +1414,32 @@ def _payment_card_amount(message: dict[str, Any]) -> int:
 def _activity_intro_completed(completed_sop_pack_ids: list[str], completed_sop_categories: list[str]) -> bool:
     completed_ids = {_string(item).lower() for item in completed_sop_pack_ids}
     completed_categories = {_string(item).lower() for item in completed_sop_categories}
-    return "s10_activity_intro" in completed_ids or bool(
-        completed_categories.intersection({"activity_intro", "s10_activity_intro"})
+    return bool(
+        completed_ids.intersection({"s10_activity_intro", "event_s10_price_quote_60min"})
+        or completed_categories.intersection(
+            {"activity_intro", "s10_activity_intro", "price_quote"}
+        )
     )
+
+
+def _effective_event_completed_categories(
+    completed_sop_categories: list[str],
+    decision: dict[str, Any],
+) -> list[str]:
+    output = {_string(item) for item in completed_sop_categories if _string(item)}
+    raw_evidence = decision.get("stage_skip_evidence")
+    if not isinstance(raw_evidence, list):
+        return sorted(output)
+    for item in raw_evidence:
+        if not isinstance(item, dict) or not _string(item.get("evidence")):
+            continue
+        if _string(item.get("stage_id")) == "activity_and_price" or _string(item.get("pack_id")) in {
+            "s10_activity_intro",
+            "event_s10_price_quote_60min",
+        }:
+            output.add("price_quote")
+            break
+    return sorted(output)
 
 
 def _content_has_value(content: dict[str, Any]) -> bool:
@@ -1539,6 +1571,71 @@ def _event_touch_evidence(
             "max_merge_pack_count": 2,
         },
     )
+
+
+def _event_delivery_history(tasks: list[dict[str, Any]], *, event_at: datetime) -> dict[str, Any]:
+    sent_tasks = [task for task in tasks if _string(task.get("status")) == "sent"]
+    category_last_sent_at: dict[str, str] = {}
+    pack_last_sent_at: dict[str, str] = {}
+    payment_card_last_sent_at: datetime | None = None
+    for task in sent_tasks:
+        sent_at = _task_time(task)
+        if not sent_at:
+            continue
+        send_payload = task.get("send_payload") if isinstance(task.get("send_payload"), dict) else {}
+        pack_ids = [
+            _string(item)
+            for item in send_payload.get("selected_sop_pack_ids") or []
+            if _string(item)
+        ] or [_string(task.get("sop_pack_id"))]
+        categories = [
+            _string(item)
+            for item in send_payload.get("selected_sop_categories") or []
+            if _string(item)
+        ] or [_string(task.get("sop_category"))]
+        for pack_id in pack_ids:
+            if pack_id and (
+                not pack_last_sent_at.get(pack_id)
+                or sent_at > (_parse_time(pack_last_sent_at[pack_id]) or datetime.min.replace(tzinfo=timezone.utc))
+            ):
+                pack_last_sent_at[pack_id] = sent_at.isoformat()
+        for category in categories:
+            if category and (
+                not category_last_sent_at.get(category)
+                or sent_at > (_parse_time(category_last_sent_at[category]) or datetime.min.replace(tzinfo=timezone.utc))
+            ):
+                category_last_sent_at[category] = sent_at.isoformat()
+        messages = task.get("reply_messages") if isinstance(task.get("reply_messages"), list) else []
+        if any(_string(message.get("type")) == "payment_collection" for message in messages if isinstance(message, dict)):
+            if payment_card_last_sent_at is None or sent_at > payment_card_last_sent_at:
+                payment_card_last_sent_at = sent_at
+    local_event_date = event_at.astimezone(SOP_QUIET_TIMEZONE).date()
+    today_count = sum(
+        1
+        for task in sent_tasks
+        if (task_at := _task_time(task))
+        and task_at.astimezone(SOP_QUIET_TIMEZONE).date() == local_event_date
+    )
+    return {
+        "event_at": event_at.isoformat(),
+        "today_count": today_count,
+        "category_last_sent_at": category_last_sent_at,
+        "pack_last_sent_at": pack_last_sent_at,
+        "payment_card_last_sent_at": payment_card_last_sent_at.isoformat()
+        if payment_card_last_sent_at
+        else "",
+    }
+
+
+def _event_payment_state(customer_memory: dict[str, Any], customer_context: dict[str, Any]) -> str:
+    basic = customer_memory.get("basic_info") if isinstance(customer_memory.get("basic_info"), dict) else {}
+    payment_fact = resolved_payment_fact(
+        orders=customer_context.get("orders") if isinstance(customer_context, dict) else [],
+        existing_state=_string(basic.get("deposit_state")),
+        existing_source=_string(basic.get("deposit_source")),
+        existing_fact=basic.get("deposit_fact"),
+    )
+    return "paid" if is_paid_deposit_state(payment_fact.get("deposit_state")) else "unpaid"
 
 
 def _task_time(task: dict[str, Any]) -> datetime | None:

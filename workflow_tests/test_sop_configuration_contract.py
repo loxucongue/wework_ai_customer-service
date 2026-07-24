@@ -50,25 +50,26 @@ def test_opening_efficacy_image_does_not_replace_activity_ad_or_case_media() -> 
     assert ACTIVITY_AD_IMAGE not in _image_urls(opening)
 
 
-def test_activity_quote_uses_one_pack_for_chat_and_first_add_event() -> None:
+def test_activity_quote_uses_separate_chat_and_silent_event_packs() -> None:
     config = _load_config()
     activity = _pack(config, "s10_activity_intro")
     legacy = _pack(config, "event_s10_price_quote_60min")
 
     assert activity["enabled"] is True
-    assert set(activity["scopes"]) == {"chat_gate", "event_first_add"}
+    assert set(activity["scopes"]) == {"chat_gate"}
     assert activity["delay_minutes"] == 60
-    assert legacy["enabled"] is False
+    assert legacy["enabled"] is True
+    assert set(legacy["scopes"]) == {"event_first_add"}
 
     candidates = first_add_candidate_packs(
         config,
-        completed_sop_pack_ids=["s10_new_customer_opening", "event_s10_effect_warmup_30min"],
-        completed_sop_categories=[],
+        completed_sop_pack_ids=["event_s10_store_prompt_5min", "event_s10_effect_warmup_30min"],
+        completed_sop_categories=["store_prompt", "effect_case"],
         delay_minutes=60,
     )
     candidate_ids = [item["id"] for item in candidates]
-    assert "s10_activity_intro" in candidate_ids
-    assert "event_s10_price_quote_60min" not in candidate_ids
+    assert "s10_activity_intro" not in candidate_ids
+    assert "event_s10_price_quote_60min" in candidate_ids
 
 
 def test_activity_quote_send_once_key_is_shared_across_both_entrypoints() -> None:
@@ -93,4 +94,75 @@ def test_activity_quote_configuration_has_no_canonicalization_error() -> None:
         if issue.get("severity") == "error"
     }
     assert "shared_activity_quote_scope_missing" not in error_codes
-    assert "legacy_activity_quote_enabled" not in error_codes
+    assert "event_activity_quote_missing" not in error_codes
+
+
+def test_silent_event_deposit_waits_for_quote_and_minimum_gap() -> None:
+    config = _load_config()
+    completed_ids = [
+        "event_s10_store_prompt_5min",
+        "event_s10_effect_warmup_30min",
+        "event_s10_price_quote_60min",
+    ]
+    completed_categories = ["store_prompt", "effect_case", "price_quote"]
+    before_gap = first_add_candidate_packs(
+        config,
+        completed_sop_pack_ids=completed_ids,
+        completed_sop_categories=completed_categories,
+        delay_minutes=70,
+        payment_state="unpaid",
+        delivery_evidence={
+            "event_at": "2026-07-24T02:10:00+00:00",
+            "category_last_sent_at": {"price_quote": "2026-07-24T02:01:00+00:00"},
+        },
+    )
+    after_gap = first_add_candidate_packs(
+        config,
+        completed_sop_pack_ids=completed_ids,
+        completed_sop_categories=completed_categories,
+        delay_minutes=70,
+        payment_state="unpaid",
+        delivery_evidence={
+            "event_at": "2026-07-24T02:11:00+00:00",
+            "category_last_sent_at": {"price_quote": "2026-07-24T02:01:00+00:00"},
+        },
+    )
+
+    assert "event_s10_deposit_push_70min" not in [item["id"] for item in before_gap]
+    assert "event_s10_deposit_push_70min" in [item["id"] for item in after_gap]
+
+
+def test_unpaid_followups_use_payment_card_delivery_time() -> None:
+    config = _load_config()
+    completed_ids = [
+        "event_s10_store_prompt_5min",
+        "event_s10_effect_warmup_30min",
+        "event_s10_price_quote_60min",
+        "event_s10_deposit_push_70min",
+    ]
+    completed_categories = ["store_prompt", "effect_case", "price_quote", "deposit_push"]
+    before_hour = first_add_candidate_packs(
+        config,
+        completed_sop_pack_ids=completed_ids,
+        completed_sop_categories=completed_categories,
+        delay_minutes=180,
+        payment_state="unpaid",
+        delivery_evidence={
+            "event_at": "2026-07-24T03:00:00+00:00",
+            "payment_card_last_sent_at": "2026-07-24T02:01:00+00:00",
+        },
+    )
+    at_hour = first_add_candidate_packs(
+        config,
+        completed_sop_pack_ids=completed_ids,
+        completed_sop_categories=completed_categories,
+        delay_minutes=180,
+        payment_state="unpaid",
+        delivery_evidence={
+            "event_at": "2026-07-24T03:01:00+00:00",
+            "payment_card_last_sent_at": "2026-07-24T02:01:00+00:00",
+        },
+    )
+
+    assert "event_s10_unpaid_effect_1h" not in [item["id"] for item in before_hour]
+    assert "event_s10_unpaid_effect_1h" in [item["id"] for item in at_hour]

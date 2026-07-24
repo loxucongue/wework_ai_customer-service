@@ -1716,36 +1716,48 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
 
-    async def test_no_customer_reply_keeps_non_payment_flow_but_blocks_unbacked_payment_card(self) -> None:
-        pack_ids = {
-            5: "event_s10_store_prompt_5min",
-            30: "event_s10_effect_warmup_30min",
-            60: "s10_activity_intro",
-            70: "event_s10_deposit_push_70min",
-        }
+    async def test_no_customer_reply_advances_event_track_without_skipping_quote(self) -> None:
         pack_service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
-        for delay_minutes, pack_id in pack_ids.items():
-            with self.subTest(delay_minutes=delay_minutes):
-                repo = _Repo()
-                client = _OutreachClient(messages=[])
-                selector = _Selector({"send_sop": True, "sop_pack_id": pack_id, "reason": "customer never replied"})
-                service = _service(repo=repo, client=client, selector=selector, pack_service=pack_service)
-                event_id = f"evt_no_reply_{delay_minutes}"
-                payload = _base_payload(
-                    event_id=event_id,
-                    event_type="sop_friend_added_schedule_batch",
-                    created_at="2026-07-11T02:00:00+00:00",
-                    sop={"delay_minutes": delay_minutes},
-                    customers=[{"first_added_event": {"trace_id": f"trace_no_reply_{delay_minutes}", "timestamp": "2026-07-11T01:00:00+00:00"}}],
-                )
-
-                repo.create_sop_event(payload)
-                result = await service.process_event(event_id)
-
-                self.assertEqual(result["status"], "processed")
-                expected_status = "skipped_payment_collection_blocked" if delay_minutes == 70 else "sent"
-                self.assertEqual(repo.tasks[0]["status"], expected_status)
-                self.assertEqual(repo.tasks[0]["sop_pack_id"], pack_id)
+        config = pack_service.load()
+        store = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=[],
+            completed_sop_categories=[],
+            delay_minutes=5,
+            payment_state="unpaid",
+        )
+        self.assertEqual([item["id"] for item in store], ["event_s10_store_prompt_5min"])
+        effect = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=["event_s10_store_prompt_5min"],
+            completed_sop_categories=["store_prompt"],
+            delay_minutes=30,
+            payment_state="unpaid",
+        )
+        self.assertEqual([item["id"] for item in effect], ["event_s10_effect_warmup_30min"])
+        quote = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=["event_s10_store_prompt_5min", "event_s10_effect_warmup_30min"],
+            completed_sop_categories=["store_prompt", "effect_case"],
+            delay_minutes=60,
+            payment_state="unpaid",
+        )
+        self.assertEqual([item["id"] for item in quote], ["event_s10_price_quote_60min"])
+        deposit_without_quote = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=["event_s10_store_prompt_5min", "event_s10_effect_warmup_30min"],
+            completed_sop_categories=["store_prompt", "effect_case"],
+            delay_minutes=70,
+            payment_state="unpaid",
+        )
+        self.assertEqual(
+            [item["id"] for item in deposit_without_quote],
+            ["event_s10_price_quote_60min", "event_s10_deposit_push_70min"],
+        )
+        self.assertEqual(
+            deposit_without_quote[1]["_prerequisite_status"],
+            "semantic_evidence_required",
+        )
 
     async def test_first_add_event_can_send_ai_touch_when_fixed_pack_is_unsuitable(self) -> None:
         repo = _Repo()
@@ -2783,12 +2795,15 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config["audit"]["error_count"], 0)
         opening = next(item for item in config["packs"] if item["id"] == "s10_new_customer_opening")
         self.assertTrue(opening["enabled"])
-        self.assertIn("event_first_add", opening["scopes"])
+        self.assertEqual(opening["scopes"], ["chat_gate"])
         self.assertEqual(opening["event_type"], "")
         self.assertEqual(opening["delay_minutes"], 0)
         need_and_case = next(item for item in config["packs"] if item["id"] == "s10_need_and_case")
         self.assertTrue(need_and_case["enabled"])
-        self.assertIn("event_first_add", need_and_case["scopes"])
+        self.assertEqual(need_and_case["scopes"], ["chat_gate"])
+        price_quote = next(item for item in config["packs"] if item["id"] == "event_s10_price_quote_60min")
+        self.assertTrue(price_quote["enabled"])
+        self.assertEqual(price_quote["scopes"], ["event_first_add"])
 
     def test_final_close_pack_requires_late_or_explicit_stage_context(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
@@ -2805,40 +2820,39 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         late = first_add_candidate_packs(
             config,
-            completed_sop_pack_ids=[],
-            completed_sop_categories=[],
+            completed_sop_pack_ids=["event_s10_price_quote_60min"],
+            completed_sop_categories=["price_quote"],
             delay_minutes=600,
             match_context={"delay_minutes": 600},
+            payment_state="unpaid",
         )
         self.assertIn("event_s10_day1_final_close", [item["id"] for item in late])
 
         explicit = first_add_candidate_packs(
             config,
-            completed_sop_pack_ids=[],
-            completed_sop_categories=[],
+            completed_sop_pack_ids=["event_s10_price_quote_60min"],
+            completed_sop_categories=["price_quote"],
             delay_minutes=0,
             match_context={"delay_minutes": 0, "event_id": "evt:day1_18_final_close", "stage_tag": "final_close"},
+            payment_state="unpaid",
         )
         self.assertIn("event_s10_day1_final_close", [item["id"] for item in explicit])
 
-    def test_first_add_candidates_fall_forward_when_current_delay_has_no_candidate(self) -> None:
+    def test_first_add_candidates_do_not_look_ahead_before_next_silent_stage(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
         config = service.load()
 
         candidates = first_add_candidate_packs(
             config,
             completed_sop_pack_ids=["s10_new_customer_opening", "event_s10_store_prompt_5min"],
-            completed_sop_categories=[],
+            completed_sop_categories=["store_prompt"],
             delay_minutes=10,
             match_context={"delay_minutes": 10},
         )
 
-        self.assertEqual(
-            [item["id"] for item in candidates],
-            ["s10_need_and_case", "event_s10_effect_warmup_30min"],
-        )
+        self.assertEqual([item["id"] for item in candidates], [])
 
-    def test_first_add_candidates_include_next_step_when_due_pack_may_repeat(self) -> None:
+    def test_first_add_candidates_only_include_current_due_silent_stage(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
         config = service.load()
 
@@ -2852,32 +2866,82 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         ids = [item["id"] for item in candidates]
         self.assertIn("event_s10_store_prompt_5min", ids)
-        self.assertIn("event_s10_effect_warmup_30min", ids)
-        self.assertLess(ids.index("event_s10_store_prompt_5min"), ids.index("event_s10_effect_warmup_30min"))
-        groups = {item["id"]: item.get("_candidate_group") for item in candidates}
-        self.assertEqual(groups["event_s10_store_prompt_5min"], "due")
-        self.assertEqual(groups["event_s10_effect_warmup_30min"], "next_step")
-        next_step = [item for item in candidates if item.get("_candidate_group") == "next_step"]
-        self.assertLessEqual(len(next_step), 1)
+        self.assertNotIn("event_s10_effect_warmup_30min", ids)
 
-    def test_first_add_candidates_keep_need_and_case_before_activity_after_opening(self) -> None:
+    def test_first_add_candidates_expose_due_later_stage_for_semantic_skip_review(self) -> None:
         service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=Path("config/sop_reply_packs.json")))
         config = service.load()
 
-        for delay_minutes in (30, 60, 70):
-            with self.subTest(delay_minutes=delay_minutes):
-                candidates = first_add_candidate_packs(
-                    config,
-                    completed_sop_pack_ids=["s10_new_customer_opening"],
-                    completed_sop_categories=["s10_new_customer_opening"],
-                    delay_minutes=delay_minutes,
-                    match_context={"delay_minutes": delay_minutes},
-                )
-                ids = [item["id"] for item in candidates]
+        before_effect = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=["event_s10_store_prompt_5min"],
+            completed_sop_categories=["store_prompt"],
+            delay_minutes=60,
+            match_context={"delay_minutes": 60},
+        )
+        self.assertEqual(
+            [item["id"] for item in before_effect],
+            ["event_s10_effect_warmup_30min", "event_s10_price_quote_60min"],
+        )
+        self.assertEqual(before_effect[1]["_prerequisite_status"], "semantic_evidence_required")
 
-                self.assertIn("s10_need_and_case", ids)
-                self.assertIn("s10_activity_intro", ids)
-                self.assertLess(ids.index("s10_need_and_case"), ids.index("s10_activity_intro"))
+        after_effect = first_add_candidate_packs(
+            config,
+            completed_sop_pack_ids=["event_s10_store_prompt_5min", "event_s10_effect_warmup_30min"],
+            completed_sop_categories=["store_prompt", "effect_case"],
+            delay_minutes=60,
+            match_context={"delay_minutes": 60},
+        )
+        self.assertEqual([item["id"] for item in after_effect], ["event_s10_price_quote_60min"])
+
+    def test_event_payment_candidate_requires_activity_stage_skip_evidence(self) -> None:
+        selector_input = {
+            "mode": "first_add_flow",
+            "completed_sop_pack_ids": [],
+            "completed_sop_categories": ["store_prompt", "effect_case"],
+            "candidate_sops": [
+                {
+                    "id": "event_s10_price_quote_60min",
+                    "sop_category": "price_quote",
+                    "order": 140,
+                    "payment_collection_gate": {"status": "not_required"},
+                },
+                {
+                    "id": "event_s10_deposit_push_70min",
+                    "sop_category": "deposit_push",
+                    "order": 150,
+                    "payment_collection_gate": {"status": "activity_intro_required"},
+                },
+            ],
+        }
+        _, blocked = normalize_event_decision(
+            {
+                "decision": "send",
+                "selected_pack_ids": ["event_s10_deposit_push_70min"],
+                "reason": "send deposit",
+            },
+            selector_input,
+        )
+        self.assertIn("selected_packs_must_start_with_earliest_candidate", blocked)
+        self.assertIn("selected_payment_pack_not_currently_supported", blocked)
+
+        _, allowed = normalize_event_decision(
+            {
+                "decision": "send",
+                "selected_pack_ids": ["event_s10_deposit_push_70min"],
+                "stage_skip_evidence": [
+                    {
+                        "stage_id": "activity_and_price",
+                        "pack_id": "event_s10_price_quote_60min",
+                        "evidence": "近期聊天已完整说明活动价、预约金抵扣和可退口径",
+                    }
+                ],
+                "reason": "recent conversation already covered the quote",
+            },
+            selector_input,
+        )
+        self.assertNotIn("selected_packs_must_start_with_earliest_candidate", allowed)
+        self.assertNotIn("selected_payment_pack_not_currently_supported", allowed)
 
     async def test_event_judge_prompt_defaults_to_platform_sop_unless_conflict_or_overlap(self) -> None:
         model = _PromptCaptureModel(
@@ -2970,8 +3034,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不要无限重复追问同一个问题", system_prompt)
         self.assertIn("客户沉默时，优先推进下一个合理 SOP 价值点", system_prompt)
         self.assertIn("发送效果铺垫包", system_prompt)
-        self.assertIn("candidate_group", system_prompt)
-        self.assertIn("next_step", system_prompt)
+        self.assertIn("计时基准、阶段前置、付款状态和当天频率资格", system_prompt)
+        self.assertIn("不能在活动报价前发送预约金卡或催付", system_prompt)
         self.assertIn("text_adjustments", system_prompt)
         self.assertIn("message_operations", system_prompt)
         self.assertIn("insert_text_after", system_prompt)
@@ -3154,8 +3218,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("最近真实聊天状态 + 已触达步骤 + 未完成步骤 + 候选包阶段目标", system_prompt)
         self.assertIn("不要无限重复追问同一个问题", system_prompt)
         self.assertIn("客户沉默时，优先推进下一个合理 SOP 价值点", system_prompt)
-        self.assertIn("candidate_group", system_prompt)
-        self.assertIn("next_step", system_prompt)
+        self.assertIn("计时基准、阶段前置、付款状态和当天频率资格", system_prompt)
+        self.assertIn("不能在活动报价前发送预约金卡或催付", system_prompt)
         self.assertIn("text_adjustments", system_prompt)
         self.assertIn("message_operations", system_prompt)
         self.assertIn("insert_text_after", system_prompt)

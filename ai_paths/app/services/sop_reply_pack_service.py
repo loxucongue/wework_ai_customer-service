@@ -12,6 +12,8 @@ from app.services.payment_collection import PAYMENT_COLLECTION_ALLOWED_AMOUNTS
 
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address", "human_handoff", "human_handoff_notice"}
 ALLOWED_SOP_SCOPES = {"chat_gate", "event_first_add", "event_platform_task"}
+ALLOWED_SCHEDULE_BASES = {"friend_added", "previous_stage_sent", "payment_card_sent", "local_clock"}
+ALLOWED_PAYMENT_STATES = {"", "unpaid", "paid"}
 ALLOWED_SOP_CATEGORIES = {
     "opening",
     "intro",
@@ -475,6 +477,21 @@ class SopReplyPackService:
             "send_once": bool(item.get("send_once", True)),
             "event_type": _checked_text(item.get("event_type"), ""),
             "delay_minutes": _non_negative_int(item.get("delay_minutes"), 0),
+            "schedule_basis": _choice_text(
+                item.get("schedule_basis"),
+                "friend_added",
+                ALLOWED_SCHEDULE_BASES,
+            ),
+            "min_gap_minutes": _non_negative_int(item.get("min_gap_minutes"), 0),
+            "requires_completed_categories": _identifier_list(item.get("requires_completed_categories")),
+            "forbidden_before_categories": _identifier_list(item.get("forbidden_before_categories")),
+            "requires_payment_state": _choice_text(
+                item.get("requires_payment_state"),
+                "",
+                ALLOWED_PAYMENT_STATES,
+            ),
+            "max_daily_sends": _non_negative_int(item.get("max_daily_sends"), 0),
+            "silence_only": bool(item.get("silence_only", False)),
             "day_stage": _checked_text(item.get("day_stage"), ""),
             "customer_state": _checked_text(item.get("customer_state"), ""),
             "stage_tag": _checked_text(item.get("stage_tag"), ""),
@@ -591,19 +608,6 @@ def _audit_first_add_candidates(packs: list[Any], issues: list[dict[str, Any]]) 
     opening = next((pack for pack in packs if isinstance(pack, dict) and str(pack.get("id") or "") == "s10_new_customer_opening"), {})
     if not opening or not bool(opening.get("enabled")):
         issues.append(_audit_issue("error", "first_add_opening_disabled", "s10_new_customer_opening", "首次加微必须启用 s10_new_customer_opening。"))
-    elif "event_first_add" not in _normalize_scopes(opening):
-        issues.append(_audit_issue("error", "first_add_opening_scope_missing", "s10_new_customer_opening", "s10_new_customer_opening 必须支持 event_first_add 执行范围。"))
-
-    need_and_case = next((pack for pack in packs if isinstance(pack, dict) and str(pack.get("id") or "") == "s10_need_and_case"), {})
-    if bool(need_and_case.get("enabled")) and "event_first_add" not in _normalize_scopes(need_and_case):
-        issues.append(
-            _audit_issue(
-                "error",
-                "first_add_need_and_case_scope_missing",
-                "s10_need_and_case",
-                "s10_need_and_case 必须支持 event_first_add，避免主动触达跳过需求案例阶段直接发活动。",
-            )
-        )
 
     immediate = [
         pack
@@ -622,13 +626,18 @@ def _audit_first_add_candidates(packs: list[Any], issues: list[dict[str, Any]]) 
         and bool(pack.get("enabled"))
         and "event_first_add" in _normalize_scopes(pack)
         and (not str(pack.get("event_type") or "").strip() or str(pack.get("event_type") or "").strip() == "sop_friend_added_schedule_batch")
-        and _non_negative_int(pack.get("delay_minutes"), 0) <= 1
+        and _non_negative_int(pack.get("delay_minutes"), 0) <= 5
         and pack.get("reply_messages")
     ]
-    if not immediate:
-        issues.append(_audit_issue("error", "first_add_immediate_no_candidate", "", "sop_friend_added_immediate 没有可发送的首次加微候选包。"))
     if not scheduled:
-        issues.append(_audit_issue("error", "first_add_schedule_no_candidate", "", "sop_friend_added_schedule_batch 1 分钟没有可发送的首次加微候选包。"))
+        issues.append(
+            _audit_issue(
+                "error",
+                "first_add_schedule_no_candidate",
+                "",
+                "事件轨前 5 分钟没有可发送的沉默客户轻触包。",
+            )
+        )
 
 
 def _audit_shared_activity_quote(packs: list[Any], issues: list[dict[str, Any]]) -> None:
@@ -647,22 +656,31 @@ def _audit_shared_activity_quote(packs: list[Any], issues: list[dict[str, Any]])
     if not bool(canonical.get("enabled")) and not bool(legacy.get("enabled")):
         return
     canonical_scopes = set(_normalize_scopes(canonical))
-    if not bool(canonical.get("enabled")) or not {"chat_gate", "event_first_add"}.issubset(canonical_scopes):
+    if not bool(canonical.get("enabled")) or "chat_gate" not in canonical_scopes:
         issues.append(
             _audit_issue(
                 "error",
                 "shared_activity_quote_scope_missing",
                 "s10_activity_intro",
-                "活动报价必须由 s10_activity_intro 同时覆盖 chat_gate 和 event_first_add。",
+                "聊天轨活动报价必须由 s10_activity_intro 覆盖 chat_gate。",
             )
         )
-    if bool(legacy.get("enabled")):
+    if "event_first_add" in canonical_scopes:
         issues.append(
             _audit_issue(
                 "error",
-                "legacy_activity_quote_enabled",
+                "chat_activity_pack_leaks_into_event_flow",
+                "s10_activity_intro",
+                "完整聊天活动包不得进入沉默事件轨；事件轨应使用独立轻量报价包。",
+            )
+        )
+    if not bool(legacy.get("enabled")) or "event_first_add" not in set(_normalize_scopes(legacy)):
+        issues.append(
+            _audit_issue(
+                "error",
+                "event_activity_quote_missing",
                 "event_s10_price_quote_60min",
-                "活动报价已由 s10_activity_intro 共用，旧 60 分钟报价包必须停用，避免重复发送。",
+                "沉默事件轨必须启用独立的 60 分钟活动报价包。",
             )
         )
 
@@ -696,6 +714,16 @@ def _normalize_scopes(item: dict[str, Any]) -> list[str]:
         if scope and scope not in scopes:
             scopes.append(scope)
     return scopes or ["chat_gate"]
+
+
+def _identifier_list(value: Any) -> list[str]:
+    values = value if isinstance(value, list) else []
+    output: list[str] = []
+    for item in values:
+        cleaned = _clean_identifier(item)
+        if cleaned and cleaned not in output:
+            output.append(cleaned)
+    return output
 
 
 def _positive_int(value: Any, default: int) -> int:

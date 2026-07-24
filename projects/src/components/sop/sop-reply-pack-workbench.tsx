@@ -55,6 +55,13 @@ type SopPack = {
   send_once: boolean;
   event_type: string;
   delay_minutes: number;
+  schedule_basis: string;
+  min_gap_minutes: number;
+  requires_completed_categories: string[];
+  forbidden_before_categories: string[];
+  requires_payment_state: string;
+  max_daily_sends: number;
+  silence_only: boolean;
   day_stage: string;
   customer_state: string;
   stage_tag: string;
@@ -240,6 +247,13 @@ export function SopReplyPackWorkbench() {
       send_once: true,
       event_type: "sop_friend_added_schedule_batch",
       delay_minutes: 0,
+      schedule_basis: "friend_added",
+      min_gap_minutes: 0,
+      requires_completed_categories: [],
+      forbidden_before_categories: [],
+      requires_payment_state: "",
+      max_daily_sends: 0,
+      silence_only: false,
       day_stage: "day1",
       customer_state: "",
       stage_tag: "",
@@ -565,6 +579,67 @@ function PackEditor({
               onChange={(event) => onChange({ delay_minutes: nonNegativeNumber(event.target.value, pack.delay_minutes) })}
             />
           </Field>
+          <Field label="计时基准">
+            <Select value={pack.schedule_basis} onValueChange={(value) => onChange({ schedule_basis: value })}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="friend_added">加微时间</SelectItem>
+                <SelectItem value="previous_stage_sent">上一阶段发送时间</SelectItem>
+                <SelectItem value="payment_card_sent">预约金卡发送时间</SelectItem>
+                <SelectItem value="local_clock">固定时段</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="最小间隔分钟">
+            <Input
+              type="number"
+              min={0}
+              value={pack.min_gap_minutes}
+              onChange={(event) => onChange({ min_gap_minutes: nonNegativeNumber(event.target.value, pack.min_gap_minutes) })}
+            />
+          </Field>
+          <Field label="必须已完成类目，逗号分隔" className="col-span-2">
+            <Input
+              value={pack.requires_completed_categories.join(",")}
+              onChange={(event) => onChange({ requires_completed_categories: identifierList(event.target.value) })}
+            />
+          </Field>
+          <Field label="此前禁止类目，逗号分隔" className="col-span-2">
+            <Input
+              value={pack.forbidden_before_categories.join(",")}
+              onChange={(event) => onChange({ forbidden_before_categories: identifierList(event.target.value) })}
+            />
+          </Field>
+          <Field label="付款状态要求">
+            <Select
+              value={pack.requires_payment_state || "__any"}
+              onValueChange={(value) => onChange({ requires_payment_state: value === "__any" ? "" : value })}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__any">不限</SelectItem>
+                <SelectItem value="unpaid">未付</SelectItem>
+                <SelectItem value="paid">已付</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label="当天最多触达，0 为不限">
+            <Input
+              type="number"
+              min={0}
+              value={pack.max_daily_sends}
+              onChange={(event) => onChange({ max_daily_sends: nonNegativeNumber(event.target.value, pack.max_daily_sends) })}
+            />
+          </Field>
+          <ToggleField
+            label="仅客户沉默时发送"
+            checked={pack.silence_only}
+            onCheckedChange={(checked) => onChange({ silence_only: checked })}
+          />
           <Field label="day_stage">
             <Input value={pack.day_stage} onChange={(event) => onChange({ day_stage: event.target.value })} />
           </Field>
@@ -938,6 +1013,19 @@ function normalizePack(value: unknown): SopPack {
     send_once: record.send_once !== false,
     event_type: stringValue(record.event_type),
     delay_minutes: nonNegativeNumber(record.delay_minutes, 0),
+    schedule_basis: ["friend_added", "previous_stage_sent", "payment_card_sent", "local_clock"].includes(
+      stringValue(record.schedule_basis),
+    )
+      ? stringValue(record.schedule_basis)
+      : "friend_added",
+    min_gap_minutes: nonNegativeNumber(record.min_gap_minutes, 0),
+    requires_completed_categories: arrayIdentifiers(record.requires_completed_categories),
+    forbidden_before_categories: arrayIdentifiers(record.forbidden_before_categories),
+    requires_payment_state: ["unpaid", "paid"].includes(stringValue(record.requires_payment_state))
+      ? stringValue(record.requires_payment_state)
+      : "",
+    max_daily_sends: nonNegativeNumber(record.max_daily_sends, 0),
+    silence_only: Boolean(record.silence_only),
     day_stage: stringValue(record.day_stage),
     customer_state: stringValue(record.customer_state),
     stage_tag: stringValue(record.stage_tag),
@@ -1069,6 +1157,23 @@ function uniquePackId(packs: SopPack[], baseId: string) {
 
 function cleanIdentifier(value: string) {
   return value.replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+function identifierList(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(/[,，\r\n]+/)
+        .map((item) => cleanIdentifier(item.trim()))
+        .filter(Boolean),
+    ),
+  );
+}
+
+function arrayIdentifiers(value: unknown): string[] {
+  return Array.isArray(value)
+    ? Array.from(new Set(value.map((item) => cleanIdentifier(stringValue(item))).filter(Boolean)))
+    : [];
 }
 
 function positiveNumber(value: unknown, fallback: number) {
