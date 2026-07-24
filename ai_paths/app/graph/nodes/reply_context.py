@@ -69,6 +69,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "order_decision": state.get("order_decision", {}),
         "appointment_decision": state.get("appointment_decision", {}),
         "sales_progression": state.get("sales_progression", {}),
+        "closing_move": state.get("closing_move", {}),
         "precision_qa_decision": state.get("precision_qa_decision", {}),
         "reply_constraints": state.get("reply_constraints", []),
         "planner_tool_policy_violations": _compact_planner_violations(state.get("tool_policy_violations", [])),
@@ -124,6 +125,7 @@ def reply_recovery_payload_for_model(state: AgentState) -> dict[str, Any]:
         "order_decision",
         "appointment_decision",
         "sales_progression",
+        "closing_move",
         "precision_qa_decision",
         "planner_direct_reply_draft",
         "turn_evidence",
@@ -412,7 +414,7 @@ def _sop_progress_for_reply(
             if isinstance(item, dict)
         ][:8],
         "selected_progression": _sanitize_planner_context_for_reply(selected_progression),
-        "usage": "这是事实进度，不是代码候选。先完整回答当前问题，再严格实现 Planner 选择的一个 sales_progression；不要照抄 SOP 静态话术，也不要一次推进多个动作。",
+        "usage": "这是事实进度，不是代码候选。先完整回答当前问题，再严格实现 Planner 选择的 sales_progression 和唯一 closing_move；不要照抄 SOP 静态话术，也不要一次推进多个动作。",
     }
 
 

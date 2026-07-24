@@ -115,6 +115,9 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "appointment_decision",
         "sop_progress_evidence",
         "sales_progression",
+        "closing_move",
+        "manual_transfer",
+        "ask_party_size",
     ]:
         assert marker in PLANNER_SYSTEM_PROMPT
 
@@ -334,6 +337,10 @@ def test_reply_actual_messages_keep_precision_rules_and_stage_business_rules() -
         "恢复下一主线",
         "不要再让客户选择门店",
         "直接用一句自然过渡进入活动或价格铺垫",
+        "closing_move",
+        "本轮唯一的具体收尾动作",
+        "introduce_offer",
+        "当轮主动落到活动",
     ]:
         assert marker in joined
 

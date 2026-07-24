@@ -86,6 +86,7 @@ class AgentState(TypedDict, total=False):
     appointment_state: dict[str, Any]
     appointment_decision: dict[str, Any]
     sales_progression: dict[str, Any]
+    closing_move: dict[str, Any]
     precision_qa_decision: dict[str, Any]
     current_known_store: dict[str, Any]
     store_candidate: dict[str, Any]

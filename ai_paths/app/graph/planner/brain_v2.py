@@ -73,6 +73,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "order_decision": {"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
   "sales_progression": {"status":"continue | pause | terminal","target_stage":"need_and_case | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[]},
+  "closing_move": {"action":"none | ask_city | ask_spot_history | send_case | introduce_offer | ask_store_choice | send_payment | manual_transfer | ask_party_size | ask_registration | ask_visit_intent | resolve_risk | close","mainline_stage":"need_and_case | trust | store | activity | deposit | registration | appointment | service | close | risk","reason":"","required_slot":"","must_not_repeat":[]},
   "reply_messages": [],
   "tool_calls": [],
   "handoff": {"needed": false, "reason": ""}
@@ -382,6 +383,7 @@ def _planner_call_output(plan: dict[str, Any]) -> dict[str, Any]:
         "order_decision": plan.get("order_decision", {}),
         "appointment_decision": plan.get("appointment_decision", {}),
         "sales_progression": plan.get("sales_progression", {}),
+        "closing_move": plan.get("closing_move", {}),
         "reply_messages": len(plan.get("planner_reply_messages", [])),
         "tool_calls": len(plan.get("planner_tool_calls", [])),
         "tool_policy_violations": len(plan.get("tool_policy_violations", [])),
@@ -880,6 +882,7 @@ def _compact_plan_for_repair(plan: dict[str, Any]) -> dict[str, Any]:
             "order_decision": plan.get("order_decision", {}),
             "appointment_decision": plan.get("appointment_decision", {}),
             "sales_progression": plan.get("sales_progression", {}),
+            "closing_move": plan.get("closing_move", {}),
             "reply_messages": plan.get("planner_reply_messages", []),
             "tool_calls": plan.get("planner_tool_calls", []),
             "handoff": plan.get("handoff", {}),

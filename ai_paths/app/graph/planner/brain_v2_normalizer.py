@@ -144,6 +144,21 @@ ALLOWED_SALES_PROGRESSION_TARGETS = (
     "close",
     "risk",
 )
+ALLOWED_CLOSING_MOVE_ACTIONS = (
+    "none",
+    "ask_city",
+    "ask_spot_history",
+    "send_case",
+    "introduce_offer",
+    "ask_store_choice",
+    "send_payment",
+    "manual_transfer",
+    "ask_party_size",
+    "ask_registration",
+    "ask_visit_intent",
+    "resolve_risk",
+    "close",
+)
 ALLOWED_PRECISION_QA_CONFIDENCE = ("high", "medium", "low")
 ALLOWED_PRECISION_QA_DEPTH = ("brief", "standard", "deep")
 
@@ -211,6 +226,9 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     )
     sales_progression = _normalize_sales_progression(
         model_payload.get("sales_progression") if isinstance(model_payload, dict) else {},
+    )
+    closing_move = _normalize_closing_move(
+        model_payload.get("closing_move") if isinstance(model_payload, dict) else {},
     )
     precision_qa_decision = _normalize_precision_qa_decision(
         model_payload.get("precision_qa_decision") if isinstance(model_payload, dict) else {},
@@ -590,6 +608,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "order_decision": order_decision,
         "appointment_decision": appointment_decision,
         "sales_progression": sales_progression,
+        "closing_move": closing_move,
         "precision_qa_decision": precision_qa_decision,
         "planner_reply_messages": planner_reply_messages,
         "planner_tool_calls": executable_tools,
@@ -1503,6 +1522,27 @@ def _normalize_sales_progression(value: Any) -> dict[str, Any]:
         ),
         "goal": str(raw.get("goal") or "").strip()[:240],
         "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
+    }
+
+
+def _normalize_closing_move(value: Any) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    return {
+        "action": _normalize_enum(
+            str(raw.get("action") or ""),
+            ALLOWED_CLOSING_MOVE_ACTIONS,
+            "none",
+        ),
+        "mainline_stage": _normalize_enum(
+            str(raw.get("mainline_stage") or ""),
+            ALLOWED_SALES_PROGRESSION_TARGETS,
+            "none",
+        ),
+        "reason": str(raw.get("reason") or "").strip()[:240],
+        "required_slot": str(raw.get("required_slot") or "").strip()[:80],
+        "must_not_repeat": _clean_str_list(
+            raw.get("must_not_repeat") if isinstance(raw.get("must_not_repeat"), list) else []
+        )[:6],
     }
 
 

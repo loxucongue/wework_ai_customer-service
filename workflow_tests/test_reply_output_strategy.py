@@ -5611,12 +5611,26 @@ def test_planner_preserves_model_owned_sales_progression_without_business_templa
                 "goal": "承接斑点情况",
                 "basis": ["门店问题已解决"],
             },
+            "closing_move": {
+                "action": "ask_spot_history",
+                "mainline_stage": "need_and_case",
+                "reason": "门店问题已解决，需求阶段尚未完成",
+                "required_slot": "spot_history",
+                "must_not_repeat": ["store_choice"],
+            },
             "reply_messages": [{"type": "text", "order": 1, "content": {"text": message}}],
             "tool_calls": [],
         },
     )
 
     assert plan["sales_progression"]["action"] == "ask_need_context"
+    assert plan["closing_move"] == {
+        "action": "ask_spot_history",
+        "mainline_stage": "need_and_case",
+        "reason": "门店问题已解决，需求阶段尚未完成",
+        "required_slot": "spot_history",
+        "must_not_repeat": ["store_choice"],
+    }
     assert plan["planner_reply_messages"][0]["content"]["text"] == message
     assert not any(
         item.get("missing") == "sales_progression_required"
