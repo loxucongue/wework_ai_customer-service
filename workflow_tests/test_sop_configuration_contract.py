@@ -101,14 +101,32 @@ def test_activity_quote_content_and_image_match_across_entrypoints() -> None:
 
 def test_chat_quote_completion_removes_silent_event_quote_candidate() -> None:
     config = _load_config()
+    common = {
+        "config": config,
+        "completed_sop_pack_ids": ["s10_activity_intro"],
+        "completed_sop_categories": ["s10_activity_intro"],
+        "delay_minutes": 80,
+        "payment_state": "unpaid",
+    }
+    before_gap = first_add_candidate_packs(
+        **common,
+        delivery_evidence={
+            "event_at": "2026-07-24T02:05:00+00:00",
+            "category_last_sent_at": {"s10_activity_intro": "2026-07-24T02:00:00+00:00"},
+        },
+    )
     candidates = first_add_candidate_packs(
-        config,
-        completed_sop_pack_ids=["s10_activity_intro"],
-        completed_sop_categories=["s10_activity_intro"],
-        delay_minutes=60,
+        **common,
+        delivery_evidence={
+            "event_at": "2026-07-24T02:20:00+00:00",
+            "category_last_sent_at": {"s10_activity_intro": "2026-07-24T02:00:00+00:00"},
+        },
     )
 
-    assert "event_s10_price_quote_60min" not in [item["id"] for item in candidates]
+    assert "event_s10_deposit_push_70min" not in [item["id"] for item in before_gap]
+    candidate_ids = [item["id"] for item in candidates]
+    assert "event_s10_price_quote_60min" not in candidate_ids
+    assert "event_s10_deposit_push_70min" in candidate_ids
 
 
 def test_activity_quote_configuration_has_no_canonicalization_error() -> None:

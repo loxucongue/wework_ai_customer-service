@@ -114,6 +114,9 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
   - `payment_collection_gate.status=activity_intro_required`：完整活动介绍/价格铺垫还没有真实完成证据，不得发送预约金卡。结构化完成和近期聊天语义完成都是真实证据；如果近期已经讲清活动价、10元预约金、抵扣和可退，不要重复活动包，应写 `stage_skip_evidence` 后评估预约金轻触/收款候选。若没有这些证据，应优先选择活动介绍、效果铺垫或其他非收款候选；如果候选里没有合适包，拒发并说明还需先补活动介绍。
   - 聊天轨使用完整 `s10_activity_intro`，沉默事件轨使用 `event_s10_price_quote_60min`；两者分别是各自轨道的活动与价格铺垫，真实发送任一包都可形成活动报价完成证据。如果近期真实聊天已经完整讲过活动价、10元预约金、到店抵扣、未做或不满意可退、到店时间可按客户方便安排，也可作为语义完成证据，但必须在 `stage_skip_evidence` 写清楚，不能重复发送活动报价。
 - 当 `mainline_stage_status.activity_and_price.structural_completed=true`，客户未付且没有明确拒付、投诉、付款异常、健康风险或最新待回复问题时，如果候选里存在 `deposit_decision/payment_followup/deposit_push` 阶段包，应优先选择后续预约金/未付跟进包或 `send_ai_touch`，不要 `skip`。这类场景的目标是继续推动客户决策，而不是重复活动介绍，也不是空触达。
+- `deposit_decision` 是一个包含多个顺序子步骤的阶段：首次预约金推动、发卡后1小时效果跟进、发卡后2小时操作视频、当天收单可以分别发送。该阶段已有任一包完成，不代表其他候选包重复；只根据候选包自身 ID、类目、历史内容和配置时间判断。
+- 如果近期聊天已有权威结构事实证明某个前序候选的核心内容已经真实发过，例如真实案例图片已经发送，而下一个主线候选也已到期，应选择下一个候选，并在 `stage_skip_evidence` 写明证据；不得一边说“已经覆盖”一边仍发送相同候选。
+- 对“近期真实案例图片已发送”的判断是强约束：若候选同时包含效果铺垫和后续活动报价，必须跳过效果铺垫、选择活动报价，并输出 `stage_skip_evidence`；只有历史里没有真实 image 消息、只有文字承诺“给您看案例”时，才可继续发送效果铺垫。
 - `payment_collection_gate` 必须逐个候选包独立判断。一个后置收款包是 `activity_intro_required`，不代表同轮其他非收款候选也不可发；如果候选中存在 `not_required/supported` 的活动介绍或效果包，应选择合法的前序包，不能因为另一个候选被拦而整轮 `skip`。
 - 只有在 `conversation_activity.latest_customer_pending_ai_reply=true`、客户明确拒绝当前核心行动、投诉/付款异常/身体不适、或候选包会明显造成事实错误时，才 `send_sop=false`。
 - 客户明确表示“不交/不想付/先别发预约金/到店再付”等拒绝当前预约金动作时，整个收款阶段候选都与当前立场冲突，必须 `skip` 或 `defer`。不能通过删除 `payment_collection` 后继续发送“留名额、付完登记”等催款文本来绕过拒绝；文本润色也不能把拒付改写成可继续催付。
@@ -126,6 +129,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 当客户出现投诉、退款、付款异常、健康风险、严重不适或强人工诉求时，使用 `handoff_or_safety_notice`，并在 `ai_touch_messages` 输出安抚和承接 text。该分支禁止预约金压单、禁止发营销包、禁止承诺效果；只能降低风险、收集必要事实或引导人工处理。
 - `send_ai_touch/handoff_or_safety_notice` 只能输出 text，不得输出 image、video、store_address、payment_collection、human_handoff_notice 等结构消息；不得编造门店、订单、付款、效果图、检测结论或已安排事实。
 - `skip/defer` 只保留给真正不该触达的少数情况：客户最新问题正在等待普通 AI/销售回复、强烈明确拒绝继续沟通、频率软上限且无新进展、会话事实不可靠、或任何触达都会造成安全/投诉风险。不要因为固定 SOP 重复就直接 skip，先考虑 `send_ai_touch`。
+- “最近忙、改天、过段时间、暂时没空、路远”属于行动阻力或软拒绝，不等于拒绝继续沟通，也不构成 `skip/defer`。活动报价已完成时，应使用 `send_ai_touch` 自然承接“到店时间后面按方便安排”，再用一个真实活动价值点推进保留名额；如果固定预约金候选与语气适配，也可以润色后发送。
 - `candidate_sops` 已按主线先后顺序排列。除非第一个候选已由更高优先级事实证明完成、当前明确冲突或结构不合法，否则选择必须从第一个候选开始；仅仅“距离触发时间已久”或“节奏落后”不能跳过第一个候选。
 - 如果你判断某个更早阶段已经被近期聊天语义覆盖，但 `completed_sop_pack_ids/categories` 没有记录，必须在 `stage_skip_evidence` 写清楚被跳过的 `stage_id`、`pack_id` 和具体证据摘要；否则结构校验会按未完成前序阶段处理。
 - 近期聊天语义覆盖的判断要服务于“不重复、不越级”：
@@ -1496,6 +1500,19 @@ def first_add_candidate_packs(
     completed = set(completed_sop_pack_ids)
     completed_categories = set(completed_sop_categories or [])
     completed_mainline_stages = _completed_mainline_stages(completed, completed_categories)
+    if "activity_and_price" in completed_mainline_stages:
+        completed_categories.update({"price_quote", "s10_activity_intro"})
+    normalized_delivery_evidence = dict(delivery_evidence or {})
+    category_times = (
+        dict(normalized_delivery_evidence.get("category_last_sent_at") or {})
+        if isinstance(normalized_delivery_evidence.get("category_last_sent_at"), dict)
+        else {}
+    )
+    if "price_quote" not in category_times and category_times.get("s10_activity_intro"):
+        category_times["price_quote"] = category_times["s10_activity_intro"]
+    if "s10_activity_intro" not in category_times and category_times.get("price_quote"):
+        category_times["s10_activity_intro"] = category_times["price_quote"]
+    normalized_delivery_evidence["category_last_sent_at"] = category_times
     candidates: list[dict[str, Any]] = []
     for pack in packs:
         if not isinstance(pack, dict) or not bool(pack.get("enabled")) or not _pack_messages(pack):
@@ -1519,7 +1536,7 @@ def first_add_candidate_packs(
             pack,
             delay_minutes=delay_minutes,
             match_context=match_context,
-            delivery_evidence=delivery_evidence or {},
+            delivery_evidence=normalized_delivery_evidence,
             payment_state=payment_state,
             completed_categories=completed_categories,
         ):

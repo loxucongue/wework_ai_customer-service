@@ -339,7 +339,7 @@ def _packs_start_at_first_candidate(
     ):
         pack_id = _text(item.get("id"))
         stage_id = mainline_stage_for_event_pack(item)
-        if _stage_structurally_completed(stage_id, stage_status):
+        if stage_id != "deposit_decision" and _stage_structurally_completed(stage_id, stage_status):
             continue
         ordered_ids.append(pack_id)
     if not selected_ids or not ordered_ids:
