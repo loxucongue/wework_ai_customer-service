@@ -860,6 +860,12 @@ def test_prompts_treat_reserved_visit_intent_as_sales_continuation() -> None:
     assert "不要只回“空了再来”" in PLANNER_SYSTEM_PROMPT
 
     assert "客户说忙、天气热、改天、路远或要订行程" in REPLY_SYSTEM_PROMPT
+
+
+def test_ad_location_objection_requires_store_facts_before_replying() -> None:
+    assert "该区名已经是有效查询范围" in PLANNER_SYSTEM_PROMPT
+    assert "必须先 `need_tools + customer_store_lookup`" in PLANNER_SYSTEM_PROMPT
+    assert "不要直接说“某区没有门店、暂无门店、没有对应门店”" in REPLY_SYSTEM_PROMPT
     assert "不自动等于退出" in REPLY_SYSTEM_PROMPT
     assert "到店时间后面按客户方便安排" in REPLY_SYSTEM_PROMPT
     assert "只有 `recommended_store.reason=distance_calculate_rank_1`" in REPLY_SYSTEM_PROMPT

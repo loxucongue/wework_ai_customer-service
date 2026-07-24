@@ -246,7 +246,7 @@ class SopExecutionService:
         event_model_retry_delay_seconds: float = 1.0,
         event_model_attempt_timeout_seconds: float = 45.0,
         event_model_total_timeout_seconds: float = 60.0,
-        chat_gate_total_timeout_seconds: float = 12.0,
+        chat_gate_total_timeout_seconds: float = 5.0,
         event_model_max_concurrency: int = 2,
     ) -> None:
         self.repository = repository
@@ -258,7 +258,7 @@ class SopExecutionService:
         self.event_model_retry_delay_seconds = max(0.0, float(event_model_retry_delay_seconds or 0.0))
         self.event_model_attempt_timeout_seconds = max(1.0, float(event_model_attempt_timeout_seconds or 45.0))
         self.event_model_total_timeout_seconds = max(1.0, float(event_model_total_timeout_seconds or 60.0))
-        self.chat_gate_total_timeout_seconds = max(1.0, float(chat_gate_total_timeout_seconds or 12.0))
+        self.chat_gate_total_timeout_seconds = max(1.0, float(chat_gate_total_timeout_seconds or 5.0))
         self._event_model_semaphore = asyncio.Semaphore(max(1, int(event_model_max_concurrency or 1)))
 
     async def evaluate_chat_gate(

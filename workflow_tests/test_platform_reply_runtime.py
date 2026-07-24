@@ -46,9 +46,9 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
             platform_reply_coordinator=PlatformReplyCoordinator(_settings_with_empty_filter(self)),
         )
 
-        first_task = asyncio.create_task(runtime.run_platform_reply(_request("question A")))
+        first_task = asyncio.create_task(runtime.run_platform_reply(_request("question A", msgid="msg-a")))
         await graph.started.wait()
-        second_task = asyncio.create_task(runtime.run_platform_reply(_request("question B")))
+        second_task = asyncio.create_task(runtime.run_platform_reply(_request("question B", msgid="msg-b")))
 
         first_response = await asyncio.wait_for(first_task, timeout=2)
         self.assertEqual(first_response.reply_messages, [])
@@ -57,6 +57,30 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         second_response = await asyncio.wait_for(second_task, timeout=2)
         self.assertEqual([message.type for message in second_response.reply_messages], ["text"])
         self.assertTrue(any("1. question A" in state["content"] and "2. question B" in state["content"] for state in graph.states))
+
+    async def test_same_platform_message_id_reuses_single_execution(self) -> None:
+        graph = _SlowPlannerGraph()
+        runtime = ChatRuntime(
+            full_graph=graph,
+            planner_graph=graph,
+            trace_logger=_TraceLogger(),
+            repository=_Repository(),
+            platform_reply_coordinator=PlatformReplyCoordinator(_settings_with_empty_filter(self)),
+        )
+        request = _request("same question", msgid="same-msg")
+
+        first_task = asyncio.create_task(runtime.run_platform_reply(request))
+        await graph.started.wait()
+        second_task = asyncio.create_task(runtime.run_platform_reply(request))
+        graph.release.set()
+
+        first_response, second_response = await asyncio.gather(first_task, second_task)
+
+        self.assertEqual(len(graph.states), 1)
+        self.assertEqual(first_response.model_dump(), second_response.model_dump())
+        cached_response = await runtime.run_platform_reply(request)
+        self.assertEqual(len(graph.states), 1)
+        self.assertEqual(first_response.model_dump(), cached_response.model_dump())
 
     async def test_need_tools_sync_reply_is_always_empty(self) -> None:
         messages = _planner_sync_reply_messages({"planner_decision": "need_tools", "planner_reply_messages": []})
@@ -491,13 +515,15 @@ class _OutreachSendClient:
         return {"status": "sent"}
 
 
-def _request(content: str) -> ChatRequest:
+def _request(content: str, *, msgid: str = "") -> ChatRequest:
     return ChatRequest(
         content=content,
         customer_id="customer",
         corp_id="corp",
         conversation_history=[],
         external_userid="ext",
+        wechat="DY258",
+        request_context={"msgid": msgid} if msgid else {},
     )
 
 

@@ -62,10 +62,11 @@ class PlatformReplyCoordinatorTests(unittest.IsolatedAsyncioTestCase):
     async def test_second_request_supersedes_first_and_merges_messages(self) -> None:
         settings = _settings_with_filter(self, {"enabled": True, "match_mode": "contains", "words": []})
         coordinator = PlatformReplyCoordinator(settings)
-        context = {"corp_id": "corp", "external_userid": "ext"}
+        first_context = {"corp_id": "corp", "external_userid": "ext", "msgid": "msg-a"}
+        second_context = {"corp_id": "corp", "external_userid": "ext", "msgid": "msg-b"}
 
-        first = await coordinator.begin(_request("question A"), request_id="req-a", request_context=context)
-        second = await coordinator.begin(_request("question B"), request_id="req-b", request_context=context)
+        first = await coordinator.begin(_request("question A"), request_id="req-a", request_context=first_context)
+        second = await coordinator.begin(_request("question B"), request_id="req-b", request_context=second_context)
 
         self.assertEqual(first.mode, "normal")
         self.assertEqual(second.mode, "merged_latest")
@@ -75,7 +76,21 @@ class PlatformReplyCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2. question B", second.effective_content)
         self.assertTrue(first.record.cancel_event.is_set())
         self.assertFalse(await coordinator.is_latest(first.record))
+        self.assertTrue(await coordinator.is_superseded(first.record))
+        self.assertEqual(first.record.superseded_by_message_id, "msg-b")
         self.assertTrue(await coordinator.is_latest(second.record))
+
+    async def test_request_without_new_message_id_does_not_cancel_running_request(self) -> None:
+        settings = _settings_with_filter(self, {"enabled": True, "match_mode": "contains", "words": []})
+        coordinator = PlatformReplyCoordinator(settings)
+        context = {"corp_id": "corp", "external_userid": "ext"}
+
+        first = await coordinator.begin(_request("question A"), request_id="req-a", request_context=context)
+        second = await coordinator.begin(_request("question B"), request_id="req-b", request_context=context)
+
+        self.assertFalse(first.record.cancel_event.is_set())
+        self.assertFalse(await coordinator.is_superseded(first.record))
+        self.assertEqual(second.mode, "normal")
 
 
 def _request(content: str) -> ChatRequest:

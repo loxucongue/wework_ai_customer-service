@@ -528,12 +528,12 @@
     {
       "id": "soft_delay_not_exit",
       "category": "犹豫挽回",
-      "messages": ["最近太忙了，改天再说", "天气太热不想出门", "我要先订机票"],
+      "messages": ["最近太忙了，改天再说", "天气太热不想出门", "我要先订机票", "这家太远了", "来回不方便，算了吧", "家里人不同意，我再考虑一下", "最近没时间，过段时间再说"],
       "history": ["小贝: 活动和门店都已经给您说清楚了。"],
       "state_patch": {"confirmed_store_id": "101", "confirmed_store_name": "厦门百星湖里店", "customer_context": {"orders": [{"id": "ord-delay", "store_id": "101", "prepay_required": 10, "prepay_paid": 0, "deposit_state": "required_unpaid"}]}, "sop_progress_evidence": {"completed_pack_ids": ["s10_activity_intro"], "completed_categories": ["activity_intro"]}},
       "expected_planner": {"decisions": ["direct_reply"]},
-      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["那您有空再来", "不打扰了"]},
-      "semantic_goal": "忙、天气、行程通常是到店时机阻力而非退出；先理解并降压，用活动资格和时间可后定自然挽回一次，话术要多样，不机械复读退款规则。"
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["那您有空再来", "不打扰了", "没必要硬跑", "不勉强您", "都不方便就不用去"]},
+      "semantic_goal": "忙、天气、行程、距离、家人意见和单次算了通常是可挽回阻力而非退出；先理解具体顾虑并降压，用一个真实价值理由自然挽回，再推进活动资格、预约金或其他一个明确成交动作。不得主动送客，话术要多样，不机械复读退款规则。"
     },
     {
       "id": "explicit_strong_refusal",

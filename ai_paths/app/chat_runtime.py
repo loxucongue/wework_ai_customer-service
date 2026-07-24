@@ -52,6 +52,9 @@ class ChatRuntime:
         self._sop_execution_service = sop_execution_service
         self._profile_event_extractor = profile_event_extractor
         self._settings = settings
+        self._platform_request_tasks: dict[str, asyncio.Task[ChatResponse]] = {}
+        self._platform_request_results: dict[str, tuple[float, ChatResponse]] = {}
+        self._platform_request_tasks_lock = asyncio.Lock()
 
     async def run_chat(self, request: ChatRequest) -> ChatResponse:
         request_id = str(uuid4())
@@ -74,6 +77,41 @@ class ChatRuntime:
         )
 
     async def run_platform_reply(self, request: ChatRequest, background_tasks: Any | None = None) -> ChatResponse:
+        request_context = build_request_context(request)
+        request_identity = _platform_request_identity(request, request_context)
+        if not request_identity:
+            return await self._run_platform_reply_once(request, background_tasks)
+
+        async with self._platform_request_tasks_lock:
+            cutoff = time.monotonic() - 900.0
+            self._platform_request_results = {
+                key: value
+                for key, value in self._platform_request_results.items()
+                if value[0] >= cutoff
+            }
+            cached = self._platform_request_results.get(request_identity)
+            if cached:
+                return cached[1]
+            task = self._platform_request_tasks.get(request_identity)
+            if task is None:
+                task = asyncio.create_task(self._run_platform_reply_once(request, background_tasks))
+                self._platform_request_tasks[request_identity] = task
+        try:
+            response = await asyncio.shield(task)
+            async with self._platform_request_tasks_lock:
+                self._platform_request_results[request_identity] = (time.monotonic(), response)
+            return response
+        finally:
+            if task.done():
+                async with self._platform_request_tasks_lock:
+                    if self._platform_request_tasks.get(request_identity) is task:
+                        self._platform_request_tasks.pop(request_identity, None)
+
+    async def _run_platform_reply_once(
+        self,
+        request: ChatRequest,
+        background_tasks: Any | None = None,
+    ) -> ChatResponse:
         request_id = str(uuid4())
         request_context = build_request_context(request)
         request_context["memory_persist_allowed"] = True
@@ -189,7 +227,11 @@ class ChatRuntime:
                 await self._platform_reply_coordinator.complete(control_record)
             planner_state = self._handle_graph_exception(initial_state, exc)
         _preserve_reply_control(planner_state, initial_state)
-        if control_record and self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+        if (
+            control_record
+            and self._platform_reply_coordinator
+            and await self._platform_reply_coordinator.is_superseded(control_record)
+        ):
             planner_state = self._superseded_state(initial_state, control_record)
             return self._persist_and_build_response(
                 request=request,
@@ -326,7 +368,7 @@ class ChatRuntime:
         final_state["trace"] = list(planner_state.get("trace") or [])
         final_state["errors"] = list(planner_state.get("errors") or [])
         try:
-            if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+            if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
                 state = self._superseded_state(planner_state, control_record) if control_record else final_state
                 if self._platform_reply_coordinator:
                     await self._platform_reply_coordinator.complete(control_record)
@@ -334,7 +376,7 @@ class ChatRuntime:
             final_state = await self._invoke_graph_with_budget(self._finalize_graph, final_state, phase="reply")
             _preserve_reply_control(final_state, planner_state)
             messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-            if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+            if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
                 state = self._superseded_state(planner_state, control_record) if control_record else final_state
                 if self._platform_reply_coordinator:
                     await self._platform_reply_coordinator.complete(control_record)
@@ -397,7 +439,7 @@ class ChatRuntime:
         async_state["request_context"] = async_context
         sop_messages = sop_state.get("reply_messages") if isinstance(sop_state.get("reply_messages"), list) else []
         try:
-            if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+            if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
                 state = self._superseded_state(initial_state, control_record) if control_record else async_state
                 if self._platform_reply_coordinator:
                     await self._platform_reply_coordinator.complete(control_record)
@@ -405,7 +447,7 @@ class ChatRuntime:
             final_state = await self._invoke_graph_with_budget(self._full_graph, async_state, phase="full")
             _preserve_reply_control(final_state, initial_state)
             ai_messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-            if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+            if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
                 state = self._superseded_state(initial_state, control_record) if control_record else final_state
                 if self._platform_reply_coordinator:
                     await self._platform_reply_coordinator.complete(control_record)
@@ -505,7 +547,7 @@ class ChatRuntime:
             final_state["trace"] = list(planner_state.get("trace") or [])
             final_state["errors"] = list(planner_state.get("errors") or [])
             try:
-                if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
                     skipped = _async_superseded_result()
                     final_state["async_final_reply"] = skipped
                     _set_async_final_control(final_state, skipped)
@@ -515,7 +557,7 @@ class ChatRuntime:
                 final_state = await self._invoke_graph_with_budget(self._finalize_graph, final_state, phase="reply")
                 _preserve_reply_control(final_state, planner_state)
                 messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-                if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
                     skipped = {**_async_superseded_result(), "reply_messages": messages}
                     final_state["async_final_reply"] = skipped
                     _set_async_final_control(final_state, skipped)
@@ -599,7 +641,7 @@ class ChatRuntime:
             async_context["async_origin"] = "sop_gate_ai_reply"
             async_state["request_context"] = async_context
             try:
-                if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
                     skipped = _async_superseded_result()
                     async_state["async_final_reply"] = skipped
                     _set_async_final_control(async_state, skipped)
@@ -609,7 +651,7 @@ class ChatRuntime:
                 final_state = await self._invoke_graph_with_budget(self._full_graph, async_state, phase="full")
                 _preserve_reply_control(final_state, initial_state)
                 messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
-                if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+                if self._platform_reply_coordinator and await self._platform_reply_coordinator.is_superseded(control_record):
                     skipped = {**_async_superseded_result(), "reply_messages": messages}
                     final_state["async_final_reply"] = skipped
                     _set_async_final_control(final_state, skipped)
@@ -1182,6 +1224,20 @@ def _should_run_async_finalize(state: AgentState) -> bool:
     if tool_names and all(name == "professional_assist" for name in tool_names):
         return False
     return any(isinstance(tool, dict) and str(tool.get("name") or "").strip() not in {"", "no_tool"} for tool in tools)
+
+
+def _platform_request_identity(request: ChatRequest, request_context: dict[str, Any]) -> str:
+    msgid = str(request_context.get("msgid") or "").strip()
+    if not msgid:
+        return ""
+    corp_id = str(request_context.get("corp_id") or request.corp_id or "").strip()
+    wechat = str(request_context.get("wechat") or request.wechat or "").strip()
+    external_userid = str(
+        request_context.get("external_userid") or request.external_userid or ""
+    ).strip()
+    if not (corp_id and wechat and external_userid):
+        return ""
+    return f"{corp_id}:wechat:{wechat}:external:{external_userid}:msgid:{msgid}"
 
 
 def _append_async_send_trace(state: AgentState, result: dict[str, Any]) -> None:
