@@ -107,7 +107,10 @@ def _offer_facts(offer: dict[str, Any]) -> dict[str, Any]:
         "unsupported_online_projects": offer.get("unsupported_online_projects") or [],
         "scope_answer_policy": offer.get("scope_answer_policy"),
         "quota": offer.get("quota"),
+        "registration_gift": offer.get("registration_gift") or {},
         "scarcity_reasons": offer.get("scarcity_reasons") or [],
+        "approved_closing_reasons": offer.get("approved_closing_reasons") or [],
+        "closing_reason_policy": offer.get("closing_reason_policy"),
         "payment_message_type": offer.get("payment_message_type"),
     }
 
