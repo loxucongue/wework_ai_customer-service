@@ -118,6 +118,9 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "closing_move",
         "manual_transfer",
         "ask_party_size",
+        "payment_decision.method",
+        "mini_program",
+        "method=transfer,action=manual_transfer",
     ]:
         assert marker in PLANNER_SYSTEM_PROMPT
 

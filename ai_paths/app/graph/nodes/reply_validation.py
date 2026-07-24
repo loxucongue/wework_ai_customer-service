@@ -1465,7 +1465,12 @@ def _asserts_appointment_confirmed(text: str) -> bool:
             return True
     if re.search(rf"(?:能帮[你您]?|可以帮[你您]?|帮[你您]?|给[你您]?).{{0,4}}留(?:下|住)?{time_token}", compact):
         return True
-    return bool(re.search(r"锁.{0,8}(?:时段|时间|今天|明天|后天|上午|下午|晚上|\d{1,2}点)", compact))
+    return bool(
+        re.search(
+            r"锁(?:定|住)?(?:具体)?(?:到店)?(?:时段|时间|今天|明天|后天|上午|下午|晚上|\d{1,2}点)",
+            compact,
+        )
+    )
 
 
 def _asserts_registration_confirmed(text: str) -> bool:

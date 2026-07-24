@@ -68,7 +68,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "next_step": "ask_intent | solve_blocker | lookup_store | confirm_time | send_deposit | no_action",
   "payment_state": "unknown | link_sent | customer_claimed_paid | resend_requested | payment_failed | needs_payment",
   "payment_action": "unknown | none | send_now | manual_transfer | offer_resend | explain_existing | confirm_next_step",
-  "payment_decision": {"action":"none | explain | send_now | resend | manual_transfer | after_paid_next_step | ask_party_size","party_size":1,"amount":10,"source":"","confidence":"high | medium | low","basis":[]},
+  "payment_decision": {"action":"none | explain | send_now | resend | manual_transfer | after_paid_next_step | ask_party_size","method":"none | mini_program | transfer","party_size":1,"amount":10,"source":"","confidence":"high | medium | low","basis":[]},
   "store_binding_decision": {"status":"none | accepted_explicit | accepted_implicit | exploring | rejected | ambiguous","store_id":"","confidence":"high | medium | low","source":"","basis":[]},
   "order_decision": {"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},

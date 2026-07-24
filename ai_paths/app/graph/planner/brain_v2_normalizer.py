@@ -85,6 +85,7 @@ ALLOWED_PAYMENT_DECISION_ACTIONS = (
     "after_paid_next_step",
     "ask_party_size",
 )
+ALLOWED_PAYMENT_METHODS = ("none", "mini_program", "transfer")
 ALLOWED_PAYMENT_DECISION_CONFIDENCE = ("high", "medium", "low")
 ALLOWED_APPOINTMENT_DECISION_ACTIONS = (
     "none",
@@ -1419,9 +1420,16 @@ def _normalize_payment_decision(
 ) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     action = _normalize_enum(str(raw.get("action") or ""), ALLOWED_PAYMENT_DECISION_ACTIONS, "")
+    method = _normalize_enum(str(raw.get("method") or ""), ALLOWED_PAYMENT_METHODS, "none")
     legacy_action = _payment_decision_action_from_legacy(payment_state=payment_state, payment_action=payment_action)
     if not action:
         action = legacy_action
+    if method == "transfer":
+        action = "manual_transfer"
+    elif action == "manual_transfer":
+        method = "transfer"
+    elif action in {"send_now", "resend"} and method == "none":
+        method = "mini_program"
     if payment_state == "customer_claimed_paid" or _has_paid_deposit_context(state, payment_state=payment_state):
         action = "after_paid_next_step"
     elif (
@@ -1445,6 +1453,12 @@ def _normalize_payment_decision(
         amount = payment_amount_for_party_size(party_size) if action in {"send_now", "resend"} else None
     else:
         amount = raw_amount
+    if action == "manual_transfer":
+        method = "transfer"
+    elif action in {"send_now", "resend"}:
+        method = "mini_program"
+    else:
+        method = "none"
 
     source = str(raw.get("source") or "").strip()
     if not source:
@@ -1465,6 +1479,7 @@ def _normalize_payment_decision(
 
     output: dict[str, Any] = {
         "action": action,
+        "method": method,
         "source": source,
         "confidence": confidence,
     }
@@ -2125,6 +2140,12 @@ def _with_payment_decision_action(
 ) -> dict[str, Any]:
     output = dict(payment_decision) if isinstance(payment_decision, dict) else {}
     output["action"] = _normalize_enum(action, ALLOWED_PAYMENT_DECISION_ACTIONS, "none")
+    if output["action"] == "manual_transfer":
+        output["method"] = "transfer"
+    elif output["action"] in {"send_now", "resend"}:
+        output["method"] = "mini_program"
+    else:
+        output["method"] = "none"
     output["source"] = source
     output["confidence"] = _normalize_enum(confidence, ALLOWED_PAYMENT_DECISION_CONFIDENCE, "high")
     basis_list = _clean_str_list(output.get("basis") if isinstance(output.get("basis"), list) else [])

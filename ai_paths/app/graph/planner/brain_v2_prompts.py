@@ -74,7 +74,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
   "next_step":"ask_intent | solve_blocker | lookup_store | confirm_time | send_deposit | no_action",
   "payment_state":"unknown | link_sent | customer_claimed_paid | resend_requested | payment_failed | needs_payment",
   "payment_action":"unknown | none | send_now | manual_transfer | offer_resend | explain_existing | confirm_next_step",
-  "payment_decision":{"action":"none | explain | send_now | resend | manual_transfer | after_paid_next_step | ask_party_size","party_size":1,"amount":10,"source":"","confidence":"high | medium | low","basis":[]},
+  "payment_decision":{"action":"none | explain | send_now | resend | manual_transfer | after_paid_next_step | ask_party_size","method":"none | mini_program | transfer","party_size":1,"amount":10,"source":"","confidence":"high | medium | low","basis":[]},
   "store_binding_decision":{"status":"none | accepted_explicit | accepted_implicit | exploring | rejected | ambiguous","store_id":"","confidence":"high | medium | low","source":"","basis":[]},
   "order_decision":{"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision":{"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
@@ -100,6 +100,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `ask_store_choice` 必须问具体门店或区域的封闭选择，不能以“定一家我再往下对”收尾。软拒绝后若选择 `send_payment`，只使用一个最贴合当前心理的价值理由，不重复堆叠活动价、原价、尾款、退款和名额全部规则。
 - `ask_store_choice` 只用于同轮预计发送多家、且没有距离排序第一门店的场景。客户要求附近/更近或质疑广告定位，工具链将产生 `recommended_store` 时，门店事实解决后直接选 `ask_spot_history` 或 `introduce_offer` 回主线，不再让客户比较其他门店。
 - `closing_move.mainline_stage` 必须是该动作实际推进到的阶段；选择 `introduce_offer` 时写 `activity`，并要求草稿当轮主动说出至少一个当前活动事实或用封闭式问题确认客户是否由线上活动进入。不能写“想参加我再介绍/需要的话再发/您先看看”。
+- `payment_decision.method` 必须明确当前客户选择：未选择方式用 `none`，小程序卡用 `mini_program`，明确转账用 `transfer`。客户明确选择转账时，即使仍有付款意向，也必须输出 `method=transfer,action=manual_transfer`，不能把“继续成交”误写成 `send_now`。
 - `closing_move` 必须与结构化付款决策一致：`payment_decision.action=manual_transfer` 时只能用 `manual_transfer`，文字说明转账后发截图登记，严禁 payment_collection，也不能跳去问城市；`payment_decision.action=ask_party_size` 时只能用 `ask_party_size`，先确认实际参加人数，不发卡、不问到店时间。
 - 活动报价已完成/已铺垫后，`payment_action/payment_decision.action=send_now/resend` 可以直接携带 payment_collection；不得因为没有同店同金额订单或开单失败而改成 explain_existing。若 `sop_progress_evidence` 和近聊都没有活动报价证据，使用 `payment_decision.action=explain` 先补活动说明，不发 payment_collection。
 - 付款字段职责不能混用：`payment_action` 只能取它自己的枚举，`payment_decision.action` 只能取它自己的枚举。客户声称已付但尚未由成功截图或订单核实时，使用 `payment_state=customer_claimed_paid`、`payment_action=confirm_next_step`、`payment_decision.action=after_paid_next_step`；不得把 `after_paid_next_step` 填进 `payment_action`。该状态只表示按客户声明继续登记，不得声称平台已核实到账。

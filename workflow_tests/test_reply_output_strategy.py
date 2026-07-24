@@ -1232,6 +1232,95 @@ def test_planner_payment_action_send_now_auto_appends_payment_card() -> None:
     assert not any(item.get("missing") == "payment_collection_required" for item in plan["tool_policy_violations"])
 
 
+def test_planner_transfer_method_overrides_inconsistent_send_now_and_removes_card() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "小程序我不用，我直接转账，转好怎么给你",
+            "conversation_history": [
+                "小贝: 这次活动总价268元，每位先付10元预约金，到店抵扣。",
+            ],
+            "sop_progress_evidence": {
+                "completed_pack_ids": ["s10_activity_intro"],
+                "completed_categories": ["activity_intro"],
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "high_intent",
+            "main_blocker": "payment_method",
+            "next_step": "send_deposit",
+            "payment_state": "needs_payment",
+            "payment_action": "send_now",
+            "payment_decision": {
+                "action": "send_now",
+                "method": "transfer",
+                "party_size": 1,
+                "amount": 10,
+                "source": "current_message",
+                "confidence": "high",
+                "basis": ["客户明确选择转账"],
+            },
+            "reply_messages": [
+                {"type": "text", "content": {"text": "可以，转好截图发我，我给您登记。"}},
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["payment_decision"]["action"] == "manual_transfer"
+    assert plan["payment_decision"]["method"] == "transfer"
+    assert plan["payment_action"] == "manual_transfer"
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+
+
+def test_planner_non_payment_action_clears_stale_payment_method() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "我已经付过了",
+            "current_turn_context": {
+                "deposit_state": "deposit_paid",
+                "turn_evidence": {
+                    "payment_evidence": {
+                        "structured_payment_state": "deposit_paid",
+                    }
+                },
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_APPOINTMENT_FOLLOWUP",
+            "conversion_stage": "post_payment",
+            "customer_type": "high_intent",
+            "main_blocker": "registration",
+            "next_step": "confirm_next_step",
+            "payment_state": "needs_payment",
+            "payment_action": "send_now",
+            "payment_decision": {
+                "action": "send_now",
+                "method": "mini_program",
+                "party_size": 1,
+                "amount": 10,
+                "source": "stale_model_output",
+                "confidence": "low",
+            },
+            "reply_messages": [
+                {"type": "text", "content": {"text": "收到，把您的姓名和电话发我登记一下。"}},
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["payment_decision"]["action"] == "after_paid_next_step"
+    assert plan["payment_decision"]["method"] == "none"
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+
+
 def test_planner_send_now_is_not_downgraded_by_short_message_guard() -> None:
     plan = build_planner_plan_v2(
         {
@@ -4849,6 +4938,31 @@ def test_reply_validation_allows_flexible_future_visit_without_confirming_a_slot
         ],
         {
             "appointment_decision": {"action": "tentative_arrange", "commitment_level": "tentative"},
+            "fact_envelope": {"structured_facts": {"appointment_facts": []}},
+        },
+    )
+
+
+def test_reply_validation_does_not_confuse_activity_lock_with_time_lock() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {
+                    "text": "可以的，先付10元把这次活动资格锁住就行，到店时间后面按您方便安排。"
+                },
+            },
+            {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+        ],
+        {
+            "payment_decision": {
+                "action": "send_now",
+                "method": "mini_program",
+                "party_size": 1,
+                "amount": 10,
+            },
+            "appointment_decision": {"action": "none", "commitment_level": "none"},
             "fact_envelope": {"structured_facts": {"appointment_facts": []}},
         },
     )
