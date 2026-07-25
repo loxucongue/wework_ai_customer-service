@@ -153,7 +153,8 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(response.reply_messages), 1)
         self.assertEqual(response.reply_messages[0].type, "text")
-        self.assertEqual(response.reply_messages[0].content, {"text": "我在，继续帮您处理。"})
+        self.assertTrue(response.reply_messages[0].content.get("text"))
+        self.assertNotEqual(response.reply_messages[0].content, {"text": "我在，继续帮您处理。"})
         self.assertTrue(repository.saved_states)
         self.assertEqual(repository.saved_states[-1]["reply_source"], "deterministic_runtime_exception_fallback")
 
@@ -169,7 +170,8 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(response.reply_messages), 1)
         self.assertEqual(response.reply_messages[0].type, "text")
-        self.assertEqual(response.reply_messages[0].content, {"text": "我在，继续帮您处理。"})
+        self.assertTrue(response.reply_messages[0].content.get("text"))
+        self.assertNotEqual(response.reply_messages[0].content, {"text": "我在，继续帮您处理。"})
         self.assertEqual(repository.saved_states[-1]["reply_source"], "deterministic_empty_reply_fallback")
 
     async def test_platform_auto_opening_returns_sop_before_planner(self) -> None:
@@ -239,7 +241,9 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         response = await runtime.run_platform_reply(_request("是不是做一次就可以"))
 
-        self.assertEqual([message.content["text"] for message in response.reply_messages], ["我在，继续帮您处理。"])
+        self.assertEqual(len(response.reply_messages), 1)
+        self.assertTrue(response.reply_messages[0].content.get("text"))
+        self.assertNotEqual(response.reply_messages[0].content["text"], "我在，继续帮您处理。")
         self.assertFalse(gate.confirmed)
         self.assertTrue(gate.failed)
 

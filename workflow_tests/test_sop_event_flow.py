@@ -3333,6 +3333,52 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(model.messages, [])
         self.assertEqual(result["sop_progress_evidence"]["unfinished_sops"][0]["id"], "static_pack")
 
+    async def test_chat_gate_bypasses_non_text_messages_to_ai_tools(self) -> None:
+        class _PackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "static_pack",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "effect_case",
+                            "name": "static pack",
+                            "purpose": "static SOP pack",
+                            "order": 10,
+                            "reply_messages": [{"type": "text", "order": 1, "content": {"text": "static message"}}],
+                        }
+                    ]
+                }
+
+        for msgtype in ("image", "location", "voice", "unknown"):
+            model = _PromptCaptureModel({"route": "sop_only", "sop_pack_id": "static_pack"})
+            service = SopExecutionService(
+                repository=_Repo(),
+                sop_reply_pack_service=_PackService(),
+                model_client=model,
+            )
+            request = ChatRequest(
+                content="https://example.test/payload",
+                customer_id=f"customer_{msgtype}",
+                corp_id="corp",
+                external_userid=f"external_{msgtype}",
+                wechat="CS001",
+                file_image="https://example.test/a.jpg" if msgtype == "image" else None,
+            )
+
+            result = await service.evaluate_chat_gate(
+                request,
+                request_id=f"req_non_text_{msgtype}",
+                request_context={"source_protocol": "workflow-compatible", "msgtype": msgtype},
+            )
+
+            self.assertEqual(result["mode"], "skipped")
+            self.assertTrue(result["need_ai_reply"])
+            self.assertFalse(result["send_sop"])
+            self.assertEqual(result["reason"], f"non_text_message_to_ai_tools:{msgtype}")
+            self.assertEqual(model.messages, [])
+
     async def test_chat_gate_selects_precision_ai_then_sop_and_defers_send_record(self) -> None:
         class _PrecisionPackService:
             def load(self) -> dict[str, Any]:

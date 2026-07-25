@@ -331,6 +331,10 @@ class SopExecutionService:
             if request_context.get("skip_sop_gate"):
                 result.update({"mode": "skipped", "reason": "skip_sop_gate"})
                 return _finish(result, started)
+            non_text_reason = _chat_non_text_ai_route_reason(request, request_context)
+            if non_text_reason:
+                result.update({"mode": "skipped", "need_ai_reply": True, "reason": non_text_reason})
+                return _finish(result, started)
             gate_risk = _chat_gate_professional_assist_risk(request)
             if gate_risk:
                 result.update({"mode": "skipped", "need_ai_reply": True, "reason": gate_risk})
@@ -2849,6 +2853,15 @@ def _chat_gate_professional_assist_risk(request: ChatRequest) -> str:
     for reason, terms in risk_terms.items():
         if any(term in content for term in terms):
             return reason
+    return ""
+
+
+def _chat_non_text_ai_route_reason(request: ChatRequest, request_context: dict[str, Any]) -> str:
+    msgtype = _string(request_context.get("msgtype")).lower()
+    if request.file_image:
+        return "non_text_message_to_ai_tools:image"
+    if msgtype and msgtype != "text":
+        return f"non_text_message_to_ai_tools:{msgtype}"
     return ""
 
 
