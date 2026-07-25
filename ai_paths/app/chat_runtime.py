@@ -1068,7 +1068,16 @@ def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, 
     state["fallback_retry_count"] = len(state.get("recovery_attempts") or [])
     state["fallback_violation"] = str(state.get("recovery_reason") or "")[:500]
     state["fallback_remaining_budget"] = runtime_budget_snapshot(state, tier="reply")
-    return [{"type": "text", "order": 1, "content": {"text": "我在，继续帮您处理。"}}]
+    content = str(state.get("normalized_content") or state.get("content") or "").strip()
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    msgtype = str(request_context.get("msgtype") or "").lower()
+    if content.startswith("[图片]") or bool(state.get("file_image")):
+        text = "亲，图片我这边收到了，正在按您发的内容帮您核对。您也可以直接打字说下想确认效果、门店还是预约，我马上接着给您说清楚。"
+    elif msgtype == "voice":
+        text = "亲，语音我这边收到啦，如果系统一时没识别准，您也可以直接打字补一句，我马上按您说的继续处理。"
+    else:
+        text = "亲，您这条消息我收到了，我先按当前记录帮您接着核对，您也可以直接说想确认效果、门店还是预约。"
+    return [{"type": "text", "order": 1, "content": {"text": text}}]
 
 
 def _has_structured_professional_assist(state: AgentState) -> bool:

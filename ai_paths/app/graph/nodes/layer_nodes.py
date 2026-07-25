@@ -251,13 +251,24 @@ def create_background_context_layer(
                 ]
             )
             customer_context = customer_result.get("customer_context", {})
-            extra_result = _timed_call(
+            extra_task = asyncio.to_thread(
+                _timed_call,
                 "store_snapshot_hydrate",
                 _enrich_customer_stores,
                 customer_store_knowledge_service,
                 customer_store_knowledge,
                 scoped_request_context,
                 customer_context,
+            )
+            extra_result = await _await_timed_background_task(
+                extra_task,
+                name="store_snapshot_hydrate",
+                timeout_seconds=BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS,
+                timeout_result={
+                    **customer_store_knowledge,
+                    "error": f"timeout_after_{BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS:g}s",
+                    "snapshot_refresh_error": f"timeout_after_{BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS:g}s",
+                },
             )
             customer_store_knowledge = extra_result["result"]
             substeps.append(_without_result(extra_result))
