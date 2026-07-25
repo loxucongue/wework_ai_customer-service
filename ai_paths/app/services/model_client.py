@@ -187,7 +187,7 @@ class ModelClient:
         def build_payload(model: str) -> dict[str, Any]:
             payload = {
                 "model": model,
-                "messages": messages,
+                "messages": self._prepare_json_messages(messages),
                 "temperature": temperature,
             }
             self._apply_max_tokens(payload, json_mode=True)

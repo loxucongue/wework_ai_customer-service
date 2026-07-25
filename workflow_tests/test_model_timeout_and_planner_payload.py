@@ -701,6 +701,46 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((client.payload or {}).get("response_format"), {"type": "json_object"})
         self.assertEqual((client.payload or {}).get("reasoning"), {"enabled": False})
 
+    async def test_vision_json_injects_lowercase_json_marker(self) -> None:
+        class CaptureModelClient(ModelClient):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.payload: dict[str, Any] | None = None
+
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                self.payload = payload
+                return {"choices": [{"message": {"content": "{\"info\": {\"ok\": true}}"}}]}
+
+        client = CaptureModelClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_vision="openai/gpt-5.4-mini",
+                model_vision_fallbacks="",
+            )
+        )
+
+        result = await client.vision_json(
+            prompt="只输出 JSON。",
+            image_url="https://example.com/a.png",
+            tier="vision",
+        )
+
+        self.assertEqual(result, {"info": {"ok": True}})
+        self.assertIsNotNone(client.payload)
+        messages = (client.payload or {}).get("messages") or []
+        self.assertGreaterEqual(len(messages), 2)
+        self.assertEqual(messages[0].get("role"), "system")
+        self.assertIn("Return valid json only.", messages[0].get("content", ""))
+        self.assertEqual(messages[1].get("role"), "user")
+
     async def test_model_client_can_enable_reasoning_for_text_relay(self) -> None:
         class CaptureModelClient(ModelClient):
             def __init__(self, settings: Settings) -> None:
