@@ -130,7 +130,7 @@ def test_platform_unknown_message_placeholder_is_treated_as_transfer_success() -
         image_info=image,
     )
 
-    assert payment["deposit_state"] == "paid_by_screenshot"
+    assert payment["deposit_state"] == "paid_by_platform_transfer_event"
     assert payment["order_id"] == "order-unknown-transfer"
     assert payment["source"] == "platform.unknown_message_transfer"
 

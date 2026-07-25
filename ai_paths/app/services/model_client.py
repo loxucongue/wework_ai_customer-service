@@ -418,7 +418,7 @@ class ModelClient:
                     return result
             record_failure(f"{failure_label}: " + " | ".join(errors))
             raise RuntimeError(f"{failure_label}: " + " | ".join(errors))
-        except Exception:
+        except BaseException:
             if not isinstance(self.last_usage, dict):
                 record_failure(f"{failure_label}: " + " | ".join(errors))
             record_cancelled_pending()

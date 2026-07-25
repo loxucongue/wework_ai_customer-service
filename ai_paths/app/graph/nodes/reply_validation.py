@@ -5,7 +5,11 @@ import re
 from typing import Any
 
 from app.graph.nodes.common import renumber_messages
-from app.graph.nodes.store_scope_summary import region_mentioned_in_text, store_scope_ids
+from app.graph.nodes.store_scope_summary import (
+    build_store_scope_summary,
+    region_mentioned_in_text,
+    store_scope_ids,
+)
 from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
     activity_intro_completed_for_payment,
@@ -13,6 +17,7 @@ from app.services.payment_collection import (
     payment_collection_content,
     payment_collection_context,
 )
+from app.services.customer_payment_state import is_paid_deposit_state
 from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
@@ -141,13 +146,28 @@ def _requested_district_regions(state: dict[str, Any]) -> list[set[str]]:
 
 def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
     output = list(_requested_district_regions(state))
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if str(resolution.get("delivery_mode") or "") == "send_all_candidates":
+        resolution_ids = {
+            str(item or "").strip()
+            for item in resolution.get("visible_candidate_ids") or []
+            if str(item or "").strip()
+        }
+        if 1 <= len(resolution_ids) <= 3:
+            output.append(resolution_ids)
+
     for region in _store_scope_summary_regions(state):
         try:
             store_count = int(region.get("store_count") or 0)
         except (TypeError, ValueError):
             store_count = 0
         requested_areas = region.get("requested_areas") if isinstance(region.get("requested_areas"), list) else []
-        if requested_areas or not (2 <= store_count <= 3):
+        if requested_areas or not (1 <= store_count <= 3):
             continue
         ids = {
             str(store.get("store_id") or store.get("id") or "").strip()
@@ -157,7 +177,6 @@ def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
         if ids:
             output.append(ids)
 
-    structured = _structured_facts(state)
     lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
     stores = [item for item in structured.get("store_facts") or [] if isinstance(item, dict)]
     level = str(lookup.get("resolved_admin_level") or "").strip().lower()
@@ -168,7 +187,7 @@ def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
             candidate_count = int(lookup.get("candidate_count") or 0)
         except (TypeError, ValueError):
             candidate_count = 0
-        if not (2 <= candidate_count <= 3):
+        if not (1 <= candidate_count <= 3):
             return output
     scope_value = str(lookup.get(level) or "").strip()
     if not scope_value:
@@ -232,9 +251,12 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_single_payment_collection(messages)
     _validate_payment_collection_consistency(messages, state)
     _validate_payment_collection_amount_text(messages, state)
+    _validate_payment_confirmation_claim(messages, state)
     _validate_no_payment_after_current_appointment_created(messages, state)
     _validate_case_image_priority(messages, state)
     _validate_effect_absolute_safety_claims(messages, state)
+    _validate_province_only_store_delivery(messages, state)
+    _validate_store_resolution_delivery_mode(messages, state)
     _validate_store_address_message_facts(messages, state)
     _validate_multi_store_address_same_district(messages, state)
     _validate_store_address_card_consistency(messages, state)
@@ -258,6 +280,42 @@ def _validate_health_reply_boundaries(messages: list[dict[str, Any]], state: dic
     if not has_notice and not is_hard_health_risk_hold(health_risk_hold(state)):
         return
     text = _compact_text(_combined_text(messages))
+    active_skin_risk = _current_active_skin_risk(state)
+    has_payment = any(
+        str(item.get("type") or "") == "payment_collection"
+        for item in messages
+        if isinstance(item, dict)
+    )
+    if active_skin_risk and not has_payment:
+        if any(marker in text for marker in ("一般不会", "通常不会", "问题不大", "多数都正常", "绝大多数正常")):
+            raise ValueError("health_active_risk_must_not_be_softened")
+        explicit_pause = any(
+            marker in text
+            for marker in (
+                "先别直接做",
+                "先不要做",
+                "暂时不建议做",
+                "先不操作",
+                "不建议直接操作",
+                "不适合直接操作",
+                "现在不建议做",
+                "现在不适合做",
+                "过敏期间不建议做",
+                "过敏期间不适合做",
+            )
+        ) or (
+            any(marker in text for marker in ("不建议", "不适合", "不要", "不能", "暂停", "不急着", "先缓一缓"))
+            and any(marker in text for marker in ("操作", "做", "安排"))
+        )
+        if not explicit_pause:
+            raise ValueError("health_active_risk_pause_required")
+        if not (
+            any(marker in text for marker in ("检测", "看一下皮肤", "看下皮肤", "查看皮肤"))
+            and any(marker in text for marker in ("适合", "确认", "判断"))
+        ):
+            raise ValueError("health_active_risk_assessment_required")
+        if any(marker in text for marker in ("按活动", "活动名额", "预约金", "收款卡", "先付款", "先付")):
+            raise ValueError("health_active_risk_sales_push_not_allowed")
     if any(
         marker in text
         for marker in (
@@ -267,6 +325,12 @@ def _validate_health_reply_boundaries(messages: list[dict[str, Any]], state: dic
             "还是以前就经常",
             "最近才出现还是",
         )
+    ):
+        raise ValueError("health_online_symptom_question_not_allowed")
+    if (
+        any(marker in text for marker in ("过敏", "泛红", "发痒", "红肿", "刺痛", "发炎", "破损"))
+        and any(marker in text for marker in ("还是", "有没有", "是否", "多久", "什么症状"))
+        and any(marker in text for marker in ("？", "?"))
     ):
         raise ValueError("health_online_symptom_question_not_allowed")
     if any(
@@ -296,6 +360,26 @@ def _validate_health_reply_boundaries(messages: list[dict[str, Any]], state: dic
         )
     ):
         raise ValueError("pregnancy_deferral_claim_not_allowed")
+
+
+def _current_active_skin_risk(state: dict[str, Any]) -> bool:
+    current = _compact_text(str(state.get("normalized_content") or state.get("content") or ""))
+    return any(
+        marker in current
+        for marker in (
+            "正在过敏",
+            "现在过敏",
+            "过敏了",
+            "正在发炎",
+            "发炎了",
+            "皮肤破损",
+            "现在破损",
+            "正在红肿",
+            "脸上红肿",
+            "正在刺痛",
+            "脸上刺痛",
+        )
+    )
 
 
 def _validate_handoff_notice_text(messages: list[dict[str, Any]]) -> None:
@@ -409,7 +493,46 @@ def _validate_structured_delivery_promises(messages: list[dict[str, Any]], state
         return
     if any(str(item.get("type") or "") == "image" for item in messages if isinstance(item, dict)):
         return
+    if _references_recently_delivered_case_image(text) and _has_recent_case_image_evidence(state):
+        return
     raise ValueError("case_image_structure_required_when_reply_promises_delivery")
+
+
+def _references_recently_delivered_case_image(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "刚发您的",
+            "刚发你的",
+            "刚才发您的",
+            "刚才发你的",
+            "前面发您的",
+            "前面发你的",
+            "上面发您的",
+            "上面发你的",
+        )
+    )
+
+
+def _has_recent_case_image_evidence(state: dict[str, Any]) -> bool:
+    summary = state.get("sent_message_summary") if isinstance(state.get("sent_message_summary"), dict) else {}
+    delivery = summary.get("case_image_delivery") if isinstance(summary.get("case_image_delivery"), dict) else {}
+    if int(delivery.get("last_image_count") or 0) > 0:
+        return True
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in history[-4:]:
+        if isinstance(item, dict):
+            message_type = str(item.get("type") or item.get("msgtype") or "").strip().lower()
+            content = str(item.get("content") or item.get("text") or "")
+            direction = str(item.get("direction") or item.get("role") or "").strip().lower()
+            if message_type == "image" and direction not in {"customer", "user", "inbound"}:
+                return True
+        else:
+            content = str(item or "")
+        compact = re.sub(r"\s+", "", content).lower()
+        if any(marker in compact for marker in ("小贝:[image]", "小贝:[图片]", "助手:[image]", "assistant:[image]")):
+            return True
+    return False
 
 
 def _validate_no_customer_visible_internal_language(messages: list[dict[str, Any]]) -> None:
@@ -524,10 +647,44 @@ def _paid_deposit_context(state: dict[str, Any]) -> bool:
     image = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
     if image.get("image_type") == "payment_proof" and image.get("payment_result") == "success":
         return True
+    if is_paid_deposit_state(state.get("payment_state")):
+        return True
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    basic_deposit = basic.get("deposit_state")
+    if isinstance(basic_deposit, dict):
+        basic_deposit = basic_deposit.get("status")
+    if is_paid_deposit_state(basic_deposit):
+        return True
+    structured = _structured_facts(state)
+    if is_paid_deposit_state(structured.get("deposit_state")):
+        return True
     turn_context = state.get("current_turn_context")
     if not isinstance(turn_context, dict):
         return False
-    return str(turn_context.get("deposit_state") or "") == "deposit_paid"
+    return is_paid_deposit_state(turn_context.get("deposit_state"))
+
+
+def _validate_payment_confirmation_claim(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    if _paid_deposit_context(state):
+        return
+    text = _compact_text(_combined_text(messages))
+    if not text:
+        return
+    if any(
+        marker in text
+        for marker in (
+            "已收到预约金",
+            "预约金已收到",
+            "已经到账",
+            "已到账",
+            "已经核款",
+            "已核款",
+            "支付已确认",
+            "付款已确认",
+            "按已付",
+        )
+    ):
+        raise ValueError("payment_confirmation_fact_required")
 
 
 def _validate_no_payment_after_current_appointment_created(
@@ -665,23 +822,182 @@ def _promises_store_info_delivery_without_cards(text: str) -> bool:
 def _validate_complete_store_listing_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     """Require cards when the completed lookup fact is a small, complete store listing."""
 
-    structured = _structured_facts(state)
-    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
-    if str(lookup.get("purpose") or "") != "existence" or str(lookup.get("status") or "") != "ok":
+    if _current_scope_is_province_only(state):
         return
-    store_ids = {
-        str(item.get("store_id") or item.get("id") or "").strip()
-        for item in _authorized_store_facts_for_validation(state)
-        if str(item.get("store_id") or item.get("id") or "").strip()
-    }
-    try:
-        candidate_count = int(lookup.get("candidate_count") or 0)
-    except (TypeError, ValueError):
-        candidate_count = 0
-    if not (1 <= candidate_count <= 3) or len(store_ids) != candidate_count:
+    current_content = str(state.get("normalized_content") or state.get("content") or "")
+    compact_current = re.sub(r"\s+", "", current_content)
+    if (
+        any(term in compact_current for term in ("这家", "那家", "这个店", "刚刚那家", "刚才那家"))
+        and not _current_message_requests_store_address_card(current_content)
+    ):
+        return
+    store_ids = _required_complete_store_listing_ids(state)
+    if not store_ids:
         return
     if not store_ids.issubset(_emitted_store_address_ids(messages)):
         raise ValueError("complete_store_listing_cards_required")
+
+
+def _validate_store_resolution_delivery_mode(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """A structured clarification result cannot be turned into guessed store cards."""
+
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if str(resolution.get("delivery_mode") or "") != "clarify_location":
+        return
+    if _emitted_store_address_ids(messages):
+        raise ValueError("store_cards_not_allowed_when_location_clarification_required")
+
+
+def _validate_province_only_store_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """Do not turn a province-only customer location into a guessed city store."""
+
+    if not _emitted_store_address_ids(messages) or not _current_scope_is_province_only(state):
+        return
+    raise ValueError("store_cards_not_allowed_for_province_only_scope")
+
+
+def _current_scope_is_province_only(state: dict[str, Any]) -> bool:
+    current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if not current_text:
+        return False
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if str(resolution.get("resolved_admin_level") or "") in {
+        "city",
+        "district",
+        "county",
+        "county_level_city",
+        "township",
+        "village",
+        "poi",
+    }:
+        return False
+    location_card = state.get("location_card") if isinstance(state.get("location_card"), dict) else {}
+    if any(
+        str(location_card.get(key) or "").strip()
+        for key in ("title", "address", "location_title", "location_address", "location")
+    ):
+        return False
+
+    summary = _store_scope_summary_for_validation(state)
+    province_names = {
+        str(item.get("province") or "").strip()
+        for item in summary.get("province_counts") or []
+        if isinstance(item, dict) and str(item.get("province") or "").strip()
+    }
+    regions = [
+        item
+        for item in summary.get("relevant_regions") or []
+        if isinstance(item, dict)
+    ]
+    province_names.update(
+        str(item.get("province") or "").strip()
+        for item in regions
+        if str(item.get("province") or "").strip()
+    )
+    matched_provinces = {
+        province for province in province_names if region_mentioned_in_text(province, current_text)
+    }
+    if not matched_provinces:
+        return False
+
+    finer_regions: set[str] = set()
+    for region in regions:
+        if str(region.get("province") or "").strip() not in matched_provinces:
+            continue
+        city = str(region.get("city") or "").strip()
+        if city:
+            finer_regions.add(city)
+        for district in region.get("district_counts") or []:
+            if isinstance(district, dict) and str(district.get("district") or "").strip():
+                finer_regions.add(str(district.get("district") or "").strip())
+    if any(region_mentioned_in_text(value, current_text) for value in finer_regions):
+        return False
+
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    known_city = str(basic.get("city") or basic.get("current_city") or "").strip()
+    known_district = str(
+        basic.get("district") or basic.get("area_or_landmark") or basic.get("region") or ""
+    ).strip()
+    if known_city and any(_regions_match(known_city, value) for value in finer_regions):
+        return False
+    if known_district:
+        return False
+    return True
+
+
+def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if str(resolution.get("delivery_mode") or "") == "send_all_candidates":
+        ids = {
+            str(item or "").strip()
+            for item in resolution.get("visible_candidate_ids") or []
+            if str(item or "").strip()
+        }
+        if 1 <= len(ids) <= 3:
+            return ids
+
+    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    if str(lookup.get("status") or "") == "ok":
+        store_ids = {
+            str(item.get("store_id") or item.get("id") or "").strip()
+            for item in _authorized_store_facts_for_validation(state)
+            if str(item.get("store_id") or item.get("id") or "").strip()
+        }
+        try:
+            candidate_count = int(lookup.get("candidate_count") or 0)
+        except (TypeError, ValueError):
+            candidate_count = 0
+        if (
+            str(lookup.get("resolved_admin_level") or "") != "province"
+            and 1 <= candidate_count <= 3
+            and len(store_ids) == candidate_count
+        ):
+            return store_ids
+
+    current_text = str(state.get("normalized_content") or state.get("content") or "")
+    matched_regions: list[set[str]] = []
+    for region in _store_scope_summary_regions(state):
+        city = str(region.get("city") or "")
+        requested_areas = region.get("requested_areas") if isinstance(region.get("requested_areas"), list) else []
+        exact_stores = (
+            region.get("requested_district_stores")
+            if isinstance(region.get("requested_district_stores"), list)
+            else []
+        )
+        if requested_areas and any(region_mentioned_in_text(str(area), current_text) for area in requested_areas):
+            ids = {
+                str(item.get("store_id") or item.get("id") or "").strip()
+                for item in exact_stores
+                if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
+            }
+            if 1 <= len(ids) <= 3:
+                matched_regions.append(ids)
+            continue
+        if not region_mentioned_in_text(city, current_text):
+            continue
+        ids = {
+            str(item.get("store_id") or item.get("id") or "").strip()
+            for item in region.get("stores") or []
+            if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
+        }
+        if 1 <= len(ids) <= 3:
+            matched_regions.append(ids)
+    return matched_regions[0] if len(matched_regions) == 1 else set()
 
 
 def _validate_recommended_store_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -1013,6 +1329,8 @@ def _store_address_card_conflicts_with_visible_text(
         return False
     records = _known_store_records_for_validation(state)
     emitted_store_ids = set(store_ids)
+    complete_listing_ids = _required_complete_store_listing_ids(state)
+    emitted_complete_listing = bool(complete_listing_ids) and emitted_store_ids == complete_listing_ids
     emitted_store_names = {
         name
         for record in records
@@ -1035,7 +1353,7 @@ def _store_address_card_conflicts_with_visible_text(
                 if name and name in text and not _store_name_matches_target(name, target_names):
                     return True
             other_region_hit = any(region_mentioned_in_text(region, text) for region in _store_record_regions(record))
-            if other_region_hit and not target_visible:
+            if other_region_hit and not target_visible and not emitted_complete_listing:
                 return True
         for name in KNOWN_STORE_NAMES:
             store_name = str(name or "").strip()
@@ -1090,10 +1408,35 @@ def _known_store_records_for_validation(state: dict[str, Any]) -> list[dict[str,
     return output
 
 
-def _store_scope_summary_regions(state: dict[str, Any]) -> list[dict[str, Any]]:
+def _store_scope_summary_for_validation(state: dict[str, Any]) -> dict[str, Any]:
     summary = state.get("store_scope_summary") if isinstance(state.get("store_scope_summary"), dict) else {}
+    if not summary:
+        knowledge = (
+            state.get("customer_store_knowledge")
+            if isinstance(state.get("customer_store_knowledge"), dict)
+            else {}
+        )
+        summary = build_store_scope_summary(
+            knowledge,
+            location_hints=_store_scope_location_hints_for_validation(state),
+        )
+    return summary
+
+
+def _store_scope_summary_regions(state: dict[str, Any]) -> list[dict[str, Any]]:
+    summary = _store_scope_summary_for_validation(state)
     regions = summary.get("relevant_regions") if isinstance(summary.get("relevant_regions"), list) else []
     return [item for item in regions if isinstance(item, dict)]
+
+
+def _store_scope_location_hints_for_validation(state: dict[str, Any]) -> list[str]:
+    hints = [str(state.get("normalized_content") or state.get("content") or "").strip()]
+    location_card = state.get("location_card") if isinstance(state.get("location_card"), dict) else {}
+    hints.extend(
+        str(location_card.get(key) or "").strip()
+        for key in ("title", "address", "location_title", "location_address")
+    )
+    return [item for item in dict.fromkeys(hints) if item]
 
 
 def _store_record_for_id(records: list[dict[str, Any]], store_id: str) -> dict[str, Any]:
@@ -1225,12 +1568,18 @@ def _asserts_customer_visible_distance_value(text: str, state: dict[str, Any]) -
     compact = re.sub(r"\s+", "", str(text or ""))
     if not _is_store_distance_context(compact, state):
         return False
-    if re.search(r"\d+(?:\.\d+)?(?:公里|千米|km|KM)", compact):
+    numeric_value = r"(?:\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百半几]+)"
+    if re.search(rf"{numeric_value}(?:公里|千米|km)", compact, flags=re.IGNORECASE):
         return True
     route_terms = "车程|步行|打车|开车|公交|地铁|骑车|过去|过来|到店|路程|导航|路上|交通"
-    if re.search(rf"(?:{route_terms})[^，。！？；,.!?;]{{0,12}}\d+(?:-\d+)?分钟", compact):
+    if re.search(rf"(?:{route_terms})[^，。！？；,.!?;]{{0,12}}{numeric_value}(?:-|到)?{numeric_value}?分钟", compact):
         return True
-    return bool(re.search(rf"\d+(?:-\d+)?分钟[^，。！？；,.!?;]{{0,8}}(?:{route_terms}|到)", compact))
+    return bool(
+        re.search(
+            rf"{numeric_value}(?:-|到)?{numeric_value}?分钟[^，。！？；,.!?;]{{0,8}}(?:{route_terms}|到)",
+            compact,
+        )
+    )
 
 
 def _is_store_distance_context(text: str, state: dict[str, Any]) -> bool:
@@ -1243,7 +1592,24 @@ def _is_store_distance_context(text: str, state: dict[str, Any]) -> bool:
     ).lower()
     if "distance" in state_markers or "store" in state_markers:
         return True
-    return any(term in text for term in ("门店", "店", "地址", "导航", "位置", "距离", "离您", "离你", "车程", "步行"))
+    return any(
+        term in text
+        for term in (
+            "门店",
+            "店",
+            "地址",
+            "导航",
+            "位置",
+            "距离",
+            "离您",
+            "离你",
+            "车程",
+            "步行",
+            "过去",
+            "过来",
+            "到店",
+        )
+    )
 
 
 def _promises_store_address_card(text: str) -> bool:
@@ -1271,6 +1637,20 @@ def _current_message_requests_store_address_card(text: str) -> bool:
     if any(
         term in compact
         for term in (
+            "我可以发定位给你",
+            "我可以发定位给您",
+            "我发定位给你",
+            "我发定位给您",
+            "我给你发定位",
+            "我给您发定位",
+            "我可以发位置给你",
+            "我可以发位置给您",
+        )
+    ):
+        return False
+    if any(
+        term in compact
+        for term in (
             "发个位置",
             "发位置",
             "位置发我",
@@ -1286,6 +1666,8 @@ def _current_message_requests_store_address_card(text: str) -> bool:
             "门店位置",
         )
     ):
+        return True
+    if ("店" in compact or "门店" in compact) and any(term in compact for term in ("发我", "发给我", "给我", "发来")):
         return True
     return bool(re.search(r"发.{0,8}(地址|位置|定位|导航)", compact)) or bool(
         re.search(r"(地址|位置|定位|导航).{0,8}(发|给)", compact)
@@ -1475,6 +1857,17 @@ def _asserts_appointment_confirmed(text: str) -> bool:
 
 def _asserts_registration_confirmed(text: str) -> bool:
     compact = re.sub(r"\s+", "", str(text or ""))
+    conditional_markers = (
+        "转完",
+        "转好",
+        "截图后",
+        "按截图",
+        "确认后",
+        "核对后",
+        "收到截图",
+    )
+    if any(marker in compact for marker in conditional_markers):
+        return False
     return any(
         term in compact
         for term in (

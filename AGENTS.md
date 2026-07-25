@@ -46,12 +46,12 @@ Both modes are required for reply-quality changes. Single-node tests answer “i
   Fix strategy: 将案例图发送时间和数量作为 evidence 提供给 Planner；无权威近期图片证据的效果疑问由 Planner 调用 `kb_search(case_studies)`，最终 Reply 只使用真实 `case_facts` 输出图片。
   Regression check: 所有 SOP 均已完成但没有近期图片发送证据时，“效果怎么样”必须规划 `kb_search(case_studies)` 并在全链路输出真实 image；上一轮确实刚发图后的评价续问允许不重复查询。
 
-- Phenomenon: 客户收到预约金卡，但平台没有对应门店、金额一致的有效未付订单，或订单属于其他门店，导致付款与后台订单无法可靠关联。
-  Root cause: 发卡动作曾与后台订单解耦，Planner 的 `send_now/resend` 可以覆盖开单失败、订单缺失和门店不匹配事实。
-  Trigger condition: 客户尚未明确确认真实门店，`create_work_order` 返回 rejected/error、缺少 order_id，或当前只有其他门店/其他金额的订单时仍尝试输出 `payment_collection`。
-  Prevention rule: 预约金卡必须以同门店、同金额的有效未付订单或本轮开单/复用成功为前置；开单失败、订单查询失败、门店或金额不匹配时禁止发卡和虚构成功。
-  Fix strategy: 形成唯一可信交易门店锚点后立即创建或复用订单；锚点可来自客户明确选择、请求/预约确认，或最近一次只发送一家真实门店卡后客户继续推进成交。发卡前统一校验当前订单，人数变化时先更新订单金额，成功后才允许输出 10/20/30/40 元卡。
-  Regression check: 开单成功但未进入付款动作时只正常承接；开单拒绝、工具异常、其他门店订单和金额不一致均不发卡；匹配有效未付订单才可发送对应金额卡片。
+- Phenomenon: 预约金卡曾被“必须先存在同门店同金额订单”的旧规则阻断，导致客户明确要报名或付款时仍被要求重复确认门店，甚至出现“入口没对上”的客户可见话术。
+  Root cause: 旧版交易链路把后台订单关联当成了客户付款前置，而当前业务流程已经调整为先完成活动报价和预约金支付，再收姓名电话并创建或关联后台订单。
+  Trigger condition: 活动报价已经完成、客户未付且适合成交，但当前没有订单、开单接口失败，或平台辅助字段尚未齐全。
+  Prevention rule: 订单不是发送预约金卡的前置。活动报价完成或已铺垫后，Planner 可根据客户意向和成交节奏发送每位 10 元的 `payment_collection`；代码只校验已付、健康风险、投诉退款、明确强拒付、人数上限、金额和结构等硬边界。
+  Fix strategy: 支付成功后先收姓名和电话，再尽力创建或关联后台订单。后台关联失败不得要求客户重复付款，不得导致空回复，也不得对客户暴露“入口没对上”等内部状态。旧版订单前置规则标记为 `superseded`，不得恢复。
+  Regression check: 无订单但活动报价已完成时允许发送合法预约金卡；已付、健康风险、明确强拒付和人数超过 4 位仍禁止发卡；支付后姓名电话齐全才尝试后台开单或关联。
 
 - Phenomenon: 已向客户发送唯一真实门店卡后，客户直接继续问价格、预约或付款，系统仍要求客户再次明确说“就这家”，导致成交链路停顿。
   Root cause: 开单前置只接受显式门店确认，没有把最近一次单店卡发送事实作为可供模型判断的交易门店锚点。
@@ -60,12 +60,12 @@ Both modes are required for reply-quality changes. Single-node tests answer “i
   Fix strategy: `sent_message_summary` 输出 `store_anchor_fact`，只描述唯一、多店或证据不完整；Planner 用 `store_binding_decision` 判断客户是明确接受、隐式接受、仍在比较、拒绝或多店未选。Normalizer 只检查该语义决策与订单动作、真实 store_id 是否一致。
   Regression check: 单店卡后继续价格/报名可由模型判断接受并开单；明确换店应绑定新店；最近多店卡、锚点 ID 不一致、旧事件证据不完整和仅有画像偏好时均不得作为隐式接受来源。
 
-- Phenomenon: 客户已接受真实门店，但平台客户辅助资料不完整时开单直接终止，导致正常答疑和成交节奏一起中断。
-  Root cause: `customer_add_wechat_id/user_id/kind/category_id` 曾与 customer_id、store_id、prepay 一起被当成硬必填字段；资料补全失败被误认为客户不具备开单条件。
-  Trigger condition: 平台客户详情接口超时、旧客户缺添加关系、经办账号或分类暂未同步，但主客户 ID、真实门店和预约金金额已经明确。
-  Prevention rule: customer_id、真实 store_id、10/20/30/40 金额和真实 order_id 是交易硬事实；其余平台字段先尽力补全，缺失时允许部分提交。平台未返回真实 order_id 时仍禁止 payment_collection，但不得让客户回复为空。
-  Fix strategy: 开单工具记录 `creation_mode/missing_optional_fields`，部分字段缺失时尝试平台开单；Reply 根据工具结果继续正常答疑和推进，不暴露接口字段或伪造成功。
-  Regression check: 可选字段全部缺失但平台接受时应创建订单并记录 partial；平台拒绝或无 order_id 时不发卡，客户可见回复仍保持正常节奏。
+- Phenomenon: 客户支付后需要登记和后台关联，但平台客户辅助资料不完整时开单可能失败。
+  Root cause: `customer_add_wechat_id/user_id/kind/category_id` 等辅助字段可能尚未同步，后台接口无法立即建立完整订单关联。
+  Trigger condition: 客户已通过权威支付事件、成功截图或订单事实确认付款，姓名电话正在补齐，平台辅助资料仍缺失或接口暂时不可用。
+  Prevention rule: 支付前不以订单阻断发卡；支付后先收姓名电话，再尽力创建或关联订单。后台失败是内部记录问题，不得改变已付事实或中断客户回复。
+  Fix strategy: 开单工具记录 `creation_mode/missing_optional_fields` 和关联状态；Reply 继续收集缺失登记信息，不暴露接口字段、不伪造开单成功。
+  Regression check: 支付后姓名电话未齐先收信息；齐全后可尝试部分字段开单；平台拒绝或无 order_id 时仍保持已付状态且客户可见回复正常。
 
 - Phenomenon: 客户已经回复并进入真实聊天，或会话接口拉取失败时，仍收到按固定时间触发的问地址、报价或催付 SOP。
   Root cause: 首次加微事件在会话拉取失败时降级为空历史，并丢弃事件创建后、实际处理前的新消息，发送前也没有真实客户回复的确定性拦截。

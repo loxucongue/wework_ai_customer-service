@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-PAID_DEPOSIT_STATES = {"paid_by_order", "paid_by_screenshot"}
+PAID_DEPOSIT_STATES = {"paid_by_order", "paid_by_screenshot", "paid_by_platform_transfer_event"}
 ACTIVE_ORDER_STATUSES = {"1", "2", "3", "pending", "waiting_schedule", "scheduled"}
 COMPLETED_ORDER_STATUSES = {"finished", "completed", "done", "closed", "complete", "已完成"}
 PAID_ORDER_PROTECTION_MONTHS = 3
@@ -85,7 +85,11 @@ def payment_fact_from_image(image_info: Any) -> dict[str, Any]:
         "source": str(image_info.get("source") or "vision.payment_proof"),
     }
     if result == "success":
-        output["deposit_state"] = "paid_by_screenshot"
+        output["deposit_state"] = (
+            "paid_by_platform_transfer_event"
+            if output["source"] == "platform.unknown_message_transfer"
+            else "paid_by_screenshot"
+        )
     return _drop_empty(output)
 
 
@@ -149,15 +153,19 @@ def resolved_payment_fact(
 
     if paid_order:
         selected = dict(paid_order)
-    elif image_fact.get("deposit_state") == "paid_by_screenshot":
+    elif image_fact.get("deposit_state") in PAID_DEPOSIT_STATES:
         selected = dict(image_fact)
         related_order = next((item for item in current_flow_facts if item.get("order_id")), None)
         if related_order:
             selected.update({key: related_order.get(key) for key in ("order_id", "order_no", "store_id", "store_name")})
-    elif existing_screenshot_paid:
+    elif existing_screenshot_paid or existing_state == "paid_by_platform_transfer_event":
         selected = {
             **(existing_fact if isinstance(existing_fact, dict) else {}),
-            "deposit_state": "paid_by_screenshot",
+            "deposit_state": (
+                "paid_by_platform_transfer_event"
+                if existing_state == "paid_by_platform_transfer_event"
+                else "paid_by_screenshot"
+            ),
             "source": existing_source or "customer_memory",
         }
     else:

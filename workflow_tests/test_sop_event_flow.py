@@ -2197,6 +2197,26 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["applied_operations"], [])
         self.assertEqual(summary["rejected"][0]["reason"], "numeric_facts_changed")
 
+    def test_sop_message_operations_preserve_trailing_action_after_structured_message(self) -> None:
+        messages, summary = apply_sop_text_adjustments(
+            [
+                {"type": "text", "order": 1, "content": {"text": "这次活动内容我跟您说清楚。"}},
+                {"type": "image", "order": 2, "content": {"url": "https://example.com/activity.jpg"}},
+                {"type": "text", "order": 3, "content": {"text": "您到店时间后面按方便安排。"}},
+                {"type": "text", "order": 4, "content": {"text": "您这边是一位参加吗？"}},
+            ],
+            [],
+            [
+                {"op": "remove_text", "order": 3},
+                {"op": "remove_text", "order": 4},
+            ],
+        )
+
+        self.assertEqual([item["type"] for item in messages], ["text", "image", "text"])
+        self.assertEqual(messages[-1]["content"]["text"], "您这边是一位参加吗？")
+        self.assertEqual(summary["applied_operations"], [{"op": "remove_text", "order": 3}])
+        self.assertEqual(summary["rejected"][-1]["reason"], "trailing_action_text_required")
+
     async def test_platform_task_directly_sends_platform_actions_without_model(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[{"direction": "staff", "content": "前面已正常沟通"}])
@@ -3738,6 +3758,78 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(evidence["unfinished_sops"][0]["purpose"], "承接客户斑点情况和效果信心")
         self.assertNotIn("reply_messages", evidence["unfinished_sops"][0])
         self.assertNotIn("未发送的静态话术原文", str(evidence))
+
+    async def test_chat_gate_exposes_recent_structured_case_image_delivery(self) -> None:
+        class _CasePackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_need_and_case",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "s10_need_and_case",
+                            "name": "需求与案例",
+                            "purpose": "发送真实案例并推进需求阶段",
+                            "order": 20,
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "我给您发案例。"}},
+                                {"type": "image", "order": 2, "content": {"url": "https://example.test/case.jpg"}},
+                            ],
+                        }
+                    ]
+                }
+
+        repository = _Repo()
+        repository.tasks.append(
+            {
+                "id": "task_recent_case",
+                "status": "sent",
+                "sop_pack_id": "event_s10_effect_warmup_30min",
+                "sop_category": "effect_case",
+                "sent_at": "2026-07-25T10:00:00+00:00",
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "先给您看效果参考。"}},
+                    {"type": "image", "order": 2, "content": {"url": "https://example.test/recent-case.jpg"}},
+                ],
+            }
+        )
+        model = _PromptCaptureModel(
+            {
+                "route": "ai_only",
+                "coverage": "none",
+                "priority_question_id": "",
+                "sop_pack_id": "",
+                "resume_stage": "activity_and_price",
+                "reason": "刚发过真实案例图，先解释效果再推进活动主线。",
+                "text_adjustments": [],
+                "message_operations": [],
+            }
+        )
+        service = SopExecutionService(
+            repository=repository,
+            sop_reply_pack_service=_CasePackService(),
+            model_client=model,
+        )
+        request = ChatRequest(
+            content="效果怎么样",
+            customer_id="customer",
+            corp_id="corp",
+            external_userid="ext",
+            wechat="CS001",
+            conversation_history=[
+                "小贝: 先给您看效果参考。",
+                "小贝: [image]https://example.test/recent-case.jpg",
+            ],
+        )
+
+        result = await service.evaluate_chat_gate(request, request_id="req_recent_case", request_context={})
+
+        self.assertEqual(result["mode"], "ai_only")
+        user_prompt = model.messages[1]["content"]
+        self.assertIn("recent_sop_delivery_evidence", user_prompt)
+        self.assertIn("event_s10_effect_warmup_30min", user_prompt)
+        self.assertIn('"image_count":1', user_prompt)
 
     async def test_chat_gate_prompt_requires_actual_message_coverage(self) -> None:
         class _ObjectionPackService:

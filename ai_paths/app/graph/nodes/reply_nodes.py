@@ -30,7 +30,7 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - 当前消息优先，结合最近12条原序历史。先直接解决本轮问题，再自然承接一个销售动作；“人呢/在吗”等短催促直接续最近未完动作，不列选项重问意图；不要复读整套规则，不要说“继续处理、安排下一步、温馨提醒、尊敬的客户”。
 - 像真人微信聊天：短句、口语、具体，不暴露“事实、排序、工具、系统、流程、状态”等内部表达。客户只回“好/嗯”时，确认并轻推下一步，不重播上一轮顾虑、案例、价格和预约金全套内容。
 - 只能使用输入中的工具、门店、订单、支付、图片和档期事实；没有事实就不要编。
-- 发过 payment_collection 只代表发过卡，不代表已支付。只有成功支付截图或订单 prepay_paid 才是权威已付；客户口头说已付只能按声明承接，不能说已核款。
+- 发过 payment_collection 只代表发过卡，不代表已支付。成功支付截图、订单 prepay_paid 或结构化 paid_by_platform_transfer_event 是权威已付；客户普通文字说已付只能按声明承接，不能说已核款。
 - 人数按到店总人数理解：“我朋友也一起”通常是本人+1位朋友=2位；“我带两个朋友”是本人+2位朋友=3位。卡片金额必须服从 Planner 的人数和金额决策。
 - 客户明确要入口/预约时，不要因为缺订单或开单失败暴露“入口没对上/不能发卡”，也不能再反问“如果你要我再发”；活动报价已铺垫且无硬阻断时按当前结构事实发卡，否则只补最小必要信息。
 - 没有真实 case_facts/image 不能说“我给您发图/图发您了”；有图且当前明确要图时才输出 image。上一轮顾虑已回答、客户只确认时不要擅自重发案例。
@@ -117,9 +117,11 @@ def create_synthesize_reply_node(
                 warnings.append({"node": "synthesize_reply", "message": "stale_handoff_notice_removed"})
                 if model_call:
                     model_call["stale_handoff_notice_removed"] = True
+            fallback_source = ""
             if not messages and errors:
                 messages = _neutral_final_fallback_messages()
                 reply_source = "deterministic_neutral_final_fallback"
+                fallback_source = reply_source
                 recovered_error = errors.pop() if errors else None
                 if recovered_error:
                     warnings.append(
@@ -135,7 +137,6 @@ def create_synthesize_reply_node(
                     model_call["output"] = {"messages": len(messages)}
                 messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
                 if handoff_notice_appended_after_fallback:
-                    validate_reply_consistency(messages, state)
                     warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
                     if model_call:
                         model_call["handoff_notice_appended"] = True
@@ -169,6 +170,15 @@ def create_synthesize_reply_node(
                 "model_context_metrics": context_metrics,
                 "recovery_attempts": recovery_attempts,
                 "recovery_reason": recovery_reason,
+                "fallback_source": fallback_source,
+                "fallback_failure_node": "synthesize_reply" if fallback_source else "",
+                "fallback_retry_count": len(recovery_attempts) if fallback_source else 0,
+                "fallback_violation": recovery_reason if fallback_source else "",
+                "fallback_remaining_budget": (
+                    runtime_budget_snapshot(state, tier=_reply_model_tier(state))
+                    if fallback_source
+                    else {}
+                ),
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output
@@ -365,6 +375,9 @@ def _prepare_structural_messages(
     prepared, planner_store_cards_preserved = _preserve_planner_store_address_actions(prepared, state)
     if planner_store_cards_preserved:
         warnings.append({"node": "synthesize_reply", "message": "planner_store_address_action_preserved"})
+    prepared, required_store_cards_appended = _append_required_store_address_actions(prepared, state)
+    if required_store_cards_appended:
+        warnings.append({"node": "synthesize_reply", "message": "required_store_address_action_appended"})
     for warning in warnings:
         if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
             warning.setdefault("node", "synthesize_reply")
@@ -853,6 +866,12 @@ def _reply_repair_hint(error: str) -> str:
         return "客户问一次效果时，先给正向信心：大多数客户一次能看到明显改善方向。不要用“不是完全没变化”这类弱安慰；再说明具体程度看斑点深浅和时间，到店会做原相机对比，最后接一个主线动作。"
     if "health_online_symptom_question_not_allowed" in error:
         return "不要在线追问客户症状、出现频率或用药情况。健康、过敏或孕期只正面承接并引导到店专业检测；严重不适收原门店、项目和时间。"
+    if "health_active_risk_must_not_be_softened" in error:
+        return "客户当前明确处于过敏、发炎或破损状态，不要用“一般不会、问题不大、多数正常”等话弱化风险。先明确暂时不操作，再说明到店检测皮肤状态、确认适合后再安排。"
+    if "health_active_risk_pause_required" in error or "health_active_risk_assessment_required" in error:
+        return "当前有明确健康风险。必须先说暂时不要直接操作，再引导到店检测或查看皮肤状态，确认适合后再安排；不要推进活动、付款或预约金。"
+    if "health_active_risk_sales_push_not_allowed" in error:
+        return "客户当前有明确过敏、发炎或破损风险。本轮只说明先不要操作、到店检测后判断是否适合；删除活动、名额、预约金、付款和收款卡推进。"
     if "health_specific_care_advice_not_allowed" in error:
         return "不要给热敷、冷敷、去角质、酸类、停用护肤品等具体护理清单。严重不适只说停止继续刺激、联系原门店；明显紧急时及时线下就医。"
     if "pregnancy_deferral_claim_not_allowed" in error:
@@ -869,6 +888,8 @@ def _reply_repair_hint(error: str) -> str:
         return "如果 payment_action=send_now、文本承诺发送预约金入口或 next_step=send_deposit，必须同时输出 payment_collection；否则删除发入口承诺并调整回复节奏。"
     if "payment_collection_amount_text_mismatch" in error:
         return "预约金卡片金额必须和文本一致；同行按每位10元锁活动名额，2位说一共20元，3位说一共30元，4位说一共40元。"
+    if "payment_confirmation_fact_required" in error:
+        return "当前没有成功支付截图、平台转账成功事件或实时订单已付事实。客户口头说已转账时，只请其发成功截图核对；不能说已收到、已到账、已核款、支付已确认或按已付登记。"
     if "offer_total_tail_amount_conflict" in error:
         return "活动总价是268元。10元预约金计入总价并到店抵扣，客户实际做时再付剩余258元；不能把258说成最终总价、全部费用或一共只付258元。"
     if "payment_participant_count_confirm_required" in error:
@@ -897,10 +918,14 @@ def _reply_repair_hint(error: str) -> str:
         return "没有门店详情事实时，不要输出具体地址。"
     if "unsupported_store_address_message" in error:
         return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时，不要输出 store_address，只能用文字说明暂时没查到并继续确认城市、区域或门店。"
+    if "store_cards_not_allowed_when_location_clarification_required" in error:
+        return "本轮 store_resolution_fact 要求 clarify_location，说明客户只给了省份、候选超过3家或地点仍有歧义。删除所有 store_address，只问一个最小必要字段：具体城市、区县或定位。"
+    if "store_cards_not_allowed_for_province_only_scope" in error:
+        return "客户当前只给了省份，且没有可靠的城市、区县或定位事实。删除所有 store_address，不按省中心猜门店；只自然追问具体城市、区县或请客户发定位。"
     if "complete_store_listing_cards_required" in error:
         return "本轮门店工具已经返回 purpose=existence 的完整 1 至 3 家真实门店。请保留自然说明，并为 tool_facts.store_facts 中每个 store_id 各输出一条 store_address；不能只用编号或文字列出门店来代替卡片。"
     if "recommended_store_card_required" in error:
-        return "本轮 distance_calculate 已产生唯一 recommended_store。请基于该事实自然承接，并追加一条 content.store_id 等于 recommended_store.store_id 的 store_address；不要只在文字里承诺稍后发卡。"
+        return "本轮 distance_calculate 已产生唯一 recommended_store。请基于该事实自然承接，并追加一条 content.store_id 等于 recommended_store.store_id 的 store_address；不要只在文字里承诺稍后发卡，也不要新增“已安排、已预约、已登记、已留位”等没有事实支持的状态。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
         return "你已经在文本里承诺发地址、位置或让客户点开导航；如果本轮有门店事实，必须追加对应 store_address 卡片。若不想发卡，就删除“我发您/点开导航/位置卡”等承诺。"
     if "distance_value_not_customer_visible" in error:
@@ -1085,6 +1110,92 @@ def _preserve_planner_store_address_actions(
         validate_reply_consistency(candidate, state)
     except Exception:
         return messages, False
+    return candidate, True
+
+
+def _append_required_store_address_actions(
+    messages: list[dict[str, Any]],
+    state: AgentState,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Complete store-card structure using only current, validated tool facts."""
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if str(resolution.get("delivery_mode") or "") == "clarify_location":
+        return messages, False
+
+    required_ids: list[str] = []
+    recommended = (
+        structured.get("recommended_store")
+        if isinstance(structured.get("recommended_store"), dict)
+        else {}
+    )
+    recommended_id = str(recommended.get("store_id") or recommended.get("id") or "").strip()
+    if recommended_id and str(recommended.get("reason") or "") == "distance_calculate_rank_1":
+        required_ids = [recommended_id]
+    elif str(resolution.get("delivery_mode") or "") == "send_all_candidates":
+        required_ids = list(
+            dict.fromkeys(
+                str(item or "").strip()
+                for item in resolution.get("visible_candidate_ids") or []
+                if str(item or "").strip()
+            )
+        )
+        if not 1 <= len(required_ids) <= 3:
+            return messages, False
+    else:
+        lookup = (
+            structured.get("store_lookup_status")
+            if isinstance(structured.get("store_lookup_status"), dict)
+            else {}
+        )
+        store_ids = list(
+            dict.fromkeys(
+                str(item.get("store_id") or item.get("id") or "").strip()
+                for item in structured.get("store_facts") or []
+                if isinstance(item, dict)
+                and str(item.get("store_id") or item.get("id") or "").strip()
+            )
+        )
+        try:
+            candidate_count = int(lookup.get("candidate_count") or 0)
+        except (TypeError, ValueError):
+            candidate_count = 0
+        if (
+            str(lookup.get("status") or "") == "ok"
+            and str(lookup.get("resolved_admin_level") or "") != "province"
+            and 1 <= candidate_count <= 3
+            and len(store_ids) == candidate_count
+        ):
+            required_ids = store_ids
+
+    if not required_ids:
+        return messages, False
+    existing_ids = {
+        _store_id_from_message(item)
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
+    }
+    additions = [
+        {"type": "store_address", "content": {"store_id": store_id}}
+        for store_id in required_ids
+        if store_id not in existing_ids
+    ]
+    if not additions:
+        return messages, False
+
+    insert_at = next(
+        (
+            index + 1
+            for index, item in enumerate(messages)
+            if isinstance(item, dict) and str(item.get("type") or "") == "text"
+        ),
+        len(messages),
+    )
+    candidate = _renumber([*messages[:insert_at], *additions, *messages[insert_at:]])
     return candidate, True
 
 

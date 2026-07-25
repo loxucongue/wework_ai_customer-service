@@ -12,6 +12,7 @@ from app.graph.nodes.current_turn_context import (
     current_store_anchor_from_state,
     is_context_reference_message,
 )
+from app.graph.nodes.location_card import location_card_from_state
 from app.graph.nodes.sent_message_summary import (
     latest_single_store_card_anchor_id,
     sent_message_summary_for_model,
@@ -279,6 +280,18 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
     required_tools = _normalize_available_time_dates_from_context(required_tools, state)
+    decision, planner_reply_messages, required_tools = _enforce_location_card_store_lookup(
+        decision=decision,
+        messages=planner_reply_messages,
+        required_tools=required_tools,
+        state=state,
+    )
+    decision, planner_reply_messages, required_tools = _enforce_explicit_location_store_lookup(
+        decision=decision,
+        messages=planner_reply_messages,
+        required_tools=required_tools,
+        state=state,
+    )
     order_decision, required_tools = _reconcile_existing_order_for_payment(
         state=state,
         payment_decision=payment_decision,
@@ -290,6 +303,15 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         order_decision=order_decision,
     )
     executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
+    if (
+        decision == "need_tools"
+        and not executable_tools
+        and _has_complete_customer_visible_reply(planner_reply_messages)
+    ):
+        # The model already produced a complete customer-facing answer but mislabeled
+        # the schema as need_tools. Preserve its semantics and normalize the envelope.
+        decision = "direct_reply"
+        required_tools = [{"name": "no_tool", "purpose": "Complete direct reply requires no external tool"}]
     if decision == "need_tools" and executable_tools:
         planner_reply_messages = []
     if (
@@ -1751,7 +1773,12 @@ def _reconcile_paid_payment_decision(
             paid = _numeric_payment_amount(order.get("prepay_paid") or order.get("fee_paid"))
             required = _numeric_payment_amount(order.get("prepay_required") or order.get("fee_required"))
             deposit_state = str(order.get("deposit_state") or normalized_payment.get("deposit_state") or "")
-            if deposit_state in {"paid_by_order", "paid_by_screenshot", "paid"}:
+            if deposit_state in {
+                "paid_by_order",
+                "paid_by_screenshot",
+                "paid_by_platform_transfer_event",
+                "paid",
+            }:
                 amount = paid or required
                 if amount:
                     break
@@ -2170,6 +2197,33 @@ def _direct_reply_message_violations(*, decision: str, messages: list[dict[str, 
     return []
 
 
+def _has_complete_customer_visible_reply(messages: list[dict[str, Any]]) -> bool:
+    visible = [
+        item
+        for item in messages
+        if isinstance(item, dict)
+        and str(item.get("type") or "text") in {"text", "image", "video", "store_address", "payment_collection"}
+    ]
+    if not visible:
+        return False
+    if any(str(item.get("type") or "text") != "text" for item in visible):
+        return True
+    generic_placeholders = {
+        "稍等一下哈",
+        "稍等哈",
+        "稍等一下",
+        "我在继续帮您处理",
+        "我在，继续帮您处理",
+        "继续帮您处理",
+    }
+    texts = {
+        _compact_text(_message_text(item.get("content")))
+        for item in visible
+        if _compact_text(_message_text(item.get("content")))
+    }
+    return bool(texts and not texts.issubset({_compact_text(item) for item in generic_placeholders}))
+
+
 def _need_tools_without_tool_violations(
     *,
     decision: str,
@@ -2361,6 +2415,61 @@ def _store_detail_tool_violations(
             ),
         }
     ]
+
+
+def _enforce_location_card_store_lookup(
+    *,
+    decision: str,
+    messages: list[dict[str, Any]],
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """A structured location card is factual input, not an authoritative store match."""
+    card = location_card_from_state(state)
+    if not card or _has_tool(required_tools, "customer_store_lookup") or _fact_envelope_store_ids(state):
+        return decision, messages, required_tools
+    query = str(card.get("address") or card.get("title") or card.get("coordinates") or "").strip()
+    if not query:
+        return decision, messages, required_tools
+    tools = [tool for tool in required_tools if str(tool.get("name") or "") != "no_tool"]
+    tools.append(
+        {
+            "name": "customer_store_lookup",
+            "purpose": "nearby_candidates",
+            "query": query,
+        }
+    )
+    return "need_tools", [], _dedupe_tools(tools)
+
+
+def _enforce_explicit_location_store_lookup(
+    *,
+    decision: str,
+    messages: list[dict[str, Any]],
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Apply the store-fact requirement whenever the model omits a required lookup."""
+    violations = _explicit_location_store_lookup_violations(
+        decision=decision,
+        messages=messages,
+        required_tools=required_tools,
+        state=state,
+    )
+    if not violations:
+        return decision, messages, required_tools
+    query = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if not query:
+        return decision, messages, required_tools
+    tools = [tool for tool in required_tools if str(tool.get("name") or "") != "no_tool"]
+    tools.append(
+        {
+            "name": "customer_store_lookup",
+            "purpose": "existence",
+            "query": query,
+        }
+    )
+    return "need_tools", [], _dedupe_tools(tools)
 
 
 def _explicit_location_store_lookup_violations(

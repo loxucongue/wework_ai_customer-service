@@ -116,14 +116,30 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(_should_run_async_finalize(state))
 
     async def test_professional_assist_waits_for_final_reply(self) -> None:
-        messages = _planner_sync_reply_messages(
-            {
-                "planner_decision": "need_tools",
-                "required_tools": [{"name": "professional_assist", "reason": "健康高风险"}],
-                "planner_reply_messages": [],
-            }
-        )
+        state = {
+            "planner_decision": "need_tools",
+            "required_tools": [{"name": "professional_assist", "reason": "健康高风险"}],
+            "planner_tool_calls": [{"name": "professional_assist", "reason": "健康高风险"}],
+            "planner_reply_messages": [],
+        }
+        messages = _planner_sync_reply_messages(state)
         self.assertEqual(messages, [])
+        self.assertTrue(_should_run_async_finalize(state))
+
+    async def test_malformed_need_tools_without_executable_call_still_runs_final_reply(self) -> None:
+        state = {
+            "planner_decision": "need_tools",
+            "planner_tool_calls": [],
+            "tool_policy_violations": [
+                {
+                    "task_type": "tool_structure",
+                    "subtype": "need_tools",
+                    "missing": "need_tools_requires_executable_tool",
+                }
+            ],
+        }
+
+        self.assertTrue(_should_run_async_finalize(state))
 
     async def test_run_chat_graph_exception_returns_deterministic_reply_instead_of_502(self) -> None:
         repository = _Repository()
@@ -201,12 +217,14 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         response = await runtime.run_platform_reply(_request("是不是做一次就可以"))
 
         self.assertEqual(
-            [message.content["text"] for message in response.reply_messages],
+            [message.content["text"] for message in response.reply_messages if message.type == "text"],
             ["多数客户做一次就能看到改善，具体程度要到店检测后判断。", "我给您发一组同类案例参考。"],
         )
         self.assertTrue(gate.confirmed)
         self.assertFalse(gate.failed)
         self.assertEqual(graph.states[0]["sop_gate_decision"]["priority_question_id"], "one_session_effect")
+        self.assertEqual(set(graph.states[0]["sop_gate_decision"]["sop_message_types"]), {"text", "image"})
+        self.assertEqual(graph.states[0]["sop_gate_decision"]["sop_image_count"], 1)
 
     async def test_precision_ai_failure_withholds_sop_and_returns_nonempty_fallback(self) -> None:
         repository = _Repository()
@@ -442,6 +460,11 @@ class _PrecisionSopGate:
             "need_ai_reply": True,
             "sop_pack_id": "s10_need_and_case",
             "reply_messages": [
+                {
+                    "type": "image",
+                    "order": 2,
+                    "content": {"url": "https://example.invalid/sop-case.jpg"},
+                },
                 {"type": "text", "order": 1, "content": {"text": "我给您发一组同类案例参考。"}}
             ],
             "task": {"id": "pending-task", "status": "pending", "created": True},

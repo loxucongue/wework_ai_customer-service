@@ -21,6 +21,7 @@ venv/
 !docs/architecture_review_20260717.md
 !docs/codex_project_handoff_20260720.md
 !docs/sop_proactive_wakeup_ab_design_20260720.md
+!docs/offline_full_chain_simulation.md
 *.tgz
 *.tar
 *.tar.gz

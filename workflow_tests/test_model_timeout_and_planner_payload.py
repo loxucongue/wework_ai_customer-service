@@ -208,6 +208,47 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage.get("winner_model"), "fast-model")
         self.assertIn("slow-model", usage.get("cancelled_models") or [])
 
+    async def test_model_client_cancellation_cleans_up_hedged_candidates(self) -> None:
+        class CancelledModelClient(ModelClient):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.active_candidates = 0
+
+            async def _post_chat(
+                self,
+                payload: dict[str, Any],
+                *,
+                tier: str,
+                fallback_index: int,
+                errors: list[str],
+            ) -> dict[str, Any]:
+                self.active_candidates += 1
+                try:
+                    await asyncio.sleep(10)
+                    return {"choices": [{"message": {"content": "late"}}]}
+                finally:
+                    self.active_candidates -= 1
+
+        client = CancelledModelClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_fast="slow-primary",
+                model_fast_fallbacks="slow-fallback",
+                model_hedge_delay_seconds=0.01,
+                model_timeout_seconds=30,
+            )
+        )
+        task = asyncio.create_task(client.chat_text([{"role": "user", "content": "hi"}], tier="fast"))
+        await asyncio.sleep(0.03)
+
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+        self.assertEqual(client.active_candidates, 0)
+
     async def test_model_client_records_timeout_candidate_and_hedge_metadata(self) -> None:
         class TimeoutModelClient(ModelClient):
             async def _post_chat(

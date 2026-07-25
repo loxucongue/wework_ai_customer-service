@@ -72,6 +72,14 @@ def test_activity_quote_uses_separate_chat_and_silent_event_packs() -> None:
     assert "event_s10_price_quote_60min" in candidate_ids
 
 
+def test_first_activity_intro_does_not_send_payment_card_in_same_turn() -> None:
+    activity = _pack(_load_config(), "s10_activity_intro")
+
+    assert "payment_collection" not in {
+        message.get("type") for message in activity.get("reply_messages") or []
+    }
+
+
 def test_activity_quote_send_once_key_is_shared_across_both_entrypoints() -> None:
     config = _load_config()
     chat_pack = _pack(config, "s10_activity_intro")

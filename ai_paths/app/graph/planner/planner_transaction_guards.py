@@ -18,7 +18,11 @@ def authoritative_paid_context(state: dict[str, Any], turn_context: dict[str, An
         if isinstance(payment_evidence.get("structured_payment_fact"), dict)
         else {}
     )
-    if str(structured.get("deposit_state") or "") in {"paid_by_order", "paid_by_screenshot"}:
+    if str(structured.get("deposit_state") or "") in {
+        "paid_by_order",
+        "paid_by_screenshot",
+        "paid_by_platform_transfer_event",
+    }:
         return True
     image = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
     return image.get("image_type") == "payment_proof" and image.get("payment_result") == "success"

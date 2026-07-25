@@ -51,7 +51,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；客户可见不要输出公里、分钟、车程。
 - 当前普通流程只登记到店日期和时间意向，不调用 available_time/create_order_plan；没有既有正式预约事实不能承诺已安排或已留位。
 - 效果、怕没效果、怕反黑、要效果图时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。
-- 预约金由 payment_decision 决定；客户口头声称已付不能确认到账，只有当前订单 `prepay_paid>0` 或清晰支付成功截图才能推进付款后信息确认。
+- 预约金由 payment_decision 决定；客户口头声称已付不能确认到账。当前订单 `prepay_paid>0`、清晰支付成功截图或结构化 `deposit_state=paid_by_platform_transfer_event` 才是权威已付，可推进付款后信息确认。
 - `stage/sub_rule_id` 必须从 Current Recovery Business Rules 的 `scene_index` 选择，不能自造英文场景名。
 - `need_tools` 必须提供可执行的扁平 `tool_calls`，工具名字段只能是 `name`；禁止 `tool_name/arguments/tool/args` 包装。门店查询示例：`{"name":"customer_store_lookup","query":"双流区","purpose":"existence"}`。
 - `direct_reply` 必须有对象数组 reply_messages 且 tool_calls=[]；`need_tools` 必须 reply_messages=[] 且 tool_calls 非空。
@@ -823,6 +823,8 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
             "priority_question_id": raw.get("priority_question_id"),
             "resume_stage": raw.get("resume_stage"),
             "sop_pack_id": raw.get("sop_pack_id"),
+            "sop_message_types": raw.get("sop_message_types"),
+            "sop_image_count": raw.get("sop_image_count"),
             "source": raw.get("source") or "chat_sop_gate_model",
             "instruction": (
                 "这是前置模型的语义路由证据，不是代码决定。请结合当前消息复核；"

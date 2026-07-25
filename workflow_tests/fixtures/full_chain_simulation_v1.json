@@ -1,0 +1,622 @@
+{
+  "version": "2026-07-24",
+  "purpose": "完全离线的多轮上下文全链路仿真矩阵。28个业务模板各4种客户表达，共112条轨迹。",
+  "defaults": {
+    "initial": {
+      "customer": {
+        "name": "仿真客户"
+      },
+      "stores": [
+        {
+          "store_id": "241",
+          "store_name": "荆州万达二店",
+          "province": "湖北省",
+          "city": "荆州市",
+          "district": "荆州区",
+          "store_address": "湖北省荆州市荆州区北京西路万达广场",
+          "location": "112.190000,30.350000"
+        },
+        {
+          "store_id": "242",
+          "store_name": "荆州沙市店",
+          "province": "湖北省",
+          "city": "荆州市",
+          "district": "沙市区",
+          "store_address": "湖北省荆州市沙市区北京中路",
+          "location": "112.250000,30.320000"
+        },
+        {
+          "store_id": "301",
+          "store_name": "广州番禺店",
+          "province": "广东省",
+          "city": "广州市",
+          "district": "番禺区",
+          "store_address": "广东省广州市番禺区市桥街兴泰路",
+          "location": "113.360000,22.940000"
+        },
+        {
+          "store_id": "302",
+          "store_name": "广州天河店",
+          "province": "广东省",
+          "city": "广州市",
+          "district": "天河区",
+          "store_address": "广东省广州市天河区天河路",
+          "location": "113.330000,23.130000"
+        },
+        {
+          "store_id": "303",
+          "store_name": "广州越秀店",
+          "province": "广东省",
+          "city": "广州市",
+          "district": "越秀区",
+          "store_address": "广东省广州市越秀区中山五路",
+          "location": "113.270000,23.130000"
+        },
+        {
+          "store_id": "304",
+          "store_name": "广州白云店",
+          "province": "广东省",
+          "city": "广州市",
+          "district": "白云区",
+          "store_address": "广东省广州市白云区云城南路",
+          "location": "113.270000,23.200000"
+        },
+        {
+          "store_id": "401",
+          "store_name": "成都双流店",
+          "province": "四川省",
+          "city": "成都市",
+          "district": "双流区",
+          "store_address": "四川省成都市双流区蛟龙港",
+          "location": "103.920000,30.570000"
+        },
+        {
+          "store_id": "501",
+          "store_name": "贵阳花溪店",
+          "province": "贵州省",
+          "city": "贵阳市",
+          "district": "花溪区",
+          "store_address": "贵州省贵阳市花溪区清溪路",
+          "location": "106.670000,26.410000"
+        },
+        {
+          "store_id": "601",
+          "store_name": "厦门百星湖里店",
+          "province": "福建省",
+          "city": "厦门市",
+          "district": "湖里区",
+          "store_address": "福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
+          "location": "118.152077,24.535414"
+        }
+      ],
+      "case_facts": [
+        {
+          "case_id": "sim_case_spot_01",
+          "summary": "同类斑点改善原相机对比参考",
+          "image_url": "https://example.invalid/simulation/case-spot-01.jpg"
+        }
+      ],
+      "geocodes": {
+        "洪湖市": {
+          "formatted_address": "湖北省荆州市洪湖市",
+          "province": "湖北省",
+          "city": "荆州市",
+          "district": "洪湖市",
+          "location": "113.470000,29.820000"
+        },
+        "甲良镇": {
+          "formatted_address": "贵州省黔南布依族苗族自治州荔波县甲良镇",
+          "province": "贵州省",
+          "city": "黔南布依族苗族自治州",
+          "district": "荔波县",
+          "township": "甲良镇",
+          "location": "107.880000,25.410000"
+        },
+        "乌林镇乌林村": {
+          "formatted_address": "湖北省荆州市洪湖市乌林镇乌林村",
+          "province": "湖北省",
+          "city": "荆州市",
+          "district": "洪湖市",
+          "township": "乌林镇",
+          "location": "113.610000,29.720000"
+        },
+        "双流区": {
+          "formatted_address": "四川省成都市双流区",
+          "province": "四川省",
+          "city": "成都市",
+          "district": "双流区",
+          "location": "103.920000,30.570000"
+        }
+      }
+    },
+    "expected": {
+      "must_reply": true
+    }
+  },
+  "templates": [
+    {
+      "id": "opening_to_need",
+      "category": "SOP主线",
+      "semantic_goal": "真人式承接新客并主动进入斑点需求或门店主线。",
+      "timeline": [{"kind": "customer_message", "content": "你好"}],
+      "followup": "脸上的斑有五六年了",
+      "variants": ["你好", "在吗", "我想了解一下", "这个怎么做"]
+    },
+    {
+      "id": "effect_with_case",
+      "category": "效果案例",
+      "critical": true,
+      "semantic_goal": "先回答效果并发送真实案例图，再自然推进检测或活动主线。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "image"],
+        "forbidden_phrases": ["我在，继续帮您处理"]
+      },
+      "initial": {"conversation": ["小贝: 我们主要做斑点改善。"]},
+      "timeline": [{"kind": "customer_message", "content": "效果怎么样，有图吗"}],
+      "followup": "这个活动怎么参加",
+      "variants": ["效果怎么样，有图吗", "我怕没效果", "有没有做前做后的照片", "给我看看真实案例"]
+    },
+    {
+      "id": "one_session_precision",
+      "category": "精准问答",
+      "critical": true,
+      "semantic_goal": "精准回答次数问题，多数一次可见改善但不绝对保证，并回到案例或活动主线。",
+      "initial": {"conversation": ["小贝: 斑点情况要结合深浅看。"]},
+      "timeline": [{"kind": "customer_message", "content": "是不是一次就可以了"}],
+      "followup": "那现在活动是什么",
+      "variants": ["是不是一次就可以了", "做一次能弄干净吗", "我就问要做几次", "不是钱的问题，一次到底行不行"]
+    },
+    {
+      "id": "price_transparency",
+      "category": "精准问答",
+      "critical": true,
+      "semantic_goal": "回答268、10元抵扣和费用透明，再自然接活动成交动作。",
+      "initial": {"conversation": ["小贝: 现在有线上淡斑活动。"]},
+      "timeline": [{"kind": "customer_message", "content": "真的就268吗"}],
+      "followup": "那怎么报名",
+      "variants": ["真的就268吗", "去了不会变2680吧", "有没有隐形消费", "还会不会加套餐"]
+    },
+    {
+      "id": "hand_scope",
+      "category": "项目范围",
+      "semantic_goal": "说明手部斑点也按268活动价；客户单独追问脸部能否做时可以如实回答。只有客户追问手脸是否同价或同做时，才明确不能承诺手脸合并按一个268价格操作。",
+      "initial": {"conversation": ["小贝: 当前淡斑活动价268。"]},
+      "timeline": [{"kind": "customer_message", "content": "手上的斑能做吗"}],
+      "followup": "那脸上的也能做吧",
+      "variants": ["手上的斑能做吗", "手背也有斑可以弄吗", "手和脸是不是一个价格", "脸上手上都能处理吗"]
+    },
+    {
+      "id": "unsupported_projects",
+      "category": "项目范围",
+      "critical": true,
+      "semantic_goal": "明确线上没有该项目，避免误导到店，同时拉回可做的淡斑范围。",
+      "timeline": [{"kind": "customer_message", "content": "你们可以除皱吗"}],
+      "followup": "那淡斑活动可以参加",
+      "variants": ["你们可以除皱吗", "祛眼袋能预约吗", "能打水光吗", "黑眼圈可以做吗"]
+    },
+    {
+      "id": "health_risk",
+      "category": "健康风险",
+      "critical": true,
+      "semantic_goal": "先处理当前健康风险，不压预约金、不保证效果。",
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"]
+      },
+      "initial": {"conversation": ["小贝: 这次活动现在是268。"]},
+      "timeline": [{"kind": "customer_message", "content": "我脸上正在过敏能做吗"}],
+      "followup": "我先去门店检测可以吗",
+      "variants": ["我脸上正在过敏能做吗", "皮肤破了还能做吗", "我刚做完医美可以去吗", "现在发炎会不会有风险"]
+    },
+    {
+      "id": "province_scope",
+      "category": "门店匹配",
+      "critical": true,
+      "semantic_goal": "只说省份时询问具体市区，不按省中心编造最近门店。",
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["store_address"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "湖北省"}],
+      "followup": "我先了解一下效果",
+      "variants": ["湖北省", "我在广东", "四川这边有吗", "贵州有店不"]
+    },
+    {
+      "id": "city_many_stores",
+      "category": "门店匹配",
+      "critical": true,
+      "semantic_goal": "城市门店较多时询问所在区，不一次丢全城门店。",
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["store_address"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "广州有吗"}],
+      "followup": "我先看看效果怎么样",
+      "variants": ["广州有吗", "我在广州市", "广州哪里有店", "广州这边最近是哪家"]
+    },
+    {
+      "id": "city_few_stores",
+      "category": "门店匹配",
+      "critical": true,
+      "semantic_goal": "市内只有1到3家真实门店时直接发送全部真实门店卡供选择。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["store_address"],
+        "required_store_ids": ["241", "242"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "荆州市有门店吗"}],
+      "followup": "我看荆州区这家",
+      "variants": ["荆州市有门店吗", "荆州的店发我", "我在荆州市区", "荆州哪里能做"]
+    },
+    {
+      "id": "county_parent_city",
+      "category": "门店匹配",
+      "critical": true,
+      "semantic_goal": "县级市无本级门店时推荐客户可见范围内最近的父级城市真实门店，不让客户重复报地名。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["store_address"],
+        "required_any_store_ids": ["241", "242"],
+        "forbidden_phrases": ["重新发一下城市", "再说一下城市"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "洪湖市"}],
+      "followup": "那活动现在多少钱",
+      "variants": ["洪湖市", "我人在洪湖城区", "洪湖这边最近哪家", "湖北荆州洪湖市"]
+    },
+    {
+      "id": "town_parent_province",
+      "category": "门店匹配",
+      "critical": true,
+      "semantic_goal": "识别乡镇所属县市后，在客户可见范围中推荐真实候选。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["store_address"],
+        "required_store_ids": ["501"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "甲良镇"}],
+      "followup": "这家活动也一样吧",
+      "variants": ["甲良镇", "贵州甲良镇", "荔波县甲良", "我住甲良这边"]
+    },
+    {
+      "id": "ambiguous_place",
+      "category": "门店匹配",
+      "critical": true,
+      "semantic_goal": "同名歧义且无法解析时只追问上级城市或定位，不猜城市。",
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["store_address"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "东坑"}],
+      "followup": "我可以发定位给你",
+      "variants": ["东坑", "我在东坑镇", "东坑这边有吗", "东坑附近的店"]
+    },
+    {
+      "id": "location_card",
+      "category": "门店工具",
+      "critical": true,
+      "semantic_goal": "正确读取定位卡片的标题、地址与经纬度并匹配真实门店。",
+      "timeline": [{
+        "kind": "customer_message",
+        "content": "定位卡片：萤火虫大厦",
+        "msgtype": "location",
+        "location": "24.535414,118.152077",
+        "location_title": "萤火虫大厦",
+        "location_address": "福建省厦门市湖里区岐山北二路1000号"
+      }],
+      "followup": "这家可以，活动怎么参加",
+      "variants": [
+        {"content": "定位卡片：萤火虫大厦", "expected": {"required_types": ["store_address"], "required_store_ids": ["601"]}},
+        {"content": "定位卡片：双流人民广场", "location_title": "双流人民广场", "location_address": "四川省成都市双流区", "expected": {"required_types": ["store_address"], "required_store_ids": ["401"]}},
+        {"content": "定位卡片：洪湖市新堤街道", "location_title": "新堤街道", "location_address": "湖北省荆州市洪湖市", "expected": {"required_types": ["store_address"], "required_store_ids": ["241"]}},
+        {"content": "定位卡片：甲良镇", "location_title": "甲良镇", "location_address": "贵州省荔波县甲良镇", "expected": {"required_types": ["store_address"], "required_store_ids": ["501"]}}
+      ]
+    },
+    {
+      "id": "store_far",
+      "category": "门店异议",
+      "critical": true,
+      "semantic_goal": "承接距离顾虑后塑造活动与检测价值并回主线，不反复问方便不方便。",
+      "initial": {
+        "conversation": [
+          "小贝: 这家是目前相对方便的门店。",
+          "小贝: 门店位置：荆州万达二店"
+        ]
+      },
+      "timeline": [{"kind": "customer_message", "content": "太远了"}],
+      "followup": "名额怎么留",
+      "variants": ["太远了", "都有点远啊", "一二公里呢", "我过去不方便"]
+    },
+    {
+      "id": "activity_intro_gate",
+      "category": "SOP Gate",
+      "critical": true,
+      "semantic_goal": "客户问活动且活动包未完成时触发活动介绍SOP并自然过渡。",
+      "initial": {
+        "conversation": [
+          "小贝: 您脸上的斑大概多久了？",
+          "用户: 有五六年了",
+          "小贝: 我先给您看一下同类效果参考。",
+          "小贝: [图片]https://example.invalid/simulation/case-spot-01.jpg"
+        ],
+        "completed_sops": ["s10_new_customer_opening", "s10_need_and_case"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "你们现在有什么活动"}],
+      "followup": "那怎么报名",
+      "variants": ["你们现在有什么活动", "这个优惠怎么参加", "现在价格是多少", "活动名额怎么登记"]
+    },
+    {
+      "id": "payment_after_activity",
+      "category": "预约金",
+      "critical": true,
+      "semantic_goal": "活动已铺垫后直接解释并发送一张10元预约金卡，不要求翻旧卡。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "payment_collection"],
+        "payment_amount": 10,
+        "forbidden_phrases": ["刚发您的卡", "之前那张卡", "翻一下前面的入口"]
+      },
+      "initial": {
+        "conversation": [
+          "小贝: 当前活动总价268，每位先付10元锁活动名额，到店抵扣，做再付258，未做或不满意可退。"
+        ],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "怎么付费"}],
+      "followup": "我付好了",
+      "variants": ["怎么付费", "那我参加", "把收款卡发我", "可以，给我预约"]
+    },
+    {
+      "id": "manual_transfer",
+      "category": "预约金",
+      "critical": true,
+      "semantic_goal": "客户明确选择转账时说明截图登记，不附预约金卡。",
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"]
+      },
+      "initial": {
+        "conversation": ["小贝: 当前活动总价268，每位先付10元预约金。"],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "我转账可以吗"}],
+      "followup": "已经转好了",
+      "variants": ["我转账可以吗", "我直接转给你", "不点小程序，转账吧", "转完给你截图行吗"]
+    },
+    {
+      "id": "paid_registration",
+      "category": "已付登记",
+      "critical": true,
+      "semantic_goal": "已付后不再发卡，收姓名电话并登记门店及到店意向。",
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"]
+      },
+      "initial": {
+        "orders": [{
+          "id": "sim_paid_order",
+          "order_id": "sim_paid_order",
+          "store_id": "241",
+          "prepay_required": 10,
+          "prepay_paid": 10,
+          "status": "pending",
+          "created_at": "2026-07-24T10:00:00+08:00"
+        }],
+        "conversation": ["小贝: 预约金已经收到。"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "付好了"}],
+      "followup": "张三 13800000000",
+      "variants": ["付好了", "我已经付了10元", "转账成功了", "钱付完然后呢"]
+    },
+    {
+      "id": "soft_refusal",
+      "category": "客户异议",
+      "semantic_goal": "识别为暂缓而非永久放弃，用一个自然理由继续推进活动资格。",
+      "initial": {
+        "conversation": ["小贝: 当前活动总价268，每位10元可以先留活动名额。"],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "我改天再说"}],
+      "followup": "可以先把活动留着",
+      "variants": ["我改天再说", "最近有点忙", "等天气好点", "我要先订机票"]
+    },
+    {
+      "id": "hard_refusal",
+      "category": "明确拒绝",
+      "critical": true,
+      "semantic_goal": "尊重明确拒绝，不发预约金卡，不继续高压营销。",
+      "expected": {
+        "must_reply": true,
+        "forbidden_types": ["payment_collection"]
+      },
+      "initial": {
+        "conversation": ["小贝: 当前活动总价268，每位10元可以先留活动名额。"],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "不要了"}],
+      "followup": "先不用了，谢谢",
+      "variants": ["不要了", "别再发了", "我不做了", "不用联系我"]
+    },
+    {
+      "id": "sop_silence_progression",
+      "category": "SOP Event",
+      "critical": true,
+      "semantic_goal": "客户沉默时按最早未完成主线触达，不跳过需求案例直接发活动。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "image"]
+      },
+      "initial": {
+        "conversation": [
+          {"direction": "staff", "content": "你好，我先给您介绍一下我们的淡斑项目。", "created_at": "2026-07-24T01:31:00+00:00"}
+        ],
+        "completed_sops": ["s10_new_customer_opening", "event_s10_store_prompt_5min"]
+      },
+      "timeline": [{"kind": "sop_event", "delay_minutes": 30, "created_at": "2026-07-24T02:00:00+00:00"}],
+      "followup": "效果怎么样",
+      "variants": [
+        {"delay_minutes": 30},
+        {"delay_minutes": 60},
+        {"delay_minutes": 70},
+        {"delay_minutes": 120}
+      ]
+    },
+    {
+      "id": "sop_duplicate_avoidance",
+      "category": "SOP Event",
+      "critical": true,
+      "semantic_goal": "历史已完整介绍活动时不重复活动介绍包，应进入预约金阶段；客户随后明确问名额怎么留时，可以简短说明并重新发送最多一张预约金卡。",
+      "initial": {
+        "conversation": [
+          {"direction": "staff", "content": "当前活动总价268，每位先付10元，到店抵扣，做再付258，未做或不满意可退。", "created_at": "2026-07-24T02:00:00+00:00"}
+        ],
+        "completed_sops": ["s10_new_customer_opening", "s10_need_and_case", "s10_activity_intro"]
+      },
+      "timeline": [{"kind": "sop_event", "delay_minutes": 70, "created_at": "2026-07-24T03:00:00+00:00"}],
+      "followup": "这个名额怎么留",
+      "variants": [
+        {"delay_minutes": 70},
+        {"delay_minutes": 90},
+        {"delay_minutes": 120},
+        {"delay_minutes": 180}
+      ]
+    },
+    {
+      "id": "sop_chatting_block",
+      "category": "SOP Event",
+      "critical": true,
+      "semantic_goal": "客户刚刚真实回复、正在聊天时不主动插入SOP。",
+      "expected": {"must_reply": false},
+      "initial": {
+        "conversation": [
+          {"direction": "customer", "content": "我想问一下价格", "created_at": "2026-07-24T02:59:00+00:00"},
+          {"direction": "staff", "content": "好的，我给您说清楚。", "created_at": "2026-07-24T02:59:30+00:00"}
+        ]
+      },
+      "timeline": [{"kind": "sop_event", "delay_minutes": 30, "created_at": "2026-07-24T03:00:00+00:00"}],
+      "variants": [
+        {"delay_minutes": 5},
+        {"delay_minutes": 30},
+        {"delay_minutes": 60},
+        {"delay_minutes": 70}
+      ]
+    },
+    {
+      "id": "platform_task_passthrough",
+      "category": "SOP Event",
+      "semantic_goal": "平台任务直接转发指定内容，不经过模型改选。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "image"]
+      },
+      "timeline": [{
+        "kind": "platform_task",
+        "payload": {
+          "message_content": [
+            {"type": "text", "content": "到店额外赠送美白小气泡一次，今天到店前6名可以赠送。"},
+            {"type": "image", "content": "https://example.invalid/simulation/visit-gift.jpg"}
+          ],
+          "sop": {"event": "sop_platform_task"}
+        }
+      }],
+      "followup": "我今天下午可以",
+      "variants": [
+        {"day_stage": "day1"},
+        {"day_stage": "day2"},
+        {"day_stage": "day3"},
+        {"day_stage": "day5"}
+      ]
+    },
+    {
+      "id": "unknown_transfer_message",
+      "category": "消息归一",
+      "critical": true,
+      "semantic_goal": "未知消息类型按客户转账事实承接，不暴露未知类型文本，并进入支付确认与登记。",
+      "initial": {
+        "conversation": ["小贝: 当前活动总价268，每位先付10元预约金。"],
+        "completed_sops": ["s10_activity_intro"]
+      },
+      "timeline": [{"kind": "customer_message", "content": "【未知消息类型】", "msgtype": "unknown"}],
+      "followup": "我叫张三，电话13800000000",
+      "variants": [
+        {"content": "【未知消息类型】"},
+        {"content": "[未知消息类型]"},
+        {"content": "未知消息类型"},
+        {"content": "【转账消息】"}
+      ]
+    },
+    {
+      "id": "model_failure_recovery",
+      "category": "模型恢复",
+      "critical": true,
+      "semantic_goal": "供应商超时、限流、502或畸形JSON后，现有重试和fallback仍需给客户非空回复。",
+      "timeline": [{"kind": "customer_message", "content": "你好，我想了解一下"}],
+      "followup": "那活动现在怎么参加",
+      "variants": [
+        {
+          "content": "你好，我想了解一下",
+          "initial": {"faults": {"model:planner": [{"mode": "timeout"}]}}
+        },
+        {
+          "content": "这个活动怎么做",
+          "initial": {"faults": {"model:planner": [{"mode": "http_502"}]}}
+        },
+        {
+          "content": "我想问一下价格",
+          "initial": {"faults": {"model:planner": [{"mode": "http_429"}]}}
+        },
+        {
+          "content": "效果怎么样",
+          "initial": {"faults": {"model:planner": [{"mode": "malformed_json"}]}}
+        }
+      ]
+    },
+    {
+      "id": "voice_transcription",
+      "category": "消息归一",
+      "critical": true,
+      "semantic_goal": "语音URL只通过本地转写夹具变成客户文本，再进入正常门店或业务回复链路。",
+      "initial": {
+        "voice_transcripts": {
+          "https://example.invalid/simulation/customer-voice.mp3": "东莞高埗有门店吗"
+        }
+      },
+      "timeline": [{
+        "kind": "customer_message",
+        "content": "https://example.invalid/simulation/customer-voice.mp3",
+        "msgtype": "voice"
+      }],
+      "followup": "那活动价格呢",
+      "variants": [
+        {
+          "initial": {
+            "voice_transcripts": {
+              "https://example.invalid/simulation/customer-voice.mp3": "东莞高埗有门店吗"
+            }
+          }
+        },
+        {
+          "initial": {
+            "voice_transcripts": {
+              "https://example.invalid/simulation/customer-voice.mp3": "南城有你们的店吗"
+            }
+          }
+        },
+        {
+          "initial": {
+            "voice_transcripts": {
+              "https://example.invalid/simulation/customer-voice.mp3": "哪个门店离我近一点"
+            }
+          }
+        },
+        {
+          "initial": {
+            "voice_transcripts": {
+              "https://example.invalid/simulation/customer-voice.mp3": "我想先了解一下效果"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

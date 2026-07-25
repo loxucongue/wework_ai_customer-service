@@ -87,6 +87,15 @@ def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_informat
     assert "不是发卡前置" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "缺少成功 order_id 或开单失败不得取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "没有订单或开单失败时仍可由模型判断本轮发卡" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "paid_by_platform_transfer_event" in REPLY_SYSTEM_PROMPT
+
+
+def test_timeout_and_recovery_prompts_keep_platform_transfer_as_authoritative_paid_fact() -> None:
+    from app.graph.nodes.reply_nodes import REPLY_RECOVERY_SYSTEM_PROMPT
+    from app.graph.planner.brain_v2 import PLANNER_TIMEOUT_RECOVERY_PROMPT
+
+    assert "deposit_state=paid_by_platform_transfer_event" in PLANNER_TIMEOUT_RECOVERY_PROMPT
+    assert "paid_by_platform_transfer_event 是权威已付" in REPLY_RECOVERY_SYSTEM_PROMPT
 
 
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
@@ -114,6 +123,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "store_candidate",
         "appointment_decision",
         "sop_progress_evidence",
+        "sop_image_count",
         "sales_progression",
         "closing_move",
         "manual_transfer",
@@ -433,6 +443,8 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "planner_direct_reply_draft" in REPLY_SYSTEM_PROMPT
     assert "不能删掉草稿里的具体回答、付款选择、保留名额、登记或门店动作" in REPLY_SYSTEM_PROMPT
     assert "不能客套收尾" in REPLY_SYSTEM_PROMPT
+    assert "本身不算具体动作" in REPLY_SYSTEM_PROMPT
+    assert "不要解释完效果后突然另起一句生硬切到活动" in REPLY_SYSTEM_PROMPT
     assert "方便时去看看" in REPLY_SYSTEM_PROMPT
     assert "不能删掉其中的具体成交动作" in REPLY_SYSTEM_PROMPT
     assert "历史风险视为已处理背景" in REPLY_TRANSACTION_PATCH_PROMPT
@@ -440,7 +452,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "`current_known_store` 不覆盖歧义" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "unresolved/no_match" in REPLY_SYSTEM_PROMPT
     assert "不得用常识、相似地名或猜测补成某个城市" in REPLY_SYSTEM_PROMPT
-    assert "`store_address` 数量必须恰好为1" in REPLY_SYSTEM_PROMPT
+    assert "必须为 `visible_candidate_ids` 的 1–3 家真实门店逐一发送门店卡" in REPLY_SYSTEM_PROMPT
     assert "孤立地名" in PLANNER_SYSTEM_PROMPT
     assert "禁止 `nearby_candidates/distance_calculate`" in PLANNER_SYSTEM_PROMPT
 
@@ -556,6 +568,21 @@ def test_reply_safety_objection_keeps_one_natural_progression_action() -> None:
     assert "不要反问“更担心安全还是想看案例”" in REPLY_SYSTEM_PROMPT
 
 
+def test_planner_and_reply_do_not_repeat_an_ignored_slot_after_new_mainline_information() -> None:
+    for prompt in (PLANNER_SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT):
+        assert "客户没有回答该槽位" in prompt
+        assert "新的有效主线信息" in prompt
+        assert "不能在紧邻下一轮原样复读同一个问题" in prompt or "不要紧邻原样复读同一个问题" in prompt
+        assert "斑有五六年" in prompt
+
+
+def test_planner_and_reply_do_not_invent_body_area_boundaries_for_face_confirmation() -> None:
+    for prompt in (PLANNER_SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT):
+        assert "脸上的也能做吧" in prompt
+        assert "两个部位总价" in prompt
+        assert "不主动展开手脸同次操作" in prompt
+
+
 def test_runtime_prompts_no_longer_carry_legacy_non_refund_policy() -> None:
     for path in [
         ROOT / "ai_paths/app/prompts/global_contract.py",
@@ -588,11 +615,18 @@ def test_sop_gate_hands_location_slot_completion_to_ai() -> None:
 
 def test_sop_gate_prefers_activity_pack_for_activity_and_payment_questions() -> None:
     source = (ROOT / "ai_paths/app/prompts/sop_chat_gate.py").read_text(encoding="utf-8")
+    assert "这家可以，活动怎么参加" in source
     for marker in [
         "活动、优惠、价格、多少钱、怎么参加、怎么预约、怎么付预约金、怎么报名",
         "s10_activity_intro",
         "不要只返回 `ai_only` 让普通 AI 空泛解释",
+        "不能让客户先读完整长文后才找到答案",
+        "recent_sop_delivery_evidence",
+        "禁止再次发送完整案例包",
         "活动已经铺垫后再交 `ai_only` 给 Planner 处理发卡和交易事实",
+        "普通活动确认，不是收费顾虑",
+        "不能误选 `s10_objection_resolution`",
+        "不能同轮发送预约金卡",
     ]:
         assert marker in source
 

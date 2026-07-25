@@ -91,6 +91,7 @@
   "transaction_policy": {
     "payment_order_policy": "order_link_not_required_for_card",
     "payment_order_policy_description": "活动报价已完成或已铺垫后，Planner可根据成交节奏发送预约金卡；订单和开单不作为发卡前置。客户支付预约金后，先询问姓名和电话，再尝试创建或关联预约金订单用于后台记录。开单失败、订单查询失败、门店或金额不匹配不得导致空回复，也不得对客户说入口没对上。",
+    "platform_unknown_message_payment_policy": "平台固定【未知消息类型】是权威转账成功事件，归一为paid_by_platform_transfer_event；直接进入已付登记并禁止重复发送预约金卡。普通文字声称已转账仍只视为客户声明，应要求截图确认且不重复发卡。",
     "payment_order_link_states": ["linked", "pending_link", "unlinked", "not_applicable"],
     "appointment_flow_mode": "registration_only",
     "post_paid_registration_fields": ["customer_name", "customer_mobile", "store", "visit_date", "visit_time"],
@@ -267,7 +268,7 @@
           "scenes": ["付款入口", "怎么交10元", "我付", "先锁名额", "就这个时间", "报名", "怎么约", "怎么预约", "我要预约", "你帮我预约", "帮我报名", "可以约", "要交钱吗", "预约金怎么抵扣", "能不能退", "尾款多少", "是不是额外收费", "不交预约金可以直接去吗", "到店再付"],
           "decision": "活动报价已完成或已铺垫，且conversion_stage=deposit_push、客户未付、无风险/强拒绝、人数金额合法时，可以发送payment_collection；不要求先成功创建或复用预约金订单。客户对预约金用途、退款、抵扣、尾款或额外收费轻度疑问时，若当前已处于预约推进、已明确门店/到店意向、历史已完成活动报价铺垫或画像deposit_state可正式推定金，可以解释规则后同轮轻推10元入口；明确强拒绝时不硬推",
           "tools": [],
-          "reply_focus": "先说明10元预约金用于锁活动名额、到店抵扣、未做或不满意可退且不限制到店时间，再按成交节奏发送入口；客户有明确预约或报名意向但缺门店时，只补最小必要门店信息，不因未开单阻断发卡。支付后再收姓名电话并做后台开单或关联；强拒绝时不硬推"
+          "reply_focus": "先说明10元预约金用于锁活动名额、到店抵扣、未做或不满意可退且不限制到店时间，再按成交节奏发送入口；活动报价已完成后，订单、开单和门店是否已经明确都不阻断发卡。缺门店时可同轮发卡，并把城市或区域作为唯一后续必要字段自然补问。支付后再收姓名电话、补齐门店并做后台开单或关联；强拒绝时不硬推"
         },
         {
           "id": "S3_APPOINTMENT_TIME",

@@ -19,7 +19,7 @@ from app.services.customer_scope import customer_scope_from_state
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
-from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic
+from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
@@ -159,6 +159,16 @@ class ChatRuntime:
             "priority_question_id": str(sop_gate.get("priority_question_id") or ""),
             "resume_stage": str(sop_gate.get("resume_stage") or ""),
             "sop_pack_id": str(sop_gate.get("sop_pack_id") or ""),
+            "sop_message_types": [
+                str(message.get("type") or "")
+                for message in (sop_gate.get("reply_messages") or [])
+                if isinstance(message, dict) and str(message.get("type") or "")
+            ],
+            "sop_image_count": sum(
+                1
+                for message in (sop_gate.get("reply_messages") or [])
+                if isinstance(message, dict) and str(message.get("type") or "") == "image"
+            ),
             "source": "chat_sop_gate_model",
         }
         initial_state["sop_progress_evidence"] = dict(sop_gate.get("sop_progress_evidence") or {})
@@ -1049,7 +1059,15 @@ def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
 
 
 def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
-    del state
+    state["fallback_source"] = "deterministic_runtime_fallback"
+    state["fallback_failure_node"] = str(
+        (state.get("errors") or [{}])[-1].get("node")
+        if isinstance((state.get("errors") or [{}])[-1], dict)
+        else "runtime"
+    )
+    state["fallback_retry_count"] = len(state.get("recovery_attempts") or [])
+    state["fallback_violation"] = str(state.get("recovery_reason") or "")[:500]
+    state["fallback_remaining_budget"] = runtime_budget_snapshot(state, tier="reply")
     return [{"type": "text", "order": 1, "content": {"text": "我在，继续帮您处理。"}}]
 
 
@@ -1217,13 +1235,12 @@ def _should_run_async_finalize(state: AgentState) -> bool:
         # Keeping one finalization path prevents planner drafts from bypassing schema
         # and factual consistency checks.
         return True
-    if planner_decision != "need_tools":
-        return False
-    tools = state.get("planner_tool_calls") if isinstance(state.get("planner_tool_calls"), list) else []
-    tool_names = [str(tool.get("name") or "").strip() for tool in tools if isinstance(tool, dict)]
-    if tool_names and all(name == "professional_assist" for name in tool_names):
-        return False
-    return any(isinstance(tool, dict) and str(tool.get("name") or "").strip() not in {"", "no_tool"} for tool in tools)
+    if planner_decision == "need_tools":
+        # A malformed plan can request tools without producing an executable call.
+        # Finalize it through Reply with the recorded violation instead of returning
+        # an empty response when Planner repair exhausts its budget.
+        return True
+    return False
 
 
 def _platform_request_identity(request: ChatRequest, request_context: dict[str, Any]) -> str:

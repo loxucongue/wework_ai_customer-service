@@ -74,6 +74,7 @@ def apply_sop_text_adjustments(
     }
     requested = adjustments if isinstance(adjustments, list) else []
     removable_payment_orders = set(removable_payment_message_orders or set())
+    preserve_trailing_text = _has_text_after_last_structured_message(normalized)
     applied_orders: list[int] = []
     applied_operations: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -102,11 +103,19 @@ def apply_sop_text_adjustments(
     for operation in message_operations if isinstance(message_operations, list) else []:
         if not isinstance(operation, dict):
             continue
+        before_operation = [
+            {**message, "content": dict(_content_dict(message.get("content")))}
+            for message in normalized
+        ]
         applied, reason = _apply_text_message_operation(
             normalized,
             operation,
             removable_payment_message_orders=removable_payment_orders,
         )
+        if applied and preserve_trailing_text and not _has_text_after_last_structured_message(normalized):
+            normalized[:] = before_operation
+            applied = None
+            reason = "trailing_action_text_required"
         if applied:
             applied_operations.append(applied)
         else:
@@ -249,6 +258,20 @@ def _would_remove_required_text(messages: list[dict[str, Any]], remove_index: in
     if remaining_text_count > 0:
         return False
     return any(str(message.get("type") or "") == "payment_collection" for message in messages)
+
+
+def _has_text_after_last_structured_message(messages: list[dict[str, Any]]) -> bool:
+    last_structured_index = -1
+    for index, message in enumerate(messages):
+        if str(message.get("type") or "") != "text":
+            last_structured_index = index
+    if last_structured_index < 0:
+        return False
+    return any(
+        str(message.get("type") or "") == "text"
+        and bool(_message_text(message.get("content")).strip())
+        for message in messages[last_structured_index + 1 :]
+    )
 
 
 def _renumber_in_current_order(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:

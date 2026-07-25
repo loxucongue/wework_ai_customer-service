@@ -70,7 +70,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
 
 `editable_text_messages` 是主要可操作文本素材。`readonly_messages` 中的图片、视频、门店卡和内部 notice 都是结构事实，不能修改、删除、重排或复制。
-`payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。缺匹配订单不是删卡理由；活动介绍包本身可以配置并发送 `payment_collection`。`activity_intro_required` 不能靠删卡绕过，必须选择活动介绍等合法前序候选或拒发。
+`payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。缺匹配订单不是删卡理由。首次完整活动介绍只负责讲清活动与价格，不能同轮发送 `payment_collection`；只有历史已经完成活动报价、客户后续出现报名或付款推进时，才进入收款阶段。`activity_intro_required` 不能靠删卡绕过，必须选择活动介绍等合法前序候选或拒发。
 选择 `merge` 时，文本 order 必须以 `adjacent_merge_options` 中对应组合的 `message_editing_context` 为准；不要沿用单包内部可能重复的 order。
 
 # Task
@@ -161,7 +161,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 刚破冰后还没有问过城市/区域，5分钟问地址包候选可用：发送问地址包，轻触客户补城市/区域。
 - 已经问过城市/区域或定位，客户仍沉默，后续事件候选里有效果铺垫包：不要再次卡在门店步骤，也不要空拒；发送效果铺垫包，并可在第一条 text 前半句承接“门店后面您发城市/定位我再匹配”，再发效果参考。
 - 已经发过效果铺垫，客户仍沉默，后续候选里有活动报价包：推进报价和活动价值，不要因为客户没有回复效果图而空拒。
-- 已经发过效果铺垫、活动报价尚未发送，而同一批候选同时出现活动报价包和“未付款效果跟进”：选择活动报价包；活动报价包可直接包含 payment_collection，不需要先有匹配订单；不能先发“未付款跟进”。
+- 已经发过效果铺垫、活动报价尚未发送，而同一批候选同时出现活动报价包和“未付款效果跟进”：选择活动报价包；首次活动报价包不能包含 `payment_collection`，应在图文后保留一句自然动作，引导客户确认人数、登记或继续咨询；不能先发“未付款跟进”。历史已经完成活动报价后，后续收款候选可以发送 `payment_collection`，不以匹配订单为前置。
 - 已经报价，客户仍沉默，后续候选里有预约金价值或收款包：可推进预约金价值；如果客户明确拒付、已付、投诉/付款异常/身体不适，则不发该包。
 - 候选同时有 `s10_activity_intro` 和收款包，且收款包显示 `activity_intro_required`：如果近期没有完整活动价格铺垫，发送 `s10_activity_intro`，不要合并收款包，也不要误判成“没有合规候选”；如果近期聊天已经完整讲过活动价、预约金、抵扣和可退，则跳过重复活动包，选择后续预约金/轻触达候选。
 - `daily_soft_limit_reached=true` 且 `silent_soft_limit_reached=true`，同时没有夜间积压和触达后的客户新进展：本次必须跳过或延后，并在 `frequency_reason` 说明频率保护；不能因为还有未完成包就继续刷屏。
@@ -193,7 +193,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 只有 `send_sop=true` 时才能输出 `text_adjustments/message_operations`；调整不能把拒发冲突改写成可发，润色不能把拒发冲突改写成可发。
 - 可用 `message_operations`：
   - `insert_text_before/insert_text_after`：只插入不含新数字事实的 text，用于补一句承接或把通知体拆得更像聊天。
-  - `remove_text`：只删除不含数字事实的多余 text，不能删除最后一条付款说明 text。
+  - `remove_text`：只删除不含数字事实的多余 text，不能删除最后一条付款说明 text；如果原包在最后一张 image/video/结构卡之后有收尾动作 text，至少保留一条，不能让整包停在素材或卡片上。
   - `merge_text`：合并多条 text，必须保留这些 text 的全部数字事实。
   - `split_text`：拆分一条 text，拆分后必须保留原 text 的全部数字事实。
   - `replace_text`：等同 text_adjustments，改写同一 order 的 text。
@@ -203,6 +203,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - 所有数字及其出现次数必须与对应原文一致，不能为了口语化重复或省略金额。
 - 不能编造新事实，不能把普通答疑改成另一阶段的强推销，不能新增催付、预约承诺、门店事实或效果承诺。
 - `store_address`、`image`、`video`、`human_handoff_notice` 永远保持原样；若 text 与这些只读消息有关，润色不得改变其事实含义。`payment_collection` 只有在 gate 明确不支持时才可删除，不能改金额或复制生成。
+- 非终态 SOP 必须保留原包的阶段出口。原包在最后一张图片、视频或结构卡后已有行动引导时，润色后仍须保留至少一条自然收尾 text；活动介绍不能只剩活动正文和海报，必须保留登记、人数确认或继续咨询中的一个动作。
 
 # Text Style Calibration
 - 原文：“尊敬的顾客您好，本机构现隆重开展淡斑活动，诚邀您参与。”客户刚说自己脸上有斑：改成类似“亲，您是想了解淡斑对吧，我简单跟您说下这次活动。”
@@ -251,7 +252,7 @@ class SopExecutionService:
         event_model_retry_delay_seconds: float = 1.0,
         event_model_attempt_timeout_seconds: float = 45.0,
         event_model_total_timeout_seconds: float = 60.0,
-        chat_gate_total_timeout_seconds: float = 5.0,
+        chat_gate_total_timeout_seconds: float = 15.0,
         event_model_max_concurrency: int = 2,
     ) -> None:
         self.repository = repository
@@ -263,7 +264,7 @@ class SopExecutionService:
         self.event_model_retry_delay_seconds = max(0.0, float(event_model_retry_delay_seconds or 0.0))
         self.event_model_attempt_timeout_seconds = max(1.0, float(event_model_attempt_timeout_seconds or 45.0))
         self.event_model_total_timeout_seconds = max(1.0, float(event_model_total_timeout_seconds or 60.0))
-        self.chat_gate_total_timeout_seconds = max(1.0, float(chat_gate_total_timeout_seconds or 5.0))
+        self.chat_gate_total_timeout_seconds = max(1.0, float(chat_gate_total_timeout_seconds or 15.0))
         self._event_model_semaphore = asyncio.Semaphore(max(1, int(event_model_max_concurrency or 1)))
 
     async def evaluate_chat_gate(
@@ -364,6 +365,10 @@ class SopExecutionService:
                 completed_ids,
                 completed_categories,
             )
+            recent_delivery_evidence = _recent_chat_sop_delivery_evidence(
+                self.repository,
+                identity,
+            )
             unfinished = [
                 pack
                 for pack in enabled_packs
@@ -400,6 +405,7 @@ class SopExecutionService:
                 request,
                 unfinished,
                 sop_progress_evidence=result["sop_progress_evidence"],
+                recent_delivery_evidence=recent_delivery_evidence,
                 customer_memory=customer_memory,
                 customer_context=order_gate.get("customer_context", {}),
             )
@@ -1740,12 +1746,14 @@ def _chat_selector_input(
     unfinished_packs: list[dict[str, Any]],
     *,
     sop_progress_evidence: dict[str, Any] | None = None,
+    recent_delivery_evidence: list[dict[str, Any]] | None = None,
     customer_memory: dict[str, Any] | None = None,
     customer_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "current_message": str(request.content or "").strip(),
         "recent_conversation": _recent_history(request.conversation_history),
+        "recent_sop_delivery_evidence": recent_delivery_evidence or [],
         "mainline": sales_mainline_for_model(),
         "mainline_progress": sop_progress_evidence or {},
         "precision_qa_index": precision_qa_index_for_gate(),
@@ -1758,6 +1766,49 @@ def _chat_selector_input(
             for pack in unfinished_packs
         ],
     }
+
+
+def _recent_chat_sop_delivery_evidence(
+    repository: Any,
+    identity: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Expose recent structured SOP deliveries without inferring customer intent."""
+    list_tasks = getattr(repository, "list_recent_sop_send_tasks_for_customer", None)
+    if not callable(list_tasks):
+        return []
+    try:
+        tasks = list_tasks(
+            customer_id=identity.get("customer_id", ""),
+            external_userid=identity.get("external_userid", ""),
+            corp_id=identity.get("corp_id", ""),
+            wechat=identity.get("wechat", ""),
+            limit=8,
+        )
+    except Exception:
+        return []
+    output: list[dict[str, Any]] = []
+    for task in tasks:
+        if not isinstance(task, dict) or _string(task.get("status")).lower() != "sent":
+            continue
+        messages = task.get("reply_messages") if isinstance(task.get("reply_messages"), list) else []
+        message_types = [
+            _string(item.get("type")).lower()
+            for item in messages
+            if isinstance(item, dict) and _string(item.get("type"))
+        ]
+        output.append(
+            _drop_empty(
+                {
+                    "sop_pack_id": _string(task.get("sop_pack_id")),
+                    "sop_category": _string(task.get("sop_category")),
+                    "sent_at": _string(task.get("sent_at") or task.get("updated_at")),
+                    "message_types": message_types,
+                    "image_count": sum(1 for item in message_types if item == "image"),
+                    "video_count": sum(1 for item in message_types if item == "video"),
+                }
+            )
+        )
+    return output[:8]
 
 
 def _event_summary(payload: dict[str, Any], customer: dict[str, Any]) -> dict[str, Any]:
