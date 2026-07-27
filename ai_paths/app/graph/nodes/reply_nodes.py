@@ -346,8 +346,6 @@ async def _run_reply_model_pipeline(
 
 def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state: AgentState) -> None:
     repairable_details = {
-        "precision_reply_passive_mainline_closure",
-        "precision_reply_missing_mainline_action",
         "manual_transfer_missing_screenshot_registration",
         "nearby_store_claim_without_location_fact",
     }

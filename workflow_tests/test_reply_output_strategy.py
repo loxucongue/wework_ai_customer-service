@@ -24,6 +24,7 @@ from app.graph.nodes.reply_nodes import (
     _maybe_build_required_payment_collection_fallback,
     _normalize_planner_reply_messages,
     _preserve_planner_store_address_actions,
+    _raise_repairable_reply_quality_issues,
     _suppress_stale_handoff_notice,
 )
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
@@ -6021,6 +6022,31 @@ def test_precision_reply_missing_mainline_action_is_soft_warning() -> None:
     warnings = collect_reply_soft_warnings(messages, state)
 
     assert any(item.get("detail") == "precision_reply_missing_mainline_action" for item in warnings)
+    _raise_repairable_reply_quality_issues(messages, state)
+
+
+def test_precision_reply_passive_closure_does_not_fail_reply_runtime() -> None:
+    messages = [
+        {
+            "type": "text",
+            "order": 1,
+            "content": "一般不会出现做完很快就反弹的情况，规范操作后做好防晒护理，改善通常能维持得比较好。",
+        },
+        {
+            "type": "text",
+            "order": 2,
+            "content": "如果您想，我可以继续把活动给您介绍清楚。",
+        },
+    ]
+    state = {
+        "precision_qa_decision": {"question_id": "maintenance_and_reappearance", "confidence": "high"},
+        "sales_progression": {"status": "continue", "target_stage": "activity"},
+    }
+
+    warnings = collect_reply_soft_warnings(messages, state)
+
+    assert any(item.get("detail") == "precision_reply_passive_mainline_closure" for item in warnings)
+    _raise_repairable_reply_quality_issues(messages, state)
 
 
 def test_one_session_weak_confidence_is_soft_warning() -> None:

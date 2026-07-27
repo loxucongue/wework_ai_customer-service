@@ -109,15 +109,28 @@
     {
       "id": "can_treat_spots",
       "category": "精准问答-可改善范围",
-      "messages": ["脸上晒斑能做吗", "老年斑可以改善吗", "色素沉着你们能做吗"],
+      "messages": ["脸上晒斑能做吗", "老年斑可以改善吗", "色素沉着你们能做吗", "遗传斑和混合斑点也可以吗"],
       "history": [],
       "expected_planner": {"decisions": ["direct_reply", "need_tools"]},
       "reply_fact_envelope": {
         "structured_facts": {"case_facts": [{"case_id": "case-range-01", "summary": "同类斑点改善参考", "image_url": "https://test.by4dev.4ba.cn/cases/range-01.jpg"}], "store_facts": [], "payment_facts": [], "tool_errors": []},
         "usable_facts": ["有真实同类斑点案例。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
       },
-      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["已经诊断", "肯定是"]},
-      "semantic_goal": "给出这类斑点多数可先看改善的确定感，不在线诊断具体斑型，主动接案例或活动主线。"
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["已经诊断", "肯定是", "凸起还是平的", "具体是哪种斑", "先发照片"]},
+      "semantic_goal": "明确雀斑、晒斑、老年斑、遗传斑、痘印痘坑、混合斑点和色素沉着属于当前活动可改善范围；不把答案弱化成只说先评估，不在线追问客户未主动提出的具体斑型，主动接案例、活动或门店主线。"
+    },
+    {
+      "id": "explicit_mole_supported_without_overconsulting",
+      "category": "精准问答-明确痣类改善",
+      "messages": ["脸上有颗痣能做吗", "我就想改善脸上这颗痣", "小痣也属于你们活动范围吗"],
+      "history": ["小贝: 我们这次主要做斑点和色素类改善。"],
+      "expected_planner": {"decisions": ["direct_reply", "need_tools"], "forbidden_tools": ["professional_assist"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"case_facts": [{"case_id": "case-range-02", "summary": "同类改善参考", "image_url": "https://test.by4dev.4ba.cn/cases/range-02.jpg"}], "store_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["有真实同类改善案例。"], "missing_facts": [], "risky_facts": [], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["凸起还是平的", "有多大", "多深", "先发照片", "不能做", "不属于活动", "客户明确咨询的痣类", "按改善方向接待"]},
+      "semantic_goal": "客户明确问痣类改善时先正向确认属于可以承接的改善方向，不主动追问凸起、大小、深浅或要求照片，不在线诊断；直接接案例、活动或城市门店主线。"
     },
     {
       "id": "hand_spots_price",
@@ -170,8 +183,34 @@
       "messages": ["做完会不会很快反弹", "过一两年是不是又长回来了", "这个能维持多久"],
       "history": [],
       "expected_planner": {"decisions": ["direct_reply"]},
-      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["永久不反弹", "二三十年不会长", "终身"]},
-      "semantic_goal": "先给规范操作和护理有助维持的信心，区分原斑改善与以后新色素问题，提醒防晒护理但不编固定年限，并回活动主线。"
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["永久不反弹", "二三十年不会长", "终身", "这个没法保证", "因人而异，所以", "不好说"]},
+      "semantic_goal": "第一句先给一般不会做完很快反弹、规范操作和护理有助维持的信心，再区分原斑改善与以后新色素问题；不以免责或因人而异开头，不编固定年限，并回活动主线。"
+    },
+    {
+      "id": "rebound_repeated_ask_no_pessimistic_repeat",
+      "category": "精准问答-反弹重复追问",
+      "messages": ["我就是怕做完没多久又反弹", "所以到底会不会又长回来"],
+      "history": [
+        "用户: 做完以后会反弹吗",
+        "小贝: 做完以后也要注意防晒和护理，每个人情况不同。"
+      ],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["每个人情况不同", "因人而异", "不能保证", "不好说", "永久不反弹", "终身"]},
+      "semantic_goal": "识别客户是因上一轮回答消极而重复追问，换成明确、有信心的结论：一般不会做完很快反弹，护理有助维持；不复读上一轮免责声明，并自然回活动或门店主线。"
+    },
+    {
+      "id": "customer_distance_fact_no_low_value_parroting",
+      "category": "真人感-不复述低价值信息",
+      "messages": ["这几家过去都差不多要40分钟"],
+      "history": [
+        "小贝: 我把当前可去的三家门店都发您了，您按平时顺路的方向选就行。",
+        "小贝: 门店位置：A店",
+        "小贝: 门店位置：B店",
+        "小贝: 门店位置：C店"
+      ],
+      "expected_planner": {"decisions": ["direct_reply"], "forbidden_tools": ["customer_store_lookup", "distance_calculate"]},
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["store_address"], "forbidden_phrases": ["40分钟", "您说这几家", "既然都差不多", "重新匹配"]},
+      "semantic_goal": "不要复述客户刚说的40分钟或把它扩成长确认句；只概括几家距离接近、让客户按顺路方向选，并马上回到斑点情况、案例或活动主线。"
     },
     {
       "id": "sensation_and_recovery",

@@ -214,11 +214,36 @@ def test_acne_marks_and_scars_are_online_bookable_scope() -> None:
     assert {"痘印改善", "痘坑改善"} <= supported
     assert "痘印" not in unsupported
     assert "痘坑" not in unsupported
-    assert "痘印、痘坑改善" in runtime_text
+    assert "痘印改善" in runtime_text
+    assert "痘坑改善" in runtime_text
     playbook_text = Path("ai_paths/app/policies/precision_qa_playbook.json").read_text(encoding="utf-8")
     assert "痘印、痘坑属于当前活动范围，不能命中本条" in playbook_text
     assert "痘印、痘坑属于当前淡斑活动改善范围，不能命中 unsupported" in PLANNER_SYSTEM_PROMPT
-    assert "痘印、痘坑改善" in REPLY_SYSTEM_PROMPT
+    assert "痘印、痘坑、混合斑点" in REPLY_SYSTEM_PROMPT
+
+
+def test_supported_spot_scope_and_sales_answer_policy_are_explicit() -> None:
+    rules = load_business_rules()
+    offer = rules.get("offer") or {}
+    supported = set(offer.get("supported_online_scope") or [])
+    expected = {
+        "雀斑改善",
+        "晒斑改善",
+        "老年斑改善",
+        "遗传斑改善",
+        "痘印改善",
+        "痘坑改善",
+        "混合斑点改善",
+        "色素沉着改善",
+        "痣类改善方向",
+    }
+
+    assert expected <= supported
+    assert "不要把客户错别字" in str(offer.get("scope_answer_policy") or "")
+    assert "不追加“凸起还是平的、大小、深浅" in REPLY_SYSTEM_PROMPT
+    assert "追求信息增量" in REPLY_SYSTEM_PROMPT
+    assert "客户说几家都差不多40分钟" in PLANNER_SYSTEM_PROMPT
+    assert "一般不会出现做完很快就反弹" in REPLY_SYSTEM_PROMPT
 
 
 def test_runtime_business_fact_views_preserve_all_current_rule_semantics() -> None:
