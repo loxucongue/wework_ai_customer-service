@@ -193,7 +193,7 @@ REPLY_PRECISION_QA_PROMPT = """
 - `precision_qa_playbook` 是回答边界和优秀表达参考，不是固定模板。先理解客户当前真正的问题，再自然作答。
 - `selected_question` 与当前语义一致时，完整覆盖其 must_answer，避开 must_not_substitute 和 forbidden_claims；示例只能校准尺度，不能逐字复读。
 - `selected_question.id=body_area_and_price` 且客户问两个部位是否一个总价时，必须同时覆盖两个边界：一个268元只对应一个部位；能不能同次操作不能提前承诺，要结合两个部位实际状态确认。即使 Planner 草稿遗漏，也要补齐。
-- `selected_question.id=body_area_and_price` 时，“手和脸/两个部位/两个地方”是身体部位，不是两位客户；不得把它当作同行人数生成20元预约金卡。当前只是在确认部位、同次操作或两个部位总价边界时，先答清边界，不同轮追加 `payment_collection`，除非客户另行明确说两个人报名或已经明确要求付款入口。
+- `selected_question.id=body_area_and_price` 时，“手和脸/两个部位/两个地方”是身体部位，不是两位客户；不得把它当作同行人数生成20元预约金卡。先答清部位、同次操作或价格边界；若 Planner 已根据活动铺垫和成交节奏决定 `send_now/resend`，可在同轮自然追加单人10元 `payment_collection`。
 - `selected_question.id=unsupported_online_projects` 时，本轮只说明线上不支持该项目预约；不得输出 `payment_collection`、不得说到店老师都能做、不得用淡斑活动误导客户为不支持项目付款。痘印、痘坑属于当前活动范围，不得按不支持项目处理；客户同时提到斑点/色素/痘印/痘坑时，才可用一句封闭式问题拉回淡斑活动。
 - `selected_question.id=can_treat_spots` 且客户问痘印、痘坑或斑点能不能做/能不能参加活动时，必须先正向确认属于改善范围，再补一个主线动作：发案例、接活动、或问城市/区域匹配门店；不能只回复“可以做/属于范围”就结束。若本轮没有真实案例图、门店卡或活动包可发，最后一句直接问“您在哪个城市或区？我给您匹配附近门店。”
 - 若 Planner 未选中或选错，可根据 question_index 和当前历史自行纠正；不要强行套用不匹配的问题。

@@ -1193,6 +1193,56 @@ def test_planner_keeps_payment_collection_when_customer_requests_resend() -> Non
     assert any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
 
 
+def test_body_area_precision_does_not_hard_block_single_customer_payment_card() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "手上的斑也是268吧，那我先报名",
+            "conversation_history": [
+                "小贝: 这次淡斑活动总价268元，每位先付10元预约金，到店抵扣。",
+            ],
+            "sop_progress_evidence": {
+                "completed_pack_ids": ["s10_activity_intro"],
+                "completed_categories": ["activity_intro"],
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "conversion_stage": "deposit_push",
+            "customer_type": "high_intent",
+            "main_blocker": "none",
+            "next_step": "send_deposit",
+            "payment_state": "needs_payment",
+            "payment_action": "send_now",
+            "payment_decision": {
+                "action": "send_now",
+                "amount": 10,
+                "party_size": 1,
+                "basis": "活动已铺垫，客户确认手部价格并报名",
+            },
+            "precision_qa_decision": {
+                "question_id": "body_area_and_price",
+                "confidence": "high",
+                "answer_depth": "standard",
+            },
+            "reply_messages": [
+                {"type": "text", "content": {"text": "手部也是268活动价，我把单人10元预约金卡发您。"}},
+                {"type": "payment_collection", "content": {"amount": 10, "remark": ""}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["payment_decision"]["action"] == "send_now"
+    assert plan["payment_decision"]["amount"] == 10
+    assert any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
+    assert not any(
+        item.get("missing") == "payment_collection_blocked_by_precision_qa_boundary"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_planner_payment_action_offer_resend_removes_same_turn_payment_card() -> None:
     plan = build_planner_plan_v2(
         {

@@ -174,7 +174,7 @@ PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT = """
 Before returning JSON, verify:
 - payment_collection does not require a matching active unpaid order; order creation/linking is only a backend association fact.
 - 若 SOP 需求/案例和活动铺垫已完成、客户未付且无风险/强拒绝/终态，也没有更自然的登记或答疑动作，则 explain-only direct_reply 不完整；可直接输出 send_now/resend + text + payment_collection。
-- `precision_qa_decision.question_id=body_area_and_price` 且客户问手脸同做、两个部位或两个部位总价时，本轮先答清部位和价格边界，`payment_decision.action` 必须是 `none` 或 `explain`，不得 `send_now/resend`，不得输出 `payment_collection`，也不得把身体部位当同行人数；成交动作只可回到活动/门店主线。
+- `precision_qa_decision.question_id=body_area_and_price` 时先答清部位和价格边界，绝不能把“手和脸/两个部位”当成两位客户或据此生成20元卡。若活动报价已经铺垫、客户未付且成交节奏自然，可按单人10元选择 `send_now/resend`；是否发卡由你结合完整上下文判断，不由部位问题本身决定。
 - store_address IDs belong to current store scope or authoritative tool facts.
 - appointment commitment=confirmed requires a real appointment fact.
 - “这家/刚才那家”对应两个并列未选、未推荐门店时，只澄清哪家并设 `store_binding=ambiguous`，不查店、不发卡；上一条唯一推荐某店后客户接受“这家”则绑定该店。`current_known_store` 单店本身不代表客户已选。

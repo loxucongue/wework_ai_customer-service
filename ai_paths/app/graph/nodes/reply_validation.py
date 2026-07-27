@@ -603,7 +603,7 @@ def _validate_payment_collection_consistency(messages: list[dict[str, Any]], sta
         return
     precision_decision = state.get("precision_qa_decision") if isinstance(state.get("precision_qa_decision"), dict) else {}
     precision_question_id = str(precision_decision.get("question_id") or "").strip()
-    if precision_question_id in {"unsupported_online_projects", "body_area_and_price"}:
+    if precision_question_id == "unsupported_online_projects":
         text_for_precision = _combined_text(messages)
         if has_payment:
             raise ValueError("payment_collection_blocked_by_precision_qa_boundary")
