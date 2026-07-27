@@ -533,7 +533,7 @@
       "history": ["小贝: 活动总价268，每位预约金10元。"],
       "expected_planner": {"decisions": ["direct_reply"], "forbidden_message_types": ["payment_collection"]},
       "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["红包", "点击小程序卡"]},
-      "semantic_goal": "客户明确选择转账时只说明转账后发截图登记，不追加小程序收款卡，也不说红包。"
+      "semantic_goal": "客户明确选择转账时只说明转好后告知并进入登记，截图方便时可发但不是必选；不追加小程序收款卡，也不说红包。"
     },
     {
       "id": "customer_claimed_paid",

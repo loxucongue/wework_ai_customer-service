@@ -71,7 +71,8 @@ def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_informat
     assert "缺少成功 order_id 或开单失败不得取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "订单和开单不是发卡前置" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不调用 available_time/create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
-    assert "客户口头说“我付了”不能单独确认已付" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "客户口头说“我付了/转好了”不能单独确认已到账" in PLANNER_TRANSACTION_PATCH_PROMPT
+    assert "截图方便时可发" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "姓名、电话、门店、到店日期和时间" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "不查档期、不创建排客" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "既有 appointment_created/confirmed" in REPLY_TRANSACTION_PATCH_PROMPT

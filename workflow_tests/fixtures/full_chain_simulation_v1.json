@@ -370,7 +370,7 @@
       "id": "manual_transfer",
       "category": "预约金",
       "critical": true,
-      "semantic_goal": "客户明确选择转账时说明截图登记，不附预约金卡。",
+      "semantic_goal": "客户明确选择转账时说明转好后告知并进入登记，截图可选，不附预约金卡。",
       "expected": {
         "must_reply": true,
         "forbidden_types": ["payment_collection"]

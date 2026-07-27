@@ -346,7 +346,6 @@ async def _run_reply_model_pipeline(
 
 def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state: AgentState) -> None:
     repairable_details = {
-        "manual_transfer_missing_screenshot_registration",
         "nearby_store_claim_without_location_fact",
     }
     for warning in collect_reply_soft_warnings(messages, state):
@@ -887,7 +886,7 @@ def _reply_repair_hint(error: str) -> str:
     if "payment_collection_amount_text_mismatch" in error:
         return "预约金卡片金额必须和文本一致；同行按每位10元锁活动名额，2位说一共20元，3位说一共30元，4位说一共40元。"
     if "payment_confirmation_fact_required" in error:
-        return "当前没有成功支付截图、平台转账成功事件或实时订单已付事实。客户口头说已转账时，只请其发成功截图核对；不能说已收到、已到账、已核款、支付已确认或按已付登记。"
+        return "当前没有成功支付截图、平台转账成功事件或实时订单已付事实。客户口头说已转账时，可先收姓名电话并说明会结合平台付款记录核对；截图方便时可发但不是必选。不能说已收到、已到账、已核款或支付已确认。"
     if "offer_total_tail_amount_conflict" in error:
         return "活动总价是268元。10元预约金计入总价并到店抵扣，客户实际做时再付剩余258元；不能把258说成最终总价、全部费用或一共只付258元。"
     if "payment_participant_count_confirm_required" in error:
@@ -932,8 +931,6 @@ def _reply_repair_hint(error: str) -> str:
         return "没有 distance_calculate 排序事实时，不要输出最近、离您最近、较近、就近等距离排序表达。只回答门店名、地址、停车或营业时间等已有门店事实，再问客户哪个区域/哪家更方便。"
     if "nearby_store_claim_without_location_fact" in error:
         return "没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”。请改成“我给您看下门店/对下城市或区域”，不要编距离感。"
-    if "manual_transfer_missing_screenshot_registration" in error:
-        return "客户明确选择转账时，不要发 payment_collection。必须说清楚“转好截图发我，我给您登记/备注”，然后只补一个必要主线字段。"
     if "available_time_fact_required" in error:
         return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“多数可以看改善 + 发送 case_facts.image_url + 到店专业检测更准”。"
     if "appointment_confirmation_fact_required" in error:

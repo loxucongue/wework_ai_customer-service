@@ -5646,6 +5646,21 @@ def test_reply_validation_allows_registration_wording_conditioned_on_transfer_sc
     )
 
 
+def test_manual_transfer_does_not_require_screenshot_wording() -> None:
+    messages = [{"type": "text", "order": 1, "content": "可以转账，转好跟我说一声，我给您登记。"}]
+    state = {
+        "payment_action": "manual_transfer",
+        "payment_decision": {"action": "manual_transfer", "method": "transfer"},
+        "fact_envelope": {"structured_facts": {"order_facts": []}},
+    }
+
+    validate_reply_consistency(messages, state)
+    warnings = collect_reply_soft_warnings(messages, state)
+    _raise_repairable_reply_quality_issues(messages, state)
+
+    assert not any(item.get("detail") == "manual_transfer_missing_screenshot_registration" for item in warnings)
+
+
 def test_reply_validation_rejects_unverified_payment_confirmation_claim() -> None:
     with pytest.raises(ValueError, match="payment_confirmation_fact_required"):
         validate_reply_consistency(

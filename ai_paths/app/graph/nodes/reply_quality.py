@@ -27,7 +27,6 @@ def collect_reply_soft_warnings(messages: list[dict[str, Any]], state: dict[str,
         _validate_repeat_similarity,
         _validate_two_text_rhythm,
         _validate_precision_reply_active_mainline_closure,
-        _validate_manual_transfer_screenshot_registration,
         _validate_nearby_store_claim_has_fact,
     )
     warnings: list[dict[str, str]] = []
@@ -165,21 +164,6 @@ def _validate_precision_reply_active_mainline_closure(messages: list[dict[str, A
         raise ValueError("precision_reply_weak_one_session_confidence")
     if not _precision_reply_has_mainline_action(messages, text):
         raise ValueError("precision_reply_missing_mainline_action")
-
-
-def _validate_manual_transfer_screenshot_registration(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    payment_decision = state.get("payment_decision") if isinstance(state.get("payment_decision"), dict) else {}
-    is_manual_transfer = (
-        str(payment_decision.get("action") or "") == "manual_transfer"
-        or str(state.get("payment_action") or "") == "manual_transfer"
-    )
-    if not is_manual_transfer:
-        return
-    text = _combined_text(messages)
-    if not text or "截图" not in text:
-        raise ValueError("manual_transfer_missing_screenshot_registration")
-    if not any(term in text for term in ("登记", "备注", "接上", "核对")):
-        raise ValueError("manual_transfer_missing_screenshot_registration")
 
 
 def _validate_nearby_store_claim_has_fact(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:

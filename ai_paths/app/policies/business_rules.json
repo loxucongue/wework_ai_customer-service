@@ -91,7 +91,7 @@
   "transaction_policy": {
     "payment_order_policy": "order_link_not_required_for_card",
     "payment_order_policy_description": "活动报价已完成或已铺垫后，Planner可根据成交节奏发送预约金卡；订单和开单不作为发卡前置。客户支付预约金后，先询问姓名和电话，再尝试创建或关联预约金订单用于后台记录。开单失败、订单查询失败、门店或金额不匹配不得导致空回复，也不得对客户说入口没对上。",
-    "platform_unknown_message_payment_policy": "平台固定【未知消息类型】是权威转账成功事件，归一为paid_by_platform_transfer_event；直接进入已付登记并禁止重复发送预约金卡。普通文字声称已转账仍只视为客户声明，应要求截图确认且不重复发卡。",
+    "platform_unknown_message_payment_policy": "平台固定【未知消息类型】是权威转账成功事件，归一为paid_by_platform_transfer_event；直接进入已付登记并禁止重复发送预约金卡。普通文字声称已转账只视为客户声明，可先收姓名电话并等待平台事件或订单状态核对；截图方便时可发但不是必选，不重复发卡，也不得声称已核款。",
     "payment_order_link_states": ["linked", "pending_link", "unlinked", "not_applicable"],
     "appointment_flow_mode": "registration_only",
     "post_paid_registration_fields": ["customer_name", "customer_mobile", "store", "visit_date", "visit_time"],

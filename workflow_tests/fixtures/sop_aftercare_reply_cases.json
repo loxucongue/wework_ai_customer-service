@@ -294,7 +294,7 @@
       }
     },
     "expected": {
-      "must_include_semantics": ["转账", "截图", "备注或登记"],
+      "must_include_semantics": ["转账", "告知或登记"],
       "must_not_include": ["payment_collection", "卡片已发", "点击下面入口"],
       "message_types": ["text"],
       "style": ["像真人收款沟通", "不机械"]

@@ -518,7 +518,7 @@
         "sent_categories": [
           "activity_price"
         ],
-        "stage_goal": "客户已明确选择转账，说明截图备注"
+        "stage_goal": "客户已明确选择转账，说明转好后告知并登记"
       },
       "turn_evidence": {
         "payment_evidence": {
@@ -545,7 +545,7 @@
       "must_not_message_types": [
         "payment_collection"
       ],
-      "notes": "客户明确选择转账，用文字说明截图备注，不输出 payment_collection。"
+      "notes": "客户明确选择转账，用文字说明转好后告知并登记；截图可选，不输出 payment_collection。"
     }
   },
   {
