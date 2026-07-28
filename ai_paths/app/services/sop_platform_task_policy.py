@@ -5,6 +5,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.services.customer_order_context import order_status_text
+from app.services.customer_payment_state import normalize_prepay_facts
 
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
@@ -38,6 +39,7 @@ def personalized_order_eligibility(customer_context: dict[str, Any]) -> dict[str
         }
     order = _current_order(customer_context)
     order_status = order_status_text(order.get("status")) if order else "no_order"
+    payment = normalize_prepay_facts(order) if order else {}
     return {
         "available": True,
         "eligible": order_status == "no_order" or order_status in PERSONALIZED_ORDER_STATUSES,
@@ -48,6 +50,8 @@ def personalized_order_eligibility(customer_context: dict[str, Any]) -> dict[str
         ),
         "order_status": order_status,
         "order_id": str(order.get("id") or order.get("order_id") or "") if order else "",
+        "deposit_state": str(payment.get("deposit_state") or "unknown"),
+        "prepay_paid": bool(payment.get("prepay_paid")),
     }
 
 

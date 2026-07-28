@@ -191,6 +191,24 @@ type DashboardStats = {
     customer_id?: string;
     task_id?: string;
   };
+  outcomes?: {
+    window_days?: number;
+    sent_tasks?: number;
+    contact_count?: number;
+    reopened_24h_rate?: number;
+    reopened_72h_rate?: number;
+    ai_resumed_72h_rate?: number;
+    deposit_7d_rate?: number;
+    average_touches_per_customer?: number;
+    value_only_rate?: number;
+    repeated_angle_rate?: number;
+    asset_send_count?: number;
+    asset_repeat_rate?: number;
+    asset_reply_72h_rate?: number;
+    safety_stop_count?: number;
+    failure_count?: number;
+    complaint_rate?: number | null;
+  };
 };
 
 const DEFAULT_FILTERS: Filters = {
@@ -344,6 +362,8 @@ function eventTypeLabel(value?: string) {
     task_failed: "触达失败",
     task_skipped_customer_replied: "客户回复，停止触达",
     task_skipped_order_state_changed: "订单变化，停止触达",
+    plan_cancelled_customer_replied: "客户回复，取消剩余计划",
+    task_deferred_daily_limit: "达到当日上限，顺延发送",
     before_send_check_failed: "发送前复查失败",
   };
   return labels[String(value || "")] || String(value || "历史事件");
@@ -400,6 +420,11 @@ function sendStatusLabel(value?: string) {
 
 function boolLabel(value?: boolean) {
   return value ? "允许收款卡" : "仅文本推进";
+}
+
+function rateLabel(value?: number | null) {
+  if (value === null || value === undefined) return "--";
+  return `${Math.round(value * 1000) / 10}%`;
 }
 
 function messagePreview(messages?: Array<JsonObject>) {
@@ -876,8 +901,45 @@ export function OutreachWorkbench() {
             </div>
           </div>
         </div>
+
+        <div className="mt-4 border-t border-zinc-200 pt-3">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold text-zinc-700">近 {dashboard.outcomes?.window_days || 30} 天触达效果</h3>
+            <span className="text-xs text-zinc-500">开口与 AI 承接按结构事件统计，投诉率待平台提供结构事件</span>
+          </div>
+          <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-zinc-200 sm:grid-cols-4 xl:grid-cols-8">
+            {[
+              ["24h 开口", rateLabel(dashboard.outcomes?.reopened_24h_rate)],
+              ["72h 开口", rateLabel(dashboard.outcomes?.reopened_72h_rate)],
+              ["AI 重新承接", rateLabel(dashboard.outcomes?.ai_resumed_72h_rate)],
+              ["7天预约金", rateLabel(dashboard.outcomes?.deposit_7d_rate)],
+              ["人均触达", String(dashboard.outcomes?.average_touches_per_customer ?? 0)],
+              ["纯价值占比", rateLabel(dashboard.outcomes?.value_only_rate)],
+              ["连续角度重复", rateLabel(dashboard.outcomes?.repeated_angle_rate)],
+              ["素材带来开口", rateLabel(dashboard.outcomes?.asset_reply_72h_rate)],
+            ].map(([label, value], index) => (
+              <div
+                key={label}
+                className={`min-w-0 px-3 py-3 ${
+                  index % 2 ? "border-l border-zinc-200" : ""
+                } ${index >= 2 ? "sm:border-l" : ""} ${index >= 4 ? "border-t xl:border-t-0" : ""}`}
+              >
+                <div className="text-[11px] text-zinc-500">{label}</div>
+                <div className="mt-1 text-base font-semibold text-zinc-900">{value}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-zinc-500">
+            <span>已发 {dashboard.outcomes?.sent_tasks || 0} 次 / {dashboard.outcomes?.contact_count || 0} 位客户</span>
+            <span>素材使用 {dashboard.outcomes?.asset_send_count || 0} 次</span>
+            <span>素材重复率 {rateLabel(dashboard.outcomes?.asset_repeat_rate)}</span>
+            <span>安全停止 {dashboard.outcomes?.safety_stop_count || 0}</span>
+            <span>失败 {dashboard.outcomes?.failure_count || 0}</span>
+            <span>投诉率 {rateLabel(dashboard.outcomes?.complaint_rate)}</span>
+          </div>
+        </div>
       </section>
-      <section className="grid min-h-[620px] grid-cols-1 lg:h-[calc(100vh-330px)] lg:max-h-[820px] lg:grid-cols-[280px_minmax(380px,1fr)_300px] 2xl:grid-cols-[340px_minmax(520px,1fr)_360px]">
+      <section className="grid min-h-[620px] grid-cols-1 lg:h-[calc(100vh-460px)] lg:max-h-[820px] lg:grid-cols-[280px_minmax(380px,1fr)_300px] 2xl:grid-cols-[340px_minmax(520px,1fr)_360px]">
         <aside className="flex h-full min-h-0 flex-col border-b border-zinc-200 bg-white lg:border-b-0 lg:border-r">
           <div className="border-b border-zinc-200 p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-medium">
@@ -1122,6 +1184,9 @@ export function OutreachWorkbench() {
                             </div>
                             <p className="mt-2 text-sm text-zinc-700">{task.message_goal || "-"}</p>
                             <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-600">
+                              <span className="rounded bg-zinc-100 px-2 py-1 text-zinc-700">
+                                内容模式：{String(planning.content_mode || "-")}
+                              </span>
                               <span className="rounded bg-emerald-50 px-2 py-1 text-emerald-700">
                                 心理角度：{String(planning.persuasion_angle || "-")}
                               </span>
@@ -1134,6 +1199,9 @@ export function OutreachWorkbench() {
                                 </span>
                               ) : null}
                             </div>
+                            <p className="mt-2 text-xs text-zinc-500">
+                              时间理由：{String(planning.timing_reason || "-")} · 紧迫度：{String(planning.urgency_level || "-")}
+                            </p>
                             {avoidRepeating ? <p className="mt-2 text-xs text-zinc-500">避免复读：{avoidRepeating}</p> : null}
                             <p className="mt-1 text-xs text-zinc-500">
                               计划发送：{formatTime(task.scheduled_at)} · {boolLabel(task.should_send_payment_collection)} · 发送结果：{sendStatusLabel(task.send_status)}

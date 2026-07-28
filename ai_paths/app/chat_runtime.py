@@ -849,6 +849,21 @@ class ChatRuntime:
             content=request.content,
             file_image=request.file_image,
         )
+        if (
+            bool(request_context.get("memory_persist_allowed"))
+            and not bool(request_context.get("test_isolated"))
+            and str(request.wechat or "").strip()
+        ):
+            cancel_outreach = getattr(self._repository, "cancel_outreach_for_customer_reply", None)
+            if callable(cancel_outreach):
+                safe_repository_call(
+                    cancel_outreach,
+                    customer_id=str(request.customer_id or ""),
+                    corp_id=str(request.corp_id or ""),
+                    wechat=str(request.wechat or ""),
+                    external_userid=str(request.external_userid or ""),
+                    request_id=request_id,
+                )
         return conversation_id
 
     async def _invoke_graph_with_budget(

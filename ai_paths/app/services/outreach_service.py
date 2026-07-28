@@ -39,9 +39,14 @@ OUTREACH_PERSUASION_ANGLES = {
     "low_risk_action",
 }
 OUTREACH_ASSET_STRATEGIES = {"none", "configured_image", "operation_video", "case_search"}
-OUTREACH_MIN_STEP_GAP_MINUTES = 24 * 60
+OUTREACH_CONTENT_MODES = {"value_only", "soft_conversion", "transaction"}
+OUTREACH_URGENCY_LEVELS = {"immediate", "same_day", "normal", "slow"}
+OUTREACH_FIRST_STEP_MAX_MINUTES = 12 * 60
+OUTREACH_MIN_STEP_GAP_MINUTES = 6 * 60
 OUTREACH_MAX_STEP_GAP_MINUTES = 72 * 60
 OUTREACH_MAX_PLAN_MINUTES = 7 * 24 * 60
+OUTREACH_DAILY_TASK_LIMIT = 2
+OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -70,6 +75,69 @@ def _message_time_iso(value: Any) -> str:
 def _add_minutes(value: str, minutes: int) -> str:
     start = _parse_iso(value) or datetime.now(timezone.utc)
     return (start + timedelta(minutes=max(0, int(minutes)))).isoformat()
+
+
+def _shift_outreach_quiet_hours(value: datetime) -> datetime:
+    local = value.astimezone(OUTREACH_BEIJING_TIMEZONE)
+    if local.hour >= 22:
+        local = (local + timedelta(days=1)).replace(hour=8, minute=30, second=0, microsecond=0)
+    elif local.hour < 8:
+        local = local.replace(hour=8, minute=30, second=0, microsecond=0)
+    return local.astimezone(timezone.utc)
+
+
+def _next_outreach_day_start(value: datetime | None = None) -> datetime:
+    current = (value or datetime.now(timezone.utc)).astimezone(OUTREACH_BEIJING_TIMEZONE)
+    return (current + timedelta(days=1)).replace(
+        hour=8,
+        minute=30,
+        second=0,
+        microsecond=0,
+    ).astimezone(timezone.utc)
+
+
+def _normalize_outreach_schedule(
+    start_at: str,
+    steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    start = _parse_iso(start_at) or datetime.now(timezone.utc)
+    start = start.astimezone(timezone.utc)
+    plan_deadline = start + timedelta(minutes=OUTREACH_MAX_PLAN_MINUTES)
+    previous = start
+    per_day_counts: dict[str, int] = {}
+    normalized: list[dict[str, Any]] = []
+
+    for index, step in enumerate(steps):
+        requested_delay = _int(step.get("delay_minutes"), 0)
+        if index == 0:
+            requested_delay = min(max(requested_delay, 0), OUTREACH_FIRST_STEP_MAX_MINUTES)
+            target = start + timedelta(minutes=requested_delay)
+        else:
+            requested_target = start + timedelta(minutes=max(0, requested_delay))
+            earliest = previous + timedelta(minutes=OUTREACH_MIN_STEP_GAP_MINUTES)
+            latest = previous + timedelta(minutes=OUTREACH_MAX_STEP_GAP_MINUTES)
+            target = min(max(requested_target, earliest), latest)
+
+        target = _shift_outreach_quiet_hours(min(target, plan_deadline))
+        local_day = target.astimezone(OUTREACH_BEIJING_TIMEZONE).date().isoformat()
+        if per_day_counts.get(local_day, 0) >= OUTREACH_DAILY_TASK_LIMIT:
+            next_local = target.astimezone(OUTREACH_BEIJING_TIMEZONE) + timedelta(days=1)
+            target = next_local.replace(hour=8, minute=30, second=0, microsecond=0).astimezone(timezone.utc)
+            target = min(target, plan_deadline)
+            target = _shift_outreach_quiet_hours(target)
+            local_day = target.astimezone(OUTREACH_BEIJING_TIMEZONE).date().isoformat()
+
+        per_day_counts[local_day] = per_day_counts.get(local_day, 0) + 1
+        normalized_delay = max(0, int((target - start).total_seconds() // 60))
+        normalized.append(
+            {
+                "scheduled_at": target.isoformat(),
+                "requested_delay_minutes": _int(step.get("delay_minutes"), 0),
+                "normalized_delay_minutes": normalized_delay,
+            }
+        )
+        previous = target
+    return normalized
 
 
 def _string(value: Any) -> str:
@@ -237,6 +305,13 @@ def _first_reply_text(messages: Any) -> str:
     return ""
 
 
+def _plan_step_text(step: dict[str, Any]) -> str:
+    text = _first_reply_text(step.get("reply_messages"))
+    if text:
+        return text
+    return _string(step.get("draft_text"))
+
+
 def _task_metadata(task: dict[str, Any]) -> dict[str, Any]:
     items = task.get("content_source_metadata")
     if not isinstance(items, list):
@@ -259,6 +334,8 @@ def _task_resolved_asset(task: dict[str, Any]) -> dict[str, Any]:
 
 def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
     if not bool(response.get("should_create_plan", True)):
+        if response.get("steps") or _string(response.get("plan_arc")):
+            return "should_create_plan=false cannot include plan_arc or steps"
         return ""
     steps = [step for step in response.get("steps") or [] if isinstance(step, dict)][:3]
     if len(steps) < 2:
@@ -268,8 +345,69 @@ def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
         return "every step must use one allowed persuasion_angle"
     if any(current == previous for previous, current in zip(angles, angles[1:])):
         return "adjacent steps must use different persuasion_angle values"
-    if any(not _string(step.get("draft_text")) for step in steps):
-        return "every step must contain draft_text"
+    content_modes = [_string(step.get("content_mode")) for step in steps]
+    if any(mode not in OUTREACH_CONTENT_MODES for mode in content_modes):
+        return "every step must use one allowed content_mode"
+    if "value_only" not in content_modes:
+        return "plan must contain at least one value_only step"
+    urgency_levels = [_string(step.get("urgency_level")) for step in steps]
+    if any(level not in OUTREACH_URGENCY_LEVELS for level in urgency_levels):
+        return "every step must use one allowed urgency_level"
+    if any(not _string(step.get("timing_reason")) for step in steps):
+        return "every step must contain timing_reason"
+    asset_strategies = [_string(step.get("asset_strategy")) or "none" for step in steps]
+    if any(strategy not in OUTREACH_ASSET_STRATEGIES for strategy in asset_strategies):
+        return "every step must use one allowed asset_strategy"
+    for step in steps:
+        messages = step.get("reply_messages")
+        if not isinstance(messages, list) or len(messages) != 1:
+            return "every step must contain exactly one reply_messages text item"
+        if (
+            not isinstance(messages[0], dict)
+            or _string(messages[0].get("type")) != "text"
+            or not _plan_step_text(step)
+        ):
+            return "plan step reply_messages must contain one non-empty text item"
+        if _string(step.get("content_mode")) == "value_only" and _bool(
+            step.get("should_send_payment_collection")
+        ):
+            return "value_only step cannot send payment_collection"
+    payment_steps = [
+        (index, step)
+        for index, step in enumerate(steps)
+        if _bool(step.get("should_send_payment_collection"))
+    ]
+    if len(payment_steps) > 1:
+        return "plan can contain at most one payment_collection step"
+    if payment_steps:
+        payment_index, payment_step = payment_steps[0]
+        if payment_index != len(steps) - 1:
+            return "payment_collection step must be final"
+        if _string(payment_step.get("content_mode")) != "transaction":
+            return "payment_collection step must use transaction content_mode"
+        if _string(payment_step.get("payment_collection_basis")) != "model_selected_after_quote":
+            return "payment_collection step must use model_selected_after_quote basis"
+    delays = [_int(step.get("delay_minutes"), -1) for step in steps]
+    if delays[0] < 0 or delays[0] > OUTREACH_FIRST_STEP_MAX_MINUTES:
+        return "first step delay_minutes must be between 0 and 720"
+    for previous, current in zip(delays, delays[1:]):
+        gap = current - previous
+        if gap < OUTREACH_MIN_STEP_GAP_MINUTES or gap > OUTREACH_MAX_STEP_GAP_MINUTES:
+            return "adjacent step delay must be between 360 and 4320 minutes"
+    if delays[-1] > OUTREACH_MAX_PLAN_MINUTES:
+        return "plan duration cannot exceed 7 days"
+    return ""
+
+
+def _outreach_plan_context_error(
+    response: dict[str, Any],
+    *,
+    activity_quote_fact: dict[str, Any],
+) -> str:
+    if not _valid_activity_quote_evidence(activity_quote_fact):
+        steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
+        if any(_bool(step.get("should_send_payment_collection")) for step in steps):
+            return "activity quote is incomplete; payment_collection must be disabled"
     return ""
 
 
@@ -518,6 +656,16 @@ class OutreachService:
         asset_catalog = self._outreach_asset_catalog()
         recent_media = recent_outreach_media(recent_messages, hours=72)
         activity_quote_fact = build_outreach_activity_quote_fact(recent_messages, memory)
+        recent_sop_delivery = []
+        recent_sop_delivery_loader = getattr(self.repository, "recent_sop_delivery", None)
+        if callable(recent_sop_delivery_loader):
+            recent_sop_delivery = recent_sop_delivery_loader(
+                customer_id=customer_id,
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                hours=72,
+            )
         source_snapshot = {
             "customer_id": customer_id,
             "corp_id": corp_id,
@@ -548,6 +696,7 @@ class OutreachService:
                 for asset in asset_catalog
             ],
             "recent_media_delivery": recent_media,
+            "recent_sop_delivery": recent_sop_delivery,
         }
         model_messages = [
             {"role": "system", "content": OUTREACH_PLAN_SYSTEM_PROMPT},
@@ -558,7 +707,10 @@ class OutreachService:
             tier="strong",
             temperature=0.0,
         )
-        structure_error = _outreach_plan_structure_error(response)
+        structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+            response,
+            activity_quote_fact=activity_quote_fact,
+        )
         if structure_error:
             response = await self.model_client.chat_json(
                 [
@@ -592,7 +744,10 @@ class OutreachService:
             tier="strong",
             temperature=0.0,
         )
-        structure_error = _outreach_plan_structure_error(response)
+        structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+            response,
+            activity_quote_fact=activity_quote_fact,
+        )
         if structure_error:
             response = await self.model_client.chat_json(
                 [
@@ -625,7 +780,10 @@ class OutreachService:
                 payload=response,
             )
             return {"created": False, "ai_result": response}
-        structure_error = _outreach_plan_structure_error(response)
+        structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+            response,
+            activity_quote_fact=activity_quote_fact,
+        )
         if structure_error:
             raise RuntimeError(f"outreach_plan_model_invalid_structure: {structure_error}")
         raw_steps = [step for step in response.get("steps") or [] if isinstance(step, dict)][:3]
@@ -652,32 +810,33 @@ class OutreachService:
         now = utc_now_iso()
         tasks = []
         payment_collection_added = False
-        previous_delay = 0
+        normalized_schedule = _normalize_outreach_schedule(now, raw_steps)
         for index, step in enumerate(raw_steps, start=1):
-            requested_delay = _int(step.get("delay_minutes"), previous_delay + OUTREACH_MIN_STEP_GAP_MINUTES)
-            delay = min(
-                max(requested_delay, previous_delay + OUTREACH_MIN_STEP_GAP_MINUTES),
-                previous_delay + OUTREACH_MAX_STEP_GAP_MINUTES,
-                OUTREACH_MAX_PLAN_MINUTES,
-            )
-            previous_delay = delay
+            schedule = normalized_schedule[index - 1]
+            content_mode = _string(step.get("content_mode"))
             payment_collection_basis = _string(step.get("payment_collection_basis"))
             should_send_payment_collection = (
                 _bool(step.get("should_send_payment_collection"))
                 and index == len(raw_steps)
+                and content_mode == "transaction"
                 and payment_collection_basis == "model_selected_after_quote"
                 and not payment_collection_added
                 and _valid_activity_quote_evidence(activity_quote_fact)
             )
             payment_collection_added = payment_collection_added or should_send_payment_collection
-            draft_text = _string(step.get("draft_text"))
+            draft_text = _plan_step_text(step)
             if not draft_text:
                 continue
             resolved_asset = resolved_assets[index - 1]
             task_metadata = {
+                "content_mode": content_mode,
                 "persuasion_angle": _string(step.get("persuasion_angle")),
                 "new_value": _string(step.get("new_value")),
                 "avoid_repeating": _list_strings(step.get("avoid_repeating")),
+                "timing_reason": _string(step.get("timing_reason")),
+                "urgency_level": _string(step.get("urgency_level")),
+                "requested_delay_minutes": schedule["requested_delay_minutes"],
+                "normalized_delay_minutes": schedule["normalized_delay_minutes"],
                 "asset_strategy": _string(step.get("asset_strategy")) or "none",
                 "asset_id": _string(step.get("asset_id")),
                 "case_query": _string(step.get("case_query")),
@@ -692,7 +851,7 @@ class OutreachService:
             tasks.append(
                 {
                     "step_index": int(step.get("step") or index),
-                    "scheduled_at": _add_minutes(now, delay),
+                    "scheduled_at": schedule["scheduled_at"],
                     "intent": str(step.get("intent") or "outreach"),
                     "message_goal": str(step.get("message_goal") or ""),
                     "content_sources": _task_content_sources(
@@ -954,6 +1113,34 @@ class OutreachService:
         plan_detail = self.repository.get_outreach_plan(str(task["plan_id"]))
         plan = plan_detail.get("plan") or {}
         try:
+            sent_today_loader = getattr(self.repository, "outreach_sent_today_count", None)
+            if callable(sent_today_loader):
+                sent_today_count = sent_today_loader(
+                    customer_id=str(task["customer_id"]),
+                    corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
+                    wechat=str(task.get("wechat") or plan.get("wechat") or ""),
+                    external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
+                )
+                if sent_today_count >= OUTREACH_DAILY_TASK_LIMIT:
+                    next_window = _next_outreach_day_start()
+                    delay_seconds = max(
+                        1,
+                        int((next_window - datetime.now(timezone.utc)).total_seconds()),
+                    )
+                    self.repository.reschedule_outreach_task(
+                        task_id,
+                        delay_seconds=delay_seconds,
+                        error_message="personalized_outreach_daily_limit",
+                    )
+                    self.repository.add_outreach_event(
+                        plan_id=str(task["plan_id"]),
+                        task_id=task_id,
+                        customer_id=str(task["customer_id"]),
+                        event_type="task_deferred_daily_limit",
+                        event_summary="Personalized outreach daily limit reached; task deferred",
+                        payload={"sent_today": sent_today_count, "next_window": next_window.isoformat()},
+                    )
+                    return {"ok": True, "status": "rescheduled", "reason": "daily_limit"}
             if task.get("before_send_check"):
                 try:
                     refresh = await self.refresh_customer_conversation(

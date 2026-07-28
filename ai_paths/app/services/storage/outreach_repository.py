@@ -364,6 +364,7 @@ class OutreachRepositoryMixin:
                 LIMIT 1
                 """
             ).fetchone()
+            outcome_stats = self._outreach_outcome_stats(conn, current=current)
         plan_counts = {str(row["status"]): int(row["count"]) for row in plan_rows}
         task_counts = {str(row["status"]): int(row["count"]) for row in task_rows}
         event_counts = {str(row["event_type"]): int(row["count"]) for row in event_rows}
@@ -388,8 +389,213 @@ class OutreachRepositoryMixin:
             "plan_status_counts": plan_counts,
             "task_status_counts": task_counts,
             "event_counts_today": event_counts,
+            "outcomes": outcome_stats,
             "next_due": dict(next_due) if next_due else {},
             "last_sent": dict(last_sent) if last_sent else {},
+        }
+
+    def _outreach_outcome_stats(self, conn: Any, *, current: datetime) -> dict[str, Any]:
+        window_start = (current - timedelta(days=30)).astimezone(timezone.utc).isoformat()
+        auto_plan = "json_extract(p.source_snapshot, '$.trigger_context.activation_policy')='auto_approved'"
+        sent_rows = conn.execute(
+            f"""
+            SELECT t.id, t.plan_id, t.sent_at, t.content_sources,
+                   p.customer_id, p.corp_id, p.wechat, p.external_userid
+            FROM outreach_tasks t
+            JOIN outreach_plans p ON p.id=t.plan_id
+            WHERE {auto_plan} AND t.status='sent' AND t.sent_at>=?
+            ORDER BY t.sent_at ASC
+            """,
+            (window_start,),
+        ).fetchall()
+        message_rows = conn.execute(
+            """
+            SELECT m.created_at, c.customer_id, c.corp_id, c.wechat, c.external_userid
+            FROM messages m
+            JOIN conversations c ON c.id=m.conversation_id
+            WHERE m.role='user' AND m.created_at>=?
+            ORDER BY m.created_at ASC
+            """,
+            (window_start,),
+        ).fetchall()
+        run_rows = conn.execute(
+            """
+            SELECT r.created_at, r.error, r.output_snapshot,
+                   c.customer_id, c.corp_id, c.wechat, c.external_userid
+            FROM runs r
+            JOIN conversations c ON c.id=r.conversation_id
+            WHERE r.created_at>=?
+            ORDER BY r.created_at ASC
+            """,
+            (window_start,),
+        ).fetchall()
+        payment_rows = conn.execute(
+            f"""
+            SELECT e.created_at, e.payload_json,
+                   p.customer_id, p.corp_id, p.wechat, p.external_userid
+            FROM outreach_events e
+            JOIN outreach_plans p ON p.id=e.plan_id
+            WHERE {auto_plan}
+              AND e.event_type='task_skipped_order_state_changed'
+              AND e.created_at>=?
+            """,
+            (window_start,),
+        ).fetchall()
+        safety_rows = conn.execute(
+            f"""
+            SELECT e.event_type, COUNT(*) AS count
+            FROM outreach_events e
+            JOIN outreach_plans p ON p.id=e.plan_id
+            WHERE {auto_plan}
+              AND e.created_at>=?
+              AND e.event_type IN ('task_skipped_order_state_changed', 'task_failed')
+            GROUP BY e.event_type
+            """,
+            (window_start,),
+        ).fetchall()
+
+        def contact_key(row: Any) -> tuple[str, str, str]:
+            external = _string(row["external_userid"]).lower() or _string(row["customer_id"]).lower()
+            return (
+                _string(row["corp_id"]).lower(),
+                _string(row["wechat"]).lower(),
+                external,
+            )
+
+        customer_messages: dict[tuple[str, str, str], list[datetime]] = {}
+        for row in message_rows:
+            parsed = _parse_iso(_string(row["created_at"]))
+            if parsed:
+                customer_messages.setdefault(contact_key(row), []).append(parsed.astimezone(timezone.utc))
+
+        successful_runs: dict[tuple[str, str, str], list[datetime]] = {}
+        for row in run_rows:
+            if _string(row["error"]):
+                continue
+            output = loads_dict(row["output_snapshot"])
+            messages = output.get("reply_messages")
+            if not isinstance(messages, list):
+                messages = output.get("http_response_reply_messages")
+            parsed = _parse_iso(_string(row["created_at"]))
+            if isinstance(messages, list) and messages and parsed:
+                successful_runs.setdefault(contact_key(row), []).append(parsed.astimezone(timezone.utc))
+
+        sent_count = len(sent_rows)
+        replied_24h = 0
+        replied_72h = 0
+        ai_resumed_72h = 0
+        value_only_count = 0
+        asset_count = 0
+        asset_reply_count = 0
+        repeated_assets = 0
+        unique_contacts: set[tuple[str, str, str]] = set()
+        seen_assets: set[tuple[tuple[str, str, str], str]] = set()
+        plan_angles: dict[str, list[tuple[int, str]]] = {}
+        first_sent_by_contact: dict[tuple[str, str, str], datetime] = {}
+
+        for row in sent_rows:
+            sent_at = _parse_iso(_string(row["sent_at"]))
+            if not sent_at:
+                continue
+            sent_at = sent_at.astimezone(timezone.utc)
+            key = contact_key(row)
+            unique_contacts.add(key)
+            first_sent_by_contact[key] = min(first_sent_by_contact.get(key, sent_at), sent_at)
+            has_reply_24h = any(
+                sent_at < item <= sent_at + timedelta(hours=24)
+                for item in customer_messages.get(key, [])
+            )
+            has_reply_72h = any(
+                sent_at < item <= sent_at + timedelta(hours=72)
+                for item in customer_messages.get(key, [])
+            )
+            replied_24h += int(has_reply_24h)
+            replied_72h += int(has_reply_72h)
+            ai_resumed_72h += int(
+                any(
+                    sent_at < item <= sent_at + timedelta(hours=72)
+                    for item in successful_runs.get(key, [])
+                )
+            )
+
+            metadata: dict[str, Any] = {}
+            resolved_asset: dict[str, Any] = {}
+            for item in loads_list(row["content_sources"]):
+                if not isinstance(item, dict):
+                    continue
+                if isinstance(item.get("outreach_task_metadata"), dict):
+                    metadata = item["outreach_task_metadata"]
+                if isinstance(item.get("resolved_asset"), dict):
+                    resolved_asset = item["resolved_asset"]
+            value_only_count += int(_string(metadata.get("content_mode")) == "value_only")
+            plan_angles.setdefault(_string(row["plan_id"]), []).append(
+                (
+                    _int(metadata.get("normalized_delay_minutes"), 0),
+                    _string(metadata.get("persuasion_angle")),
+                )
+            )
+            asset_key = _string(resolved_asset.get("document_id") or resolved_asset.get("url"))
+            if asset_key:
+                asset_count += 1
+                asset_reply_count += int(has_reply_72h)
+                scoped_asset = (key, asset_key)
+                repeated_assets += int(scoped_asset in seen_assets)
+                seen_assets.add(scoped_asset)
+
+        repeated_angle_pairs = 0
+        angle_pairs = 0
+        for items in plan_angles.values():
+            ordered = [angle for _, angle in sorted(items) if angle]
+            for previous, current_angle in zip(ordered, ordered[1:]):
+                angle_pairs += 1
+                repeated_angle_pairs += int(previous == current_angle)
+
+        deposit_contacts: set[tuple[str, str, str]] = set()
+        for row in payment_rows:
+            payload = loads_dict(row["payload_json"])
+            paid = _string(payload.get("deposit_state")) in {
+                "paid_by_order",
+                "paid_by_screenshot",
+                "paid",
+            } or bool(payload.get("prepay_paid"))
+            paid_at = _parse_iso(_string(row["created_at"]))
+            key = contact_key(row)
+            first_sent = first_sent_by_contact.get(key)
+            if paid and paid_at and first_sent and first_sent < paid_at <= first_sent + timedelta(days=7):
+                deposit_contacts.add(key)
+
+        safety_counts = {_string(row["event_type"]): int(row["count"]) for row in safety_rows}
+
+        def rate(value: int, denominator: int) -> float:
+            return round(value / denominator, 4) if denominator else 0.0
+
+        return {
+            "window_days": 30,
+            "sent_tasks": sent_count,
+            "contact_count": len(unique_contacts),
+            "reopened_24h_count": replied_24h,
+            "reopened_24h_rate": rate(replied_24h, sent_count),
+            "reopened_72h_count": replied_72h,
+            "reopened_72h_rate": rate(replied_72h, sent_count),
+            "ai_resumed_72h_count": ai_resumed_72h,
+            "ai_resumed_72h_rate": rate(ai_resumed_72h, sent_count),
+            "deposit_7d_count": len(deposit_contacts),
+            "deposit_7d_rate": rate(len(deposit_contacts), len(unique_contacts)),
+            "average_touches_per_customer": round(sent_count / len(unique_contacts), 2) if unique_contacts else 0.0,
+            "value_only_count": value_only_count,
+            "value_only_rate": rate(value_only_count, sent_count),
+            "repeated_angle_pairs": repeated_angle_pairs,
+            "repeated_angle_rate": rate(repeated_angle_pairs, angle_pairs),
+            "asset_send_count": asset_count,
+            "asset_repeat_count": repeated_assets,
+            "asset_repeat_rate": rate(repeated_assets, asset_count),
+            "asset_reply_72h_count": asset_reply_count,
+            "asset_reply_72h_rate": rate(asset_reply_count, asset_count),
+            "safety_stop_count": safety_counts.get("task_skipped_order_state_changed", 0),
+            "failure_count": safety_counts.get("task_failed", 0),
+            "complaint_rate": None,
+            "complaint_measurement": "unavailable_without_structured_event",
+            "effective_reply_measurement": "customer_reply_and_successful_ai_chain_proxy",
         }
 
     def create_outreach_plan(
@@ -787,6 +993,153 @@ class OutreachRepositoryMixin:
         with self.store.connect() as conn:
             cursor = conn.execute(query, params)
         return int(cursor.rowcount or 0)
+
+    def cancel_outreach_for_customer_reply(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str = "",
+        request_id: str = "",
+    ) -> dict[str, Any]:
+        scope = build_customer_scope(
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
+        if not scope.persistence_allowed:
+            return {"cancelled_plans": 0, "skipped_tasks": 0}
+
+        now = utc_now_iso()
+        plan_ids: list[str] = []
+        skipped_tasks = 0
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM outreach_plans
+                WHERE corp_id=?
+                  AND lower(wechat)=lower(?)
+                  AND (lower(external_userid)=lower(?) OR customer_id=?)
+                  AND status IN ('draft', 'active', 'waiting', 'paused')
+                """,
+                (corp_id, wechat, external_userid or customer_id, customer_id),
+            ).fetchall()
+            plan_ids = [_string(row["id"]) for row in rows if _string(row["id"])]
+            for plan_id in plan_ids:
+                cursor = conn.execute(
+                    """
+                    UPDATE outreach_tasks
+                    SET status='skipped', error_message='customer_replied', updated_at=?
+                    WHERE plan_id=? AND status IN ('pending', 'checking', 'check_failed')
+                    """,
+                    (now, plan_id),
+                )
+                skipped_tasks += int(cursor.rowcount or 0)
+                conn.execute(
+                    """
+                    UPDATE outreach_plans
+                    SET status='cancelled', cancelled_at=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (now, now, plan_id),
+                )
+
+        for plan_id in plan_ids:
+            self.add_outreach_event(
+                plan_id=plan_id,
+                task_id="",
+                customer_id=customer_id,
+                event_type="plan_cancelled_customer_replied",
+                event_summary="Customer replied; remaining personalized outreach was cancelled",
+                payload={"request_id": request_id, "skipped_tasks": skipped_tasks},
+            )
+        if plan_ids:
+            self.update_customer_outreach_state(
+                scope.sales_contact_key,
+                outreach_status="cancelled",
+                outreach_plan_id="",
+            )
+        return {"cancelled_plans": len(plan_ids), "skipped_tasks": skipped_tasks}
+
+    def recent_sop_delivery(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str = "",
+        hours: int = 72,
+    ) -> list[dict[str, Any]]:
+        if not _string(wechat):
+            return []
+        since = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(hours)))).isoformat()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT sop_pack_id, sop_pack_name, sop_category, trigger_source,
+                       reply_messages_json, sent_at
+                FROM sop_send_tasks
+                WHERE status='sent'
+                  AND corp_id=?
+                  AND lower(wechat)=lower(?)
+                  AND (lower(external_userid)=lower(?) OR customer_id=?)
+                  AND sent_at>=?
+                ORDER BY sent_at DESC
+                LIMIT 20
+                """,
+                (corp_id, wechat, external_userid or customer_id, customer_id, since),
+            ).fetchall()
+        return [
+            {
+                "sop_pack_id": _string(row["sop_pack_id"]),
+                "sop_pack_name": _string(row["sop_pack_name"]),
+                "sop_category": _string(row["sop_category"]),
+                "trigger_source": _string(row["trigger_source"]),
+                "sent_at": _string(row["sent_at"]),
+                "reply_messages": loads_list(row["reply_messages_json"]),
+            }
+            for row in rows
+        ]
+
+    def outreach_sent_today_count(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str = "",
+        now: str | None = None,
+    ) -> int:
+        if not _string(wechat):
+            return 0
+        current = _parse_iso(now) if now else datetime.now(timezone.utc)
+        current = current or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        beijing = timezone(timedelta(hours=8))
+        local = current.astimezone(beijing)
+        start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).isoformat()
+        end = (
+            local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        ).astimezone(timezone.utc).isoformat()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM outreach_tasks t
+                JOIN outreach_plans p ON p.id=t.plan_id
+                WHERE t.status='sent'
+                  AND t.sent_at>=? AND t.sent_at<?
+                  AND p.corp_id=?
+                  AND lower(p.wechat)=lower(?)
+                  AND (lower(p.external_userid)=lower(?) OR p.customer_id=?)
+                """,
+                (start, end, corp_id, wechat, external_userid or customer_id, customer_id),
+            ).fetchone()
+        return int(row[0] or 0)
 
     def list_due_outreach_tasks(
         self,

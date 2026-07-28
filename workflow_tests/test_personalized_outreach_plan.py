@@ -5,10 +5,37 @@ import unittest
 from types import SimpleNamespace
 from typing import Any
 
-from app.services.outreach_service import OutreachService, build_outreach_activity_quote_fact
+from app.services.outreach_service import (
+    OutreachService,
+    _normalize_outreach_schedule,
+    build_outreach_activity_quote_fact,
+)
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    def test_schedule_supports_immediate_touch_and_daily_limit(self) -> None:
+        schedule = _normalize_outreach_schedule(
+            "2026-07-28T01:00:00+00:00",
+            [
+                {"delay_minutes": 0},
+                {"delay_minutes": 360},
+                {"delay_minutes": 720},
+            ],
+        )
+
+        self.assertEqual(schedule[0]["scheduled_at"], "2026-07-28T01:00:00+00:00")
+        self.assertEqual(schedule[1]["scheduled_at"], "2026-07-28T07:00:00+00:00")
+        self.assertEqual(schedule[2]["scheduled_at"], "2026-07-29T00:30:00+00:00")
+
+    def test_schedule_moves_quiet_hour_touch_to_beijing_0830(self) -> None:
+        schedule = _normalize_outreach_schedule(
+            "2026-07-28T13:30:00+00:00",
+            [{"delay_minutes": 60}, {"delay_minutes": 600}],
+        )
+
+        self.assertEqual(schedule[0]["scheduled_at"], "2026-07-29T00:30:00+00:00")
+        self.assertGreaterEqual(schedule[1]["normalized_delay_minutes"], 60 + 360)
+
     def test_activity_quote_fact_uses_visible_quote_or_structured_sop_progress(self) -> None:
         message_fact = build_outreach_activity_quote_fact(
             [
@@ -248,7 +275,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                         {
                             "step": 1,
                             "persuasion_angle": "empathy",
-                            "draft_text": "只有一步",
+                            "reply_messages": [{"type": "text", "order": 1, "content": {"text": "只有一步"}}],
                         }
                     ],
                 },
@@ -278,7 +305,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                         {
                             "step": 1,
                             "persuasion_angle": "unsupported_angle",
-                            "draft_text": "结构错误",
+                            "reply_messages": [{"type": "text", "order": 1, "content": {"text": "结构错误"}}],
                         }
                     ],
                 },
@@ -306,26 +333,32 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "steps": [
                 {
                     "step": 1,
-                    "delay_minutes": 1440,
+                    "delay_minutes": 360,
+                    "timing_reason": "先降低客户时间压力",
+                    "urgency_level": "same_day",
+                    "content_mode": "value_only",
                     "intent": "time_reassurance",
                     "persuasion_angle": "empathy",
                     "new_value": "到店时间后定",
                     "avoid_repeating": ["完整活动规则"],
-                    "draft_text": "亲，您时间没定也不影响，后面按您方便安排就行。",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，您时间没定也不影响，后面按您方便安排就行。"}}],
                     "asset_strategy": "none",
                     "cta": "回复大概方便的时间",
                     "payment_collection_basis": "none",
                     "payment_collection_evidence": {"activity_quote_message_index": None},
-                    "should_send_payment_collection": True,
+                    "should_send_payment_collection": False,
                 },
                 {
                     "step": 2,
-                    "delay_minutes": 4320,
+                    "delay_minutes": 1440,
+                    "timing_reason": "价值铺垫后再降低付款门槛",
+                    "urgency_level": "normal",
+                    "content_mode": "transaction",
                     "intent": "deposit_value",
                     "persuasion_angle": "low_risk_action",
                     "new_value": "先保留活动资格",
                     "avoid_repeating": ["距离顾虑"],
-                    "draft_text": "亲，您可以先把活动资格留住，到店时间后面再定。",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，您可以先把活动资格留住，到店时间后面再定。"}}],
                     "asset_strategy": "none",
                     "cta": "支付10元预约金",
                     "payment_collection_basis": "model_selected_after_quote",
@@ -378,12 +411,15 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "steps": [
                 {
                     "step": 1,
-                    "delay_minutes": 1440,
+                    "delay_minutes": 360,
+                    "timing_reason": "用专业信息先解除顾虑",
+                    "urgency_level": "same_day",
+                    "content_mode": "value_only",
                     "intent": "effect_reassurance",
                     "persuasion_angle": "professionalism",
                     "new_value": "到店先检测",
                     "avoid_repeating": ["反弹问题原话"],
-                    "draft_text": "亲，前面的活动我再帮您接着留意。",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，前面的活动我再帮您接着留意。"}}],
                     "asset_strategy": "none",
                     "cta": "回复斑点情况",
                     "payment_collection_basis": "none",
@@ -391,12 +427,15 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 },
                 {
                     "step": 2,
-                    "delay_minutes": 4320,
+                    "delay_minutes": 1440,
+                    "timing_reason": "隔天再提供低风险动作",
+                    "urgency_level": "normal",
+                    "content_mode": "transaction",
                     "intent": "deposit_value",
                     "persuasion_angle": "low_risk_action",
                     "new_value": "活动资格可先保留",
                     "avoid_repeating": ["检测流程"],
-                    "draft_text": "亲，活动资格可以先保留，到店时间后面再定。",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，活动资格可以先保留，到店时间后面再定。"}}],
                     "asset_strategy": "none",
                     "cta": "支付10元预约金",
                     "payment_collection_basis": "model_selected_after_quote",
@@ -405,10 +444,17 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 },
             ],
         }
+        repaired_response = json.loads(json.dumps(response, ensure_ascii=False))
+        repaired_response["steps"][1]["content_mode"] = "soft_conversion"
+        repaired_response["steps"][1]["payment_collection_basis"] = "none"
+        repaired_response["steps"][1]["payment_collection_evidence"] = {
+            "activity_quote_message_index": None
+        }
+        repaired_response["steps"][1]["should_send_payment_collection"] = False
         repository = _Repository()
         service = OutreachService(
             repository=repository,
-            model_client=_ModelClient(response=response),
+            model_client=_SequenceModelClient([response, repaired_response, repaired_response]),
             system_client=object(),
         )
 
@@ -441,12 +487,15 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "steps": [
                 {
                     "step": 1,
-                    "delay_minutes": 1440,
+                    "delay_minutes": 360,
+                    "timing_reason": "先提供操作知识",
+                    "urgency_level": "same_day",
+                    "content_mode": "value_only",
                     "intent": "education",
                     "persuasion_angle": "education",
                     "new_value": "解释操作过程",
                     "avoid_repeating": ["完整报价"],
-                    "draft_text": "亲，我给您补一个操作过程参考，您看完会更直观。",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，我给您补一个操作过程参考，您看完会更直观。"}}],
                     "asset_strategy": "operation_video",
                     "asset_id": "operation_pack:1",
                     "cta": "看完回复感受",
@@ -454,12 +503,15 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 },
                 {
                     "step": 2,
-                    "delay_minutes": 4320,
+                    "delay_minutes": 1440,
+                    "timing_reason": "隔天用真实案例增强信任",
+                    "urgency_level": "normal",
+                    "content_mode": "soft_conversion",
                     "intent": "effect_reassurance",
                     "persuasion_angle": "proof",
                     "new_value": "同类斑点参考",
                     "avoid_repeating": ["操作过程"],
-                    "draft_text": "亲，我再给您看个同类情况参考，您主要担心的是效果对吧？",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，我再给您看个同类情况参考，您主要担心的是效果对吧？"}}],
                     "asset_strategy": "case_search",
                     "case_query": "晒斑改善案例",
                     "fallback_asset_id": "effect_pack:2",
@@ -558,24 +610,30 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "steps": [
                 {
                     "step": 1,
-                    "delay_minutes": 1440,
+                    "delay_minutes": 360,
+                    "timing_reason": "先提供护理知识",
+                    "urgency_level": "same_day",
+                    "content_mode": "value_only",
                     "intent": "education",
                     "persuasion_angle": "education",
                     "new_value": "简单护理知识",
                     "avoid_repeating": ["价格"],
-                    "draft_text": "亲，我给您补个简单护理知识，平时防晒也会影响色素状态。",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，我给您补个简单护理知识，平时防晒也会影响色素状态。"}}],
                     "asset_strategy": "none",
                     "cta": "回复斑点时间",
                     "should_send_payment_collection": False,
                 },
                 {
                     "step": 2,
-                    "delay_minutes": 4320,
+                    "delay_minutes": 1440,
+                    "timing_reason": "隔天补充真实效果参考",
+                    "urgency_level": "normal",
+                    "content_mode": "soft_conversion",
                     "intent": "effect_reassurance",
                     "persuasion_angle": "proof",
                     "new_value": "效果参考",
                     "avoid_repeating": ["护理知识"],
-                    "draft_text": "亲，我给您补个同类参考，您看完会更直观。",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，我给您补个同类参考，您看完会更直观。"}}],
                     "asset_strategy": "case_search",
                     "case_query": "晒斑改善案例",
                     "fallback_asset_id": "effect_pack:2",
@@ -613,14 +671,17 @@ class _ModelClient:
             "steps": [
                 {
                     "step": 1,
-                    "delay_minutes": 1440,
+                    "delay_minutes": 360,
+                    "timing_reason": "客户刚结束对话，先低压力承接",
+                    "urgency_level": "same_day",
+                    "content_mode": "soft_conversion",
                     "intent": "store_convenience",
                     "persuasion_angle": "empathy",
                     "new_value": "到店时间可以后定",
                     "avoid_repeating": ["门店距离"],
                     "before_send_check": True,
                     "message_goal": "化解距离顾虑",
-                    "draft_text": "亲，您上次主要是觉得距离不太方便。活动名额可以先留着，到店时间按您方便安排。",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，您上次主要是觉得距离不太方便。活动名额可以先留着，到店时间按您方便安排。"}}],
                     "asset_strategy": "none",
                     "cta": "回复是否愿意继续了解",
                     "should_send_payment_collection": False,
@@ -628,14 +689,17 @@ class _ModelClient:
                 },
                 {
                     "step": 2,
-                    "delay_minutes": 4320,
+                    "delay_minutes": 1440,
+                    "timing_reason": "隔天补充专业流程价值",
+                    "urgency_level": "normal",
+                    "content_mode": "value_only",
                     "intent": "professional_value",
                     "persuasion_angle": "professionalism",
                     "new_value": "到店先检测再决定",
                     "avoid_repeating": ["活动名额"],
                     "before_send_check": True,
                     "message_goal": "用专业流程降低到店顾虑",
-                    "draft_text": "亲，到店会先看斑点情况和适合的方向，合适再决定，您主要是哪类斑点呢？",
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，到店会先看斑点情况和适合的方向，合适再决定，您主要是哪类斑点呢？"}}],
                     "asset_strategy": "none",
                     "cta": "回复斑点类型",
                     "should_send_payment_collection": False,

@@ -105,6 +105,85 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OutreachRepositoryDueTaskTests(unittest.TestCase):
+    def test_customer_reply_cancels_active_plan_and_remaining_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
+            store.initialize()
+            repository = AppRepository(store)
+            created = repository.create_outreach_plan(
+                customer_id="customer-reply",
+                corp_id="corp",
+                user_id="7294",
+                wechat="DY258",
+                external_userid="external-reply",
+                customer_stage="P2_OBJECTION",
+                stall_reason="silent",
+                customer_psychology="需要重新承接",
+                plan_goal="重新开口",
+                source_snapshot={},
+                tasks=[_due_task(1, "第一步"), _due_task(2, "第二步")],
+            )
+            repository.update_outreach_plan_status(created["plan"]["id"], "active")
+
+            result = repository.cancel_outreach_for_customer_reply(
+                customer_id="customer-reply",
+                corp_id="corp",
+                wechat="dy258",
+                external_userid="external-reply",
+                request_id="request-reply",
+            )
+
+            detail = repository.get_outreach_plan(created["plan"]["id"])
+            self.assertEqual(result, {"cancelled_plans": 1, "skipped_tasks": 2})
+            self.assertEqual(detail["plan"]["status"], "cancelled")
+            self.assertTrue(all(task["status"] == "skipped" for task in detail["tasks"]))
+            self.assertIn(
+                "plan_cancelled_customer_replied",
+                [event["event_type"] for event in detail["events"]],
+            )
+
+    def test_recent_sop_delivery_is_scoped_and_available_for_model_dedupe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
+            store.initialize()
+            repository = AppRepository(store)
+            now = "2026-07-28T12:00:00+00:00"
+            with store.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO sop_events
+                        (event_id, event_type, source, received_at, updated_at)
+                    VALUES ('event-sop', 'sop_friend_added_schedule_batch', 'test', ?, ?)
+                    """,
+                    (now, now),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO sop_send_tasks
+                        (id, event_id, idempotency_key, customer_id, external_userid, corp_id,
+                         user_id, wechat, sop_pack_id, sop_pack_name, sop_category,
+                         reply_messages_json, status, created_at, updated_at, sent_at)
+                    VALUES
+                        ('task-sop', 'event-sop', 'idem-sop', 'customer-sop', 'external-sop', 'corp',
+                         '7294', 'DY258', 's10_need_and_case', '需求案例', 'need_and_case',
+                         '[{"type":"text","order":1,"content":{"text":"效果参考"}}]',
+                         'sent', ?, ?, ?)
+                    """,
+                    (now, now, now),
+                )
+
+            deliveries = repository.recent_sop_delivery(
+                customer_id="customer-sop",
+                corp_id="corp",
+                wechat="dy258",
+                external_userid="external-sop",
+                hours=72,
+            )
+
+            self.assertEqual(len(deliveries), 1)
+            self.assertEqual(deliveries[0]["sop_pack_id"], "s10_need_and_case")
+            self.assertEqual(deliveries[0]["reply_messages"][0]["type"], "text")
+
     def test_task_decoder_preserves_structured_outreach_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
@@ -333,6 +412,9 @@ class OutreachRepositoryDueTaskTests(unittest.TestCase):
             )
             repository.update_outreach_plan_status(manual["plan"]["id"], "active")
             with store.connect() as conn:
+                conn.execute(
+                    "UPDATE outreach_plans SET created_at='2026-07-28T02:00:00+00:00'"
+                )
                 conn.execute(
                     """
                     INSERT INTO sop_events
