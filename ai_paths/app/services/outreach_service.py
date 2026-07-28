@@ -290,8 +290,10 @@ class OutreachService:
         current_stage: str = "",
         business_goal: str = "",
         sop_plan_id: str = "",
+        source_context: dict[str, Any] | None = None,
+        trigger_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        context = self.repository.recent_customer_context(
+        context = source_context or self.repository.recent_customer_context(
             customer_id,
             corp_id=corp_id,
             wechat=wechat,
@@ -312,6 +314,7 @@ class OutreachService:
             "business_goal": goal,
             "sop_plan_id": sop_plan_id,
             "offer_context": S10_OUTREACH_CONTEXT,
+            "trigger_context": trigger_context or {},
         }
         response = await self.model_client.chat_json(
             [
@@ -338,6 +341,9 @@ class OutreachService:
                 continue
             delay = int(step.get("delay_minutes") or (60 * index))
             should_send_payment_collection = _bool(step.get("should_send_payment_collection"))
+            draft_text = _string(step.get("draft_text"))
+            if not draft_text:
+                continue
             tasks.append(
                 {
                     "step_index": int(step.get("step") or index),
@@ -350,20 +356,15 @@ class OutreachService:
                     ),
                     "should_send_payment_collection": should_send_payment_collection,
                     "before_send_check": bool(step.get("before_send_check", True)),
+                    "reply_messages": (
+                        [{"type": "text", "order": 1, "content": {"text": draft_text}}]
+                        if draft_text
+                        else []
+                    ),
                 }
             )
         if not tasks:
-            tasks = [
-                {
-                    "step_index": 1,
-                    "scheduled_at": _add_minutes(now, 60),
-                    "intent": "trust_rebuild",
-                    "message_goal": "重新承接客户顾虑，邀请继续沟通",
-                    "content_sources": _task_content_sources(["s10_offer"], should_send_payment_collection=False),
-                    "should_send_payment_collection": False,
-                    "before_send_check": True,
-                }
-            ]
+            raise RuntimeError("outreach_plan_model_missing_reviewable_drafts")
         source_snapshot["ai_result"] = response
         return {
             "created": True,
@@ -382,6 +383,85 @@ class OutreachService:
                 sop_plan_id=sop_plan_id,
             ),
         }
+
+    async def ensure_platform_task_plan(
+        self,
+        *,
+        identity: dict[str, Any],
+        conversation_messages: list[dict[str, Any]],
+        conversation_activity: dict[str, Any],
+        customer_context: dict[str, Any],
+        platform_task: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create one reviewable day-2 personalized plan and reuse it on later platform triggers."""
+        customer_id = _string(identity.get("customer_id"))
+        corp_id = _string(identity.get("corp_id"))
+        wechat = _string(identity.get("wechat"))
+        external_userid = _string(identity.get("external_userid"))
+        active = self.repository.get_active_outreach_plan_for_customer(
+            customer_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+        )
+        if active:
+            plan = active.get("plan") if isinstance(active.get("plan"), dict) else {}
+            latest_customer_at = _parse_iso(_string(conversation_activity.get("latest_customer_message_at")))
+            plan_created_at = _parse_iso(_string(plan.get("created_at")))
+            if latest_customer_at and plan_created_at and latest_customer_at > plan_created_at:
+                self.repository.update_outreach_plan_status(_string(plan.get("id")), "cancelled")
+                self.repository.add_outreach_event(
+                    plan_id=_string(plan.get("id")),
+                    task_id="",
+                    customer_id=customer_id,
+                    event_type="platform_task_plan_superseded_by_customer_reply",
+                    event_summary="Customer replied after plan creation; regenerate from latest conversation",
+                    payload={
+                        "latest_customer_message_at": latest_customer_at.isoformat(),
+                        "plan_created_at": plan_created_at.isoformat(),
+                        "platform_task": platform_task,
+                    },
+                )
+            else:
+                self.repository.add_outreach_event(
+                    plan_id=_string(plan.get("id")),
+                    task_id="",
+                    customer_id=customer_id,
+                    event_type="platform_task_filtered_plan_reused",
+                    event_summary="Filtered platform task and reused personalized outreach plan",
+                    payload={"platform_task": platform_task, "conversation_activity": conversation_activity},
+                )
+                return {"created": False, "reused": True, **active}
+
+        local_context = self.repository.recent_customer_context(
+            customer_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+        )
+        source_context = {
+            "memory": local_context.get("memory") or {},
+            "recent_messages": conversation_messages[-30:],
+            "conversation_activity": conversation_activity,
+            "customer_context": customer_context,
+        }
+        result = await self.generate_plan(
+            customer_id=customer_id,
+            corp_id=corp_id,
+            user_id=_string(identity.get("user_id")),
+            wechat=wechat,
+            external_userid=external_userid,
+            current_stage="day2_personalized_spoken_unbooked",
+            business_goal="根据客户最近卡点制定第二天起的个性化唤醒计划，促使客户重新开口并推进预约金",
+            source_context=source_context,
+            trigger_context={
+                "source": "sop_platform_task",
+                "platform_task_filtered": True,
+                "platform_task": platform_task,
+                "activation_policy": "review_required",
+            },
+        )
+        return {"reused": False, **result}
 
     def activate_plan(self, plan_id: str) -> dict[str, Any]:
         self.repository.add_outreach_event(

@@ -54,12 +54,18 @@ customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_
 store_service = StoreService(platform_agent_client)
 sop_reply_pack_service = SopReplyPackService(settings)
 precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
+outreach_service = OutreachService(
+    repository=repository,
+    model_client=model_client,
+    system_client=outreach_system_client,
+)
 sop_execution_service = SopExecutionService(
     repository=repository,
     sop_reply_pack_service=sop_reply_pack_service,
     model_client=model_client,
     memory_store=memory_store,
     customer_context_service=customer_context_service,
+    personalized_outreach_service=outreach_service,
     event_model_retry_attempts=settings.sop_event_model_retry_attempts,
     event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
     event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
@@ -74,6 +80,7 @@ sop_event_service = SopEventService(
     sop_execution_service=sop_execution_service,
     memory_store=memory_store,
     customer_context_service=customer_context_service,
+    personalized_outreach_service=outreach_service,
     daily_touch_soft_limit=settings.sop_event_daily_touch_soft_limit,
     default_identity={
         "corp_id": settings.platform_agent_default_corp_id,
@@ -110,12 +117,6 @@ chat_runtime = ChatRuntime(
     profile_event_extractor=reply_graphs.profile_event_extractor,
     settings=settings,
 )
-outreach_service = OutreachService(
-    repository=repository,
-    model_client=model_client,
-    system_client=outreach_system_client,
-)
-
 app = FastAPI(title=settings.app_name)
 logger = logging.getLogger(__name__)
 sop_event_retry_worker: asyncio.Task[None] | None = None

@@ -1883,17 +1883,18 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         repo = _Repo()
         client = _OutreachClient(messages=[])
         selector = _Selector({"send_sop": True, "sop_pack_id": "opening", "reason": "should not run"})
+        context_service = _CustomerContextService(
+            {
+                "source": "platform_agent",
+                "orders": [],
+                "orders_error": "TimeoutError: timed out",
+            }
+        )
         service = _service(
             repo=repo,
             client=client,
             selector=selector,
-            customer_context_service=_CustomerContextService(
-                {
-                    "source": "platform_agent",
-                    "orders": [],
-                    "orders_error": "TimeoutError: timed out",
-                }
-            ),
+            customer_context_service=context_service,
         )
         payload = _base_payload(
             event_id="evt_order_fetch_failed",
@@ -1906,11 +1907,17 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         repo.create_sop_event(payload)
         result = await service.process_event("evt_order_fetch_failed")
 
-        self.assertEqual(result["status"], "processed_with_errors")
+        self.assertEqual(result["status"], "retry_pending_model")
         self.assertEqual(repo.tasks[0]["status"], "failed_order_fetch")
         self.assertIn("TimeoutError", repo.tasks[0]["error"])
         self.assertEqual(selector.calls, [])
         self.assertEqual(client.send_calls, [])
+
+        context_service.context = {"source": "platform_agent", "orders": []}
+        recovered = await service.process_due_model_retries()
+
+        self.assertEqual(recovered[0]["status"], "processed")
+        self.assertEqual(len(client.send_calls), 1)
 
     async def test_successful_send_records_minimal_sop_history_and_last_outreach_time(self) -> None:
         repo = _Repo()
@@ -2242,6 +2249,213 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.tasks[0]["send_payload"]["routing_mode"], "direct_platform_actions")
         self.assertFalse(repo.tasks[0]["send_response"]["event_decision"]["model_called"])
         self.assertEqual(selector.calls, [])
+
+    async def test_day1_platform_task_is_suppressed_to_avoid_duplicate_first_day_touch(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[])
+        service = _service(repo=repo, client=client)
+        payload = _base_payload(
+            event_id="evt_platform_day1",
+            event_type="sop_platform_task",
+            sop={
+                "day_stage": "day1",
+                "platform_task": {"message_content": [{"type": "text", "content": "平台第一天任务"}]},
+            },
+            customers=[{}],
+        )
+
+        repo.create_sop_event(payload)
+        await service.process_event("evt_platform_day1")
+
+        self.assertEqual(repo.tasks[0]["status"], "skipped_day1_platform_task")
+        self.assertEqual(client.send_calls, [])
+
+    async def test_platform_conversation_fetch_failure_is_retried_before_routing(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(fetch_result={"status": "failed", "error": "TimeoutError: timed out"})
+        service = _service(repo=repo, client=client)
+        payload = _base_payload(
+            event_id="evt_platform_fetch_retry",
+            event_type="sop_platform_task",
+            sop={"day_stage": "day2", "actions": [{"type": "text", "content": "平台后续触达"}]},
+            customers=[{}],
+        )
+
+        repo.create_sop_event(payload)
+        first = await service.process_event("evt_platform_fetch_retry")
+
+        self.assertEqual(first["status"], "retry_pending_model")
+        self.assertEqual(repo.tasks[0]["status"], "failed_conversation_fetch")
+        self.assertEqual(client.send_calls, [])
+
+        client.fetch_result = {"status": "ok", "messages": []}
+        recovered = await service.process_due_model_retries()
+
+        self.assertEqual(recovered[0]["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "sent")
+        self.assertEqual(len(client.send_calls), 1)
+
+    async def test_day2_spoken_customer_without_order_filters_platform_task_and_creates_plan(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            messages=[
+                {
+                    "direction": "customer",
+                    "content": "你们效果真的好吗",
+                    "msgtime": "2026-07-27T03:00:00+00:00",
+                }
+            ]
+        )
+        personalized = _PersonalizedOutreachService()
+        service = _service(
+            repo=repo,
+            client=client,
+            personalized_outreach_service=personalized,
+        )
+        payload = _base_payload(
+            event_id="evt_platform_day2_personalized",
+            event_type="sop_platform_task",
+            sop={
+                "day_stage": "day2",
+                "platform_task": {"message_content": [{"type": "text", "content": "平台统一效果跟进"}]},
+            },
+            customers=[{}],
+            created_at="2026-07-28T02:00:00+00:00",
+        )
+
+        repo.create_sop_event(payload)
+        await service.process_event("evt_platform_day2_personalized")
+
+        self.assertEqual(repo.tasks[0]["status"], "filtered_personalized_outreach")
+        self.assertEqual(client.send_calls, [])
+        self.assertEqual(len(personalized.calls), 1)
+        self.assertEqual(
+            personalized.calls[0]["platform_task"]["messages"][0]["content"]["text"],
+            "平台统一效果跟进",
+        )
+
+    async def test_day2_spoken_customer_with_pending_order_uses_personalized_plan(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[{"direction": "customer", "content": "我再考虑下"}])
+        personalized = _PersonalizedOutreachService()
+        context = _CustomerContextService(
+            {"source": "platform_agent", "orders": [{"id": "order-1", "status": 1, "is_current_order": True}]}
+        )
+        service = _service(
+            repo=repo,
+            client=client,
+            customer_context_service=context,
+            personalized_outreach_service=personalized,
+        )
+        payload = _base_payload(
+            event_id="evt_platform_day2_pending",
+            event_type="sop_platform_task",
+            sop={"day_stage": "day2", "actions": [{"type": "text", "content": "统一催付"}]},
+            customers=[{}],
+        )
+
+        repo.create_sop_event(payload)
+        await service.process_event("evt_platform_day2_pending")
+
+        self.assertEqual(repo.tasks[0]["status"], "filtered_personalized_outreach")
+        self.assertEqual(len(personalized.calls), 1)
+        self.assertEqual(client.send_calls, [])
+
+    async def test_day2_personalized_plan_failure_is_retried_without_forwarding_platform_task(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(messages=[{"direction": "customer", "content": "我担心效果"}])
+        personalized = _FlakyPersonalizedOutreachService()
+        service = _service(
+            repo=repo,
+            client=client,
+            personalized_outreach_service=personalized,
+        )
+        payload = _base_payload(
+            event_id="evt_platform_day2_plan_retry",
+            event_type="sop_platform_task",
+            sop={"day_stage": "day2", "actions": [{"type": "text", "content": "平台统一效果跟进"}]},
+            customers=[{}],
+        )
+
+        repo.create_sop_event(payload)
+        first = await service.process_event("evt_platform_day2_plan_retry")
+
+        self.assertEqual(first["status"], "retry_pending_model")
+        self.assertEqual(repo.tasks[0]["status"], "failed_personalized_outreach_plan")
+        self.assertEqual(client.send_calls, [])
+
+        personalized.fail = False
+        recovered = await service.process_due_model_retries()
+
+        self.assertEqual(recovered[0]["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "filtered_personalized_outreach")
+        self.assertEqual(len(personalized.calls), 2)
+        self.assertEqual(client.send_calls, [])
+
+    async def test_day2_never_spoke_and_booked_customers_keep_platform_delivery(self) -> None:
+        for suffix, messages, orders in (
+            ("silent", [], []),
+            (
+                "booked",
+                [{"direction": "customer", "content": "好的"}],
+                [{"id": "order-2", "status": 2, "is_current_order": True}],
+            ),
+        ):
+            repo = _Repo()
+            client = _OutreachClient(messages=messages)
+            context = _CustomerContextService({"source": "platform_agent", "orders": orders})
+            service = _service(repo=repo, client=client, customer_context_service=context)
+            payload = _base_payload(
+                event_id=f"evt_platform_day2_{suffix}",
+                event_type="sop_platform_task",
+                sop={"day_stage": "day2", "actions": [{"type": "text", "content": "平台后续触达"}]},
+                customers=[{}],
+            )
+
+            repo.create_sop_event(payload)
+            await service.process_event(f"evt_platform_day2_{suffix}")
+
+            self.assertEqual(repo.tasks[0]["status"], "sent")
+            self.assertEqual(len(client.send_calls), 1)
+            self.assertEqual(
+                repo.tasks[0]["send_payload"]["platform_task_routing"]["route"],
+                "direct",
+            )
+
+    async def test_day2_customer_remains_personalized_when_early_reply_is_outside_recent_window(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            messages=[
+                {
+                    "direction": "staff",
+                    "content": "后续统一触达内容",
+                    "msgtime": "2026-07-28T02:00:00+00:00",
+                }
+            ]
+        )
+        memory = _MemoryStore({"last_customer_message_at": "2026-07-26T02:00:00+00:00"})
+        personalized = _PersonalizedOutreachService()
+        service = _service(
+            repo=repo,
+            client=client,
+            memory_store=memory,
+            personalized_outreach_service=personalized,
+        )
+        payload = _base_payload(
+            event_id="evt_platform_day2_early_spoken",
+            event_type="sop_platform_task",
+            sop={"day_stage": "day3", "actions": [{"type": "text", "content": "平台第三天触达"}]},
+            customers=[{}],
+        )
+
+        repo.create_sop_event(payload)
+        await service.process_event("evt_platform_day2_early_spoken")
+
+        self.assertEqual(repo.tasks[0]["status"], "filtered_personalized_outreach")
+        routing = repo.tasks[0]["send_payload"]["platform_task_routing"]
+        self.assertFalse(routing["has_spoken_sources"]["recent_conversation"])
+        self.assertTrue(routing["has_spoken_sources"]["persisted_customer_message_time"])
+        self.assertEqual(client.send_calls, [])
 
     async def test_platform_task_bypasses_model_when_ai_auto_reply_is_disabled(self) -> None:
         repo = _Repo()
@@ -4155,6 +4369,7 @@ def _service(
     default_identity: dict[str, Any] | None = None,
     memory_store: Any | None = None,
     customer_context_service: Any | None = None,
+    personalized_outreach_service: Any | None = None,
     daily_touch_soft_limit: int = 2,
 ) -> SopEventService:
     return SopEventService(
@@ -4164,6 +4379,7 @@ def _service(
         sop_execution_service=selector or _Selector({"send_sop": False, "reason": "default reject"}),
         memory_store=memory_store,
         customer_context_service=customer_context_service or _CustomerContextService(),
+        personalized_outreach_service=personalized_outreach_service,
         daily_touch_soft_limit=daily_touch_soft_limit,
         default_identity=default_identity,
     )
@@ -4438,6 +4654,28 @@ class _CustomerContextService:
     def load(self, **kwargs: Any) -> dict[str, Any]:
         self.load_calls.append(kwargs)
         return dict(self.context)
+
+
+class _PersonalizedOutreachService:
+    def __init__(self, result: dict[str, Any] | None = None) -> None:
+        self.result = result or {"created": True, "plan": {"id": "plan-personalized"}}
+        self.calls: list[dict[str, Any]] = []
+
+    async def ensure_platform_task_plan(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        return dict(self.result)
+
+
+class _FlakyPersonalizedOutreachService(_PersonalizedOutreachService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail = True
+
+    async def ensure_platform_task_plan(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        if self.fail:
+            raise TimeoutError("personalized plan timed out")
+        return dict(self.result)
 
 
 class _Repo:

@@ -20,6 +20,7 @@ from app.services.sop_event_decision import (
 )
 from app.services.sop_execution_service import SopExecutionService, first_add_candidate_packs, is_platform_auto_opening_message
 from app.services.sop_message_sanitizer import apply_sop_text_adjustments, sanitize_sop_reply_messages
+from app.services.sop_platform_task_policy import classify_platform_task_route
 from app.services.sop_reply_pack_service import ALLOWED_MESSAGE_TYPES, SopReplyPackService
 from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import compact
@@ -46,6 +47,7 @@ class SopEventService:
         sop_execution_service: SopExecutionService | None = None,
         memory_store: Any | None = None,
         customer_context_service: Any | None = None,
+        personalized_outreach_service: Any | None = None,
         daily_touch_soft_limit: int = 2,
         default_identity: dict[str, Any] | None = None,
         persistent_retry_attempts: int = 4,
@@ -59,6 +61,7 @@ class SopEventService:
         self.sop_execution_service = sop_execution_service
         self.memory_store = memory_store
         self.customer_context_service = customer_context_service
+        self.personalized_outreach_service = personalized_outreach_service
         self.daily_touch_soft_limit = max(1, int(daily_touch_soft_limit or 2))
         self.persistent_retry_attempts = max(0, int(persistent_retry_attempts or 0))
         self.persistent_retry_base_delay_seconds = max(0.0, float(persistent_retry_base_delay_seconds or 0.0))
@@ -115,13 +118,24 @@ class SopEventService:
                 continue
             task_results.append(await self._send_task(task))
 
-        model_errors = [item for item in task_results if _string(item.get("status")) == "failed_model_error"]
-        if model_errors and _string(payload.get("event_type")) != "sop_platform_task":
+        event_type = _string(payload.get("event_type"))
+        retryable_statuses = {
+            "failed_model_error",
+            "failed_order_fetch",
+            "failed_personalized_outreach_not_configured",
+            "failed_personalized_outreach_plan",
+        }
+        if event_type == "sop_platform_task":
+            retryable_statuses.add("failed_conversation_fetch")
+        retryable_errors = [
+            item for item in task_results if _string(item.get("status")) in retryable_statuses
+        ]
+        if retryable_errors:
             schedule_retry = getattr(self.repository, "schedule_sop_event_model_retry", None)
             if callable(schedule_retry):
                 retry_event = schedule_retry(
                     event_id,
-                    error=_string(model_errors[-1].get("error")) or "event_model_failed",
+                    error=_string(retryable_errors[-1].get("error")) or "event_processing_failed",
                     max_attempts=self.persistent_retry_attempts,
                     base_delay_seconds=self.persistent_retry_base_delay_seconds,
                     max_delay_seconds=self.persistent_retry_max_delay_seconds,
@@ -338,6 +352,15 @@ class SopEventService:
             )
 
         customer_memory = self._load_customer_memory(identity)
+        self._record_observed_customer_activity(identity, conversation_activity)
+        if (
+            not _string(customer_memory.get("last_customer_message_at"))
+            and _string(conversation_activity.get("latest_customer_message_at"))
+        ):
+            customer_memory = {
+                **customer_memory,
+                "last_customer_message_at": _string(conversation_activity.get("latest_customer_message_at")),
+            }
         order_gate = self._load_sop_order_gate(identity, customer_memory)
         customer_context = dict(order_gate.get("customer_context") or {})
         customer_context["_sop_order_gate"] = {
@@ -421,6 +444,30 @@ class SopEventService:
         except Exception:
             return {}
         return memory if isinstance(memory, dict) else {}
+
+    def _record_observed_customer_activity(
+        self,
+        identity: dict[str, str],
+        conversation_activity: dict[str, Any],
+    ) -> None:
+        """Persist an observed customer reply so later limited history cannot erase that fact."""
+        latest_customer_message_at = _string(conversation_activity.get("latest_customer_message_at"))
+        if not latest_customer_message_at:
+            return
+        scope = customer_scope_from_identity(identity)
+        if not scope.persistence_allowed:
+            return
+        touch_message_time = getattr(self.repository, "touch_customer_message_time", None)
+        if not callable(touch_message_time):
+            return
+        try:
+            touch_message_time(
+                scope.sales_contact_key,
+                field="last_customer_message_at",
+                value=latest_customer_message_at,
+            )
+        except Exception:
+            return
 
     def _load_sop_order_gate(self, identity: dict[str, str], customer_memory: dict[str, Any]) -> dict[str, Any]:
         """Freshly load the current order and block unsafe SOP delivery states."""
@@ -842,6 +889,105 @@ class SopEventService:
             raw_messages,
             conversation_messages=conversation_messages,
         )
+        routing = classify_platform_task_route(
+            payload=payload,
+            customer=customer,
+            conversation_activity=conversation_activity,
+            customer_context=customer_context,
+            customer_memory=customer_memory,
+        )
+        if routing["route"] == "suppress_day1":
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="platform_actions",
+                sop_pack_name="platform_actions",
+                sop_category="platform_actions",
+                reply_messages=[],
+                status="skipped_day1_platform_task",
+                error="",
+                send_payload={
+                    "identity": identity,
+                    "routing_mode": "suppress_day1_platform_task",
+                    "platform_task_routing": routing,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
+                },
+            )
+        if routing["route"] == "defer":
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="platform_actions",
+                sop_pack_name="platform_actions",
+                sop_category="platform_actions",
+                reply_messages=[],
+                status="failed_order_fetch",
+                error=str((routing.get("order_gate") or {}).get("error") or routing["reason"]),
+                send_payload={
+                    "identity": identity,
+                    "routing_mode": "defer_platform_task_order_unknown",
+                    "platform_task_routing": routing,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
+                },
+            )
+        if routing["route"] == "personalized":
+            if self.personalized_outreach_service is None:
+                plan_result = {
+                    "created": False,
+                    "error": "personalized_outreach_service_not_configured",
+                }
+                status = "failed_personalized_outreach_not_configured"
+                error = "personalized_outreach_service_not_configured"
+            else:
+                try:
+                    plan_result = await self.personalized_outreach_service.ensure_platform_task_plan(
+                        identity=identity,
+                        conversation_messages=conversation_messages,
+                        conversation_activity=conversation_activity,
+                        customer_context=customer_context,
+                        platform_task={
+                            "event_id": str(payload.get("event_id") or ""),
+                            "created_at": str(payload.get("created_at") or ""),
+                            "messages": messages,
+                        },
+                    )
+                    status = "filtered_personalized_outreach"
+                    error = ""
+                except Exception as exc:
+                    plan_result = {
+                        "created": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                    status = "failed_personalized_outreach_plan"
+                    error = str(plan_result["error"])
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="personalized_outreach",
+                sop_pack_name="personalized_outreach",
+                sop_category="personalized_outreach",
+                reply_messages=[],
+                status=status,
+                error=error,
+                send_payload={
+                    "identity": identity,
+                    "routing_mode": "personalized_outreach_plan",
+                    "platform_task_routing": routing,
+                    "suppressed_platform_messages": messages,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
+                    "outreach_plan": compact(plan_result, max_chars=12000),
+                },
+                send_response={"outreach_plan": compact(plan_result, max_chars=12000)},
+            )
         if not messages:
             return self._create_task_record(
                 payload,
@@ -859,6 +1005,7 @@ class SopEventService:
                     "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                     "conversation_activity": conversation_activity,
                     "message_sanitize": sanitize_summary,
+                    "platform_task_routing": routing,
                 },
             )
 
@@ -882,6 +1029,7 @@ class SopEventService:
                     "message_sanitize": sanitize_summary,
                     "ai_auto_reply": ai_auto_reply,
                     "routing_mode": "direct_platform_actions",
+                    "platform_task_routing": routing,
                 },
             )
         return self._create_task_record(
@@ -902,6 +1050,7 @@ class SopEventService:
                 "message_sanitize": sanitize_summary,
                 "ai_auto_reply": ai_auto_reply,
                 "routing_mode": "direct_platform_actions",
+                "platform_task_routing": routing,
             },
             send_response={
                 "event_decision": {
@@ -1000,8 +1149,26 @@ class SopEventService:
         elif (
             task.get("id")
             and not task.get("created")
-            and _string(task.get("status")) in {"failed_model_error", "model_retry_resolved"}
-            and status in {"failed_model_error", "skipped_model_rejected"}
+            and _string(task.get("status"))
+            in {
+                "failed_model_error",
+                "failed_conversation_fetch",
+                "failed_order_fetch",
+                "failed_personalized_outreach_not_configured",
+                "failed_personalized_outreach_plan",
+                "model_retry_resolved",
+            }
+            and status
+            in {
+                "failed_model_error",
+                "failed_conversation_fetch",
+                "failed_order_fetch",
+                "failed_personalized_outreach_not_configured",
+                "failed_personalized_outreach_plan",
+                "filtered_personalized_outreach",
+                "pending",
+                "skipped_model_rejected",
+            }
         ):
             task = self.repository.update_sop_send_task(
                 str(task["id"]),
@@ -1010,7 +1177,7 @@ class SopEventService:
                 send_response=send_response or task.get("send_response") or {},
                 error=error,
             )
-            task["created"] = False
+            task["created"] = status == "pending"
         return task
 
     async def _send_task(self, task: dict[str, Any]) -> dict[str, Any]:
