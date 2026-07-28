@@ -8,7 +8,7 @@ from app.services.outreach_service import OutreachService
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
-    async def test_platform_task_plan_uses_latest_context_and_persists_reviewable_drafts(self) -> None:
+    async def test_platform_task_plan_uses_latest_context_and_auto_queues_drafts(self) -> None:
         repository = _Repository()
         model = _ModelClient()
         service = OutreachService(repository=repository, model_client=model, system_client=object())
@@ -50,20 +50,24 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         model_input = json.loads(model.calls[0]["messages"][1]["content"])
         self.assertEqual(model_input["recent_messages"][0]["content"], "门店太远了，我再考虑下")
         self.assertTrue(model_input["trigger_context"]["platform_task_filtered"])
-        self.assertEqual(model_input["trigger_context"]["activation_policy"], "review_required")
+        self.assertEqual(model_input["trigger_context"]["activation_policy"], "auto_approved")
         self.assertEqual(repository.created_plan["customer_id"], "22000001")
         self.assertEqual(
             repository.created_plan["tasks"][0]["reply_messages"][0]["content"]["text"],
             "亲，您上次主要是觉得距离不太方便。活动名额可以先留着，到店时间按您方便安排。",
         )
         self.assertTrue(repository.created_plan["tasks"][0]["before_send_check"])
+        self.assertTrue(result["auto_approved"])
+        self.assertEqual(result["plan"]["status"], "active")
+        self.assertEqual(repository.updated_statuses, [("plan-created", "active")])
+        self.assertEqual(repository.events[-1]["event_type"], "plan_auto_approved")
 
-    async def test_existing_draft_plan_is_reused_without_another_model_call(self) -> None:
+    async def test_existing_active_plan_is_reused_without_another_model_call(self) -> None:
         repository = _Repository()
         repository.active_plan = {
             "plan": {
                 "id": "plan-existing",
-                "status": "draft",
+                "status": "active",
                 "created_at": "2026-07-28T10:00:00+08:00",
             },
             "tasks": [{"id": "task-existing"}],
@@ -93,6 +97,51 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["created"])
         self.assertEqual(model.calls, [])
         self.assertEqual(repository.events[0]["event_type"], "platform_task_filtered_plan_reused")
+
+    async def test_legacy_review_plan_is_cancelled_and_replaced_by_auto_approved_plan(self) -> None:
+        repository = _Repository()
+        repository.active_plan = {
+            "plan": {
+                "id": "plan-legacy",
+                "status": "draft",
+                "created_at": "2026-07-28T10:00:00+08:00",
+                "source_snapshot": {
+                    "trigger_context": {
+                        "source": "sop_platform_task",
+                        "activation_policy": "review_required",
+                    }
+                },
+            },
+            "tasks": [{"id": "task-legacy"}],
+            "events": [],
+        }
+        model = _ModelClient()
+        service = OutreachService(repository=repository, model_client=model, system_client=object())
+
+        result = await service.ensure_platform_task_plan(
+            identity={
+                "customer_id": "22000001",
+                "corp_id": "corp-1",
+                "user_id": "7294",
+                "wechat": "DY258",
+                "external_userid": "external-1",
+            },
+            conversation_messages=[],
+            conversation_activity={
+                "real_customer_message_count": 1,
+                "latest_customer_message_at": "2026-07-28T09:00:00+08:00",
+            },
+            customer_context={"orders": []},
+            platform_task={"event_id": "platform-task-migrate", "messages": []},
+        )
+
+        self.assertTrue(result["created"])
+        self.assertTrue(result["auto_approved"])
+        self.assertEqual(
+            repository.updated_statuses,
+            [("plan-legacy", "cancelled"), ("plan-created", "active")],
+        )
+        self.assertEqual(repository.events[0]["event_type"], "legacy_review_plan_cancelled")
 
     async def test_customer_reply_after_draft_plan_regenerates_from_latest_conversation(self) -> None:
         repository = _Repository()
@@ -133,7 +182,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["created"])
         self.assertFalse(result["reused"])
-        self.assertEqual(repository.updated_statuses, [("plan-old", "cancelled")])
+        self.assertEqual(
+            repository.updated_statuses,
+            [("plan-old", "cancelled"), ("plan-created", "active")],
+        )
         self.assertEqual(repository.events[0]["event_type"], "platform_task_plan_superseded_by_customer_reply")
         self.assertEqual(len(model.calls), 1)
 
@@ -158,6 +210,120 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(repository.created_plan, {})
+
+    async def test_payment_card_requires_structured_quote_and_customer_acceptance_evidence(self) -> None:
+        response = {
+            "should_create_plan": True,
+            "steps": [
+                {
+                    "step": 1,
+                    "delay_minutes": 60,
+                    "intent": "deposit_value",
+                    "draft_text": "亲，您前面说要入口，我把预约金卡接着发您。",
+                    "payment_collection_basis": "explicit_request_after_quote",
+                    "payment_collection_evidence": {
+                        "activity_quote_message_index": 0,
+                        "customer_acceptance_message_index": 1,
+                    },
+                    "should_send_payment_collection": True,
+                },
+                {
+                    "step": 2,
+                    "delay_minutes": 360,
+                    "intent": "deposit_value",
+                    "draft_text": "亲，您忙完回我一句就行。",
+                    "payment_collection_basis": "explicit_request_after_quote",
+                    "payment_collection_evidence": {
+                        "activity_quote_message_index": 0,
+                        "customer_acceptance_message_index": 1,
+                    },
+                    "should_send_payment_collection": True,
+                },
+            ],
+        }
+        repository = _Repository()
+        service = OutreachService(
+            repository=repository,
+            model_client=_ModelClient(response=response),
+            system_client=object(),
+        )
+
+        await service.ensure_platform_task_plan(
+            identity={
+                "customer_id": "22000001",
+                "corp_id": "corp-1",
+                "user_id": "7294",
+                "wechat": "DY258",
+                "external_userid": "external-1",
+            },
+            conversation_messages=[
+                {
+                    "direction": "staff",
+                    "content": "活动总价268，每位先交10元预约金。",
+                    "created_at": "2026-07-28T09:00:00+08:00",
+                },
+                {
+                    "direction": "customer",
+                    "content": "可以，发入口吧。",
+                    "created_at": "2026-07-28T09:01:00+08:00",
+                },
+            ],
+            conversation_activity={"real_customer_message_count": 1},
+            customer_context={"orders": []},
+            platform_task={"event_id": "platform-task-card", "messages": []},
+        )
+
+        first_messages = repository.created_plan["tasks"][0]["reply_messages"]
+        second_messages = repository.created_plan["tasks"][1]["reply_messages"]
+        self.assertEqual([item["type"] for item in first_messages], ["text", "payment_collection"])
+        self.assertEqual([item["type"] for item in second_messages], ["text"])
+
+    async def test_payment_card_is_removed_when_evidence_indices_do_not_match_message_parties(self) -> None:
+        response = {
+            "should_create_plan": True,
+            "steps": [
+                {
+                    "step": 1,
+                    "delay_minutes": 60,
+                    "intent": "deposit_value",
+                    "draft_text": "亲，前面的活动我再帮您接着留意。",
+                    "payment_collection_basis": "explicit_request_after_quote",
+                    "payment_collection_evidence": {
+                        "activity_quote_message_index": 0,
+                        "customer_acceptance_message_index": 1,
+                    },
+                    "should_send_payment_collection": True,
+                }
+            ],
+        }
+        repository = _Repository()
+        service = OutreachService(
+            repository=repository,
+            model_client=_ModelClient(response=response),
+            system_client=object(),
+        )
+
+        await service.ensure_platform_task_plan(
+            identity={
+                "customer_id": "22000001",
+                "corp_id": "corp-1",
+                "user_id": "7294",
+                "wechat": "DY258",
+                "external_userid": "external-1",
+            },
+            conversation_messages=[
+                {"direction": "customer", "content": "会不会反弹"},
+                {"direction": "staff", "content": "到店先检测"},
+            ],
+            conversation_activity={"real_customer_message_count": 1},
+            customer_context={"orders": []},
+            platform_task={"event_id": "platform-task-no-card", "messages": []},
+        )
+
+        self.assertEqual(
+            [item["type"] for item in repository.created_plan["tasks"][0]["reply_messages"]],
+            ["text"],
+        )
 
 
 class _ModelClient:
@@ -207,8 +373,30 @@ class _Repository:
 
     def update_outreach_plan_status(self, plan_id: str, status: str) -> dict[str, Any]:
         self.updated_statuses.append((plan_id, status))
-        self.active_plan = {}
-        return {"plan": {"id": plan_id, "status": status}}
+        if status in {"cancelled", "completed"}:
+            self.active_plan = {}
+        else:
+            self.active_plan = {
+                "plan": {"id": plan_id, "status": status},
+                "tasks": self.created_plan.get("tasks") or [],
+                "events": [],
+            }
+        return dict(self.active_plan) if self.active_plan else {"plan": {"id": plan_id, "status": status}}
+
+    def get_outreach_plan(self, plan_id: str) -> dict[str, Any]:
+        if self.active_plan and (self.active_plan.get("plan") or {}).get("id") == plan_id:
+            return dict(self.active_plan)
+        if plan_id == "plan-created":
+            return {
+                "plan": {
+                    "id": plan_id,
+                    "status": "draft",
+                    "customer_id": self.created_plan.get("customer_id"),
+                },
+                "tasks": self.created_plan.get("tasks") or [],
+                "events": [],
+            }
+        return {}
 
     def create_outreach_plan(self, **kwargs: Any) -> dict[str, Any]:
         self.created_plan = kwargs

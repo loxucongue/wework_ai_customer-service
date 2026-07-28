@@ -58,6 +58,8 @@ outreach_service = OutreachService(
     repository=repository,
     model_client=model_client,
     system_client=outreach_system_client,
+    customer_context_service=customer_context_service,
+    before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
 )
 sop_execution_service = SopExecutionService(
     repository=repository,
@@ -120,6 +122,7 @@ chat_runtime = ChatRuntime(
 app = FastAPI(title=settings.app_name)
 logger = logging.getLogger(__name__)
 sop_event_retry_worker: asyncio.Task[None] | None = None
+outreach_auto_send_worker: asyncio.Task[None] | None = None
 
 
 async def _run_sop_event_retry_worker() -> None:
@@ -133,18 +136,44 @@ async def _run_sop_event_retry_worker() -> None:
         await asyncio.sleep(max(1.0, settings.sop_event_retry_poll_seconds))
 
 
+async def _run_outreach_auto_send_worker() -> None:
+    while True:
+        try:
+            result = await outreach_service.execute_due_tasks(
+                limit=settings.outreach_auto_send_batch_size,
+                auto_approved_only=True,
+            )
+            if result.get("count"):
+                logger.info("Processed %s auto-approved outreach task(s)", result["count"])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Outreach auto-send worker iteration failed")
+        await asyncio.sleep(max(1.0, settings.outreach_auto_send_poll_seconds))
+
+
 @app.on_event("startup")
 async def startup() -> None:
-    global sop_event_retry_worker
+    global outreach_auto_send_worker, sop_event_retry_worker
     sqlite_store.initialize()
     repository.recover_interrupted_sop_event_model_retries()
+    repository.recover_interrupted_outreach_tasks()
     if sop_event_retry_worker is None or sop_event_retry_worker.done():
         sop_event_retry_worker = asyncio.create_task(_run_sop_event_retry_worker())
+    if settings.outreach_auto_send_enabled and (
+        outreach_auto_send_worker is None or outreach_auto_send_worker.done()
+    ):
+        outreach_auto_send_worker = asyncio.create_task(_run_outreach_auto_send_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global sop_event_retry_worker
+    global outreach_auto_send_worker, sop_event_retry_worker
+    if outreach_auto_send_worker is not None:
+        outreach_auto_send_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await outreach_auto_send_worker
+        outreach_auto_send_worker = None
     if sop_event_retry_worker is not None:
         sop_event_retry_worker.cancel()
         with suppress(asyncio.CancelledError):

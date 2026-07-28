@@ -11,6 +11,46 @@ BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 PERSONALIZED_ORDER_STATUSES = {"pending"}
 
 
+def personalized_order_eligibility(customer_context: dict[str, Any]) -> dict[str, Any]:
+    """Return the factual order gate used before an automatic personalized send."""
+    if not isinstance(customer_context, dict):
+        return {
+            "available": False,
+            "eligible": False,
+            "reason": "customer_context_missing",
+            "order_status": "unknown",
+        }
+    error = str(customer_context.get("orders_error") or customer_context.get("error") or "").strip()
+    if error:
+        return {
+            "available": False,
+            "eligible": False,
+            "reason": "platform_order_context_unavailable",
+            "order_status": "unknown",
+            "error": error,
+        }
+    if str(customer_context.get("source") or "") != "platform_agent":
+        return {
+            "available": False,
+            "eligible": False,
+            "reason": "platform_order_context_unavailable",
+            "order_status": "unknown",
+        }
+    order = _current_order(customer_context)
+    order_status = order_status_text(order.get("status")) if order else "no_order"
+    return {
+        "available": True,
+        "eligible": order_status == "no_order" or order_status in PERSONALIZED_ORDER_STATUSES,
+        "reason": (
+            "still_spoken_without_booked_order"
+            if order_status == "no_order" or order_status in PERSONALIZED_ORDER_STATUSES
+            else "order_state_changed"
+        ),
+        "order_status": order_status,
+        "order_id": str(order.get("id") or order.get("order_id") or "") if order else "",
+    }
+
+
 def classify_platform_task_route(
     *,
     payload: dict[str, Any],

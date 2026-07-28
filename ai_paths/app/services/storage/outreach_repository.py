@@ -479,23 +479,82 @@ class OutreachRepositoryMixin:
                 )
         return self.get_outreach_plan(plan_id)
 
-    def list_due_outreach_tasks(self, *, limit: int = 20, now: str | None = None) -> list[dict[str, Any]]:
+    def list_due_outreach_tasks(
+        self,
+        *,
+        limit: int = 20,
+        now: str | None = None,
+        auto_approved_only: bool = False,
+    ) -> list[dict[str, Any]]:
         now_value = now or utc_now_iso()
+        auto_clause = (
+            "AND json_extract(p.source_snapshot, '$.trigger_context.activation_policy')='auto_approved'"
+            if auto_approved_only
+            else ""
+        )
         with self.store.connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT t.*, p.corp_id, p.user_id, p.wechat, p.external_userid, p.status AS plan_status
                 FROM outreach_tasks t
                 JOIN outreach_plans p ON p.id=t.plan_id
                 WHERE t.status='pending'
                   AND t.scheduled_at<=?
                   AND p.status IN ('active', 'waiting')
+                  {auto_clause}
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM outreach_tasks earlier
+                      WHERE earlier.plan_id=t.plan_id
+                        AND earlier.step_index<t.step_index
+                        AND earlier.status IN ('pending', 'checking', 'check_failed')
+                  )
                 ORDER BY t.scheduled_at ASC
                 LIMIT ?
                 """,
                 (now_value, max(1, min(limit, 100))),
             ).fetchall()
         return [self._decode_outreach_task(dict(row)) for row in rows]
+
+    def claim_outreach_task(self, task_id: str) -> bool:
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE outreach_tasks
+                SET status='checking', error_message='', updated_at=?
+                WHERE id=? AND status='pending'
+                """,
+                (now, task_id),
+            )
+        return bool(cursor.rowcount)
+
+    def reschedule_outreach_task(self, task_id: str, *, delay_seconds: int, error_message: str) -> dict[str, Any]:
+        scheduled_at = (datetime.now(timezone.utc) + timedelta(seconds=max(1, delay_seconds))).isoformat()
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            conn.execute(
+                """
+                UPDATE outreach_tasks
+                SET status='pending', scheduled_at=?, error_message=?, updated_at=?
+                WHERE id=?
+                """,
+                (scheduled_at, error_message, now, task_id),
+            )
+        return self.get_outreach_task(task_id)
+
+    def recover_interrupted_outreach_tasks(self) -> int:
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE outreach_tasks
+                SET status='pending', error_message='recovered_after_process_restart', updated_at=?
+                WHERE status='checking'
+                """,
+                (now,),
+            )
+        return int(cursor.rowcount or 0)
 
     def get_outreach_task(self, task_id: str) -> dict[str, Any]:
         with self.store.connect() as conn:
