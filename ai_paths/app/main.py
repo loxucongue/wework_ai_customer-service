@@ -59,6 +59,8 @@ outreach_service = OutreachService(
     model_client=model_client,
     system_client=outreach_system_client,
     customer_context_service=customer_context_service,
+    sop_reply_pack_service=sop_reply_pack_service,
+    coze_client=coze_client,
     before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
 )
 sop_execution_service = SopExecutionService(

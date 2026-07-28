@@ -17,7 +17,7 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         system = _SystemClient()
         service = OutreachService(
             repository=repository,
-            model_client=object(),
+            model_client=_MessageModelClient(),
             system_client=system,
             customer_context_service=_CustomerContextService(orders=[]),
         )
@@ -45,8 +45,43 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, {"ok": True, "status": "skipped", "reason": "order_state_changed"})
         self.assertEqual(system.sent, [])
-        self.assertIn(("plan-1", "completed"), repository.plan_statuses)
+        self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
+        self.assertEqual(
+            repository.skipped_remaining,
+            [
+                {
+                    "plan_id": "plan-1",
+                    "reason": "customer_order_state_changed",
+                    "exclude_task_id": "task-1",
+                }
+            ],
+        )
         self.assertEqual(repository.events[-1]["event_type"], "task_skipped_order_state_changed")
+
+    async def test_customer_reply_cancels_the_remaining_plan(self) -> None:
+        repository = _ExecutionRepository(order_status="no_order")
+        system = _SystemClient(
+            messages=[
+                {
+                    "direction": "customer",
+                    "content": "我再问一下",
+                    "created_at": "2026-07-28T09:00:00+08:00",
+                }
+            ]
+        )
+        service = OutreachService(
+            repository=repository,
+            model_client=object(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result, {"ok": True, "status": "skipped", "reason": "customer_replied"})
+        self.assertEqual(system.sent, [])
+        self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
+        self.assertEqual(repository.skipped_remaining[0]["reason"], "customer_replied_after_plan_creation")
 
     async def test_unavailable_order_check_reschedules_instead_of_sending(self) -> None:
         repository = _ExecutionRepository(order_status="no_order")
@@ -70,6 +105,58 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OutreachRepositoryDueTaskTests(unittest.TestCase):
+    def test_task_decoder_preserves_structured_outreach_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
+            store.initialize()
+            repository = AppRepository(store)
+            created = repository.create_outreach_plan(
+                customer_id="customer-meta",
+                corp_id="corp",
+                user_id="7294",
+                wechat="DY258",
+                external_userid="external-meta",
+                customer_stage="P2_OBJECTION",
+                stall_reason="effect_worry",
+                customer_psychology="需要效果信任",
+                plan_goal="重新开口",
+                source_snapshot={},
+                tasks=[
+                    {
+                        **_due_task(1, "参考"),
+                        "content_sources": [
+                            "s10_offer",
+                            {"should_send_payment_collection": False},
+                            {
+                                "outreach_task_metadata": {
+                                    "persuasion_angle": "proof",
+                                    "new_value": "真实案例",
+                                }
+                            },
+                            {
+                                "resolved_asset": {
+                                    "asset_id": "case:1",
+                                    "type": "image",
+                                    "url": "https://cdn.example/case.jpg",
+                                }
+                            },
+                        ],
+                    }
+                ],
+            )
+
+            task = repository.get_outreach_task(created["tasks"][0]["id"])
+
+            self.assertEqual(task["content_sources"], ["s10_offer"])
+            self.assertEqual(
+                task["content_source_metadata"][1]["outreach_task_metadata"]["persuasion_angle"],
+                "proof",
+            )
+            self.assertEqual(
+                task["content_source_metadata"][2]["resolved_asset"]["url"],
+                "https://cdn.example/case.jpg",
+            )
+
     def test_candidate_search_filters_before_limit_and_matches_customer_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
@@ -389,15 +476,29 @@ class _CustomerContextService:
 
 
 class _SystemClient:
-    def __init__(self) -> None:
+    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
         self.sent: list[dict[str, Any]] = []
+        self.messages = messages or []
 
     async def conversation(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"data": {"messages": []}}
+        return {"data": {"messages": self.messages}}
 
     async def send(self, **kwargs: Any) -> dict[str, Any]:
         self.sent.append(kwargs)
         return {"code": 0, "data": {"send_status": "accepted", "system_msgid": "msg-1"}}
+
+
+class _MessageModelClient:
+    async def chat_json(self, _messages: list[dict[str, Any]], **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "亲，前面您主要担心效果，我再给您说清楚一点。"},
+                }
+            ]
+        }
 
 
 class _ExecutionRepository:
@@ -407,6 +508,7 @@ class _ExecutionRepository:
         self.plan_statuses: list[tuple[str, str]] = []
         self.events: list[dict[str, Any]] = []
         self.reschedules: list[dict[str, Any]] = []
+        self.skipped_remaining: list[dict[str, str]] = []
 
     def get_outreach_task(self, task_id: str) -> dict[str, Any]:
         return {
@@ -461,6 +563,22 @@ class _ExecutionRepository:
     def update_outreach_plan_status(self, plan_id: str, status: str) -> dict[str, Any]:
         self.plan_statuses.append((plan_id, status))
         return {"plan": {"id": plan_id, "status": status}}
+
+    def skip_remaining_outreach_tasks(
+        self,
+        plan_id: str,
+        *,
+        reason: str,
+        exclude_task_id: str = "",
+    ) -> int:
+        self.skipped_remaining.append(
+            {
+                "plan_id": plan_id,
+                "reason": reason,
+                "exclude_task_id": exclude_task_id,
+            }
+        )
+        return 1
 
     def add_outreach_event(self, **kwargs: Any) -> dict[str, Any]:
         self.events.append(kwargs)

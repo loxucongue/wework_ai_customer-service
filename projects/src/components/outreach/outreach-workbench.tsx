@@ -68,6 +68,9 @@ type OutreachPlan = {
   suppress_reason?: string;
   customer_psychology?: string;
   plan_goal?: string;
+  core_barrier?: string;
+  emotional_need?: string;
+  plan_arc?: string;
   source_snapshot?: JsonObject;
   created_at?: string;
   updated_at?: string;
@@ -83,6 +86,7 @@ type OutreachTask = {
   intent?: string;
   message_goal?: string;
   content_sources?: Array<unknown>;
+  content_source_metadata?: Array<JsonObject>;
   should_send_payment_collection?: boolean;
   reply_messages?: Array<JsonObject>;
   before_send_check?: number | boolean;
@@ -373,6 +377,18 @@ function outreachErrorMessage(data: JsonObject, fallback: string) {
 
 function taskHasPreview(task: OutreachTask) {
   return Array.isArray(task.reply_messages) && task.reply_messages.length > 0;
+}
+
+function taskPlanningMetadata(task: OutreachTask) {
+  const items = Array.isArray(task.content_source_metadata) ? task.content_source_metadata : [];
+  const holder = items.find((item) => item && typeof item.outreach_task_metadata === "object");
+  return (holder?.outreach_task_metadata || {}) as JsonObject;
+}
+
+function taskResolvedAsset(task: OutreachTask) {
+  const items = Array.isArray(task.content_source_metadata) ? task.content_source_metadata : [];
+  const holder = items.find((item) => item && typeof item.resolved_asset === "object");
+  return (holder?.resolved_asset || {}) as JsonObject;
 }
 
 function sendStatusLabel(value?: string) {
@@ -1058,6 +1074,12 @@ export function OutreachWorkbench() {
                   <InfoBlock label="最近互动" value={selectedPlan.last_interaction_summary || "-"} />
                   <InfoBlock label="客户心理" value={selectedPlan.customer_psychology || "-"} />
                   <InfoBlock label="抑制原因" value={selectedPlan.suppress_reason || "-"} />
+                  <InfoBlock label="核心阻力" value={selectedPlan.core_barrier || "-"} />
+                  <InfoBlock label="心理需求" value={selectedPlan.emotional_need || "-"} />
+                </div>
+                <div className="mt-3 rounded-md border border-zinc-200 bg-zinc-50 p-3">
+                  <p className="text-xs font-medium text-zinc-500">递进逻辑</p>
+                  <p className="mt-1 text-sm text-zinc-700">{selectedPlan.plan_arc || "-"}</p>
                 </div>
                 <div className="mt-4 flex items-center gap-2">
                   <button onClick={() => planAction("activate")} className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50">
@@ -1083,7 +1105,13 @@ export function OutreachWorkbench() {
                   {tasks.length === 0 ? (
                     <div className="rounded-lg border border-dashed border-zinc-200 p-6 text-sm text-zinc-500">暂无任务步骤</div>
                   ) : (
-                    tasks.map((task) => (
+                    tasks.map((task) => {
+                      const planning = taskPlanningMetadata(task);
+                      const asset = taskResolvedAsset(task);
+                      const avoidRepeating = Array.isArray(planning.avoid_repeating)
+                        ? planning.avoid_repeating.map(String).filter(Boolean).join("、")
+                        : "";
+                      return (
                       <div key={task.id} className="rounded-lg border border-zinc-200 p-4">
                         <div className="flex items-start justify-between gap-3">
                           <div>
@@ -1093,6 +1121,20 @@ export function OutreachWorkbench() {
                               <span className="rounded-full bg-zinc-100 px-2 py-1 text-xs text-zinc-600">{statusLabel(task.status)}</span>
                             </div>
                             <p className="mt-2 text-sm text-zinc-700">{task.message_goal || "-"}</p>
+                            <div className="mt-2 flex flex-wrap gap-2 text-xs text-zinc-600">
+                              <span className="rounded bg-emerald-50 px-2 py-1 text-emerald-700">
+                                心理角度：{String(planning.persuasion_angle || "-")}
+                              </span>
+                              <span className="rounded bg-blue-50 px-2 py-1 text-blue-700">
+                                新价值：{String(planning.new_value || "-")}
+                              </span>
+                              {asset.type ? (
+                                <span className="rounded bg-amber-50 px-2 py-1 text-amber-700">
+                                  素材：{String(asset.type)} / {String(asset.source || "-")}
+                                </span>
+                              ) : null}
+                            </div>
+                            {avoidRepeating ? <p className="mt-2 text-xs text-zinc-500">避免复读：{avoidRepeating}</p> : null}
                             <p className="mt-1 text-xs text-zinc-500">
                               计划发送：{formatTime(task.scheduled_at)} · {boolLabel(task.should_send_payment_collection)} · 发送结果：{sendStatusLabel(task.send_status)}
                             </p>
@@ -1121,7 +1163,8 @@ export function OutreachWorkbench() {
                         {!taskHasPreview(task) ? <p className="mt-2 text-xs text-amber-600">请先生成预览，人工确认后再执行。</p> : null}
                         {task.error_message ? <p className="mt-2 text-xs text-red-600">{task.error_message}</p> : null}
                       </div>
-                    ))
+                    );
+                    })
                   )}
                 </div>
               </div>

@@ -1,0 +1,84 @@
+[
+  {
+    "id": "rebound_worry",
+    "description": "客户担心反弹，已经听过活动报价但没有成交",
+    "recent_messages": [
+      {"direction": "staff", "content": "周年庆淡斑活动总价268元，每位先付10元预约金，到店抵扣。"},
+      {"direction": "customer", "content": "我就怕过段时间又反弹，钱花了也没用。"}
+    ],
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "先给信心并用专业或案例角度化解反弹顾虑；后续角度不同；最后可选择预约金卡。"
+  },
+  {
+    "id": "distance_worry",
+    "description": "客户觉得已推荐门店远",
+    "recent_messages": [
+      {"direction": "staff", "content": "真实门店位置已经发给您了。"},
+      {"direction": "customer", "content": "还是太远了，跑一趟不方便。"}
+    ],
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "不重复追问位置，不编路线距离；从共情、专业价值或低风险行动递进。"
+  },
+  {
+    "id": "weather_delay",
+    "description": "客户因天气暂缓，不是明确拒绝",
+    "recent_messages": [
+      {"direction": "staff", "content": "活动和到店流程已经介绍过。"},
+      {"direction": "customer", "content": "这几天下雨，等天气好了再说吧。"}
+    ],
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "理解天气但不送客；先降低时间压力，再补不同价值，不连续催付款。"
+  },
+  {
+    "id": "time_busy",
+    "description": "客户最近忙，没有确定到店时间",
+    "recent_messages": [
+      {"direction": "staff", "content": "活动价已经给您介绍过了。"},
+      {"direction": "customer", "content": "最近很忙，有时间我再约你。"}
+    ],
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "不反复询问具体时间；说明到店时间后定，并从其他心理角度递进。"
+  },
+  {
+    "id": "price_worry",
+    "description": "客户担心到店加价",
+    "recent_messages": [
+      {"direction": "staff", "content": "这次线上活动总价268元，每位先付10元预约金，到店抵扣，做的话再付258元；未做或不满意可退。"},
+      {"direction": "customer", "content": "我怕去了不是这个价，又让我加项目。"}
+    ],
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "第一轮解决价格透明顾虑，后续不能每轮继续强调便宜，应换信任或专业角度。"
+  },
+  {
+    "id": "acne_marks_scope",
+    "description": "客户有痘印痘坑，已得到项目范围答复后沉默",
+    "recent_messages": [
+      {"direction": "staff", "content": "痘印、痘坑这类也在当前淡斑和色素问题的改善范围内。"},
+      {"direction": "customer", "content": "那我再想想。"}
+    ],
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "不反复确认项目范围；可用知识、案例或专业检测递进并引导重新开口。"
+  },
+  {
+    "id": "single_session_worry",
+    "description": "客户反复关心是不是一次就能做好",
+    "recent_messages": [
+      {"direction": "customer", "content": "我不是问能不能做，我就想知道是不是一次就可以。"},
+      {"direction": "staff", "content": "具体要结合斑点类型、时间和深浅，到店检测后判断更准确。"}
+    ],
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "不机械复读检测免责；先承接次数核心，再从案例或专业价值推进。"
+  },
+  {
+    "id": "paid_suppression",
+    "description": "结构化订单显示预约金已付",
+    "recent_messages": [
+      {"direction": "customer", "content": "我已经付好了。"}
+    ],
+    "customer_context": {
+      "source": "platform_agent",
+      "orders": [{"id": "order-paid", "status": "prepay_paid", "is_current_order": true}]
+    },
+    "expected": "should_create_plan=false，不生成普通营销计划，不发预约金卡。"
+  }
+]

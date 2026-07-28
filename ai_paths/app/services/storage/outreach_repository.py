@@ -766,6 +766,28 @@ class OutreachRepositoryMixin:
                 )
         return self.get_outreach_plan(plan_id)
 
+    def skip_remaining_outreach_tasks(
+        self,
+        plan_id: str,
+        *,
+        reason: str,
+        exclude_task_id: str = "",
+    ) -> int:
+        now = utc_now_iso()
+        query = """
+            UPDATE outreach_tasks
+            SET status='skipped', error_message=?, updated_at=?
+            WHERE plan_id=?
+              AND status IN ('pending', 'checking', 'check_failed')
+        """
+        params: list[Any] = [reason, now, plan_id]
+        if exclude_task_id:
+            query += " AND id!=?"
+            params.append(exclude_task_id)
+        with self.store.connect() as conn:
+            cursor = conn.execute(query, params)
+        return int(cursor.rowcount or 0)
+
     def list_due_outreach_tasks(
         self,
         *,
@@ -986,6 +1008,9 @@ class OutreachRepositoryMixin:
                 "last_interaction_summary",
                 "next_best_action",
                 "suppress_reason",
+                "core_barrier",
+                "emotional_need",
+                "plan_arc",
             ):
                 row[key] = _string(ai_result.get(key))
             row["customer_stage"] = row.get("customer_stage") or _string(ai_result.get("conversion_stage"))
@@ -1004,6 +1029,7 @@ class OutreachRepositoryMixin:
         raw_sources = loads_list(row.get("content_sources"))
         policy_items = [item for item in raw_sources if isinstance(item, dict)]
         row["content_sources"] = [_string(item) for item in raw_sources if not isinstance(item, dict) and _string(item)]
+        row["content_source_metadata"] = policy_items
         row["should_send_payment_collection"] = any(
             bool(item.get("should_send_payment_collection")) for item in policy_items
         )

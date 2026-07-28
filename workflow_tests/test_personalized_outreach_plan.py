@@ -2,12 +2,39 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from typing import Any
 
-from app.services.outreach_service import OutreachService
+from app.services.outreach_service import OutreachService, build_outreach_activity_quote_fact
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    def test_activity_quote_fact_uses_visible_quote_or_structured_sop_progress(self) -> None:
+        message_fact = build_outreach_activity_quote_fact(
+            [
+                {"direction": "staff", "content": "活动和流程已经介绍过。"},
+                {"direction": "staff", "content": "周年庆活动总价268元，每位先付10元预约金。"},
+            ],
+            {},
+        )
+        self.assertTrue(message_fact["completed"])
+        self.assertEqual(message_fact["message_indexes"], [1])
+
+        progress_fact = build_outreach_activity_quote_fact(
+            [{"direction": "staff", "content": "活动和流程已经介绍过。"}],
+            {"sop_progress_evidence": {"completed_pack_ids": ["s10_activity_intro"]}},
+        )
+        self.assertTrue(progress_fact["completed"])
+        self.assertEqual(progress_fact["structured_sources"], ["sop_progress"])
+
+    def test_activity_quote_fact_rejects_generic_activity_summary(self) -> None:
+        fact = build_outreach_activity_quote_fact(
+            [{"direction": "staff", "content": "活动和到店流程已经介绍过。"}],
+            {},
+        )
+        self.assertFalse(fact["completed"])
+        self.assertEqual(fact["message_indexes"], [])
+
     async def test_platform_task_plan_uses_latest_context_and_auto_queues_drafts(self) -> None:
         repository = _Repository()
         model = _ModelClient()
@@ -46,7 +73,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(result["created"])
         self.assertFalse(result["reused"])
-        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(len(model.calls), 2)
         model_input = json.loads(model.calls[0]["messages"][1]["content"])
         self.assertEqual(model_input["recent_messages"][0]["content"], "门店太远了，我再考虑下")
         self.assertTrue(model_input["trigger_context"]["platform_task_filtered"])
@@ -187,14 +214,14 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             [("plan-old", "cancelled"), ("plan-created", "active")],
         )
         self.assertEqual(repository.events[0]["event_type"], "platform_task_plan_superseded_by_customer_reply")
-        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(len(model.calls), 2)
 
     async def test_plan_without_reviewable_draft_fails_instead_of_creating_empty_task(self) -> None:
         repository = _Repository()
         model = _ModelClient(response={"should_create_plan": True, "steps": [{"step": 1, "delay_minutes": 30}]})
         service = OutreachService(repository=repository, model_client=model, system_client=object())
 
-        with self.assertRaisesRegex(RuntimeError, "missing_reviewable_drafts"):
+        with self.assertRaisesRegex(RuntimeError, "invalid_structure"):
             await service.ensure_platform_task_plan(
                 identity={
                     "customer_id": "22000001",
@@ -211,32 +238,98 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(repository.created_plan, {})
 
-    async def test_payment_card_requires_structured_quote_and_customer_acceptance_evidence(self) -> None:
+    async def test_invalid_first_plan_response_is_repaired_once(self) -> None:
+        valid = _ModelClient().response
+        model = _SequenceModelClient(
+            [
+                {
+                    "should_create_plan": True,
+                    "steps": [
+                        {
+                            "step": 1,
+                            "persuasion_angle": "empathy",
+                            "draft_text": "只有一步",
+                        }
+                    ],
+                },
+                valid,
+            ]
+        )
+        repository = _Repository()
+        service = OutreachService(repository=repository, model_client=model, system_client=object())
+
+        result = await service.generate_plan(
+            customer_id="22000001",
+            source_context={"memory": {}, "recent_messages": []},
+        )
+
+        self.assertTrue(result["created"])
+        self.assertEqual(len(model.calls), 3)
+        self.assertIn("不符合结构合同", model.calls[1]["messages"][-1]["content"])
+
+    async def test_invalid_final_review_is_repaired_once(self) -> None:
+        valid = _ModelClient().response
+        model = _SequenceModelClient(
+            [
+                valid,
+                {
+                    "should_create_plan": True,
+                    "steps": [
+                        {
+                            "step": 1,
+                            "persuasion_angle": "unsupported_angle",
+                            "draft_text": "结构错误",
+                        }
+                    ],
+                },
+                valid,
+            ]
+        )
+        repository = _Repository()
+        service = OutreachService(repository=repository, model_client=model, system_client=object())
+
+        result = await service.generate_plan(
+            customer_id="22000001",
+            source_context={"memory": {}, "recent_messages": []},
+        )
+
+        self.assertTrue(result["created"])
+        self.assertEqual(len(model.calls), 3)
+        repair_payload = model.calls[2]["messages"][-1]["content"]
+        self.assertIn("structure_error", repair_payload)
+        self.assertIn("unsupported_angle", repair_payload)
+
+    async def test_payment_card_can_be_selected_on_final_step_after_activity_quote(self) -> None:
         response = {
             "should_create_plan": True,
+            "plan_arc": "先共情时间压力，再降低付款决策成本",
             "steps": [
                 {
                     "step": 1,
-                    "delay_minutes": 60,
-                    "intent": "deposit_value",
-                    "draft_text": "亲，您前面说要入口，我把预约金卡接着发您。",
-                    "payment_collection_basis": "explicit_request_after_quote",
-                    "payment_collection_evidence": {
-                        "activity_quote_message_index": 0,
-                        "customer_acceptance_message_index": 1,
-                    },
+                    "delay_minutes": 1440,
+                    "intent": "time_reassurance",
+                    "persuasion_angle": "empathy",
+                    "new_value": "到店时间后定",
+                    "avoid_repeating": ["完整活动规则"],
+                    "draft_text": "亲，您时间没定也不影响，后面按您方便安排就行。",
+                    "asset_strategy": "none",
+                    "cta": "回复大概方便的时间",
+                    "payment_collection_basis": "none",
+                    "payment_collection_evidence": {"activity_quote_message_index": None},
                     "should_send_payment_collection": True,
                 },
                 {
                     "step": 2,
-                    "delay_minutes": 360,
+                    "delay_minutes": 4320,
                     "intent": "deposit_value",
-                    "draft_text": "亲，您忙完回我一句就行。",
-                    "payment_collection_basis": "explicit_request_after_quote",
-                    "payment_collection_evidence": {
-                        "activity_quote_message_index": 0,
-                        "customer_acceptance_message_index": 1,
-                    },
+                    "persuasion_angle": "low_risk_action",
+                    "new_value": "先保留活动资格",
+                    "avoid_repeating": ["距离顾虑"],
+                    "draft_text": "亲，您可以先把活动资格留住，到店时间后面再定。",
+                    "asset_strategy": "none",
+                    "cta": "支付10元预约金",
+                    "payment_collection_basis": "model_selected_after_quote",
+                    "payment_collection_evidence": {"activity_quote_message_index": 0},
                     "should_send_payment_collection": True,
                 },
             ],
@@ -275,25 +368,41 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
 
         first_messages = repository.created_plan["tasks"][0]["reply_messages"]
         second_messages = repository.created_plan["tasks"][1]["reply_messages"]
-        self.assertEqual([item["type"] for item in first_messages], ["text", "payment_collection"])
-        self.assertEqual([item["type"] for item in second_messages], ["text"])
+        self.assertEqual([item["type"] for item in first_messages], ["text"])
+        self.assertEqual([item["type"] for item in second_messages], ["text", "payment_collection"])
 
     async def test_payment_card_is_removed_when_evidence_indices_do_not_match_message_parties(self) -> None:
         response = {
             "should_create_plan": True,
+            "plan_arc": "先专业解释，再降低行动门槛",
             "steps": [
                 {
                     "step": 1,
-                    "delay_minutes": 60,
-                    "intent": "deposit_value",
+                    "delay_minutes": 1440,
+                    "intent": "effect_reassurance",
+                    "persuasion_angle": "professionalism",
+                    "new_value": "到店先检测",
+                    "avoid_repeating": ["反弹问题原话"],
                     "draft_text": "亲，前面的活动我再帮您接着留意。",
-                    "payment_collection_basis": "explicit_request_after_quote",
-                    "payment_collection_evidence": {
-                        "activity_quote_message_index": 0,
-                        "customer_acceptance_message_index": 1,
-                    },
+                    "asset_strategy": "none",
+                    "cta": "回复斑点情况",
+                    "payment_collection_basis": "none",
+                    "should_send_payment_collection": False,
+                },
+                {
+                    "step": 2,
+                    "delay_minutes": 4320,
+                    "intent": "deposit_value",
+                    "persuasion_angle": "low_risk_action",
+                    "new_value": "活动资格可先保留",
+                    "avoid_repeating": ["检测流程"],
+                    "draft_text": "亲，活动资格可以先保留，到店时间后面再定。",
+                    "asset_strategy": "none",
+                    "cta": "支付10元预约金",
+                    "payment_collection_basis": "model_selected_after_quote",
+                    "payment_collection_evidence": {"activity_quote_message_index": 0},
                     "should_send_payment_collection": True,
-                }
+                },
             ],
         }
         repository = _Repository()
@@ -321,8 +430,174 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(
-            [item["type"] for item in repository.created_plan["tasks"][0]["reply_messages"]],
+            [item["type"] for item in repository.created_plan["tasks"][1]["reply_messages"]],
             ["text"],
+        )
+
+    async def test_plan_resolves_configured_and_case_assets_without_model_urls(self) -> None:
+        response = {
+            "should_create_plan": True,
+            "plan_arc": "先用配置素材科普，再用真实案例增强信任",
+            "steps": [
+                {
+                    "step": 1,
+                    "delay_minutes": 1440,
+                    "intent": "education",
+                    "persuasion_angle": "education",
+                    "new_value": "解释操作过程",
+                    "avoid_repeating": ["完整报价"],
+                    "draft_text": "亲，我给您补一个操作过程参考，您看完会更直观。",
+                    "asset_strategy": "operation_video",
+                    "asset_id": "operation_pack:1",
+                    "cta": "看完回复感受",
+                    "should_send_payment_collection": False,
+                },
+                {
+                    "step": 2,
+                    "delay_minutes": 4320,
+                    "intent": "effect_reassurance",
+                    "persuasion_angle": "proof",
+                    "new_value": "同类斑点参考",
+                    "avoid_repeating": ["操作过程"],
+                    "draft_text": "亲，我再给您看个同类情况参考，您主要担心的是效果对吧？",
+                    "asset_strategy": "case_search",
+                    "case_query": "晒斑改善案例",
+                    "fallback_asset_id": "effect_pack:2",
+                    "cta": "回复主要顾虑",
+                    "should_send_payment_collection": False,
+                },
+            ],
+        }
+        repository = _Repository()
+        model = _ModelClient(response=response)
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=object(),
+            sop_reply_pack_service=_SopPackService(),
+            coze_client=_CozeClient(),
+        )
+
+        await service.generate_plan(customer_id="22000001", source_context={"recent_messages": [], "memory": {}})
+
+        self.assertEqual(
+            [item["type"] for item in repository.created_plan["tasks"][0]["reply_messages"]],
+            ["text", "video"],
+        )
+        self.assertEqual(
+            repository.created_plan["tasks"][0]["reply_messages"][1]["content"]["url"],
+            "https://cdn.example/operation.mp4",
+        )
+        self.assertEqual(
+            repository.created_plan["tasks"][1]["reply_messages"][1]["content"]["url"],
+            "https://cdn.example/kb-case.jpg",
+        )
+        model_input = json.loads(model.calls[0]["messages"][1]["content"])
+        self.assertNotIn("url", model_input["asset_catalog"][0])
+
+    async def test_message_model_can_only_rewrite_text_and_cannot_replace_locked_asset(self) -> None:
+        repository = _Repository()
+        model = _ModelClient(
+            response={
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "亲，我给您补个真实参考，您看完回我一句就行。"}},
+                    {"type": "image", "order": 2, "content": {"url": "https://evil.example/fake.jpg"}},
+                    {"type": "payment_collection", "order": 3, "content": {"amount": 40}},
+                ]
+            }
+        )
+        service = OutreachService(repository=repository, model_client=model, system_client=object())
+        task = {
+            "customer_id": "22000001",
+            "content_sources": [],
+            "content_source_metadata": [
+                {"should_send_payment_collection": False},
+                {
+                    "outreach_task_metadata": {
+                        "persuasion_angle": "proof",
+                        "new_value": "同类案例",
+                        "avoid_repeating": ["完整报价"],
+                        "cta": "回复主要顾虑",
+                    }
+                },
+                {
+                    "resolved_asset": {
+                        "asset_id": "effect_pack:2",
+                        "type": "image",
+                        "url": "https://cdn.example/real.jpg",
+                        "source": "sop_config",
+                    }
+                },
+            ],
+            "reply_messages": [{"type": "text", "order": 1, "content": {"text": "原草稿"}}],
+            "should_send_payment_collection": False,
+        }
+
+        messages = await service._generate_task_messages(task=task, plan={})
+
+        self.assertEqual(
+            messages,
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "亲，我给您补个真实参考，您看完回我一句就行。"},
+                },
+                {
+                    "type": "image",
+                    "order": 2,
+                    "content": {"url": "https://cdn.example/real.jpg"},
+                },
+            ],
+        )
+
+    async def test_case_search_failure_uses_model_selected_configured_fallback(self) -> None:
+        response = {
+            "should_create_plan": True,
+            "plan_arc": "先补知识，再补效果参考",
+            "steps": [
+                {
+                    "step": 1,
+                    "delay_minutes": 1440,
+                    "intent": "education",
+                    "persuasion_angle": "education",
+                    "new_value": "简单护理知识",
+                    "avoid_repeating": ["价格"],
+                    "draft_text": "亲，我给您补个简单护理知识，平时防晒也会影响色素状态。",
+                    "asset_strategy": "none",
+                    "cta": "回复斑点时间",
+                    "should_send_payment_collection": False,
+                },
+                {
+                    "step": 2,
+                    "delay_minutes": 4320,
+                    "intent": "effect_reassurance",
+                    "persuasion_angle": "proof",
+                    "new_value": "效果参考",
+                    "avoid_repeating": ["护理知识"],
+                    "draft_text": "亲，我给您补个同类参考，您看完会更直观。",
+                    "asset_strategy": "case_search",
+                    "case_query": "晒斑改善案例",
+                    "fallback_asset_id": "effect_pack:2",
+                    "cta": "回复主要顾虑",
+                    "should_send_payment_collection": False,
+                },
+            ],
+        }
+        repository = _Repository()
+        service = OutreachService(
+            repository=repository,
+            model_client=_ModelClient(response=response),
+            system_client=object(),
+            sop_reply_pack_service=_SopPackService(),
+            coze_client=_FailingCozeClient(),
+        )
+
+        await service.generate_plan(customer_id="22000001", source_context={"recent_messages": [], "memory": {}})
+
+        self.assertEqual(
+            repository.created_plan["tasks"][1]["reply_messages"][1]["content"]["url"],
+            "https://cdn.example/fallback.jpg",
         )
 
 
@@ -334,17 +609,38 @@ class _ModelClient:
             "stall_reason": "store_unclear",
             "customer_psychology": "距离顾虑",
             "plan_goal": "让客户重新开口并保留活动资格",
+            "plan_arc": "先共情距离顾虑，再用专业检测价值推进",
             "steps": [
                 {
                     "step": 1,
-                    "delay_minutes": 90,
+                    "delay_minutes": 1440,
                     "intent": "store_convenience",
+                    "persuasion_angle": "empathy",
+                    "new_value": "到店时间可以后定",
+                    "avoid_repeating": ["门店距离"],
                     "before_send_check": True,
                     "message_goal": "化解距离顾虑",
                     "draft_text": "亲，您上次主要是觉得距离不太方便。活动名额可以先留着，到店时间按您方便安排。",
+                    "asset_strategy": "none",
+                    "cta": "回复是否愿意继续了解",
                     "should_send_payment_collection": False,
                     "content_sources": ["s10_offer"],
-                }
+                },
+                {
+                    "step": 2,
+                    "delay_minutes": 4320,
+                    "intent": "professional_value",
+                    "persuasion_angle": "professionalism",
+                    "new_value": "到店先检测再决定",
+                    "avoid_repeating": ["活动名额"],
+                    "before_send_check": True,
+                    "message_goal": "用专业流程降低到店顾虑",
+                    "draft_text": "亲，到店会先看斑点情况和适合的方向，合适再决定，您主要是哪类斑点呢？",
+                    "asset_strategy": "none",
+                    "cta": "回复斑点类型",
+                    "should_send_payment_collection": False,
+                    "content_sources": ["s10_offer"],
+                },
             ],
         }
         self.calls: list[dict[str, Any]] = []
@@ -352,6 +648,71 @@ class _ModelClient:
     async def chat_json(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
         self.calls.append({"messages": messages, **kwargs})
         return dict(self.response)
+
+
+class _SequenceModelClient(_ModelClient):
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        super().__init__(response=responses[0])
+        self.responses = responses
+
+    async def chat_json(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+        self.calls.append({"messages": messages, **kwargs})
+        return dict(self.responses[min(len(self.calls) - 1, len(self.responses) - 1)])
+
+
+class _SopPackService:
+    def load(self) -> dict[str, Any]:
+        return {
+            "packs": [
+                {
+                    "id": "operation_pack",
+                    "enabled": True,
+                    "name": "操作视频",
+                    "purpose": "展示真实操作过程",
+                    "sop_category": "operation_video",
+                    "reply_messages": [
+                        {
+                            "type": "video",
+                            "order": 1,
+                            "content": {"url": "https://cdn.example/operation.mp4"},
+                        }
+                    ],
+                },
+                {
+                    "id": "effect_pack",
+                    "enabled": True,
+                    "name": "效果参考",
+                    "purpose": "增强效果信任",
+                    "sop_category": "effect_case",
+                    "reply_messages": [
+                        {
+                            "type": "image",
+                            "order": 2,
+                            "content": {"url": "https://cdn.example/fallback.jpg"},
+                        }
+                    ],
+                },
+            ]
+        }
+
+
+class _CozeClient:
+    async def search_kb(self, kb_name: str, query: str) -> Any:
+        assert kb_name == "case_studies"
+        assert query == "晒斑改善案例"
+        return SimpleNamespace(
+            items=[
+                SimpleNamespace(
+                    content='<img src="https://cdn.example/kb-case.jpg"> 同类参考',
+                    document_id="case-doc-1",
+                )
+            ]
+        )
+
+
+class _FailingCozeClient:
+    async def search_kb(self, _kb_name: str, _query: str) -> Any:
+        raise RuntimeError("kb unavailable")
 
 
 class _Repository:
