@@ -14,7 +14,7 @@
     "description": "客户觉得已推荐门店远",
     "recent_messages": [
       {"direction": "staff", "content": "真实门店位置已经发给您了。"},
-      {"direction": "customer", "content": "还是太远了，跑一趟不方便。"}
+      {"direction": "customer", "content": "还是太远了，跑一趟不方便，就算了吧。"}
     ],
     "customer_context": {"source": "platform_agent", "orders": []},
     "expected": "不重复追问位置，不编路线距离；从共情、专业价值或低风险行动递进。"

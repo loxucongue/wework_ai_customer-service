@@ -38,6 +38,7 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - draft_text 已直接交付本轮 new_value，CTA 只是自然的后续选择时可以高分；任何“回复看/活动/继续/判断后我再提供”都应降低 conversion_action。
 - 次数顾虑需要先给非绝对的正面预期，再说明按实际状态评估；只复读类型、深浅和检测属于没有正面回答。
 - 最后一轮已经给出活动量化事实并直接问“登记一个吗”或同义封闭式动作时，conversion_action 应为4分以上。以“有空找我、需要时喊我、觉得合适告诉我、我再发完整活动”收尾只能给3分以下。
+- “算了、太远、不方便、暂时不用、以后再说”属于软拒绝，不等于明确停止联系。除 paid_suppression 或明确“不要再联系/别发消息/拉黑/投诉退款”外，`should_create_plan=false` 属于 hard_error。
 
 同时输出 hard_error、hard_error_reason 和 concise_reason。只输出有效 json。
 """.strip()
@@ -54,9 +55,12 @@ ALLOWED_ANGLES = {
 }
 
 
-def _hard_errors(plan: dict[str, Any], asset_ids: set[str]) -> list[str]:
+def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]) -> list[str]:
     if not bool(plan.get("should_create_plan", True)):
-        return []
+        expected = str(case.get("expected") or "").lower()
+        if str(case.get("id") or "") == "paid_suppression" or "should_create_plan=false" in expected:
+            return []
+        return ["unexpected_suppression"]
     steps = [item for item in plan.get("steps") or [] if isinstance(item, dict)]
     errors: list[str] = []
     if len(steps) not in {2, 3}:
@@ -148,7 +152,11 @@ async def _run_case(
             tier="strong",
             temperature=0.0,
         )
-    hard_errors = _hard_errors(plan, {str(item.get("asset_id") or "") for item in asset_catalog})
+    hard_errors = _hard_errors(
+        plan,
+        {str(item.get("asset_id") or "") for item in asset_catalog},
+        case,
+    )
     scores = [
         int(review.get(key) or 0)
         for key in ("psychology_accuracy", "arc_diversity", "asset_fit", "human_tone", "conversion_action")
