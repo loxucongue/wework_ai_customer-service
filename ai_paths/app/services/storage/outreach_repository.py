@@ -40,6 +40,7 @@ def _outreach_candidate_matches_keyword(candidate: dict[str, Any], keyword: str)
         candidate.get("customer_id"),
         candidate.get("external_userid"),
         candidate.get("wechat"),
+        candidate.get("platform_customer_name"),
         candidate.get("title"),
         candidate.get("last_customer_message"),
         candidate.get("latest_event_summary"),
@@ -50,6 +51,66 @@ def _outreach_candidate_matches_keyword(candidate: dict[str, Any], keyword: str)
         if isinstance(value, dict):
             parts.extend(str(item) for item in value.values())
     return needle in " ".join(_string(part).lower() for part in parts if part is not None)
+
+
+def _candidate_identity_matches_keyword(candidate: dict[str, Any], keyword: str) -> bool:
+    needle = keyword.strip().lower()
+    if not needle:
+        return True
+    parts = [
+        candidate.get("customer_id"),
+        candidate.get("external_userid"),
+        candidate.get("wechat"),
+        candidate.get("platform_customer_name"),
+        candidate.get("title"),
+        candidate.get("last_customer_message"),
+    ]
+    return needle in " ".join(_string(part).lower() for part in parts if part is not None)
+
+
+def _latest_platform_customer_names(conn: Any, rows: list[Any]) -> dict[tuple[str, str], str]:
+    external_ids = sorted(
+        {
+            _string(row["external_userid"]).lower()
+            for row in rows
+            if _string(row["external_userid"])
+        }
+    )
+    if not external_ids:
+        return {}
+    names: dict[tuple[str, str], str] = {}
+    for offset in range(0, len(external_ids), 800):
+        batch = external_ids[offset : offset + 800]
+        placeholders = ",".join("?" for _ in batch)
+        name_rows = conn.execute(
+            f"""
+            SELECT
+                LOWER(CAST(json_extract(customer.value, '$.conversation.external_userid') AS TEXT)) AS external_key,
+                LOWER(COALESCE(
+                    NULLIF(CAST(json_extract(customer.value, '$.conversation.wework_user_id') AS TEXT), ''),
+                    NULLIF(CAST(json_extract(e.raw_payload_json, '$.account.wework_user_id') AS TEXT), '')
+                )) AS wechat_key,
+                COALESCE(
+                    NULLIF(CAST(json_extract(customer.value, '$.customer.name') AS TEXT), ''),
+                    NULLIF(CAST(json_extract(customer.value, '$.conversation.sender_name') AS TEXT), ''),
+                    NULLIF(CAST(json_extract(customer.value, '$.customer.remark') AS TEXT), ''),
+                    NULLIF(CAST(json_extract(customer.value, '$.conversation.sender_remark') AS TEXT), '')
+                ) AS customer_name,
+                e.received_at
+            FROM sop_events e
+            JOIN json_each(e.raw_payload_json, '$.customers') AS customer
+            WHERE LOWER(CAST(json_extract(customer.value, '$.conversation.external_userid') AS TEXT))
+                  IN ({placeholders})
+            ORDER BY e.received_at DESC
+            """,
+            batch,
+        ).fetchall()
+        for name_row in name_rows:
+            key = (_string(name_row["external_key"]).lower(), _string(name_row["wechat_key"]).lower())
+            customer_name = _string(name_row["customer_name"])
+            if key[0] and key[1] and customer_name and key not in names:
+                names[key] = customer_name
+    return names
 
 
 class OutreachRepositoryMixin:
@@ -144,9 +205,17 @@ class OutreachRepositoryMixin:
                 """,
                 (cutoff_72h, query_limit),
             ).fetchall()
+            platform_names = _latest_platform_customer_names(conn, list(rows))
         items: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
+            platform_name_key = (
+                _string(item.get("external_userid")).lower(),
+                _string(item.get("wechat")).lower(),
+            )
+            item["platform_customer_name"] = platform_names.get(platform_name_key, "")
+            if keyword and not _candidate_identity_matches_keyword(item, keyword):
+                continue
             scope = build_customer_scope(
                 corp_id=item.get("corp_id"),
                 wechat=item.get("wechat"),

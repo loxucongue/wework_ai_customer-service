@@ -113,6 +113,26 @@ class OutreachRepositoryDueTaskTests(unittest.TestCase):
                 content="想了解荆州门店",
                 file_image=None,
             )
+            repository.create_sop_event(
+                {
+                    "event_id": "event-platform-name",
+                    "event_type": "sop_platform_task",
+                    "source": "test",
+                    "customers": [
+                        {
+                            "conversation": {
+                                "external_userid": "external-target",
+                                "wework_user_id": "dy258",
+                                "sender_name": "张治萍",
+                            },
+                            "customer": {
+                                "name": "张治萍",
+                                "remark": "张女士",
+                            },
+                        }
+                    ],
+                }
+            )
 
             by_name = repository.list_outreach_candidates(
                 limit=1,
@@ -131,6 +151,7 @@ class OutreachRepositoryDueTaskTests(unittest.TestCase):
             )
 
             self.assertEqual([item["customer_id"] for item in by_name], ["customer-22016906"])
+            self.assertEqual(by_name[0]["platform_customer_name"], "张治萍")
             self.assertEqual([item["customer_id"] for item in by_customer_id], ["customer-22016906"])
             self.assertEqual([item["customer_id"] for item in by_external_id], ["customer-22016906"])
 

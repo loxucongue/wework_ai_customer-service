@@ -871,6 +871,7 @@ class OutreachService:
             candidate.get("customer_id"),
             candidate.get("external_userid"),
             candidate.get("wechat"),
+            candidate.get("platform_customer_name"),
             candidate.get("title"),
             candidate.get("last_customer_message"),
             candidate.get("latest_event_summary"),

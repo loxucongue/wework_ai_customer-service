@@ -38,6 +38,7 @@ type Candidate = {
   corp_id?: string;
   user_id?: string;
   wechat?: string;
+  platform_customer_name?: string;
   title?: string;
   lifecycle_stage?: string;
   last_customer_message_at?: string;
@@ -269,7 +270,15 @@ function listValue(value: unknown) {
 function candidateName(candidate?: Candidate | null) {
   if (!candidate) return "-";
   const basic = objectValue(candidate.basic_info);
-  return textValue(basic.customer_name) || candidate.title || candidate.customer_id;
+  const title = String(candidate.title || "").trim();
+  const safeTitle =
+    title.length <= 24 &&
+    !/[\r\n。！？!?]/.test(title) &&
+    !title.includes("我已经添加了你") &&
+    !title.includes("现在我们可以开始聊天了")
+      ? title
+      : "";
+  return textValue(basic.customer_name) || candidate.platform_customer_name || safeTitle || candidate.customer_id;
 }
 
 function fieldLabel(key: string) {
