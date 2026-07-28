@@ -8,6 +8,7 @@ from typing import Any
 
 from app.services.outreach_service import OutreachService
 from app.services.storage import AppRepository, SQLiteStore
+from app.services.customer_scope import build_customer_scope
 
 
 class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
@@ -69,6 +70,70 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OutreachRepositoryDueTaskTests(unittest.TestCase):
+    def test_candidate_search_filters_before_limit_and_matches_customer_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
+            store.initialize()
+            repository = AppRepository(store)
+            for index in range(3):
+                request = SimpleNamespace(
+                    customer_id=f"recent-{index}",
+                    external_userid=f"external-recent-{index}",
+                    corp_id="corp",
+                    user_id="7294",
+                    wechat="DY258",
+                )
+                repository.upsert_conversation(
+                    conversation_id=f"conversation-recent-{index}",
+                    request=request,
+                    title=f"最近客户{index}",
+                )
+                repository.add_user_message(
+                    conversation_id=f"conversation-recent-{index}",
+                    request_id=f"request-recent-{index}",
+                    content="普通消息",
+                    file_image=None,
+                )
+
+            target_request = SimpleNamespace(
+                customer_id="customer-22016906",
+                external_userid="external-target",
+                corp_id="corp",
+                user_id="7294",
+                wechat="DY258",
+            )
+            repository.upsert_conversation(
+                conversation_id="conversation-target",
+                request=target_request,
+                title="张治萍",
+            )
+            repository.add_user_message(
+                conversation_id="conversation-target",
+                request_id="request-target",
+                content="想了解荆州门店",
+                file_image=None,
+            )
+
+            by_name = repository.list_outreach_candidates(
+                limit=1,
+                silent_minutes_min=0,
+                keyword="张治萍",
+            )
+            by_customer_id = repository.list_outreach_candidates(
+                limit=1,
+                silent_minutes_min=0,
+                keyword="22016906",
+            )
+            by_external_id = repository.list_outreach_candidates(
+                limit=1,
+                silent_minutes_min=0,
+                keyword="external-target",
+            )
+
+            self.assertEqual([item["customer_id"] for item in by_name], ["customer-22016906"])
+            self.assertEqual([item["customer_id"] for item in by_customer_id], ["customer-22016906"])
+            self.assertEqual([item["customer_id"] for item in by_external_id], ["customer-22016906"])
+
     def test_auto_worker_selects_only_auto_approved_and_one_step_per_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
@@ -120,6 +185,166 @@ class OutreachRepositoryDueTaskTests(unittest.TestCase):
             self.assertEqual(len(tasks), 1)
             self.assertEqual(tasks[0]["customer_id"], "customer-auto")
             self.assertEqual(tasks[0]["step_index"], 1)
+
+    def test_dashboard_stats_only_count_auto_approved_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
+            store.initialize()
+            repository = AppRepository(store)
+            auto = repository.create_outreach_plan(
+                customer_id="customer-auto",
+                corp_id="corp",
+                user_id="7294",
+                wechat="DY258",
+                external_userid="external-auto",
+                customer_stage="P2_OBJECTION",
+                stall_reason="silent",
+                customer_psychology="仍有兴趣",
+                plan_goal="重新开口",
+                source_snapshot={
+                    "trigger_context": {
+                        "source": "sop_platform_task",
+                        "activation_policy": "auto_approved",
+                    }
+                },
+                tasks=[_due_task(1, "第一步"), _due_task(2, "第二步")],
+            )
+            repository.update_outreach_plan_status(auto["plan"]["id"], "active")
+            manual = repository.create_outreach_plan(
+                customer_id="customer-manual",
+                corp_id="corp",
+                user_id="7294",
+                wechat="DY258",
+                external_userid="external-manual",
+                customer_stage="P2_OBJECTION",
+                stall_reason="silent",
+                customer_psychology="仍有兴趣",
+                plan_goal="人工计划",
+                source_snapshot={"trigger_context": {"activation_policy": "review_required"}},
+                tasks=[_due_task(1, "不应计入")],
+            )
+            repository.update_outreach_plan_status(manual["plan"]["id"], "active")
+            with store.connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO sop_events
+                        (event_id, event_type, source, received_at, updated_at)
+                    VALUES (?, 'sop_platform_task', 'test', ?, ?)
+                    """,
+                    (
+                        "platform-event-1",
+                        "2026-07-28T02:00:00+00:00",
+                        "2026-07-28T02:00:00+00:00",
+                    ),
+                )
+
+            stats = repository.outreach_dashboard_stats(now="2026-07-28T12:00:00+08:00")
+
+            self.assertEqual(stats["metrics"]["platform_tasks_today"], 1)
+            self.assertEqual(stats["metrics"]["personalized_plans_today"], 1)
+            self.assertEqual(stats["metrics"]["active_plans"], 1)
+            self.assertEqual(stats["metrics"]["pending_tasks"], 2)
+            self.assertEqual(stats["metrics"]["due_tasks"], 2)
+
+    def test_customer_detail_respects_sales_contact_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
+            store.initialize()
+            repository = AppRepository(store)
+            scope_a = build_customer_scope(
+                corp_id="corp",
+                wechat="DY258",
+                external_userid="external-same",
+                customer_id="customer-same",
+            )
+            scope_b = build_customer_scope(
+                corp_id="corp",
+                wechat="CS001",
+                external_userid="external-same",
+                customer_id="customer-same",
+            )
+            repository.save_memory(
+                scope_a.sales_contact_key,
+                {
+                    "portrait": {"summary": "A账号画像"},
+                    "basic_info": {"city": "上海"},
+                    "lifecycle_stage": "P2_OBJECTION",
+                    "history_events": [
+                        {
+                            "event_type": "customer_psychology_update",
+                            "summary": "A账号事件",
+                        }
+                    ],
+                },
+            )
+            repository.save_memory(
+                scope_b.sales_contact_key,
+                {
+                    "portrait": {"summary": "B账号画像"},
+                    "basic_info": {"city": "广州"},
+                    "lifecycle_stage": "P1_INTEREST",
+                    "history_events": [
+                        {
+                            "event_type": "customer_psychology_update",
+                            "summary": "B账号事件",
+                        }
+                    ],
+                },
+            )
+            plan_a = repository.create_outreach_plan(
+                customer_id="customer-same",
+                corp_id="corp",
+                user_id="7294",
+                wechat="DY258",
+                external_userid="external-same",
+                customer_stage="P2_OBJECTION",
+                stall_reason="silent",
+                customer_psychology="仍有兴趣",
+                plan_goal="重新开口",
+                source_snapshot={"trigger_context": {"activation_policy": "auto_approved"}},
+                tasks=[_due_task(1, "A账号任务")],
+            )
+            plan_b = repository.create_outreach_plan(
+                customer_id="customer-same",
+                corp_id="corp",
+                user_id="7294",
+                wechat="CS001",
+                external_userid="external-same",
+                customer_stage="P1_INTEREST",
+                stall_reason="silent",
+                customer_psychology="仍有兴趣",
+                plan_goal="重新开口",
+                source_snapshot={"trigger_context": {"activation_policy": "auto_approved"}},
+                tasks=[_due_task(1, "B账号任务")],
+            )
+            repository.add_outreach_event(
+                plan_id=plan_a["plan"]["id"],
+                task_id="",
+                customer_id="customer-same",
+                event_type="plan_created",
+                event_summary="A账号唤醒事件",
+            )
+            repository.add_outreach_event(
+                plan_id=plan_b["plan"]["id"],
+                task_id="",
+                customer_id="customer-same",
+                event_type="plan_created",
+                event_summary="B账号唤醒事件",
+            )
+
+            detail = repository.get_outreach_customer_detail(
+                customer_id="customer-same",
+                corp_id="corp",
+                wechat="DY258",
+                external_userid="external-same",
+            )
+
+            self.assertEqual(detail["portrait"]["summary"], "A账号画像")
+            self.assertEqual(detail["basic_info"]["city"], "上海")
+            self.assertEqual([item["summary"] for item in detail["history_events"]], ["A账号事件"])
+            event_summaries = [item["event_summary"] for item in detail["outreach_events"]]
+            self.assertIn("A账号唤醒事件", event_summaries)
+            self.assertNotIn("B账号唤醒事件", event_summaries)
 
 
 def _due_task(step: int, text: str) -> dict[str, Any]:

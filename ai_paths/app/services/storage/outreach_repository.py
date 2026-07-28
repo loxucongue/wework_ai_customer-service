@@ -32,6 +32,26 @@ def _string(value: Any) -> str:
     return str(value).strip()
 
 
+def _outreach_candidate_matches_keyword(candidate: dict[str, Any], keyword: str) -> bool:
+    needle = keyword.strip().lower()
+    if not needle:
+        return True
+    parts = [
+        candidate.get("customer_id"),
+        candidate.get("external_userid"),
+        candidate.get("wechat"),
+        candidate.get("title"),
+        candidate.get("last_customer_message"),
+        candidate.get("latest_event_summary"),
+        candidate.get("lifecycle_stage"),
+    ]
+    for field in ("portrait", "basic_info"):
+        value = candidate.get(field)
+        if isinstance(value, dict):
+            parts.extend(str(item) for item in value.values())
+    return needle in " ".join(_string(part).lower() for part in parts if part is not None)
+
+
 class OutreachRepositoryMixin:
     def touch_customer_message_time(self, memory_key: str, *, field: str, value: str | None = None) -> None:
         if field not in {
@@ -94,10 +114,11 @@ class OutreachRepositoryMixin:
         outreach_status: str = "",
         lifecycle_stage: str = "",
         no_plan_only: bool = False,
+        keyword: str = "",
     ) -> list[dict[str, Any]]:
         cutoff_72h = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
         result_limit = max(1, min(limit, 200))
-        query_limit = max(result_limit, min(result_limit * 5, 1000))
+        query_limit = 5000 if keyword.strip() else max(result_limit, min(result_limit * 5, 1000))
         with self.store.connect() as conn:
             rows = conn.execute(
                 """
@@ -151,6 +172,8 @@ class OutreachRepositoryMixin:
             item["outreach_plan_id"] = str(memory.get("outreach_plan_id") or "")
             events = memory.get("history_events") if isinstance(memory.get("history_events"), list) else []
             item["latest_event_summary"] = str((events[-1] if events else {}).get("summary") or "")
+            if keyword and not _outreach_candidate_matches_keyword(item, keyword):
+                continue
             if outreach_status and item["outreach_status"] != outreach_status:
                 continue
             if lifecycle_stage and item["lifecycle_stage"] != lifecycle_stage:
@@ -163,6 +186,142 @@ class OutreachRepositoryMixin:
             if len(items) >= result_limit:
                 break
         return items
+
+    def outreach_dashboard_stats(self, *, now: str | None = None) -> dict[str, Any]:
+        current = _parse_iso(now) if now else datetime.now(timezone.utc)
+        current = current or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        beijing = timezone(timedelta(hours=8))
+        current_beijing = current.astimezone(beijing)
+        day_start = current_beijing.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end = day_start + timedelta(days=1)
+        start_utc = day_start.astimezone(timezone.utc).isoformat()
+        end_utc = day_end.astimezone(timezone.utc).isoformat()
+        now_utc = current.astimezone(timezone.utc).isoformat()
+        auto_plan = "json_extract(source_snapshot, '$.trigger_context.activation_policy')='auto_approved'"
+        auto_joined_plan = "json_extract(p.source_snapshot, '$.trigger_context.activation_policy')='auto_approved'"
+
+        with self.store.connect() as conn:
+            platform_tasks_today = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*) FROM sop_events
+                    WHERE event_type='sop_platform_task' AND received_at>=? AND received_at<?
+                    """,
+                    (start_utc, end_utc),
+                ).fetchone()[0]
+            )
+            plans_today = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM outreach_plans WHERE {auto_plan} AND created_at>=? AND created_at<?",
+                    (start_utc, end_utc),
+                ).fetchone()[0]
+            )
+            plan_rows = conn.execute(
+                f"""
+                SELECT status, COUNT(*) AS count
+                FROM outreach_plans
+                WHERE {auto_plan}
+                GROUP BY status
+                """
+            ).fetchall()
+            task_rows = conn.execute(
+                f"""
+                SELECT t.status, COUNT(*) AS count
+                FROM outreach_tasks t
+                JOIN outreach_plans p ON p.id=t.plan_id
+                WHERE {auto_joined_plan}
+                GROUP BY t.status
+                """
+            ).fetchall()
+            due_tasks = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM outreach_tasks t
+                    JOIN outreach_plans p ON p.id=t.plan_id
+                    WHERE {auto_joined_plan}
+                      AND t.status='pending'
+                      AND t.scheduled_at<=?
+                      AND p.status IN ('active', 'waiting')
+                    """,
+                    (now_utc,),
+                ).fetchone()[0]
+            )
+            sent_today = int(
+                conn.execute(
+                    f"""
+                    SELECT COUNT(*)
+                    FROM outreach_tasks t
+                    JOIN outreach_plans p ON p.id=t.plan_id
+                    WHERE {auto_joined_plan}
+                      AND t.status='sent'
+                      AND t.sent_at>=? AND t.sent_at<?
+                    """,
+                    (start_utc, end_utc),
+                ).fetchone()[0]
+            )
+            event_rows = conn.execute(
+                f"""
+                SELECT e.event_type, COUNT(*) AS count
+                FROM outreach_events e
+                JOIN outreach_plans p ON p.id=e.plan_id
+                WHERE {auto_joined_plan}
+                  AND e.created_at>=? AND e.created_at<?
+                GROUP BY e.event_type
+                """,
+                (start_utc, end_utc),
+            ).fetchall()
+            next_due = conn.execute(
+                f"""
+                SELECT t.scheduled_at, t.customer_id, t.id AS task_id
+                FROM outreach_tasks t
+                JOIN outreach_plans p ON p.id=t.plan_id
+                WHERE {auto_joined_plan}
+                  AND t.status='pending'
+                  AND p.status IN ('active', 'waiting')
+                ORDER BY t.scheduled_at ASC
+                LIMIT 1
+                """
+            ).fetchone()
+            last_sent = conn.execute(
+                f"""
+                SELECT t.sent_at, t.customer_id, t.id AS task_id
+                FROM outreach_tasks t
+                JOIN outreach_plans p ON p.id=t.plan_id
+                WHERE {auto_joined_plan} AND t.status='sent'
+                ORDER BY t.sent_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        plan_counts = {str(row["status"]): int(row["count"]) for row in plan_rows}
+        task_counts = {str(row["status"]): int(row["count"]) for row in task_rows}
+        event_counts = {str(row["event_type"]): int(row["count"]) for row in event_rows}
+        stopped_today = (
+            event_counts.get("task_skipped_customer_replied", 0)
+            + event_counts.get("task_skipped_order_state_changed", 0)
+        )
+        return {
+            "generated_at": now_utc,
+            "timezone": "Asia/Shanghai",
+            "metrics": {
+                "platform_tasks_today": platform_tasks_today,
+                "personalized_plans_today": plans_today,
+                "active_plans": plan_counts.get("active", 0) + plan_counts.get("waiting", 0),
+                "pending_tasks": task_counts.get("pending", 0),
+                "due_tasks": due_tasks,
+                "sent_today": sent_today,
+                "stopped_today": stopped_today,
+                "retry_today": event_counts.get("before_send_check_failed", 0),
+                "failed_today": event_counts.get("task_failed", 0),
+            },
+            "plan_status_counts": plan_counts,
+            "task_status_counts": task_counts,
+            "event_counts_today": event_counts,
+            "next_due": dict(next_due) if next_due else {},
+            "last_sent": dict(last_sent) if last_sent else {},
+        }
 
     def create_outreach_plan(
         self,
@@ -441,6 +600,65 @@ class OutreachRepositoryMixin:
                 params,
             ).fetchall()
         return [self._decode_outreach_event(dict(row)) for row in rows]
+
+    def get_outreach_customer_detail(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str = "",
+        event_limit: int = 100,
+    ) -> dict[str, Any]:
+        scope = build_customer_scope(
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_id=customer_id,
+        )
+        if not scope.persistence_allowed:
+            return {}
+        memory = self.load_memory(scope.sales_contact_key) or {
+            "customer_id": scope.sales_contact_key,
+            "portrait": {},
+            "basic_info": {},
+            "lifecycle_stage": "",
+            "history_events": [],
+        }
+        clauses = ["p.customer_id=?", "p.wechat=?"]
+        params: list[Any] = [customer_id, wechat]
+        if corp_id:
+            clauses.append("p.corp_id=?")
+            params.append(corp_id)
+        if external_userid:
+            clauses.append("p.external_userid=?")
+            params.append(external_userid)
+        params.append(max(1, min(event_limit, 300)))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT e.*
+                FROM outreach_events e
+                JOIN outreach_plans p ON p.id=e.plan_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY e.created_at DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return {
+            "customer_id": customer_id,
+            "external_userid": external_userid,
+            "corp_id": corp_id,
+            "wechat": wechat,
+            "sales_contact_key": scope.sales_contact_key,
+            "portrait": memory.get("portrait") if isinstance(memory.get("portrait"), dict) else {},
+            "basic_info": memory.get("basic_info") if isinstance(memory.get("basic_info"), dict) else {},
+            "lifecycle_stage": str(memory.get("lifecycle_stage") or ""),
+            "profile_updated_at": str(memory.get("updated_at") or ""),
+            "history_events": memory.get("history_events") if isinstance(memory.get("history_events"), list) else [],
+            "outreach_events": [self._decode_outreach_event(dict(row)) for row in rows],
+        }
 
     def update_outreach_plan_status(self, plan_id: str, status: str) -> dict[str, Any]:
         now = utc_now_iso()

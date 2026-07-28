@@ -67,7 +67,6 @@ sop_execution_service = SopExecutionService(
     model_client=model_client,
     memory_store=memory_store,
     customer_context_service=customer_context_service,
-    personalized_outreach_service=outreach_service,
     event_model_retry_attempts=settings.sop_event_model_retry_attempts,
     event_model_retry_delay_seconds=settings.sop_event_model_retry_delay_seconds,
     event_model_attempt_timeout_seconds=settings.sop_event_model_attempt_timeout_seconds,
@@ -533,6 +532,38 @@ async def admin_outreach_candidates(
             keyword=keyword,
         )
     }
+
+
+@app.get("/admin/outreach/dashboard", dependencies=[Depends(require_api_key)])
+async def admin_outreach_dashboard() -> dict[str, Any]:
+    return {
+        **outreach_service.dashboard_stats(),
+        "worker": {
+            "enabled": settings.outreach_auto_send_enabled,
+            "mode": "auto_approved",
+            "poll_seconds": settings.outreach_auto_send_poll_seconds,
+            "batch_size": settings.outreach_auto_send_batch_size,
+            "before_send_retry_seconds": settings.outreach_before_send_retry_seconds,
+        },
+    }
+
+
+@app.get("/admin/outreach/customers/{customer_id}/detail", dependencies=[Depends(require_api_key)])
+async def admin_outreach_customer_detail(
+    customer_id: str,
+    corp_id: str = "",
+    wechat: str = "",
+    external_userid: str = "",
+) -> dict[str, Any]:
+    detail = outreach_service.customer_detail(
+        customer_id=customer_id,
+        corp_id=corp_id,
+        wechat=wechat,
+        external_userid=external_userid,
+    )
+    if not detail:
+        raise HTTPException(status_code=400, detail="完整的客服账号边界是读取客户详情的前提")
+    return detail
 
 
 @app.get("/admin/outreach/sops", dependencies=[Depends(require_api_key)])

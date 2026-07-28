@@ -6,19 +6,26 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   ArrowLeft,
+  Bot,
+  CircleCheck,
+  CircleX,
   Clock,
   FileText,
+  GitBranch,
+  History,
   ListChecks,
   LoaderCircle,
+  MapPin,
   MessageSquareText,
   Pause,
+  Phone,
   Play,
-  Plus,
   RefreshCw,
-  Save,
   Search,
   Send,
-  Trash2,
+  ShieldCheck,
+  Tags,
+  TimerReset,
   UserRound,
   XCircle,
 } from "lucide-react";
@@ -95,6 +102,30 @@ type OutreachEvent = {
   created_at?: string;
 };
 
+type CustomerHistoryEvent = {
+  event_id?: string;
+  event_type?: string;
+  stage?: string;
+  summary?: string;
+  facts?: JsonObject;
+  impact?: string;
+  confidence?: number;
+  event_time?: string;
+};
+
+type CustomerDetail = {
+  customer_id?: string;
+  external_userid?: string;
+  corp_id?: string;
+  wechat?: string;
+  portrait?: JsonObject;
+  basic_info?: JsonObject;
+  lifecycle_stage?: string;
+  profile_updated_at?: string;
+  history_events?: CustomerHistoryEvent[];
+  outreach_events?: OutreachEvent[];
+};
+
 type ConversationMessage = {
   content?: unknown;
   text?: unknown;
@@ -116,6 +147,7 @@ type PlanDetail = {
 };
 
 type Filters = {
+  keyword: string;
   silentMinutesMin: string;
   lifecycleStage: string;
   outreachStatus: string;
@@ -123,52 +155,46 @@ type Filters = {
   limit: string;
 };
 
-type SopFilters = {
-  silent_minutes_min: number;
-  lifecycle_stage: string;
-  outreach_status: string;
-  no_plan_only: boolean;
-  keyword: string;
-  business_goal: string;
-  limit: number;
-};
-
-type SopPlan = {
-  id: string;
-  name: string;
-  description?: string;
-  status: string;
-  filters?: Partial<SopFilters>;
-  created_at?: string;
-  updated_at?: string;
-  last_run_at?: string;
-  last_run_summary?: JsonObject;
-  stats?: {
-    total_plans?: number;
-    total_tasks?: number;
-    sent_tasks?: number;
+type DashboardStats = {
+  generated_at?: string;
+  timezone?: string;
+  worker?: {
+    enabled?: boolean;
+    mode?: string;
+    poll_seconds?: number;
+    batch_size?: number;
+    before_send_retry_seconds?: number;
+  };
+  metrics?: {
+    platform_tasks_today?: number;
+    personalized_plans_today?: number;
+    active_plans?: number;
     pending_tasks?: number;
-    plans?: Record<string, number>;
-    tasks?: Record<string, number>;
+    due_tasks?: number;
+    sent_today?: number;
+    stopped_today?: number;
+    retry_today?: number;
+    failed_today?: number;
+  };
+  next_due?: {
+    scheduled_at?: string;
+    customer_id?: string;
+    task_id?: string;
+  };
+  last_sent?: {
+    sent_at?: string;
+    customer_id?: string;
+    task_id?: string;
   };
 };
 
 const DEFAULT_FILTERS: Filters = {
+  keyword: "",
   silentMinutesMin: "60",
   lifecycleStage: "",
   outreachStatus: "",
   noPlanOnly: true,
   limit: "50",
-};
-
-const DEFAULT_SOP_FILTERS: SopFilters = {
-  silent_minutes_min: 0,
-  lifecycle_stage: "",
-  outreach_status: "",
-  no_plan_only: true,
-  keyword: "",
-  business_goal: "推进客户支付10元预约金并到店",
-  limit: 20,
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -211,14 +237,103 @@ function formatSilent(minutes?: number) {
   return `${(minutes / 1440).toFixed(1)}天`;
 }
 
-function jsonPreview(value: unknown) {
-  if (value == null || value === "") return "-";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
+function candidateKey(candidate?: Candidate | null) {
+  if (!candidate) return "";
+  return [candidate.corp_id, candidate.wechat, candidate.external_userid, candidate.customer_id]
+    .map((value) => String(value || "").toLowerCase())
+    .join(":");
+}
+
+function objectValue(value: unknown): JsonObject {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as JsonObject) : {};
+}
+
+function textValue(value: unknown): string {
+  if (value == null || value === "") return "";
+  if (Array.isArray(value)) return value.map(textValue).filter(Boolean).join("、");
+  if (typeof value === "object") {
+    return Object.entries(value as JsonObject)
+      .map(([key, item]) => `${fieldLabel(key)}：${textValue(item)}`)
+      .filter((item) => !item.endsWith("："))
+      .join("；");
   }
+  return String(value);
+}
+
+function listValue(value: unknown) {
+  if (Array.isArray(value)) return value.map(textValue).filter(Boolean);
+  const text = textValue(value);
+  return text ? [text] : [];
+}
+
+function candidateName(candidate?: Candidate | null) {
+  if (!candidate) return "-";
+  const basic = objectValue(candidate.basic_info);
+  return textValue(basic.customer_name) || candidate.title || candidate.customer_id;
+}
+
+function fieldLabel(key: string) {
+  const labels: Record<string, string> = {
+    summary: "画像摘要",
+    customer_type_tags: "客户类型",
+    decision_stage: "决策阶段",
+    deposit_state: "预约金状态",
+    main_objection: "主要顾虑",
+    next_sales_strategy: "下一步策略",
+    intent_level: "意向程度",
+    trust_level: "信任程度",
+    concerns: "客户顾虑",
+    style_tags: "沟通偏好",
+    city: "城市",
+    area_or_landmark: "区域/地标",
+    preferred_store_id: "意向门店 ID",
+    preferred_store_name: "意向门店",
+    intent_date: "意向日期",
+    intent_time: "意向时间",
+    customer_name: "登记姓名",
+    phone: "联系电话",
+    order_id: "订单 ID",
+    store_id: "门店 ID",
+    store_name: "门店",
+    amount: "金额",
+    source: "来源",
+    status: "状态",
+    reason: "原因",
+  };
+  return labels[key] || key.replaceAll("_", " ");
+}
+
+function levelLabel(value: unknown) {
+  const labels: Record<string, string> = {
+    low: "低",
+    medium: "中",
+    high: "高",
+    unknown: "未知",
+    none: "未进入",
+    unpaid: "未支付",
+    paid: "已支付",
+  };
+  const text = textValue(value);
+  return labels[text] || text || "-";
+}
+
+function eventTypeLabel(value?: string) {
+  const labels: Record<string, string> = {
+    customer_psychology_update: "客户心理变化",
+    customer_need_update: "客户需求更新",
+    store_preference_update: "门店偏好更新",
+    payment_success: "预约金已支付",
+    offer_explained: "活动报价已介绍",
+    deposit_explained: "预约金规则已介绍",
+    plan_created: "生成唤醒计划",
+    plan_activated: "启用唤醒计划",
+    task_sent: "触达已发送",
+    task_failed: "触达失败",
+    task_skipped_customer_replied: "客户回复，停止触达",
+    task_skipped_order_state_changed: "订单变化，停止触达",
+    before_send_check_failed: "发送前复查失败",
+  };
+  return labels[String(value || "")] || String(value || "历史事件");
 }
 
 async function readJsonResponse(response: Response) {
@@ -260,35 +375,6 @@ function sendStatusLabel(value?: string) {
 
 function boolLabel(value?: boolean) {
   return value ? "允许收款卡" : "仅文本推进";
-}
-
-function sopFilterSummary(filters?: Partial<SopFilters>) {
-  if (!filters) return "不限客群";
-  const parts = [];
-  const silent = Number(filters.silent_minutes_min || 0);
-  parts.push(silent > 0 ? `沉默>${formatSilent(silent)}` : "沉默不限");
-  if (filters.keyword) parts.push(`品项/关键词:${filters.keyword}`);
-  if (filters.lifecycle_stage) parts.push(`阶段:${filters.lifecycle_stage}`);
-  if (filters.outreach_status) parts.push(`计划状态:${statusLabel(filters.outreach_status)}`);
-  if (filters.no_plan_only) parts.push("仅无计划");
-  parts.push(`上限:${filters.limit || 20}`);
-  return parts.join(" · ");
-}
-
-function normalizeSopDraft(plan?: SopPlan) {
-  return {
-    id: plan?.id || "",
-    name: plan?.name || "",
-    description: plan?.description || "",
-    status: plan?.status || "draft",
-    filters: {
-      ...DEFAULT_SOP_FILTERS,
-      ...(plan?.filters || {}),
-      silent_minutes_min: Number(plan?.filters?.silent_minutes_min ?? DEFAULT_SOP_FILTERS.silent_minutes_min),
-      limit: Number(plan?.filters?.limit ?? DEFAULT_SOP_FILTERS.limit),
-      no_plan_only: Boolean(plan?.filters?.no_plan_only ?? DEFAULT_SOP_FILTERS.no_plan_only),
-    },
-  };
 }
 
 function messagePreview(messages?: Array<JsonObject>) {
@@ -333,7 +419,6 @@ export function OutreachWorkbench() {
   const [selectedCustomer, setSelectedCustomer] = useState<Candidate | null>(null);
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [planDetail, setPlanDetail] = useState<PlanDetail | null>(null);
-  const [events, setEvents] = useState<OutreachEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -341,100 +426,25 @@ export function OutreachWorkbench() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyCustomer, setHistoryCustomer] = useState<Candidate | null>(null);
   const [historyMessages, setHistoryMessages] = useState<ConversationMessage[]>([]);
-  const [sopPlans, setSopPlans] = useState<SopPlan[]>([]);
-  const [sopDraft, setSopDraft] = useState(() => normalizeSopDraft());
-  const [sopPreviewCandidates, setSopPreviewCandidates] = useState<Candidate[]>([]);
+  const [dashboard, setDashboard] = useState<DashboardStats>({});
+  const [customerDetail, setCustomerDetail] = useState<CustomerDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailRevision, setDetailRevision] = useState(0);
 
   const selectedPlan = planDetail?.plan || null;
   const tasks = useMemo(() => planDetail?.tasks || [], [planDetail]);
   const planEvents = useMemo(() => planDetail?.events || [], [planDetail]);
 
-  const loadSopPlans = useCallback(async () => {
+  const loadDashboard = useCallback(async () => {
     try {
-      const response = await fetch("/api/outreach/sops?limit=100", { cache: "no-store" });
+      const response = await fetch("/api/outreach/dashboard", { cache: "no-store" });
       const data = await readJsonResponse(response);
-      if (!response.ok) throw new Error(outreachErrorMessage(data, "加载SOP计划失败"));
-      setSopPlans(Array.isArray(data.items) ? data.items : []);
+      if (!response.ok) throw new Error(outreachErrorMessage(data, "加载主动唤醒统计失败"));
+      setDashboard(data as DashboardStats);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
-
-  const previewSopAudience = useCallback(async () => {
-    setBusy("sop-preview");
-    setError("");
-    setNotice("");
-    const search = new URLSearchParams();
-    search.set("silent_minutes_min", String(sopDraft.filters.silent_minutes_min || 0));
-    search.set("limit", String(sopDraft.filters.limit || 20));
-    if (sopDraft.filters.lifecycle_stage) search.set("lifecycle_stage", sopDraft.filters.lifecycle_stage);
-    if (sopDraft.filters.outreach_status) search.set("outreach_status", sopDraft.filters.outreach_status);
-    if (sopDraft.filters.no_plan_only) search.set("no_plan_only", "true");
-    if (sopDraft.filters.keyword) search.set("keyword", sopDraft.filters.keyword);
-    try {
-      const response = await fetch(`/api/outreach/candidates?${search.toString()}`, { cache: "no-store" });
-      const data = await readJsonResponse(response);
-      if (!response.ok) throw new Error(outreachErrorMessage(data, "预估客群失败"));
-      setSopPreviewCandidates(Array.isArray(data.items) ? data.items : []);
-      setNotice(`已预估 ${Array.isArray(data.items) ? data.items.length : 0} 个候选客户`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
-  }, [sopDraft.filters]);
-
-  const saveSopPlan = useCallback(async () => {
-    if (!sopDraft.name.trim()) {
-      setError("请先填写SOP计划名称");
-      return;
-    }
-    setBusy("sop-save");
-    setError("");
-    setNotice("");
-    try {
-      const response = await fetch(sopDraft.id ? `/api/outreach/sops/${encodeURIComponent(sopDraft.id)}` : "/api/outreach/sops", {
-        method: sopDraft.id ? "PUT" : "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: sopDraft.name,
-          description: sopDraft.description,
-          status: sopDraft.status,
-          filters: sopDraft.filters,
-        }),
-      });
-      const data = await readJsonResponse(response);
-      if (!response.ok) throw new Error(outreachErrorMessage(data, "保存SOP计划失败"));
-      setSopDraft(normalizeSopDraft(data as SopPlan));
-      await loadSopPlans();
-      setNotice("SOP计划已保存");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
-  }, [loadSopPlans, sopDraft]);
-
-  const deleteSopPlan = useCallback(async (plan: SopPlan) => {
-    setBusy(`sop-delete-${plan.id}`);
-    setError("");
-    setNotice("");
-    try {
-      const response = await fetch(`/api/outreach/sops/${encodeURIComponent(plan.id)}`, { method: "DELETE" });
-      const data = await readJsonResponse(response);
-      if (!response.ok) throw new Error(outreachErrorMessage(data, "删除SOP计划失败"));
-      if (sopDraft.id === plan.id) {
-        setSopDraft(normalizeSopDraft());
-        setSopPreviewCandidates([]);
-      }
-      await loadSopPlans();
-      setNotice("SOP计划已删除");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
-  }, [loadSopPlans, sopDraft.id]);
 
   const loadCandidates = useCallback(async () => {
     setLoading(true);
@@ -442,6 +452,7 @@ export function OutreachWorkbench() {
     const search = new URLSearchParams();
     search.set("silent_minutes_min", filters.silentMinutesMin || "0");
     search.set("limit", filters.limit || "50");
+    if (filters.keyword) search.set("keyword", filters.keyword);
     if (filters.lifecycleStage) search.set("lifecycle_stage", filters.lifecycleStage);
     if (filters.outreachStatus) search.set("outreach_status", filters.outreachStatus);
     if (filters.noPlanOnly) search.set("no_plan_only", "true");
@@ -449,46 +460,24 @@ export function OutreachWorkbench() {
       const response = await fetch(`/api/outreach/candidates?${search.toString()}`, { cache: "no-store" });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || "加载候选客户失败");
-      const items = Array.isArray(data.items) ? data.items : [];
+      const items = (Array.isArray(data.items) ? data.items : []) as Candidate[];
       setCandidates(items);
-      if (!selectedCustomer && items.length) setSelectedCustomer(items[0]);
+      setSelectedCustomer((current) => {
+        if (!items.length) return null;
+        if (!current) return items[0];
+        return items.find((item) => candidateKey(item) === candidateKey(current)) || items[0];
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [filters, selectedCustomer]);
+  }, [filters]);
 
-  const loadEvents = useCallback(async () => {
-    const response = await fetch("/api/outreach/events?limit=80", { cache: "no-store" });
-    const data = await response.json();
-    if (response.ok) setEvents(Array.isArray(data.items) ? data.items : []);
+  const refreshCustomerDetail = useCallback(async () => {
+    setDetailRevision((value) => value + 1);
   }, []);
 
-  const runSopPlan = useCallback(async (plan: SopPlan, activate = false) => {
-    setBusy(activate ? `sop-run-activate-${plan.id}` : `sop-run-${plan.id}`);
-    setError("");
-    setNotice("");
-    try {
-      const limit = Number(plan.filters?.limit || sopDraft.filters.limit || 20);
-      const response = await fetch(`/api/outreach/sops/${encodeURIComponent(plan.id)}/run`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ limit, activate }),
-      });
-      const data = await readJsonResponse(response);
-      if (!response.ok || data.ok === false) throw new Error(outreachErrorMessage(data, "运行SOP计划失败"));
-      await loadSopPlans();
-      await loadCandidates();
-      await loadEvents();
-      const summary = data.summary as JsonObject | undefined;
-      setNotice(`批量生成完成：成功 ${String(summary?.success_count ?? 0)}，失败 ${String(summary?.failed_count ?? 0)}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
-  }, [loadCandidates, loadEvents, loadSopPlans, sopDraft.filters.limit]);
 
   const loadPlan = useCallback(async (planId: string) => {
     if (!planId) return;
@@ -553,7 +542,7 @@ export function OutreachWorkbench() {
           }
           await loadPlan(planId);
           await loadCandidates();
-          await loadEvents();
+          await refreshCustomerDetail();
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -561,7 +550,7 @@ export function OutreachWorkbench() {
         setBusy("");
       }
     },
-    [loadCandidates, loadEvents, loadPlan]
+    [loadCandidates, loadPlan, refreshCustomerDetail]
   );
 
   const planAction = useCallback(
@@ -578,14 +567,14 @@ export function OutreachWorkbench() {
         if (!response.ok) throw new Error(data?.error || "更新计划失败");
         setPlanDetail(data);
         await loadCandidates();
-        await loadEvents();
+        await refreshCustomerDetail();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy("");
       }
     },
-    [loadCandidates, loadEvents, selectedPlan]
+    [loadCandidates, refreshCustomerDetail, selectedPlan]
   );
 
   const executeTask = useCallback(
@@ -598,18 +587,18 @@ export function OutreachWorkbench() {
         const data = await readJsonResponse(response);
         if (!response.ok || data.ok === false) {
           if (selectedPlanId) await loadPlan(selectedPlanId);
-          await loadEvents();
+          await refreshCustomerDetail();
           throw new Error(outreachErrorMessage(data, "执行任务失败"));
         }
         if (selectedPlanId) await loadPlan(selectedPlanId);
-        await loadEvents();
+        await refreshCustomerDetail();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy("");
       }
     },
-    [loadEvents, loadPlan, selectedPlanId]
+    [loadPlan, refreshCustomerDetail, selectedPlanId]
   );
 
   const previewTask = useCallback(
@@ -622,14 +611,14 @@ export function OutreachWorkbench() {
         const data = await readJsonResponse(response);
         if (!response.ok || data.ok === false) throw new Error(outreachErrorMessage(data, "生成预览失败"));
         if (selectedPlanId) await loadPlan(selectedPlanId);
-        await loadEvents();
+        await refreshCustomerDetail();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy("");
       }
     },
-    [loadEvents, loadPlan, selectedPlanId]
+    [loadPlan, refreshCustomerDetail, selectedPlanId]
   );
 
   const refreshConversation = useCallback(
@@ -652,14 +641,14 @@ export function OutreachWorkbench() {
         if (!response.ok) throw new Error(outreachErrorMessage(data, "刷新历史失败"));
         if (data.warning) setNotice(String(data.warning));
         await loadCandidates();
-        await loadEvents();
+        await refreshCustomerDetail();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy("");
       }
     },
-    [loadCandidates, loadEvents]
+    [loadCandidates, refreshCustomerDetail]
   );
 
   const openConversationHistory = useCallback(
@@ -687,14 +676,14 @@ export function OutreachWorkbench() {
         setHistoryMessages(Array.isArray(data.messages) ? data.messages : []);
         if (data.warning) setNotice(String(data.warning));
         await loadCandidates();
-        await loadEvents();
+        await refreshCustomerDetail();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
         setBusy("");
       }
     },
-    [loadCandidates, loadEvents]
+    [loadCandidates, refreshCustomerDetail]
   );
 
   const runDue = useCallback(async () => {
@@ -706,282 +695,182 @@ export function OutreachWorkbench() {
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || "执行到期任务失败");
       if (selectedPlanId) await loadPlan(selectedPlanId);
-      await loadEvents();
+      await Promise.all([refreshCustomerDetail(), loadDashboard()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy("");
     }
-  }, [loadEvents, loadPlan, selectedPlanId]);
+  }, [loadDashboard, loadPlan, refreshCustomerDetail, selectedPlanId]);
 
   useEffect(() => {
     loadCandidates();
-    loadEvents();
-    loadSopPlans();
+    loadDashboard();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (selectedCustomer?.outreach_plan_id) loadPlan(selectedCustomer.outreach_plan_id);
+    if (!selectedCustomer?.outreach_plan_id) {
+      setSelectedPlanId("");
+      setPlanDetail(null);
+    }
   }, [loadPlan, selectedCustomer?.outreach_plan_id]);
+
+  useEffect(() => {
+    if (!selectedCustomer) {
+      setCustomerDetail(null);
+      return;
+    }
+    const controller = new AbortController();
+    const search = new URLSearchParams({
+      corp_id: selectedCustomer.corp_id || "",
+      wechat: selectedCustomer.wechat || "",
+      external_userid: selectedCustomer.external_userid || selectedCustomer.customer_id,
+    });
+    setDetailLoading(true);
+    setCustomerDetail(null);
+    fetch(
+      `/api/outreach/customers/${encodeURIComponent(selectedCustomer.customer_id)}/detail?${search.toString()}`,
+      { cache: "no-store", signal: controller.signal }
+    )
+      .then(async (response) => {
+        const data = await readJsonResponse(response);
+        if (!response.ok) throw new Error(outreachErrorMessage(data, "加载客户画像失败"));
+        return data as CustomerDetail;
+      })
+      .then((data) => setCustomerDetail(data))
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setDetailLoading(false);
+      });
+    return () => controller.abort();
+  }, [detailRevision, selectedCustomer]);
 
   return (
     <main className="min-h-screen bg-[#f7f8fb] text-[#171717]">
-      <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-zinc-200 bg-white px-5">
+      <header className="sticky top-0 z-30 flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-zinc-200 bg-white px-3 py-2 sm:px-5">
         <div className="flex items-center gap-3">
           <Link href="/" className="rounded-md border border-zinc-200 p-2 text-zinc-600 hover:bg-zinc-50" title="返回对话">
             <ArrowLeft className="h-4 w-4" />
           </Link>
           <div>
-            <h1 className="text-base font-semibold">主动唤醒</h1>
-            <p className="text-xs text-zinc-500">筛选沉默客户，生成计划，到点前复查并触达</p>
+            <h1 className="text-base font-semibold">个性化主动唤醒</h1>
+            <p className="text-xs text-zinc-500">监控客户状态，自动生成计划，到点复查后触达</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {notice ? <span className="max-w-xl truncate text-xs text-amber-600">{notice}</span> : null}
-          {error ? <span className="max-w-xl truncate text-xs text-red-600">{error}</span> : null}
+          {notice ? <span className="hidden max-w-xl truncate text-xs text-amber-600 lg:inline">{notice}</span> : null}
+          {error ? <span className="hidden max-w-xl truncate text-xs text-red-600 lg:inline">{error}</span> : null}
           <button onClick={runDue} className="inline-flex items-center gap-2 rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800">
             <Activity className="h-4 w-4" />
             执行到期任务
           </button>
-          <button onClick={loadCandidates} className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50">
+          <button
+            onClick={() => {
+              loadCandidates();
+              refreshCustomerDetail();
+              loadDashboard();
+            }}
+            className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50"
+          >
             <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
             刷新
           </button>
         </div>
       </header>
 
-      <section className="shrink-0 border-b border-zinc-200 bg-white px-5 py-4">
-        <div className="mb-3 flex items-center justify-between gap-3">
+      <section className="border-b border-zinc-200 bg-white px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-sm font-semibold">客群SOP计划管理</h2>
-            <p className="text-xs text-zinc-500">按客群筛选批量生成主动唤醒计划，并监控计划与任务进度</p>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">自动唤醒运行总览</h2>
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${
+                  dashboard.worker?.enabled ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                }`}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${dashboard.worker?.enabled ? "bg-emerald-500" : "bg-red-500"}`} />
+                {dashboard.worker?.enabled ? "自动发送运行中" : "自动发送已关闭"}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-zinc-500">
+              第二天起，已开口但未预约客户由模型生成个性化计划，发送前复查客户回复和订单状态
+            </p>
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setSopDraft(normalizeSopDraft());
-              setSopPreviewCandidates([]);
-            }}
-            className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50"
-          >
-            <Plus className="h-4 w-4" />
-            新增计划
-          </button>
+          <div className="text-right text-xs text-zinc-500">
+            <div>数据时区：北京时间</div>
+            <div className="mt-1">更新于 {formatTime(dashboard.generated_at)}</div>
+          </div>
         </div>
 
-        <div className="grid grid-cols-[minmax(360px,420px)_minmax(0,1fr)] gap-4">
-          <div className="rounded-lg border border-zinc-200 p-3">
-            <div className="grid grid-cols-2 gap-2">
-              <label className="col-span-2 text-xs text-zinc-500">
-                计划名称
-                <input
-                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm text-zinc-900"
-                  placeholder="例如 S10沉默客户再激活"
-                  value={sopDraft.name}
-                  onChange={(event) => setSopDraft((prev) => ({ ...prev, name: event.target.value }))}
-                />
-              </label>
-              <label className="text-xs text-zinc-500">
-                沉默时间
-                <select
-                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
-                  value={String(sopDraft.filters.silent_minutes_min)}
-                  onChange={(event) =>
-                    setSopDraft((prev) => ({
-                      ...prev,
-                      filters: { ...prev.filters, silent_minutes_min: Number(event.target.value) },
-                    }))
-                  }
-                >
-                  <option value="0">不限</option>
-                  <option value="60">1小时</option>
-                  <option value="180">3小时</option>
-                  <option value="720">12小时</option>
-                  <option value="1440">24小时</option>
-                  <option value="4320">3天</option>
-                </select>
-              </label>
-              <label className="text-xs text-zinc-500">
-                SOP状态
-                <select
-                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
-                  value={sopDraft.status}
-                  onChange={(event) => setSopDraft((prev) => ({ ...prev, status: event.target.value }))}
-                >
-                  <option value="draft">草稿</option>
-                  <option value="active">启用</option>
-                  <option value="paused">暂停</option>
-                </select>
-              </label>
-              <label className="text-xs text-zinc-500">
-                加微品项/关键词
-                <input
-                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                  placeholder="例如 S10 / 祛斑 / 地址"
-                  value={sopDraft.filters.keyword}
-                  onChange={(event) =>
-                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, keyword: event.target.value } }))
-                  }
-                />
-              </label>
-              <label className="text-xs text-zinc-500">
-                批量数量
-                <input
-                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                  value={String(sopDraft.filters.limit)}
-                  onChange={(event) =>
-                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, limit: Number(event.target.value) || 1 } }))
-                  }
-                />
-              </label>
-              <label className="text-xs text-zinc-500">
-                客户阶段
-                <input
-                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                  placeholder="可为空"
-                  value={sopDraft.filters.lifecycle_stage}
-                  onChange={(event) =>
-                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, lifecycle_stage: event.target.value } }))
-                  }
-                />
-              </label>
-              <label className="text-xs text-zinc-500">
-                单客计划状态
-                <select
-                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
-                  value={sopDraft.filters.outreach_status}
-                  onChange={(event) =>
-                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, outreach_status: event.target.value } }))
-                  }
-                >
-                  <option value="">全部</option>
-                  <option value="none">无计划</option>
-                  <option value="draft">草稿</option>
-                  <option value="active">执行中</option>
-                  <option value="waiting">等待</option>
-                  <option value="paused">暂停</option>
-                </select>
-              </label>
-              <label className="col-span-2 text-xs text-zinc-500">
-                任务目标
-                <input
-                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                  value={sopDraft.filters.business_goal}
-                  onChange={(event) =>
-                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, business_goal: event.target.value } }))
-                  }
-                />
-              </label>
-              <label className="col-span-2 flex items-center gap-2 text-xs text-zinc-600">
-                <input
-                  type="checkbox"
-                  checked={sopDraft.filters.no_plan_only}
-                  onChange={(event) =>
-                    setSopDraft((prev) => ({ ...prev, filters: { ...prev.filters, no_plan_only: event.target.checked } }))
-                  }
-                />
-                只选择当前无主动唤醒计划的客户
-              </label>
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+          <DashboardMetric icon={<GitBranch className="h-4 w-4" />} label="今日平台任务" value={dashboard.metrics?.platform_tasks_today || 0} />
+          <DashboardMetric icon={<Bot className="h-4 w-4" />} label="今日个性化计划" value={dashboard.metrics?.personalized_plans_today || 0} />
+          <DashboardMetric icon={<Activity className="h-4 w-4" />} label="执行中计划" value={dashboard.metrics?.active_plans || 0} />
+          <DashboardMetric icon={<Clock className="h-4 w-4" />} label="待发送任务" value={dashboard.metrics?.pending_tasks || 0} />
+          <DashboardMetric icon={<TimerReset className="h-4 w-4" />} label="当前已到期" value={dashboard.metrics?.due_tasks || 0} tone={dashboard.metrics?.due_tasks ? "warning" : "neutral"} />
+          <DashboardMetric icon={<CircleCheck className="h-4 w-4" />} label="今日已发送" value={dashboard.metrics?.sent_today || 0} tone="success" />
+          <DashboardMetric icon={<ShieldCheck className="h-4 w-4" />} label="今日安全停止" value={dashboard.metrics?.stopped_today || 0} />
+          <DashboardMetric icon={<CircleX className="h-4 w-4" />} label="今日失败" value={dashboard.metrics?.failed_today || 0} tone={dashboard.metrics?.failed_today ? "danger" : "neutral"} />
+        </div>
+
+        <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.8fr)]">
+          <div className="border-t border-zinc-200 pt-3">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-xs font-semibold text-zinc-700">今日处理链路</h3>
+              <span className="text-xs text-zinc-500">只统计自动审批的个性化唤醒</span>
             </div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={saveSopPlan}
-                disabled={busy === "sop-save"}
-                className="inline-flex min-w-[92px] items-center justify-center gap-2 rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800 disabled:cursor-wait disabled:bg-zinc-700"
-              >
-                {busy === "sop-save" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                {busy === "sop-save" ? "保存中" : "保存计划"}
-              </button>
-              <button
-                type="button"
-                onClick={previewSopAudience}
-                disabled={busy === "sop-preview"}
-                className="inline-flex min-w-[92px] items-center justify-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50 disabled:cursor-wait disabled:bg-zinc-50 disabled:text-zinc-500"
-              >
-                {busy === "sop-preview" ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                {busy === "sop-preview" ? "预估中" : "预估客群"}
-              </button>
+            <div className="grid grid-cols-5 overflow-hidden rounded-lg border border-zinc-200">
+              {[
+                ["平台任务", dashboard.metrics?.platform_tasks_today || 0],
+                ["生成计划", dashboard.metrics?.personalized_plans_today || 0],
+                ["等待发送", dashboard.metrics?.pending_tasks || 0],
+                ["发送成功", dashboard.metrics?.sent_today || 0],
+                ["状态变化停止", dashboard.metrics?.stopped_today || 0],
+              ].map(([label, value], index) => (
+                <div key={String(label)} className={`min-w-0 px-1.5 py-3 sm:px-3 ${index ? "border-l border-zinc-200" : ""}`}>
+                  <div className="min-h-7 text-center text-[10px] leading-tight text-zinc-500 sm:min-h-0 sm:text-left sm:text-xs">{label}</div>
+                  <div className="mt-1 text-lg font-semibold">{value}</div>
+                </div>
+              ))}
             </div>
-            <p className="mt-2 text-xs text-zinc-500">当前预估：{sopPreviewCandidates.length} 个客户</p>
           </div>
 
-          <div className="min-w-0 rounded-lg border border-zinc-200">
-            <div className="grid grid-cols-[1.2fr_1.4fr_0.7fr_0.8fr_220px] border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium text-zinc-500">
-              <span>计划</span>
-              <span>客群筛选</span>
-              <span>进度</span>
-              <span>最近运行</span>
-              <span className="text-right">操作</span>
-            </div>
-            <div className="max-h-[245px] overflow-y-auto">
-              {sopPlans.length === 0 ? (
-                <div className="p-6 text-center text-sm text-zinc-500">暂无SOP计划</div>
-              ) : (
-                sopPlans.map((plan) => (
-                  <div key={plan.id} className="grid grid-cols-[1.2fr_1.4fr_0.7fr_0.8fr_220px] items-center gap-2 border-b border-zinc-100 px-3 py-3 text-sm last:border-b-0">
-                    <button
-                      type="button"
-                      onClick={() => setSopDraft(normalizeSopDraft(plan))}
-                      className="min-w-0 text-left hover:text-zinc-600"
-                    >
-                      <div className="truncate font-medium">{plan.name}</div>
-                      <div className="truncate text-xs text-zinc-500">{statusLabel(plan.status)} · {plan.description || "无说明"}</div>
-                    </button>
-                    <div className="min-w-0 truncate text-xs text-zinc-600">{sopFilterSummary(plan.filters)}</div>
-                    <div className="text-xs text-zinc-600">
-                      计划 {plan.stats?.total_plans || 0}
-                      <br />
-                      已发 {plan.stats?.sent_tasks || 0}
-                    </div>
-                    <div className="text-xs text-zinc-500">{formatTime(plan.last_run_at)}</div>
-                    <div className="flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => runSopPlan(plan)}
-                        disabled={busy === `sop-run-${plan.id}`}
-                        className="inline-flex min-w-[76px] items-center justify-center gap-1 rounded-md border border-zinc-200 px-2 py-1.5 text-xs hover:bg-zinc-50 disabled:cursor-wait disabled:bg-zinc-50"
-                      >
-                        {busy === `sop-run-${plan.id}` ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                        生成
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => runSopPlan(plan, true)}
-                        disabled={busy === `sop-run-activate-${plan.id}`}
-                        className="inline-flex min-w-[88px] items-center justify-center gap-1 rounded-md bg-zinc-900 px-2 py-1.5 text-xs text-white hover:bg-zinc-800 disabled:cursor-wait disabled:bg-zinc-700"
-                      >
-                        {busy === `sop-run-activate-${plan.id}` ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Activity className="h-3.5 w-3.5" />}
-                        生成启用
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteSopPlan(plan)}
-                        disabled={busy === `sop-delete-${plan.id}`}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-red-200 text-red-600 hover:bg-red-50 disabled:cursor-wait disabled:bg-red-50"
-                        title="删除SOP计划"
-                      >
-                        {busy === `sop-delete-${plan.id}` ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
+          <div className="border-t border-zinc-200 pt-3">
+            <h3 className="mb-2 text-xs font-semibold text-zinc-700">队列与复查</h3>
+            <div className="grid grid-cols-2 gap-x-5 gap-y-2 text-xs">
+              <StatLine label="下个发送时间" value={formatTime(dashboard.next_due?.scheduled_at)} />
+              <StatLine label="最近发送时间" value={formatTime(dashboard.last_sent?.sent_at)} />
+              <StatLine label="复查重试" value={String(dashboard.metrics?.retry_today || 0)} />
+              <StatLine label="轮询间隔" value={`${dashboard.worker?.poll_seconds || "-"} 秒`} />
+              <StatLine label="单批上限" value={String(dashboard.worker?.batch_size || "-")} />
+              <StatLine label="复查失败重试" value={`${dashboard.worker?.before_send_retry_seconds || "-"} 秒`} />
             </div>
           </div>
         </div>
       </section>
-
-      <section className="grid h-[calc(100vh-96px)] min-h-[620px] max-h-[760px] grid-cols-[340px_minmax(520px,1fr)_360px]">
-        <aside className="flex h-full min-h-0 flex-col border-r border-zinc-200 bg-white">
+      <section className="grid min-h-[620px] grid-cols-1 lg:h-[calc(100vh-330px)] lg:max-h-[820px] lg:grid-cols-[280px_minmax(380px,1fr)_300px] 2xl:grid-cols-[340px_minmax(520px,1fr)_360px]">
+        <aside className="flex h-full min-h-0 flex-col border-b border-zinc-200 bg-white lg:border-b-0 lg:border-r">
           <div className="border-b border-zinc-200 p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-medium">
               <Search className="h-4 w-4" />
-              客户筛选
+              客户与计划筛选
             </div>
             <div className="grid grid-cols-2 gap-2">
+              <label className="col-span-2 text-xs text-zinc-500">
+                搜索客户
+                <input
+                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
+                  placeholder="昵称、客户 ID 或最近消息"
+                  value={filters.keyword}
+                  onChange={(event) => setFilters((prev) => ({ ...prev, keyword: event.target.value }))}
+                />
+              </label>
               <label className="text-xs text-zinc-500">
-                沉默超过
+                至少未回复
                 <select
                   className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
                   value={filters.silentMinutesMin}
@@ -995,7 +884,7 @@ export function OutreachWorkbench() {
                 </select>
               </label>
               <label className="text-xs text-zinc-500">
-                计划状态
+                唤醒状态
                 <select
                   className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
                   value={filters.outreachStatus}
@@ -1007,13 +896,16 @@ export function OutreachWorkbench() {
                   <option value="active">执行中</option>
                   <option value="waiting">等待</option>
                   <option value="paused">暂停</option>
+                  <option value="completed">已完成</option>
+                  <option value="cancelled">已取消</option>
+                  <option value="failed">失败</option>
                 </select>
               </label>
               <label className="col-span-2 text-xs text-zinc-500">
-                客户阶段
+                当前成交阶段
                 <input
                   className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                  placeholder="例如 已问价 / 已看案例 / 已给门店"
+                  placeholder="填写完整阶段值"
                   value={filters.lifecycleStage}
                   onChange={(event) => setFilters((prev) => ({ ...prev, lifecycleStage: event.target.value }))}
                 />
@@ -1024,10 +916,10 @@ export function OutreachWorkbench() {
                   checked={filters.noPlanOnly}
                   onChange={(event) => setFilters((prev) => ({ ...prev, noPlanOnly: event.target.checked }))}
                 />
-                只看无计划客户
+                仅看未生成计划
               </label>
               <label className="text-xs text-zinc-500">
-                数量
+                展示数量
                 <input
                   className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
                   value={filters.limit}
@@ -1036,7 +928,7 @@ export function OutreachWorkbench() {
               </label>
             </div>
             <button onClick={loadCandidates} className="mt-3 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800">
-              筛选客户
+              查询客户
             </button>
           </div>
 
@@ -1046,10 +938,11 @@ export function OutreachWorkbench() {
             ) : (
               <div className="space-y-2">
                 {candidates.map((item) => {
-                  const active = selectedCustomer?.customer_id === item.customer_id;
+                  const active = candidateKey(selectedCustomer) === candidateKey(item);
+                  const name = candidateName(item);
                   return (
                     <div
-                      key={item.customer_id}
+                      key={candidateKey(item)}
                       onClick={() => setSelectedCustomer(item)}
                       onKeyDown={(event) => {
                         if (event.key === "Enter" || event.key === " ") setSelectedCustomer(item);
@@ -1061,15 +954,21 @@ export function OutreachWorkbench() {
                       }`}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium">{item.title || item.customer_id}</div>
-                          <div className="truncate text-xs text-zinc-500">ID {item.customer_id}</div>
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-sm font-semibold text-white">
+                            {name.slice(0, 1)}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold">{name}</div>
+                            <div className="truncate text-xs text-zinc-500">客户 ID：{item.customer_id}</div>
+                          </div>
                         </div>
                         <span className="rounded-full bg-zinc-100 px-2 py-1 text-xs text-zinc-600">{statusLabel(item.outreach_status)}</span>
                       </div>
-                      <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-500">
-                        <span>沉默 {formatSilent(item.silent_minutes)}</span>
-                        <span>{formatTime(item.last_customer_message_at)}</span>
+                      <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-zinc-500">
+                        <span className="truncate">客服：{item.wechat || item.user_id || "-"}</span>
+                        <span className="text-right">未回复 {formatSilent(item.silent_minutes)}</span>
+                        <span className="col-span-2 truncate">企微 ID：{item.external_userid || "-"}</span>
                       </div>
                       <div className="mt-2 flex items-end gap-2">
                         <p className="min-w-0 flex-1 line-clamp-2 text-xs text-zinc-600">{item.last_customer_message || item.latest_event_summary || "暂无最近消息摘要"}</p>
@@ -1079,11 +978,12 @@ export function OutreachWorkbench() {
                             event.stopPropagation();
                             openConversationHistory(item);
                           }}
-                          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-100"
+                          className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-md border border-zinc-200 bg-white px-2 text-xs text-zinc-700 hover:bg-zinc-100"
                           title="查看历史聊天记录"
                           disabled={busy === `history-${item.customer_id}`}
                         >
                           <MessageSquareText className="h-4 w-4" />
+                          聊天
                         </button>
                       </div>
                     </div>
@@ -1224,48 +1124,58 @@ export function OutreachWorkbench() {
           </div>
         </section>
 
-        <aside className="h-full min-h-0 overflow-y-auto border-l border-zinc-200 bg-white p-4">
-          <section className="rounded-xl border border-zinc-200 p-4">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-              <FileText className="h-4 w-4" />
-              客户画像与最近记录
+        <aside className="h-full min-h-0 overflow-y-auto border-t border-zinc-200 bg-white p-4 lg:border-l lg:border-t-0">
+          {!selectedCustomer ? (
+            <div className="rounded-xl border border-dashed border-zinc-200 p-8 text-center text-sm text-zinc-500">
+              从左侧选择客户后查看画像和历史事件
             </div>
-            {selectedCustomer ? (
-              <div className="space-y-3 text-sm">
-                <InfoLine label="客户" value={selectedCustomer.title || selectedCustomer.customer_id} />
-                <InfoLine label="员工" value={selectedCustomer.wechat || selectedCustomer.user_id || "-"} />
-                <InfoLine label="最近客户消息" value={formatTime(selectedCustomer.last_customer_message_at)} />
-                <InfoLine label="最近触达" value={formatTime(selectedCustomer.last_outreach_at)} />
-                <div>
-                  <div className="mb-1 text-xs text-zinc-500">画像摘要</div>
-                  <pre className="max-h-40 overflow-auto rounded-md bg-zinc-50 p-3 text-xs leading-relaxed text-zinc-700">
-                    {jsonPreview(selectedCustomer.portrait || selectedCustomer.basic_info)}
-                  </pre>
-                </div>
-              </div>
-            ) : (
-              <p className="text-sm text-zinc-500">暂无选中客户</p>
-            )}
-          </section>
-
-          <section className="mt-4 rounded-xl border border-zinc-200 p-4">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-              <Activity className="h-4 w-4" />
-              执行日志
+          ) : detailLoading ? (
+            <div className="flex items-center justify-center gap-2 rounded-xl border border-zinc-200 p-8 text-sm text-zinc-500">
+              <LoaderCircle className="h-4 w-4 animate-spin" />
+              正在加载客户详情
             </div>
-            <div className="space-y-3">
-              {(planEvents.length ? planEvents : events).slice(0, 30).map((event) => (
-                <div key={event.id} className="rounded-lg border border-zinc-100 bg-zinc-50 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-zinc-800">{event.event_type}</span>
-                    <span className="text-xs text-zinc-500">{formatTime(event.created_at)}</span>
+          ) : (
+            <>
+              <section className="rounded-xl border border-zinc-200">
+                <div className="border-b border-zinc-200 p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-base font-semibold text-white">
+                      {candidateName(selectedCustomer).slice(0, 1)}
+                    </div>
+                    <div className="min-w-0">
+                      <h2 className="truncate text-sm font-semibold">{candidateName(selectedCustomer)}</h2>
+                      <p className="truncate text-xs text-zinc-500">客户 ID：{selectedCustomer.customer_id}</p>
+                    </div>
                   </div>
-                  <p className="mt-1 text-xs text-zinc-600">{event.event_summary || "-"}</p>
+                  <button
+                    type="button"
+                    onClick={() => openConversationHistory(selectedCustomer)}
+                    className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50"
+                  >
+                    <MessageSquareText className="h-4 w-4" />
+                    查看聊天记录
+                  </button>
                 </div>
-              ))}
-              {(planEvents.length ? planEvents : events).length === 0 ? <p className="text-sm text-zinc-500">暂无日志</p> : null}
-            </div>
-          </section>
+                <div className="space-y-2 p-4">
+                  <InfoLine label="企微 ID" value={selectedCustomer.external_userid || "-"} />
+                  <InfoLine label="接待账号" value={selectedCustomer.wechat || selectedCustomer.user_id || "-"} />
+                  <InfoLine label="当前阶段" value={customerDetail?.lifecycle_stage || selectedCustomer.lifecycle_stage || "未分阶段"} />
+                  <InfoLine label="最近客户消息" value={formatTime(selectedCustomer.last_customer_message_at)} />
+                  <InfoLine label="最近主动触达" value={formatTime(selectedCustomer.last_outreach_at)} />
+                </div>
+              </section>
+
+              <CustomerProfilePanel
+                portrait={objectValue(customerDetail?.portrait || selectedCustomer.portrait)}
+                basicInfo={objectValue(customerDetail?.basic_info || selectedCustomer.basic_info)}
+                updatedAt={customerDetail?.profile_updated_at}
+              />
+
+              <CustomerEventTimeline events={customerDetail?.history_events || []} />
+
+              <OutreachEventTimeline events={customerDetail?.outreach_events || planEvents} />
+            </>
+          )}
         </aside>
       </section>
       {historyOpen ? (
@@ -1274,7 +1184,7 @@ export function OutreachWorkbench() {
             <div className="flex items-start justify-between gap-3 border-b border-zinc-200 p-4">
               <div className="min-w-0">
                 <h2 className="truncate text-base font-semibold">历史聊天记录</h2>
-                <p className="truncate text-xs text-zinc-500">{historyCustomer ? `${historyCustomer.title || historyCustomer.customer_id} · ID ${historyCustomer.customer_id}` : ""}</p>
+                <p className="truncate text-xs text-zinc-500">{historyCustomer ? `${candidateName(historyCustomer)} · 客户 ID ${historyCustomer.customer_id}` : ""}</p>
               </div>
               <button
                 type="button"
@@ -1329,11 +1239,239 @@ function MetricCard({ icon, label, value }: { icon: ReactNode; label: string; va
   );
 }
 
+function DashboardMetric({
+  icon,
+  label,
+  value,
+  tone = "neutral",
+}: {
+  icon: ReactNode;
+  label: string;
+  value: number;
+  tone?: "neutral" | "success" | "warning" | "danger";
+}) {
+  const toneClass = {
+    neutral: "text-zinc-600",
+    success: "text-emerald-700",
+    warning: "text-amber-700",
+    danger: "text-red-700",
+  }[tone];
+  return (
+    <div className="min-w-0 rounded-lg border border-zinc-200 bg-white px-3 py-3">
+      <div className={`flex items-center gap-2 text-xs ${toneClass}`}>
+        {icon}
+        <span className="truncate">{label}</span>
+      </div>
+      <div className="mt-2 text-xl font-semibold text-zinc-900">{value}</div>
+    </div>
+  );
+}
+
+function StatLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-3 border-b border-zinc-100 py-1.5">
+      <span className="truncate text-zinc-500">{label}</span>
+      <span className="shrink-0 font-medium text-zinc-800">{value}</span>
+    </div>
+  );
+}
+
 function InfoBlock({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-lg bg-zinc-50 p-3">
       <div className="text-xs text-zinc-500">{label}</div>
       <div className="mt-1 line-clamp-3 text-sm text-zinc-800">{value}</div>
+    </div>
+  );
+}
+
+function CustomerProfilePanel({
+  portrait,
+  basicInfo,
+  updatedAt,
+}: {
+  portrait: JsonObject;
+  basicInfo: JsonObject;
+  updatedAt?: string;
+}) {
+  const summary = textValue(portrait.summary);
+  const concerns = listValue(portrait.concerns);
+  const customerTags = listValue(portrait.customer_type_tags);
+  const styleTags = listValue(portrait.style_tags);
+  const fields = [
+    ["登记姓名", basicInfo.customer_name, <UserRound key="name" className="h-3.5 w-3.5" />],
+    ["联系电话", basicInfo.phone, <Phone key="phone" className="h-3.5 w-3.5" />],
+    ["城市", basicInfo.city, <MapPin key="city" className="h-3.5 w-3.5" />],
+    ["区域/地标", basicInfo.area_or_landmark, <MapPin key="area" className="h-3.5 w-3.5" />],
+    ["意向门店", basicInfo.preferred_store_name, <MapPin key="store" className="h-3.5 w-3.5" />],
+    ["意向到店", [textValue(basicInfo.intent_date), textValue(basicInfo.intent_time)].filter(Boolean).join(" "), <Clock key="time" className="h-3.5 w-3.5" />],
+  ].filter(([, value]) => Boolean(textValue(value)));
+
+  return (
+    <section className="mt-4 overflow-hidden rounded-xl border border-zinc-200">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <UserRound className="h-4 w-4" />
+          客户画像
+        </div>
+        <span className="text-[11px] text-zinc-400">更新 {formatTime(updatedAt)}</span>
+      </div>
+      <div className="space-y-4 p-4">
+        <div>
+          <div className="text-xs text-zinc-500">当前判断</div>
+          <p className="mt-1 text-sm leading-relaxed text-zinc-800">{summary || "暂未形成画像摘要"}</p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3 border-y border-zinc-100 py-3 text-xs">
+          <ProfileStatus label="意向程度" value={levelLabel(portrait.intent_level)} />
+          <ProfileStatus label="信任程度" value={levelLabel(portrait.trust_level)} />
+          <ProfileStatus label="决策阶段" value={textValue(portrait.decision_stage) || "-"} />
+          <ProfileStatus label="预约金状态" value={levelLabel(portrait.deposit_state || basicInfo.deposit_state)} />
+        </div>
+
+        {fields.length ? (
+          <div className="grid grid-cols-1 gap-2">
+            {fields.map(([label, value, icon]) => (
+              <div key={String(label)} className="flex items-start gap-2 text-xs">
+                <span className="mt-0.5 text-zinc-400">{icon as ReactNode}</span>
+                <span className="w-16 shrink-0 text-zinc-500">{String(label)}</span>
+                <span className="min-w-0 break-words text-zinc-800">{textValue(value)}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {textValue(portrait.main_objection) ? (
+          <ProfileTextBlock label="主要顾虑" value={textValue(portrait.main_objection)} />
+        ) : null}
+        {textValue(portrait.next_sales_strategy) ? (
+          <ProfileTextBlock label="建议承接" value={textValue(portrait.next_sales_strategy)} accent />
+        ) : null}
+        <TagGroup label="客户类型" items={customerTags} />
+        <TagGroup label="当前顾虑" items={concerns} />
+        <TagGroup label="沟通偏好" items={styleTags} />
+      </div>
+    </section>
+  );
+}
+
+function CustomerEventTimeline({ events }: { events: CustomerHistoryEvent[] }) {
+  const sorted = [...events].reverse();
+  return (
+    <section className="mt-4 rounded-xl border border-zinc-200">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <History className="h-4 w-4" />
+          客户历史事件
+        </div>
+        <span className="text-xs text-zinc-400">{sorted.length} 条</span>
+      </div>
+      <div className="p-4">
+        {sorted.length ? (
+          <div className="space-y-0">
+            {sorted.slice(0, 40).map((event, index) => (
+              <div key={event.event_id || `${event.event_type}-${event.event_time}-${index}`} className="relative border-l border-zinc-200 pb-5 pl-4 last:pb-0">
+                <span className="absolute -left-1 top-1 h-2 w-2 rounded-full bg-zinc-700" />
+                <div className="flex items-start justify-between gap-2">
+                  <span className="text-xs font-medium text-zinc-800">{eventTypeLabel(event.event_type)}</span>
+                  <span className="shrink-0 text-[11px] text-zinc-400">{formatTime(event.event_time)}</span>
+                </div>
+                <p className="mt-1 text-xs leading-relaxed text-zinc-600">{event.summary || "未记录摘要"}</p>
+                {event.impact ? <p className="mt-1 text-[11px] text-zinc-500">影响：{event.impact}</p> : null}
+                <FactList facts={objectValue(event.facts)} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="py-3 text-center text-sm text-zinc-500">暂无客户历史事件</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function OutreachEventTimeline({ events }: { events: OutreachEvent[] }) {
+  return (
+    <section className="mt-4 rounded-xl border border-zinc-200">
+      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
+        <div className="flex items-center gap-2 text-sm font-semibold">
+          <Activity className="h-4 w-4" />
+          唤醒执行事件
+        </div>
+        <span className="text-xs text-zinc-400">{events.length} 条</span>
+      </div>
+      <div className="divide-y divide-zinc-100 px-4">
+        {events.length ? (
+          events.slice(0, 30).map((event) => (
+            <div key={event.id} className="py-3">
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-xs font-medium text-zinc-800">{eventTypeLabel(event.event_type)}</span>
+                <span className="shrink-0 text-[11px] text-zinc-400">{formatTime(event.created_at)}</span>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-zinc-600">{event.event_summary || "未记录摘要"}</p>
+            </div>
+          ))
+        ) : (
+          <p className="py-5 text-center text-sm text-zinc-500">暂无唤醒执行事件</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ProfileStatus({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-zinc-500">{label}</div>
+      <div className="mt-0.5 font-medium text-zinc-800">{value}</div>
+    </div>
+  );
+}
+
+function ProfileTextBlock({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
+  return (
+    <div className={`border-l-2 pl-3 ${accent ? "border-emerald-500" : "border-amber-400"}`}>
+      <div className="text-xs text-zinc-500">{label}</div>
+      <p className="mt-1 text-xs leading-relaxed text-zinc-700">{value}</p>
+    </div>
+  );
+}
+
+function TagGroup({ label, items }: { label: string; items: string[] }) {
+  if (!items.length) return null;
+  return (
+    <div>
+      <div className="mb-2 flex items-center gap-1 text-xs text-zinc-500">
+        <Tags className="h-3.5 w-3.5" />
+        {label}
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {items.map((item) => (
+          <span key={item} className="rounded bg-zinc-100 px-2 py-1 text-[11px] text-zinc-700">
+            {item}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FactList({ facts }: { facts: JsonObject }) {
+  const entries = Object.entries(facts)
+    .map(([key, value]) => [
+      fieldLabel(key),
+      key.endsWith("_state") || key === "status" ? levelLabel(value) : textValue(value),
+    ] as const)
+    .filter(([, value]) => Boolean(value));
+  if (!entries.length) return null;
+  return (
+    <div className="mt-2 space-y-1">
+      {entries.slice(0, 8).map(([label, value]) => (
+        <div key={label} className="flex items-start gap-2 text-[11px] leading-relaxed">
+          <span className="shrink-0 text-zinc-400">{label}</span>
+          <span className="min-w-0 break-words text-zinc-600">{value}</span>
+        </div>
+      ))}
     </div>
   );
 }

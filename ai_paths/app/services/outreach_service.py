@@ -154,10 +154,29 @@ class OutreachService:
             outreach_status=outreach_status,
             lifecycle_stage=lifecycle_stage,
             no_plan_only=no_plan_only,
+            keyword=keyword,
         )
         if not keyword:
             return candidates
         return [item for item in candidates if self._candidate_matches_keyword(item, keyword)]
+
+    def dashboard_stats(self) -> dict[str, Any]:
+        return self.repository.outreach_dashboard_stats()
+
+    def customer_detail(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str = "",
+    ) -> dict[str, Any]:
+        return self.repository.get_outreach_customer_detail(
+            customer_id=customer_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+        )
 
     def list_sop_plans(self, *, limit: int = 100) -> list[dict[str, Any]]:
         return self.repository.list_outreach_sop_plans(limit=limit)
@@ -849,6 +868,9 @@ class OutreachService:
         if not needle:
             return True
         parts = [
+            candidate.get("customer_id"),
+            candidate.get("external_userid"),
+            candidate.get("wechat"),
             candidate.get("title"),
             candidate.get("last_customer_message"),
             candidate.get("latest_event_summary"),
