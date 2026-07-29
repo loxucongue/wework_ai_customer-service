@@ -10,7 +10,6 @@ import {
   CircleCheck,
   CircleX,
   Clock,
-  FileText,
   GitBranch,
   History,
   Images,
@@ -404,7 +403,7 @@ function outreachErrorMessage(data: JsonObject, fallback: string) {
     return "生成计划失败，请稍后重试";
   }
   if (data.error === "preview_required") {
-    return "请先生成预览，人工确认后再执行";
+    return "该旧任务缺少可执行消息，请重新生成计划";
   }
   if (data.status === "check_failed") {
     return "发送前复查历史失败，已阻止发送。请刷新历史后重试";
@@ -412,7 +411,7 @@ function outreachErrorMessage(data: JsonObject, fallback: string) {
   return String(data.detail || data.error || fallback);
 }
 
-function taskHasPreview(task: OutreachTask) {
+function taskHasMessages(task: OutreachTask) {
   return Array.isArray(task.reply_messages) && task.reply_messages.length > 0;
 }
 
@@ -444,18 +443,80 @@ function rateLabel(value?: number | null) {
   return `${Math.round(value * 1000) / 10}%`;
 }
 
-function messagePreview(messages?: Array<JsonObject>) {
-  if (!messages?.length) return "发送前由模型生成";
-  return messages
-    .map((item) => {
-      const content = item.content as JsonObject | undefined;
-      if (item.type === "image") return "[图片]";
-      if (item.type === "store_address") return `[门店卡片:${String(content?.store_id || "")}]`;
-      if (item.type === "payment_collection") return `[收款入口:${String(content?.amount || 10)}元]`;
-      return String(content?.text || item.type || "");
-    })
-    .filter(Boolean)
-    .join(" / ");
+function outreachMessageTypeLabel(type: unknown) {
+  const labels: Record<string, string> = {
+    text: "文字",
+    image: "图片",
+    video: "视频",
+    payment_collection: "预约金卡",
+    store_address: "门店卡",
+    human_handoff_notice: "人工协助",
+  };
+  const key = String(type || "unknown");
+  return labels[key] || key;
+}
+
+function outreachMessageContent(message: JsonObject) {
+  const content = message.content;
+  return content && typeof content === "object" ? (content as JsonObject) : {};
+}
+
+function OutreachMessageList({ messages }: { messages?: Array<JsonObject> }) {
+  if (!messages?.length) {
+    return <p className="text-sm text-amber-700">该旧任务没有结构化消息，请重新生成计划后再执行。</p>;
+  }
+  return (
+    <div className="divide-y divide-zinc-200 border-y border-zinc-200">
+      {messages
+        .slice()
+        .sort((left, right) => Number(left.order || 0) - Number(right.order || 0))
+        .map((message, index) => {
+          const type = String(message.type || "unknown");
+          const content = outreachMessageContent(message);
+          const url = String(content.url || "");
+          return (
+            <div key={`${type}-${String(message.order || index + 1)}-${index}`} className="grid gap-2 py-3 sm:grid-cols-[88px_minmax(0,1fr)]">
+              <div className="flex items-start gap-2 text-xs text-zinc-500">
+                <span className="font-medium text-zinc-900">#{String(message.order || index + 1)}</span>
+                <span>{outreachMessageTypeLabel(type)}</span>
+              </div>
+              <div className="min-w-0 text-sm text-zinc-800">
+                {type === "text" ? <p className="whitespace-pre-wrap break-words">{String(content.text || "")}</p> : null}
+                {type === "image" && url ? (
+                  <div className="space-y-2">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={url} alt="计划发送图片" loading="lazy" className="max-h-56 max-w-full rounded-md border border-zinc-200 object-contain" />
+                    <a href={url} target="_blank" rel="noreferrer" className="block break-all text-xs text-blue-600 hover:underline">
+                      {url}
+                    </a>
+                  </div>
+                ) : null}
+                {type === "video" && url ? (
+                  <div className="space-y-2">
+                    <video src={url} controls preload="none" className="max-h-64 max-w-full rounded-md border border-zinc-200" />
+                    <a href={url} target="_blank" rel="noreferrer" className="block break-all text-xs text-blue-600 hover:underline">
+                      {url}
+                    </a>
+                  </div>
+                ) : null}
+                {type === "payment_collection" ? (
+                  <p>金额：{String(content.amount || 10)} 元{content.remark ? ` · 备注：${String(content.remark)}` : ""}</p>
+                ) : null}
+                {type === "store_address" ? (
+                  <p>
+                    门店 ID：{String(content.store_id || "-")}
+                    {content.store_name ? ` · ${String(content.store_name)}` : ""}
+                  </p>
+                ) : null}
+                {!["text", "image", "video", "payment_collection", "store_address"].includes(type) ? (
+                  <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs">{JSON.stringify(content, null, 2)}</pre>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
+    </div>
+  );
 }
 
 function messageText(message: ConversationMessage) {
@@ -577,7 +638,7 @@ export function OutreachWorkbench() {
             user_id: candidate.user_id || "",
             wechat: candidate.wechat || "",
             external_userid: candidate.external_userid || candidate.customer_id,
-            limit: 30,
+            limit: 50,
           }),
         });
         const refreshData = await readJsonResponse(refreshResponse);
@@ -668,26 +729,6 @@ export function OutreachWorkbench() {
     [loadPlan, refreshCustomerDetail, selectedPlanId]
   );
 
-  const previewTask = useCallback(
-    async (taskId: string) => {
-      setBusy(`preview-${taskId}`);
-      setError("");
-      setNotice("");
-      try {
-        const response = await fetch(`/api/outreach/tasks/${encodeURIComponent(taskId)}/preview`, { method: "POST" });
-        const data = await readJsonResponse(response);
-        if (!response.ok || data.ok === false) throw new Error(outreachErrorMessage(data, "生成预览失败"));
-        if (selectedPlanId) await loadPlan(selectedPlanId);
-        await refreshCustomerDetail();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setBusy("");
-      }
-    },
-    [loadPlan, refreshCustomerDetail, selectedPlanId]
-  );
-
   const refreshConversation = useCallback(
     async (candidate: Candidate) => {
       setBusy("refresh-conversation");
@@ -702,6 +743,7 @@ export function OutreachWorkbench() {
             user_id: candidate.user_id || "",
             wechat: candidate.wechat || "",
             external_userid: candidate.external_userid || candidate.customer_id,
+            limit: 50,
           }),
         });
         const data = await readJsonResponse(response);
@@ -735,7 +777,7 @@ export function OutreachWorkbench() {
             user_id: candidate.user_id || "",
             wechat: candidate.wechat || "",
             external_userid: candidate.external_userid || candidate.customer_id,
-            limit: 30,
+            limit: 50,
           }),
         });
         const data = await readJsonResponse(response);
@@ -1256,26 +1298,23 @@ export function OutreachWorkbench() {
                           </div>
                           <div className="flex items-center gap-2">
                             <button
-                              onClick={() => previewTask(task.id)}
-                              className="inline-flex min-w-[96px] items-center justify-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50 disabled:cursor-wait disabled:bg-zinc-50 disabled:text-zinc-500"
-                              disabled={busy === `preview-${task.id}`}
-                            >
-                              {busy === `preview-${task.id}` ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-                              {busy === `preview-${task.id}` ? "生成中" : "生成预览"}
-                            </button>
-                            <button
                               onClick={() => executeTask(task.id)}
                               className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:bg-zinc-50 disabled:text-zinc-400"
-                              disabled={busy === `task-${task.id}` || !taskHasPreview(task)}
-                              title={taskHasPreview(task) ? "发送前会复查客户是否已回复" : "请先生成预览，人工确认后再执行"}
+                              disabled={busy === `task-${task.id}` || !taskHasMessages(task)}
+                              title={taskHasMessages(task) ? "发送前会复查客户状态，并结合最新上下文润色文字" : "该旧任务缺少消息，请重新生成计划"}
                             >
                               <Send className="h-4 w-4" />
                               立即执行
                             </button>
                           </div>
                         </div>
-                        <div className="mt-3 rounded-md bg-zinc-50 p-3 text-sm text-zinc-700">{messagePreview(task.reply_messages)}</div>
-                        {!taskHasPreview(task) ? <p className="mt-2 text-xs text-amber-600">请先生成预览，人工确认后再执行。</p> : null}
+                        <div className="mt-4">
+                          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                            <h4 className="text-xs font-semibold text-zinc-700">计划发送消息</h4>
+                            <span className="text-xs text-zinc-500">已生成即可执行；发送前会复查状态并只润色文字</span>
+                          </div>
+                          <OutreachMessageList messages={task.reply_messages} />
+                        </div>
                         {task.error_message ? <p className="mt-2 text-xs text-red-600">{task.error_message}</p> : null}
                       </div>
                     );

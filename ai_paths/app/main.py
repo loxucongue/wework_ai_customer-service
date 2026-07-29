@@ -701,13 +701,17 @@ async def admin_outreach_refresh_conversation(
 ) -> dict[str, Any]:
     payload = payload or {}
     try:
+        limit = max(1, min(int(payload.get("limit") or 50), 50))
+    except (TypeError, ValueError):
+        limit = 50
+    try:
         return await outreach_service.refresh_customer_conversation(
             customer_id=customer_id,
             corp_id=str(payload.get("corp_id") or ""),
             user_id=str(payload.get("user_id") or ""),
             wechat=str(payload.get("wechat") or ""),
             external_userid=str(payload.get("external_userid") or ""),
-            limit=int(payload.get("limit") or 10),
+            limit=limit,
         )
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
@@ -716,7 +720,7 @@ async def admin_outreach_refresh_conversation(
             corp_id=str(payload.get("corp_id") or ""),
             wechat=str(payload.get("wechat") or ""),
             external_userid=str(payload.get("external_userid") or ""),
-            limit=int(payload.get("limit") or 10),
+            limit=limit,
             error=detail,
         )
         if cached:
