@@ -68,6 +68,10 @@ def _base_state() -> dict:
             "customer": {"kind": 1, "category_id": "10"},
             "orders": [],
         },
+        "sop_progress_evidence": {
+            "completed_pack_ids": ["s10_activity_intro"],
+            "completed_categories": ["activity_intro"],
+        },
         "customer_store_knowledge": {"stores": [{"store_id": "386", "store_name": "厦门百星店"}]},
         "trace": [],
         "errors": [],

@@ -50,13 +50,10 @@ def activity_intro_completed_for_payment(state: dict[str, Any] | None) -> bool:
     history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
     if any(_looks_like_visible_activity_quote(item) for item in history[-12:]):
         return True
-    return not any(
-        _activity_intro_known_unfinished(source)
-        for source in (
-            state.get("sop_progress_evidence"),
-            (state.get("sop_gate") or {}).get("sop_progress_evidence") if isinstance(state.get("sop_gate"), dict) else None,
-        )
-    )
+    # Missing progress is not proof that the customer saw the quote. Payment
+    # collection remains blocked until a structured completion event or visible
+    # recent quote establishes the prerequisite.
+    return False
 
 
 def payment_collection_content(

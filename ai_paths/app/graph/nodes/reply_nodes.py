@@ -7,7 +7,7 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
-from app.graph.nodes.reply_validation import validate_reply_consistency
+from app.graph.nodes.reply_validation import _paid_deposit_context, validate_reply_consistency
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
 from app.graph.nodes.store_scope_summary import region_mentioned_in_text
 from app.policies.constants import KNOWN_STORE_NAMES
@@ -505,7 +505,7 @@ def _needs_strong_reply_model(state: AgentState) -> bool:
 
 
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
-    return [{"type": "text", "order": 1, "content": "我在，继续帮您处理。"}]
+    return [{"type": "text", "order": 1, "content": "收到，您这条我看到了。"}]
 
 
 def _maybe_append_required_store_address(
@@ -580,12 +580,8 @@ def _state_requires_payment_collection(state: AgentState) -> bool:
 
 
 def _state_has_paid_deposit_context(state: AgentState) -> bool:
-    """Return whether order or successful screenshot evidence confirms payment."""
-    image = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
-    if image.get("image_type") == "payment_proof" and image.get("payment_result") == "success":
-        return True
-    current_turn_context = state.get("current_turn_context") if isinstance(state.get("current_turn_context"), dict) else {}
-    return str(current_turn_context.get("deposit_state") or "") == "deposit_paid"
+    """Use the same authoritative paid-fact boundary as final validation."""
+    return _paid_deposit_context(state)
 
 
 def _ensure_required_handoff_notice(messages: list[dict[str, Any]], state: AgentState) -> tuple[list[dict[str, Any]], bool]:
@@ -860,19 +856,7 @@ def _reply_repair_hint(error: str) -> str:
     if "precision_reply_missing_mainline_action" in error:
         return "精准支线问题不能只答疑后停住。请保留当前问题的正面回答，再补一条明确主线动作句：问城市或区域、主动接活动名额、发案例、推进预约金或登记到店时间。动作句要具体、像微信销售，不要写“继续处理/安排下一步/如果您想”。"
     if "precision_reply_weak_one_session_confidence" in error:
-        return "客户问一次效果时，先给正向信心：大多数客户一次能看到明显改善方向。不要用“不是完全没变化”这类弱安慰；再说明具体程度看斑点深浅和时间，到店会做原相机对比，最后接一个主线动作。"
-    if "health_online_symptom_question_not_allowed" in error:
-        return "不要在线追问客户症状、出现频率或用药情况。健康、过敏或孕期只正面承接并引导到店专业检测；严重不适收原门店、项目和时间。"
-    if "health_active_risk_must_not_be_softened" in error:
-        return "客户当前明确处于过敏、发炎或破损状态，不要用“一般不会、问题不大、多数正常”等话弱化风险。先明确暂时不操作，再说明到店检测皮肤状态、确认适合后再安排。"
-    if "health_active_risk_pause_required" in error or "health_active_risk_assessment_required" in error:
-        return "当前有明确健康风险。必须先说暂时不要直接操作，再引导到店检测或查看皮肤状态，确认适合后再安排；不要推进活动、付款或预约金。"
-    if "health_active_risk_sales_push_not_allowed" in error:
-        return "客户当前有明确过敏、发炎或破损风险。本轮只说明先不要操作、到店检测后判断是否适合；删除活动、名额、预约金、付款和收款卡推进。"
-    if "health_specific_care_advice_not_allowed" in error:
-        return "不要给热敷、冷敷、去角质、酸类、停用护肤品等具体护理清单。严重不适只说停止继续刺激、联系原门店；明显紧急时及时线下就医。"
-    if "pregnancy_deferral_claim_not_allowed" in error:
-        return "不要直接判定只能等孕期结束、产后或哺乳期结束再来。只说明需要到店专业检测评估，确认适合后再安排。"
+        return "客户问只能淡或一次效果时，先给正向信心：不是只能淡一点，我们这边很多客户改善都很明显，做前做后原相机对比能直观看到变化。不要复述客户的绝对化问题，也不要以不能保证开头；最后接一个主线动作。"
     if "payment_collection_blocked_by_health_risk_hold" in error:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_blocked_by_payment_action" in error:
@@ -892,7 +876,7 @@ def _reply_repair_hint(error: str) -> str:
     if "payment_participant_count_confirm_required" in error:
         return "客户同行人数超过4位时不要发送 payment_collection；改成 text 确认一共几位到店，或说明多人同行先由门店承接确认。"
     if "human_handoff_notice" in error:
-        return "需要内部关注时，先用客户可见 text 正面回答和引导到店检测或核对事实，再追加 human_handoff_notice；text 不要说转人工、转同事、专业同事、稍等一下哈。"
+        return "需要内部关注时，先用客户可见 text 正面承接当前问题，再追加 human_handoff_notice；客户可见文字应自然完整，不要只输出内部通知。"
     if "ambiguous_deposit_refund_wording" in error or "legacy_deposit_refund_policy" in error:
         return "预约金口径统一为“每位10元锁活动名额，到店抵扣；未做或不满意可退，实际按付款记录核对”。不要承诺自动退款、即时到账、具体退款金额或处理时效。"
     if "case_context_must_not_use_activity_intro_image" in error:
@@ -902,7 +886,7 @@ def _reply_repair_hint(error: str) -> str:
     if "effect_reply_confidence_order_required" in error:
         return "效果疑问要先肯定对应需求可以做、大多数客户改善反馈不错，再补到店检测更准确；不要第一句就说因人而异、不保证或具体看个人情况。"
     if "effect_absolute_safety_claim" in error:
-        return "效果和安全顾虑可以积极承接，允许‘一般不会反黑’这类非绝对信心表达，但不要说绝对不会、保证不会、100%不会、一定有效、保证效果或包效果；同时要给多数客户反馈正常/改善不错的信心，再说到店检测评估、按皮肤状态操作、适合再安排。"
+        return "效果和安全顾虑可以积极承接，允许‘一般不会反黑’和‘多数客户反馈都比较正常’这类信心表达；只避免明确的绝对、保证或100%安全承诺，再自然接到店检测或当前主线。"
     if "reply_too_similar" in error:
         return "客户在重复追问同类问题，请换一个角度回答，不要复用上一轮核心话术。"
     if "two_text_required" in error:
@@ -1129,9 +1113,14 @@ def _append_required_store_address_actions(
         else {}
     )
     recommended_id = str(recommended.get("store_id") or recommended.get("id") or "").strip()
-    if recommended_id and str(recommended.get("reason") or "") == "distance_calculate_rank_1":
+    delivery_mode = str(resolution.get("delivery_mode") or "")
+    if (
+        delivery_mode in {"", "send_recommended"}
+        and recommended_id
+        and str(recommended.get("reason") or "") == "distance_calculate_rank_1"
+    ):
         required_ids = [recommended_id]
-    elif str(resolution.get("delivery_mode") or "") == "send_all_candidates":
+    elif delivery_mode == "send_all_candidates":
         required_ids = list(
             dict.fromkeys(
                 str(item or "").strip()

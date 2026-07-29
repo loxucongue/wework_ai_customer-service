@@ -184,7 +184,7 @@
       "history": [],
       "expected_planner": {"decisions": ["direct_reply"]},
       "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["永久不反弹", "二三十年不会长", "终身", "这个没法保证", "因人而异，所以", "不好说"]},
-      "semantic_goal": "第一句先给一般不会做完很快反弹、规范操作和护理有助维持的信心，再区分原斑改善与以后新色素问题；不以免责或因人而异开头，不编固定年限，并回活动主线。"
+      "semantic_goal": "第一句直接给安心结论：后续做好日常防晒护理，基本不会出现反弹情况；不要说回到原样，不以免责或因人而异开头，不编固定年限，并回活动主线。"
     },
     {
       "id": "rebound_repeated_ask_no_pessimistic_repeat",
@@ -196,7 +196,31 @@
       ],
       "expected_planner": {"decisions": ["direct_reply"]},
       "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["每个人情况不同", "因人而异", "不能保证", "不好说", "永久不反弹", "终身"]},
-      "semantic_goal": "识别客户是因上一轮回答消极而重复追问，换成明确、有信心的结论：一般不会做完很快反弹，护理有助维持；不复读上一轮免责声明，并自然回活动或门店主线。"
+      "semantic_goal": "识别客户是因上一轮回答消极而重复追问，换成明确安心的结论：后续做好日常防晒护理，基本不会出现反弹情况；不复读上一轮免责声明，也不说回到原样，并自然回活动或门店主线。"
+    },
+    {
+      "id": "outdoor_work_reassurance",
+      "category": "精准问答-户外工作",
+      "messages": ["那估计没用，因为我们干工地的", "我天天在外面晒，做了是不是也没效果"],
+      "history": ["小贝: 我们这边主要做斑点和色素问题改善。"],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {
+        "required_types": ["text"],
+        "forbidden_phrases": ["效果会比较差", "可能没效果", "不适合做", "没办法", "很容易反弹", "回到原样"]
+      },
+      "semantic_goal": "先给客户安心：很多户外工作的顾客做了反馈都不错，户外工作不等于做了没用；只补一个容易执行的防晒或遮挡建议，再自然回到案例、活动或门店主线。"
+    },
+    {
+      "id": "technology_method",
+      "category": "精准问答-技术方式",
+      "messages": ["用激光打的吗", "你们到底是什么技术"],
+      "history": [],
+      "expected_planner": {"decisions": ["direct_reply"]},
+      "expected_reply": {
+        "required_types": ["text"],
+        "forbidden_phrases": ["就是普通洗脸", "只是普通洗脸", "就是洗脸护理", "光电技术", "激光祛斑", "进口仪器", "具体设备到店再说"]
+      },
+      "semantic_goal": "直接说明采用肌源调肤点斑技术，再简短说明会结合斑点和皮肤状态针对操作；不回避成普通护理，不自行扩展设备、能量、医学原理或激光类别，并自然回主线。"
     },
     {
       "id": "customer_distance_fact_no_low_value_parroting",
@@ -618,6 +642,19 @@
       },
       "expected_reply": {"required_types": ["text", "human_handoff_notice"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["您这是", "用什么药", "保证没事"]},
       "semantic_goal": "当前明确严重不适时正面承接、停止销售发卡，不在线诊断或追问用药，追加内部notice。"
+    },
+    {
+      "id": "pregnancy_natural_care",
+      "category": "孕期自然关怀",
+      "messages": ["我怀孕了现在能做吗", "那我等生完再来可以吗"],
+      "history": ["小贝: 我们主要做斑点和色素问题改善。"],
+      "expected_planner": {"decisions": ["need_tools", "direct_reply"], "forbidden_message_types": ["payment_collection"]},
+      "reply_fact_envelope": {
+        "structured_facts": {"professional_assist_facts": [{"status": "attention_required", "reason": "current_pregnancy"}], "store_facts": [], "case_facts": [], "payment_facts": [], "tool_errors": []},
+        "usable_facts": ["客户当前处于孕期，暂不推进操作和付款。"], "missing_facts": [], "risky_facts": ["current_pregnancy"], "unsupported_claims": []
+      },
+      "expected_reply": {"required_types": ["text"], "forbidden_types": ["payment_collection"], "forbidden_phrases": ["保证没事", "现在就能做", "先交10元"]},
+      "semantic_goal": "自然回应孕期客户，不在线诊断、不发付款卡；可以直接说现在先不着急，等生完或身体方便时再来店内咨询，并自然祝福客户身体健康。不得把这种关怀表达判为违规或强制改成生硬风险话术。"
     },
     {
       "id": "complaint_refund_payment_anomaly",

@@ -165,10 +165,10 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         '"name":"distance_calculate"',
         "不得把 `after_paid_next_step` 填进 `payment_action`",
         "`payment_action=confirm_next_step`",
-        "不在线追问用药或症状",
+        "不做在线诊断或药物指导",
         "连“可以继续约”也不能确认",
         "答清后仍无门店就问城市区域",
-        "健康、孕期或过敏只引导到店专业检测",
+        "孕期可说明等生完或身体状态方便时再来咨询",
         "隐形消费或收费透明顾虑答清、活动已说明但无门店",
         "发卡前置是活动报价已完成/已铺垫",
         "短消息须承接最近未完动作",
@@ -248,7 +248,9 @@ def test_supported_spot_scope_and_sales_answer_policy_are_explicit() -> None:
     assert "不追加“凸起还是平的、大小、深浅" in REPLY_SYSTEM_PROMPT
     assert "追求信息增量" in REPLY_SYSTEM_PROMPT
     assert "客户说几家都差不多40分钟" in PLANNER_SYSTEM_PROMPT
-    assert "一般不会出现做完很快就反弹" in REPLY_SYSTEM_PROMPT
+    assert "后续做好日常防晒护理，基本不会出现反弹情况的哦" in REPLY_SYSTEM_PROMPT
+    assert "我们采用的是肌源调肤点斑技术" in REPLY_SYSTEM_PROMPT
+    assert "很多户外工作的顾客做了反馈都不错的" in REPLY_SYSTEM_PROMPT
 
 
 def test_runtime_business_fact_views_preserve_all_current_rule_semantics() -> None:
@@ -450,11 +452,11 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
         "绝不能因为开单未成功而输出空回复",
         "不查 `available_time`",
         "不能停在费用说明",
-        "不在线追问用药和身体症状",
+        "不做在线诊断",
         "不能说“可以继续约",
         "也不能承诺稍后发入口",
-        "健康、孕期和过敏统一引导到店专业检测",
-        "不直接判定只能等产后或以后",
+        "孕期客户可以说明现在不着急操作",
+        "等生完或身体状态方便时再到店咨询",
         "直接续最近未完动作",
         "不猜网络延迟、页面故障或银行原因",
         "未付且客户未主动登记时不提前索要姓名电话",

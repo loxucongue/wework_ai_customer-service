@@ -39,9 +39,12 @@ def postpaid_scheduling_tool_violations(
     *,
     payment_decision: dict[str, Any],
     required_tools: list[dict[str, Any]],
-    has_authoritative_paid: bool,
+    is_postpaid_registration_flow: bool,
 ) -> list[dict[str, str]]:
-    if str(payment_decision.get("action") or "") != "after_paid_next_step" or not has_authoritative_paid:
+    if (
+        str(payment_decision.get("action") or "") != "after_paid_next_step"
+        or not is_postpaid_registration_flow
+    ):
         return []
     violations: list[dict[str, str]] = []
     for tool in required_tools:

@@ -33,13 +33,24 @@ from app.graph.planner.brain_v2 import _current_known_store_for_planner, _planne
 from app.graph.planner.brain_v2_normalizer import _clean_scoped_location_query, build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import PLANNER_SYSTEM_PROMPT
 from app.schemas import ChatResponse, ReplyMessage
+from app.services.payment_collection import activity_intro_completed_for_payment
 from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
 from app.services.workflow_compat import workflow_response_from_chat
+
+
+_ACTIVITY_INTRO_EVIDENCE = {
+    "sop_progress_evidence": {
+        "completed_pack_ids": ["s10_activity_intro"],
+        "completed_categories": ["activity_intro"],
+    }
+}
 
 
 def _payment_order_state(*, amount: int = 10, store_id: str = "386") -> dict:
     return {
         "confirmed_store_id": store_id,
+        "conversation_history": ["小贝: 活动总价268元，每位10元预约金到店抵扣。"],
+        **_ACTIVITY_INTRO_EVIDENCE,
         "customer_basic_info": {
             "confirmed_store_id": store_id,
             "order_state": {"order_id": "order-current", "store_id": store_id, "prepay_required": amount},
@@ -541,8 +552,12 @@ def test_contextual_short_open_task_recovers_planner_no_reply() -> None:
         },
     )
 
-    assert plan["planner_decision"] == "no_reply"
+    assert plan["planner_decision"] == "direct_reply"
     assert plan["planner_reply_messages"] == []
+    assert any(
+        item.get("missing") == "no_reply_not_allowed_for_customer_turn"
+        for item in plan["tool_policy_violations"]
+    )
     assert "current_turn_context_guard" not in plan["reply_strategy"]
 
 
@@ -673,6 +688,7 @@ def test_current_turn_context_post_deposit_time_confirmation_missing_store() -> 
 def test_current_turn_context_plain_paid_phrase_binds_next_step_without_card() -> None:
     context = build_current_turn_context(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": "付完然后呢",
             "conversation_history": [
                 "用户: 我报名，朋友一起",
@@ -711,6 +727,7 @@ def test_current_turn_context_does_not_treat_unpaid_history_as_paid_deposit() ->
 def test_current_turn_context_payment_retry_does_not_become_paid_deposit() -> None:
     context = build_current_turn_context(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": "没收到，再发一下",
             "conversation_history": [
                 "用户: 我报名，朋友一起",
@@ -730,6 +747,7 @@ def test_current_turn_context_payment_retry_does_not_become_paid_deposit() -> No
 def test_current_turn_context_history_health_risk_is_advisory_for_short_message() -> None:
     context = build_current_turn_context(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": "你好",
             "conversation_history": [
                 "用户: 我有心脏病和高血压，这个能做吗",
@@ -1054,8 +1072,10 @@ def test_planner_does_not_treat_customer_paid_claim_as_authoritative() -> None:
         },
     )
 
-    assert plan["payment_state"] == "needs_payment"
-    assert plan["payment_decision"]["action"] == "explain"
+    assert plan["payment_state"] == "customer_claimed_paid"
+    assert plan["payment_action"] == "confirm_next_step"
+    assert plan["payment_decision"]["action"] == "after_paid_next_step"
+    assert plan["payment_decision"]["source"] == "unverified_customer_claim"
     assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
     assert plan["reply_strategy"]["payment_action_guard"] == "payment_card_removed_by_payment_action"
 
@@ -1063,6 +1083,7 @@ def test_planner_does_not_treat_customer_paid_claim_as_authoritative() -> None:
 def test_planner_legacy_card_payload_becomes_send_now_decision_when_model_omits_state() -> None:
     plan = build_planner_plan_v2(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": "付完然后呢",
             "conversation_history": [
                 "用户: 我报名，朋友一起",
@@ -1165,6 +1186,7 @@ def test_planner_does_not_auto_append_payment_collection_after_customer_says_pai
 def test_planner_keeps_payment_collection_when_customer_requests_resend() -> None:
     plan = build_planner_plan_v2(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": "没收到，再发一下",
             "conversation_history": [
                 "用户: 我报名，朋友一起",
@@ -1395,6 +1417,7 @@ def test_planner_non_payment_action_clears_stale_payment_method() -> None:
 def test_planner_send_now_is_not_downgraded_by_short_message_guard() -> None:
     plan = build_planner_plan_v2(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": "你好",
             "conversation_history": [
                 "用户: 我报名",
@@ -1593,7 +1616,7 @@ def test_planner_effect_marker_without_case_tool_stays_model_decision() -> None:
 
 def test_deposit_push_without_payment_action_does_not_auto_append_payment_collection() -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": "报名"},
+        {**_ACTIVITY_INTRO_EVIDENCE, "normalized_content": "报名"},
         {
             "decision": "direct_reply",
             "stage": "S3",
@@ -1902,6 +1925,7 @@ def test_payment_decision_resend_inherits_last_payment_amount() -> None:
 
 def test_payment_collection_amount_inherits_recent_twenty_yuan_context() -> None:
     state = {
+        **_ACTIVITY_INTRO_EVIDENCE,
         "normalized_content": _u(r"\u4eba\u5462"),
         "conversation_history": [
             _u(r"\u5c0f\u8d1d: 2\u4f4d\u4e00\u517120\u5143\u9884\u7ea6\u91d1\u5165\u53e3\u5df2\u53d1"),
@@ -1938,6 +1962,7 @@ def test_payment_collection_amount_inherits_recent_twenty_yuan_context() -> None
 
 def test_payment_collection_amount_infers_recent_companion_confirmation() -> None:
     state = {
+        **_ACTIVITY_INTRO_EVIDENCE,
         "normalized_content": _u(r"\u53ef\u4ee5\uff0c\u53d1\u9884\u7ea6\u91d1\u5165\u53e3"),
         "content": _u(r"\u53ef\u4ee5\uff0c\u53d1\u9884\u7ea6\u91d1\u5165\u53e3"),
         "conversation_history": [
@@ -1981,7 +2006,7 @@ def test_reply_validation_rejects_text_twenty_yuan_with_ten_yuan_card() -> None:
                 },
                 {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
             ],
-            {"normalized_content": _u(r"\u4eba\u5462")},
+            {**_ACTIVITY_INTRO_EVIDENCE, "normalized_content": _u(r"\u4eba\u5462")},
         )
 
 
@@ -1996,7 +2021,7 @@ def test_reply_validation_rejects_text_ten_yuan_entry_with_twenty_yuan_card() ->
                 },
                 {"type": "payment_collection", "order": 2, "content": {"amount": 20, "remark": ""}},
             ],
-            {"normalized_content": _u(r"\u670b\u53cb\u4e00\u8d77\u8fc7\u53bb")},
+            {**_ACTIVITY_INTRO_EVIDENCE, "normalized_content": _u(r"\u670b\u53cb\u4e00\u8d77\u8fc7\u53bb")},
         )
 
 
@@ -2025,7 +2050,11 @@ def test_planner_reply_normalizes_ten_yuan_entry_text_for_twenty_yuan_card() -> 
 
 def test_payment_collection_over_four_people_requires_confirmation() -> None:
     plan = build_planner_plan_v2(
-        {"normalized_content": "带四个朋友一起过去", "content": "带四个朋友一起过去"},
+        {
+            **_ACTIVITY_INTRO_EVIDENCE,
+            "normalized_content": "带四个朋友一起过去",
+            "content": "带四个朋友一起过去",
+        },
         {
             "decision": "direct_reply",
             "stage": "S3",
@@ -2782,6 +2811,7 @@ def test_generic_store_direct_reply_is_not_rewritten_by_normalizer() -> None:
 def test_scoped_city_store_question_requires_lookup_when_city_has_limited_candidates() -> None:
     plan = build_planner_plan_v2(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": "厦门有门店吗",
             "customer_store_knowledge": {"stores": [{"city": "厦门市", "district": "思明区", "store_name": "厦门思明店"}]},
         },
@@ -2921,6 +2951,7 @@ def test_multi_store_city_text_cannot_promise_store_info_without_cards() -> None
 def test_scoped_city_store_question_does_not_override_legal_planner_tool_query() -> None:
     plan = build_planner_plan_v2(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": "厦门有门店吗",
             "customer_store_knowledge": {
                 "stores": [
@@ -3532,9 +3563,10 @@ def test_unverified_paid_claim_cannot_confirm_appointment() -> None:
     assert plan["appointment_decision"] == {
         "action": "none",
         "commitment_level": "none",
-        "basis": ["支付状态尚未由订单或成功截图确认"],
+        "basis": ["客户声明已付款但尚无权威到账事实；先登记信息，不确认正式预约"],
     }
-    assert plan["payment_state"] != "customer_claimed_paid"
+    assert plan["payment_state"] == "customer_claimed_paid"
+    assert plan["payment_decision"]["action"] == "after_paid_next_step"
 
 
 def test_confirmed_appointment_decision_allows_request_confirmed_appointment_fact() -> None:
@@ -3670,7 +3702,31 @@ def test_no_reply_not_allowed_for_current_availability_question() -> None:
     )
 
     assert any(
-        item.get("missing") == "no_reply_not_allowed_for_appointment_availability_question"
+        item.get("missing") == "no_reply_not_allowed_for_customer_turn"
+        for item in plan["tool_policy_violations"]
+    )
+
+
+def test_no_reply_not_allowed_for_any_customer_question() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "你们这个效果怎么样"},
+        {
+            "decision": "no_reply",
+            "stage": "S2",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "effect",
+            "main_blocker": "effect",
+            "next_step": "answer_question",
+            "payment_state": "unknown",
+            "payment_action": "none",
+            "reply_messages": [],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert any(
+        item.get("missing") == "no_reply_not_allowed_for_customer_turn"
         for item in plan["tool_policy_violations"]
     )
 
@@ -3679,7 +3735,11 @@ def test_reply_validation_requires_card_for_payment_promise_without_order() -> N
     with pytest.raises(ValueError, match="payment_collection_required_when_reply_promises_payment_entry"):
         validate_reply_consistency(
             [{"type": "text", "order": 1, "content": {"text": "好的，我重新发您10元预约金入口"}}],
-            {"conversion_stage": "deposit_push", "next_step": "send_deposit"},
+            {
+                **_ACTIVITY_INTRO_EVIDENCE,
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+            },
         )
 
 
@@ -3687,6 +3747,7 @@ def test_reply_validation_allows_safe_text_after_work_order_rejection() -> None:
     validate_reply_consistency(
         [{"type": "text", "order": 1, "content": {"text": "这家门店我先记录好了，支付信息确认后再继续。"}}],
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "conversion_stage": "deposit_push",
             "next_step": "send_deposit",
             "payment_action": "explain_existing",
@@ -3722,6 +3783,7 @@ def test_reply_validation_allows_card_after_work_order_rejection() -> None:
             {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
         ],
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "conversion_stage": "deposit_push",
             "next_step": "send_deposit",
             "payment_action": "send_now",
@@ -3815,7 +3877,11 @@ def test_reply_validation_requires_card_for_signup_promise_without_order() -> No
                     },
                 }
             ],
-            {"conversion_stage": "objection_resolution", "next_step": "solve_blocker"},
+            {
+                **_ACTIVITY_INTRO_EVIDENCE,
+                "conversion_stage": "objection_resolution",
+                "next_step": "solve_blocker",
+            },
         )
 
 
@@ -3875,7 +3941,7 @@ def test_reply_validation_normalizes_old_human_handoff_to_notice() -> None:
     assert [item["type"] for item in messages] == ["text", "human_handoff_notice"]
 
 
-def test_reply_validation_rejects_old_handoff_visible_wording() -> None:
+def test_reply_validation_allows_natural_handoff_visible_wording() -> None:
     messages = validated_model_messages(
         {
             "reply_messages": [
@@ -3886,8 +3952,7 @@ def test_reply_validation_rejects_old_handoff_visible_wording() -> None:
         {},
     )
 
-    with pytest.raises(ValueError, match="human_handoff_notice_customer_text_not_resolved"):
-        validate_reply_consistency(messages, {})
+    validate_reply_consistency(messages, {})
 
 
 def test_planner_normalizes_old_handoff_to_notice() -> None:
@@ -4055,6 +4120,7 @@ def test_required_payment_collection_fallback_respects_hard_health_risk() -> Non
 def test_merged_health_risk_overrides_store_lookup_task() -> None:
     plan = build_planner_plan_v2(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
             "request_context": {
                 "merged_customer_messages": [
@@ -4093,6 +4159,7 @@ def test_merged_health_risk_overrides_store_lookup_task() -> None:
 def test_store_detail_tool_does_not_rewrite_planner_business_stage() -> None:
     plan = build_planner_plan_v2(
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
             "confirmed_store_name": _u(r"\u53a6\u95e8\u767e\u661f\u6e56\u91cc\u5e97"),
         },
@@ -4394,6 +4461,7 @@ def test_reply_validation_allows_payment_collection_after_previous_send() -> Non
             {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": "锁活动名额"}},
         ],
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "conversion_stage": "deposit_push",
             "next_step": "send_deposit",
             "sent_message_summary": {"payment_collection_sent": True, "payment_collection_count": 1},
@@ -4427,7 +4495,11 @@ def test_reply_validation_rejects_group_payment_text_mismatch() -> None:
                 {"type": "text", "order": 1, "content": {"text": "可以，我给您发10元预约金入口，先帮您锁活动名额。"}},
                 {"type": "payment_collection", "order": 2, "content": {"amount": 20, "remark": ""}},
             ],
-            {"conversion_stage": "deposit_push", "next_step": "send_deposit"},
+            {
+                **_ACTIVITY_INTRO_EVIDENCE,
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+            },
         )
 
 
@@ -4447,6 +4519,7 @@ def test_reply_validation_rejects_group_payment_wrong_total_amount() -> None:
                 {"type": "payment_collection", "order": 2, "content": {"amount": 30, "remark": ""}},
             ],
             {
+                **_ACTIVITY_INTRO_EVIDENCE,
                 "normalized_content": _u(r"\u6211\u5e26\u4e24\u4e2a\u670b\u53cb\u4e00\u8d77\u62a5\u540d"),
                 "conversion_stage": "deposit_push",
                 "next_step": "send_deposit",
@@ -4460,7 +4533,11 @@ def test_reply_validation_allows_group_payment_text_with_per_person_wording() ->
             {"type": "text", "order": 1, "content": {"text": "可以，2位一共20元预约金，每位10元，到店抵扣。"}},
             {"type": "payment_collection", "order": 2, "content": {"amount": 20, "remark": ""}},
         ],
-        {"conversion_stage": "deposit_push", "next_step": "send_deposit"},
+        {
+            **_ACTIVITY_INTRO_EVIDENCE,
+            "conversion_stage": "deposit_push",
+            "next_step": "send_deposit",
+        },
     )
 
 
@@ -4470,7 +4547,11 @@ def test_reply_validation_allows_group_payment_text_with_each_pay_wording() -> N
             {"type": "text", "order": 1, "content": {"text": "可以的，两位先各付10元预约金，一共20元，到店抵扣。"}},
             {"type": "payment_collection", "order": 2, "content": {"amount": 20, "remark": ""}},
         ],
-        {"conversion_stage": "deposit_push", "next_step": "send_deposit"},
+        {
+            **_ACTIVITY_INTRO_EVIDENCE,
+            "conversion_stage": "deposit_push",
+            "next_step": "send_deposit",
+        },
     )
 
 
@@ -4482,6 +4563,7 @@ def test_reply_validation_rejects_payment_collection_when_participants_over_limi
                 {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
             ],
             {
+                **_ACTIVITY_INTRO_EVIDENCE,
                 "normalized_content": "我带四个朋友一起过去",
                 "conversion_stage": "deposit_push",
                 "next_step": "send_deposit",
@@ -4499,6 +4581,7 @@ def test_reply_validation_allows_over_limit_participant_confirmation_without_pay
             }
         ],
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "normalized_content": "我带四个朋友一起过去",
             "conversion_stage": "deposit_push",
             "next_step": "send_deposit",
@@ -4517,6 +4600,7 @@ def test_reply_validation_rejects_over_limit_text_promising_entry_without_paymen
                 }
             ],
             {
+                **_ACTIVITY_INTRO_EVIDENCE,
                 "normalized_content": "我带四个朋友一起过去",
                 "conversion_stage": "deposit_push",
                 "next_step": "send_deposit",
@@ -4535,6 +4619,7 @@ def test_reply_validation_rejects_over_limit_text_with_high_payment_amount_witho
                 }
             ],
             {
+                **_ACTIVITY_INTRO_EVIDENCE,
                 "normalized_content": "我带四个朋友一起过去",
                 "conversion_stage": "deposit_push",
                 "next_step": "send_deposit",
@@ -4770,6 +4855,84 @@ def test_distance_fact_output_hides_customer_visible_numbers() -> None:
     assert "distance_km" not in structured["recommended_store"]
     assert "distance_meters" not in structured["store_facts"][0]
     assert "duration_seconds" not in structured["store_facts"][0]
+
+
+def test_distance_ranking_with_many_candidates_delivers_only_recommended_store() -> None:
+    output = build_planner_fact_output(
+        {
+            "distance_calculate": {
+                "origin": "嘉兴秀洲区",
+                "status": "ok",
+                "ranked_stores": [
+                    {
+                        "store_id": str(store_id),
+                        "store_name": f"嘉兴门店{store_id}",
+                        "address": f"嘉兴市示例地址{store_id}",
+                        "distance_km": float(index + 1),
+                        "distance_source": "amap",
+                    }
+                    for index, store_id in enumerate((342, 343, 344, 345))
+                ],
+            }
+        },
+        {},
+    )
+    structured = output["fact_envelope"]["structured_facts"]
+
+    assert structured["store_resolution_fact"]["delivery_mode"] == "send_recommended"
+    assert structured["store_resolution_fact"]["recommended_store_id"] == "342"
+    assert structured["store_resolution_fact"]["distance_ranking_available"] is True
+
+    messages, changed = _append_required_store_address_actions(
+        [{"type": "text", "order": 1, "content": {"text": "我先把当前相对方便的这家门店发您。"}}],
+        output,
+    )
+    assert changed is True
+    assert [
+        item["content"]["store_id"]
+        for item in messages
+        if item["type"] == "store_address"
+    ] == ["342"]
+    validate_reply_consistency(messages, output)
+
+
+def test_distance_ranking_with_two_candidates_does_not_send_all_cards() -> None:
+    output = build_planner_fact_output(
+        {
+            "distance_calculate": {
+                "origin": "嘉兴秀洲区",
+                "status": "ok",
+                "ranked_stores": [
+                    {
+                        "store_id": "342",
+                        "store_name": "嘉兴秀洲店",
+                        "distance_km": 2.0,
+                        "distance_source": "amap",
+                    },
+                    {
+                        "store_id": "343",
+                        "store_name": "嘉兴南湖店",
+                        "distance_km": 4.0,
+                        "distance_source": "amap",
+                    },
+                ],
+            }
+        },
+        {},
+    )
+    structured = output["fact_envelope"]["structured_facts"]
+
+    assert structured["store_resolution_fact"]["delivery_mode"] == "send_recommended"
+    messages, changed = _append_required_store_address_actions(
+        [{"type": "text", "order": 1, "content": {"text": "当前优先看这家。"}}],
+        output,
+    )
+    assert changed is True
+    assert [
+        item["content"]["store_id"]
+        for item in messages
+        if item["type"] == "store_address"
+    ] == ["342"]
 
 
 def test_reply_validation_allows_distance_rank_without_numeric_value() -> None:
@@ -5495,6 +5658,7 @@ def test_reply_validation_does_not_confuse_activity_lock_with_time_lock() -> Non
             {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
         ],
         {
+            **_ACTIVITY_INTRO_EVIDENCE,
             "payment_decision": {
                 "action": "send_now",
                 "method": "mini_program",
@@ -5681,27 +5845,58 @@ def test_reply_validation_allows_platform_transfer_payment_confirmation() -> Non
     )
 
 
+def test_reply_validation_allows_registration_confirmation_after_authoritative_payment_without_order() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "预约金已经收到，活动名额给您登记好了，把姓名和手机号发我。"}],
+        {
+            "customer_basic_info": {
+                "deposit_state": {"status": "paid_by_platform_transfer_event"},
+            },
+            "fact_envelope": {"structured_facts": {"order_facts": []}},
+        },
+    )
+
+
+def test_reply_validation_rejects_registration_confirmation_from_customer_claim_only() -> None:
+    with pytest.raises(ValueError, match="registration_confirmation_fact_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "我先帮您登记活动。"}],
+            {
+                "payment_state": "customer_claimed_paid",
+                "fact_envelope": {"structured_facts": {"order_facts": []}},
+            },
+        )
+
+
+def test_payment_collection_requires_positive_activity_intro_evidence() -> None:
+    assert activity_intro_completed_for_payment({}) is False
+    assert activity_intro_completed_for_payment(
+        {"conversation_history": ["小贝: 活动总价268元，每位10元预约金到店抵扣。"]}
+    ) is True
+
+
 @pytest.mark.parametrize(
-    ("text", "violation"),
+    "text",
     [
-        ("您脸肿是刚出现的还是以前就经常这样？", "health_online_symptom_question_not_allowed"),
-        ("您先停用护肤品，也先别去角质。", "health_specific_care_advice_not_allowed"),
-        ("建议等孕期结束后再来做。", "pregnancy_deferral_claim_not_allowed"),
+        "您脸肿是刚出现的还是以前就经常这样？",
+        "您先停用护肤品，也先别去角质。",
+        "建议等孕期结束后再来做。",
+        "等生完再来我们店内咨询也是可以的哈，祝您身体健康。",
+        "多数客户做完反馈都比较正常，到店前再帮您看下皮肤状态。",
     ],
 )
-def test_reply_validation_rejects_online_health_advice_boundaries(text: str, violation: str) -> None:
-    with pytest.raises(ValueError, match=violation):
-        validate_reply_consistency(
-            [
-                {"type": "text", "order": 1, "content": text},
-                {
-                    "type": "human_handoff_notice",
-                    "order": 2,
-                    "content": {"handoff_reason": "health risk"},
-                },
-            ],
-            {},
-        )
+def test_reply_validation_allows_natural_health_wording(text: str) -> None:
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": text},
+            {
+                "type": "human_handoff_notice",
+                "order": 2,
+                "content": {"handoff_reason": "health risk"},
+            },
+        ],
+        {},
+    )
 
 
 def test_reply_validation_allows_health_detection_and_generic_stop_stimulation() -> None:
@@ -5728,23 +5923,22 @@ def test_reply_validation_allows_health_detection_and_generic_stop_stimulation()
     )
 
 
-def test_reply_validation_rejects_sales_push_during_active_skin_risk() -> None:
-    with pytest.raises(ValueError, match="health_active_risk_sales_push_not_allowed"):
-        validate_reply_consistency(
-            [
-                {
-                    "type": "text",
-                    "order": 1,
-                    "content": "您正在过敏先别直接做，到店检测确认适合后再安排，活动名额我先帮您留意。",
-                },
-                {
-                    "type": "human_handoff_notice",
-                    "order": 2,
-                    "content": {"handoff_reason": "active allergy"},
-                },
-            ],
-            {"normalized_content": "我脸上正在过敏能做吗"},
-        )
+def test_reply_validation_does_not_block_health_text_by_literal_words() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "您正在过敏先别直接做，到店检测确认适合后再安排，活动名额我先帮您留意。",
+            },
+            {
+                "type": "human_handoff_notice",
+                "order": 2,
+                "content": {"handoff_reason": "active allergy"},
+            },
+        ],
+        {"normalized_content": "我脸上正在过敏能做吗"},
+    )
 
 
 def test_reply_validation_allows_claimed_registration_with_created_order_fact() -> None:
@@ -5948,12 +6142,11 @@ def test_reply_validation_rejects_effect_reply_starting_with_risk_disclaimer() -
     assert any("effect_reply_confidence_order_required" in item["detail"] for item in warnings)
 
 
-def test_reply_validation_rejects_effect_absolute_safety_claim() -> None:
-    with pytest.raises(ValueError, match="effect_absolute_safety_claim"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "淡斑方向可以看，不会导致反黑，到店检测后再安排。"}}],
-            {"normalized_content": "做完会不会反黑"},
-        )
+def test_reply_validation_allows_non_absolute_direct_safety_answer() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "淡斑方向可以看，不会导致反黑，到店检测后再安排。"}}],
+        {"normalized_content": "做完会不会反黑"},
+    )
 
 
 def test_reply_validation_allows_non_absolute_safety_confidence() -> None:
@@ -5965,6 +6158,19 @@ def test_reply_validation_allows_non_absolute_safety_confidence() -> None:
                 "content": {
                     "text": "一般不会反黑，我们绝大多数客户反馈都比较正常，到店会先检测评估。"
                 },
+            }
+        ],
+        {"normalized_content": "会不会反黑"},
+    )
+
+
+def test_reply_validation_allows_negated_absolute_safety_language() -> None:
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "不能保证绝对不会反黑，但规范操作并做好护理，一般反馈都比较正常。"},
             }
         ],
         {"normalized_content": "会不会反黑"},
@@ -6553,7 +6759,7 @@ def test_reply_prompt_uses_handoff_notice_and_direct_resolution() -> None:
 
     assert "human_handoff_notice" in REPLY_SYSTEM_PROMPT
     assert "到店先检测" in REPLY_SYSTEM_PROMPT
-    assert "门店、时间、金额、项目" in REPLY_SYSTEM_PROMPT
+    assert "按结构事实追加 `human_handoff_notice`" in REPLY_SYSTEM_PROMPT
     assert "专业同事确认/核对" not in REPLY_SYSTEM_PROMPT
 
 

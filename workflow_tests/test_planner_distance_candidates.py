@@ -189,7 +189,13 @@ class PlannerModelOwnershipTests(unittest.TestCase):
 
     def test_planner_keeps_model_emitted_payment_collection(self) -> None:
         plan = build_planner_plan_v2(
-            {"normalized_content": "我想报名"},
+            {
+                "normalized_content": "我想报名",
+                "sop_progress_evidence": {
+                    "completed_pack_ids": ["s10_activity_intro"],
+                    "completed_categories": ["activity_intro"],
+                },
+            },
             {
                 "decision": "direct_reply",
                 "stage": "S3",

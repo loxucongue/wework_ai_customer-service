@@ -15,6 +15,25 @@ def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if item not in (None, "", [], {})}
 
 
+def _store_delivery_mode(
+    *,
+    resolution_status: str,
+    resolved_level: str,
+    visible_candidate_count: int,
+    has_real_ranking: bool = False,
+    recommended_store_id: str = "",
+) -> str:
+    if has_real_ranking and recommended_store_id:
+        return "send_recommended"
+    if resolution_status in {"ambiguous_location", "no_match"} or resolved_level == "province":
+        return "clarify_location"
+    if resolution_status == "ok" and 1 <= visible_candidate_count <= 3:
+        return "send_all_candidates"
+    if resolution_status == "ok" and visible_candidate_count > 3:
+        return "clarify_location"
+    return "none"
+
+
 def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
     """Provide factual evidence to the final reply model without customer-facing wording."""
     facts: list[str] = []
@@ -103,15 +122,11 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 )
             resolution_status = str(value.get("status") or "")
             resolved_level = str(value.get("resolved_admin_level") or "")
-            delivery_mode = "none"
-            if resolution_status in {"ambiguous_location", "no_match"}:
-                delivery_mode = "clarify_location"
-            elif resolved_level == "province":
-                delivery_mode = "clarify_location"
-            elif resolution_status == "ok" and 1 <= visible_candidate_count <= 3:
-                delivery_mode = "send_all_candidates"
-            elif resolution_status == "ok" and visible_candidate_count > 3:
-                delivery_mode = "clarify_location"
+            delivery_mode = _store_delivery_mode(
+                resolution_status=resolution_status,
+                resolved_level=resolved_level,
+                visible_candidate_count=visible_candidate_count,
+            )
             structured_facts["store_resolution_fact"] = _drop_empty(
                 {
                     "raw_place": str(value.get("raw_query") or value.get("query") or ""),
@@ -190,6 +205,16 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "reason": "distance_calculate_rank_1",
                 }
             visible_candidate_count = len(structured_facts["store_facts"])
+            ranked_recommended_store_id = str(
+                structured_facts["recommended_store"].get("store_id") or ""
+            )
+            delivery_mode = _store_delivery_mode(
+                resolution_status=str(value.get("status") or ""),
+                resolved_level=str(value.get("resolved_admin_level") or ""),
+                visible_candidate_count=visible_candidate_count,
+                has_real_ranking=has_real_ranking,
+                recommended_store_id=ranked_recommended_store_id,
+            )
             structured_facts["store_resolution_fact"] = _drop_empty(
                 {
                     "raw_place": str(value.get("origin") or ""),
@@ -209,14 +234,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     ],
                     "visible_candidate_count": visible_candidate_count,
                     "distance_ranking_available": has_real_ranking,
-                    "delivery_mode": (
-                        "send_all_candidates"
-                        if 1 <= visible_candidate_count <= 3
-                        else ("clarify_location" if visible_candidate_count > 3 else "none")
-                    ),
-                    "recommended_store_id": str(
-                        structured_facts["recommended_store"].get("store_id") or ""
-                    ),
+                    "delivery_mode": delivery_mode,
+                    "recommended_store_id": ranked_recommended_store_id,
                 }
             )
             facts.append(

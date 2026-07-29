@@ -241,7 +241,6 @@ def _move_handoff_notices_after_visible(messages: list[dict[str, Any]]) -> list[
 
 def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     _validate_handoff_notice_text(messages)
-    _validate_health_reply_boundaries(messages, state)
     _validate_deposit_refund_policy(messages)
     _validate_unverified_refund_execution_claims(messages)
     _validate_structured_delivery_promises(messages, state)
@@ -271,117 +270,6 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_store_delivery_text_matches_cards(messages, state)
 
 
-def _validate_health_reply_boundaries(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    has_notice = any(
-        str(item.get("type") or "") in {"human_handoff", "human_handoff_notice"}
-        for item in messages
-        if isinstance(item, dict)
-    )
-    if not has_notice and not is_hard_health_risk_hold(health_risk_hold(state)):
-        return
-    text = _compact_text(_combined_text(messages))
-    active_skin_risk = _current_active_skin_risk(state)
-    has_payment = any(
-        str(item.get("type") or "") == "payment_collection"
-        for item in messages
-        if isinstance(item, dict)
-    )
-    if active_skin_risk and not has_payment:
-        if any(marker in text for marker in ("一般不会", "通常不会", "问题不大", "多数都正常", "绝大多数正常")):
-            raise ValueError("health_active_risk_must_not_be_softened")
-        explicit_pause = any(
-            marker in text
-            for marker in (
-                "先别直接做",
-                "先不要做",
-                "暂时不建议做",
-                "先不操作",
-                "不建议直接操作",
-                "不适合直接操作",
-                "现在不建议做",
-                "现在不适合做",
-                "过敏期间不建议做",
-                "过敏期间不适合做",
-            )
-        ) or (
-            any(marker in text for marker in ("不建议", "不适合", "不要", "不能", "暂停", "不急着", "先缓一缓"))
-            and any(marker in text for marker in ("操作", "做", "安排"))
-        )
-        if not explicit_pause:
-            raise ValueError("health_active_risk_pause_required")
-        if not (
-            any(marker in text for marker in ("检测", "看一下皮肤", "看下皮肤", "查看皮肤"))
-            and any(marker in text for marker in ("适合", "确认", "判断"))
-        ):
-            raise ValueError("health_active_risk_assessment_required")
-        if any(marker in text for marker in ("按活动", "活动名额", "预约金", "收款卡", "先付款", "先付")):
-            raise ValueError("health_active_risk_sales_push_not_allowed")
-    if any(
-        marker in text
-        for marker in (
-            "平时还是最近",
-            "现在是否不舒服",
-            "是刚出现的还是",
-            "还是以前就经常",
-            "最近才出现还是",
-        )
-    ):
-        raise ValueError("health_online_symptom_question_not_allowed")
-    if (
-        any(marker in text for marker in ("过敏", "泛红", "发痒", "红肿", "刺痛", "发炎", "破损"))
-        and any(marker in text for marker in ("还是", "有没有", "是否", "多久", "什么症状"))
-        and any(marker in text for marker in ("？", "?"))
-    ):
-        raise ValueError("health_online_symptom_question_not_allowed")
-    if any(
-        marker in text
-        for marker in (
-            "先别热敷",
-            "先不要热敷",
-            "先别冷敷",
-            "先不要冷敷",
-            "暂停护肤品",
-            "停用护肤品",
-            "先别用护肤品",
-            "先不要用护肤品",
-            "去角质",
-            "酸类产品",
-            "暂停刺激性的护理",
-        )
-    ):
-        raise ValueError("health_specific_care_advice_not_allowed")
-    if any(
-        marker in text
-        for marker in (
-            "等孕期结束后再",
-            "等生完再",
-            "产后再来",
-            "哺乳期结束后再",
-        )
-    ):
-        raise ValueError("pregnancy_deferral_claim_not_allowed")
-
-
-def _current_active_skin_risk(state: dict[str, Any]) -> bool:
-    current = _compact_text(str(state.get("normalized_content") or state.get("content") or ""))
-    return any(
-        marker in current
-        for marker in (
-            "正在过敏",
-            "现在过敏",
-            "过敏了",
-            "正在发炎",
-            "发炎了",
-            "皮肤破损",
-            "现在破损",
-            "正在红肿",
-            "脸上红肿",
-            "正在刺痛",
-            "脸上刺痛",
-        )
-    )
-
-
 def _validate_handoff_notice_text(messages: list[dict[str, Any]]) -> None:
     has_notice = any(
         str(item.get("type") or "") in {"human_handoff", "human_handoff_notice"}
@@ -393,31 +281,6 @@ def _validate_handoff_notice_text(messages: list[dict[str, Any]]) -> None:
     text = _combined_text(messages)
     if not text:
         raise ValueError("human_handoff_notice_requires_visible_answer")
-    banned = (
-        "转人工",
-        "转接",
-        "转同事",
-        "专业同事",
-        "专业顾问",
-        "同事沟通",
-        "同事协助",
-        "同步给同事",
-        "同步给专业",
-        "我帮您同步处理",
-        "同步处理",
-        "同步反馈处理",
-        "反馈处理",
-        "专人联系",
-        "稍后会有专人",
-        "马上帮您核对",
-        "马上核对",
-        "马上帮您对接",
-        "稍等一下哈",
-        "稍等哈",
-        "我先帮您看一下",
-    )
-    if any(term in text for term in banned):
-        raise ValueError("human_handoff_notice_customer_text_not_resolved")
 
 
 def _validate_deposit_refund_policy(messages: list[dict[str, Any]]) -> None:
@@ -708,9 +571,6 @@ def _validate_payment_not_during_health_risk_hold(messages: list[dict[str, Any]]
         return
     if any(str(item.get("type") or "") == "payment_collection" for item in messages if isinstance(item, dict)):
         raise ValueError("payment_collection_blocked_by_health_risk_hold")
-    text = _combined_text(messages)
-    if any(term in text for term in ("预约金", "付款入口", "收款入口", "报名入口", "支付入口", "线上10元", "锁名额")):
-        raise ValueError("payment_collection_blocked_by_health_risk_hold")
 
 
 def _validate_payment_collection_amount_text(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -740,30 +600,33 @@ def _validate_effect_absolute_safety_claims(messages: list[dict[str, Any]], stat
     text = re.sub(r"\s+", "", _combined_text(messages))
     if not text:
         return
-    banned = (
-        "绝不会反黑",
-        "保证不会反黑",
-        "肯定不会反黑",
-        "100%不会反黑",
-        "百分百不会反黑",
-        "不会做坏",
-        "不会越做越差",
-        "一定有效",
-        "一次一定",
-        "保证效果",
-        "包效果",
-    )
     risk_terms = ("反黑", "留疤", "留痕", "伤肤", "伤皮肤", "做坏", "越做越差")
-    state_text = re.sub(r"\s+", "", str(state.get("normalized_content") or state.get("content") or ""))
-    risk_scope = f"{text}{state_text}"
-    if any(term in text for term in banned) and any(term in risk_scope for term in risk_terms):
-        raise ValueError("effect_absolute_safety_claim")
-    if re.search(
-        r"(?<!一般)(?<!通常)(?<!基本)不会[^，。！？,.!?]{0,8}(反黑|留疤|留痕|伤肤|伤皮肤|做坏|越做越差)",
-        text,
-    ):
-        raise ValueError("effect_absolute_safety_claim")
-    if re.search(r"(绝对|绝对|保证|肯定|100%|百分百)[^，。！？,.!?]{0,8}不会[^，。！？,.!?]{0,8}(反黑|留疤|留痕|伤肤|伤皮肤|做坏|越做越差)", text):
+    pattern = re.compile(
+        r"(?:绝对|保证|肯定|100%|百分百|绝)"
+        r"[^，。！？,.!?]{0,8}(?:不会|不可能)"
+        r"[^，。！？,.!?]{0,8}(?:"
+        + "|".join(risk_terms)
+        + r")"
+    )
+    for match in pattern.finditer(text):
+        prefix = text[max(0, match.start() - 6) : match.start()]
+        if any(
+            prefix.endswith(marker)
+            for marker in (
+                "不",
+                "不能",
+                "无法",
+                "不会",
+                "不敢",
+                "不做",
+                "不能说",
+                "不能保证",
+                "无法保证",
+                "不能承诺",
+                "无法承诺",
+            )
+        ):
+            continue
         raise ValueError("effect_absolute_safety_claim")
 
 
@@ -1130,6 +993,8 @@ def _validate_appointment_confirmation_facts(messages: list[dict[str, Any]], sta
 def _validate_registration_confirmation_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     text = _combined_text(messages)
     if not text or not _asserts_registration_confirmed(text):
+        return
+    if _paid_deposit_context(state):
         return
     structured = _structured_facts(state)
     for fact in structured.get("order_facts") or []:

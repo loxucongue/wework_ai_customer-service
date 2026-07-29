@@ -242,15 +242,22 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     if unverified_paid_claim:
         payment_decision = _with_payment_decision_action(
             payment_decision,
-            "explain",
+            "after_paid_next_step",
             source="unverified_customer_claim",
             confidence="high",
-            basis="客户口头表示已付，但当前订单和成功截图均未确认支付",
+            basis="客户已声明付款；先继续登记姓名电话并等待平台付款事实核对",
         )
-        payment_state = "needs_payment" if _has_current_unpaid_order(state) else "unknown"
-        payment_action = "explain_existing"
-        appointment_decision = {"action": "none", "commitment_level": "none", "basis": ["支付状态尚未由订单或成功截图确认"]}
-        reply_constraints.append("客户口头表示已付不能单独作为支付成功事实；当前订单未确认入账时，只说明系统暂未查到，不推进付款后登记。")
+        payment_state = "customer_claimed_paid"
+        payment_action = "confirm_next_step"
+        appointment_decision = {
+            "action": "none",
+            "commitment_level": "none",
+            "basis": ["客户声明已付款但尚无权威到账事实；先登记信息，不确认正式预约"],
+        }
+        reply_constraints.append(
+            "客户口头表示已付不能单独作为支付成功事实；可先收姓名电话并说明会结合平台付款记录核对，"
+            "不得宣称已核款、不得重复发送 payment_collection、不得确认正式预约。"
+        )
     payment_decision = _reconcile_paid_payment_decision(
         payment_decision=payment_decision,
         order_decision=order_decision,
@@ -271,6 +278,22 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     primary_task: dict[str, Any] = {}
     secondary_tasks: list[dict[str, Any]] = []
     normalizer_policy_violations: list[dict[str, str]] = []
+    if decision == "no_reply":
+        # Platform auto-message suppression is resolved before Planner runs.
+        # Any turn reaching Planner therefore requires a customer-visible reply.
+        decision = "direct_reply"
+        normalizer_policy_violations.append(
+            {
+                "task_type": "reply_liveness",
+                "subtype": "customer_turn",
+                "missing": "no_reply_not_allowed_for_customer_turn",
+                "note": (
+                    "This turn reached Planner and therefore requires a customer-visible answer. "
+                    "Return a direct_reply, or use need_tools with an executable tool call. "
+                    "Do not use no_reply for a real customer turn."
+                ),
+            }
+        )
 
     reply_strategy: dict[str, Any] = {}
     if is_hard_health_risk_hold(risk_hold):
@@ -579,10 +602,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             appointment_decision=appointment_decision,
             messages=planner_reply_messages,
         ),
-        *_no_reply_customer_question_violations(
-            state=state,
-            decision=decision,
-        ),
         *_appointment_availability_reply_violations(
             state=state,
             decision=decision,
@@ -652,7 +671,7 @@ def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailabl
                 {
                     "type": "text",
                     "order": 1,
-                    "content": {"text": "我在，继续帮您处理。"},
+                    "content": {"text": "收到，您这条我看到了。"},
                 },
                 {
                     "type": "human_handoff_notice",
@@ -684,7 +703,7 @@ def planner_unavailable_fallback_plan(state: AgentState, *, reason: str = "Plann
                 {
                     "type": "text",
                     "order": 1,
-                    "content": {"text": "我在，继续帮您处理。"},
+                    "content": {"text": "收到，您这条我看到了。"},
                 }
             ],
             "tool_calls": [],
@@ -2240,25 +2259,6 @@ def _need_tools_without_tool_violations(
     ]
 
 
-def _no_reply_customer_question_violations(*, state: AgentState, decision: str) -> list[dict[str, str]]:
-    if decision != "no_reply":
-        return []
-    if _current_message_requests_appointment_availability(state):
-        return [
-            {
-                "task_type": "reply_liveness",
-                "subtype": "appointment_availability",
-                "missing": "no_reply_not_allowed_for_appointment_availability_question",
-                "note": (
-                    "The customer is asking whether a concrete appointment time is available. "
-                    "Do not repair by returning no_reply. If store_id and date are available, call available_time; "
-                    "otherwise ask for the missing store/date scope without claiming the time is available, held, or arranged."
-                ),
-            }
-        ]
-    return []
-
-
 def _direct_reply_store_consistency_violations(
     *,
     state: AgentState,
@@ -3472,7 +3472,9 @@ def _postpaid_scheduling_tool_violations(
     return _structured_postpaid_scheduling_tool_violations(
         payment_decision=payment_decision,
         required_tools=required_tools,
-        has_authoritative_paid=_has_authoritative_paid_context(state),
+        is_postpaid_registration_flow=(
+            str(payment_decision.get("action") or "") == "after_paid_next_step"
+        ),
     )
 
 

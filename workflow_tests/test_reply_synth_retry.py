@@ -301,6 +301,10 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
                 "planner_decision": "need_tools",
                 "payment_action": "send_now",
                 "payment_decision": {"action": "send_now", "amount": 10},
+                "sop_progress_evidence": {
+                    "completed_pack_ids": ["s10_activity_intro"],
+                    "completed_categories": ["activity_intro"],
+                },
                 "order_decision": {"action": "create_work", "store_id": "386"},
                 "current_known_store": {"store_id": "386", "store_name": "厦门百星湖里店"},
                 "fact_envelope": {
@@ -319,7 +323,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "payment_collection"])
         self.assertEqual(model.retry_messages, [])
 
-    async def test_reply_synth_uses_handoff_notice_fallback_after_bad_retry(self) -> None:
+    async def test_reply_synth_accepts_natural_handoff_wording_without_literal_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             model = FakeBadHandoffModelClient()
             node = create_synthesize_reply_node(
@@ -352,19 +356,15 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
             output = await node(state)
 
-        self.assertEqual(model.calls, 3)
-        self.assertEqual(model.tiers, ["strong", "strong", "fast"])
+        self.assertEqual(model.calls, 1)
+        self.assertEqual(model.tiers, ["strong"])
         self.assertEqual(output["errors"], [])
-        self.assertEqual(output["reply_source"], "compact_recovery_model")
+        self.assertEqual(output["reply_source"], "main_model")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
         text = output["reply_messages"][0]["content"]
-        self.assertIn("信息记录清楚", text)
-        self.assertNotIn("专业顾问", text)
-        self.assertNotIn("专人联系", text)
-        self.assertNotIn("同步处理", text)
-        recovery_info = state["trace"][0]["tool_calls"][0].get("recovery")
-        self.assertIsInstance(recovery_info, dict)
-        self.assertEqual(recovery_info.get("tier"), "fast")
+        self.assertIn("专业顾问", text)
+        self.assertIn("专人联系", text)
+        self.assertNotIn("recovery", state["trace"][0]["tool_calls"][0])
 
     async def test_no_reply_strong_dissatisfaction_gets_visible_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -392,7 +392,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
-        self.assertEqual(output["reply_messages"][0]["content"], "我在，继续帮您处理。")
+        self.assertEqual(output["reply_messages"][0]["content"], "收到，您这条我看到了。")
 
     async def test_no_reply_explicit_stop_stays_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -420,7 +420,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
-        self.assertEqual(output["reply_messages"][0]["content"], "我在，继续帮您处理。")
+        self.assertEqual(output["reply_messages"][0]["content"], "收到，您这条我看到了。")
 
     async def test_handoff_notice_fallback_when_reply_model_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -453,7 +453,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
-        self.assertEqual("我在，继续帮您处理。", output["reply_messages"][0]["content"])
+        self.assertEqual("收到，您这条我看到了。", output["reply_messages"][0]["content"])
 
     async def test_current_professional_assist_notice_is_not_removed_as_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
