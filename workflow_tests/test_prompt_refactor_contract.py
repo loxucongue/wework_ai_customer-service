@@ -1006,6 +1006,9 @@ def test_outreach_prompts_require_multi_angle_assets_and_locked_send_structure()
         "历史客服话术只用于判断",
         "相邻步骤的 CTA 必须推动不同的小进展",
         "不能声称已留名额、已登记、已预约或已锁资格",
+        "Customer-visible WeChat Language",
+        "不能像分析报告、客服工单或咨询问卷",
+        "不要设计“回我 A/B/C”",
     ]:
         assert marker in OUTREACH_PLAN_SYSTEM_PROMPT
     for marker in [
@@ -1013,6 +1016,8 @@ def test_outreach_prompts_require_multi_angle_assets_and_locked_send_structure()
         "不能改变计划的心理角度、素材、预约金动作、金额或发送时间",
         "代码会在文字后附加",
         "avoid_repeating",
+        "真人销售顺手发微信",
+        "不写“回我 A/B/C”",
     ]:
         assert marker in OUTREACH_MESSAGE_SYSTEM_PROMPT
     for marker in [
@@ -1021,5 +1026,6 @@ def test_outreach_prompts_require_multi_angle_assets_and_locked_send_structure()
         "activity_quote_fact.completed",
         "本轮已附 10 元预约金卡",
         "不能三轮都要求客户回复一个关键词",
+        "读起来像问卷、流程提示或计划摘要",
     ]:
         assert marker in OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT

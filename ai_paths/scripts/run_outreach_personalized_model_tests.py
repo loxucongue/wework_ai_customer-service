@@ -41,8 +41,15 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - 选择 case_search/configured_image/operation_video 后仍问“要不要我发”属于动作不一致，应降低 conversion_action；直接说明“我给您放一个参考”才是正确承接。
 - `case_search` 的 `fallback_asset_id` 是可选兜底，不是必填。只要 `case_query` 合法且未编造 URL，不能因 fallback 为空判 hard_error 或降低 asset_fit；运行时代码会查询真实案例库，失败时发送模型会按无素材事实改写文字。
 - 次数顾虑需要先给非绝对的正面预期，再说明按实际状态评估；只复读类型、深浅和检测属于没有正面回答。
+- 次数顾虑以“没法一口答死/没法只看一眼定/不能确定”开头时，psychology_accuracy 不得高于3分；应先说明很多客户一次能看到直观改善，再补真实判断边界。
 - 最后一轮已经给出活动量化事实并直接问“登记一个吗”或同义封闭式动作时，conversion_action 应为4分以上。以“有空找我、需要时喊我、觉得合适告诉我、我再发完整活动”收尾只能给3分以下。
 - “算了、太远、不方便、暂时不用、以后再说”属于软拒绝，不等于明确停止联系。除 paid_suppression 或明确“不要再联系/别发消息/拉黑/投诉退款”外，`should_create_plan=false` 属于 hard_error。
+- human_tone 评估客户可见 `reply_messages`，不是后台计划分析。4 分要求像真人微信：通常1–2句、具体口语、没有报告腔或问卷腔；出现“困扰、改善思路、是否接近、接着判断、往下判断”等抽象计划语言，或要求客户“回我A/B/C”选择内部分类时，human_tone 不得高于3分。
+- 客户只有“你好/在吗”等问候、没有描述皮肤问题时，首轮直接假设“您这种斑点/先看皮肤状态”，或用“您先说说”式问卷开场，human_tone 不得高于3分。
+- 相邻两轮客户文字都在说检测、皮肤状态、价格或同一个事实时，arc_diversity 不得高于3分；后台角度枚举不同不能掩盖客户实际收到的内容重复。
+- 单条活动消息同时堆叠活动价、限量名额和赠品三个卖点时，human_tone 不得高于3分。自然微信应结合当前客户只选一个主要理由。
+- 客户文字承诺本轮会发送案例、图片、视频或参考，但该步 `asset_strategy=none` 时，asset_fit 和 conversion_action 均不得高于3分。
+- “我给您找了个做前做后的真实对比，您先看看”属于自然案例承接；“给您补个同类真实参考，看看改善思路是否接近”属于机器表达。
 
 同时输出 hard_error、hard_error_reason 和 concise_reason。只输出有效 json。
 """.strip()

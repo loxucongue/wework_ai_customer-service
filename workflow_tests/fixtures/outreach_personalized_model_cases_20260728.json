@@ -1,5 +1,15 @@
 [
   {
+    "id": "minimal_opening_silent",
+    "description": "客户只发过简短问候，客服承接后客户没有继续开口",
+    "recent_messages": [
+      {"direction": "customer", "content": "你好，在吗"},
+      {"direction": "staff", "content": "在的，您是想了解淡斑活动吗？"}
+    ],
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "像微信朋友聊天一样自然简短，不出现分析报告词、内部分类或强制口令；不同轮次仍有递进。"
+  },
+  {
     "id": "rebound_worry",
     "description": "客户担心反弹，已经听过活动报价但没有成交",
     "recent_messages": [
