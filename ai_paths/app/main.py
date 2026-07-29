@@ -185,9 +185,7 @@ async def startup() -> None:
         outreach_auto_send_worker is None or outreach_auto_send_worker.done()
     ):
         outreach_auto_send_worker = asyncio.create_task(_run_outreach_auto_send_worker())
-    if settings.aics_storage_backend.strip().lower() == "mysql" and (
-        storage_retention_worker is None or storage_retention_worker.done()
-    ):
+    if storage_retention_worker is None or storage_retention_worker.done():
         storage_retention_worker = asyncio.create_task(_run_storage_retention_worker())
 
 
