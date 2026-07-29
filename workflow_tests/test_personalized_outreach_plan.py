@@ -9,11 +9,47 @@ from typing import Any
 from app.services.outreach_service import (
     OutreachService,
     _normalize_outreach_schedule,
+    _outreach_plan_structure_error,
     build_outreach_activity_quote_fact,
 )
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    def test_single_step_plan_is_valid_for_low_intent_silence(self) -> None:
+        response = {
+            "should_create_plan": True,
+            "plan_arc": "只轻触一次获取门店匹配所需区域，客户不回复则停止。",
+            "steps": [
+                {
+                    "step": 1,
+                    "delay_minutes": 720,
+                    "timing_reason": "客户意向较低，只安排一次低压力触达",
+                    "urgency_level": "normal",
+                    "content_mode": "value_only",
+                    "persuasion_angle": "convenience",
+                    "new_value": "只需提供城市或区域即可匹配真实门店",
+                    "reply_messages": [
+                        {
+                            "type": "text",
+                            "order": 1,
+                            "content": {
+                                "text": "您方便时发我城市或区域就行，我按真实门店帮您看下。"
+                            },
+                        }
+                    ],
+                    "asset_strategy": "none",
+                    "cta": "提供城市或区域",
+                    "payment_collection_basis": "none",
+                    "payment_collection_evidence": {
+                        "activity_quote_message_index": None
+                    },
+                    "should_send_payment_collection": False,
+                }
+            ],
+        }
+
+        self.assertEqual(_outreach_plan_structure_error(response), "")
+
     def test_schedule_supports_immediate_touch_and_daily_limit(self) -> None:
         schedule = _normalize_outreach_schedule(
             "2026-07-28T01:00:00+00:00",

@@ -373,8 +373,8 @@ def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
             return "should_create_plan=false cannot include plan_arc or steps"
         return ""
     steps = [step for step in response.get("steps") or [] if isinstance(step, dict)][:3]
-    if len(steps) < 2:
-        return "plan must contain 2 or 3 steps"
+    if not steps:
+        return "plan must contain 1 to 3 steps"
     angles = [_string(step.get("persuasion_angle")) for step in steps]
     if any(angle not in OUTREACH_PERSUASION_ANGLES for angle in angles):
         return "every step must use one allowed persuasion_angle"
