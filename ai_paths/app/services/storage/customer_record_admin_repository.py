@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.customer_scope import build_customer_scope
+from app.services.storage.store_base import scalar
 
 
 class CustomerRecordAdminRepositoryMixin:
@@ -42,7 +43,7 @@ class CustomerRecordAdminRepositoryMixin:
                     SELECT customer_id, external_userid, corp_id, wechat
                     FROM {table}
                     WHERE {' AND '.join(clauses)}
-                    ORDER BY rowid DESC
+                    ORDER BY updated_at DESC
                     LIMIT 20
                     """,
                     params,
@@ -292,7 +293,7 @@ def _clean(value: Any) -> str:
 
 def _count(conn: Any, sql: str, params: tuple[Any, ...]) -> int:
     row = conn.execute(sql, params).fetchone()
-    return int(row[0] if row else 0)
+    return int(scalar(row))
 
 
 def _execute_delete(conn: Any, sql: str, params: tuple[Any, ...]) -> int:
@@ -301,6 +302,5 @@ def _execute_delete(conn: Any, sql: str, params: tuple[Any, ...]) -> int:
 
 
 def _delete_many(conn: Any, sql: str, params: list[tuple[Any, ...]]) -> int:
-    before = conn.total_changes
-    conn.executemany(sql, params)
-    return int(conn.total_changes - before)
+    result = conn.executemany(sql, params)
+    return int(result.rowcount or 0)

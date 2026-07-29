@@ -24,7 +24,7 @@ from app.services.platform_agent_client import PlatformAgentClient
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import SopExecutionService
-from app.services.storage import AppRepository, SQLiteStore
+from app.services.storage import AppRepository, build_store
 from app.services.store_service import StoreService
 from app.services.store_snapshot_service import StoreSnapshotService
 from app.services.sop_reply_pack_service import SopReplyPackService
@@ -38,8 +38,8 @@ from app.services.workflow_compat import (
 
 settings = get_settings()
 trace_logger = TraceLogger(settings)
-sqlite_store = SQLiteStore(settings)
-repository = AppRepository(sqlite_store)
+storage_store = build_store(settings)
+repository = AppRepository(storage_store)
 coze_client = CozeClient(settings)
 voice_transcription_client = DoubaoAsrClient(settings)
 model_client = ModelClient(settings)
@@ -124,6 +124,7 @@ app = FastAPI(title=settings.app_name)
 logger = logging.getLogger(__name__)
 sop_event_retry_worker: asyncio.Task[None] | None = None
 outreach_auto_send_worker: asyncio.Task[None] | None = None
+storage_retention_worker: asyncio.Task[None] | None = None
 
 
 async def _run_sop_event_retry_worker() -> None:
@@ -153,10 +154,27 @@ async def _run_outreach_auto_send_worker() -> None:
         await asyncio.sleep(max(1.0, settings.outreach_auto_send_poll_seconds))
 
 
+async def _run_storage_retention_worker() -> None:
+    while True:
+        try:
+            result = await asyncio.to_thread(
+                repository.prune_runtime_history,
+                trace_days=settings.aics_trace_retention_days,
+                run_days=settings.aics_run_retention_days,
+            )
+            if any(result.values()):
+                logger.info("Pruned AICS runtime history: %s", result)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("AICS retention worker iteration failed")
+        await asyncio.sleep(6 * 60 * 60)
+
+
 @app.on_event("startup")
 async def startup() -> None:
-    global outreach_auto_send_worker, sop_event_retry_worker
-    sqlite_store.initialize()
+    global outreach_auto_send_worker, sop_event_retry_worker, storage_retention_worker
+    storage_store.initialize()
     repository.recover_interrupted_sop_event_model_retries()
     repository.recover_interrupted_outreach_tasks()
     if sop_event_retry_worker is None or sop_event_retry_worker.done():
@@ -165,11 +183,15 @@ async def startup() -> None:
         outreach_auto_send_worker is None or outreach_auto_send_worker.done()
     ):
         outreach_auto_send_worker = asyncio.create_task(_run_outreach_auto_send_worker())
+    if settings.aics_storage_backend.strip().lower() == "mysql" and (
+        storage_retention_worker is None or storage_retention_worker.done()
+    ):
+        storage_retention_worker = asyncio.create_task(_run_storage_retention_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global outreach_auto_send_worker, sop_event_retry_worker
+    global outreach_auto_send_worker, sop_event_retry_worker, storage_retention_worker
     if outreach_auto_send_worker is not None:
         outreach_auto_send_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -180,12 +202,18 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await sop_event_retry_worker
         sop_event_retry_worker = None
+    if storage_retention_worker is not None:
+        storage_retention_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await storage_retention_worker
+        storage_retention_worker = None
     await model_client.aclose()
     await coze_client.aclose()
     await voice_transcription_client.aclose()
     await outreach_send_client.aclose()
     await outreach_system_client.aclose()
     platform_agent_client.close()
+    storage_store.close()
 
 
 @app.get("/health")

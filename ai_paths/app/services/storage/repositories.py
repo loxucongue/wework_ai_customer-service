@@ -5,7 +5,7 @@ from app.services.storage.customer_record_admin_repository import CustomerRecord
 from app.services.storage.memory_repository import MemoryRepositoryMixin
 from app.services.storage.outreach_repository import OutreachRepositoryMixin
 from app.services.storage.run_repository import RunRepositoryMixin
-from app.services.storage.sqlite_store import SQLiteStore
+from app.services.storage.store_base import Store
 from app.services.storage.sop_event_repository import SopEventRepositoryMixin
 
 
@@ -17,5 +17,5 @@ class AppRepository(
     RunRepositoryMixin,
     SopEventRepositoryMixin,
 ):
-    def __init__(self, store: SQLiteStore):
+    def __init__(self, store: Store):
         self.store = store

@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+import importlib.util
+import os
+from pathlib import Path
+import sqlite3
+from types import SimpleNamespace
+from typing import Any
+from uuid import uuid4
+
+import pytest
+
+from app.services.storage.mirrored_store import MirroredStore
+from app.services.storage.mysql_schema import (
+    EXPECTED_ALL_TABLES,
+    EXPECTED_COLUMNS,
+    EXPECTED_TABLES,
+    VERSION_TABLE,
+)
+from app.services.storage.mysql_store import MySQLStore, _runtime_sql_guard
+from app.services.storage.repositories import AppRepository
+from app.services.storage.store_base import LOGICAL_TABLES, map_logical_tables
+from app.services.storage.sqlite_store import SQLiteStore
+
+
+def _settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        aics_table_prefix="aics_",
+        aics_mysql_database="wecom_cs",
+        aics_mysql_host="127.0.0.1",
+        aics_mysql_port=3306,
+        aics_mysql_user="test",
+        aics_mysql_password="test",
+        aics_mysql_ssl_required=False,
+        aics_mysql_ssl_ca=None,
+        aics_mysql_connect_timeout_seconds=1,
+        aics_mysql_read_timeout_seconds=1,
+        aics_mysql_write_timeout_seconds=1,
+        aics_mysql_pool_size=1,
+        aics_mysql_max_overflow=0,
+    )
+
+
+def test_mysql_schema_contains_only_expected_aics_tables() -> None:
+    assert len(EXPECTED_TABLES) == 12
+    assert len(EXPECTED_ALL_TABLES) == 13
+    assert VERSION_TABLE == "aics_schema_version"
+    assert all(table.startswith("aics_") for table in EXPECTED_ALL_TABLES)
+    assert {table.removeprefix("aics_") for table in EXPECTED_TABLES} == set(LOGICAL_TABLES)
+    assert "active_send_once_key" in EXPECTED_COLUMNS["aics_sop_send_tasks"]
+
+
+def test_table_mapper_does_not_rewrite_string_literals() -> None:
+    sql = (
+        "SELECT * FROM conversations "
+        "WHERE source='conversations' AND note=\"messages\" "
+        "AND id IN (SELECT conversation_id FROM messages)"
+    )
+    mapped = map_logical_tables(sql, prefix="aics_")
+    assert "FROM aics_conversations" in mapped
+    assert "FROM aics_messages" in mapped
+    assert "'conversations'" in mapped
+    assert '"messages"' in mapped
+
+
+def test_mysql_store_translates_placeholders_and_sqlite_upserts() -> None:
+    store = MySQLStore(_settings())
+    try:
+        sql = store.prepare_sql(
+            """
+            INSERT INTO customer_memory (customer_id, portrait)
+            VALUES (?, '?')
+            ON CONFLICT(customer_id) DO UPDATE SET portrait=excluded.portrait
+            """
+        )
+        assert "INSERT INTO aics_customer_memory" in sql
+        assert "VALUES (%s, '?')" in sql
+        assert "ON DUPLICATE KEY UPDATE portrait=VALUES(portrait)" in sql
+
+        ignored = store.prepare_sql(
+            "INSERT OR IGNORE INTO sop_events (event_id) VALUES (?)"
+        )
+        assert ignored == "INSERT IGNORE INTO aics_sop_events (event_id) VALUES (%s)"
+
+        replaced = store.prepare_sql(
+            "INSERT OR REPLACE INTO runs (request_id) VALUES (?)"
+        )
+        assert replaced == "REPLACE INTO aics_runs (request_id) VALUES (%s)"
+    finally:
+        store.close()
+
+
+def test_runtime_guard_rejects_ddl_and_platform_writes() -> None:
+    with pytest.raises(RuntimeError, match="Runtime DDL"):
+        _runtime_sql_guard("ALTER TABLE aics_runs ADD COLUMN bad INT", prefix="aics_")
+    with pytest.raises(RuntimeError, match="non-AICS"):
+        _runtime_sql_guard("UPDATE conversations SET title='x'", prefix="aics_")
+    with pytest.raises(RuntimeError, match="non-AICS"):
+        _runtime_sql_guard("DELETE FROM platform_customers", prefix="aics_")
+    with pytest.raises(RuntimeError, match="non-AICS"):
+        _runtime_sql_guard(
+            "WITH chosen AS (SELECT 1) DELETE FROM platform_customers",
+            prefix="aics_",
+        )
+    with pytest.raises(RuntimeError, match="Runtime DDL"):
+        _runtime_sql_guard(
+            "/* migration must not run here */ ALTER TABLE aics_runs ADD COLUMN bad INT",
+            prefix="aics_",
+        )
+    _runtime_sql_guard(
+        "UPDATE aics_conversations SET title='do not DELETE FROM platform_customers'",
+        prefix="aics_",
+    )
+    _runtime_sql_guard("UPDATE aics_conversations SET title='x'", prefix="aics_")
+
+
+class _Cursor:
+    rowcount = 1
+
+    def fetchone(self) -> None:
+        return None
+
+    def fetchall(self) -> list[Any]:
+        return []
+
+
+class _Connection:
+    def __init__(self, calls: list[str], label: str):
+        self.calls = calls
+        self.label = label
+        self.total_changes = 0
+
+    def execute(self, sql: str, params: Any = None) -> _Cursor:
+        self.calls.append(f"{self.label}:execute:{sql.strip().split()[0].upper()}")
+        return _Cursor()
+
+    def executemany(self, sql: str, params: Any) -> _Cursor:
+        self.calls.append(f"{self.label}:executemany")
+        return _Cursor()
+
+
+class _Store:
+    dialect = "test"
+
+    def __init__(self, calls: list[str], label: str):
+        self.calls = calls
+        self.label = label
+
+    def initialize(self) -> None:
+        self.calls.append(f"{self.label}:initialize")
+
+    @contextmanager
+    def connect(self):
+        self.calls.append(f"{self.label}:begin")
+        connection = _Connection(self.calls, self.label)
+        try:
+            yield connection
+        except Exception:
+            self.calls.append(f"{self.label}:rollback")
+            raise
+        else:
+            self.calls.append(f"{self.label}:commit")
+
+    def close(self) -> None:
+        self.calls.append(f"{self.label}:close")
+
+
+def test_mirror_replays_only_writes_after_primary_commit() -> None:
+    calls: list[str] = []
+    store = MirroredStore(_Store(calls, "primary"), _Store(calls, "mirror"))  # type: ignore[arg-type]
+    with store.connect() as connection:
+        connection.execute("SELECT * FROM conversations")
+        connection.execute("UPDATE conversations SET title=? WHERE id=?", ("x", "1"))
+
+    assert calls == [
+        "primary:begin",
+        "primary:execute:SELECT",
+        "primary:execute:UPDATE",
+        "primary:commit",
+        "mirror:begin",
+        "mirror:execute:UPDATE",
+        "mirror:commit",
+    ]
+
+
+def test_mysql_configuration_rejects_wrong_prefix_and_database() -> None:
+    wrong_prefix = _settings()
+    wrong_prefix.aics_table_prefix = "ai_"
+    with pytest.raises(ValueError, match="AICS_TABLE_PREFIX"):
+        MySQLStore(wrong_prefix)
+
+    wrong_database = _settings()
+    wrong_database.aics_mysql_database = "other"
+    with pytest.raises(ValueError, match="AICS_MYSQL_DATABASE"):
+        MySQLStore(wrong_database)
+
+
+def test_migration_source_manifest_uses_14_day_trace_window(tmp_path: Path) -> None:
+    database = tmp_path / "source.db"
+    store = SQLiteStore(SimpleNamespace(db_path=database))
+    store.initialize()
+    with store.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO conversations
+                (id, customer_id, external_userid, corp_id, user_id, wechat, title, created_at, updated_at)
+            VALUES ('c1', 'u1', 'e1', 'corp', 'staff', 'wx', '', '2026-07-29T00:00:00+00:00', '2026-07-29T00:00:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO runs
+                (request_id, conversation_id, customer_id, created_at)
+            VALUES ('r1', 'c1', 'u1', '2026-07-29T00:00:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO node_traces
+                (id, request_id, node_name, created_at)
+            VALUES ('recent', 'r1', 'planner', '2999-01-01T00:00:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO node_traces
+                (id, request_id, node_name, created_at)
+            VALUES ('old', 'r1', 'planner', '2000-01-01T00:00:00+00:00')
+            """
+        )
+
+    spec = importlib.util.spec_from_file_location(
+        "aics_migration",
+        Path("ai_paths/scripts/migrate_sqlite_to_mysql.py"),
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    connection = sqlite3.connect(database)
+    connection.row_factory = sqlite3.Row
+    try:
+        manifest = module._source_manifest(connection, trace_days=14)
+    finally:
+        connection.close()
+    assert manifest["tables"]["runs"]["rows"] == 1
+    assert manifest["tables"]["node_traces"]["rows"] == 1
+    assert manifest["json_errors"] == []
+
+
+@pytest.mark.skipif(
+    os.getenv("AICS_TEST_MYSQL_ENABLED") != "true",
+    reason="set AICS_TEST_MYSQL_ENABLED=true for the isolated MySQL contract",
+)
+def test_isolated_mysql_repository_and_mirror_contract(tmp_path: Path) -> None:
+    host = os.getenv("AICS_TEST_MYSQL_HOST", "127.0.0.1")
+    if host not in {"127.0.0.1", "localhost"}:
+        pytest.fail("The opt-in storage contract only accepts an isolated loopback MySQL")
+    settings = SimpleNamespace(
+        aics_table_prefix="aics_",
+        aics_mysql_database="wecom_cs",
+        aics_mysql_host=host,
+        aics_mysql_port=int(os.getenv("AICS_TEST_MYSQL_PORT", "3306")),
+        aics_mysql_user=os.environ["AICS_TEST_MYSQL_USER"],
+        aics_mysql_password=os.environ["AICS_TEST_MYSQL_PASSWORD"],
+        aics_mysql_ssl_required=True,
+        aics_mysql_ssl_ca=os.getenv("AICS_TEST_MYSQL_SSL_CA", ""),
+        aics_mysql_connect_timeout_seconds=5,
+        aics_mysql_read_timeout_seconds=5,
+        aics_mysql_write_timeout_seconds=5,
+        aics_mysql_pool_size=1,
+        aics_mysql_max_overflow=0,
+    )
+    primary = MySQLStore(settings)
+    mirror = SQLiteStore(SimpleNamespace(db_path=tmp_path / "mirror.db"))
+    store = MirroredStore(primary, mirror)
+    suffix = uuid4().hex
+    customer_id = f"mysql-contract-{suffix}"
+    old_run_id = f"old-{suffix}"
+    new_run_id = f"new-{suffix}"
+    try:
+        store.initialize()
+        repository = AppRepository(store)
+        repository.save_memory(
+            customer_id,
+            {
+                "portrait": {"contract_marker": suffix},
+                "basic_info": {"source": "isolated_mysql"},
+            },
+        )
+        assert repository.load_memory(customer_id)["portrait"]["contract_marker"] == suffix
+        with mirror.connect() as connection:
+            mirrored = connection.execute(
+                "SELECT portrait FROM customer_memory WHERE customer_id=?",
+                (customer_id,),
+            ).fetchone()
+        assert mirrored is not None
+
+        with primary.connect() as connection:
+            connection.execute(
+                "INSERT INTO runs (request_id, customer_id, created_at) VALUES (?, ?, ?)",
+                (old_run_id, customer_id, "2000-01-01T00:00:00+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO runs (request_id, customer_id, created_at) VALUES (?, ?, ?)",
+                (new_run_id, customer_id, "2999-01-01T00:00:00+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO node_traces (id, request_id, node_name, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (old_run_id, old_run_id, "planner", "2000-01-01T00:00:00+00:00"),
+            )
+            connection.execute(
+                """
+                INSERT INTO node_traces (id, request_id, node_name, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (new_run_id, new_run_id, "planner", "2999-01-01T00:00:00+00:00"),
+            )
+        pruned = AppRepository(primary).prune_runtime_history(trace_days=14, run_days=90)
+        assert pruned["node_traces"] >= 1
+        assert pruned["runs"] >= 1
+        with primary.connect() as connection:
+            assert connection.execute(
+                "SELECT request_id FROM runs WHERE request_id=?",
+                (old_run_id,),
+            ).fetchone() is None
+            assert connection.execute(
+                "SELECT request_id FROM runs WHERE request_id=?",
+                (new_run_id,),
+            ).fetchone()
+    finally:
+        with primary.connect() as connection:
+            connection.execute(
+                "DELETE FROM node_traces WHERE request_id IN (?, ?)",
+                (old_run_id, new_run_id),
+            )
+            connection.execute(
+                "DELETE FROM runs WHERE request_id IN (?, ?)",
+                (old_run_id, new_run_id),
+            )
+            connection.execute(
+                "DELETE FROM history_events WHERE customer_id=?",
+                (customer_id,),
+            )
+            connection.execute(
+                "DELETE FROM customer_memory WHERE customer_id=?",
+                (customer_id,),
+            )
+        store.close()

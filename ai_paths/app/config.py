@@ -91,6 +91,23 @@ class Settings(BaseSettings):
     model_text_max_tokens: int = 2048
     memory_dir: Path = Path("logs/memory")
     db_path: Path = Field(default=Path("data/ai_paths.db"), alias="AI_PATHS_DB_PATH")
+    aics_storage_backend: str = Field(default="sqlite", alias="AICS_STORAGE_BACKEND")
+    aics_mysql_host: str = Field(default="", alias="AICS_MYSQL_HOST")
+    aics_mysql_port: int = Field(default=3306, alias="AICS_MYSQL_PORT")
+    aics_mysql_database: str = Field(default="wecom_cs", alias="AICS_MYSQL_DATABASE")
+    aics_mysql_user: str = Field(default="", alias="AICS_MYSQL_USER")
+    aics_mysql_password: str = Field(default="", alias="AICS_MYSQL_PASSWORD", repr=False)
+    aics_mysql_ssl_required: bool = Field(default=True, alias="AICS_MYSQL_SSL_REQUIRED")
+    aics_mysql_ssl_ca: str = Field(default="", alias="AICS_MYSQL_SSL_CA")
+    aics_mysql_pool_size: int = Field(default=5, alias="AICS_MYSQL_POOL_SIZE")
+    aics_mysql_max_overflow: int = Field(default=5, alias="AICS_MYSQL_MAX_OVERFLOW")
+    aics_mysql_connect_timeout_seconds: int = Field(default=10, alias="AICS_MYSQL_CONNECT_TIMEOUT_SECONDS")
+    aics_mysql_read_timeout_seconds: int = Field(default=15, alias="AICS_MYSQL_READ_TIMEOUT_SECONDS")
+    aics_mysql_write_timeout_seconds: int = Field(default=15, alias="AICS_MYSQL_WRITE_TIMEOUT_SECONDS")
+    aics_table_prefix: str = Field(default="aics_", alias="AICS_TABLE_PREFIX")
+    aics_sqlite_mirror_enabled: bool = Field(default=False, alias="AICS_SQLITE_MIRROR_ENABLED")
+    aics_trace_retention_days: int = Field(default=14, alias="AICS_TRACE_RETENTION_DAYS")
+    aics_run_retention_days: int = Field(default=90, alias="AICS_RUN_RETENTION_DAYS")
     platform_agent_base_url: str = "https://www.henm.cn"
     platform_agent_token: str = Field(default="", repr=False)
     platform_agent_request_from: str = "platform_agent"

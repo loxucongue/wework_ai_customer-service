@@ -468,7 +468,7 @@ class SopEventRepositoryMixin:
                         WHERE corp_id<>'' AND user_id<>'' AND wechat<>''
                           AND (LOWER(external_userid)=LOWER(?) OR LOWER(customer_id)=LOWER(?))
                           AND (?='' OR LOWER(wechat)=LOWER(?))
-                    )
+                    ) AS identities
                     ORDER BY updated_at DESC
                     LIMIT 1
                     """,
@@ -495,7 +495,7 @@ class SopEventRepositoryMixin:
                         SELECT customer_id, external_userid, corp_id, user_id, wechat, 'outreach_plans' AS source, updated_at
                         FROM outreach_plans
                         WHERE corp_id<>'' AND user_id<>'' AND wechat<>'' AND LOWER(wechat)=LOWER(?)
-                    )
+                    ) AS identities
                     ORDER BY updated_at DESC
                     LIMIT 1
                     """,

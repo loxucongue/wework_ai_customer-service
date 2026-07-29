@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from app.services.customer_scope import build_customer_scope
 from app.services.storage.serialization import dumps, loads_dict, loads_list, utc_now_iso
+from app.services.storage.store_base import scalar
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -79,35 +80,38 @@ def _latest_platform_customer_names(conn: Any, rows: list[Any]) -> dict[tuple[st
     if not external_ids:
         return {}
     names: dict[tuple[str, str], str] = {}
-    for offset in range(0, len(external_ids), 800):
-        batch = external_ids[offset : offset + 800]
-        placeholders = ",".join("?" for _ in batch)
-        name_rows = conn.execute(
-            f"""
-            SELECT
-                LOWER(CAST(json_extract(customer.value, '$.conversation.external_userid') AS TEXT)) AS external_key,
-                LOWER(COALESCE(
-                    NULLIF(CAST(json_extract(customer.value, '$.conversation.wework_user_id') AS TEXT), ''),
-                    NULLIF(CAST(json_extract(e.raw_payload_json, '$.account.wework_user_id') AS TEXT), '')
-                )) AS wechat_key,
-                COALESCE(
-                    NULLIF(CAST(json_extract(customer.value, '$.customer.name') AS TEXT), ''),
-                    NULLIF(CAST(json_extract(customer.value, '$.conversation.sender_name') AS TEXT), ''),
-                    NULLIF(CAST(json_extract(customer.value, '$.customer.remark') AS TEXT), ''),
-                    NULLIF(CAST(json_extract(customer.value, '$.conversation.sender_remark') AS TEXT), '')
-                ) AS customer_name,
-                e.received_at
-            FROM sop_events e
-            JOIN json_each(e.raw_payload_json, '$.customers') AS customer
-            WHERE LOWER(CAST(json_extract(customer.value, '$.conversation.external_userid') AS TEXT))
-                  IN ({placeholders})
-            ORDER BY e.received_at DESC
-            """,
-            batch,
-        ).fetchall()
-        for name_row in name_rows:
-            key = (_string(name_row["external_key"]).lower(), _string(name_row["wechat_key"]).lower())
-            customer_name = _string(name_row["customer_name"])
+    wanted = set(external_ids)
+    event_rows = conn.execute(
+        """
+        SELECT raw_payload_json
+        FROM sop_events
+        ORDER BY received_at DESC
+        LIMIT 5000
+        """
+    ).fetchall()
+    for event_row in event_rows:
+        payload = loads_dict(event_row["raw_payload_json"])
+        account = payload.get("account") if isinstance(payload.get("account"), dict) else {}
+        account_wechat = _string(account.get("wework_user_id")).lower()
+        customers = payload.get("customers") if isinstance(payload.get("customers"), list) else []
+        for item in customers:
+            if not isinstance(item, dict):
+                continue
+            conversation = item.get("conversation") if isinstance(item.get("conversation"), dict) else {}
+            customer = item.get("customer") if isinstance(item.get("customer"), dict) else {}
+            external_key = _string(
+                conversation.get("external_userid") or customer.get("external_userid")
+            ).lower()
+            if external_key not in wanted:
+                continue
+            wechat_key = _string(conversation.get("wework_user_id")).lower() or account_wechat
+            customer_name = _string(
+                customer.get("name")
+                or conversation.get("sender_name")
+                or customer.get("remark")
+                or conversation.get("sender_remark")
+            )
+            key = (external_key, wechat_key)
             if key[0] and key[1] and customer_name and key not in names:
                 names[key] = customer_name
     return names
@@ -268,25 +272,23 @@ class OutreachRepositoryMixin:
         start_utc = day_start.astimezone(timezone.utc).isoformat()
         end_utc = day_end.astimezone(timezone.utc).isoformat()
         now_utc = current.astimezone(timezone.utc).isoformat()
-        auto_plan = "json_extract(source_snapshot, '$.trigger_context.activation_policy')='auto_approved'"
-        auto_joined_plan = "json_extract(p.source_snapshot, '$.trigger_context.activation_policy')='auto_approved'"
+        auto_plan = f"{self.store.json_text('source_snapshot', '$.trigger_context.activation_policy')}='auto_approved'"
+        auto_joined_plan = f"{self.store.json_text('p.source_snapshot', '$.trigger_context.activation_policy')}='auto_approved'"
 
         with self.store.connect() as conn:
-            platform_tasks_today = int(
-                conn.execute(
-                    """
-                    SELECT COUNT(*) FROM sop_events
-                    WHERE event_type='sop_platform_task' AND received_at>=? AND received_at<?
-                    """,
-                    (start_utc, end_utc),
-                ).fetchone()[0]
-            )
-            plans_today = int(
-                conn.execute(
-                    f"SELECT COUNT(*) FROM outreach_plans WHERE {auto_plan} AND created_at>=? AND created_at<?",
-                    (start_utc, end_utc),
-                ).fetchone()[0]
-            )
+            platform_tasks_today = conn.execute(
+                """
+                SELECT COUNT(*) FROM sop_events
+                WHERE event_type='sop_platform_task' AND received_at>=? AND received_at<?
+                """,
+                (start_utc, end_utc),
+            ).fetchone()
+            platform_tasks_today = int(scalar(platform_tasks_today))
+            plans_today = conn.execute(
+                f"SELECT COUNT(*) FROM outreach_plans WHERE {auto_plan} AND created_at>=? AND created_at<?",
+                (start_utc, end_utc),
+            ).fetchone()
+            plans_today = int(scalar(plans_today))
             plan_rows = conn.execute(
                 f"""
                 SELECT status, COUNT(*) AS count
@@ -304,33 +306,31 @@ class OutreachRepositoryMixin:
                 GROUP BY t.status
                 """
             ).fetchall()
-            due_tasks = int(
-                conn.execute(
-                    f"""
-                    SELECT COUNT(*)
-                    FROM outreach_tasks t
-                    JOIN outreach_plans p ON p.id=t.plan_id
-                    WHERE {auto_joined_plan}
-                      AND t.status='pending'
-                      AND t.scheduled_at<=?
-                      AND p.status IN ('active', 'waiting')
-                    """,
-                    (now_utc,),
-                ).fetchone()[0]
-            )
-            sent_today = int(
-                conn.execute(
-                    f"""
-                    SELECT COUNT(*)
-                    FROM outreach_tasks t
-                    JOIN outreach_plans p ON p.id=t.plan_id
-                    WHERE {auto_joined_plan}
-                      AND t.status='sent'
-                      AND t.sent_at>=? AND t.sent_at<?
-                    """,
-                    (start_utc, end_utc),
-                ).fetchone()[0]
-            )
+            due_tasks = conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM outreach_tasks t
+                JOIN outreach_plans p ON p.id=t.plan_id
+                WHERE {auto_joined_plan}
+                  AND t.status='pending'
+                  AND t.scheduled_at<=?
+                  AND p.status IN ('active', 'waiting')
+                """,
+                (now_utc,),
+            ).fetchone()
+            due_tasks = int(scalar(due_tasks))
+            sent_today = conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM outreach_tasks t
+                JOIN outreach_plans p ON p.id=t.plan_id
+                WHERE {auto_joined_plan}
+                  AND t.status='sent'
+                  AND t.sent_at>=? AND t.sent_at<?
+                """,
+                (start_utc, end_utc),
+            ).fetchone()
+            sent_today = int(scalar(sent_today))
             event_rows = conn.execute(
                 f"""
                 SELECT e.event_type, COUNT(*) AS count
@@ -396,7 +396,7 @@ class OutreachRepositoryMixin:
 
     def _outreach_outcome_stats(self, conn: Any, *, current: datetime) -> dict[str, Any]:
         window_start = (current - timedelta(days=30)).astimezone(timezone.utc).isoformat()
-        auto_plan = "json_extract(p.source_snapshot, '$.trigger_context.activation_policy')='auto_approved'"
+        auto_plan = f"{self.store.json_text('p.source_snapshot', '$.trigger_context.activation_policy')}='auto_approved'"
         sent_rows = conn.execute(
             f"""
             SELECT t.id, t.plan_id, t.sent_at, t.content_sources,
@@ -1139,7 +1139,7 @@ class OutreachRepositoryMixin:
                 """,
                 (start, end, corp_id, wechat, external_userid or customer_id, customer_id),
             ).fetchone()
-        return int(row[0] or 0)
+        return int(scalar(row))
 
     def list_due_outreach_tasks(
         self,
@@ -1150,7 +1150,7 @@ class OutreachRepositoryMixin:
     ) -> list[dict[str, Any]]:
         now_value = now or utc_now_iso()
         auto_clause = (
-            "AND json_extract(p.source_snapshot, '$.trigger_context.activation_policy')='auto_approved'"
+            f"AND {self.store.json_text('p.source_snapshot', '$.trigger_context.activation_policy')}='auto_approved'"
             if auto_approved_only
             else ""
         )

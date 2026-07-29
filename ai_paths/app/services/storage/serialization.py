@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
 from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.planner.runtime_plan import planner_task_views
+
+
+logger = logging.getLogger(__name__)
 
 
 def utc_now_iso() -> str:
@@ -20,7 +24,8 @@ def loads_dict(value: str | None) -> dict[str, Any]:
     try:
         parsed = json.loads(value or "{}")
         return parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Invalid persisted JSON object ignored: %s", exc)
         return {}
 
 
@@ -28,7 +33,8 @@ def loads_list(value: str | None) -> list[Any]:
     try:
         parsed = json.loads(value or "[]")
         return parsed if isinstance(parsed, list) else []
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Invalid persisted JSON list ignored: %s", exc)
         return []
 
 

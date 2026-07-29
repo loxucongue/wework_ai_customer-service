@@ -9,6 +9,8 @@ from app.config import Settings
 
 
 class SQLiteStore:
+    dialect = "sqlite"
+
     def __init__(self, settings: Settings):
         self.db_path: Path = settings.db_path
         self.schema_path = Path(__file__).with_name("schema.sql")
@@ -23,6 +25,14 @@ class SQLiteStore:
             self._ensure_sop_event_columns(conn)
             self._ensure_sop_send_task_columns(conn)
             self._ensure_sales_contact_indexes(conn)
+
+    @staticmethod
+    def json_text(column: str, path: str) -> str:
+        return f"json_extract({column}, '{path}')"
+
+    @staticmethod
+    def close() -> None:
+        return None
 
     @staticmethod
     def _ensure_customer_memory_columns(conn: sqlite3.Connection) -> None:

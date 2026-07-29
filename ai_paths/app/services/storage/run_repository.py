@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.graph.planner.runtime_plan import planner_task_views
@@ -174,6 +175,24 @@ class RunRepositoryMixin:
         return {
             "run": decode_run(dict(run)) if run else {},
             "node_traces": [decode_trace(dict(row)) for row in traces],
+        }
+
+    def prune_runtime_history(self, *, trace_days: int, run_days: int) -> dict[str, int]:
+        now = datetime.now(timezone.utc)
+        trace_before = (now - timedelta(days=max(1, trace_days))).isoformat()
+        run_before = (now - timedelta(days=max(1, run_days))).isoformat()
+        with self.store.connect() as conn:
+            traces = conn.execute(
+                "DELETE FROM node_traces WHERE created_at<?",
+                (trace_before,),
+            )
+            runs = conn.execute(
+                "DELETE FROM runs WHERE created_at<?",
+                (run_before,),
+            )
+        return {
+            "node_traces": int(traces.rowcount or 0),
+            "runs": int(runs.rowcount or 0),
         }
 
 
