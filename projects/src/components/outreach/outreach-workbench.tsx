@@ -396,6 +396,15 @@ async function readJsonResponse(response: Response) {
 }
 
 function outreachErrorMessage(data: JsonObject, fallback: string) {
+  if (data.reason === "customer_deleted" || data.error === "customer_deleted") {
+    return "该客户已删除企业微信，系统已停止生成计划和后续触达。";
+  }
+  if (
+    data.reason === "customer_relation_unavailable" ||
+    data.reason === "customer_relation_check_failed"
+  ) {
+    return "暂时无法确认客户关系状态，系统已停止生成计划，请稍后重试。";
+  }
   if (data.error === "conversation_refresh_failed") {
     return "历史聊天查询超时，请稍后重试或降低条数";
   }
@@ -643,6 +652,16 @@ export function OutreachWorkbench() {
         });
         const refreshData = await readJsonResponse(refreshResponse);
         if (!refreshResponse.ok) throw new Error(outreachErrorMessage(refreshData, "生成计划前刷新历史失败"));
+        const customerRelation =
+          refreshData.customer_relation && typeof refreshData.customer_relation === "object"
+            ? (refreshData.customer_relation as JsonObject)
+            : {};
+        if (
+          customerRelation.is_deleted === true ||
+          ["deleted", "removed"].includes(String(customerRelation.status || "").toLowerCase())
+        ) {
+          throw new Error("该客户已删除企业微信，系统已停止生成计划和后续触达。");
+        }
         const messages = Array.isArray(refreshData.messages) ? refreshData.messages : [];
         if (messages.length === 0) {
           throw new Error("生成计划前未获取到历史聊天，请先确认客户信息或稍后重试");
@@ -663,6 +682,9 @@ export function OutreachWorkbench() {
         });
         const data = await readJsonResponse(response);
         if (!response.ok) throw new Error(outreachErrorMessage(data, "生成计划失败"));
+        if (data.skipped === true) {
+          throw new Error(outreachErrorMessage(data, "当前客户不适合生成计划"));
+        }
         const planId = data?.plan?.id || data?.id;
         if (planId) {
           if (activate) {
@@ -897,6 +919,16 @@ export function OutreachWorkbench() {
           </button>
         </div>
       </header>
+      {error ? (
+        <div className="mx-3 mt-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 sm:mx-5" role="alert">
+          {error}
+        </div>
+      ) : null}
+      {!error && notice ? (
+        <div className="mx-3 mt-3 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:mx-5" role="status">
+          {notice}
+        </div>
+      ) : null}
 
       <section className="border-b border-zinc-200 bg-white px-5 py-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
