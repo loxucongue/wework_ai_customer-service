@@ -526,7 +526,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             repository=repository,
             model_client=model,
             system_client=object(),
-            sop_reply_pack_service=_SopPackService(),
+            outreach_asset_library_service=_OutreachAssetLibraryService(),
             coze_client=_CozeClient(),
         )
 
@@ -577,7 +577,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                         "asset_id": "effect_pack:2",
                         "type": "image",
                         "url": "https://cdn.example/real.jpg",
-                        "source": "sop_config",
+                        "source": "outreach_asset_library",
                     }
                 },
             ],
@@ -647,7 +647,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             repository=repository,
             model_client=_ModelClient(response=response),
             system_client=object(),
-            sop_reply_pack_service=_SopPackService(),
+            outreach_asset_library_service=_OutreachAssetLibraryService(),
             coze_client=_FailingCozeClient(),
         )
 
@@ -724,37 +724,31 @@ class _SequenceModelClient(_ModelClient):
         return dict(self.responses[min(len(self.calls) - 1, len(self.responses) - 1)])
 
 
-class _SopPackService:
+class _OutreachAssetLibraryService:
     def load(self) -> dict[str, Any]:
         return {
-            "packs": [
+            "assets": [
                 {
-                    "id": "operation_pack",
+                    "id": "operation_pack:1",
                     "enabled": True,
+                    "type": "video",
                     "name": "操作视频",
-                    "purpose": "展示真实操作过程",
-                    "sop_category": "operation_video",
-                    "reply_messages": [
-                        {
-                            "type": "video",
-                            "order": 1,
-                            "content": {"url": "https://cdn.example/operation.mp4"},
-                        }
-                    ],
+                    "annotation": "展示真实操作过程，用于客户不了解操作方式时做专业科普。",
+                    "use_cases": ["操作方式", "专业流程"],
+                    "avoid_when": ["近期已发送操作视频"],
+                    "tags": ["操作", "视频"],
+                    "url": "https://cdn.example/operation.mp4",
                 },
                 {
-                    "id": "effect_pack",
+                    "id": "effect_pack:2",
                     "enabled": True,
+                    "type": "image",
                     "name": "效果参考",
-                    "purpose": "增强效果信任",
-                    "sop_category": "effect_case",
-                    "reply_messages": [
-                        {
-                            "type": "image",
-                            "order": 2,
-                            "content": {"url": "https://cdn.example/fallback.jpg"},
-                        }
-                    ],
+                    "annotation": "用于客户担心效果时增强真实信任。",
+                    "use_cases": ["效果顾虑"],
+                    "avoid_when": ["近期已发送同类案例"],
+                    "tags": ["效果", "案例"],
+                    "url": "https://cdn.example/fallback.jpg",
                 },
             ]
         }

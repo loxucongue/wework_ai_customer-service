@@ -12,27 +12,26 @@ from app.services.outreach_assets import (
 )
 
 
-def test_enabled_sop_media_builds_stable_asset_catalog() -> None:
+def test_enabled_outreach_media_builds_model_annotated_asset_catalog() -> None:
     catalog = build_outreach_asset_catalog(
         {
-            "packs": [
+            "assets": [
                 {
-                    "id": "effect_pack",
+                    "id": "effect-reference",
                     "enabled": True,
-                    "name": "效果参考",
-                    "purpose": "增强效果信任",
-                    "sop_category": "effect_case",
-                    "reply_messages": [
-                        {"type": "text", "order": 1, "content": {"text": "参考"}},
-                        {"type": "image", "order": 2, "content": {"url": "https://cdn.example/case.jpg"}},
-                    ],
+                    "type": "image",
+                    "name": "真实效果参考",
+                    "url": "https://cdn.example/case.jpg",
+                    "annotation": "苹果原相机拍摄的做前做后效果参考，用于客户担心效果时建立信任。",
+                    "use_cases": ["效果顾虑", "信任建立"],
+                    "avoid_when": ["最近已发送同类案例"],
+                    "tags": ["案例", "效果"],
                 },
                 {
-                    "id": "disabled_pack",
+                    "id": "disabled-video",
                     "enabled": False,
-                    "reply_messages": [
-                        {"type": "video", "order": 1, "content": {"url": "https://cdn.example/old.mp4"}}
-                    ],
+                    "type": "video",
+                    "url": "https://cdn.example/old.mp4",
                 },
             ]
         }
@@ -40,16 +39,33 @@ def test_enabled_sop_media_builds_stable_asset_catalog() -> None:
 
     assert catalog == [
         {
-            "asset_id": "effect_pack:2",
+            "asset_id": "effect-reference",
             "type": "image",
             "url": "https://cdn.example/case.jpg",
-            "source": "sop_config",
-            "source_pack_id": "effect_pack",
-            "source_pack_name": "效果参考",
-            "sop_category": "effect_case",
-            "purpose": "增强效果信任",
+            "source": "outreach_asset_library",
+            "name": "真实效果参考",
+            "annotation": "苹果原相机拍摄的做前做后效果参考，用于客户担心效果时建立信任。",
+            "use_cases": ["效果顾虑", "信任建立"],
+            "avoid_when": ["最近已发送同类案例"],
+            "tags": ["案例", "效果"],
         }
     ]
+
+
+def test_sop_reply_pack_media_is_not_an_outreach_asset_source() -> None:
+    assert build_outreach_asset_catalog(
+        {
+            "packs": [
+                {
+                    "id": "s10_need_and_case",
+                    "enabled": True,
+                    "reply_messages": [
+                        {"type": "image", "order": 1, "content": {"url": "https://cdn.example/sop.jpg"}}
+                    ],
+                }
+            ]
+        }
+    ) == []
 
 
 def test_recent_media_is_deduplicated_and_blocks_reuse() -> None:

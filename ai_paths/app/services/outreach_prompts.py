@@ -74,7 +74,8 @@ OUTREACH_PLAN_SYSTEM_PROMPT = """
 # Asset Rules
 - `asset_strategy` 只能是 `none/configured_image/operation_video/case_search`。
 - 每一步 `reply_messages` 只能输出 1 条 `type=text`；绝不能在 `reply_messages` 内输出 image、video、URL、asset_id 或 payment_collection。素材和付款卡由代码根据下面的选择字段追加。
-- `configured_image` 或 `operation_video` 必须选择输入 `asset_catalog` 中真实存在且类型匹配的 `asset_id`。
+- `asset_catalog` 是主动唤醒专用素材库，不是 SOP 话术包。每个候选包含名称、画面注释、适用场景、避免使用条件和标签；结合当前客户心理与本轮新价值选择，不要只按标签机械匹配。
+- `configured_image` 或 `operation_video` 必须选择输入 `asset_catalog` 中真实存在且类型匹配的 `asset_id`，并遵守该素材的 `avoid_when`。
 - `case_search` 必须给出具体 `case_query`，由代码查询真实 `case_studies`；可以同时给一个真实配置图片 `fallback_asset_id`。
 - 选择 `case_search/configured_image/operation_video` 就表示代码会在本轮文字后直接附素材；文字必须说“我给您放一个参考/过程”，不得再问“要不要我发、想不想看”。
 - `case_search` 只用于客户确实需要效果证据的场景，查询词只写客户已明确的斑点/色素类型，不添加“轻中度、具体肤质、疗程”等未知特征。
@@ -218,7 +219,7 @@ OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT = """
 3. 客户说忙、有时间再约、等天气时，所有步骤都不得追问日期、工作日、周末或时段，也不要要求发照片。
 4. 客户的项目范围或次数问题已经得到答复后，不得再次索取同一分类信息。
    次数顾虑必须先给非绝对的正面预期，例如很多客户一次可看到直观改善，再保留按类型、时间和深浅评估的边界；不能只复读检测免责。
-5. 素材只从 asset_catalog 选择；case_search 只能使用客户已明确的类型。客户未说具体类型时只能使用“淡斑效果案例”或“斑点改善案例”等通用查询。
+5. 静态图片和视频只从独立的 asset_catalog 选择，不得假定 SOP 包里的素材可用；case_search 只能使用客户已明确的类型。客户未说具体类型时只能使用“淡斑效果案例”或“斑点改善案例”等通用查询。
    `asset_strategy` 只能是 `none/configured_image/operation_video/case_search`；每一步 `reply_messages` 必须且只能包含 1 条 text，图片、视频、asset_id、URL 和付款卡都不能出现在 `reply_messages` 中。
 6. `source_snapshot.activity_quote_fact.completed=false` 时，所有步骤必须 `should_send_payment_collection=false`、`payment_collection_basis=none`、报价索引为 null；最后一轮可以直接说明一个当前 offer_context 事实并用封闭式动作收口。
    若计划目标是继续成交，最后一轮优先选一个清楚的量化事实，例如 268 元、限 30 名或价值 180 元美白管理；只能选一个，不堆叠。

@@ -123,6 +123,10 @@ class Settings(BaseSettings):
         default=Path("config/precision_qa_playbook.json"),
         alias="PRECISION_QA_PLAYBOOK_PATH",
     )
+    outreach_asset_library_path: Path = Field(
+        default=Path("config/outreach_assets.json"),
+        alias="OUTREACH_ASSET_LIBRARY_PATH",
+    )
     sop_event_daily_touch_soft_limit: int = Field(default=2, alias="SOP_EVENT_DAILY_TOUCH_SOFT_LIMIT")
     outreach_send_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SEND_BASE_URL")
     outreach_send_agent_token: str = Field(default="", alias="OUTREACH_SEND_AGENT_TOKEN", repr=False)

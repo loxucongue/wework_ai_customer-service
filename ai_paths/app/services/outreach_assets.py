@@ -11,38 +11,29 @@ ALLOWED_OUTREACH_ASSET_TYPES = {"image", "video"}
 
 
 def build_outreach_asset_catalog(config: dict[str, Any]) -> list[dict[str, Any]]:
-    packs = config.get("packs") if isinstance(config.get("packs"), list) else []
+    configured_assets = config.get("assets") if isinstance(config.get("assets"), list) else []
     assets: list[dict[str, Any]] = []
-    for pack in packs:
-        if not isinstance(pack, dict) or not bool(pack.get("enabled")):
+    for configured in configured_assets:
+        if not isinstance(configured, dict) or not bool(configured.get("enabled")):
             continue
-        pack_id = _string(pack.get("id"))
-        if not pack_id:
+        asset_id = _string(configured.get("id"))
+        asset_type = _string(configured.get("type"))
+        url = _string(configured.get("url"))
+        if not asset_id or asset_type not in ALLOWED_OUTREACH_ASSET_TYPES or not _is_http_url(url):
             continue
-        messages = pack.get("reply_messages") if isinstance(pack.get("reply_messages"), list) else []
-        for index, message in enumerate(messages, start=1):
-            if not isinstance(message, dict):
-                continue
-            asset_type = _string(message.get("type"))
-            if asset_type not in ALLOWED_OUTREACH_ASSET_TYPES:
-                continue
-            content = message.get("content") if isinstance(message.get("content"), dict) else {}
-            url = _string(content.get("url"))
-            if not _is_http_url(url):
-                continue
-            order = _positive_int(message.get("order"), index)
-            assets.append(
-                {
-                    "asset_id": f"{pack_id}:{order}",
-                    "type": asset_type,
-                    "url": url,
-                    "source": "sop_config",
-                    "source_pack_id": pack_id,
-                    "source_pack_name": _string(pack.get("name")),
-                    "sop_category": _string(pack.get("sop_category")),
-                    "purpose": _string(pack.get("purpose")),
-                }
-            )
+        assets.append(
+            {
+                "asset_id": asset_id,
+                "type": asset_type,
+                "url": url,
+                "source": "outreach_asset_library",
+                "name": _string(configured.get("name")),
+                "annotation": _string(configured.get("annotation")),
+                "use_cases": _string_list(configured.get("use_cases")),
+                "avoid_when": _string_list(configured.get("avoid_when")),
+                "tags": _string_list(configured.get("tags")),
+            }
+        )
     return assets
 
 
@@ -206,3 +197,9 @@ def _positive_int(value: Any, default: int) -> int:
 
 def _string(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := _string(item))]

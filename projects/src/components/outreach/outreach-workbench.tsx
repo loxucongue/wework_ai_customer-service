@@ -13,6 +13,7 @@ import {
   FileText,
   GitBranch,
   History,
+  Images,
   ListChecks,
   LoaderCircle,
   MapPin,
@@ -814,6 +815,13 @@ export function OutreachWorkbench() {
         <div className="flex items-center gap-2">
           {notice ? <span className="hidden max-w-xl truncate text-xs text-amber-600 lg:inline">{notice}</span> : null}
           {error ? <span className="hidden max-w-xl truncate text-xs text-red-600 lg:inline">{error}</span> : null}
+          <Link
+            href="/outreach/assets"
+            className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50"
+          >
+            <Images className="h-4 w-4" />
+            素材库
+          </Link>
           <button onClick={runDue} className="inline-flex items-center gap-2 rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800">
             <Activity className="h-4 w-4" />
             执行到期任务

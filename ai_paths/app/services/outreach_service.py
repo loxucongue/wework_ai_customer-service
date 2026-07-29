@@ -8,6 +8,7 @@ from app.services.customer_context import CustomerContextService
 from app.services.customer_scope import build_customer_scope
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
+from app.services.outreach_asset_library_service import OutreachAssetLibraryService
 from app.services.outreach_assets import (
     asset_reply_message,
     build_outreach_asset_catalog,
@@ -23,7 +24,6 @@ from app.services.outreach_prompts import (
 )
 from app.services.outreach_system_client import OutreachSystemClient
 from app.services.sop_platform_task_policy import personalized_order_eligibility
-from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.storage import AppRepository
 from app.services.storage.serialization import dumps, utc_now_iso
 
@@ -419,7 +419,7 @@ class OutreachService:
         model_client: ModelClient,
         system_client: OutreachSystemClient,
         customer_context_service: CustomerContextService | None = None,
-        sop_reply_pack_service: SopReplyPackService | None = None,
+        outreach_asset_library_service: OutreachAssetLibraryService | None = None,
         coze_client: CozeClient | None = None,
         before_send_retry_seconds: int = 60,
     ) -> None:
@@ -427,7 +427,7 @@ class OutreachService:
         self.model_client = model_client
         self.system_client = system_client
         self.customer_context_service = customer_context_service
-        self.sop_reply_pack_service = sop_reply_pack_service
+        self.outreach_asset_library_service = outreach_asset_library_service
         self.coze_client = coze_client
         self.before_send_retry_seconds = max(1, int(before_send_retry_seconds))
 
@@ -687,10 +687,11 @@ class OutreachService:
                     for key in (
                         "asset_id",
                         "type",
-                        "source_pack_id",
-                        "source_pack_name",
-                        "sop_category",
-                        "purpose",
+                        "name",
+                        "annotation",
+                        "use_cases",
+                        "avoid_when",
+                        "tags",
                     )
                 }
                 for asset in asset_catalog
@@ -887,9 +888,9 @@ class OutreachService:
         }
 
     def _outreach_asset_catalog(self) -> list[dict[str, Any]]:
-        if self.sop_reply_pack_service is None:
+        if self.outreach_asset_library_service is None:
             return []
-        return build_outreach_asset_catalog(self.sop_reply_pack_service.load())
+        return build_outreach_asset_catalog(self.outreach_asset_library_service.load())
 
     async def _resolve_outreach_asset(
         self,
@@ -1351,7 +1352,17 @@ class OutreachService:
             "task_metadata": task_metadata,
             "resolved_asset": {
                 key: resolved_asset.get(key)
-                for key in ("asset_id", "type", "source", "source_pack_id", "sop_category", "description")
+                for key in (
+                    "asset_id",
+                    "type",
+                    "source",
+                    "name",
+                    "annotation",
+                    "use_cases",
+                    "avoid_when",
+                    "tags",
+                    "description",
+                )
                 if resolved_asset.get(key)
             },
             "plan": {
