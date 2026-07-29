@@ -105,6 +105,34 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
 
 
 class OutreachRepositoryDueTaskTests(unittest.TestCase):
+    def test_active_plan_lookup_is_case_insensitive_for_wechat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
+            store.initialize()
+            repository = AppRepository(store)
+            created = repository.create_outreach_plan(
+                customer_id="customer-case",
+                corp_id="corp",
+                user_id="7294",
+                wechat="DY258",
+                external_userid="external-case",
+                customer_stage="P2_OBJECTION",
+                stall_reason="silent",
+                customer_psychology="需要重新承接",
+                plan_goal="重新开口",
+                source_snapshot={},
+                tasks=[_due_task(1, "第一步")],
+            )
+
+            active = repository.get_active_outreach_plan_for_customer(
+                "customer-case",
+                corp_id="corp",
+                wechat="dy258",
+                external_userid="external-case",
+            )
+
+            self.assertEqual(active["plan"]["id"], created["plan"]["id"])
+
     def test_customer_reply_cancels_active_plan_and_remaining_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))

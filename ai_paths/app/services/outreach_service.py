@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -70,6 +71,36 @@ def _message_time_iso(value: Any) -> str:
         return datetime.fromtimestamp(number, tz=timezone.utc).isoformat()
     parsed = _parse_iso(raw)
     return parsed.isoformat() if parsed else raw
+
+
+def _conversation_fingerprint(
+    *,
+    corp_id: str,
+    wechat: str,
+    external_userid: str,
+    customer_id: str,
+    latest_customer_message_at: str,
+    latest_staff_message_at: str,
+) -> str:
+    raw = "|".join(
+        (
+            _string(corp_id).lower(),
+            _string(wechat).lower(),
+            _string(external_userid).lower(),
+            _string(customer_id),
+            _message_time_iso(latest_customer_message_at),
+            _message_time_iso(latest_staff_message_at),
+        )
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _is_second_beijing_day(contact_started_at: str, *, now: datetime | None = None) -> bool:
+    started = _parse_iso(_string(contact_started_at))
+    if not started:
+        return False
+    current = (now or datetime.now(timezone.utc)).astimezone(OUTREACH_BEIJING_TIMEZONE)
+    return current.date() > started.astimezone(OUTREACH_BEIJING_TIMEZONE).date()
 
 
 def _add_minutes(value: str, minutes: int) -> str:
@@ -430,6 +461,19 @@ class OutreachService:
         self.outreach_asset_library_service = outreach_asset_library_service
         self.coze_client = coze_client
         self.before_send_retry_seconds = max(1, int(before_send_retry_seconds))
+        self._plan_locks: dict[str, asyncio.Lock] = {}
+        self._monitor_status: dict[str, Any] = {
+            "last_scan_started_at": "",
+            "last_scan_finished_at": "",
+            "candidate_count": 0,
+            "evaluated_count": 0,
+            "created_count": 0,
+            "rejected_count": 0,
+            "skipped_count": 0,
+            "error_count": 0,
+            "skip_reasons": {},
+            "last_error": "",
+        }
 
     def list_candidates(
         self,
@@ -778,7 +822,16 @@ class OutreachService:
                 customer_id=customer_id,
                 event_type="plan_rejected",
                 event_summary=str(response.get("stall_reason") or "AI decided not to create outreach plan"),
-                payload=response,
+                payload={
+                    "identity": {
+                        "customer_id": customer_id,
+                        "corp_id": corp_id,
+                        "wechat": wechat,
+                        "external_userid": external_userid,
+                    },
+                    "trigger_context": trigger_context or {},
+                    "ai_result": response,
+                },
             )
             return {"created": False, "ai_result": response}
         structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
@@ -954,10 +1007,37 @@ class OutreachService:
         platform_task: dict[str, Any],
     ) -> dict[str, Any]:
         """Create one auto-approved day-2 personalized plan and reuse it on later platform triggers."""
+        lock = self._plan_lock(identity)
+        async with lock:
+            return await self._ensure_platform_task_plan_locked(
+                identity=identity,
+                conversation_messages=conversation_messages,
+                conversation_activity=conversation_activity,
+                customer_context=customer_context,
+                platform_task=platform_task,
+            )
+
+    async def _ensure_platform_task_plan_locked(
+        self,
+        *,
+        identity: dict[str, Any],
+        conversation_messages: list[dict[str, Any]],
+        conversation_activity: dict[str, Any],
+        customer_context: dict[str, Any],
+        platform_task: dict[str, Any],
+    ) -> dict[str, Any]:
         customer_id = _string(identity.get("customer_id"))
         corp_id = _string(identity.get("corp_id"))
         wechat = _string(identity.get("wechat"))
         external_userid = _string(identity.get("external_userid"))
+        conversation_fingerprint = _conversation_fingerprint(
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            customer_id=customer_id,
+            latest_customer_message_at=_string(conversation_activity.get("latest_customer_message_at")),
+            latest_staff_message_at=_string(conversation_activity.get("latest_staff_message_at")),
+        )
         active = self.repository.get_active_outreach_plan_for_customer(
             customer_id,
             corp_id=corp_id,
@@ -1020,6 +1100,20 @@ class OutreachService:
                     )
                     return {"created": False, "reused": True, **active}
 
+        if self.repository.has_outreach_evaluation_fingerprint(
+            customer_id=customer_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            conversation_fingerprint=conversation_fingerprint,
+        ):
+            return {
+                "created": False,
+                "reused": False,
+                "skipped": True,
+                "reason": "conversation_fingerprint_already_evaluated",
+            }
+
         local_context = self.repository.recent_customer_context(
             customer_id,
             corp_id=corp_id,
@@ -1046,6 +1140,7 @@ class OutreachService:
                 "platform_task_filtered": True,
                 "platform_task": platform_task,
                 "activation_policy": "auto_approved",
+                "conversation_fingerprint": conversation_fingerprint,
             },
         )
         if not result.get("created"):
@@ -1055,6 +1150,304 @@ class OutreachService:
             raise RuntimeError("personalized_outreach_plan_missing_id")
         activated = self._auto_approve_plan(plan_id)
         return {"reused": False, "auto_approved": True, **result, **activated}
+
+    async def evaluate_silent_customers(
+        self,
+        *,
+        limit: int = 5,
+        silent_minutes: int = 10,
+        auto_activate: bool = True,
+    ) -> dict[str, Any]:
+        started_at = utc_now_iso()
+        stats: dict[str, Any] = {
+            "last_scan_started_at": started_at,
+            "last_scan_finished_at": "",
+            "candidate_count": 0,
+            "evaluated_count": 0,
+            "created_count": 0,
+            "rejected_count": 0,
+            "skipped_count": 0,
+            "error_count": 0,
+            "skip_reasons": {},
+            "last_error": "",
+            "results": [],
+        }
+        scan_limit = max(50, min(500, max(1, int(limit)) * 20))
+        candidates = self.list_candidates(
+            limit=scan_limit,
+            silent_minutes_min=0,
+        )
+        stats["candidate_count"] = len(candidates)
+        eligible_seen = 0
+        for candidate in candidates:
+            if eligible_seen >= max(1, int(limit)):
+                break
+            rough_reason = self._rough_silence_candidate_reason(
+                candidate,
+                silent_minutes=max(1, int(silent_minutes)),
+            )
+            if rough_reason:
+                result = {
+                    "status": "skipped",
+                    "customer_id": _string(candidate.get("customer_id")),
+                    "reason": rough_reason,
+                }
+            else:
+                eligible_seen += 1
+                try:
+                    result = await self._evaluate_silent_candidate(
+                        candidate,
+                        silent_minutes=max(1, int(silent_minutes)),
+                        auto_activate=auto_activate,
+                    )
+                except Exception as exc:
+                    result = {
+                        "status": "error",
+                        "customer_id": _string(candidate.get("customer_id")),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+            stats["results"].append(result)
+            status = _string(result.get("status"))
+            if status == "evaluated":
+                stats["evaluated_count"] += 1
+                if result.get("created"):
+                    stats["created_count"] += 1
+                else:
+                    stats["rejected_count"] += 1
+            elif status == "error":
+                stats["error_count"] += 1
+                stats["last_error"] = _string(result.get("error"))
+            else:
+                stats["skipped_count"] += 1
+                reason = _string(result.get("reason")) or "unknown"
+                skip_reasons = stats["skip_reasons"]
+                skip_reasons[reason] = int(skip_reasons.get(reason) or 0) + 1
+        stats["last_scan_finished_at"] = utc_now_iso()
+        self._monitor_status = {key: value for key, value in stats.items() if key != "results"}
+        return stats
+
+    @staticmethod
+    def _rough_silence_candidate_reason(candidate: dict[str, Any], *, silent_minutes: int) -> str:
+        if not _is_second_beijing_day(_string(candidate.get("sales_contact_started_at"))):
+            return "not_proven_day2_plus"
+        if not _string(candidate.get("last_customer_message_at")):
+            return "customer_never_spoke"
+        if not bool(candidate.get("awaiting_customer_reply")):
+            return "not_waiting_for_customer_reply"
+        if _int(candidate.get("reply_wait_minutes"), 0) < silent_minutes:
+            return "reply_wait_below_threshold"
+        manual_takeover = _parse_iso(_string(candidate.get("last_manual_takeover_at")))
+        remembered_customer = _parse_iso(_string(candidate.get("last_customer_message_at")))
+        if manual_takeover and remembered_customer and manual_takeover >= remembered_customer:
+            return "manual_takeover_active"
+        return ""
+
+    async def _evaluate_silent_candidate(
+        self,
+        candidate: dict[str, Any],
+        *,
+        silent_minutes: int,
+        auto_activate: bool,
+    ) -> dict[str, Any]:
+        identity = {
+            "customer_id": _string(candidate.get("customer_id")),
+            "corp_id": _string(candidate.get("corp_id")),
+            "user_id": _string(candidate.get("user_id")),
+            "wechat": _string(candidate.get("wechat")),
+            "external_userid": _string(candidate.get("external_userid")),
+        }
+        customer_id = identity["customer_id"]
+        if not all((customer_id, identity["corp_id"], identity["wechat"], identity["external_userid"])):
+            return {"status": "skipped", "customer_id": customer_id, "reason": "incomplete_sales_contact_identity"}
+        if not _is_second_beijing_day(_string(candidate.get("sales_contact_started_at"))):
+            return {"status": "skipped", "customer_id": customer_id, "reason": "not_proven_day2_plus"}
+        if not _string(candidate.get("last_customer_message_at")):
+            return {"status": "skipped", "customer_id": customer_id, "reason": "customer_never_spoke"}
+        manual_takeover = _parse_iso(_string(candidate.get("last_manual_takeover_at")))
+        remembered_customer = _parse_iso(_string(candidate.get("last_customer_message_at")))
+        if manual_takeover and remembered_customer and manual_takeover >= remembered_customer:
+            return {"status": "skipped", "customer_id": customer_id, "reason": "manual_takeover_active"}
+
+        lock = self._plan_lock(identity)
+        async with lock:
+            active = self.repository.get_active_outreach_plan_for_customer(
+                customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+            )
+            if active:
+                return {"status": "skipped", "customer_id": customer_id, "reason": "nonterminal_plan_exists"}
+            try:
+                refreshed = await self.refresh_customer_conversation(
+                    customer_id=customer_id,
+                    corp_id=identity["corp_id"],
+                    user_id=identity["user_id"],
+                    wechat=identity["wechat"],
+                    external_userid=identity["external_userid"],
+                    limit=30,
+                )
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "customer_id": customer_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            latest_customer_text = _string(refreshed.get("latest_customer_message_at"))
+            latest_staff_text = _string(refreshed.get("latest_staff_message_at"))
+            latest_customer = _parse_iso(latest_customer_text)
+            latest_staff = _parse_iso(latest_staff_text)
+            if not latest_customer:
+                return {"status": "skipped", "customer_id": customer_id, "reason": "customer_never_spoke"}
+            if not latest_staff or latest_staff <= latest_customer:
+                return {"status": "skipped", "customer_id": customer_id, "reason": "not_waiting_for_customer_reply"}
+            wait_minutes = max(
+                0,
+                int((datetime.now(timezone.utc) - latest_staff.astimezone(timezone.utc)).total_seconds() // 60),
+            )
+            if wait_minutes < silent_minutes:
+                return {"status": "skipped", "customer_id": customer_id, "reason": "reply_wait_below_threshold"}
+            conversation_fingerprint = _conversation_fingerprint(
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+                customer_id=customer_id,
+                latest_customer_message_at=latest_customer_text,
+                latest_staff_message_at=latest_staff_text,
+            )
+            if self.repository.has_outreach_evaluation_fingerprint(
+                customer_id=customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+                conversation_fingerprint=conversation_fingerprint,
+            ):
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "conversation_fingerprint_already_evaluated",
+                }
+
+            local_context = self.repository.recent_customer_context(
+                customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+            )
+            customer_context = await self._load_monitor_customer_context(
+                identity=identity,
+                memory=local_context.get("memory") or {},
+            )
+            order_gate = personalized_order_eligibility(customer_context)
+            if not order_gate.get("available"):
+                return {"status": "skipped", "customer_id": customer_id, "reason": "order_context_unavailable"}
+            if not order_gate.get("eligible"):
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": _string(order_gate.get("reason")) or "order_not_eligible",
+                }
+
+            source_context = {
+                "memory": local_context.get("memory") or {},
+                "recent_messages": (refreshed.get("messages") or [])[-30:],
+                "conversation_activity": {
+                    "real_customer_message_count": len(
+                        [
+                            message
+                            for message in refreshed.get("messages") or []
+                            if _string(
+                                message.get("direction")
+                                or message.get("from")
+                                or message.get("sender_type")
+                            ).lower()
+                            in {"customer", "user", "external"}
+                        ]
+                    ),
+                    "latest_customer_message_at": latest_customer_text,
+                    "latest_staff_message_at": latest_staff_text,
+                    "reply_wait_minutes": wait_minutes,
+                },
+                "customer_context": customer_context,
+            }
+            result = await self.generate_plan(
+                **identity,
+                current_stage="day2_personalized_spoken_unbooked",
+                business_goal="用个性化价值触达促使客户重新开口，再逐步推进到店或预约金",
+                source_context=source_context,
+                trigger_context={
+                    "source": "silence_monitor",
+                    "activation_policy": "auto_approved",
+                    "conversation_fingerprint": conversation_fingerprint,
+                    "latest_customer_message_at": latest_customer_text,
+                    "latest_staff_message_at": latest_staff_text,
+                    "reply_wait_minutes": wait_minutes,
+                    "monitor_silent_minutes": silent_minutes,
+                },
+            )
+            if not result.get("created"):
+                return {
+                    "status": "evaluated",
+                    "customer_id": customer_id,
+                    "created": False,
+                    "reason": "model_rejected_plan",
+                    "ai_result": result.get("ai_result") or {},
+                }
+            plan_id = _string((result.get("plan") or {}).get("id") or result.get("id"))
+            if not plan_id:
+                raise RuntimeError("silence_monitor_plan_missing_id")
+            if auto_activate:
+                activated = self._auto_approve_plan(plan_id)
+                result = {**result, **activated, "auto_approved": True}
+            return {
+                "status": "evaluated",
+                "customer_id": customer_id,
+                "created": True,
+                "plan_id": plan_id,
+                "result": result,
+            }
+
+    async def _load_monitor_customer_context(
+        self,
+        *,
+        identity: dict[str, Any],
+        memory: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self.customer_context_service is None:
+            return {}
+        request_context = {
+            "customer_id": identity.get("customer_id"),
+            "corp_id": identity.get("corp_id"),
+            "wechat": identity.get("wechat"),
+            "external_userid": identity.get("external_userid"),
+            "user_id": identity.get("user_id"),
+        }
+        return await asyncio.to_thread(
+            self.customer_context_service.load,
+            customer_id=_string(identity.get("customer_id")),
+            memory=memory,
+            request_context=request_context,
+        )
+
+    def monitor_status(self) -> dict[str, Any]:
+        return dict(self._monitor_status)
+
+    def _plan_lock(self, identity: dict[str, Any]) -> asyncio.Lock:
+        scope = build_customer_scope(
+            corp_id=identity.get("corp_id"),
+            wechat=_string(identity.get("wechat")).lower(),
+            external_userid=identity.get("external_userid"),
+            customer_id=identity.get("customer_id"),
+        )
+        key = scope.sales_contact_key or "|".join(
+            _string(identity.get(field)).lower()
+            for field in ("corp_id", "wechat", "external_userid", "customer_id")
+        )
+        lock = self._plan_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._plan_locks[key] = lock
+        return lock
 
     def _auto_approve_plan(self, plan_id: str) -> dict[str, Any]:
         customer_id = self._plan_customer_id(plan_id)

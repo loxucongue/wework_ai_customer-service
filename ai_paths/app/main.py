@@ -126,6 +126,7 @@ app = FastAPI(title=settings.app_name)
 logger = logging.getLogger(__name__)
 sop_event_retry_worker: asyncio.Task[None] | None = None
 outreach_auto_send_worker: asyncio.Task[None] | None = None
+outreach_plan_monitor_worker: asyncio.Task[None] | None = None
 storage_retention_worker: asyncio.Task[None] | None = None
 
 
@@ -156,6 +157,29 @@ async def _run_outreach_auto_send_worker() -> None:
         await asyncio.sleep(max(1.0, settings.outreach_auto_send_poll_seconds))
 
 
+async def _run_outreach_plan_monitor_worker() -> None:
+    while True:
+        try:
+            result = await outreach_service.evaluate_silent_customers(
+                limit=settings.outreach_plan_monitor_batch_size,
+                silent_minutes=settings.outreach_plan_monitor_silent_minutes,
+                auto_activate=settings.outreach_plan_monitor_auto_activate,
+            )
+            if result.get("evaluated_count") or result.get("error_count"):
+                logger.info(
+                    "Outreach plan monitor evaluated=%s created=%s rejected=%s errors=%s",
+                    result.get("evaluated_count"),
+                    result.get("created_count"),
+                    result.get("rejected_count"),
+                    result.get("error_count"),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Outreach plan monitor worker iteration failed")
+        await asyncio.sleep(max(5.0, settings.outreach_plan_monitor_poll_seconds))
+
+
 async def _run_storage_retention_worker() -> None:
     while True:
         try:
@@ -175,7 +199,7 @@ async def _run_storage_retention_worker() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global outreach_auto_send_worker, sop_event_retry_worker, storage_retention_worker
+    global outreach_auto_send_worker, outreach_plan_monitor_worker, sop_event_retry_worker, storage_retention_worker
     storage_store.initialize()
     repository.recover_interrupted_sop_event_model_retries()
     repository.recover_interrupted_outreach_tasks()
@@ -185,18 +209,27 @@ async def startup() -> None:
         outreach_auto_send_worker is None or outreach_auto_send_worker.done()
     ):
         outreach_auto_send_worker = asyncio.create_task(_run_outreach_auto_send_worker())
+    if settings.outreach_plan_monitor_enabled and (
+        outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()
+    ):
+        outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
     if storage_retention_worker is None or storage_retention_worker.done():
         storage_retention_worker = asyncio.create_task(_run_storage_retention_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global outreach_auto_send_worker, sop_event_retry_worker, storage_retention_worker
+    global outreach_auto_send_worker, outreach_plan_monitor_worker, sop_event_retry_worker, storage_retention_worker
     if outreach_auto_send_worker is not None:
         outreach_auto_send_worker.cancel()
         with suppress(asyncio.CancelledError):
             await outreach_auto_send_worker
         outreach_auto_send_worker = None
+    if outreach_plan_monitor_worker is not None:
+        outreach_plan_monitor_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await outreach_plan_monitor_worker
+        outreach_plan_monitor_worker = None
     if sop_event_retry_worker is not None:
         sop_event_retry_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -587,6 +620,14 @@ async def admin_outreach_dashboard() -> dict[str, Any]:
             "poll_seconds": settings.outreach_auto_send_poll_seconds,
             "batch_size": settings.outreach_auto_send_batch_size,
             "before_send_retry_seconds": settings.outreach_before_send_retry_seconds,
+        },
+        "plan_monitor": {
+            "enabled": settings.outreach_plan_monitor_enabled,
+            "poll_seconds": settings.outreach_plan_monitor_poll_seconds,
+            "silent_minutes": settings.outreach_plan_monitor_silent_minutes,
+            "batch_size": settings.outreach_plan_monitor_batch_size,
+            "auto_activate": settings.outreach_plan_monitor_auto_activate,
+            **outreach_service.monitor_status(),
         },
     }
 

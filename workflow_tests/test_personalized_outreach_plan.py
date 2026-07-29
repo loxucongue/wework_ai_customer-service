@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -61,6 +62,147 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(fact["completed"])
         self.assertEqual(fact["message_indexes"], [])
+
+    def test_silence_monitor_prefilter_uses_latest_staff_reply(self) -> None:
+        base = {
+            "sales_contact_started_at": "2000-01-01T00:00:00+08:00",
+            "last_customer_message_at": "2026-07-29T09:00:00+08:00",
+            "awaiting_customer_reply": True,
+        }
+
+        self.assertEqual(
+            OutreachService._rough_silence_candidate_reason(
+                {**base, "reply_wait_minutes": 5},
+                silent_minutes=10,
+            ),
+            "reply_wait_below_threshold",
+        )
+        self.assertEqual(
+            OutreachService._rough_silence_candidate_reason(
+                {**base, "reply_wait_minutes": 10},
+                silent_minutes=10,
+            ),
+            "",
+        )
+        self.assertEqual(
+            OutreachService._rough_silence_candidate_reason(
+                {**base, "awaiting_customer_reply": False, "reply_wait_minutes": 30},
+                silent_minutes=10,
+            ),
+            "not_waiting_for_customer_reply",
+        )
+        self.assertEqual(
+            OutreachService._rough_silence_candidate_reason(
+                {
+                    **base,
+                    "sales_contact_started_at": datetime.now(timezone.utc).isoformat(),
+                    "reply_wait_minutes": 30,
+                },
+                silent_minutes=10,
+            ),
+            "not_proven_day2_plus",
+        )
+
+    async def test_silence_monitor_creates_and_activates_one_plan(self) -> None:
+        now = datetime.now(timezone.utc)
+        customer_at = (now - timedelta(minutes=30)).isoformat()
+        staff_at = (now - timedelta(minutes=11)).isoformat()
+        repository = _Repository()
+        repository.candidates = [
+            _monitor_candidate(
+                customer_at=customer_at,
+                staff_at=staff_at,
+            )
+        ]
+        model = _ModelClient()
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "我考虑下", "created_at": customer_at},
+                {"direction": "staff", "content": "您慢慢考虑", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_silent_customers(
+            limit=5,
+            silent_minutes=10,
+            auto_activate=True,
+        )
+
+        self.assertEqual(result["evaluated_count"], 1)
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(result["error_count"], 0)
+        self.assertEqual(repository.updated_statuses, [("plan-created", "active")])
+        self.assertEqual(
+            repository.created_plan["source_snapshot"]["trigger_context"]["source"],
+            "silence_monitor",
+        )
+        self.assertEqual(len(model.calls), 2)
+
+    async def test_silence_monitor_model_rejection_is_idempotent_for_same_conversation(self) -> None:
+        now = datetime.now(timezone.utc)
+        customer_at = (now - timedelta(minutes=40)).isoformat()
+        staff_at = (now - timedelta(minutes=20)).isoformat()
+        repository = _Repository()
+        repository.candidates = [
+            _monitor_candidate(
+                customer_at=customer_at,
+                staff_at=staff_at,
+            )
+        ]
+        model = _ModelClient(
+            response={
+                "should_create_plan": False,
+                "stall_reason": "当前不适合主动触达",
+                "customer_psychology": "需要空间",
+            }
+        )
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "先不用", "created_at": customer_at},
+                {"direction": "staff", "content": "好的", "created_at": staff_at},
+            ],
+        )
+
+        first = await service.evaluate_silent_customers(limit=5, silent_minutes=10)
+        calls_after_first_scan = len(model.calls)
+        second = await service.evaluate_silent_customers(limit=5, silent_minutes=10)
+
+        self.assertEqual(first["rejected_count"], 1)
+        self.assertEqual(second["evaluated_count"], 0)
+        self.assertEqual(
+            second["results"][0]["reason"],
+            "conversation_fingerprint_already_evaluated",
+        )
+        self.assertEqual(calls_after_first_scan, 2)
+        self.assertEqual(len(model.calls), calls_after_first_scan)
+
+    def test_sop_event_and_silence_monitor_share_contact_lock(self) -> None:
+        service = OutreachService(
+            repository=_Repository(),
+            model_client=_ModelClient(),
+            system_client=object(),
+        )
+        first = service._plan_lock(
+            {
+                "customer_id": "22000001",
+                "corp_id": "corp-1",
+                "wechat": "DY258",
+                "external_userid": "external-1",
+            }
+        )
+        second = service._plan_lock(
+            {
+                "customer_id": "22000001",
+                "corp_id": "corp-1",
+                "wechat": "dy258",
+                "external_userid": "external-1",
+            }
+        )
+        self.assertIs(first, second)
 
     async def test_platform_task_plan_uses_latest_context_and_auto_queues_drafts(self) -> None:
         repository = _Repository()
@@ -779,6 +921,11 @@ class _Repository:
         self.created_plan: dict[str, Any] = {}
         self.events: list[dict[str, Any]] = []
         self.updated_statuses: list[tuple[str, str]] = []
+        self.candidates: list[dict[str, Any]] = []
+        self.evaluated_fingerprints: set[str] = set()
+
+    def list_outreach_candidates(self, **_kwargs: Any) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.candidates]
 
     def get_active_outreach_plan_for_customer(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return dict(self.active_plan)
@@ -788,7 +935,20 @@ class _Repository:
 
     def add_outreach_event(self, **kwargs: Any) -> dict[str, Any]:
         self.events.append(kwargs)
+        payload = kwargs.get("payload") if isinstance(kwargs.get("payload"), dict) else {}
+        trigger = payload.get("trigger_context") if isinstance(payload.get("trigger_context"), dict) else {}
+        fingerprint = str(trigger.get("conversation_fingerprint") or "")
+        if fingerprint:
+            self.evaluated_fingerprints.add(fingerprint)
         return {"event_id": f"event-{len(self.events)}"}
+
+    def has_outreach_evaluation_fingerprint(
+        self,
+        *,
+        conversation_fingerprint: str,
+        **_kwargs: Any,
+    ) -> bool:
+        return conversation_fingerprint in self.evaluated_fingerprints
 
     def update_outreach_plan_status(self, plan_id: str, status: str) -> dict[str, Any]:
         self.updated_statuses.append((plan_id, status))
@@ -819,11 +979,70 @@ class _Repository:
 
     def create_outreach_plan(self, **kwargs: Any) -> dict[str, Any]:
         self.created_plan = kwargs
+        snapshot = kwargs.get("source_snapshot") if isinstance(kwargs.get("source_snapshot"), dict) else {}
+        trigger = snapshot.get("trigger_context") if isinstance(snapshot.get("trigger_context"), dict) else {}
+        fingerprint = str(trigger.get("conversation_fingerprint") or "")
+        if fingerprint:
+            self.evaluated_fingerprints.add(fingerprint)
         return {
             "plan": {"id": "plan-created", "status": "draft"},
             "tasks": kwargs["tasks"],
             "events": [],
         }
+
+
+def _monitor_candidate(*, customer_at: str, staff_at: str) -> dict[str, Any]:
+    return {
+        "customer_id": "22000001",
+        "corp_id": "corp-1",
+        "user_id": "7294",
+        "wechat": "DY258",
+        "external_userid": "external-1",
+        "sales_contact_started_at": "2000-01-01T00:00:00+08:00",
+        "last_customer_message_at": customer_at,
+        "latest_outbound_message_at": staff_at,
+        "reply_wait_minutes": 10,
+        "awaiting_customer_reply": True,
+        "last_manual_takeover_at": "",
+    }
+
+
+class _MonitorOutreachService(OutreachService):
+    def __init__(
+        self,
+        *,
+        repository: _Repository,
+        model_client: _ModelClient,
+        refreshed_messages: list[dict[str, Any]],
+    ) -> None:
+        super().__init__(
+            repository=repository,
+            model_client=model_client,
+            system_client=object(),
+        )
+        self.refreshed_messages = refreshed_messages
+
+    async def refresh_customer_conversation(self, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "messages": list(self.refreshed_messages),
+            "latest_customer_message_at": self._latest_message_time(
+                self.refreshed_messages,
+                sender="customer",
+            ),
+            "latest_staff_message_at": self._latest_message_time(
+                self.refreshed_messages,
+                sender="staff",
+            ),
+        }
+
+    async def _load_monitor_customer_context(
+        self,
+        *,
+        identity: dict[str, Any],
+        memory: dict[str, Any],
+    ) -> dict[str, Any]:
+        del identity, memory
+        return {"source": "platform_agent", "orders": []}
 
 
 if __name__ == "__main__":

@@ -27,6 +27,17 @@ def _silent_minutes(value: str | None) -> int:
     return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds() // 60))
 
 
+def _latest_iso_value(*values: Any) -> str:
+    parsed_values = [
+        (parsed, _string(value))
+        for value in values
+        if _string(value) and (parsed := _parse_iso(_string(value))) is not None
+    ]
+    if not parsed_values:
+        return ""
+    return max(parsed_values, key=lambda item: item[0])[1]
+
+
 def _string(value: Any) -> str:
     if value is None:
         return ""
@@ -189,12 +200,18 @@ class OutreachRepositoryMixin:
                 """
                 SELECT c.customer_id, c.updated_at, c.external_userid, c.corp_id, c.user_id, c.wechat, c.title,
                     (SELECT created_at FROM messages m WHERE m.conversation_id=c.id AND m.role='user' ORDER BY created_at DESC LIMIT 1) AS conversation_last_customer_at,
+                    (SELECT created_at FROM messages m WHERE m.conversation_id=c.id AND m.role='assistant' ORDER BY created_at DESC LIMIT 1) AS conversation_last_staff_at,
                     (SELECT content FROM messages m WHERE m.conversation_id=c.id AND m.role='user' ORDER BY created_at DESC LIMIT 1) AS last_customer_message,
+                    (
+                        SELECT MIN(c3.created_at) FROM conversations c3
+                        WHERE c3.customer_id=c.customer_id AND c3.corp_id=c.corp_id
+                          AND lower(c3.wechat)=lower(c.wechat) AND c3.external_userid=c.external_userid
+                    ) AS sales_contact_started_at,
                     (
                         SELECT COUNT(*) FROM outreach_tasks t
                         JOIN outreach_plans p ON p.id=t.plan_id
                         WHERE p.customer_id=c.customer_id AND p.corp_id=c.corp_id
-                          AND p.wechat=c.wechat AND p.external_userid=c.external_userid
+                          AND lower(p.wechat)=lower(c.wechat) AND p.external_userid=c.external_userid
                           AND t.status='sent' AND t.sent_at>=?
                     ) AS outreach_sent_count_72h
                 FROM conversations c
@@ -202,7 +219,7 @@ class OutreachRepositoryMixin:
                   AND c.updated_at=(
                       SELECT MAX(c2.updated_at) FROM conversations c2
                       WHERE c2.customer_id=c.customer_id AND c2.corp_id=c.corp_id
-                        AND c2.wechat=c.wechat AND c2.external_userid=c.external_userid
+                        AND lower(c2.wechat)=lower(c.wechat) AND c2.external_userid=c.external_userid
                   )
                 ORDER BY c.updated_at DESC
                 LIMIT ?
@@ -239,6 +256,11 @@ class OutreachRepositoryMixin:
             )
             item["last_staff_message_at"] = str(memory.get("last_staff_message_at") or "")
             item["last_ai_reply_at"] = str(memory.get("last_ai_reply_at") or "")
+            item["latest_outbound_message_at"] = _latest_iso_value(
+                item.get("last_staff_message_at"),
+                item.get("last_ai_reply_at"),
+                item.get("conversation_last_staff_at"),
+            )
             item["last_manual_takeover_at"] = str(memory.get("last_manual_takeover_at") or "")
             item["last_outreach_at"] = str(memory.get("last_outreach_at") or "")
             item["outreach_status"] = str(memory.get("outreach_status") or "none")
@@ -254,6 +276,14 @@ class OutreachRepositoryMixin:
             if no_plan_only and item["outreach_plan_id"]:
                 continue
             item["silent_minutes"] = _silent_minutes(item.get("last_customer_message_at"))
+            item["reply_wait_minutes"] = _silent_minutes(item.get("latest_outbound_message_at"))
+            latest_customer = _parse_iso(item.get("last_customer_message_at"))
+            latest_outbound = _parse_iso(item.get("latest_outbound_message_at"))
+            item["awaiting_customer_reply"] = bool(
+                latest_customer
+                and latest_outbound
+                and latest_outbound > latest_customer
+            )
             if item["silent_minutes"] >= silent_minutes_min:
                 items.append(item)
             if len(items) >= result_limit:
@@ -832,7 +862,11 @@ class OutreachRepositoryMixin:
     ) -> dict[str, Any]:
         if not wechat:
             return {}
-        clauses = ["customer_id=?", "wechat=?", "status IN ('draft', 'active', 'waiting', 'paused')"]
+        clauses = [
+            "customer_id=?",
+            "lower(wechat)=lower(?)",
+            "status IN ('draft', 'active', 'waiting', 'paused')",
+        ]
         params: list[Any] = [customer_id, wechat]
         if corp_id:
             clauses.append("corp_id=?")
@@ -851,6 +885,56 @@ class OutreachRepositoryMixin:
                 params,
             ).fetchone()
         return self.get_outreach_plan(row["id"]) if row else {}
+
+    def has_outreach_evaluation_fingerprint(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+        conversation_fingerprint: str,
+    ) -> bool:
+        if not customer_id or not wechat or not conversation_fingerprint:
+            return False
+        with self.store.connect() as conn:
+            plan_rows = conn.execute(
+                """
+                SELECT source_snapshot
+                FROM outreach_plans
+                WHERE customer_id=? AND corp_id=? AND lower(wechat)=lower(?) AND external_userid=?
+                ORDER BY created_at DESC
+                LIMIT 20
+                """,
+                (customer_id, corp_id, wechat, external_userid),
+            ).fetchall()
+            event_rows = conn.execute(
+                """
+                SELECT payload_json
+                FROM outreach_events
+                WHERE customer_id=? AND event_type='plan_rejected'
+                ORDER BY created_at DESC
+                LIMIT 50
+                """,
+                (customer_id,),
+            ).fetchall()
+        for row in plan_rows:
+            snapshot = loads_dict(row["source_snapshot"])
+            trigger = snapshot.get("trigger_context") if isinstance(snapshot.get("trigger_context"), dict) else {}
+            if _string(trigger.get("conversation_fingerprint")) == conversation_fingerprint:
+                return True
+        for row in event_rows:
+            payload = loads_dict(row["payload_json"])
+            identity = payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
+            trigger = payload.get("trigger_context") if isinstance(payload.get("trigger_context"), dict) else {}
+            if (
+                _string(identity.get("corp_id")) == corp_id
+                and _string(identity.get("wechat")) == wechat
+                and _string(identity.get("external_userid")) == external_userid
+                and _string(trigger.get("conversation_fingerprint")) == conversation_fingerprint
+            ):
+                return True
+        return False
 
     def list_outreach_events(
         self,

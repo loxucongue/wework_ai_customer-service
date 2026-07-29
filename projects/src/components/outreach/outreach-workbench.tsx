@@ -171,6 +171,22 @@ type DashboardStats = {
     batch_size?: number;
     before_send_retry_seconds?: number;
   };
+  plan_monitor?: {
+    enabled?: boolean;
+    poll_seconds?: number;
+    silent_minutes?: number;
+    batch_size?: number;
+    auto_activate?: boolean;
+    last_scan_started_at?: string;
+    last_scan_finished_at?: string;
+    candidate_count?: number;
+    evaluated_count?: number;
+    created_count?: number;
+    rejected_count?: number;
+    skipped_count?: number;
+    error_count?: number;
+    last_error?: string;
+  };
   metrics?: {
     platform_tasks_today?: number;
     personalized_plans_today?: number;
@@ -898,15 +914,38 @@ export function OutreachWorkbench() {
           </div>
 
           <div className="border-t border-zinc-200 pt-3">
-            <h3 className="mb-2 text-xs font-semibold text-zinc-700">队列与复查</h3>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="text-xs font-semibold text-zinc-700">队列与计划监控</h3>
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] ${
+                  dashboard.plan_monitor?.enabled
+                    ? "bg-emerald-50 text-emerald-700"
+                    : "bg-zinc-100 text-zinc-600"
+                }`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    dashboard.plan_monitor?.enabled ? "bg-emerald-500" : "bg-zinc-400"
+                  }`}
+                />
+                {dashboard.plan_monitor?.enabled ? "10分钟评估运行中" : "10分钟评估已关闭"}
+              </span>
+            </div>
             <div className="grid grid-cols-2 gap-x-5 gap-y-2 text-xs">
               <StatLine label="下个发送时间" value={formatTime(dashboard.next_due?.scheduled_at)} />
               <StatLine label="最近发送时间" value={formatTime(dashboard.last_sent?.sent_at)} />
-              <StatLine label="复查重试" value={String(dashboard.metrics?.retry_today || 0)} />
-              <StatLine label="轮询间隔" value={`${dashboard.worker?.poll_seconds || "-"} 秒`} />
-              <StatLine label="单批上限" value={String(dashboard.worker?.batch_size || "-")} />
-              <StatLine label="复查失败重试" value={`${dashboard.worker?.before_send_retry_seconds || "-"} 秒`} />
+              <StatLine label="最近监控扫描" value={formatTime(dashboard.plan_monitor?.last_scan_finished_at)} />
+              <StatLine label="沉默阈值" value={`${dashboard.plan_monitor?.silent_minutes || 10} 分钟`} />
+              <StatLine label="候选 / 已评估" value={`${dashboard.plan_monitor?.candidate_count || 0} / ${dashboard.plan_monitor?.evaluated_count || 0}`} />
+              <StatLine label="创建 / 模型拒绝" value={`${dashboard.plan_monitor?.created_count || 0} / ${dashboard.plan_monitor?.rejected_count || 0}`} />
+              <StatLine label="监控跳过" value={String(dashboard.plan_monitor?.skipped_count || 0)} />
+              <StatLine label="监控错误" value={String(dashboard.plan_monitor?.error_count || 0)} />
             </div>
+            {dashboard.plan_monitor?.last_error ? (
+              <p className="mt-2 truncate text-[11px] text-red-600" title={dashboard.plan_monitor.last_error}>
+                最近错误：{dashboard.plan_monitor.last_error}
+              </p>
+            ) : null}
           </div>
         </div>
 
