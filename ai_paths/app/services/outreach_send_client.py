@@ -7,6 +7,7 @@ import asyncio
 import httpx
 
 from app.config import Settings
+from app.services.customer_relation import normalize_customer_relation
 
 
 _REQUEST_RETRY_ATTEMPTS = 3
@@ -150,11 +151,13 @@ class OutreachSendClient:
                 },
             }
         messages = _conversation_messages(data)
+        customer_relation = normalize_customer_relation(data)
         return {
             "status": "ok",
             "request": params,
             "message_count": len(messages),
             "messages": messages,
+            "customer_relation": customer_relation,
             "response": data,
         }
 

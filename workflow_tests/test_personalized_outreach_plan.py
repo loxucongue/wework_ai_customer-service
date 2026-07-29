@@ -180,11 +180,63 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls_after_first_scan, 2)
         self.assertEqual(len(model.calls), calls_after_first_scan)
 
+    async def test_deleted_customer_skips_plan_generation_before_model_call(self) -> None:
+        repository = _Repository()
+        model = _ModelClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=_ConversationSystemClient(deleted=True),
+        )
+
+        result = await service.generate_plan(
+            customer_id="22000001",
+            corp_id="corp-1",
+            user_id="7294",
+            wechat="DY258",
+            external_userid="external-1",
+        )
+
+        self.assertEqual(result["reason"], "customer_deleted")
+        self.assertEqual(model.calls, [])
+        self.assertEqual(repository.created_plan, {})
+        self.assertIn(
+            "plan_skipped_customer_deleted",
+            [event["event_type"] for event in repository.events],
+        )
+
+    async def test_silence_monitor_skips_deleted_customer_before_model_call(self) -> None:
+        now = datetime.now(timezone.utc)
+        customer_at = (now - timedelta(minutes=30)).isoformat()
+        staff_at = (now - timedelta(minutes=11)).isoformat()
+        repository = _Repository()
+        repository.candidates = [_monitor_candidate(customer_at=customer_at, staff_at=staff_at)]
+        model = _ModelClient()
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "我再看看", "created_at": customer_at},
+                {"direction": "staff", "content": "好的", "created_at": staff_at},
+            ],
+            deleted=True,
+        )
+
+        result = await service.evaluate_silent_customers(limit=5, silent_minutes=10)
+
+        self.assertEqual(result["created_count"], 0)
+        self.assertEqual(result["results"][0]["reason"], "customer_deleted")
+        self.assertEqual(model.calls, [])
+        self.assertIn(
+            "plan_skipped_customer_deleted",
+            [event["event_type"] for event in repository.events],
+        )
+
     def test_sop_event_and_silence_monitor_share_contact_lock(self) -> None:
         service = OutreachService(
             repository=_Repository(),
             model_client=_ModelClient(),
-            system_client=object(),
+            system_client=_ConversationSystemClient(),
         )
         first = service._plan_lock(
             {
@@ -207,7 +259,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
     async def test_platform_task_plan_uses_latest_context_and_auto_queues_drafts(self) -> None:
         repository = _Repository()
         model = _ModelClient()
-        service = OutreachService(repository=repository, model_client=model, system_client=object())
+        service = OutreachService(repository=repository, model_client=model, system_client=_ConversationSystemClient())
 
         result = await service.ensure_platform_task_plan(
             identity={
@@ -270,7 +322,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "events": [],
         }
         model = _ModelClient()
-        service = OutreachService(repository=repository, model_client=model, system_client=object())
+        service = OutreachService(repository=repository, model_client=model, system_client=_ConversationSystemClient())
 
         result = await service.ensure_platform_task_plan(
             identity={
@@ -292,7 +344,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["reused"])
         self.assertFalse(result["created"])
         self.assertEqual(model.calls, [])
-        self.assertEqual(repository.events[0]["event_type"], "platform_task_filtered_plan_reused")
+        self.assertIn(
+            "platform_task_filtered_plan_reused",
+            [event["event_type"] for event in repository.events],
+        )
 
     async def test_legacy_review_plan_is_cancelled_and_replaced_by_auto_approved_plan(self) -> None:
         repository = _Repository()
@@ -312,7 +367,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "events": [],
         }
         model = _ModelClient()
-        service = OutreachService(repository=repository, model_client=model, system_client=object())
+        service = OutreachService(repository=repository, model_client=model, system_client=_ConversationSystemClient())
 
         result = await service.ensure_platform_task_plan(
             identity={
@@ -337,7 +392,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             repository.updated_statuses,
             [("plan-legacy", "cancelled"), ("plan-created", "active")],
         )
-        self.assertEqual(repository.events[0]["event_type"], "legacy_review_plan_cancelled")
+        self.assertIn(
+            "legacy_review_plan_cancelled",
+            [event["event_type"] for event in repository.events],
+        )
 
     async def test_customer_reply_after_draft_plan_regenerates_from_latest_conversation(self) -> None:
         repository = _Repository()
@@ -351,7 +409,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "events": [],
         }
         model = _ModelClient()
-        service = OutreachService(repository=repository, model_client=model, system_client=object())
+        service = OutreachService(repository=repository, model_client=model, system_client=_ConversationSystemClient())
 
         result = await service.ensure_platform_task_plan(
             identity={
@@ -382,13 +440,16 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             repository.updated_statuses,
             [("plan-old", "cancelled"), ("plan-created", "active")],
         )
-        self.assertEqual(repository.events[0]["event_type"], "platform_task_plan_superseded_by_customer_reply")
+        self.assertIn(
+            "platform_task_plan_superseded_by_customer_reply",
+            [event["event_type"] for event in repository.events],
+        )
         self.assertEqual(len(model.calls), 2)
 
     async def test_plan_without_reviewable_draft_fails_instead_of_creating_empty_task(self) -> None:
         repository = _Repository()
         model = _ModelClient(response={"should_create_plan": True, "steps": [{"step": 1, "delay_minutes": 30}]})
-        service = OutreachService(repository=repository, model_client=model, system_client=object())
+        service = OutreachService(repository=repository, model_client=model, system_client=_ConversationSystemClient())
 
         with self.assertRaisesRegex(RuntimeError, "invalid_structure"):
             await service.ensure_platform_task_plan(
@@ -425,7 +486,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         repository = _Repository()
-        service = OutreachService(repository=repository, model_client=model, system_client=object())
+        service = OutreachService(repository=repository, model_client=model, system_client=_ConversationSystemClient())
 
         result = await service.generate_plan(
             customer_id="22000001",
@@ -455,7 +516,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         repository = _Repository()
-        service = OutreachService(repository=repository, model_client=model, system_client=object())
+        service = OutreachService(repository=repository, model_client=model, system_client=_ConversationSystemClient())
 
         result = await service.generate_plan(
             customer_id="22000001",
@@ -513,7 +574,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         service = OutreachService(
             repository=repository,
             model_client=_ModelClient(response=response),
-            system_client=object(),
+            system_client=_ConversationSystemClient(),
         )
 
         await service.ensure_platform_task_plan(
@@ -597,7 +658,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         service = OutreachService(
             repository=repository,
             model_client=_SequenceModelClient([response, repaired_response, repaired_response]),
-            system_client=object(),
+            system_client=_ConversationSystemClient(),
         )
 
         await service.ensure_platform_task_plan(
@@ -667,7 +728,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         service = OutreachService(
             repository=repository,
             model_client=model,
-            system_client=object(),
+            system_client=_ConversationSystemClient(),
             outreach_asset_library_service=_OutreachAssetLibraryService(),
             coze_client=_CozeClient(),
         )
@@ -700,7 +761,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 ]
             }
         )
-        service = OutreachService(repository=repository, model_client=model, system_client=object())
+        service = OutreachService(repository=repository, model_client=model, system_client=_ConversationSystemClient())
         task = {
             "customer_id": "22000001",
             "content_sources": [],
@@ -788,7 +849,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         service = OutreachService(
             repository=repository,
             model_client=_ModelClient(response=response),
-            system_client=object(),
+            system_client=_ConversationSystemClient(),
             outreach_asset_library_service=_OutreachAssetLibraryService(),
             coze_client=_FailingCozeClient(),
         )
@@ -1007,6 +1068,24 @@ def _monitor_candidate(*, customer_at: str, staff_at: str) -> dict[str, Any]:
     }
 
 
+class _ConversationSystemClient:
+    def __init__(self, *, deleted: bool = False) -> None:
+        self.deleted = deleted
+
+    async def conversation(self, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "data": {
+                "messages": [],
+                "customer_relation": {
+                    "status": "deleted" if self.deleted else "active",
+                    "is_deleted": self.deleted,
+                    "deleted_at": "2026-07-29T10:00:00+08:00" if self.deleted else None,
+                    "updated_at": "2026-07-29T10:00:00+08:00",
+                },
+            }
+        }
+
+
 class _MonitorOutreachService(OutreachService):
     def __init__(
         self,
@@ -1014,17 +1093,26 @@ class _MonitorOutreachService(OutreachService):
         repository: _Repository,
         model_client: _ModelClient,
         refreshed_messages: list[dict[str, Any]],
+        deleted: bool = False,
     ) -> None:
         super().__init__(
             repository=repository,
             model_client=model_client,
-            system_client=object(),
+            system_client=_ConversationSystemClient(),
         )
         self.refreshed_messages = refreshed_messages
+        self.deleted = deleted
 
     async def refresh_customer_conversation(self, **_kwargs: Any) -> dict[str, Any]:
         return {
             "messages": list(self.refreshed_messages),
+            "customer_relation": {
+                "available": True,
+                "status": "deleted" if self.deleted else "active",
+                "is_deleted": self.deleted,
+                "deleted_at": "2026-07-29T10:00:00+08:00" if self.deleted else "",
+                "updated_at": "2026-07-29T10:00:00+08:00",
+            },
             "latest_customer_message_at": self._latest_message_time(
                 self.refreshed_messages,
                 sender="customer",

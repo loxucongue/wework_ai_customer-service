@@ -103,6 +103,25 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.sent, [])
         self.assertEqual(repository.reschedules[-1]["delay_seconds"], 45)
 
+    async def test_deleted_customer_cancels_plan_before_send(self) -> None:
+        repository = _ExecutionRepository(order_status="no_order")
+        system = _SystemClient(deleted=True)
+        service = OutreachService(
+            repository=repository,
+            model_client=_MessageModelClient(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "customer_deleted")
+        self.assertEqual(system.sent, [])
+        self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
+        self.assertEqual(repository.skipped_remaining[0]["reason"], "customer_deleted")
+        self.assertEqual(repository.events[-1]["event_type"], "task_skipped_customer_deleted")
+
 
 class OutreachRepositoryDueTaskTests(unittest.TestCase):
     def test_active_plan_lookup_is_case_insensitive_for_wechat(self) -> None:
@@ -586,12 +605,28 @@ class _CustomerContextService:
 
 
 class _SystemClient:
-    def __init__(self, messages: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        messages: list[dict[str, Any]] | None = None,
+        *,
+        deleted: bool = False,
+    ) -> None:
         self.sent: list[dict[str, Any]] = []
         self.messages = messages or []
+        self.deleted = deleted
 
     async def conversation(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"data": {"messages": self.messages}}
+        return {
+            "data": {
+                "messages": self.messages,
+                "customer_relation": {
+                    "status": "deleted" if self.deleted else "active",
+                    "is_deleted": self.deleted,
+                    "deleted_at": "2026-07-29T10:00:00+08:00" if self.deleted else None,
+                    "updated_at": "2026-07-29T10:00:00+08:00",
+                },
+            }
+        }
 
     async def send(self, **kwargs: Any) -> dict[str, Any]:
         self.sent.append(kwargs)

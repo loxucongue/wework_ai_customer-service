@@ -29,6 +29,43 @@ from app.services.storage import AppRepository, SQLiteStore
 
 
 class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_deleted_customer_is_marked_before_sop_model_or_send(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            fetch_result={
+                "status": "ok",
+                "message_count": 1,
+                "messages": [{"direction": "customer", "content": "你好"}],
+                "customer_relation": {
+                    "available": True,
+                    "status": "deleted",
+                    "is_deleted": True,
+                    "deleted_at": "2026-07-29T10:00:00+08:00",
+                    "updated_at": "2026-07-29T10:00:00+08:00",
+                },
+            }
+        )
+        personalized = _PersonalizedOutreachService()
+        service = _service(
+            repo=repo,
+            client=client,
+            personalized_outreach_service=personalized,
+        )
+        payload = _base_payload(
+            event_id="evt_customer_deleted",
+            event_type="sop_platform_task",
+            sop={"day_stage": "day2", "actions": [{"type": "text", "content": "统一跟进"}]},
+            customers=[{}],
+        )
+
+        repo.create_sop_event(payload)
+        await service.process_event("evt_customer_deleted")
+
+        self.assertEqual(repo.tasks[0]["status"], "skipped_customer_deleted")
+        self.assertEqual(repo.tasks[0]["sop_pack_id"], "customer_deleted")
+        self.assertEqual(personalized.calls, [])
+        self.assertEqual(client.send_calls, [])
+
     async def test_missing_active_send_identity_skips_before_conversation_fetch(self) -> None:
         repo = _Repo()
         client = _OutreachClient()
@@ -4618,7 +4655,19 @@ class _OutreachClient:
             result = dict(self.fetch_result)
             result.setdefault("request", kwargs)
             return result
-        return {"status": "ok", "request": kwargs, "message_count": len(self.messages), "messages": self.messages}
+        return {
+            "status": "ok",
+            "request": kwargs,
+            "message_count": len(self.messages),
+            "messages": self.messages,
+            "customer_relation": {
+                "available": True,
+                "status": "active",
+                "is_deleted": False,
+                "deleted_at": "",
+                "updated_at": "2026-07-29T10:00:00+08:00",
+            },
+        }
 
     async def send_reply_messages(self, **kwargs: Any) -> dict[str, Any]:
         self.send_calls.append(kwargs)

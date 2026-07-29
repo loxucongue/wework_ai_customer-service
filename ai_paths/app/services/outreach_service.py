@@ -6,6 +6,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.services.customer_context import CustomerContextService
+from app.services.customer_relation import (
+    customer_relation_is_deleted,
+    normalize_customer_relation,
+)
 from app.services.customer_scope import build_customer_scope
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
@@ -609,6 +613,7 @@ class OutreachService:
             limit=limit,
         )
         messages = self._conversation_messages(payload)
+        customer_relation = normalize_customer_relation(payload)
         scope = build_customer_scope(
             corp_id=corp_id,
             wechat=wechat,
@@ -635,13 +640,18 @@ class OutreachService:
             customer_id=customer_id,
             event_type="conversation_refreshed",
             event_summary="Refreshed customer conversation from system API",
-            payload={"latest_customer_message_at": latest_customer, "message_count": len(messages)},
+            payload={
+                "latest_customer_message_at": latest_customer,
+                "message_count": len(messages),
+                "customer_relation": customer_relation,
+            },
         )
         return {
             "raw": payload,
             "messages": messages,
             "latest_customer_message_at": latest_customer,
             "latest_staff_message_at": latest_staff,
+            "customer_relation": customer_relation,
         }
 
     def cached_customer_conversation(
@@ -688,12 +698,76 @@ class OutreachService:
         source_context: dict[str, Any] | None = None,
         trigger_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        context = source_context or self.repository.recent_customer_context(
-            customer_id,
-            corp_id=corp_id,
-            wechat=wechat,
-            external_userid=external_userid,
+        context = dict(
+            source_context
+            or self.repository.recent_customer_context(
+                customer_id,
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+            )
         )
+        customer_relation = (
+            context.get("customer_relation")
+            if isinstance(context.get("customer_relation"), dict)
+            else {}
+        )
+        if not customer_relation.get("available"):
+            try:
+                refreshed = await self.refresh_customer_conversation(
+                    customer_id=customer_id,
+                    corp_id=corp_id,
+                    user_id=user_id,
+                    wechat=wechat,
+                    external_userid=external_userid,
+                    limit=50,
+                )
+            except Exception as exc:
+                return self._relation_plan_skip(
+                    customer_id=customer_id,
+                    corp_id=corp_id,
+                    wechat=wechat,
+                    external_userid=external_userid,
+                    reason="customer_relation_check_failed",
+                    relation={
+                        "available": False,
+                        "status": "unknown",
+                        "is_deleted": False,
+                        "deleted_at": "",
+                        "updated_at": "",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    trigger_context=trigger_context or {},
+                )
+            customer_relation = (
+                refreshed.get("customer_relation")
+                if isinstance(refreshed.get("customer_relation"), dict)
+                else {}
+            )
+            refreshed_messages = refreshed.get("messages")
+            if isinstance(refreshed_messages, list):
+                context["recent_messages"] = refreshed_messages[-50:]
+        context["customer_relation"] = customer_relation
+        if not customer_relation.get("available"):
+            return self._relation_plan_skip(
+                customer_id=customer_id,
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                reason="customer_relation_unavailable",
+                relation=customer_relation,
+                trigger_context=trigger_context or {},
+            )
+        if customer_relation_is_deleted(customer_relation):
+            return self._relation_plan_skip(
+                customer_id=customer_id,
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                reason="customer_deleted",
+                relation=customer_relation,
+                trigger_context=trigger_context or {},
+            )
         memory = context.get("memory") or {}
         recent_messages = context.get("recent_messages") or []
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
@@ -725,6 +799,7 @@ class OutreachService:
             "activity_quote_fact": activity_quote_fact,
             "trigger_context": trigger_context or {},
             "customer_context": context.get("customer_context") or {},
+            "customer_relation": customer_relation,
             "asset_catalog": [
                 {
                     key: asset.get(key)
@@ -940,6 +1015,73 @@ class OutreachService:
             ),
         }
 
+    def _relation_plan_skip(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+        reason: str,
+        relation: dict[str, Any],
+        trigger_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        active_loader = getattr(self.repository, "get_active_outreach_plan_for_customer", None)
+        active = (
+            active_loader(
+                customer_id,
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+            )
+            if callable(active_loader)
+            else {}
+        )
+        plan = active.get("plan") if isinstance(active.get("plan"), dict) else {}
+        plan_id = _string(plan.get("id"))
+        if plan_id and reason == "customer_deleted":
+            skip_remaining = getattr(self.repository, "skip_remaining_outreach_tasks", None)
+            if callable(skip_remaining):
+                skip_remaining(plan_id, reason="customer_deleted")
+            update_plan_status = getattr(self.repository, "update_outreach_plan_status", None)
+            if callable(update_plan_status):
+                update_plan_status(plan_id, "cancelled")
+        event_type = (
+            "plan_skipped_customer_deleted"
+            if reason == "customer_deleted"
+            else "plan_skipped_customer_relation_unavailable"
+        )
+        add_event = getattr(self.repository, "add_outreach_event", None)
+        if callable(add_event):
+            add_event(
+                plan_id=plan_id,
+                task_id="",
+                customer_id=customer_id,
+                event_type=event_type,
+                event_summary=(
+                    "Customer relation is deleted; personalized plan generation skipped"
+                    if reason == "customer_deleted"
+                    else "Customer relation could not be verified; personalized plan generation skipped"
+                ),
+                payload={
+                    "identity": {
+                        "customer_id": customer_id,
+                        "corp_id": corp_id,
+                        "wechat": wechat,
+                        "external_userid": external_userid,
+                    },
+                    "reason": reason,
+                    "customer_relation": relation,
+                    "trigger_context": trigger_context,
+                },
+            )
+        return {
+            "created": False,
+            "skipped": True,
+            "reason": reason,
+            "customer_relation": relation,
+        }
+
     def _outreach_asset_catalog(self) -> list[dict[str, Any]]:
         if self.outreach_asset_library_service is None:
             return []
@@ -1005,6 +1147,7 @@ class OutreachService:
         conversation_activity: dict[str, Any],
         customer_context: dict[str, Any],
         platform_task: dict[str, Any],
+        customer_relation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create one auto-approved day-2 personalized plan and reuse it on later platform triggers."""
         lock = self._plan_lock(identity)
@@ -1015,6 +1158,7 @@ class OutreachService:
                 conversation_activity=conversation_activity,
                 customer_context=customer_context,
                 platform_task=platform_task,
+                customer_relation=customer_relation or {},
             )
 
     async def _ensure_platform_task_plan_locked(
@@ -1025,11 +1169,73 @@ class OutreachService:
         conversation_activity: dict[str, Any],
         customer_context: dict[str, Any],
         platform_task: dict[str, Any],
+        customer_relation: dict[str, Any],
     ) -> dict[str, Any]:
         customer_id = _string(identity.get("customer_id"))
         corp_id = _string(identity.get("corp_id"))
         wechat = _string(identity.get("wechat"))
         external_userid = _string(identity.get("external_userid"))
+        if not customer_relation.get("available"):
+            try:
+                refreshed = await self.refresh_customer_conversation(
+                    customer_id=customer_id,
+                    corp_id=corp_id,
+                    user_id=_string(identity.get("user_id")),
+                    wechat=wechat,
+                    external_userid=external_userid,
+                    limit=50,
+                )
+                customer_relation = (
+                    refreshed.get("customer_relation")
+                    if isinstance(refreshed.get("customer_relation"), dict)
+                    else {}
+                )
+            except Exception as exc:
+                return self._relation_plan_skip(
+                    customer_id=customer_id,
+                    corp_id=corp_id,
+                    wechat=wechat,
+                    external_userid=external_userid,
+                    reason="customer_relation_check_failed",
+                    relation={
+                        "available": False,
+                        "status": "unknown",
+                        "is_deleted": False,
+                        "deleted_at": "",
+                        "updated_at": "",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                    trigger_context={
+                        "source": "sop_platform_task",
+                        "platform_task": platform_task,
+                    },
+                )
+        if not customer_relation.get("available"):
+            return self._relation_plan_skip(
+                customer_id=customer_id,
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                reason="customer_relation_unavailable",
+                relation=customer_relation,
+                trigger_context={
+                    "source": "sop_platform_task",
+                    "platform_task": platform_task,
+                },
+            )
+        if customer_relation_is_deleted(customer_relation):
+            return self._relation_plan_skip(
+                customer_id=customer_id,
+                corp_id=corp_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                reason="customer_deleted",
+                relation=customer_relation,
+                trigger_context={
+                    "source": "sop_platform_task",
+                    "platform_task": platform_task,
+                },
+            )
         conversation_fingerprint = _conversation_fingerprint(
             corp_id=corp_id,
             wechat=wechat,
@@ -1125,6 +1331,7 @@ class OutreachService:
             "recent_messages": conversation_messages[-30:],
             "conversation_activity": conversation_activity,
             "customer_context": customer_context,
+            "customer_relation": customer_relation,
         }
         result = await self.generate_plan(
             customer_id=customer_id,
@@ -1285,13 +1492,49 @@ class OutreachService:
                     user_id=identity["user_id"],
                     wechat=identity["wechat"],
                     external_userid=identity["external_userid"],
-                    limit=30,
+                    limit=50,
                 )
             except Exception as exc:
                 return {
                     "status": "error",
                     "customer_id": customer_id,
                     "error": f"{type(exc).__name__}: {exc}",
+                }
+            customer_relation = (
+                refreshed.get("customer_relation")
+                if isinstance(refreshed.get("customer_relation"), dict)
+                else {}
+            )
+            if not customer_relation.get("available"):
+                self._relation_plan_skip(
+                    customer_id=customer_id,
+                    corp_id=identity["corp_id"],
+                    wechat=identity["wechat"],
+                    external_userid=identity["external_userid"],
+                    reason="customer_relation_unavailable",
+                    relation=customer_relation,
+                    trigger_context={"source": "silence_monitor"},
+                )
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "customer_relation_unavailable",
+                }
+            if customer_relation_is_deleted(customer_relation):
+                self._relation_plan_skip(
+                    customer_id=customer_id,
+                    corp_id=identity["corp_id"],
+                    wechat=identity["wechat"],
+                    external_userid=identity["external_userid"],
+                    reason="customer_deleted",
+                    relation=customer_relation,
+                    trigger_context={"source": "silence_monitor"},
+                )
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "customer_deleted",
+                    "customer_relation": customer_relation,
                 }
             latest_customer_text = _string(refreshed.get("latest_customer_message_at"))
             latest_staff_text = _string(refreshed.get("latest_staff_message_at"))
@@ -1350,7 +1593,8 @@ class OutreachService:
 
             source_context = {
                 "memory": local_context.get("memory") or {},
-                "recent_messages": (refreshed.get("messages") or [])[-30:],
+                "recent_messages": (refreshed.get("messages") or [])[-50:],
+                "customer_relation": customer_relation,
                 "conversation_activity": {
                     "real_customer_message_count": len(
                         [
@@ -1543,8 +1787,37 @@ class OutreachService:
                         user_id=str(task.get("user_id") or plan.get("user_id") or ""),
                         wechat=str(task.get("wechat") or plan.get("wechat") or ""),
                         external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
-                        limit=10,
+                        limit=50,
                     )
+                    customer_relation = (
+                        refresh.get("customer_relation")
+                        if isinstance(refresh.get("customer_relation"), dict)
+                        else {}
+                    )
+                    if not customer_relation.get("available"):
+                        raise RuntimeError("before_send_customer_relation_unavailable")
+                    if customer_relation_is_deleted(customer_relation):
+                        self.repository.update_outreach_task(task_id, status="skipped")
+                        self.repository.skip_remaining_outreach_tasks(
+                            str(task["plan_id"]),
+                            reason="customer_deleted",
+                            exclude_task_id=task_id,
+                        )
+                        self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+                        self.repository.add_outreach_event(
+                            plan_id=str(task["plan_id"]),
+                            task_id=task_id,
+                            customer_id=str(task["customer_id"]),
+                            event_type="task_skipped_customer_deleted",
+                            event_summary="Customer deleted the sales contact before outreach execution",
+                            payload={"customer_relation": customer_relation},
+                        )
+                        return {
+                            "ok": True,
+                            "status": "skipped",
+                            "reason": "customer_deleted",
+                            "customer_relation": customer_relation,
+                        }
                     if self._customer_replied_after_plan(plan, refresh.get("latest_customer_message_at")):
                         self.repository.update_outreach_task(task_id, status="skipped")
                         self.repository.skip_remaining_outreach_tasks(

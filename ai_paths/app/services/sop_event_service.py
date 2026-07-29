@@ -13,6 +13,7 @@ from fastapi import BackgroundTasks
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
+from app.services.customer_relation import customer_relation_is_deleted
 from app.services.sop_event_decision import (
     build_event_ai_reply_policy,
     combine_selected_pack_messages,
@@ -230,6 +231,30 @@ class SopEventService:
                 status="failed_conversation_fetch",
                 error=str(conversation_fetch.get("error") or conversation_fetch.get("reason") or "conversation_fetch_failed"),
                 send_payload={"identity": identity, "conversation_fetch": compact(conversation_fetch, max_chars=4000)},
+            )
+
+        customer_relation = (
+            conversation_fetch.get("customer_relation")
+            if isinstance(conversation_fetch.get("customer_relation"), dict)
+            else {}
+        )
+        if customer_relation_is_deleted(customer_relation):
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="customer_deleted",
+                sop_pack_name="customer_deleted",
+                sop_category="customer_relation",
+                reply_messages=[],
+                status="skipped_customer_deleted",
+                error="",
+                send_payload={
+                    "identity": identity,
+                    "customer_relation": customer_relation,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                },
             )
 
         conversation_messages = conversation_fetch.get("messages") if isinstance(conversation_fetch.get("messages"), list) else []
@@ -884,6 +909,11 @@ class SopEventService:
         customer_memory: dict[str, Any],
         customer_context: dict[str, Any],
     ) -> dict[str, Any]:
+        customer_relation = (
+            conversation_fetch.get("customer_relation")
+            if isinstance(conversation_fetch.get("customer_relation"), dict)
+            else {}
+        )
         raw_messages = _actions_to_reply_messages(_customer_actions(payload, customer))
         messages, sanitize_summary = sanitize_sop_reply_messages(
             raw_messages,
@@ -951,6 +981,7 @@ class SopEventService:
                         conversation_messages=conversation_messages,
                         conversation_activity=conversation_activity,
                         customer_context=customer_context,
+                        customer_relation=customer_relation,
                         platform_task={
                             "event_id": str(payload.get("event_id") or ""),
                             "created_at": str(payload.get("created_at") or ""),
@@ -1652,6 +1683,7 @@ def _conversation_fetch_summary(conversation_fetch: dict[str, Any]) -> dict[str,
         "reason": conversation_fetch.get("reason", ""),
         "request": conversation_fetch.get("request", {}),
         "message_count": conversation_fetch.get("message_count", 0),
+        "customer_relation": conversation_fetch.get("customer_relation", {}),
         "response": compact(response, max_chars=2000) if response else {},
     }
 
