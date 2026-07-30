@@ -15,7 +15,7 @@ from app.services.outreach_service import (
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
-    def test_single_step_plan_is_valid_for_low_intent_silence(self) -> None:
+    def test_single_step_plan_is_rejected_so_the_cycle_cannot_end_after_one_touch(self) -> None:
         response = {
             "should_create_plan": True,
             "plan_arc": "只轻触一次获取门店匹配所需区域，客户不回复则停止。",
@@ -48,7 +48,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             ],
         }
 
-        self.assertEqual(_outreach_plan_structure_error(response), "")
+        self.assertEqual(
+            _outreach_plan_structure_error(response),
+            "plan must contain 2 to 3 steps",
+        )
 
     def test_schedule_supports_immediate_touch_and_daily_limit(self) -> None:
         schedule = _normalize_outreach_schedule(
@@ -216,6 +219,36 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls_after_first_scan, 2)
         self.assertEqual(len(model.calls), calls_after_first_scan)
 
+    async def test_silence_monitor_does_not_start_a_new_cycle_without_customer_reply(self) -> None:
+        now = datetime.now(timezone.utc)
+        customer_at = (now - timedelta(days=2)).isoformat()
+        staff_at = (now - timedelta(hours=1)).isoformat()
+        repository = _Repository()
+        repository.completed_plan = {
+            "id": "plan-completed",
+            "status": "completed",
+            "completed_at": (now - timedelta(minutes=30)).isoformat(),
+        }
+        repository.candidates = [_monitor_candidate(customer_at=customer_at, staff_at=staff_at)]
+        model = _ModelClient()
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "我考虑下", "created_at": customer_at},
+                {"direction": "staff", "content": "给您补一个参考", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_silent_customers(limit=5, silent_minutes=10)
+
+        self.assertEqual(result["created_count"], 0)
+        self.assertEqual(
+            result["results"][0]["reason"],
+            "outreach_cycle_completed_without_new_customer_reply",
+        )
+        self.assertEqual(model.calls, [])
+
     async def test_deleted_customer_skips_plan_generation_before_model_call(self) -> None:
         repository = _Repository()
         model = _ModelClient()
@@ -345,6 +378,44 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["plan"]["status"], "active")
         self.assertEqual(repository.updated_statuses, [("plan-created", "active")])
         self.assertEqual(repository.events[-1]["event_type"], "plan_auto_approved")
+
+    async def test_platform_task_does_not_start_a_new_cycle_without_customer_reply(self) -> None:
+        repository = _Repository()
+        repository.completed_plan = {
+            "id": "plan-completed",
+            "status": "completed",
+            "completed_at": "2026-07-29T12:00:00+08:00",
+        }
+        model = _ModelClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=_ConversationSystemClient(),
+        )
+
+        result = await service.ensure_platform_task_plan(
+            identity={
+                "customer_id": "22000001",
+                "corp_id": "corp-1",
+                "user_id": "7294",
+                "wechat": "DY258",
+                "external_userid": "external-1",
+            },
+            conversation_messages=[],
+            conversation_activity={
+                "real_customer_message_count": 1,
+                "latest_customer_message_at": "2026-07-28T09:00:00+08:00",
+                "latest_staff_message_at": "2026-07-29T11:00:00+08:00",
+            },
+            customer_context={"orders": []},
+            platform_task={"event_id": "platform-task-after-cycle", "messages": []},
+        )
+
+        self.assertEqual(
+            result["reason"],
+            "outreach_cycle_completed_without_new_customer_reply",
+        )
+        self.assertEqual(model.calls, [])
 
     async def test_existing_active_plan_is_reused_without_another_model_call(self) -> None:
         repository = _Repository()
@@ -575,6 +646,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "delay_minutes": 360,
                     "timing_reason": "先降低客户时间压力",
                     "urgency_level": "same_day",
+                    "no_reply_action": "advance_to_next_step",
+                    "no_reply_strategy": "未回复则换成低风险成交动作，不再追问时间",
                     "content_mode": "value_only",
                     "intent": "time_reassurance",
                     "persuasion_angle": "empathy",
@@ -592,6 +665,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "delay_minutes": 1440,
                     "timing_reason": "价值铺垫后再降低付款门槛",
                     "urgency_level": "normal",
+                    "no_reply_action": "end_plan",
+                    "no_reply_strategy": "仍未回复则结束本周期",
                     "content_mode": "transaction",
                     "intent": "deposit_value",
                     "persuasion_angle": "low_risk_action",
@@ -653,6 +728,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "delay_minutes": 360,
                     "timing_reason": "用专业信息先解除顾虑",
                     "urgency_level": "same_day",
+                    "no_reply_action": "advance_to_next_step",
+                    "no_reply_strategy": "未回复则改为低风险活动价值，不再重复检测流程",
                     "content_mode": "value_only",
                     "intent": "effect_reassurance",
                     "persuasion_angle": "professionalism",
@@ -669,6 +746,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "delay_minutes": 1440,
                     "timing_reason": "隔天再提供低风险动作",
                     "urgency_level": "normal",
+                    "no_reply_action": "end_plan",
+                    "no_reply_strategy": "仍未回复则结束本周期",
                     "content_mode": "transaction",
                     "intent": "deposit_value",
                     "persuasion_angle": "low_risk_action",
@@ -729,6 +808,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "delay_minutes": 360,
                     "timing_reason": "先提供操作知识",
                     "urgency_level": "same_day",
+                    "no_reply_action": "advance_to_next_step",
+                    "no_reply_strategy": "未回复则换真实案例建立效果信任",
                     "content_mode": "value_only",
                     "intent": "education",
                     "persuasion_angle": "education",
@@ -745,6 +826,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "delay_minutes": 1440,
                     "timing_reason": "隔天用真实案例增强信任",
                     "urgency_level": "normal",
+                    "no_reply_action": "end_plan",
+                    "no_reply_strategy": "仍未回复则结束本周期",
                     "content_mode": "soft_conversion",
                     "intent": "effect_reassurance",
                     "persuasion_angle": "proof",
@@ -852,6 +935,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "delay_minutes": 360,
                     "timing_reason": "先提供护理知识",
                     "urgency_level": "same_day",
+                    "no_reply_action": "advance_to_next_step",
+                    "no_reply_strategy": "未回复则换真实效果参考，不重复护理知识",
                     "content_mode": "value_only",
                     "intent": "education",
                     "persuasion_angle": "education",
@@ -867,6 +952,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "delay_minutes": 1440,
                     "timing_reason": "隔天补充真实效果参考",
                     "urgency_level": "normal",
+                    "no_reply_action": "end_plan",
+                    "no_reply_strategy": "仍未回复则结束本周期",
                     "content_mode": "soft_conversion",
                     "intent": "effect_reassurance",
                     "persuasion_angle": "proof",
@@ -913,6 +1000,8 @@ class _ModelClient:
                     "delay_minutes": 360,
                     "timing_reason": "客户刚结束对话，先低压力承接",
                     "urgency_level": "same_day",
+                    "no_reply_action": "advance_to_next_step",
+                    "no_reply_strategy": "未回复则换专业流程价值，不再重复距离顾虑",
                     "content_mode": "soft_conversion",
                     "intent": "store_convenience",
                     "persuasion_angle": "empathy",
@@ -931,6 +1020,8 @@ class _ModelClient:
                     "delay_minutes": 1440,
                     "timing_reason": "隔天补充专业流程价值",
                     "urgency_level": "normal",
+                    "no_reply_action": "end_plan",
+                    "no_reply_strategy": "仍未回复则结束本周期",
                     "content_mode": "value_only",
                     "intent": "professional_value",
                     "persuasion_angle": "professionalism",
@@ -1015,6 +1106,7 @@ class _FailingCozeClient:
 class _Repository:
     def __init__(self) -> None:
         self.active_plan: dict[str, Any] = {}
+        self.completed_plan: dict[str, Any] = {}
         self.created_plan: dict[str, Any] = {}
         self.events: list[dict[str, Any]] = []
         self.updated_statuses: list[tuple[str, str]] = []
@@ -1026,6 +1118,13 @@ class _Repository:
 
     def get_active_outreach_plan_for_customer(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return dict(self.active_plan)
+
+    def get_latest_completed_outreach_plan_for_customer(
+        self,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        return dict(self.completed_plan)
 
     def recent_customer_context(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"memory": {"last_customer_message_at": "2026-07-27T10:00:00+08:00"}}

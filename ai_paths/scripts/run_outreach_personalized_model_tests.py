@@ -19,8 +19,8 @@ from app.services.outreach_service import build_outreach_activity_quote_fact
 
 
 REVIEW_PROMPT = """
-你是独立的销售对话质量评审。根据测试场景、当前权威活动事实、真实素材目录和计划 json，分别给以下五项 1–5 分：
-psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action。
+你是独立的销售对话质量评审。根据测试场景、当前权威活动事实、真实素材目录和计划 json，分别给以下六项 1–5 分：
+psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action、timing_fit。
 4 分表示可上线，5 分表示优秀。paid_suppression 场景只要正确拒绝普通营销计划即可全部给 5 分。
 
 评审边界：
@@ -33,6 +33,7 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - 价格透明顾虑不应为了配素材而硬发案例图或活动图；痘印痘坑案例查询不得添加客户未提供的程度、肤质或疗程。
 - 相邻角度、新价值和 CTA 索取的信息不同即可认为有递进；不能仅因为都需要客户回复就把 arc_diversity 判为 3 分。
 - 发卡步骤的文字和 CTA 必须直接承接本轮 10 元预约金卡；如果让客户回复“活动/入口”后再发卡，属于支付动作不一致。
+- `should_send_payment_collection=true` 时，运行时代码会在该步 text 后追加真实预约金卡，计划模型不允许自行输出卡片。只检查 text/CTA 是否直接引导点击本轮卡片；不得因为计划的 `reply_messages` 里只有 text 而判失败。
 - 只有 recent_messages 中存在真实完整报价且 plan 标记发卡时，才检查文字与卡片是否一致。没有完整报价时不发卡是正确硬边界，不得因此判 hard_error 或降低 conversion_action。
 - 没有完整报价时，最后一轮直接讲一个权威活动事实并用封闭式动作收口，可评为有效成交推进；不能要求客户先回复关键词才提供本轮本可直接说明的信息。
 - 没有完整报价时，最后一轮清楚给出一个量化活动事实（268元、限30名或180元赠送）并封闭式询问登记，可将 conversion_action 评为4分以上；不要因为未发卡扣分。
@@ -47,8 +48,13 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - human_tone 评估客户可见 `reply_messages`，不是后台计划分析。4 分要求像真人微信：通常1–2句、具体口语、没有报告腔或问卷腔；出现“困扰、改善思路、是否接近、接着判断、往下判断”等抽象计划语言，或要求客户“回我A/B/C”选择内部分类时，human_tone 不得高于3分。
 - 客户只有“你好/在吗”等问候、没有描述皮肤问题时，首轮直接假设“您这种斑点/先看皮肤状态”，或用“您先说说”式问卷开场，human_tone 不得高于3分。
 - 相邻两轮客户文字都在说检测、皮肤状态、价格、同一个缺失信息或同一个 CTA 时，arc_diversity 不得高于3分；后台角度枚举不同不能掩盖客户实际收到的内容重复。
-- 普通低意向沉默客户如果后续仍依赖同一条客户信息，应只生成 1 步；为了凑 2–3 步而重复催问时，arc_diversity 和 timing_fit 均不得高于2分。
-- 单步低意向计划只自然索取一次后续必需事实，例如城市或区域，并明确不再安排后续催问时，属于合适的 conversion_action，可评 4–5 分；不要因为它没有立即推进活动或预约金而扣分。
+- 每套计划应生成 2–3 步完整周期。后续步骤必须假设前一步未回复，并换成不依赖同一条缺失信息的新价值；三步重复催地址、时间、照片或同一顾虑时，arc_diversity 和 timing_fit 均不得高于2分。
+- 低意向或长期沉默计划仍应形成 2–3 步完整周期，但可以拉开间隔并用 `cta=none` 直接交付关怀、科普、专业价值或真实证据。同一个必要事实整套最多询问一次，后续不能继续催同一信息。
+- 必须结合 `conversation_activity.reply_wait_minutes` 评分：刚开始沉默时首轮应承接最近顾虑并保持成交动量；沉默超过一天时首轮应明显降低催促感，用产品价值、斑点/护理知识、轻关怀或真实证据重新建立联系。长期沉默仍重复历史问题或原 CTA 时，psychology_accuracy 和 timing_fit 均不得高于3分。
+- `reply_wait_minutes>=1440` 时，第一轮应为 `cta=none`，优先采用 education/proof/professionalism/self_image 的陈述式价值触达；仍用 empathy/convenience 包装“活动还是效果”等问卷或问号催回复时，psychology_accuracy、human_tone 和 timing_fit 均不得高于3分。
+- “您先忙、等方便再说、先不打扰、后面有空再找我、先放着”等主动送客表达，在任何步骤出现时 conversion_action 不得高于3分；如果整条消息没有继续提供具体新价值，psychology_accuracy 也不得高于3分。
+- 最后一轮未发卡时，客户可见文字必须用明确封闭式问题完成收口；只陈述活动事实，或以“想了解我继续说/我给您留着”结束时，conversion_action 不得高于3分。
+- 客户尚未明确接受时使用“我先给您留着、先把资格留上、已经登记”等已执行表述属于事实越界，应判 hard_error；正确方式是询问是否登记。
 - 单条活动消息同时堆叠活动价、限量名额和赠品三个卖点时，human_tone 不得高于3分。自然微信应结合当前客户只选一个主要理由。
 - 客户文字承诺本轮会发送案例、图片、视频或参考，但该步 `asset_strategy=none` 时，asset_fit 和 conversion_action 均不得高于3分。
 - “我给您找了个做前做后的真实对比，您先看看”属于自然案例承接；“给您补个同类真实参考，看看改善思路是否接近”属于机器表达。
@@ -77,7 +83,7 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
         return ["unexpected_suppression"]
     steps = [item for item in plan.get("steps") or [] if isinstance(item, dict)]
     errors: list[str] = []
-    if len(steps) not in {1, 2, 3}:
+    if len(steps) not in {2, 3}:
         errors.append("step_count")
     angles = [str(item.get("persuasion_angle") or "") for item in steps]
     if any(angle not in ALLOWED_ANGLES for angle in angles):
@@ -97,6 +103,11 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
     if delays and delays[-1] > 10080:
         errors.append("plan_too_long")
     for index, step in enumerate(steps):
+        expected_no_reply_action = "end_plan" if index == len(steps) - 1 else "advance_to_next_step"
+        if str(step.get("no_reply_action") or "") != expected_no_reply_action:
+            errors.append(f"invalid_no_reply_action:{index + 1}")
+        if not str(step.get("no_reply_strategy") or "").strip():
+            errors.append(f"missing_no_reply_strategy:{index + 1}")
         reply_messages = step.get("reply_messages")
         if (
             not isinstance(reply_messages, list)
@@ -130,6 +141,7 @@ async def _run_case(
         "customer_id": f"model-test-{case['id']}",
         "memory": {},
         "recent_messages": case.get("recent_messages") or [],
+        "conversation_activity": case.get("conversation_activity") or {},
         "customer_context": case.get("customer_context") or {},
         "current_stage": "day2_personalized_spoken_unbooked",
         "business_goal": "推动客户重新开口，并逐步推进到店或支付10元预约金",
@@ -215,7 +227,14 @@ async def _run_case(
     )
     scores = [
         int(review.get(key) or 0)
-        for key in ("psychology_accuracy", "arc_diversity", "asset_fit", "human_tone", "conversion_action")
+        for key in (
+            "psychology_accuracy",
+            "arc_diversity",
+            "asset_fit",
+            "human_tone",
+            "conversion_action",
+            "timing_fit",
+        )
     ]
     passed = (
         not hard_errors

@@ -46,6 +46,7 @@ OUTREACH_PERSUASION_ANGLES = {
 OUTREACH_ASSET_STRATEGIES = {"none", "configured_image", "operation_video", "case_search"}
 OUTREACH_CONTENT_MODES = {"value_only", "soft_conversion", "transaction"}
 OUTREACH_URGENCY_LEVELS = {"immediate", "same_day", "normal", "slow"}
+OUTREACH_NO_REPLY_ACTIONS = {"advance_to_next_step", "end_plan"}
 OUTREACH_FIRST_STEP_MAX_MINUTES = 12 * 60
 OUTREACH_MIN_STEP_GAP_MINUTES = 6 * 60
 OUTREACH_MAX_STEP_GAP_MINUTES = 72 * 60
@@ -97,6 +98,20 @@ def _conversation_fingerprint(
         )
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _completed_cycle_blocks_automatic_replan(
+    completed_plan: dict[str, Any],
+    *,
+    latest_customer_message_at: str,
+) -> bool:
+    if not completed_plan:
+        return False
+    completed_at = _parse_iso(_string(completed_plan.get("completed_at")))
+    latest_customer_at = _parse_iso(_string(latest_customer_message_at))
+    if not completed_at:
+        return False
+    return latest_customer_at is None or latest_customer_at <= completed_at
 
 
 def _is_second_beijing_day(contact_started_at: str, *, now: datetime | None = None) -> bool:
@@ -373,8 +388,8 @@ def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
             return "should_create_plan=false cannot include plan_arc or steps"
         return ""
     steps = [step for step in response.get("steps") or [] if isinstance(step, dict)][:3]
-    if not steps:
-        return "plan must contain 1 to 3 steps"
+    if len(steps) not in {2, 3}:
+        return "plan must contain 2 to 3 steps"
     angles = [_string(step.get("persuasion_angle")) for step in steps]
     if any(angle not in OUTREACH_PERSUASION_ANGLES for angle in angles):
         return "every step must use one allowed persuasion_angle"
@@ -390,6 +405,15 @@ def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
         return "every step must use one allowed urgency_level"
     if any(not _string(step.get("timing_reason")) for step in steps):
         return "every step must contain timing_reason"
+    no_reply_actions = [_string(step.get("no_reply_action")) for step in steps]
+    if any(action not in OUTREACH_NO_REPLY_ACTIONS for action in no_reply_actions):
+        return "every step must use one allowed no_reply_action"
+    if any(not _string(step.get("no_reply_strategy")) for step in steps):
+        return "every step must contain no_reply_strategy"
+    if any(action != "advance_to_next_step" for action in no_reply_actions[:-1]):
+        return "non-final steps must advance to the next step when there is no reply"
+    if no_reply_actions[-1] != "end_plan":
+        return "final step must end the current plan when there is no reply"
     asset_strategies = [_string(step.get("asset_strategy")) or "none" for step in steps]
     if any(strategy not in OUTREACH_ASSET_STRATEGIES for strategy in asset_strategies):
         return "every step must use one allowed asset_strategy"
@@ -964,6 +988,8 @@ class OutreachService:
                 "avoid_repeating": _list_strings(step.get("avoid_repeating")),
                 "timing_reason": _string(step.get("timing_reason")),
                 "urgency_level": _string(step.get("urgency_level")),
+                "no_reply_action": _string(step.get("no_reply_action")),
+                "no_reply_strategy": _string(step.get("no_reply_strategy")),
                 "requested_delay_minutes": schedule["requested_delay_minutes"],
                 "normalized_delay_minutes": schedule["normalized_delay_minutes"],
                 "asset_strategy": _string(step.get("asset_strategy")) or "none",
@@ -1306,6 +1332,20 @@ class OutreachService:
                     )
                     return {"created": False, "reused": True, **active}
 
+        if self._completed_cycle_blocks_auto_plan(
+            customer_id=customer_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+            latest_customer_message_at=_string(conversation_activity.get("latest_customer_message_at")),
+        ):
+            return {
+                "created": False,
+                "reused": False,
+                "skipped": True,
+                "reason": "outreach_cycle_completed_without_new_customer_reply",
+            }
+
         if self.repository.has_outreach_evaluation_fingerprint(
             customer_id=customer_id,
             corp_id=corp_id,
@@ -1544,6 +1584,18 @@ class OutreachService:
                 return {"status": "skipped", "customer_id": customer_id, "reason": "customer_never_spoke"}
             if not latest_staff or latest_staff <= latest_customer:
                 return {"status": "skipped", "customer_id": customer_id, "reason": "not_waiting_for_customer_reply"}
+            if self._completed_cycle_blocks_auto_plan(
+                customer_id=customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+                latest_customer_message_at=latest_customer_text,
+            ):
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "outreach_cycle_completed_without_new_customer_reply",
+                }
             wait_minutes = max(
                 0,
                 int((datetime.now(timezone.utc) - latest_staff.astimezone(timezone.utc)).total_seconds() // 60),
@@ -1675,6 +1727,29 @@ class OutreachService:
 
     def monitor_status(self) -> dict[str, Any]:
         return dict(self._monitor_status)
+
+    def _completed_cycle_blocks_auto_plan(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+        latest_customer_message_at: str,
+    ) -> bool:
+        loader = getattr(self.repository, "get_latest_completed_outreach_plan_for_customer", None)
+        if not callable(loader):
+            return False
+        completed_plan = loader(
+            customer_id,
+            corp_id=corp_id,
+            wechat=wechat,
+            external_userid=external_userid,
+        )
+        return _completed_cycle_blocks_automatic_replan(
+            completed_plan if isinstance(completed_plan, dict) else {},
+            latest_customer_message_at=latest_customer_message_at,
+        )
 
     def _plan_lock(self, identity: dict[str, Any]) -> asyncio.Lock:
         scope = build_customer_scope(
@@ -1911,6 +1986,9 @@ class OutreachService:
             send_status=str(data.get("send_status") or send_result.get("msg") or "accepted"),
             system_msgid=str(data.get("system_msgid") or ""),
         )
+        remaining_loader = getattr(self.repository, "outreach_plan_has_remaining_tasks", None)
+        has_remaining_tasks = bool(remaining_loader(str(task["plan_id"]))) if callable(remaining_loader) else True
+        next_plan_status = "waiting" if has_remaining_tasks else "completed"
         scope = build_customer_scope(
             corp_id=task.get("corp_id") or plan.get("corp_id"),
             wechat=task.get("wechat") or plan.get("wechat"),
@@ -1921,11 +1999,11 @@ class OutreachService:
             self.repository.touch_customer_message_time(scope.sales_contact_key, field="last_outreach_at", value=sent_at)
             self.repository.update_customer_outreach_state(
                 scope.sales_contact_key,
-                outreach_status="waiting",
-                outreach_plan_id=str(task["plan_id"]),
+                outreach_status=next_plan_status,
+                outreach_plan_id=str(task["plan_id"]) if has_remaining_tasks else "",
                 last_outreach_at=sent_at,
             )
-        self.repository.update_outreach_plan_status(str(task["plan_id"]), "waiting")
+        self.repository.update_outreach_plan_status(str(task["plan_id"]), next_plan_status)
         self.repository.add_outreach_event(
             plan_id=str(task["plan_id"]),
             task_id=task_id,
@@ -1934,6 +2012,15 @@ class OutreachService:
             event_summary="Outreach task sent",
             payload={"reply_messages": reply_messages, "send_result": send_result},
         )
+        if not has_remaining_tasks:
+            self.repository.add_outreach_event(
+                plan_id=str(task["plan_id"]),
+                task_id=task_id,
+                customer_id=str(task["customer_id"]),
+                event_type="plan_cycle_completed",
+                event_summary="Final outreach step sent; current personalized outreach cycle completed",
+                payload={"sent_at": sent_at},
+            )
         return {"ok": True, "status": "sent", "send_result": send_result}
 
     async def _refresh_order_eligibility(self, *, task: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:

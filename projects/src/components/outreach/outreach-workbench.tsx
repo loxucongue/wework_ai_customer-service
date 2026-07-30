@@ -1361,6 +1361,12 @@ export function OutreachWorkbench() {
                             <p className="mt-2 text-xs text-zinc-500">
                               时间理由：{String(planning.timing_reason || "-")} · 紧迫度：{String(planning.urgency_level || "-")}
                             </p>
+                            <p className="mt-1 text-xs text-zinc-500">
+                              本轮未回复：
+                              {String(planning.no_reply_action || "") === "end_plan"
+                                ? "结束当前周期，不再自动续计划"
+                                : String(planning.no_reply_strategy || "进入下一步并更换沟通角度")}
+                            </p>
                             {avoidRepeating ? <p className="mt-2 text-xs text-zinc-500">避免复读：{avoidRepeating}</p> : null}
                             <p className="mt-1 text-xs text-zinc-500">
                               计划发送：{formatTime(task.scheduled_at)} · {boolLabel(task.should_send_payment_collection)} · 发送结果：{sendStatusLabel(task.send_status)}

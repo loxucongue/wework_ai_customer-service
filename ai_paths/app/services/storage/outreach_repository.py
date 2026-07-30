@@ -886,6 +886,53 @@ class OutreachRepositoryMixin:
             ).fetchone()
         return self.get_outreach_plan(row["id"]) if row else {}
 
+    def get_latest_completed_outreach_plan_for_customer(
+        self,
+        customer_id: str,
+        *,
+        corp_id: str = "",
+        wechat: str = "",
+        external_userid: str = "",
+    ) -> dict[str, Any]:
+        if not wechat:
+            return {}
+        clauses = [
+            "customer_id=?",
+            "lower(wechat)=lower(?)",
+            "status='completed'",
+        ]
+        params: list[Any] = [customer_id, wechat]
+        if corp_id:
+            clauses.append("corp_id=?")
+            params.append(corp_id)
+        if external_userid:
+            clauses.append("external_userid=?")
+            params.append(external_userid)
+        with self.store.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT * FROM outreach_plans
+                WHERE {' AND '.join(clauses)}
+                ORDER BY completed_at DESC, created_at DESC
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return self._decode_outreach_plan(dict(row)) if row else {}
+
+    def outreach_plan_has_remaining_tasks(self, plan_id: str) -> bool:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM outreach_tasks
+                WHERE plan_id=?
+                  AND status IN ('pending', 'checking', 'check_failed', 'sending')
+                """,
+                (plan_id,),
+            ).fetchone()
+        return int(scalar(row)) > 0
+
     def has_outreach_evaluation_fingerprint(
         self,
         *,

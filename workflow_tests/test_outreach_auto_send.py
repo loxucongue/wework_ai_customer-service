@@ -13,7 +13,7 @@ from app.services.customer_scope import build_customer_scope
 
 class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
     async def test_auto_approved_task_sends_after_fresh_conversation_and_order_checks(self) -> None:
-        repository = _ExecutionRepository(order_status="no_order")
+        repository = _ExecutionRepository(order_status="no_order", remaining_tasks=True)
         system = _SystemClient()
         service = OutreachService(
             repository=repository,
@@ -28,6 +28,22 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(system.sent), 1)
         self.assertIn(("task-1", "sent"), repository.task_statuses)
         self.assertIn(("plan-1", "waiting"), repository.plan_statuses)
+
+    async def test_final_task_completes_the_cycle_instead_of_waiting_forever(self) -> None:
+        repository = _ExecutionRepository(order_status="no_order", remaining_tasks=False)
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=_MessageModelClient(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-final")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertIn(("plan-1", "completed"), repository.plan_statuses)
+        self.assertEqual(repository.events[-1]["event_type"], "plan_cycle_completed")
 
     async def test_auto_approved_task_is_skipped_when_order_became_booked(self) -> None:
         repository = _ExecutionRepository(order_status="no_order")
@@ -151,6 +167,44 @@ class OutreachRepositoryDueTaskTests(unittest.TestCase):
             )
 
             self.assertEqual(active["plan"]["id"], created["plan"]["id"])
+
+    def test_completed_cycle_and_remaining_task_queries_are_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
+            store.initialize()
+            repository = AppRepository(store)
+            created = repository.create_outreach_plan(
+                customer_id="customer-cycle",
+                corp_id="corp",
+                user_id="7294",
+                wechat="DY258",
+                external_userid="external-cycle",
+                customer_stage="P2_OBJECTION",
+                stall_reason="silent",
+                customer_psychology="需要递进价值",
+                plan_goal="重新开口",
+                source_snapshot={},
+                tasks=[_due_task(1, "第一步"), _due_task(2, "第二步")],
+            )
+            plan_id = created["plan"]["id"]
+            first_task_id = created["tasks"][0]["id"]
+            second_task_id = created["tasks"][1]["id"]
+
+            repository.update_outreach_task(first_task_id, status="sent")
+            self.assertTrue(repository.outreach_plan_has_remaining_tasks(plan_id))
+            repository.update_outreach_task(second_task_id, status="sent")
+            self.assertFalse(repository.outreach_plan_has_remaining_tasks(plan_id))
+            repository.update_outreach_plan_status(plan_id, "completed")
+
+            completed = repository.get_latest_completed_outreach_plan_for_customer(
+                "customer-cycle",
+                corp_id="corp",
+                wechat="dy258",
+                external_userid="external-cycle",
+            )
+
+            self.assertEqual(completed["id"], plan_id)
+            self.assertEqual(completed["status"], "completed")
 
     def test_customer_reply_cancels_active_plan_and_remaining_tasks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -647,8 +701,9 @@ class _MessageModelClient:
 
 
 class _ExecutionRepository:
-    def __init__(self, order_status: str) -> None:
+    def __init__(self, order_status: str, *, remaining_tasks: bool = False) -> None:
         self.order_status = order_status
+        self.remaining_tasks = remaining_tasks
         self.task_statuses: list[tuple[str, str]] = []
         self.plan_statuses: list[tuple[str, str]] = []
         self.events: list[dict[str, Any]] = []
@@ -708,6 +763,9 @@ class _ExecutionRepository:
     def update_outreach_plan_status(self, plan_id: str, status: str) -> dict[str, Any]:
         self.plan_statuses.append((plan_id, status))
         return {"plan": {"id": plan_id, "status": status}}
+
+    def outreach_plan_has_remaining_tasks(self, _plan_id: str) -> bool:
+        return self.remaining_tasks
 
     def skip_remaining_outreach_tasks(
         self,

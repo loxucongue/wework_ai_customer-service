@@ -6,8 +6,9 @@
       {"direction": "customer", "content": "你好，在吗"},
       {"direction": "staff", "content": "在的，您是想了解淡斑活动吗？"}
     ],
+    "conversation_activity": {"reply_wait_minutes": 5760},
     "customer_context": {"source": "platform_agent", "orders": []},
-    "expected": "像微信朋友聊天一样自然简短，不出现分析报告词、内部分类或强制口令；不同轮次仍有递进。"
+    "expected": "客户已沉默4天，首轮应用轻关怀、产品价值或斑点知识重新建立联系，不继续追问原问题；不同轮次仍有递进。"
   },
   {
     "id": "rebound_worry",
@@ -16,6 +17,7 @@
       {"direction": "staff", "content": "周年庆淡斑活动总价268元，每位先付10元预约金，到店抵扣。"},
       {"direction": "customer", "content": "我就怕过段时间又反弹，钱花了也没用。"}
     ],
+    "conversation_activity": {"reply_wait_minutes": 20},
     "customer_context": {"source": "platform_agent", "orders": []},
     "expected": "先给信心并用专业或案例角度化解反弹顾虑；后续角度不同；最后可选择预约金卡。"
   },
@@ -26,8 +28,9 @@
       {"direction": "staff", "content": "真实门店位置已经发给您了。"},
       {"direction": "customer", "content": "还是太远了，跑一趟不方便，就算了吧。"}
     ],
+    "conversation_activity": {"reply_wait_minutes": 2880},
     "customer_context": {"source": "platform_agent", "orders": []},
-    "expected": "不重复追问位置，不编路线距离；从共情、专业价值或低风险行动递进。"
+    "expected": "客户已沉默2天，不重复追问位置、不编路线距离；首轮提供与跑一趟是否值得相关的新价值，后续再从专业或低风险行动递进。"
   },
   {
     "id": "weather_delay",
@@ -36,6 +39,7 @@
       {"direction": "staff", "content": "活动和到店流程已经介绍过。"},
       {"direction": "customer", "content": "这几天下雨，等天气好了再说吧。"}
     ],
+    "conversation_activity": {"reply_wait_minutes": 1440},
     "customer_context": {"source": "platform_agent", "orders": []},
     "expected": "理解天气但不送客；先降低时间压力，再补不同价值，不连续催付款。"
   },
@@ -46,6 +50,7 @@
       {"direction": "staff", "content": "活动价已经给您介绍过了。"},
       {"direction": "customer", "content": "最近很忙，有时间我再约你。"}
     ],
+    "conversation_activity": {"reply_wait_minutes": 180},
     "customer_context": {"source": "platform_agent", "orders": []},
     "expected": "不反复询问具体时间；说明到店时间后定，并从其他心理角度递进。"
   },
@@ -56,6 +61,7 @@
       {"direction": "staff", "content": "这次线上活动总价268元，每位先付10元预约金，到店抵扣，做的话再付258元；未做或不满意可退。"},
       {"direction": "customer", "content": "我怕去了不是这个价，又让我加项目。"}
     ],
+    "conversation_activity": {"reply_wait_minutes": 15},
     "customer_context": {"source": "platform_agent", "orders": []},
     "expected": "第一轮解决价格透明顾虑，后续不能每轮继续强调便宜，应换信任或专业角度。"
   },
@@ -66,8 +72,9 @@
       {"direction": "staff", "content": "痘印、痘坑这类也在当前淡斑和色素问题的改善范围内。"},
       {"direction": "customer", "content": "那我再想想。"}
     ],
+    "conversation_activity": {"reply_wait_minutes": 4320},
     "customer_context": {"source": "platform_agent", "orders": []},
-    "expected": "不反复确认项目范围；可用知识、案例或专业检测递进并引导重新开口。"
+    "expected": "客户已沉默3天，不反复确认项目范围或追问决定；首轮用痘印痘坑相关知识、护理价值或轻关怀重新建立联系，后续可用案例或专业流程递进。"
   },
   {
     "id": "single_session_worry",
@@ -76,6 +83,7 @@
       {"direction": "customer", "content": "我不是问能不能做，我就想知道是不是一次就可以。"},
       {"direction": "staff", "content": "具体要结合斑点类型、时间和深浅，到店检测后判断更准确。"}
     ],
+    "conversation_activity": {"reply_wait_minutes": 45},
     "customer_context": {"source": "platform_agent", "orders": []},
     "expected": "不机械复读检测免责；先承接次数核心，再从案例或专业价值推进。"
   },
@@ -85,6 +93,7 @@
     "recent_messages": [
       {"direction": "customer", "content": "我已经付好了。"}
     ],
+    "conversation_activity": {"reply_wait_minutes": 60},
     "customer_context": {
       "source": "platform_agent",
       "orders": [{"id": "order-paid", "status": "prepay_paid", "is_current_order": true}]
