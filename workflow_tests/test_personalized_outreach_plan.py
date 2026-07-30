@@ -8,7 +8,9 @@ from typing import Any
 
 from app.services.outreach_service import (
     OutreachService,
+    _compose_outreach_messages,
     _conversation_activity_from_context,
+    _normalize_outreach_plan_response,
     _normalize_outreach_schedule,
     _outreach_plan_context_error,
     _outreach_plan_structure_error,
@@ -17,6 +19,56 @@ from app.services.outreach_service import (
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    def test_plan_normalizer_wraps_text_content_in_reply_message_object(self) -> None:
+        response = _ModelClient().response
+        response["steps"][0]["reply_messages"] = [
+            {"type": "text", "order": 8, "content": "平时护理温和一点会更稳。"}
+        ]
+
+        normalized = _normalize_outreach_plan_response(response)
+
+        self.assertEqual(
+            normalized["steps"][0]["reply_messages"],
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "平时护理温和一点会更稳。"},
+                }
+            ],
+        )
+        self.assertEqual(_outreach_plan_structure_error(normalized), "")
+
+    def test_plan_structure_accepts_one_or_two_text_messages_per_step(self) -> None:
+        response = _ModelClient().response
+        response["steps"][0]["reply_messages"] = [
+            {"type": "text", "order": 1, "content": {"text": "平时防晒没跟上的话，色素会更容易显出来。"}},
+            {"type": "text", "order": 2, "content": {"text": "日常做点简单遮挡，再把补水跟上会更稳一些。"}},
+        ]
+
+        self.assertEqual(_outreach_plan_structure_error(response), "")
+
+        response["steps"][0]["reply_messages"].append(
+            {"type": "text", "order": 3, "content": {"text": "第三条不允许"}}
+        )
+        self.assertEqual(
+            _outreach_plan_structure_error(response),
+            "every step must contain one or two reply_messages text items",
+        )
+
+    def test_message_composition_keeps_two_texts_before_locked_asset_and_card(self) -> None:
+        messages = _compose_outreach_messages(
+            ["第一条价值信息", "第二条自然承接"],
+            resolved_asset={"type": "image", "url": "https://cdn.example/real.jpg"},
+            should_send_payment_collection=True,
+        )
+
+        self.assertEqual(
+            [item["type"] for item in messages],
+            ["text", "text", "image", "payment_collection"],
+        )
+        self.assertEqual([item["order"] for item in messages], [1, 2, 3, 4])
+
     def test_manual_plan_context_derives_reply_wait_from_cached_message_facts(self) -> None:
         now = datetime(2026, 7, 30, 4, 35, tzinfo=timezone.utc)
 
@@ -44,6 +96,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(activity["awaiting_customer_reply"])
         self.assertEqual(activity["real_customer_message_count"], 1)
         self.assertEqual(activity["reply_wait_minutes"], 2793)
+        self.assertEqual(activity["customer_silence_minutes"], 5984)
         self.assertEqual(
             activity["latest_staff_message_at"],
             "2026-07-28T06:01:46+00:00",
@@ -78,6 +131,38 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 reply_wait_minutes=20,
             ),
             "",
+        )
+
+    def test_long_customer_silence_requires_immediate_first_touch_and_daily_spacing(self) -> None:
+        response = _ModelClient().response
+        response["steps"][0]["delay_minutes"] = 360
+
+        self.assertEqual(
+            _outreach_plan_context_error(
+                response,
+                activity_quote_fact={"completed": False},
+                reply_wait_minutes=2793,
+                customer_silence_minutes=6048,
+            ),
+            (
+                "customer_silence_minutes is at least 4320; first step delay_minutes "
+                "must be between 0 and 180"
+            ),
+        )
+
+        response["steps"][0]["delay_minutes"] = 60
+        response["steps"][1]["delay_minutes"] = 780
+        self.assertEqual(
+            _outreach_plan_context_error(
+                response,
+                activity_quote_fact={"completed": False},
+                reply_wait_minutes=2793,
+                customer_silence_minutes=6048,
+            ),
+            (
+                "customer_silence_minutes is at least 4320; adjacent steps must be "
+                "at least 1440 minutes apart"
+            ),
         )
 
     def test_final_step_requires_an_explicit_action(self) -> None:
@@ -428,6 +513,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 "real_customer_message_count": 1,
                 "latest_customer_message_at": "2026-07-27T10:00:00+08:00",
                 "reply_wait_minutes": 20,
+                "customer_silence_minutes": 20,
             },
             customer_context={"orders": [], "deposit_state": "unknown"},
             platform_task={
@@ -783,7 +869,11 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "created_at": "2026-07-28T09:01:00+08:00",
                 },
             ],
-            conversation_activity={"real_customer_message_count": 1},
+            conversation_activity={
+                "real_customer_message_count": 1,
+                "reply_wait_minutes": 20,
+                "customer_silence_minutes": 20,
+            },
             customer_context={"orders": []},
             platform_task={"event_id": "platform-task-card", "messages": []},
         )
@@ -866,7 +956,11 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 {"direction": "customer", "content": "会不会反弹"},
                 {"direction": "staff", "content": "到店先检测"},
             ],
-            conversation_activity={"real_customer_message_count": 1},
+            conversation_activity={
+                "real_customer_message_count": 1,
+                "reply_wait_minutes": 20,
+                "customer_silence_minutes": 20,
+            },
             customer_context={"orders": []},
             platform_task={"event_id": "platform-task-no-card", "messages": []},
         )
@@ -1002,6 +1096,56 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 },
             ],
         )
+
+    async def test_message_model_can_return_two_natural_text_messages(self) -> None:
+        repository = _Repository()
+        model = _ModelClient(
+            response={
+                "reply_messages": [
+                    {
+                        "type": "text",
+                        "order": 1,
+                        "content": {"text": "平时日晒多的话，斑点颜色会更容易显出来。"},
+                    },
+                    {
+                        "type": "text",
+                        "order": 2,
+                        "content": {"text": "日常先把防晒和补水做好，对皮肤状态也更友好。"},
+                    },
+                ]
+            }
+        )
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=_ConversationSystemClient(),
+        )
+        task = {
+            "customer_id": "22000001",
+            "content_sources": [],
+            "content_source_metadata": [
+                {
+                    "outreach_task_metadata": {
+                        "content_mode": "value_only",
+                        "persuasion_angle": "education",
+                        "new_value": "未讲过的防晒护理知识",
+                        "avoid_repeating": ["门店地址", "到店检测"],
+                        "cta": "none",
+                    }
+                }
+            ],
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "原草稿第一条"}},
+                {"type": "text", "order": 2, "content": {"text": "原草稿第二条"}},
+            ],
+            "should_send_payment_collection": False,
+        }
+
+        messages = await service._generate_task_messages(task=task, plan={})
+
+        self.assertEqual([item["type"] for item in messages], ["text", "text"])
+        model_input = json.loads(model.calls[0]["messages"][1]["content"])
+        self.assertEqual(model_input["task"]["draft_texts"], ["原草稿第一条", "原草稿第二条"])
 
     async def test_case_search_failure_uses_model_selected_configured_fallback(self) -> None:
         response = {

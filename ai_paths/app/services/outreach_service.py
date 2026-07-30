@@ -133,6 +133,16 @@ def _conversation_activity_from_context(
             if awaiting_customer_reply and latest_staff
             else 0
         )
+    if "customer_silence_minutes" not in activity or activity.get("customer_silence_minutes") in {
+        None,
+        "",
+    }:
+        current = now or datetime.now(timezone.utc)
+        activity["customer_silence_minutes"] = (
+            max(0, int((current - latest_customer.astimezone(timezone.utc)).total_seconds() // 60))
+            if latest_customer
+            else 0
+        )
     activity.setdefault("latest_customer_message_at", _message_time_iso(latest_customer_text))
     activity.setdefault("latest_staff_message_at", _message_time_iso(latest_staff_text))
     activity.setdefault("real_customer_message_count", customer_count)
@@ -381,13 +391,18 @@ def _task_content_sources(
 
 
 def _compose_outreach_messages(
-    text: str,
+    texts: str | list[str],
     *,
     resolved_asset: dict[str, Any] | None = None,
     should_send_payment_collection: bool = False,
 ) -> list[dict[str, Any]]:
-    output = [{"type": "text", "order": 1, "content": {"text": _string(text)}}]
-    asset_message = asset_reply_message(resolved_asset or {}, order=2)
+    normalized_texts = [_string(item) for item in ([texts] if isinstance(texts, str) else texts)]
+    output = [
+        {"type": "text", "order": index, "content": {"text": text}}
+        for index, text in enumerate(normalized_texts[:2], start=1)
+        if text
+    ]
+    asset_message = asset_reply_message(resolved_asset or {}, order=len(output) + 1)
     if asset_message:
         output.append(asset_message)
     if should_send_payment_collection:
@@ -402,8 +417,14 @@ def _compose_outreach_messages(
 
 
 def _first_reply_text(messages: Any) -> str:
+    texts = _reply_texts(messages)
+    return texts[0] if texts else ""
+
+
+def _reply_texts(messages: Any, *, limit: int = 2) -> list[str]:
     if not isinstance(messages, list):
-        return ""
+        return []
+    output: list[str] = []
     for item in messages:
         if not isinstance(item, dict) or _string(item.get("type")) != "text":
             continue
@@ -413,15 +434,40 @@ def _first_reply_text(messages: Any) -> str:
         else:
             text = _string(content)
         if text:
-            return text
-    return ""
+            output.append(text)
+            if len(output) >= limit:
+                break
+    return output
 
 
 def _plan_step_text(step: dict[str, Any]) -> str:
-    text = _first_reply_text(step.get("reply_messages"))
-    if text:
-        return text
-    return _string(step.get("draft_text"))
+    texts = _plan_step_texts(step)
+    return texts[0] if texts else ""
+
+
+def _plan_step_texts(step: dict[str, Any]) -> list[str]:
+    texts = _reply_texts(step.get("reply_messages"))
+    if texts:
+        return texts
+    draft_text = _string(step.get("draft_text"))
+    return [draft_text] if draft_text else []
+
+
+def _normalize_outreach_plan_response(response: dict[str, Any]) -> dict[str, Any]:
+    for step in response.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        messages = step.get("reply_messages")
+        if not isinstance(messages, list):
+            continue
+        for index, message in enumerate(messages, start=1):
+            if not isinstance(message, dict) or _string(message.get("type")) != "text":
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                message["content"] = {"text": content}
+            message["order"] = index
+    return response
 
 
 def _task_metadata(task: dict[str, Any]) -> dict[str, Any]:
@@ -483,14 +529,16 @@ def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
         return "every step must use one allowed asset_strategy"
     for step in steps:
         messages = step.get("reply_messages")
-        if not isinstance(messages, list) or len(messages) != 1:
-            return "every step must contain exactly one reply_messages text item"
-        if (
-            not isinstance(messages[0], dict)
-            or _string(messages[0].get("type")) != "text"
-            or not _plan_step_text(step)
-        ):
-            return "plan step reply_messages must contain one non-empty text item"
+        if not isinstance(messages, list) or len(messages) not in {1, 2}:
+            return "every step must contain one or two reply_messages text items"
+        if any(
+            not isinstance(message, dict)
+            or _string(message.get("type")) != "text"
+            for message in messages
+        ) or any(not isinstance(message.get("content"), dict) for message in messages) or len(
+            _reply_texts(messages)
+        ) != len(messages):
+            return "plan step reply_messages must contain one or two non-empty text items"
         if _string(step.get("content_mode")) == "value_only" and _bool(
             step.get("should_send_payment_collection")
         ):
@@ -527,8 +575,21 @@ def _outreach_plan_context_error(
     *,
     activity_quote_fact: dict[str, Any],
     reply_wait_minutes: int = 0,
+    customer_silence_minutes: int = 0,
 ) -> str:
     steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
+    if bool(response.get("should_create_plan", True)) and customer_silence_minutes >= 4320 and steps:
+        delays = [_int(step.get("delay_minutes"), -1) for step in steps]
+        if not 0 <= delays[0] <= 180:
+            return (
+                "customer_silence_minutes is at least 4320; first step delay_minutes "
+                "must be between 0 and 180"
+            )
+        if any(current - previous < 1440 for previous, current in zip(delays, delays[1:])):
+            return (
+                "customer_silence_minutes is at least 4320; adjacent steps must be "
+                "at least 1440 minutes apart"
+            )
     if bool(response.get("should_create_plan", True)) and reply_wait_minutes >= 1440 and steps:
         first_step = steps[0]
         first_step_is_value_delivery = (
@@ -884,6 +945,10 @@ class OutreachService:
             recent_messages=recent_messages,
         )
         reply_wait_minutes = _int(conversation_activity.get("reply_wait_minutes"), 0)
+        customer_silence_minutes = _int(
+            conversation_activity.get("customer_silence_minutes"),
+            0,
+        )
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
         asset_catalog = self._outreach_asset_catalog()
         recent_media = recent_outreach_media(recent_messages, hours=72)
@@ -942,10 +1007,12 @@ class OutreachService:
             tier="strong",
             temperature=0.0,
         )
+        response = _normalize_outreach_plan_response(response)
         structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
             response,
             activity_quote_fact=activity_quote_fact,
             reply_wait_minutes=reply_wait_minutes,
+            customer_silence_minutes=customer_silence_minutes,
         )
         if structure_error:
             response = await self.model_client.chat_json(
@@ -964,6 +1031,7 @@ class OutreachService:
                 tier="strong",
                 temperature=0.0,
             )
+            response = _normalize_outreach_plan_response(response)
         response = await self.model_client.chat_json(
             [
                 {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
@@ -980,10 +1048,12 @@ class OutreachService:
             tier="strong",
             temperature=0.0,
         )
+        response = _normalize_outreach_plan_response(response)
         structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
             response,
             activity_quote_fact=activity_quote_fact,
             reply_wait_minutes=reply_wait_minutes,
+            customer_silence_minutes=customer_silence_minutes,
         )
         for _repair_attempt in range(3):
             if not structure_error:
@@ -1011,10 +1081,12 @@ class OutreachService:
                 tier="strong",
                 temperature=0.0,
             )
+            response = _normalize_outreach_plan_response(response)
             structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
                 response,
                 activity_quote_fact=activity_quote_fact,
                 reply_wait_minutes=reply_wait_minutes,
+                customer_silence_minutes=customer_silence_minutes,
             )
         if not bool(response.get("should_create_plan", True)):
             self.repository.add_outreach_event(
@@ -1039,6 +1111,7 @@ class OutreachService:
             response,
             activity_quote_fact=activity_quote_fact,
             reply_wait_minutes=reply_wait_minutes,
+            customer_silence_minutes=customer_silence_minutes,
         )
         if structure_error:
             raise RuntimeError(f"outreach_plan_model_invalid_structure: {structure_error}")
@@ -1080,8 +1153,8 @@ class OutreachService:
                 and _valid_activity_quote_evidence(activity_quote_fact)
             )
             payment_collection_added = payment_collection_added or should_send_payment_collection
-            draft_text = _plan_step_text(step)
-            if not draft_text:
+            draft_texts = _plan_step_texts(step)
+            if not draft_texts:
                 continue
             resolved_asset = resolved_assets[index - 1]
             task_metadata = {
@@ -1102,7 +1175,7 @@ class OutreachService:
                 "plan_arc": _string(response.get("plan_arc")),
             }
             reply_messages = _compose_outreach_messages(
-                draft_text,
+                draft_texts,
                 resolved_asset=resolved_asset,
                 should_send_payment_collection=should_send_payment_collection,
             )
@@ -2203,6 +2276,7 @@ class OutreachService:
                 "intent": task.get("intent"),
                 "message_goal": task.get("message_goal"),
                 "draft_text": _first_reply_text(task.get("reply_messages")),
+                "draft_texts": _reply_texts(task.get("reply_messages")),
                 "should_send_payment_collection": bool(task.get("should_send_payment_collection")),
             },
             "task_metadata": task_metadata,
@@ -2238,11 +2312,11 @@ class OutreachService:
             tier="balanced",
             temperature=0.0,
         )
-        text = _first_reply_text(response.get("reply_messages"))
-        if not text:
+        texts = _reply_texts(response.get("reply_messages"))
+        if not texts:
             raise RuntimeError("outreach_message_model_empty")
         return _compose_outreach_messages(
-            text,
+            texts,
             resolved_asset=resolved_asset,
             should_send_payment_collection=bool(task.get("should_send_payment_collection")),
         )

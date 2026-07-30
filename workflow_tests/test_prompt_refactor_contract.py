@@ -29,6 +29,7 @@ from app.prompts.reply_synthesizer import build_reply_messages
 from app.prompts.sop_chat_gate import build_sop_chat_gate_messages
 from app.policies.business_rules import (
     load_business_rules,
+    outreach_business_facts_for_model,
     planner_business_rules_prompt_section,
     reply_business_rules_for_model,
 )
@@ -1012,12 +1013,14 @@ def test_outreach_prompts_require_multi_angle_assets_and_locked_send_structure()
     ]:
         assert marker in OUTREACH_PLAN_SYSTEM_PROMPT
     for marker in [
-        "只改写一条 text",
+        "只改写计划中锁定的 1–2 条 text",
         "不能改变计划的心理角度、素材、预约金动作、金额或发送时间",
         "代码会在文字后附加",
         "avoid_repeating",
         "真人销售顺手发微信",
         "不写“回我 A/B/C”",
+        "outreach_knowledge_facts",
+        "门店位置已经发您了",
     ]:
         assert marker in OUTREACH_MESSAGE_SYSTEM_PROMPT
     for marker in [
@@ -1027,5 +1030,24 @@ def test_outreach_prompts_require_multi_angle_assets_and_locked_send_structure()
         "我把10元预约金卡发您",
         "不能三轮都要求客户回复一个关键词",
         "读起来像问卷、流程提示或计划摘要",
+        "历史已讲主题清单",
+        "reply_wait_minutes>=4320",
     ]:
         assert marker in OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT
+
+
+def test_outreach_context_contains_approved_non_repeating_knowledge_facts() -> None:
+    facts = outreach_business_facts_for_model()
+    knowledge = facts["outreach_knowledge_facts"]
+    topics = {item["id"]: item for item in knowledge["topics"]}
+
+    assert "先检查完整近期聊天" in knowledge["usage_policy"]
+    assert {
+        "daily_sun_protection",
+        "gentle_care",
+        "spot_observation",
+        "outdoor_work_care",
+        "maintenance_care",
+        "original_camera_record",
+    }.issubset(topics)
+    assert all(item.get("avoid_when") for item in topics.values())

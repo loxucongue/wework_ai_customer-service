@@ -16,6 +16,7 @@ from app.services.outreach_prompts import (
 )
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.outreach_service import (
+    _normalize_outreach_plan_response,
     _outreach_plan_context_error,
     _outreach_plan_structure_error,
     build_outreach_activity_quote_fact,
@@ -58,6 +59,15 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - 低意向或长期沉默计划仍应形成 2–3 步完整周期，但可以拉开间隔并用 `cta=none` 直接交付关怀、科普、专业价值或真实证据。同一个必要事实整套最多询问一次，后续不能继续催同一信息。
 - 必须结合 `conversation_activity.reply_wait_minutes` 评分：刚开始沉默时首轮应承接最近顾虑并保持成交动量；沉默超过一天时首轮应明显降低催促感，用产品价值、斑点/护理知识、轻关怀或真实证据重新建立联系。长期沉默仍重复历史问题或原 CTA 时，psychology_accuracy 和 timing_fit 均不得高于3分。
 - `reply_wait_minutes>=1440` 时，第一轮应为 `cta=none`，优先采用 education/proof/professionalism/self_image 的陈述式价值触达；仍用 empathy/convenience 包装“活动还是效果”等问卷或问号催回复时，psychology_accuracy、human_tone 和 timing_fit 均不得高于3分。
+- `reply_wait_minutes>=1440` 时，把第一轮与全部历史客服消息逐条比较。若仍在说历史已经发过的门店、地址、路线、停车、检测、价格、预约金或案例，即使换了措辞，psychology_accuracy、arc_diversity 和 timing_fit 均不得高于2分。
+- `customer_silence_minutes>=4320` 时，第一轮必须提供一个历史未讲过的批准科普、未发送真实证据或全新产品价值。说“门店已经发您了”“到店先检测”“之前给您介绍过”属于明显无价值复读。
+- `offer_context.outreach_knowledge_facts` 是允许模型选用的候选知识目录，不代表这些内容历史已经发给客户。只有 `recent_messages/recent_sop_delivery/recent_media_delivery` 才能证明客户实际收到过某个话题或素材。
+- `customer_silence_minutes>=4320` 且最近没有客户主动报名、询问付款或明确参加时，本周期应以重新开口为目标，不应因历史报价完成就复读268/10/258或直接附预约金卡；这样做应降低 psychology_accuracy、conversion_action 和 timing_fit。
+- `customer_silence_minutes>=4320` 时，评估动作发生时已经等待足够久，第一步必须在0–180分钟内轻触，后续每一步与前一步至少间隔24小时；不满足时 timing_fit 不得高于2分。
+- 长期沉默计划最后一步用一个简短、自然、与前两轮新价值相关的问题促使客户重新开口，是正确的 conversion_action，可评4分以上；不能因为它是问句就降分。“您平时是不是经常在户外呀？”以及历史未问过的“您现在最想先改善脸上哪一块呀？”都属于可接受的单一低门槛问题。只有使用“还是”二选一、要求客户选择效果/价格/活动/门店、口令式选择或重复历史问题时才应扣分。
+- 时间只按数值判断：`customer_silence_minutes>=4320` 时，第一步在0–180分钟且后续相邻步骤差值均不少于1440分钟，就符合长期沉默节奏，不得凭主观感觉误判 timing_fit。
+- 第一轮已讲防晒、清洁、补水等日常护理，第二轮仍讲另一条日常护理，即使把标签改成 professionalism 也属于语义重复，arc_diversity 不得高于3分；第二轮应切换真实证据、技术或记录价值。
+- 一步输出两条 text 是允许的：只有两条共同围绕一个新价值、自然分段且没有重复时才可高分；机械拆句、两条重复结论或借第二条夹带额外营销，应降低 human_tone。
 - “您先忙、等方便再说、先不打扰、后面有空再找我、先放着”等主动送客表达，在任何步骤出现时 conversion_action 不得高于3分；如果整条消息没有继续提供具体新价值，psychology_accuracy 也不得高于3分。
 - 最后一轮未发卡时，客户可见文字必须用明确封闭式问题完成收口；只陈述活动事实，或以“想了解我继续说/我给您留着”结束时，conversion_action 不得高于3分。
 - 客户尚未明确接受时使用“我先给您留着、先把资格留上、已经登记”等已执行表述属于事实越界，应判 hard_error；正确方式是询问是否登记。
@@ -96,6 +106,9 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
         plan,
         activity_quote_fact=build_outreach_activity_quote_fact(case.get("recent_messages") or [], {}),
         reply_wait_minutes=int((case.get("conversation_activity") or {}).get("reply_wait_minutes") or 0),
+        customer_silence_minutes=int(
+            (case.get("conversation_activity") or {}).get("customer_silence_minutes") or 0
+        ),
     )
     if context_error:
         errors.append(f"context:{context_error}")
@@ -127,8 +140,8 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
         reply_messages = step.get("reply_messages")
         if (
             not isinstance(reply_messages, list)
-            or len(reply_messages) != 1
-            or str(reply_messages[0].get("type") or "") != "text"
+            or len(reply_messages) not in {1, 2}
+            or any(str(item.get("type") or "") != "text" for item in reply_messages)
         ):
             errors.append(f"invalid_reply_messages:{index + 1}")
         strategy = str(step.get("asset_strategy") or "none")
@@ -143,6 +156,21 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
         ):
             errors.append("value_only_payment")
     return errors
+
+
+def _long_silence_timing_is_valid(plan: dict[str, Any], case: dict[str, Any]) -> bool:
+    activity = case.get("conversation_activity") or {}
+    if int(activity.get("customer_silence_minutes") or 0) < 4320:
+        return False
+    steps = [item for item in plan.get("steps") or [] if isinstance(item, dict)]
+    if len(steps) not in {2, 3}:
+        return False
+    delays = [int(item.get("delay_minutes") or -1) for item in steps]
+    return (
+        0 <= delays[0] <= 180
+        and all(1440 <= right - left <= 4320 for left, right in zip(delays, delays[1:]))
+        and delays[-1] <= 10080
+    )
 
 
 async def _run_case(
@@ -183,6 +211,7 @@ async def _run_case(
                 tier="strong",
                 temperature=0.0,
             )
+            plan = _normalize_outreach_plan_response(plan)
             plan = await client.chat_json(
                 [
                     {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
@@ -200,10 +229,14 @@ async def _run_case(
                 tier="strong",
                 temperature=0.0,
             )
+            plan = _normalize_outreach_plan_response(plan)
             structure_error = _outreach_plan_structure_error(plan) or _outreach_plan_context_error(
                 plan,
                 activity_quote_fact=payload["activity_quote_fact"],
                 reply_wait_minutes=int(payload["conversation_activity"].get("reply_wait_minutes") or 0),
+                customer_silence_minutes=int(
+                    payload["conversation_activity"].get("customer_silence_minutes") or 0
+                ),
             )
             for _repair_attempt in range(3):
                 if not structure_error:
@@ -232,10 +265,14 @@ async def _run_case(
                     tier="strong",
                     temperature=0.0,
                 )
+                plan = _normalize_outreach_plan_response(plan)
                 structure_error = _outreach_plan_structure_error(plan) or _outreach_plan_context_error(
                     plan,
                     activity_quote_fact=payload["activity_quote_fact"],
                     reply_wait_minutes=int(payload["conversation_activity"].get("reply_wait_minutes") or 0),
+                    customer_silence_minutes=int(
+                        payload["conversation_activity"].get("customer_silence_minutes") or 0
+                    ),
                 )
         except Exception as exc:
             return {
@@ -278,6 +315,11 @@ async def _run_case(
         {str(item.get("asset_id") or "") for item in asset_catalog},
         case,
     )
+    if _long_silence_timing_is_valid(plan, case):
+        model_timing_fit = int(review.get("timing_fit") or 0)
+        review["timing_fit_model"] = model_timing_fit
+        review["timing_fit"] = max(4, model_timing_fit)
+        review["timing_fit_source"] = "deterministic_long_silence_boundary"
     scores = [
         int(review.get(key) or 0)
         for key in (

@@ -88,6 +88,7 @@ def outreach_business_facts_for_model() -> dict[str, Any]:
             ("allowed_points", "forbidden_points"),
         ),
         "offer": _offer_facts(offer),
+        "outreach_knowledge_facts": rules.get("outreach_knowledge_facts") or {},
         "transaction_policy": rules.get("transaction_policy") or {},
         "hard_forbidden": rules.get("forbidden") or [],
     }
