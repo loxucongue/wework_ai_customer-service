@@ -15,6 +15,15 @@ from app.services.outreach_service import (
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    def test_final_step_requires_an_explicit_action(self) -> None:
+        response = _ModelClient().response
+        response["steps"][-1]["cta"] = "none"
+
+        self.assertEqual(
+            _outreach_plan_structure_error(response),
+            "final step must contain one explicit customer action",
+        )
+
     def test_single_step_plan_is_rejected_so_the_cycle_cannot_end_after_one_touch(self) -> None:
         response = {
             "should_create_plan": True,
@@ -769,6 +778,9 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "activity_quote_message_index": None
         }
         repaired_response["steps"][1]["should_send_payment_collection"] = False
+        repaired_response["steps"][1]["reply_messages"][0]["content"]["text"] = (
+            "亲，活动资格可以先保留，到店时间后面再定。您还想继续了解活动吗？"
+        )
         repository = _Repository()
         service = OutreachService(
             repository=repository,
@@ -959,7 +971,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "persuasion_angle": "proof",
                     "new_value": "效果参考",
                     "avoid_repeating": ["护理知识"],
-                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，我给您补个同类参考，您看完会更直观。"}}],
+                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，我给您补个同类参考，您看完会更直观。您看完最担心的是效果还是恢复呢？"}}],
                     "asset_strategy": "case_search",
                     "case_query": "晒斑改善案例",
                     "fallback_asset_id": "effect_pack:2",

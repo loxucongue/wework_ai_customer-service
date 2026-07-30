@@ -1024,7 +1024,7 @@ def test_outreach_prompts_require_multi_angle_assets_and_locked_send_structure()
         "终审模型",
         "候选计划",
         "activity_quote_fact.completed",
-        "本轮已附 10 元预约金卡",
+        "我把10元预约金卡发您",
         "不能三轮都要求客户回复一个关键词",
         "读起来像问卷、流程提示或计划摘要",
     ]:

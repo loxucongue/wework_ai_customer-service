@@ -15,7 +15,10 @@ from app.services.outreach_prompts import (
     S10_OUTREACH_CONTEXT,
 )
 from app.services.sop_reply_pack_service import SopReplyPackService
-from app.services.outreach_service import build_outreach_activity_quote_fact
+from app.services.outreach_service import (
+    _outreach_plan_structure_error,
+    build_outreach_activity_quote_fact,
+)
 
 
 REVIEW_PROMPT = """
@@ -32,8 +35,10 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - 客户已说忙、有时间再约或等天气时，计划不得继续追问具体日期、工作日、周末或时段。
 - 价格透明顾虑不应为了配素材而硬发案例图或活动图；痘印痘坑案例查询不得添加客户未提供的程度、肤质或疗程。
 - 相邻角度、新价值和 CTA 索取的信息不同即可认为有递进；不能仅因为都需要客户回复就把 arc_diversity 判为 3 分。
-- 发卡步骤的文字和 CTA 必须直接承接本轮 10 元预约金卡；如果让客户回复“活动/入口”后再发卡，属于支付动作不一致。
-- `should_send_payment_collection=true` 时，运行时代码会在该步 text 后追加真实预约金卡，计划模型不允许自行输出卡片。只检查 text/CTA 是否直接引导点击本轮卡片；不得因为计划的 `reply_messages` 里只有 text 而判失败。
+- 发卡步骤的文字和 CTA 必须直接承接随消息附上的 10 元预约金卡；如果让客户回复“活动/入口”后再发卡，属于支付动作不一致。
+- `should_send_payment_collection=true` 时，运行时代码会在该步 text 后追加真实预约金卡，计划模型不允许自行输出卡片。只检查 text/CTA 是否直接引导点击随消息附上的卡片；不得因为计划的 `reply_messages` 里只有 text 而判失败。
+- 客户可见文字出现“本轮、当前步骤、计划任务”等内部结构词时，human_tone 和 conversion_action 均不得高于 3 分。
+- 评分必须以客户实际看到的 `reply_messages` 为准，后台 `new_value/message_goal` 写得正确但客户文字没有交付不算完成。出现“您空下来我再帮您看、后面方便再说、先不打扰”等送客表达，且同一句没有新增专业、知识或活动价值时，psychology_accuracy 和 conversion_action 均不得高于 3 分。
 - 只有 recent_messages 中存在真实完整报价且 plan 标记发卡时，才检查文字与卡片是否一致。没有完整报价时不发卡是正确硬边界，不得因此判 hard_error 或降低 conversion_action。
 - 没有完整报价时，最后一轮直接讲一个权威活动事实并用封闭式动作收口，可评为有效成交推进；不能要求客户先回复关键词才提供本轮本可直接说明的信息。
 - 没有完整报价时，最后一轮清楚给出一个量化活动事实（268元、限30名或180元赠送）并封闭式询问登记，可将 conversion_action 评为4分以上；不要因为未发卡扣分。
@@ -56,7 +61,7 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - 最后一轮未发卡时，客户可见文字必须用明确封闭式问题完成收口；只陈述活动事实，或以“想了解我继续说/我给您留着”结束时，conversion_action 不得高于3分。
 - 客户尚未明确接受时使用“我先给您留着、先把资格留上、已经登记”等已执行表述属于事实越界，应判 hard_error；正确方式是询问是否登记。
 - 单条活动消息同时堆叠活动价、限量名额和赠品三个卖点时，human_tone 不得高于3分。自然微信应结合当前客户只选一个主要理由。
-- 客户文字承诺本轮会发送案例、图片、视频或参考，但该步 `asset_strategy=none` 时，asset_fit 和 conversion_action 均不得高于3分。
+- 客户文字承诺会发送案例、图片、视频或参考，但该步 `asset_strategy=none` 时，asset_fit 和 conversion_action 均不得高于3分。“我给您发个同类改善参考/给您放个做前做后参考”都属于明确素材承诺，不能因为语气自然而放过。
 - “我给您找了个做前做后的真实对比，您先看看”属于自然案例承接；“给您补个同类真实参考，看看改善思路是否接近”属于机器表达。
 
 同时输出 hard_error、hard_error_reason 和 concise_reason。只输出有效 json。
@@ -83,6 +88,9 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
         return ["unexpected_suppression"]
     steps = [item for item in plan.get("steps") or [] if isinstance(item, dict)]
     errors: list[str] = []
+    structure_error = _outreach_plan_structure_error(plan)
+    if structure_error:
+        errors.append(f"structure:{structure_error}")
     if len(steps) not in {2, 3}:
         errors.append("step_count")
     angles = [str(item.get("persuasion_angle") or "") for item in steps]
@@ -184,6 +192,33 @@ async def _run_case(
                 tier="strong",
                 temperature=0.0,
             )
+            structure_error = _outreach_plan_structure_error(plan)
+            for _repair_attempt in range(2):
+                if not structure_error:
+                    break
+                plan = await client.chat_json(
+                    [
+                        {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": json.dumps(
+                                {
+                                    "source_snapshot": payload,
+                                    "candidate_plan": plan,
+                                    "structure_error": structure_error,
+                                    "repair_instruction": (
+                                        "修复结构错误并输出完整有效 json。只能使用合同允许的枚举，"
+                                        "保留事实边界、递进策略和素材约束，不要解释。"
+                                    ),
+                                },
+                                ensure_ascii=False,
+                            ),
+                        },
+                    ],
+                    tier="strong",
+                    temperature=0.0,
+                )
+                structure_error = _outreach_plan_structure_error(plan)
         except Exception as exc:
             return {
                 "case_id": case["id"],

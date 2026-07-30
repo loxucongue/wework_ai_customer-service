@@ -414,6 +414,8 @@ def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
         return "non-final steps must advance to the next step when there is no reply"
     if no_reply_actions[-1] != "end_plan":
         return "final step must end the current plan when there is no reply"
+    if _string(steps[-1].get("cta")).lower() in {"", "none"}:
+        return "final step must contain one explicit customer action"
     asset_strategies = [_string(step.get("asset_strategy")) or "none" for step in steps]
     if any(strategy not in OUTREACH_ASSET_STRATEGIES for strategy in asset_strategies):
         return "every step must use one allowed asset_strategy"
@@ -892,7 +894,9 @@ class OutreachService:
             response,
             activity_quote_fact=activity_quote_fact,
         )
-        if structure_error:
+        for _repair_attempt in range(2):
+            if not structure_error:
+                break
             response = await self.model_client.chat_json(
                 [
                     {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
@@ -913,6 +917,10 @@ class OutreachService:
                 ],
                 tier="strong",
                 temperature=0.0,
+            )
+            structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+                response,
+                activity_quote_fact=activity_quote_fact,
             )
         if not bool(response.get("should_create_plan", True)):
             self.repository.add_outreach_event(
