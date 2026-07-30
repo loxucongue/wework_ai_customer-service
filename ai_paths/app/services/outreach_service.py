@@ -56,6 +56,33 @@ OUTREACH_DAILY_TASK_LIMIT = 2
 OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 
 
+def classify_conversation_refresh_error(error: Exception | str) -> tuple[str, str]:
+    detail = f"{type(error).__name__}: {error}" if isinstance(error, Exception) else str(error or "")
+    normalized = detail.lower()
+    if "40401" in normalized or "account not found" in normalized:
+        return (
+            "conversation_account_not_found",
+            "平台未找到当前客服账号，已显示本地缓存记录；请检查企微账号配置。",
+        )
+    if "401" in normalized or "403" in normalized or "unauthorized" in normalized or "forbidden" in normalized:
+        return (
+            "conversation_refresh_unauthorized",
+            "平台聊天记录接口鉴权失败，已显示本地缓存记录。",
+        )
+    if any(
+        marker in normalized
+        for marker in ("readtimeout", "connecttimeout", "pooltimeout", "timeouterror", "timeout")
+    ):
+        return (
+            "conversation_refresh_timeout",
+            "平台历史聊天查询超时，已显示本地缓存记录。",
+        )
+    return (
+        "conversation_refresh_failed",
+        "平台历史聊天查询失败，已显示本地缓存记录。",
+    )
+
+
 def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -843,10 +870,12 @@ class OutreachService:
         messages = self._local_context_messages(context.get("recent_messages") or [], limit=limit)
         if not messages:
             return {}
+        error_code, warning = classify_conversation_refresh_error(error)
         return {
             "ok": True,
             "source": "local_cache",
-            "warning": "平台历史聊天查询超时，已显示本地缓存记录",
+            "warning": warning,
+            "fallback_reason": error_code,
             "error": error,
             "raw": {},
             "messages": messages,

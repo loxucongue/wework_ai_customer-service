@@ -17,7 +17,7 @@ from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
 from app.services.outreach_asset_library_service import OutreachAssetLibraryService
-from app.services.outreach_service import OutreachService
+from app.services.outreach_service import OutreachService, classify_conversation_refresh_error
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.outreach_system_client import OutreachSystemClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
@@ -715,6 +715,7 @@ async def admin_outreach_refresh_conversation(
         )
     except Exception as exc:
         detail = f"{type(exc).__name__}: {exc}"
+        error_code, _warning = classify_conversation_refresh_error(exc)
         cached = outreach_service.cached_customer_conversation(
             customer_id,
             corp_id=str(payload.get("corp_id") or ""),
@@ -729,7 +730,7 @@ async def admin_outreach_refresh_conversation(
             status_code=502,
             content={
                 "ok": False,
-                "error": "conversation_refresh_failed",
+                "error": error_code,
                 "detail": detail,
             },
         )

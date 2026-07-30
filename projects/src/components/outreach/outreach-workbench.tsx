@@ -422,8 +422,17 @@ function outreachErrorMessage(data: JsonObject, fallback: string) {
   ) {
     return "暂时无法确认客户关系状态，系统已停止生成计划，请稍后重试。";
   }
+  if (data.error === "conversation_account_not_found") {
+    return "平台未找到当前客服账号，请检查企微账号配置。";
+  }
+  if (data.error === "conversation_refresh_unauthorized") {
+    return "平台聊天记录接口鉴权失败，请检查接口配置。";
+  }
+  if (data.error === "conversation_refresh_timeout") {
+    return "平台历史聊天查询超时，请稍后重试。";
+  }
   if (data.error === "conversation_refresh_failed") {
-    return "历史聊天查询超时，请稍后重试或降低条数";
+    return "平台历史聊天查询失败，请稍后重试。";
   }
   if (data.error === "outreach_plan_generation_failed") {
     return "生成计划失败，请稍后重试";
