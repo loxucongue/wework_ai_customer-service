@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   ArrowLeft,
@@ -57,6 +57,9 @@ type Candidate = {
 type OutreachPlan = {
   id: string;
   customer_id: string;
+  external_userid?: string;
+  corp_id?: string;
+  wechat?: string;
   status: string;
   customer_stage?: string;
   conversion_stage?: string;
@@ -281,6 +284,20 @@ function candidateKey(candidate?: Candidate | null) {
   return [candidate.corp_id, candidate.wechat, candidate.external_userid, candidate.customer_id]
     .map((value) => String(value || "").toLowerCase())
     .join(":");
+}
+
+function planMatchesCandidate(plan: OutreachPlan, candidate: Candidate) {
+  if (String(plan.customer_id || "") !== String(candidate.customer_id || "")) return false;
+  const identityFields: Array<keyof Pick<OutreachPlan, "corp_id" | "wechat" | "external_userid">> = [
+    "corp_id",
+    "wechat",
+    "external_userid",
+  ];
+  return identityFields.every((field) => {
+    const planValue = String(plan[field] || "").trim().toLowerCase();
+    const candidateValue = String(candidate[field] || "").trim().toLowerCase();
+    return !planValue || !candidateValue || planValue === candidateValue;
+  });
 }
 
 function objectValue(value: unknown): JsonObject {
@@ -556,6 +573,7 @@ export function OutreachWorkbench() {
   const [selectedCustomer, setSelectedCustomer] = useState<Candidate | null>(null);
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [planDetail, setPlanDetail] = useState<PlanDetail | null>(null);
+  const [planLoading, setPlanLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -567,6 +585,7 @@ export function OutreachWorkbench() {
   const [customerDetail, setCustomerDetail] = useState<CustomerDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailRevision, setDetailRevision] = useState(0);
+  const planLoadSequence = useRef(0);
 
   const selectedPlan = planDetail?.plan || null;
   const tasks = useMemo(() => planDetail?.tasks || [], [planDetail]);
@@ -616,20 +635,32 @@ export function OutreachWorkbench() {
   }, []);
 
 
-  const loadPlan = useCallback(async (planId: string) => {
+  const loadPlan = useCallback(async (planId: string, expectedCustomer?: Candidate | null) => {
     if (!planId) return;
-    setBusy("load-plan");
+    const requestSequence = ++planLoadSequence.current;
+    setPlanLoading(true);
+    setPlanDetail(null);
+    setSelectedPlanId(planId);
     setError("");
     try {
       const response = await fetch(`/api/outreach/plans/${encodeURIComponent(planId)}`, { cache: "no-store" });
-      const data = await response.json();
+      const data = (await response.json()) as PlanDetail & { error?: string };
       if (!response.ok) throw new Error(data?.error || "加载计划失败");
+      if (!data.plan || String(data.plan.id || "") !== planId) {
+        throw new Error("计划详情与请求不一致，请刷新后重试");
+      }
+      if (expectedCustomer && !planMatchesCandidate(data.plan, expectedCustomer)) {
+        throw new Error("计划不属于当前客户，已停止展示旧计划");
+      }
+      if (requestSequence !== planLoadSequence.current) return;
       setPlanDetail(data);
-      setSelectedPlanId(planId);
     } catch (err) {
+      if (requestSequence !== planLoadSequence.current) return;
+      setPlanDetail(null);
+      setSelectedPlanId("");
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy("");
+      if (requestSequence === planLoadSequence.current) setPlanLoading(false);
     }
   }, []);
 
@@ -690,7 +721,7 @@ export function OutreachWorkbench() {
           if (activate) {
             await fetch(`/api/outreach/plans/${encodeURIComponent(planId)}/activate`, { method: "POST" });
           }
-          await loadPlan(planId);
+          await loadPlan(planId, candidate);
           await loadCandidates();
           await refreshCustomerDetail();
         }
@@ -736,11 +767,11 @@ export function OutreachWorkbench() {
         const response = await fetch(`/api/outreach/tasks/${encodeURIComponent(taskId)}/execute`, { method: "POST" });
         const data = await readJsonResponse(response);
         if (!response.ok || data.ok === false) {
-          if (selectedPlanId) await loadPlan(selectedPlanId);
+          if (selectedPlanId) await loadPlan(selectedPlanId, selectedCustomer);
           await refreshCustomerDetail();
           throw new Error(outreachErrorMessage(data, "执行任务失败"));
         }
-        if (selectedPlanId) await loadPlan(selectedPlanId);
+        if (selectedPlanId) await loadPlan(selectedPlanId, selectedCustomer);
         await refreshCustomerDetail();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -748,7 +779,7 @@ export function OutreachWorkbench() {
         setBusy("");
       }
     },
-    [loadPlan, refreshCustomerDetail, selectedPlanId]
+    [loadPlan, refreshCustomerDetail, selectedCustomer, selectedPlanId]
   );
 
   const refreshConversation = useCallback(
@@ -825,14 +856,14 @@ export function OutreachWorkbench() {
       const response = await fetch("/api/outreach/run-due?limit=20", { method: "POST" });
       const data = await response.json();
       if (!response.ok) throw new Error(data?.error || "执行到期任务失败");
-      if (selectedPlanId) await loadPlan(selectedPlanId);
+      if (selectedPlanId) await loadPlan(selectedPlanId, selectedCustomer);
       await Promise.all([refreshCustomerDetail(), loadDashboard()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy("");
     }
-  }, [loadDashboard, loadPlan, refreshCustomerDetail, selectedPlanId]);
+  }, [loadDashboard, loadPlan, refreshCustomerDetail, selectedCustomer, selectedPlanId]);
 
   useEffect(() => {
     loadCandidates();
@@ -840,12 +871,14 @@ export function OutreachWorkbench() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (selectedCustomer?.outreach_plan_id) loadPlan(selectedCustomer.outreach_plan_id);
-    if (!selectedCustomer?.outreach_plan_id) {
-      setSelectedPlanId("");
-      setPlanDetail(null);
+    ++planLoadSequence.current;
+    setSelectedPlanId("");
+    setPlanDetail(null);
+    setPlanLoading(false);
+    if (selectedCustomer?.outreach_plan_id) {
+      void loadPlan(selectedCustomer.outreach_plan_id, selectedCustomer);
     }
-  }, [loadPlan, selectedCustomer?.outreach_plan_id]);
+  }, [loadPlan, selectedCustomer, selectedCustomer?.outreach_plan_id]);
 
   useEffect(() => {
     if (!selectedCustomer) {
@@ -1245,7 +1278,12 @@ export function OutreachWorkbench() {
               </div>
             </div>
 
-            {selectedPlan ? (
+            {planLoading ? (
+              <div className="flex items-center justify-center gap-2 p-12 text-sm text-zinc-500">
+                <LoaderCircle className="h-4 w-4 animate-spin" />
+                正在加载当前客户的计划
+              </div>
+            ) : selectedPlan ? (
               <div className="p-4">
                 <div className="grid grid-cols-3 gap-3">
                   <InfoBlock label="成交阶段" value={selectedPlan.conversion_stage || selectedPlan.customer_stage || "-"} />
