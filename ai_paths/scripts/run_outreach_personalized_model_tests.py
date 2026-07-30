@@ -11,6 +11,7 @@ from app.services.model_client import ModelClient
 from app.services.outreach_assets import build_outreach_asset_catalog
 from app.services.outreach_prompts import (
     OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT,
+    OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT,
     OUTREACH_PLAN_SYSTEM_PROMPT,
     S10_OUTREACH_CONTEXT,
 )
@@ -39,6 +40,7 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - 相邻角度、新价值和 CTA 索取的信息不同即可认为有递进；不能仅因为都需要客户回复就把 arc_diversity 判为 3 分。
 - 发卡步骤的文字和 CTA 必须直接承接随消息附上的 10 元预约金卡；如果让客户回复“活动/入口”后再发卡，属于支付动作不一致。
 - `should_send_payment_collection=true` 时，运行时代码会在该步 text 后追加真实预约金卡，计划模型不允许自行输出卡片。只检查 text/CTA 是否直接引导点击随消息附上的卡片；不得因为计划的 `reply_messages` 里只有 text 而判失败。
+- `activity_quote_fact.completed=true`、`reply_wait_minutes<180` 且客户刚连续质疑隐形消费、骗局或收费真实性时，最后一步直接附预约金卡是已确认的成交策略，不属于动作越界；结构和文字一致时 conversion_action 应不低于 4 分。
 - 客户可见文字出现“本轮、当前步骤、计划任务”等内部结构词时，human_tone 和 conversion_action 均不得高于 3 分。
 - 评分必须以客户实际看到的 `reply_messages` 为准，后台 `new_value/message_goal` 写得正确但客户文字没有交付不算完成。出现“您空下来我再帮您看、后面方便再说、先不打扰”等送客表达，且同一句没有新增专业、知识或活动价值时，psychology_accuracy 和 conversion_action 均不得高于 3 分。
 - 只有 recent_messages 中存在真实完整报价且 plan 标记发卡时，才检查文字与卡片是否一致。没有完整报价时不发卡是正确硬边界，不得因此判 hard_error 或降低 conversion_action。
@@ -75,7 +77,35 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 - 客户文字承诺会发送案例、图片、视频或参考，但该步 `asset_strategy=none` 时，asset_fit 和 conversion_action 均不得高于3分。“我给您发个同类改善参考/给您放个做前做后参考”都属于明确素材承诺，不能因为语气自然而放过。
 - “我给您找了个做前做后的真实对比，您先看看”属于自然案例承接；“给您补个同类真实参考，看看改善思路是否接近”属于机器表达。
 
-同时输出 hard_error、hard_error_reason 和 concise_reason。只输出有效 json。
+以下抑制属于正确行为，不得判 hard_error，并应给六项 5 分：
+- 输入只有平台固定自动加好友开场，没有客户本人真实开口。
+- 已付、已预约、退款投诉、健康风险、明确停止联系或历史归属不可信。
+- 客户已长期沉默，历史活动、案例、预约金和催促已经饱和，并且 offer_context、真实素材和客户事实中都没有相关、真实、未讲过的新价值。
+
+客户本人发送“你好”“在吗”等自然问候属于真实开口。客户表达距离、天气、忙碌、“算了”等软拒绝时，只要历史没有营销饱和且 offer_context 仍有相关未讲价值，就不应直接抑制。
+“历史营销饱和且无新价值”抑制只适用于 `customer_silence_minutes>=4320` 的长期沉默；近期真实顾虑且没有硬边界时 `should_create_plan=false` 必须判为 hard_error。
+
+输出必须是扁平字段，不要把六项分数放进 `scores` 子对象：
+{
+  "psychology_accuracy": 5,
+  "arc_diversity": 5,
+  "asset_fit": 5,
+  "human_tone": 5,
+  "conversion_action": 5,
+  "timing_fit": 5,
+  "hard_error": false,
+  "hard_error_reason": "",
+  "concise_reason": "简洁结论"
+}
+
+最终校准：
+- 长期沉默第一步在 0–180 分钟都符合要求；最后一步用“您平时是不是经常在户外呀？”这类单一日常问题重新开口，`conversion_action/timing_fit` 可给 4 分以上。
+- 客户刚连续质疑隐形消费或骗局，`reply_wait_minutes<180` 且完整报价已完成时，最后一步直接附 10 元预约金卡是正确成交动作；结构一致时不得称为越界或删除卡片。
+- `reply_wait_minutes<180`、完整报价已完成且客户刚提出反弹、效果或价格等普通顾虑时，在先解决顾虑并交付不同价值后，最后一步直接附预约金卡同样是正确成交收口，结构一致时 conversion_action 应不低于 4。
+- 历史只讲过门店、停车、活动价格、预约金和检测，而温和护理、防晒、原相机记录没有发送时，不能把计划判成“无新价值”。
+- 客户文字含“回我一个字/回我一下、我好接着说、如果您还想了解、我继续跟您说可以吗、我整理好了要发您吗、我先给您留着”等流程尾巴时，human_tone 和 conversion_action 不得高于 3；自然问题应直接停在问号。
+- 长期沉默只有两项真实新价值时，使用两步并在第二步结束是正确设计；第三步只是泛问日晒或要求回复口令时应删除，不能因为少一轮扣分。
+只输出有效 json。
 """.strip()
 
 ALLOWED_ANGLES = {
@@ -124,6 +154,10 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
         errors.append("missing_value_only")
     if sum(bool(item.get("should_send_payment_collection")) for item in steps) > 1:
         errors.append("multiple_payment_cards")
+    if bool(case.get("expect_payment_collection")) and not any(
+        bool(item.get("should_send_payment_collection")) for item in steps
+    ):
+        errors.append("missing_expected_payment_card")
     delays = [int(item.get("delay_minutes") or 0) for item in steps]
     if delays and not 0 <= delays[0] <= 720:
         errors.append("invalid_first_delay")
@@ -243,7 +277,7 @@ async def _run_case(
                     break
                 plan = await client.chat_json(
                     [
-                        {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
+                        {"role": "system", "content": OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT},
                         {
                             "role": "user",
                             "content": json.dumps(
@@ -252,10 +286,8 @@ async def _run_case(
                                     "candidate_plan": plan,
                                     "structure_error": structure_error,
                                     "repair_instruction": (
-                                        "修复结构错误并输出完整有效 json。只能使用合同允许的枚举，"
-                                        "保留事实边界、递进策略和素材约束；同时重新执行完整 Review Checklist，"
-                                        "不得引入口令式回复、送客表达或内部结构词，最后一步必须直接交付价值并自然收口。"
-                                        "不要解释。"
+                                        "严格按 structure_error 修复完整 json；保留现有业务语义和客户可见文字，"
+                                        "不要重新判断是否创建计划，不要解释。"
                                     ),
                                 },
                                 ensure_ascii=False,
@@ -310,6 +342,18 @@ async def _run_case(
                 "review_unavailable": True,
                 "review_error": f"{type(exc).__name__}: {exc}",
             }
+    nested_scores = review.get("scores")
+    if isinstance(nested_scores, dict):
+        for key in (
+            "psychology_accuracy",
+            "arc_diversity",
+            "asset_fit",
+            "human_tone",
+            "conversion_action",
+            "timing_fit",
+        ):
+            if review.get(key) is None and nested_scores.get(key) is not None:
+                review[key] = nested_scores[key]
     hard_errors = _hard_errors(
         plan,
         {str(item.get("asset_id") or "") for item in asset_catalog},

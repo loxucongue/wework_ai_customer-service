@@ -36,6 +36,7 @@ from app.policies.business_rules import (
 from app.services.outreach_prompts import (
     OUTREACH_MESSAGE_SYSTEM_PROMPT,
     OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT,
+    OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT,
     OUTREACH_PLAN_SYSTEM_PROMPT,
 )
 
@@ -1007,6 +1008,10 @@ def test_outreach_prompts_require_multi_angle_assets_and_locked_send_structure()
         "历史客服话术只用于判断",
         "相邻步骤的 CTA 必须推动不同的小进展",
         "不能声称已留名额、已登记、已预约或已锁资格",
+        "只有这些内容时不得臆造客户需求",
+        "历史已经高频营销",
+        "长期沉默默认使用 2 步",
+        "必须 `should_create_plan=false`",
         "Customer-visible WeChat Language",
         "不能像分析报告、客服工单或咨询问卷",
         "不要设计“回我 A/B/C”",
@@ -1032,8 +1037,22 @@ def test_outreach_prompts_require_multi_angle_assets_and_locked_send_structure()
         "读起来像问卷、流程提示或计划摘要",
         "历史已讲主题清单",
         "reply_wait_minutes>=4320",
+        "从未真实开口",
+        "营销已经饱和",
+        "长期沉默默认 2 步",
     ]:
         assert marker in OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT
+    for marker in [
+        "json 结构修复器",
+        "只修复报错指出的结构",
+        "每条 `reply_messages` 严格使用",
+        "所有步骤的 `delay_minutes` 必须严格递增",
+        "不得因为修复结构而删除原本有效的计划",
+    ]:
+        assert marker in OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT
+
+    outreach_source = (ROOT / "ai_paths/app/services/outreach_service.py").read_text(encoding="utf-8")
+    assert "OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT" in outreach_source
 
 
 def test_outreach_context_contains_approved_non_repeating_knowledge_facts() -> None:

@@ -24,6 +24,7 @@ from app.services.outreach_assets import (
 from app.services.outreach_prompts import (
     OUTREACH_MESSAGE_SYSTEM_PROMPT,
     OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT,
+    OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT,
     OUTREACH_PLAN_SYSTEM_PROMPT,
     S10_OUTREACH_CONTEXT,
 )
@@ -1060,7 +1061,7 @@ class OutreachService:
                 break
             response = await self.model_client.chat_json(
                 [
-                    {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
+                    {"role": "system", "content": OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT},
                     {
                         "role": "user",
                         "content": dumps(
@@ -1069,10 +1070,8 @@ class OutreachService:
                                 "candidate_plan": response,
                                 "structure_error": structure_error,
                                 "repair_instruction": (
-                                    "修复结构错误并输出完整有效 json。只能使用合同允许的枚举，"
-                                    "保留事实边界、递进策略和素材约束；同时重新执行完整 Review Checklist，"
-                                    "不得引入口令式回复、送客表达或内部结构词，最后一步必须直接交付价值并自然收口。"
-                                    "不要解释。"
+                                    "严格按 structure_error 修复完整 json；保留现有业务语义和客户可见文字，"
+                                    "不要重新判断是否创建计划，不要解释。"
                                 ),
                             }
                         ),

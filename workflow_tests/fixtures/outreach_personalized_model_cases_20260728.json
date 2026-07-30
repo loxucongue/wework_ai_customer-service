@@ -119,5 +119,114 @@
     },
     "customer_context": {"source": "platform_agent", "orders": []},
     "expected": "首轮不得再提门店、路线、停车或要求客户回复；应以斑点护理知识、产品价值、专业价值或真实证据重新建立联系。历史只讲过门店、停车、营业时间、活动价格、预约金和到店检测，没有讲过温和护理、防晒或原相机记录，这些候选知识不能被误判为历史已发送。后续步骤换角度递进，最后才可低压力收口。"
+  },
+  {
+    "id": "platform_auto_opening_only",
+    "description": "只有企微自动加好友开场，没有客户真实咨询",
+    "recent_messages": [
+      {"direction": "customer", "content": "我已经添加了你，现在我们可以开始聊天了。"},
+      {"direction": "staff", "content": "您好，您是想了解淡斑效果还是门店位置呀？"}
+    ],
+    "conversation_activity": {
+      "reply_wait_minutes": 5760,
+      "customer_silence_minutes": 5760,
+      "awaiting_customer_reply": true
+    },
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "should_create_plan=false。自动加好友开场不算真实开口，不能臆造客户顾虑或生成千人千面营销计划。"
+  },
+  {
+    "id": "long_marketing_saturation_no_new_value",
+    "description": "客户软拒绝后已连续收到报价、案例、预约金卡和催促，长期不回复",
+    "recent_messages": [
+      {"direction": "customer", "content": "暂时不需要，先不定了。"},
+      {"direction": "staff", "content": "活动总价268元，先付10元预约金，到店抵扣后再付258元。"},
+      {"direction": "staff", "content": "付款给：黛伊科技"},
+      {"direction": "staff", "content": "名额有限，您先把活动资格留住。"},
+      {"direction": "staff", "content": "[图片消息]"},
+      {"direction": "staff", "content": "我再给您看一组效果，登记还赠送美白管理，给您预约一个吗？"},
+      {"direction": "staff", "content": "付款给：黛伊科技"}
+    ],
+    "conversation_activity": {
+      "reply_wait_minutes": 7200,
+      "customer_silence_minutes": 7200,
+      "awaiting_customer_reply": true
+    },
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "should_create_plan=false。历史营销已经饱和，客户持续不回；不能用通用科普、活动、案例或预约金换词凑计划。"
+  },
+  {
+    "id": "long_rebound_answered_then_marketed",
+    "description": "客户担心反弹，已经得到完整解释，之后又被多次催付并沉默四天",
+    "recent_messages": [
+      {"direction": "customer", "content": "我以前做过一次又长出来，就怕再反弹。"},
+      {"direction": "staff", "content": "规范操作后做好防晒和日常护理，改善通常能维持得比较好；后续新出现色素不等于原来的斑马上反弹。"},
+      {"direction": "staff", "content": "活动总价268元，先付10元预约金锁活动资格。"},
+      {"direction": "staff", "content": "付款给：黛伊科技"},
+      {"direction": "staff", "content": "今天还有优惠名额，先登记一个吧。"}
+    ],
+    "conversation_activity": {
+      "reply_wait_minutes": 5760,
+      "customer_silence_minutes": 6000,
+      "awaiting_customer_reply": true
+    },
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "如果仍有未发送的真实证据，应默认生成2步关系恢复计划：第一步不得复读反弹、防晒、活动或预约金，可用未发送案例/原相机证据；第二步换成不同的专业或低压力开口角度。不得发卡。没有相关新价值时应 should_create_plan=false。"
+  },
+  {
+    "id": "refund_complaint_suppression",
+    "description": "客户退款未到账并连续催促",
+    "recent_messages": [
+      {"direction": "customer", "content": "我确定退款，怎么还没好？"},
+      {"direction": "customer", "content": "你们公司是怎么搞的啊？"},
+      {"direction": "staff", "content": "我这边继续帮您核对退款记录。"}
+    ],
+    "conversation_activity": {
+      "reply_wait_minutes": 180,
+      "customer_silence_minutes": 200,
+      "awaiting_customer_reply": true
+    },
+    "customer_context": {
+      "source": "platform_agent",
+      "orders": [{"id": "refund-order", "status": "refund_pending", "is_current_order": true}]
+    },
+    "expected": "should_create_plan=false。退款投诉退出普通营销计划，不得发送活动、案例或预约金。"
+  },
+  {
+    "id": "short_hidden_fee_high_intent",
+    "description": "客户已听完整报价，连续追问到店加价，刚沉默15分钟",
+    "expect_payment_collection": true,
+    "recent_messages": [
+      {"direction": "staff", "content": "线上淡斑活动总价268元，先付10元预约金，到店抵扣，做的话再付258元；活动包含淡斑、检测、基础清洁和肌肤补水。"},
+      {"direction": "customer", "content": "是这个价格吗？不会到店又要几千吧。"},
+      {"direction": "staff", "content": "活动范围内不会强制加项目，额外项目由您自己决定，不认可不产生费用。"},
+      {"direction": "customer", "content": "我看好多都是骗人进去然后加价。"}
+    ],
+    "conversation_activity": {
+      "reply_wait_minutes": 15,
+      "customer_silence_minutes": 15,
+      "awaiting_customer_reply": false
+    },
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "近期高意向场景：第一步直接解决信任问题，后续不能重复价格政策，应换原相机记录、真实证据或专业价值；报价已完成且无硬边界时，最后一步可直接附一张预约金卡。"
+  },
+  {
+    "id": "long_weather_soft_refusal_after_quote",
+    "description": "客户说天气热暂时不做，之后已收到案例和催促并沉默四天",
+    "recent_messages": [
+      {"direction": "staff", "content": "活动总价268元，线上先付10元预约金，到店抵扣。"},
+      {"direction": "customer", "content": "谢谢不用，天气太热不想做。"},
+      {"direction": "staff", "content": "天气热确实不想出门，您有时间再安排。"},
+      {"direction": "staff", "content": "[图片消息]"},
+      {"direction": "staff", "content": "今天能抽50分钟过来吗？"},
+      {"direction": "staff", "content": "先付10元预约金，想来的时候随时预约。"}
+    ],
+    "conversation_activity": {
+      "reply_wait_minutes": 5760,
+      "customer_silence_minutes": 6000,
+      "awaiting_customer_reply": true
+    },
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "不得继续讲天气、时间、活动或预约金。只有存在历史未讲过且相关的新价值时才生成默认2步关系恢复计划，否则 should_create_plan=false；整个周期不得发卡。"
   }
 ]
