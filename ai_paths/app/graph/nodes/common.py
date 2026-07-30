@@ -18,6 +18,16 @@ def looks_bad_text(text: str) -> bool:
     return text.count("?") >= 2 and not any("\u4e00" <= ch <= "\u9fff" for ch in text)
 
 
+def looks_suspected_short_mojibake(text: str) -> bool:
+    """Flag short damaged text without guessing the customer's intended words."""
+    value = str(text or "").strip()
+    if not value or len(value) > 4:
+        return False
+    if "\ufffd" in value:
+        return True
+    return bool(re.fullmatch(r"[琛浜鏄][?？]", value))
+
+
 def repair_mojibake_text(text: str) -> tuple[str, dict[str, Any]]:
     value = str(text or "")
     info: dict[str, Any] = {"applied": False}

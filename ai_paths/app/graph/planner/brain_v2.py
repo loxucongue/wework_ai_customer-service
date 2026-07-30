@@ -45,6 +45,8 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 
 # Principles
 - 当前消息优先；近聊、turn_evidence、customer_context 只作证据，不替你决定业务动作。
+- `input_quality_flags` 含 `suspected_short_mojibake` 时，原文可能在入站前已损坏。不得猜测它必然等于“行、好、是”；结合最近历史低置信度承接当前任务，避免复读无关流程。
+- 历史客服消息“付款给：某公司”是平台对已发送预约金卡的文字渲染，不代表客户选择转账或已经支付。活动已报价、客户未付且在卡后新回复“行/好/谢谢”时，默认继续成交并重发小程序收款卡；只有客户本人明确选择转账时才走 manual_transfer，未付前不收姓名电话。
 - 不把技术超时理解成客户高风险；除非客户当前消息本身明确健康高风险、投诉退款、付款异常、严重不适或强人工诉求，否则不要输出 human_handoff_notice。
 - 不编造门店、地址、停车、营业时间、距离、档期、案例图、价格、支付状态、订单状态或医疗结论。
 - 需要具体门店/地址/停车/营业时间/导航/附近候选时，用 customer_store_lookup。
@@ -79,6 +81,9 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "handoff": {"needed": false, "reason": ""}
 }
 """
+
+PLANNER_GRAPH_RETURN_GUARD_SECONDS = 0.75
+PLANNER_MIN_PRIMARY_ATTEMPT_SECONDS = 1.0
 
 
 def planner_v2_model_tier(state: AgentState) -> str:
@@ -146,11 +151,21 @@ async def run_planner_brain_v2(
     node_started_at = time.monotonic()
     primary_budget = _model_budget_seconds(model_client, "model_planner_primary_budget_seconds", 25.0)
     recovery_budget = _model_budget_seconds(model_client, "model_planner_recovery_budget_seconds", 10.0)
-    primary_deadline = _capped_deadline(
-        node_started_at + primary_budget,
-        model_deadline_monotonic(planner_state, tier="planner", reserve_reply=True),
+    planner_round_deadline = model_deadline_monotonic(planner_state, tier="planner", reserve_reply=True)
+    model_round_deadline = (
+        planner_round_deadline - PLANNER_GRAPH_RETURN_GUARD_SECONDS
+        if planner_round_deadline is not None
+        else None
+    )
+    primary_deadline = _primary_deadline_preserving_recovery(
+        started_at=node_started_at,
+        primary_budget_seconds=primary_budget,
+        recovery_budget_seconds=recovery_budget,
+        round_deadline=model_round_deadline,
     )
     try:
+        if primary_deadline - time.monotonic() < PLANNER_MIN_PRIMARY_ATTEMPT_SECONDS:
+            raise TimeoutError("full planner skipped to preserve compact recovery budget")
         payload = await _chat_json_with_deadline(
             model_client,
             initial_messages,
@@ -177,6 +192,7 @@ async def run_planner_brain_v2(
                 planner_state,
                 reason=f"{initial_error}; timeout_retry_skipped=insufficient_round_budget",
             )
+            plan["fallback_source"] = "planner_timeout_retry_skipped_budget"
             _attach_derived_planner_facts(plan, planner_state)
             return plan, {
                 "name": "planner_brain_v2",
@@ -185,9 +201,11 @@ async def run_planner_brain_v2(
                 "raw_json_output": {},
                 "output": _planner_call_output(plan),
                 "usage": initial_usage,
+                "fallback_source": "planner_timeout_retry_skipped_budget",
                 "deadline": {
                     "primary_budget_seconds": primary_budget,
                     "recovery_budget_seconds": recovery_budget,
+                    "store_context_elapsed_ms": int(planner_state.get("store_context_elapsed_ms") or 0),
                     "runtime_budget": runtime_budget_snapshot(planner_state, tier="planner", reserve_reply=True),
                     "elapsed_ms": int((time.monotonic() - node_started_at) * 1000),
                 },
@@ -197,7 +215,7 @@ async def run_planner_brain_v2(
         retry_call["input"]["messages"] = retry_messages
         recovery_deadline = _capped_deadline(
             time.monotonic() + recovery_budget,
-            model_deadline_monotonic(planner_state, tier="planner", reserve_reply=True),
+            model_round_deadline,
         )
         try:
             payload = await _chat_json_with_deadline(
@@ -219,6 +237,7 @@ async def run_planner_brain_v2(
                 planner_state,
                 reason=f"{initial_error}; timeout_retry_failed={retry_error}",
             )
+            plan["fallback_source"] = "planner_timeout_after_retry"
             _attach_derived_planner_facts(plan, planner_state)
             model_call = {
                 "name": "planner_brain_v2",
@@ -227,9 +246,12 @@ async def run_planner_brain_v2(
                 "raw_json_output": {},
                 "output": _planner_call_output(plan),
                 "usage": initial_usage,
+                "fallback_source": "planner_timeout_after_retry",
                 "deadline": {
                     "primary_budget_seconds": primary_budget,
                     "recovery_budget_seconds": recovery_budget,
+                    "store_context_elapsed_ms": int(planner_state.get("store_context_elapsed_ms") or 0),
+                    "remaining_reply_budget": runtime_budget_snapshot(planner_state, tier="reply"),
                     "elapsed_ms": int((time.monotonic() - node_started_at) * 1000),
                 },
                 "nested_calls": nested_calls,
@@ -274,7 +296,7 @@ async def run_planner_brain_v2(
             repair_call["input"]["tier"] = repair_tier
             repair_deadline = _capped_deadline(
                 time.monotonic() + recovery_budget,
-                model_deadline_monotonic(planner_state, tier="planner", reserve_reply=True),
+                model_round_deadline,
             )
             repaired_payload = await _chat_json_with_deadline(
                 model_client,
@@ -302,6 +324,7 @@ async def run_planner_brain_v2(
         "deadline": {
             "primary_budget_seconds": primary_budget,
             "recovery_budget_seconds": recovery_budget,
+            "store_context_elapsed_ms": int(planner_state.get("store_context_elapsed_ms") or 0),
             "remaining_primary_budget_ms": max(0, int((primary_deadline - time.monotonic()) * 1000)),
             "runtime_budget": runtime_budget_snapshot(planner_state, tier="planner", reserve_reply=True),
             "elapsed_ms": int((time.monotonic() - node_started_at) * 1000),
@@ -347,6 +370,22 @@ def _model_budget_seconds(model_client: ModelClient, name: str, default: float) 
 
 def _capped_deadline(node_deadline: float, round_deadline: float | None) -> float:
     return min(node_deadline, round_deadline) if round_deadline is not None else node_deadline
+
+
+def _primary_deadline_preserving_recovery(
+    *,
+    started_at: float,
+    primary_budget_seconds: float,
+    recovery_budget_seconds: float,
+    round_deadline: float | None,
+) -> float:
+    primary_deadline = started_at + primary_budget_seconds
+    if round_deadline is None:
+        return primary_deadline
+    remaining = max(0.0, round_deadline - started_at)
+    if remaining < recovery_budget_seconds + PLANNER_MIN_PRIMARY_ATTEMPT_SECONDS:
+        return started_at
+    return min(primary_deadline, round_deadline - recovery_budget_seconds)
 
 
 def _planner_state_with_derived_facts(state: AgentState) -> AgentState:
@@ -406,6 +445,9 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "current_date": _current_date_iso(),
         "timezone": "Asia/Shanghai",
         "current_message": state.get("normalized_content") or "",
+        "raw_current_message": state.get("content") or "",
+        "normalized_current_message": state.get("normalized_content") or "",
+        "input_quality_flags": list(state.get("input_quality_flags") or []),
         "location_card": location_card_from_state(state),
         "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-20:],
         "image_info": _compact_image_info(state.get("image_info") or {}),
@@ -437,6 +479,9 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "current_date": base.get("current_date"),
         "timezone": base.get("timezone"),
         "current_message": base.get("current_message"),
+        "raw_current_message": base.get("raw_current_message"),
+        "normalized_current_message": base.get("normalized_current_message"),
+        "input_quality_flags": base.get("input_quality_flags"),
         "conversation_history": (base.get("conversation_history") or [])[-8:],
         "image_info": base.get("image_info"),
         "category_id": base.get("category_id"),

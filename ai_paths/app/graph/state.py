@@ -62,11 +62,15 @@ class AgentState(TypedDict, total=False):
     sop_progress_evidence: dict[str, Any]
     background_substeps: list[dict[str, Any]]
     background_fact_views: dict[str, Any]
+    store_context_status: str
+    store_context_elapsed_ms: int
+    store_context_skipped_steps: list[str]
     input_quality_flags: list[str]
     model_deadline: dict[str, Any]
     model_context_metrics: dict[str, Any]
     recovery_attempts: list[dict[str, Any]]
     recovery_reason: str
+    fallback_source: str
 
     planner_decision: str
     planner_stage: str

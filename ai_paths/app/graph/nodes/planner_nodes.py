@@ -122,6 +122,12 @@ def create_planner_brain_node(
                 "model_context_metrics": context_metrics,
                 "recovery_attempts": recovery_attempts,
                 "recovery_reason": recovery_reason,
+                "fallback_source": str(
+                    (planner_call or {}).get("fallback_source")
+                    or plan.get("fallback_source")
+                    or state.get("fallback_source")
+                    or ""
+                ),
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output

@@ -5,11 +5,18 @@ import json
 import time
 import unittest
 from datetime import date, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 from app.config import Settings
+from app.graph.nodes.common import looks_suspected_short_mojibake
 from app.graph.nodes.image_info import fallback_image_info
-from app.graph.planner.brain_v2 import _planner_payload_for_model, run_planner_brain_v2
+from app.graph.planner.brain_v2 import (
+    PLANNER_GRAPH_RETURN_GUARD_SECONDS,
+    _planner_payload_for_model,
+    _primary_deadline_preserving_recovery,
+    run_planner_brain_v2,
+)
 from app.services.model_client import ModelClient
 from app.services.model_selection import api_key, base_url, is_claude_model, model_names
 from app.services.runtime_budget import (
@@ -26,6 +33,38 @@ def _settings(**overrides: Any) -> Settings:
 
 
 class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
+    def test_short_mojibake_detection_preserves_normal_confirmation(self) -> None:
+        self.assertFalse(looks_suspected_short_mojibake("行"))
+        self.assertFalse(looks_suspected_short_mojibake("好的"))
+        for value in ("琛?", "浜?", "鏄?", "\ufffd"):
+            self.assertTrue(looks_suspected_short_mojibake(value), value)
+
+    def test_planner_payload_exposes_raw_normalized_message_and_quality_flags(self) -> None:
+        payload = _planner_payload_for_model(
+            {
+                "content": "琛?",
+                "normalized_content": "琛?",
+                "input_quality_flags": ["suspected_short_mojibake"],
+            }
+        )
+
+        self.assertEqual(payload["raw_current_message"], "琛?")
+        self.assertEqual(payload["normalized_current_message"], "琛?")
+        self.assertEqual(payload["input_quality_flags"], ["suspected_short_mojibake"])
+
+    def test_primary_planner_deadline_reserves_compact_recovery_window(self) -> None:
+        started_at = 100.0
+        round_deadline = 140.0
+
+        primary_deadline = _primary_deadline_preserving_recovery(
+            started_at=started_at,
+            primary_budget_seconds=35.0,
+            recovery_budget_seconds=10.0,
+            round_deadline=round_deadline,
+        )
+
+        self.assertEqual(primary_deadline, 130.0)
+
     def test_json_marker_is_injected_when_prompt_only_contains_uppercase_json(self) -> None:
         messages = [{"role": "user", "content": "Return valid JSON only."}]
 
@@ -463,6 +502,84 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model_call["nested_calls"][0]["name"], "planner_brain_timeout_retry")
         self.assertIn("TimeoutError", model_call.get("initial_error", ""))
 
+    async def test_planner_runtime_deadline_allows_compact_retry_before_outer_deadline(self) -> None:
+        class DeadlinePlannerClient:
+            available = True
+
+            def __init__(self) -> None:
+                self.calls: list[dict[str, Any]] = []
+                self.last_usage: dict[str, Any] = {}
+                self.settings = SimpleNamespace(
+                    model_planner_primary_budget_seconds=1.05,
+                    model_planner_recovery_budget_seconds=0.1,
+                )
+
+            async def chat_json(
+                self,
+                messages: list[dict[str, Any]],
+                *,
+                tier: str,
+                temperature: float = 0.1,
+                deadline_monotonic: float,
+            ) -> dict[str, Any]:
+                self.calls.append(
+                    {
+                        "tier": tier,
+                        "messages": messages,
+                        "deadline_monotonic": deadline_monotonic,
+                    }
+                )
+                if len(self.calls) == 1:
+                    await asyncio.sleep(max(0.0, deadline_monotonic - time.monotonic()) + 0.01)
+                    raise TimeoutError("primary deadline")
+                return {
+                    "decision": "direct_reply",
+                    "stage": "S1",
+                    "sub_rule_id": "S1_CONTEXT",
+                    "conversion_stage": "interest_capture",
+                    "customer_type": "unknown",
+                    "main_blocker": "none",
+                    "next_step": "no_action",
+                    "payment_action": "none",
+                    "payment_decision": {"action": "none", "source": "planner"},
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": "好嘞亲，我按活动流程继续帮您登记。"}}
+                    ],
+                    "tool_calls": [],
+                }
+
+        started_at = time.monotonic()
+        planner_deadline = started_at + 2.0
+        state = {
+            "content": "行",
+            "normalized_content": "行",
+            "conversation_history": ["小贝: 活动价已经介绍过了。", "用户: 行"],
+            "runtime_budget": {
+                "mode": "enforced",
+                "enforced": True,
+                "started_monotonic": started_at,
+                "ordinary_deadline_monotonic": planner_deadline,
+                "strong_deadline_monotonic": planner_deadline,
+                "reply_reserve_seconds": 0.0,
+                "min_retry_remaining_seconds": 0.05,
+            },
+        }
+        client = DeadlinePlannerClient()
+
+        plan, model_call = await asyncio.wait_for(
+            run_planner_brain_v2(state, client),  # type: ignore[arg-type]
+            timeout=planner_deadline - time.monotonic(),
+        )
+
+        self.assertEqual([call["tier"] for call in client.calls], ["planner", "fast"])
+        self.assertLessEqual(
+            client.calls[0]["deadline_monotonic"],
+            planner_deadline - PLANNER_GRAPH_RETURN_GUARD_SECONDS - 0.1 + 0.02,
+        )
+        self.assertEqual(plan["planner_decision"], "direct_reply")
+        self.assertIn("Planner Timeout Recovery", client.calls[1]["messages"][0]["content"])
+        self.assertIn("initial_error", model_call)
+
     async def test_planner_normalizer_accepts_exact_snapshot_store_from_shared_evidence(self) -> None:
         target_date = (date.today() + timedelta(days=1)).isoformat()
 
@@ -546,6 +663,8 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["type"] for item in plan["planner_reply_messages"]], ["text"])
         self.assertNotIn("human_handoff_notice", [item["type"] for item in plan["planner_reply_messages"]])
         self.assertIn("timeout_retry_failed", model_call.get("error", ""))
+        self.assertEqual(plan["fallback_source"], "planner_timeout_after_retry")
+        self.assertEqual(model_call["fallback_source"], "planner_timeout_after_retry")
 
     def test_relay_provider_uses_relay_credentials(self) -> None:
         settings = _settings(

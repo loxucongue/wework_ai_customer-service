@@ -1027,6 +1027,7 @@ class ChatRuntime:
                 "policy_match_level": final_state.get("policy_match_level", ""),
                 "policy_version": final_state.get("policy_version", ""),
                 "reply_source": final_state.get("reply_source", ""),
+                "fallback_source": final_state.get("fallback_source", ""),
                 "postprocess_changed": bool(final_state.get("postprocess_changed")),
                 "postprocess_reasons": final_state.get("postprocess_reasons", []),
                 "async_final_reply": final_state.get("async_final_reply", {}),
@@ -1074,7 +1075,7 @@ def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:
 
 
 def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
-    state["fallback_source"] = "deterministic_runtime_fallback"
+    state["fallback_source"] = str(state.get("fallback_source") or "deterministic_runtime_fallback")
     state["fallback_failure_node"] = str(
         (state.get("errors") or [{}])[-1].get("node")
         if isinstance((state.get("errors") or [{}])[-1], dict)

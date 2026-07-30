@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -12,7 +13,7 @@ from app.graph.nodes.common import repair_mojibake_text
 from app.graph.nodes.contextual_short_message import short_message_context_for_model
 from app.graph.nodes.conversation_history_fetch import platform_messages_to_history
 from app.graph.nodes.current_turn_context import build_current_turn_context
-from app.graph.nodes.layer_nodes import create_background_context_layer
+from app.graph.nodes.layer_nodes import create_background_context_layer, create_input_normalization_layer
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model, reply_user_payload_for_model
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.nodes.appointment_time_utils import normalize_time_text, summarize_available_slots
@@ -6357,6 +6358,27 @@ class _TraceLogger:
         return self._Span()
 
 
+@pytest.mark.parametrize(
+    ("content", "expected_flags"),
+    [
+        ("行", []),
+        ("琛?", ["suspected_short_mojibake"]),
+        ("浜?", ["suspected_short_mojibake"]),
+        ("鏄?", ["suspected_short_mojibake"]),
+    ],
+)
+def test_input_normalization_marks_short_mojibake_without_rewriting(
+    content: str,
+    expected_flags: list[str],
+) -> None:
+    node = create_input_normalization_layer(trace_logger=_TraceLogger(), model_client=None)
+
+    output = asyncio.run(node({"content": content, "trace": []}))
+
+    assert output["normalized_content"] == content
+    assert output["input_quality_flags"] == expected_flags
+
+
 def test_reply_validation_rejects_schedule_lookup_promise_without_available_time_fact() -> None:
     messages = validated_model_messages(
         {
@@ -6893,6 +6915,73 @@ def test_background_context_keeps_request_history_when_platform_fetch_fails() ->
     assert output["conversation_history"] == ["用户: 原始历史"]
     assert output["conversation_fetch"]["status"] == "failed"
     assert output["conversation_fetch"]["used_message_count"] == 1
+
+
+def test_background_store_context_uses_one_shared_timeout_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    class CustomerContext:
+        def load_identity(self, **kwargs: object) -> dict[str, object]:
+            return {"request_context": {}, "identity_context": {}}
+
+        def load_with_identity(self, **kwargs: object) -> dict[str, object]:
+            return {
+                "orders": [{"order_id": "order-1", "prepay_paid": False}],
+                "appointment": {},
+                "source": "test",
+            }
+
+    class SlowStoreKnowledge:
+        hydrate_calls = 0
+
+        def load(self, **kwargs: object) -> dict[str, object]:
+            time.sleep(0.2)
+            return {"source": "late-store-index", "stores": [{"store_id": "241"}]}
+
+        def with_appointment_extra_stores(self, **kwargs: object) -> dict[str, object]:
+            self.hydrate_calls += 1
+            time.sleep(0.2)
+            return {"source": "late-hydrate", "stores": [{"store_id": "241"}]}
+
+    async def fetcher(**kwargs: object) -> dict[str, object]:
+        return {
+            "status": "ok",
+            "messages": [{"direction": "customer", "content": {"text": "行"}}],
+        }
+
+    monkeypatch.setattr("app.graph.nodes.layer_nodes.BACKGROUND_STORE_CONTEXT_BUDGET_SECONDS", 0.08)
+    store_service = SlowStoreKnowledge()
+    node = create_background_context_layer(
+        trace_logger=_TraceLogger(),
+        memory_store=None,
+        customer_context_service=CustomerContext(),  # type: ignore[arg-type]
+        customer_store_knowledge_service=store_service,  # type: ignore[arg-type]
+        conversation_fetcher=fetcher,
+    )
+
+    output = asyncio.run(
+        node(
+            {
+                "content": "行",
+                "conversation_history": ["小贝: 活动已经介绍过了。", "用户: 行"],
+                "customer_id": "customer-1",
+                "request_context": {
+                    "corp_id": "corp",
+                    "customer_id": "customer-1",
+                    "external_userid": "external",
+                    "user_id": "user",
+                    "wechat": "wechat",
+                },
+                "trace": [],
+                "test_isolated": True,
+            }
+        )
+    )
+
+    assert output["store_context_status"] == "partial_timeout"
+    assert 50 <= output["store_context_elapsed_ms"] < 160
+    assert output["store_context_skipped_steps"] == ["store_snapshot_hydrate:index_timeout"]
+    assert store_service.hydrate_calls == 0
+    assert output["customer_context"]["orders"][0]["order_id"] == "order-1"
+    assert output["conversation_history"] == ["用户: 行"]
 
 
 def test_reply_payload_keeps_parking_as_normal_answer() -> None:

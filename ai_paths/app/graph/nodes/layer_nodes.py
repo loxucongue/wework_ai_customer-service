@@ -4,7 +4,12 @@ import asyncio
 import time
 from typing import Any, Callable
 
-from app.graph.nodes.common import looks_bad_text, model_usage_snapshot, repair_mojibake_text
+from app.graph.nodes.common import (
+    looks_bad_text,
+    looks_suspected_short_mojibake,
+    model_usage_snapshot,
+    repair_mojibake_text,
+)
 from app.graph.nodes.conversation_history_fetch import ConversationFetcher, fetch_platform_conversation_history
 from app.graph.nodes.image_info import build_vision_prompt, fallback_image_info, validated_image_info
 from app.graph.nodes.location_card import append_location_card_to_content
@@ -21,7 +26,7 @@ UNKNOWN_TRANSFER_MESSAGE_PLACEHOLDERS = {
     "[未知消息类型]",
     "未知消息类型",
 }
-BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS = 8.0
+BACKGROUND_STORE_CONTEXT_BUDGET_SECONDS = 5.0
 BACKGROUND_EXTERNAL_TIMEOUT_SECONDS = 8.0
 
 
@@ -46,6 +51,8 @@ def create_input_normalization_layer(
                 input_quality_flags.append("encoding_repaired")
             if looks_bad_text(normalized):
                 input_quality_flags.append("suspected_mojibake")
+            if looks_suspected_short_mojibake(normalized):
+                input_quality_flags.append("suspected_short_mojibake")
             temp_state = dict(state)
             temp_state["normalized_content"] = normalized
             platform_transfer_info = _platform_unknown_transfer_image_info(normalized)
@@ -182,6 +189,8 @@ def create_background_context_layer(
                     request_context=scoped_request_context,
                 )
             )
+            store_context_started_at = time.monotonic()
+            store_context_deadline = store_context_started_at + BACKGROUND_STORE_CONTEXT_BUDGET_SECONDS
             customer_task = asyncio.to_thread(
                 _timed_call,
                 "order_index",
@@ -228,12 +237,12 @@ def create_background_context_layer(
                 _await_timed_background_task(
                     store_task,
                     name="store_index",
-                    timeout_seconds=BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS,
+                    timeout_seconds=max(0.05, store_context_deadline - time.monotonic()),
                     timeout_result={
                         "source": "customer_store_knowledge_timeout",
                         "stores": [],
                         "appointment_extra_stores": [],
-                        "error": f"timeout_after_{BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS:g}s",
+                        "error": f"timeout_after_{BACKGROUND_STORE_CONTEXT_BUDGET_SECONDS:g}s",
                     },
                 ),
             )
@@ -251,27 +260,52 @@ def create_background_context_layer(
                 ]
             )
             customer_context = customer_result.get("customer_context", {})
-            extra_task = asyncio.to_thread(
-                _timed_call,
-                "store_snapshot_hydrate",
-                _enrich_customer_stores,
-                customer_store_knowledge_service,
-                customer_store_knowledge,
-                scoped_request_context,
-                customer_context,
-            )
-            extra_result = await _await_timed_background_task(
-                extra_task,
-                name="store_snapshot_hydrate",
-                timeout_seconds=BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS,
-                timeout_result={
-                    **customer_store_knowledge,
-                    "error": f"timeout_after_{BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS:g}s",
-                    "snapshot_refresh_error": f"timeout_after_{BACKGROUND_STORE_INDEX_TIMEOUT_SECONDS:g}s",
-                },
-            )
+            store_context_skipped_steps: list[str] = []
+            store_index_error = str(store_result_timed.get("error") or "")
+            store_index_timed_out = "timeout_after_" in store_index_error
+            store_context_remaining = max(0.0, store_context_deadline - time.monotonic())
+            if store_index_timed_out:
+                store_context_skipped_steps.append("store_snapshot_hydrate:index_timeout")
+                extra_result = _skipped_background_result(
+                    "store_snapshot_hydrate",
+                    customer_store_knowledge,
+                    reason="store_index_timeout",
+                )
+            elif store_context_remaining <= 0.05:
+                store_context_skipped_steps.append("store_snapshot_hydrate:budget_exhausted")
+                extra_result = _skipped_background_result(
+                    "store_snapshot_hydrate",
+                    customer_store_knowledge,
+                    reason="shared_store_budget_exhausted",
+                )
+            else:
+                extra_task = asyncio.to_thread(
+                    _timed_call,
+                    "store_snapshot_hydrate",
+                    _enrich_customer_stores,
+                    customer_store_knowledge_service,
+                    customer_store_knowledge,
+                    scoped_request_context,
+                    customer_context,
+                )
+                extra_result = await _await_timed_background_task(
+                    extra_task,
+                    name="store_snapshot_hydrate",
+                    timeout_seconds=store_context_remaining,
+                    timeout_result={
+                        **customer_store_knowledge,
+                        "error": f"timeout_after_{store_context_remaining:g}s",
+                        "snapshot_refresh_error": f"timeout_after_{store_context_remaining:g}s",
+                    },
+                )
             customer_store_knowledge = extra_result["result"]
             substeps.append(_without_result(extra_result))
+            store_context_status = _store_context_status(
+                customer_store_knowledge_service=customer_store_knowledge_service,
+                store_index_result=store_result_timed,
+                hydrate_result=extra_result,
+            )
+            store_context_elapsed_ms = int((time.monotonic() - store_context_started_at) * 1000)
             span["entry"]["tool_calls"] = [
                 *[
                     {
@@ -290,6 +324,9 @@ def create_background_context_layer(
                 "conversation_history": conversation_history,
                 "conversation_fetch": conversation_result.get("conversation_fetch", {}),
                 "background_substeps": substeps,
+                "store_context_status": store_context_status,
+                "store_context_elapsed_ms": store_context_elapsed_ms,
+                "store_context_skipped_steps": store_context_skipped_steps,
                 "background_fact_views": _background_fact_views(
                     identity=identity,
                     customer_result=customer_result,
@@ -616,9 +653,44 @@ def _background_output_snapshot(output: dict[str, Any]) -> dict[str, Any]:
             "error": store_knowledge.get("error", ""),
         },
         "background_substeps": output.get("background_substeps", []),
+        "store_context_status": output.get("store_context_status", ""),
+        "store_context_elapsed_ms": output.get("store_context_elapsed_ms", 0),
+        "store_context_skipped_steps": output.get("store_context_skipped_steps", []),
         "conversation_fetch": output.get("conversation_fetch", {}),
         "conversation_history_count": len(output.get("conversation_history") or []),
     }
+
+
+def _skipped_background_result(name: str, result: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "duration_ms": 0,
+        "result": dict(result),
+        "cache_hit": _cache_hit_from_result(result),
+        "error": "",
+        "summary": {"status": "skipped", "reason": reason},
+    }
+
+
+def _store_context_status(
+    *,
+    customer_store_knowledge_service: CustomerStoreKnowledgeService | None,
+    store_index_result: dict[str, Any],
+    hydrate_result: dict[str, Any],
+) -> str:
+    if customer_store_knowledge_service is None:
+        return "unavailable"
+    errors = " ".join(
+        str(item.get("error") or "")
+        for item in (store_index_result, hydrate_result)
+        if isinstance(item, dict)
+    )
+    if "timeout_after_" in errors:
+        return "partial_timeout"
+    store_result = hydrate_result.get("result") if isinstance(hydrate_result, dict) else {}
+    if errors and not (isinstance(store_result, dict) and (store_result.get("stores") or store_result.get("appointment_extra_stores"))):
+        return "unavailable"
+    return "complete"
 
 
 def request_context_from_state(state: AgentState) -> dict[str, Any]:
