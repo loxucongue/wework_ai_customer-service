@@ -16,6 +16,7 @@ from app.services.outreach_prompts import (
 )
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.outreach_service import (
+    _outreach_plan_context_error,
     _outreach_plan_structure_error,
     build_outreach_activity_quote_fact,
 )
@@ -91,6 +92,13 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
     structure_error = _outreach_plan_structure_error(plan)
     if structure_error:
         errors.append(f"structure:{structure_error}")
+    context_error = _outreach_plan_context_error(
+        plan,
+        activity_quote_fact=build_outreach_activity_quote_fact(case.get("recent_messages") or [], {}),
+        reply_wait_minutes=int((case.get("conversation_activity") or {}).get("reply_wait_minutes") or 0),
+    )
+    if context_error:
+        errors.append(f"context:{context_error}")
     if len(steps) not in {2, 3}:
         errors.append("step_count")
     angles = [str(item.get("persuasion_angle") or "") for item in steps]
@@ -192,8 +200,12 @@ async def _run_case(
                 tier="strong",
                 temperature=0.0,
             )
-            structure_error = _outreach_plan_structure_error(plan)
-            for _repair_attempt in range(2):
+            structure_error = _outreach_plan_structure_error(plan) or _outreach_plan_context_error(
+                plan,
+                activity_quote_fact=payload["activity_quote_fact"],
+                reply_wait_minutes=int(payload["conversation_activity"].get("reply_wait_minutes") or 0),
+            )
+            for _repair_attempt in range(3):
                 if not structure_error:
                     break
                 plan = await client.chat_json(
@@ -208,7 +220,9 @@ async def _run_case(
                                     "structure_error": structure_error,
                                     "repair_instruction": (
                                         "修复结构错误并输出完整有效 json。只能使用合同允许的枚举，"
-                                        "保留事实边界、递进策略和素材约束，不要解释。"
+                                        "保留事实边界、递进策略和素材约束；同时重新执行完整 Review Checklist，"
+                                        "不得引入口令式回复、送客表达或内部结构词，最后一步必须直接交付价值并自然收口。"
+                                        "不要解释。"
                                     ),
                                 },
                                 ensure_ascii=False,
@@ -218,7 +232,11 @@ async def _run_case(
                     tier="strong",
                     temperature=0.0,
                 )
-                structure_error = _outreach_plan_structure_error(plan)
+                structure_error = _outreach_plan_structure_error(plan) or _outreach_plan_context_error(
+                    plan,
+                    activity_quote_fact=payload["activity_quote_fact"],
+                    reply_wait_minutes=int(payload["conversation_activity"].get("reply_wait_minutes") or 0),
+                )
         except Exception as exc:
             return {
                 "case_id": case["id"],

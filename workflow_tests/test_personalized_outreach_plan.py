@@ -9,12 +9,44 @@ from typing import Any
 from app.services.outreach_service import (
     OutreachService,
     _normalize_outreach_schedule,
+    _outreach_plan_context_error,
     _outreach_plan_structure_error,
     build_outreach_activity_quote_fact,
 )
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    def test_long_silence_requires_a_value_first_step_without_cta(self) -> None:
+        response = _ModelClient().response
+        response["steps"][0]["persuasion_angle"] = "convenience"
+        response["steps"][0]["cta"] = "选择先了解效果还是活动"
+
+        self.assertEqual(
+            _outreach_plan_context_error(
+                response,
+                activity_quote_fact={"completed": False},
+                reply_wait_minutes=5760,
+            ),
+            (
+                "reply_wait_minutes is at least 1440; rewrite the first step with cta exactly 'none', "
+                "persuasion_angle one of education/proof/professionalism/self_image, and a declarative "
+                "customer text with no question mark that directly delivers useful value"
+            ),
+        )
+
+    def test_recent_silence_keeps_model_selected_first_step(self) -> None:
+        response = _ModelClient().response
+        response["steps"][0]["persuasion_angle"] = "convenience"
+
+        self.assertEqual(
+            _outreach_plan_context_error(
+                response,
+                activity_quote_fact={"completed": False},
+                reply_wait_minutes=20,
+            ),
+            "",
+        )
+
     def test_final_step_requires_an_explicit_action(self) -> None:
         response = _ModelClient().response
         response["steps"][-1]["cta"] = "none"

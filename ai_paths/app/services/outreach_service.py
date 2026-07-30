@@ -464,9 +464,29 @@ def _outreach_plan_context_error(
     response: dict[str, Any],
     *,
     activity_quote_fact: dict[str, Any],
+    reply_wait_minutes: int = 0,
 ) -> str:
+    steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
+    if bool(response.get("should_create_plan", True)) and reply_wait_minutes >= 1440 and steps:
+        first_step = steps[0]
+        first_step_is_value_delivery = (
+            _string(first_step.get("cta")).lower() in {"", "none"}
+            and _string(first_step.get("persuasion_angle"))
+            in {
+                "education",
+                "proof",
+                "professionalism",
+                "self_image",
+            }
+            and not any(marker in _plan_step_text(first_step) for marker in ("?", "？"))
+        )
+        if not first_step_is_value_delivery:
+            return (
+                "reply_wait_minutes is at least 1440; rewrite the first step with cta exactly 'none', "
+                "persuasion_angle one of education/proof/professionalism/self_image, and a declarative "
+                "customer text with no question mark that directly delivers useful value"
+            )
     if not _valid_activity_quote_evidence(activity_quote_fact):
-        steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
         if any(_bool(step.get("should_send_payment_collection")) for step in steps):
             return "activity quote is incomplete; payment_collection must be disabled"
     return ""
@@ -796,6 +816,8 @@ class OutreachService:
             )
         memory = context.get("memory") or {}
         recent_messages = context.get("recent_messages") or []
+        conversation_activity = context.get("conversation_activity") or {}
+        reply_wait_minutes = _int(conversation_activity.get("reply_wait_minutes"), 0)
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
         asset_catalog = self._outreach_asset_catalog()
         recent_media = recent_outreach_media(recent_messages, hours=72)
@@ -818,6 +840,7 @@ class OutreachService:
             "external_userid": external_userid,
             "memory": memory,
             "recent_messages": recent_messages,
+            "conversation_activity": conversation_activity,
             "current_stage": current_stage,
             "business_goal": goal,
             "sop_plan_id": sop_plan_id,
@@ -856,6 +879,7 @@ class OutreachService:
         structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
             response,
             activity_quote_fact=activity_quote_fact,
+            reply_wait_minutes=reply_wait_minutes,
         )
         if structure_error:
             response = await self.model_client.chat_json(
@@ -893,8 +917,9 @@ class OutreachService:
         structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
             response,
             activity_quote_fact=activity_quote_fact,
+            reply_wait_minutes=reply_wait_minutes,
         )
-        for _repair_attempt in range(2):
+        for _repair_attempt in range(3):
             if not structure_error:
                 break
             response = await self.model_client.chat_json(
@@ -909,7 +934,9 @@ class OutreachService:
                                 "structure_error": structure_error,
                                 "repair_instruction": (
                                     "修复结构错误并输出完整有效 json。只能使用合同允许的枚举，"
-                                    "保留事实边界、递进策略和素材约束，不要解释。"
+                                    "保留事实边界、递进策略和素材约束；同时重新执行完整 Review Checklist，"
+                                    "不得引入口令式回复、送客表达或内部结构词，最后一步必须直接交付价值并自然收口。"
+                                    "不要解释。"
                                 ),
                             }
                         ),
@@ -921,6 +948,7 @@ class OutreachService:
             structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
                 response,
                 activity_quote_fact=activity_quote_fact,
+                reply_wait_minutes=reply_wait_minutes,
             )
         if not bool(response.get("should_create_plan", True)):
             self.repository.add_outreach_event(
@@ -944,6 +972,7 @@ class OutreachService:
         structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
             response,
             activity_quote_fact=activity_quote_fact,
+            reply_wait_minutes=reply_wait_minutes,
         )
         if structure_error:
             raise RuntimeError(f"outreach_plan_model_invalid_structure: {structure_error}")
