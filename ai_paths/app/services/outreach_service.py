@@ -78,6 +78,68 @@ def _message_time_iso(value: Any) -> str:
     return parsed.isoformat() if parsed else raw
 
 
+def _conversation_activity_from_context(
+    *,
+    existing: dict[str, Any] | None,
+    memory: dict[str, Any] | None,
+    recent_messages: list[dict[str, Any]] | None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    activity = dict(existing or {})
+    memory_fact = dict(memory or {})
+    messages = list(recent_messages or [])
+
+    latest_customer_text = _string(
+        activity.get("latest_customer_message_at")
+        or memory_fact.get("last_customer_message_at")
+    )
+    latest_staff_text = _string(
+        activity.get("latest_staff_message_at")
+        or memory_fact.get("last_staff_message_at")
+        or memory_fact.get("last_ai_reply_at")
+    )
+    customer_count = 0
+    for message in messages:
+        direction = _string(
+            message.get("direction")
+            or message.get("from")
+            or message.get("sender_type")
+        ).lower()
+        message_time_text = _message_time_iso(
+            message.get("msgtime")
+            or message.get("timestamp")
+            or message.get("created_at")
+        )
+        message_time = _parse_iso(message_time_text)
+        if direction in {"customer", "user", "external"}:
+            customer_count += 1
+            known_customer_time = _parse_iso(_message_time_iso(latest_customer_text))
+            if message_time and (known_customer_time is None or message_time > known_customer_time):
+                latest_customer_text = message_time_text
+        elif direction in {"staff", "assistant", "ai", "employee"}:
+            known_staff_time = _parse_iso(_message_time_iso(latest_staff_text))
+            if message_time and (known_staff_time is None or message_time > known_staff_time):
+                latest_staff_text = message_time_text
+
+    latest_customer = _parse_iso(_message_time_iso(latest_customer_text))
+    latest_staff = _parse_iso(_message_time_iso(latest_staff_text))
+    awaiting_customer_reply = bool(
+        latest_staff and (latest_customer is None or latest_staff > latest_customer)
+    )
+    if "reply_wait_minutes" not in activity or activity.get("reply_wait_minutes") in {None, ""}:
+        current = now or datetime.now(timezone.utc)
+        activity["reply_wait_minutes"] = (
+            max(0, int((current - latest_staff.astimezone(timezone.utc)).total_seconds() // 60))
+            if awaiting_customer_reply and latest_staff
+            else 0
+        )
+    activity.setdefault("latest_customer_message_at", _message_time_iso(latest_customer_text))
+    activity.setdefault("latest_staff_message_at", _message_time_iso(latest_staff_text))
+    activity.setdefault("real_customer_message_count", customer_count)
+    activity.setdefault("awaiting_customer_reply", awaiting_customer_reply)
+    return activity
+
+
 def _conversation_fingerprint(
     *,
     corp_id: str,
@@ -816,7 +878,11 @@ class OutreachService:
             )
         memory = context.get("memory") or {}
         recent_messages = context.get("recent_messages") or []
-        conversation_activity = context.get("conversation_activity") or {}
+        conversation_activity = _conversation_activity_from_context(
+            existing=context.get("conversation_activity"),
+            memory=memory,
+            recent_messages=recent_messages,
+        )
         reply_wait_minutes = _int(conversation_activity.get("reply_wait_minutes"), 0)
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
         asset_catalog = self._outreach_asset_catalog()

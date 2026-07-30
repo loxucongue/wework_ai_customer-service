@@ -99,5 +99,24 @@
       "orders": [{"id": "order-paid", "status": "prepay_paid", "is_current_order": true}]
     },
     "expected": "should_create_plan=false，不生成普通营销计划，不发预约金卡。"
+  },
+  {
+    "id": "store_matched_long_silence",
+    "description": "门店和活动早已发送，期间又做过营销触达，客户持续沉默超过一天",
+    "recent_messages": [
+      {"direction": "customer", "content": "江苏扬州邗江区"},
+      {"direction": "customer", "content": "门店在哪里"},
+      {"direction": "staff", "content": "扬州邗江二店的位置和门店卡已经发您了，停车和营业时间也给您说明了。"},
+      {"direction": "staff", "content": "这次线上活动总价268元，每位先付10元预约金，到店抵扣，做的话再付258元。"},
+      {"direction": "staff", "content": "到店会先看斑点和皮肤状态，再结合实际情况给建议。"}
+    ],
+    "conversation_activity": {
+      "reply_wait_minutes": 2793,
+      "latest_customer_message_at": "2026-07-26T00:50:49+00:00",
+      "latest_staff_message_at": "2026-07-28T06:01:46+00:00",
+      "awaiting_customer_reply": true
+    },
+    "customer_context": {"source": "platform_agent", "orders": []},
+    "expected": "首轮不得再提门店、路线、停车或要求客户回复；应以斑点护理知识、产品价值、专业价值或真实证据重新建立联系。后续步骤换角度递进，最后才可低压力收口。"
   }
 ]

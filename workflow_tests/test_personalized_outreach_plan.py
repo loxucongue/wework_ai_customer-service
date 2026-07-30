@@ -8,6 +8,7 @@ from typing import Any
 
 from app.services.outreach_service import (
     OutreachService,
+    _conversation_activity_from_context,
     _normalize_outreach_schedule,
     _outreach_plan_context_error,
     _outreach_plan_structure_error,
@@ -16,6 +17,38 @@ from app.services.outreach_service import (
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    def test_manual_plan_context_derives_reply_wait_from_cached_message_facts(self) -> None:
+        now = datetime(2026, 7, 30, 4, 35, tzinfo=timezone.utc)
+
+        activity = _conversation_activity_from_context(
+            existing={},
+            memory={
+                "last_customer_message_at": "2026-07-26T00:50:49+00:00",
+                "last_staff_message_at": "2026-07-28T06:01:46+00:00",
+            },
+            recent_messages=[
+                {
+                    "from": "customer",
+                    "content": "store location",
+                    "msgtime": 1785027049766,
+                },
+                {
+                    "from": "staff",
+                    "content": "follow-up",
+                    "msgtime": 1785218506172,
+                },
+            ],
+            now=now,
+        )
+
+        self.assertTrue(activity["awaiting_customer_reply"])
+        self.assertEqual(activity["real_customer_message_count"], 1)
+        self.assertEqual(activity["reply_wait_minutes"], 2793)
+        self.assertEqual(
+            activity["latest_staff_message_at"],
+            "2026-07-28T06:01:46+00:00",
+        )
+
     def test_long_silence_requires_a_value_first_step_without_cta(self) -> None:
         response = _ModelClient().response
         response["steps"][0]["persuasion_angle"] = "convenience"
@@ -394,6 +427,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             conversation_activity={
                 "real_customer_message_count": 1,
                 "latest_customer_message_at": "2026-07-27T10:00:00+08:00",
+                "reply_wait_minutes": 20,
             },
             customer_context={"orders": [], "deposit_state": "unknown"},
             platform_task={
