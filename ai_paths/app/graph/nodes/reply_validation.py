@@ -685,6 +685,8 @@ def _promises_store_info_delivery_without_cards(text: str) -> bool:
 def _validate_complete_store_listing_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     """Require cards when the completed lookup fact is a small, complete store listing."""
 
+    if not _current_turn_requires_complete_store_listing(state):
+        return
     if _current_scope_is_province_only(state):
         return
     current_content = str(state.get("normalized_content") or state.get("content") or "")
@@ -699,6 +701,37 @@ def _validate_complete_store_listing_delivery(messages: list[dict[str, Any]], st
         return
     if not store_ids.issubset(_emitted_store_address_ids(messages)):
         raise ValueError("complete_store_listing_cards_required")
+
+
+def _current_turn_requires_complete_store_listing(state: dict[str, Any]) -> bool:
+    """Limit complete-list enforcement to a current store-delivery turn."""
+
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if str(resolution.get("delivery_mode") or "") == "send_all_candidates":
+        return True
+    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    if str(lookup.get("status") or "") == "ok":
+        return True
+
+    current_text = str(state.get("normalized_content") or state.get("content") or "")
+    if _current_message_requests_store_address_card(current_text):
+        return True
+    for region in _store_scope_summary_regions(state):
+        requested_areas = region.get("requested_areas") if isinstance(region.get("requested_areas"), list) else []
+        if any(
+            str(area or "").strip() and region_mentioned_in_text(str(area), current_text)
+            for area in requested_areas
+        ):
+            return True
+        city = str(region.get("city") or "").strip()
+        if city and region_mentioned_in_text(city, current_text):
+            return True
+    return False
 
 
 def _validate_store_resolution_delivery_mode(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:

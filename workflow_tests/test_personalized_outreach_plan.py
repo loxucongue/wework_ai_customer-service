@@ -635,6 +635,24 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "events": [],
         }
         model = _ModelClient()
+        # The fixed July 28 conversation becomes long-silent as wall time moves on.
+        # Keep this migration test valid under the long-silence plan contract.
+        model.response["steps"][0].update(
+            {
+                "delay_minutes": 60,
+                "content_mode": "value_only",
+                "persuasion_angle": "education",
+                "cta": "none",
+                "reply_messages": [
+                    {
+                        "type": "text",
+                        "order": 1,
+                        "content": {"text": "到店会先看斑点情况和皮肤状态，再按实际情况给建议。"},
+                    }
+                ],
+            }
+        )
+        model.response["steps"][1]["delay_minutes"] = 1500
         service = OutreachService(repository=repository, model_client=model, system_client=_ConversationSystemClient())
 
         result = await service.ensure_platform_task_plan(

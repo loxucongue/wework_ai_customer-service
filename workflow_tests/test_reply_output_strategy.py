@@ -5874,6 +5874,73 @@ def test_payment_collection_requires_positive_activity_intro_evidence() -> None:
     assert activity_intro_completed_for_payment(
         {"conversation_history": ["小贝: 活动总价268元，每位10元预约金到店抵扣。"]}
     ) is True
+    assert activity_intro_completed_for_payment(
+        {"sent_message_summary": {"payment_collection_sent": True, "payment_collection_count": 1}}
+    ) is True
+    assert activity_intro_completed_for_payment(
+        {"history_events": [{"event_type": "payment_collection_sent", "facts": {"amount": 10}}]}
+    ) is True
+
+
+def test_payment_turn_is_not_blocked_by_stale_complete_store_scope() -> None:
+    state = {
+        "normalized_content": "行",
+        "payment_action": "send_now",
+        "payment_decision": {"action": "resend", "method": "mini_program", "party_size": 1, "amount": 10},
+        "sent_message_summary": {"payment_collection_sent": True, "payment_collection_count": 1},
+        "store_scope_summary": {
+            "relevant_regions": [
+                {
+                    "city": "荆州市",
+                    "stores": [
+                        {"store_id": "241", "store_name": "荆州万达店"},
+                        {"store_id": "242", "store_name": "荆州沙市店"},
+                    ],
+                }
+            ]
+        },
+    }
+
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": "好嘞亲，我把10元预约金卡重新发您。"},
+            {"type": "payment_collection", "order": 2, "content": {"amount": 10}},
+        ],
+        state,
+    )
+
+
+def test_payment_progression_and_decision_mismatch_requires_planner_repair() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "改天去吧",
+            "sent_message_summary": {"payment_collection_sent": True, "payment_collection_count": 1},
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S4",
+            "sub_rule_id": "S4_HESITATION",
+            "conversion_stage": "objection_resolution",
+            "customer_type": "time",
+            "main_blocker": "time",
+            "next_step": "solve_blocker",
+            "payment_action": "explain_existing",
+            "payment_decision": {"action": "explain"},
+            "sales_progression": {
+                "status": "continue",
+                "target_stage": "deposit",
+                "action": "send_payment_card",
+                "goal": "继续推进预约金",
+            },
+            "reply_messages": [{"type": "text", "content": {"text": "到店时间后面按您方便安排。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "payment_progression_decision_mismatch"
+        for item in plan["tool_policy_violations"]
+    )
 
 
 @pytest.mark.parametrize(

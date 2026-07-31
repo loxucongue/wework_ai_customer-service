@@ -37,6 +37,15 @@ def activity_intro_completed_for_payment(state: dict[str, Any] | None) -> bool:
     summary = state.get("sent_message_summary") if isinstance(state.get("sent_message_summary"), dict) else {}
     if summary.get("activity_intro_image_sent"):
         return True
+    try:
+        payment_collection_count = int(summary.get("payment_collection_count") or 0)
+    except (TypeError, ValueError):
+        payment_collection_count = 0
+    if summary.get("payment_collection_sent") or payment_collection_count > 0:
+        # A successfully delivered payment card is structural evidence that this
+        # sales contact already passed the activity-price prerequisite. This
+        # remains a sent-message fact only; it never proves the customer paid.
+        return True
     for event in state.get("history_events") or []:
         if not isinstance(event, dict):
             continue
@@ -44,6 +53,8 @@ def activity_intro_completed_for_payment(state: dict[str, Any] | None) -> bool:
         pack_id = str(event.get("pack_id") or event.get("sop_pack_id") or event.get("send_once_key") or "").strip().lower()
         category = str(event.get("sop_category") or event.get("category") or "").strip().lower()
         if event_type in {"activity_intro_image_sent", "offer_explained"}:
+            return True
+        if event_type == "payment_collection_sent":
             return True
         if pack_id == "s10_activity_intro" or category in {"activity_intro", "s10_activity_intro"}:
             return True

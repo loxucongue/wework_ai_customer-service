@@ -589,6 +589,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             payment_state=payment_state,
             payment_action=payment_action,
             payment_decision=payment_decision,
+            sales_progression=sales_progression,
             messages=planner_reply_messages,
         ),
         *_postpaid_scheduling_tool_violations(
@@ -3205,6 +3206,7 @@ def _payment_consistency_violations(
     payment_state: str,
     payment_action: str,
     payment_decision: dict[str, Any],
+    sales_progression: dict[str, Any],
     messages: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     if decision == "no_reply":
@@ -3221,6 +3223,20 @@ def _payment_consistency_violations(
                 }
             ]
         return []
+    progression_action = str(sales_progression.get("action") or "")
+    if progression_action == "send_payment_card" and decision_action not in {"send_now", "resend"}:
+        return [
+            {
+                "task_type": "reply_schema_consistency",
+                "subtype": "payment_collection",
+                "missing": "payment_progression_decision_mismatch",
+                "note": (
+                    "sales_progression.action=send_payment_card requires payment_decision.action=send_now/resend. "
+                    "Use payment_decision as the single payment authority: either send the card, or change the "
+                    "sales progression to an explain-only action."
+                ),
+            }
+        ]
     payment_context = payment_collection_context(state={**state, "payment_decision": payment_decision}, messages=messages)
     if _payment_send_requires_activity_intro(
         conversion_stage=conversion_stage,
