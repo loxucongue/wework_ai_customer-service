@@ -32,6 +32,7 @@ from app.services.trace_logger import TraceLogger
 
 
 _STORE_SNAPSHOT_CACHE: dict[str, Any] | None = None
+_STORE_SNAPSHOT_CACHE_KEY: tuple[str, int] | None = None
 _ACTION_TOOL_TIMEOUT_SECONDS = 12.0
 
 
@@ -1986,17 +1987,27 @@ def _normalize_store_name_for_match(value: str) -> str:
 
 
 def _snapshot_store_values() -> list[dict[str, Any]]:
-    global _STORE_SNAPSHOT_CACHE
-    if _STORE_SNAPSHOT_CACHE is None:
-        snapshot: dict[str, Any] = {}
-        for path in _snapshot_store_candidate_paths():
+    global _STORE_SNAPSHOT_CACHE, _STORE_SNAPSHOT_CACHE_KEY
+    snapshot: dict[str, Any] = {}
+    selected_key: tuple[str, int] | None = None
+    selected_path: Path | None = None
+    for path in _snapshot_store_candidate_paths():
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        selected_path = path
+        selected_key = (str(path.resolve()), stat.st_mtime_ns)
+        break
+    if selected_key != _STORE_SNAPSHOT_CACHE_KEY:
+        if selected_path is not None:
             try:
-                snapshot = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(snapshot, dict):
-                    break
+                loaded = json.loads(selected_path.read_text(encoding="utf-8"))
+                snapshot = loaded if isinstance(loaded, dict) else {}
             except (OSError, json.JSONDecodeError):
                 snapshot = {}
         _STORE_SNAPSHOT_CACHE = snapshot
+        _STORE_SNAPSHOT_CACHE_KEY = selected_key
     stores_by_id = _STORE_SNAPSHOT_CACHE.get("stores_by_id") if isinstance(_STORE_SNAPSHOT_CACHE, dict) else {}
     if isinstance(stores_by_id, dict) and stores_by_id:
         return [store for store in stores_by_id.values() if isinstance(store, dict)]

@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import httpx
@@ -67,6 +68,7 @@ class StoreSnapshotService:
         self._settings = settings
         self._geocode_workflow_id = str(getattr(settings, "geocode_workflow_id", "") or "").strip()
         self._coze_oauth_provider = CozeOAuthTokenProvider(settings) if self._geocode_workflow_id else None
+        self._refresh_lock = Lock()
 
     def load_snapshot(self, *, request_context: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot = self._read_snapshot()
@@ -81,25 +83,40 @@ class StoreSnapshotService:
         request_context: dict[str, Any] | None = None,
         allow_existing_on_error: bool = True,
     ) -> dict[str, Any]:
-        existing = self._read_snapshot()
-        if not self._platform_client or not self._platform_client.available:
-            if allow_existing_on_error and existing:
-                existing["refresh_error"] = "platform_agent_unavailable"
-                return existing
-            return self._empty_snapshot(source="platform_agent_unavailable", refresh_error="platform_agent_unavailable")
+        with self._refresh_lock:
+            existing = self._read_snapshot()
+            if not self._platform_client or not self._platform_client.available:
+                if allow_existing_on_error and existing:
+                    existing["refresh_error"] = "platform_agent_unavailable"
+                    return existing
+                return self._empty_snapshot(source="platform_agent_unavailable", refresh_error="platform_agent_unavailable")
 
-        try:
-            rows = self._platform_client.list_store_options(request_context=request_context)
-            stores = self._hydrate_rows(rows, request_context or {})
-            snapshot = self._build_snapshot(stores)
-            self._write_snapshot(snapshot)
-            return snapshot
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            if allow_existing_on_error and existing:
-                existing["refresh_error"] = error
-                return existing
-            return self._empty_snapshot(source="refresh_error", refresh_error=error)
+            try:
+                rows = self._platform_client.list_store_options(request_context=request_context)
+                eligible_rows = [row for row in rows if _store_option_is_recommendable(row)]
+                excluded_rows = [row for row in rows if not _store_option_is_recommendable(row)]
+                stores = self._hydrate_rows(eligible_rows, request_context or {})
+                snapshot = self._build_snapshot(stores)
+                snapshot["platform_store_count"] = len(rows)
+                snapshot["platform_recommendable_count"] = len(eligible_rows)
+                snapshot["excluded_platform_store_count"] = len(excluded_rows)
+                snapshot["excluded_platform_stores"] = [
+                    {
+                        "store_id": str(row.get("id") or row.get("store_id") or ""),
+                        "store_name": clean_text(row.get("name") or ""),
+                        "status": row.get("status"),
+                        "shore_show": row.get("shore_show"),
+                    }
+                    for row in excluded_rows
+                ]
+                self._write_snapshot(snapshot)
+                return snapshot
+            except Exception as exc:
+                error = f"{type(exc).__name__}: {exc}"
+                if allow_existing_on_error and existing:
+                    existing["refresh_error"] = error
+                    return existing
+                return self._empty_snapshot(source="refresh_error", refresh_error=error)
 
     def stores_for_scope(
         self,
@@ -194,13 +211,18 @@ class StoreSnapshotService:
 
     def _store_from_row(self, row: dict[str, Any], *, detail: dict[str, Any], detail_source: str) -> dict[str, Any]:
         store_id = str(row.get("id") or row.get("store_id") or "").strip()
+        store_name = clean_text(row.get("name") or detail.get("name") or "")
         parking = detail.get("parking_info") if isinstance(detail.get("parking_info"), dict) else {}
         address = clean_text(detail.get("tencent_address") or row.get("tencent_address") or row.get("address") or "")
         parking_address = clean_text(parking.get("park_address") or "")
         province, city, district = parse_region(address)
         if not (province or city or district):
             province, city, district = parse_region(parking_address)
-        geocode = self._geocode_store_address(address or parking_address)
+        geocode, geocode_query, rejected_geocodes = self._resolve_store_geocode(
+            store_name=store_name,
+            address=address,
+            parking_address=parking_address,
+        )
         if geocode:
             province = clean_text(geocode.get("province") or province)
             city = clean_text(geocode.get("city") or city)
@@ -212,7 +234,7 @@ class StoreSnapshotService:
         end = str(row.get("business_hours_end") or detail.get("business_hours_end") or "").strip()
         return {
             "store_id": store_id,
-            "store_name": clean_text(row.get("name") or detail.get("name") or ""),
+            "store_name": store_name,
             "province": province,
             "city": city,
             "district": district,
@@ -229,9 +251,59 @@ class StoreSnapshotService:
             "geocode_level": clean_text(geocode.get("level") if geocode else ""),
             "geocode_township": clean_text(geocode.get("township") if geocode else ""),
             "geocode_source": "poi_to_geocode" if geocode else "",
+            "geocode_query": geocode_query,
+            "geocode_rejected_candidates": rejected_geocodes,
+            "platform_status": row.get("status"),
+            "platform_shore_show": row.get("shore_show"),
+            "platform_schedule_status": row.get("schedule_status"),
+            "platform_plan_status": row.get("plan_status"),
+            "platform_is_pause": row.get("is_pause"),
+            "platform_pause_start": row.get("pause_start"),
+            "platform_pause_end": row.get("pause_end"),
             "source": "store_snapshot",
             "detail_source": detail_source,
         }
+
+    def _resolve_store_geocode(
+        self,
+        *,
+        store_name: str,
+        address: str,
+        parking_address: str,
+    ) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        address_region = parse_region(address)
+        parking_region = parse_region(parking_address)
+        rejected: list[dict[str, Any]] = []
+        for query in geocode_query_candidates(
+            store_name=store_name,
+            address=address,
+            parking_address=parking_address,
+        ):
+            geocode = self._geocode_store_address(query)
+            if not geocode:
+                rejected.append({"query": query, "reason": "empty_result"})
+                continue
+            conflicts = geocode_region_conflicts(
+                geocode,
+                address_region=address_region,
+                parking_region=parking_region,
+            )
+            if conflicts:
+                rejected.append(
+                    {
+                        "query": query,
+                        "reason": "region_conflict",
+                        "conflicts": conflicts,
+                        "result_region": {
+                            "province": clean_text(geocode.get("province")),
+                            "city": clean_text(geocode.get("city")),
+                            "district": clean_text(geocode.get("district")),
+                        },
+                    }
+                )
+                continue
+            return geocode, query, rejected
+        return {}, "", rejected
 
     def _geocode_store_address(self, address: str) -> dict[str, Any]:
         address = clean_text(address)
@@ -390,6 +462,107 @@ def parse_township(address: str) -> str:
 
 def clean_text(value: Any) -> str:
     return re.sub(r"[\u200b-\u200f\ufeff]", "", str(value or "")).strip()
+
+
+def _store_option_is_recommendable(row: dict[str, Any]) -> bool:
+    """Use platform lifecycle fields to keep historical stores out of fallback."""
+
+    status = row.get("status")
+    shore_show = row.get("shore_show")
+    if status not in (None, "") and str(status).strip() != "1":
+        return False
+    if shore_show not in (None, "") and str(shore_show).strip() != "1":
+        return False
+    return True
+
+
+def geocode_query_candidates(
+    *,
+    store_name: str,
+    address: str,
+    parking_address: str,
+) -> list[str]:
+    """Build deterministic POI queries without changing platform store facts."""
+
+    store_name = clean_text(store_name)
+    address = clean_text(address)
+    parking_address = clean_text(parking_address)
+    address_region = parse_region(address)
+    parking_region = parse_region(parking_address)
+    address_has_city = bool(address_region[1])
+    parking_has_city = bool(parking_region[1])
+    candidates: list[str] = []
+
+    if address and address_has_city:
+        candidates.append(address)
+    if address and parking_address and parking_has_city:
+        candidates.append(f"{parking_address} {address}")
+    if address and store_name:
+        candidates.append(f"{store_name} {address}")
+    if address:
+        candidates.append(address)
+    if parking_address:
+        candidates.append(parking_address)
+
+    output: list[str] = []
+    for candidate in candidates:
+        candidate = clean_text(candidate)
+        if candidate and candidate not in output:
+            output.append(candidate)
+    return output
+
+
+def geocode_region_conflicts(
+    geocode: dict[str, Any],
+    *,
+    address_region: tuple[str, str, str],
+    parking_region: tuple[str, str, str],
+) -> list[str]:
+    """Reject geocode results that contradict explicit platform regions."""
+
+    result_province = clean_text(geocode.get("province"))
+    result_city = clean_text(geocode.get("city"))
+    result_district = clean_text(geocode.get("district") or geocode.get("township"))
+    address_province, address_city, address_district = address_region
+    parking_province, parking_city, _ = parking_region
+    conflicts: list[str] = []
+
+    for source, expected, actual in (
+        ("address_province", address_province, result_province),
+        ("address_city", address_city, result_city),
+        ("address_district", address_district, result_district),
+        ("parking_province", parking_province, result_province),
+        ("parking_city", parking_city, result_city),
+    ):
+        if expected and actual and not _region_values_equal(expected, actual):
+            conflicts.append(f"{source}:{expected}!={actual}")
+    return conflicts
+
+
+def _region_values_equal(left: str, right: str) -> bool:
+    def normalize(value: str) -> str:
+        text = clean_text(value)
+        for suffix in (
+            "壮族自治区",
+            "回族自治区",
+            "维吾尔自治区",
+            "特别行政区",
+            "自治州",
+            "自治县",
+            "自治区",
+            "地区",
+            "新区",
+            "省",
+            "市",
+            "区",
+            "县",
+            "旗",
+        ):
+            if text.endswith(suffix) and len(text) > len(suffix):
+                return text[: -len(suffix)]
+        return text
+
+    return bool(normalize(left) and normalize(left) == normalize(right))
 
 
 def parse_geocode_workflow_response(raw: dict[str, Any]) -> dict[str, Any]:

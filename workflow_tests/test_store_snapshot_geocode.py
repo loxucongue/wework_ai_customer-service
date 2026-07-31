@@ -3,7 +3,14 @@ from __future__ import annotations
 import unittest
 
 from app.config import Settings
-from app.services.store_snapshot_service import StoreSnapshotService, parse_geocode_workflow_response, parse_region
+from app.services.store_snapshot_service import (
+    StoreSnapshotService,
+    _store_option_is_recommendable,
+    geocode_query_candidates,
+    geocode_region_conflicts,
+    parse_geocode_workflow_response,
+    parse_region,
+)
 
 
 def u(value: str) -> str:
@@ -11,6 +18,12 @@ def u(value: str) -> str:
 
 
 class StoreSnapshotGeocodeTests(unittest.TestCase):
+    def test_platform_inactive_or_hidden_store_is_not_recommendable(self) -> None:
+        self.assertFalse(_store_option_is_recommendable({"status": 0, "shore_show": 1}))
+        self.assertFalse(_store_option_is_recommendable({"status": 1, "shore_show": 2}))
+        self.assertTrue(_store_option_is_recommendable({"status": 1, "shore_show": 1}))
+        self.assertTrue(_store_option_is_recommendable({"id": "fixture"}))
+
     def test_parse_geocode_data_list_response(self) -> None:
         raw = {
             "code": 0,
@@ -72,6 +85,87 @@ class StoreSnapshotGeocodeTests(unittest.TestCase):
         self.assertEqual(province, "")
         self.assertEqual(city, u(r"\u4e2d\u5c71\u5e02"))
         self.assertEqual(district, u(r"\u4e1c\u533a"))
+
+    def test_incomplete_address_uses_parking_region_before_raw_poi(self) -> None:
+        service = StoreSnapshotService(Settings(geocode_workflow_id=""), platform_client=None)
+        calls: list[str] = []
+
+        def geocode(address: str) -> dict[str, str]:
+            calls.append(address)
+            if address.startswith(u(r"\u5e7f\u4e1c\u7701\u5e7f\u5dde\u5e02")):
+                return {
+                    "province": u(r"\u5e7f\u4e1c\u7701"),
+                    "city": u(r"\u5e7f\u5dde\u5e02"),
+                    "district": u(r"\u756a\u79ba\u533a"),
+                    "formatted_address": u(r"\u5e7f\u4e1c\u7701\u5e7f\u5dde\u5e02\u756a\u79ba\u533a\u756a\u79ba\u4e07\u8fbe\u5e7f\u573aB4\u680b"),
+                    "location": "113.350056,23.006945",
+                }
+            return {
+                "province": u(r"\u56db\u5ddd\u7701"),
+                "city": u(r"\u5357\u5145\u5e02"),
+                "district": u(r"\u5357\u90e8\u53bf"),
+            }
+
+        service._geocode_store_address = geocode  # type: ignore[method-assign]
+        store = service._store_from_row(
+            {
+                "id": "129",
+                "name": u(r"\u5e7f\u5dde\u756a\u79ba\u5e97"),
+                "status": 1,
+                "shore_show": 1,
+            },
+            detail={
+                "tencent_address": u(r"\u756a\u79ba\u4e07\u8fbe\u5e7f\u573aB4\u680b"),
+                "parking_info": {
+                    "park_address": u(
+                        r"\u5e7f\u4e1c\u7701\u5e7f\u5dde\u5e02\u756a\u79ba\u533a\u5174\u5357\u5927\u9053368\u53f7"
+                    )
+                },
+            },
+            detail_source="test",
+        )
+
+        self.assertTrue(calls[0].startswith(u(r"\u5e7f\u4e1c\u7701\u5e7f\u5dde\u5e02")))
+        self.assertEqual(store["province"], u(r"\u5e7f\u4e1c\u7701"))
+        self.assertEqual(store["city"], u(r"\u5e7f\u5dde\u5e02"))
+        self.assertEqual(store["district"], u(r"\u756a\u79ba\u533a"))
+        self.assertEqual(store["location"], "113.350056,23.006945")
+
+    def test_store_name_disambiguates_address_without_region(self) -> None:
+        candidates = geocode_query_candidates(
+            store_name=u(r"\u6210\u90fd\u9752\u7f8a\u5e97"),
+            address=u(r"\u4e8c\u73af\u8def\u897f\u4e00\u6bb5155\u53f7\u5929\u7965\u5e7f\u573a4\u680b"),
+            parking_address="",
+        )
+
+        self.assertEqual(
+            candidates[0],
+            u(r"\u6210\u90fd\u9752\u7f8a\u5e97 \u4e8c\u73af\u8def\u897f\u4e00\u6bb5155\u53f7\u5929\u7965\u5e7f\u573a4\u680b"),
+        )
+
+    def test_geocode_conflicting_with_explicit_city_is_rejected(self) -> None:
+        conflicts = geocode_region_conflicts(
+            {
+                "province": u(r"\u5b81\u590f\u56de\u65cf\u81ea\u6cbb\u533a"),
+                "city": u(r"\u94f6\u5ddd\u5e02"),
+                "district": u(r"\u91d1\u51e4\u533a"),
+            },
+            address_region=(
+                "",
+                u(r"\u592a\u539f\u5e02"),
+                u(r"\u674f\u82b1\u5cad\u533a"),
+            ),
+            parking_region=(
+                u(r"\u5c71\u897f\u7701"),
+                u(r"\u592a\u539f\u5e02"),
+                u(r"\u674f\u82b1\u5cad\u533a"),
+            ),
+        )
+
+        self.assertIn(
+            u(r"\u0061\u0064\u0064\u0072\u0065\u0073\u0073\u005f\u0063\u0069\u0074\u0079\u003a\u592a\u539f\u5e02\u0021\u003d\u94f6\u5ddd\u5e02"),
+            conflicts,
+        )
 
 
 if __name__ == "__main__":
