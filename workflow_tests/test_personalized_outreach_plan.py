@@ -685,11 +685,14 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_customer_reply_after_draft_plan_regenerates_from_latest_conversation(self) -> None:
         repository = _Repository()
+        now = datetime.now(timezone.utc)
+        plan_created_at = (now - timedelta(hours=2)).isoformat()
+        customer_replied_at = (now - timedelta(hours=1)).isoformat()
         repository.active_plan = {
             "plan": {
                 "id": "plan-old",
                 "status": "draft",
-                "created_at": "2026-07-27T10:00:00+08:00",
+                "created_at": plan_created_at,
             },
             "tasks": [{"id": "task-old"}],
             "events": [],
@@ -709,12 +712,12 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "direction": "customer",
                     "content": "我现在主要担心到店还要加钱",
-                    "created_at": "2026-07-28T11:00:00+08:00",
+                    "created_at": customer_replied_at,
                 }
             ],
             conversation_activity={
                 "real_customer_message_count": 2,
-                "latest_customer_message_at": "2026-07-28T11:00:00+08:00",
+                "latest_customer_message_at": customer_replied_at,
             },
             customer_context={"orders": []},
             platform_task={"event_id": "platform-task-new-reply", "messages": []},

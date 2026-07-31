@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -162,6 +163,53 @@ class FakeAlwaysFailReplyModelClient:
 
 
 class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_low_round_budget_skips_primary_and_runs_compact_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = FakeFinalReplyModelClient()
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=model,
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            now = time.monotonic()
+            state: dict[str, Any] = {
+                "request_id": "test-low-budget-compact-recovery",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "行",
+                "normalized_content": "行",
+                "planner_decision": "direct_reply",
+                "planner_reply_messages": [],
+                "fact_envelope": {},
+                "required_tools": [],
+                "runtime_budget": {
+                    "mode": "enforced",
+                    "enforced": True,
+                    "started_monotonic": now - 50.0,
+                    "ordinary_deadline_monotonic": now + 8.5,
+                    "strong_deadline_monotonic": now + 8.5,
+                    "min_retry_remaining_seconds": 8.0,
+                },
+            }
+
+            output = await node(state)
+
+        self.assertEqual(model.calls, 1)
+        self.assertEqual(output["reply_source"], "compact_recovery_model")
+        trace_entry = next(item for item in output["trace"] if item.get("node") == "synthesize_reply")
+        model_call = trace_entry["tool_calls"][0]
+        self.assertEqual(
+            model_call["primary"]["status"],
+            "skipped_to_preserve_compact_recovery_budget",
+        )
+
     async def test_valid_planner_direct_reply_still_uses_final_reply_model_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             model = FakeFinalReplyModelClient()
@@ -392,7 +440,10 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
-        self.assertEqual(output["reply_messages"][0]["content"], "收到，您这条我看到了。")
+        self.assertEqual(
+            output["reply_messages"][0]["content"],
+            "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。",
+        )
 
     async def test_no_reply_explicit_stop_stays_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -420,7 +471,10 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
-        self.assertEqual(output["reply_messages"][0]["content"], "收到，您这条我看到了。")
+        self.assertEqual(
+            output["reply_messages"][0]["content"],
+            "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。",
+        )
 
     async def test_handoff_notice_fallback_when_reply_model_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -453,7 +507,10 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["errors"], [])
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
-        self.assertEqual("收到，您这条我看到了。", output["reply_messages"][0]["content"])
+        self.assertEqual(
+            "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。",
+            output["reply_messages"][0]["content"],
+        )
 
     async def test_current_professional_assist_notice_is_not_removed_as_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

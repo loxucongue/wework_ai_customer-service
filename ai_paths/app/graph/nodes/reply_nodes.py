@@ -232,9 +232,16 @@ async def _run_reply_model_pipeline(
     primary_budget = _model_budget_seconds(model_client, "model_reply_primary_budget_seconds", 30.0)
     recovery_budget = _model_budget_seconds(model_client, "model_reply_recovery_budget_seconds", 15.0)
     started_at = time.monotonic()
+    round_deadline = model_deadline_monotonic(state, tier=tier)
+    recovery_reserve_seconds = min(recovery_budget, 9.0)
+    primary_round_deadline = (
+        round_deadline - recovery_reserve_seconds
+        if round_deadline is not None
+        else None
+    )
     primary_deadline = _capped_deadline(
         started_at + primary_budget,
-        model_deadline_monotonic(state, tier=tier),
+        primary_round_deadline,
     )
     model_call: dict[str, Any] = {
         "name": "reply_synthesizer_model",
@@ -247,56 +254,64 @@ async def _run_reply_model_pipeline(
     }
     primary_error: Exception | None = None
 
-    try:
-        payload = await _chat_json_with_deadline(
-            model_client,
-            model_messages,
-            tier=tier,
-            deadline_monotonic=primary_deadline,
-        )
-        model_call["raw_json_output"] = payload
-        model_call["usage"] = model_usage_snapshot(model_client)
+    if primary_deadline is not None and primary_deadline <= started_at + 1.0:
+        primary_error = TimeoutError("reply_primary_skipped_to_preserve_compact_recovery_budget")
+        model_call["primary_error"] = f"{type(primary_error).__name__}: {primary_error}"
+        model_call["primary"] = {
+            "status": "skipped_to_preserve_compact_recovery_budget",
+            "runtime_budget": runtime_budget_snapshot(state, tier=tier),
+        }
+    else:
         try:
-            messages = validated_model_messages(payload, state)
-            messages = _prepare_structural_messages(messages, state, warnings)
-            validate_reply_consistency(messages, state)
-            _raise_repairable_reply_quality_issues(messages, state)
-        except Exception as validation_exc:
-            if not can_start_model_retry(state, tier=tier):
+            payload = await _chat_json_with_deadline(
+                model_client,
+                model_messages,
+                tier=tier,
+                deadline_monotonic=primary_deadline,
+            )
+            model_call["raw_json_output"] = payload
+            model_call["usage"] = model_usage_snapshot(model_client)
+            try:
+                messages = validated_model_messages(payload, state)
+                messages = _prepare_structural_messages(messages, state, warnings)
+                validate_reply_consistency(messages, state)
+                _raise_repairable_reply_quality_issues(messages, state)
+            except Exception as validation_exc:
+                if not can_start_model_retry(state, tier=tier):
+                    model_call["retry"] = {
+                        "reason": f"{type(validation_exc).__name__}: {validation_exc}",
+                        "status": "skipped_insufficient_round_budget",
+                        "runtime_budget": runtime_budget_snapshot(state, tier=tier),
+                    }
+                    raise
+                retry_messages = _reply_retry_messages(model_messages, validation_exc)
+                retry_deadline = _capped_deadline(
+                    time.monotonic() + recovery_budget,
+                    model_deadline_monotonic(state, tier=tier),
+                )
+                retry_payload = await _chat_json_with_deadline(
+                    model_client,
+                    retry_messages,
+                    tier=tier,
+                    deadline_monotonic=retry_deadline,
+                )
                 model_call["retry"] = {
                     "reason": f"{type(validation_exc).__name__}: {validation_exc}",
-                    "status": "skipped_insufficient_round_budget",
-                    "runtime_budget": runtime_budget_snapshot(state, tier=tier),
+                    "messages": retry_messages,
+                    "raw_json_output": retry_payload,
+                    "usage": model_usage_snapshot(model_client),
                 }
-                raise
-            retry_messages = _reply_retry_messages(model_messages, validation_exc)
-            retry_deadline = _capped_deadline(
-                time.monotonic() + recovery_budget,
-                model_deadline_monotonic(state, tier=tier),
-            )
-            retry_payload = await _chat_json_with_deadline(
-                model_client,
-                retry_messages,
-                tier=tier,
-                deadline_monotonic=retry_deadline,
-            )
-            model_call["retry"] = {
-                "reason": f"{type(validation_exc).__name__}: {validation_exc}",
-                "messages": retry_messages,
-                "raw_json_output": retry_payload,
-                "usage": model_usage_snapshot(model_client),
-            }
-            messages = validated_model_messages(retry_payload, state)
-            messages = _prepare_structural_messages(messages, state, warnings)
-            validate_reply_consistency(messages, state)
-            _raise_repairable_reply_quality_issues(messages, state)
-        model_call["draft_messages"] = debug_message_contents(messages)
-        model_call["output"] = {"messages": len(messages)}
-        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        return messages, model_call, "main_model"
-    except Exception as exc:
-        primary_error = exc
-        model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
+                messages = validated_model_messages(retry_payload, state)
+                messages = _prepare_structural_messages(messages, state, warnings)
+                validate_reply_consistency(messages, state)
+                _raise_repairable_reply_quality_issues(messages, state)
+            model_call["draft_messages"] = debug_message_contents(messages)
+            model_call["output"] = {"messages": len(messages)}
+            model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+            return messages, model_call, "main_model"
+        except Exception as exc:
+            primary_error = exc
+            model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
 
     recovery_messages = _reply_recovery_messages(state)
     if not can_start_model_retry(state, tier=tier):
@@ -506,7 +521,7 @@ def _needs_strong_reply_model(state: AgentState) -> bool:
 
 
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
-    return [{"type": "text", "order": 1, "content": "收到，您这条我看到了。"}]
+    return [{"type": "text", "order": 1, "content": "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。"}]
 
 
 def _maybe_append_required_store_address(

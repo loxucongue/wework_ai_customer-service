@@ -1089,11 +1089,11 @@ def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, 
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     msgtype = str(request_context.get("msgtype") or "").lower()
     if content.startswith("[图片]") or bool(state.get("file_image")):
-        text = "亲，图片我这边收到了，正在按您发的内容帮您核对。您也可以直接打字说下想确认效果、门店还是预约，我马上接着给您说清楚。"
+        text = "亲，图片我收到了，刚才没接完整。您方便的话再补一句最想确认的问题，我马上接着回您。"
     elif msgtype == "voice":
-        text = "亲，语音我这边收到啦，如果系统一时没识别准，您也可以直接打字补一句，我马上按您说的继续处理。"
+        text = "亲，语音我收到了，刚才没接完整。您方便的话再打字补一句，我马上接着回您。"
     else:
-        text = "亲，您这条消息我收到了，我先按当前记录帮您接着核对，您也可以直接说想确认效果、门店还是预约。"
+        text = "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。"
     return [{"type": "text", "order": 1, "content": {"text": text}}]
 
 
