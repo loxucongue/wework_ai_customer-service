@@ -80,6 +80,31 @@ class PlatformReplyCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.record.superseded_by_message_id, "msg-b")
         self.assertTrue(await coordinator.is_latest(second.record))
 
+    async def test_consecutive_images_preserve_urls_and_merge_as_image_markers(self) -> None:
+        settings = _settings_with_filter(self, {"enabled": True, "match_mode": "contains", "words": []})
+        coordinator = PlatformReplyCoordinator(settings)
+
+        first = await coordinator.begin(
+            _request("https://media.example/one.jpg", file_image="https://media.example/one.jpg"),
+            request_id="req-image-a",
+            request_context={"corp_id": "corp", "external_userid": "ext", "msgid": "msg-image-a"},
+        )
+        second = await coordinator.begin(
+            _request("https://media.example/two.jpg", file_image="https://media.example/two.jpg"),
+            request_id="req-image-b",
+            request_context={"corp_id": "corp", "external_userid": "ext", "msgid": "msg-image-b"},
+        )
+
+        self.assertEqual(first.record.image_urls, ["https://media.example/one.jpg"])
+        self.assertEqual(second.mode, "merged_latest")
+        self.assertEqual(second.merged_customer_messages, ["[图片]", "[图片]"])
+        self.assertEqual(
+            second.image_urls,
+            ["https://media.example/one.jpg", "https://media.example/two.jpg"],
+        )
+        self.assertEqual(second.effective_request_context["merged_image_urls"], second.image_urls)
+        self.assertNotIn("https://media.example", second.effective_content)
+
     async def test_request_without_new_message_id_does_not_cancel_running_request(self) -> None:
         settings = _settings_with_filter(self, {"enabled": True, "match_mode": "contains", "words": []})
         coordinator = PlatformReplyCoordinator(settings)
@@ -93,13 +118,14 @@ class PlatformReplyCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.mode, "normal")
 
 
-def _request(content: str) -> ChatRequest:
+def _request(content: str, *, file_image: str = "") -> ChatRequest:
     return ChatRequest(
         content=content,
         customer_id="customer",
         corp_id="corp",
         conversation_history=[],
         external_userid="ext",
+        file_image=file_image or None,
     )
 
 

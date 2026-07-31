@@ -58,12 +58,12 @@ def create_input_normalization_layer(
             platform_transfer_info = _platform_unknown_transfer_image_info(normalized)
             if platform_transfer_info is not None:
                 normalized = "客户发送了转账消息"
-                image_info, model_call = platform_transfer_info, None
+                image_info, model_calls = platform_transfer_info, []
             else:
                 image_task = asyncio.create_task(_understand_image(temp_state, model_client))
-                image_info, model_call = await image_task
-            if model_call:
-                span["entry"]["tool_calls"] = [model_call]
+                image_info, model_calls = await image_task
+            if model_calls:
+                span["entry"]["tool_calls"] = model_calls
             output = {
                 "normalized_content": normalized,
                 "location_card": location_card,
@@ -102,30 +102,39 @@ def _platform_unknown_transfer_image_info(content: str) -> dict[str, Any] | None
     }
 
 
-async def _understand_image(state: dict[str, Any], model_client: ModelClient | None) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    has_image = bool(state.get("file_image"))
-    model_call: dict[str, Any] | None = None
-    if has_image and model_client and model_client.available:
+async def _understand_image(
+    state: dict[str, Any],
+    model_client: ModelClient | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    image_urls = _image_urls_from_state(state)
+    has_image = bool(image_urls)
+    if not has_image or not model_client or not model_client.available:
+        return fallback_image_info(has_image=has_image), []
+
+    prompt = build_vision_prompt(state)
+
+    async def analyze(image_url: str, index: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        model_call: dict[str, Any] = {
+            "name": "vision_model",
+            "input": {
+                "tier": "vision",
+                "image_index": index,
+                "image_url": image_url,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": image_url}},
+                        ],
+                    }
+                ],
+            },
+        }
         try:
-            prompt = build_vision_prompt(state)
-            model_call = {
-                "name": "vision_model",
-                "input": {
-                    "tier": "vision",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": prompt},
-                                {"type": "image_url", "image_url": {"url": str(state.get("file_image"))}},
-                            ],
-                        }
-                    ],
-                },
-            }
             payload = await model_client.vision_json(
                 prompt=prompt,
-                image_url=str(state.get("file_image")),
+                image_url=image_url,
                 tier="vision",
                 temperature=0.0,
             )
@@ -138,9 +147,113 @@ async def _understand_image(state: dict[str, Any], model_client: ModelClient | N
             model_call["usage"] = model_usage_snapshot(model_client)
             return image_info, model_call
         except Exception as exc:
-            model_call = model_call or {"name": "vision_model", "input": {"tier": "vision"}}
             model_call["error"] = f"{type(exc).__name__}: {exc}"
-    return fallback_image_info(has_image=has_image), model_call
+            return None, model_call
+
+    analyzed = await asyncio.gather(*(analyze(url, index) for index, url in enumerate(image_urls, start=1)))
+    infos = [info for info, _call in analyzed if isinstance(info, dict)]
+    model_calls = [call for _info, call in analyzed]
+    if not infos:
+        fallback = fallback_image_info(has_image=True)
+        fallback.update({"image_count": len(image_urls), "analyzed_image_count": 0})
+        return fallback, model_calls
+    return _merge_image_infos(infos, image_count=len(image_urls)), model_calls
+
+
+def _image_urls_from_state(state: dict[str, Any]) -> list[str]:
+    values = state.get("image_urls") if isinstance(state.get("image_urls"), list) else []
+    values = [*values, str(state.get("file_image") or "")]
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        url = str(value or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        output.append(url)
+    return output[-3:]
+
+
+def _merge_image_infos(infos: list[dict[str, Any]], *, image_count: int) -> dict[str, Any]:
+    if len(infos) == 1:
+        return {
+            **infos[0],
+            "image_count": image_count,
+            "analyzed_image_count": 1,
+            "images": [infos[0]],
+        }
+
+    payment_info = next(
+        (
+            info
+            for info in infos
+            if str(info.get("image_type") or "") == "payment_proof"
+            and str(info.get("payment_result") or "") in {"success", "pending", "failed"}
+        ),
+        None,
+    )
+    image_types = _dedupe_image_values(infos, "image_type")
+    image_intents = _dedupe_image_values(infos, "image_intent")
+    confidence_values = [float(info.get("confidence") or 0) for info in infos]
+    merged: dict[str, Any] = {
+        "has_image": True,
+        "image_desc": "；".join(
+            f"图片{index}：{str(info.get('image_desc') or '').strip()}"
+            for index, info in enumerate(infos, start=1)
+            if str(info.get("image_desc") or "").strip()
+        ),
+        "image_type": (
+            "payment_proof"
+            if payment_info
+            else image_types[0]
+            if len(image_types) == 1
+            else "unclear"
+        ),
+        "image_intent": (
+            str(payment_info.get("image_intent") or "general_image")
+            if payment_info
+            else image_intents[0]
+            if len(image_intents) == 1
+            else "general_image"
+        ),
+        "body_part": "、".join(_dedupe_image_values(infos, "body_part")),
+        "visible_concerns": _dedupe_image_list_values(infos, "visible_concerns"),
+        "risk_signals": _dedupe_image_list_values(infos, "risk_signals"),
+        "extracted_text": _dedupe_image_list_values(infos, "extracted_text"),
+        "text_clues": _dedupe_image_list_values(infos, "text_clues"),
+        "payment_result": str((payment_info or {}).get("payment_result") or "unclear"),
+        "payment_amount": (payment_info or {}).get("payment_amount"),
+        "payment_order_no": str((payment_info or {}).get("payment_order_no") or ""),
+        "confidence": round(sum(confidence_values) / len(confidence_values), 3),
+        "image_count": image_count,
+        "analyzed_image_count": len(infos),
+        "images": infos,
+    }
+    return merged
+
+
+def _dedupe_image_values(infos: list[dict[str, Any]], key: str) -> list[str]:
+    return _dedupe_text_values(str(info.get(key) or "") for info in infos)
+
+
+def _dedupe_image_list_values(infos: list[dict[str, Any]], key: str) -> list[str]:
+    return _dedupe_text_values(
+        str(value or "")
+        for info in infos
+        for value in (info.get(key) if isinstance(info.get(key), list) else [])
+    )
+
+
+def _dedupe_text_values(values: Any) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+    return output
 
 
 def create_background_context_layer(

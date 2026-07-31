@@ -898,6 +898,7 @@ class ChatRuntime:
             "content": request.content,
             "conversation_history": request.conversation_history,
             "file_image": request.file_image,
+            "image_urls": _image_urls_from_request(request, request_context),
             "user_id": request.user_id,
             "wechat": request.wechat,
             "external_userid": request.external_userid,
@@ -1046,6 +1047,21 @@ class ChatRuntime:
             final_state=state,
             token_usage=collect_model_usage(state.get("trace", []))["summary"],
         )
+
+
+def _image_urls_from_request(request: ChatRequest, request_context: dict[str, Any]) -> list[str]:
+    merged = request_context.get("merged_image_urls")
+    values = list(merged) if isinstance(merged, list) else []
+    values.append(str(request.file_image or ""))
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        url = str(value or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        output.append(url)
+    return output[-3:]
 
 
 def _planner_sync_reply_messages(state: AgentState) -> list[dict[str, Any]]:

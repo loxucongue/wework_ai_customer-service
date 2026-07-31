@@ -19,6 +19,7 @@ class PlatformReplyRecord:
     generation_id: str
     original_content: str
     merged_customer_messages: list[str]
+    image_urls: list[str]
     started_at: datetime
     message_id: str = ""
     cancel_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -37,6 +38,7 @@ class PlatformReplyDecision:
     effective_content: str = ""
     effective_request_context: dict[str, Any] = field(default_factory=dict)
     merged_customer_messages: list[str] = field(default_factory=list)
+    image_urls: list[str] = field(default_factory=list)
     superseded_request_id: str = ""
     filter_hit: dict[str, Any] = field(default_factory=dict)
 
@@ -67,12 +69,14 @@ class PlatformReplyCoordinator:
             )
 
         generation_id = str(uuid4())
-        original_content = str(request.content or "").strip()
+        original_content = _mergeable_content(request)
+        current_image_urls = _request_image_urls(request)
         message_id = _message_id(request, request_context)
         async with self._lock:
             self._cleanup_locked()
             previous = self._inflight.get(customer_key)
             previous_messages: list[str] = []
+            previous_image_urls: list[str] = []
             superseded_request_id = ""
             if previous and previous.status == "running" and message_id:
                 previous.status = "superseded"
@@ -80,15 +84,18 @@ class PlatformReplyCoordinator:
                 previous.superseded_by_message_id = message_id
                 previous.cancel_event.set()
                 previous_messages = list(previous.merged_customer_messages or [previous.original_content])
+                previous_image_urls = list(previous.image_urls)
                 superseded_request_id = previous.request_id
 
             merged_messages = [message for message in [*previous_messages, original_content] if message]
+            image_urls = _dedupe_strings([*previous_image_urls, *current_image_urls])[-3:]
             record = PlatformReplyRecord(
                 request_id=request_id,
                 customer_key=customer_key,
                 generation_id=generation_id,
                 original_content=original_content,
                 merged_customer_messages=merged_messages,
+                image_urls=image_urls,
                 started_at=datetime.now(timezone.utc),
                 message_id=message_id,
             )
@@ -99,6 +106,8 @@ class PlatformReplyCoordinator:
         if mode == "merged_latest":
             effective_context["merged_customer_messages"] = merged_messages
             effective_context["superseded_request_id"] = superseded_request_id
+        if image_urls:
+            effective_context["merged_image_urls"] = image_urls
         return PlatformReplyDecision(
             mode=mode,
             request_id=request_id,
@@ -108,6 +117,7 @@ class PlatformReplyCoordinator:
             effective_content=_merged_content(merged_messages) if mode == "merged_latest" else request.content,
             effective_request_context=effective_context,
             merged_customer_messages=merged_messages,
+            image_urls=image_urls,
             superseded_request_id=superseded_request_id,
         )
 
@@ -135,6 +145,7 @@ class PlatformReplyCoordinator:
             superseded_request_id=decision.superseded_request_id,
             message_id=decision.record.message_id if decision.record else "",
             merged_customer_messages=decision.merged_customer_messages,
+            image_urls=decision.image_urls,
             filter_hit=decision.filter_hit,
         )
 
@@ -147,6 +158,7 @@ class PlatformReplyCoordinator:
             message_id=record.message_id,
             superseded_by_message_id=record.superseded_by_message_id,
             merged_customer_messages=record.merged_customer_messages,
+            image_urls=record.image_urls,
         )
 
     async def is_superseded(self, record: PlatformReplyRecord | None) -> bool:
@@ -222,6 +234,33 @@ def _merged_content(messages: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _request_image_urls(request: ChatRequest) -> list[str]:
+    image_url = str(request.file_image or "").strip()
+    return [image_url] if image_url else []
+
+
+def _mergeable_content(request: ChatRequest) -> str:
+    content = str(request.content or "").strip()
+    image_url = str(request.file_image or "").strip()
+    if not image_url:
+        return content
+    if not content or content == image_url:
+        return "[图片]"
+    return content.replace(image_url, "[图片]")
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    output: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        output.append(normalized)
+    return output
+
+
 def _base_control(
     *,
     mode: str,
@@ -232,6 +271,7 @@ def _base_control(
     message_id: str = "",
     superseded_by_message_id: str = "",
     merged_customer_messages: list[str] | None = None,
+    image_urls: list[str] | None = None,
     filter_hit: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -243,6 +283,7 @@ def _base_control(
         "message_id": message_id,
         "superseded_by_message_id": superseded_by_message_id,
         "merged_customer_messages": list(merged_customer_messages or []),
+        "merged_image_urls": list(image_urls or []),
         "filter_hit": filter_hit or {"matched": False},
         "sync_return": {},
         "async_final": {},

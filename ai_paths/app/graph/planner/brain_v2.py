@@ -53,6 +53,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；客户可见不要输出公里、分钟、车程。
 - 当前普通流程只登记到店日期和时间意向，不调用 available_time/create_order_plan；没有既有正式预约事实不能承诺已安排或已留位。
 - 效果、怕没效果、怕反黑、要效果图时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。
+- 客户已经发送皮肤图片时直接使用 `image_info`；需要效果证据只查 case_studies。当前没有询问门店且近聊已有门店锚点时，不得因图片 URL 或合并消息调用门店工具；案例后必须推进一个未完成主线动作。
 - 预约金由 payment_decision 决定；客户口头声称已付不能确认到账。当前订单 `prepay_paid>0`、清晰支付成功截图或结构化 `deposit_state=paid_by_platform_transfer_event` 才是权威已付，可推进付款后信息确认。
 - `stage/sub_rule_id` 必须从 Current Recovery Business Rules 的 `scene_index` 选择，不能自造英文场景名。
 - `need_tools` 必须提供可执行的扁平 `tool_calls`，工具名字段只能是 `name`；禁止 `tool_name/arguments/tool/args` 包装。门店查询示例：`{"name":"customer_store_lookup","query":"双流区","purpose":"existence"}`。
@@ -1076,8 +1077,30 @@ def _compact_image_info(raw: dict[str, Any]) -> dict[str, Any]:
         "payment_amount",
         "payment_order_no",
         "confidence",
+        "image_count",
+        "analyzed_image_count",
     )
-    return {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
+    output = {key: raw.get(key) for key in keys if raw.get(key) not in (None, "", [], {})}
+    images = raw.get("images") if isinstance(raw.get("images"), list) else []
+    if len(images) > 1:
+        output["images"] = [
+            {
+                key: image.get(key)
+                for key in (
+                    "image_type",
+                    "image_intent",
+                    "body_part",
+                    "visible_concerns",
+                    "risk_signals",
+                    "image_desc",
+                    "confidence",
+                )
+                if image.get(key) not in (None, "", [], {})
+            }
+            for image in images[:3]
+            if isinstance(image, dict)
+        ]
+    return output
 
 
 def _store_scope_location_hints(

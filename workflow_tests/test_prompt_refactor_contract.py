@@ -313,6 +313,7 @@ def test_planner_actual_messages_include_risk_transaction_and_rule_contracts() -
         assert '"scene_catalog"' in joined
         assert '"conversion_psychology"' in joined
         assert '"transaction_policy"' in joined
+        assert "`closing_move` 禁止再次选择 `send_case`" in joined
 
 
 def test_chat_gate_actual_messages_keep_sop_precision_and_ai_boundaries() -> None:
