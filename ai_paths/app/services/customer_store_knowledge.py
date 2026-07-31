@@ -115,6 +115,7 @@ class CustomerStoreKnowledgeService:
                 "snapshot_store_count": scoped.get("snapshot_store_count"),
                 "snapshot_source": scoped.get("snapshot_source"),
                 "snapshot_refresh_error": scoped.get("snapshot_refresh_error"),
+                "invalid_store_facts": scoped.get("invalid_store_facts", []),
             }
         else:
             stores = [self._store_knowledge_from_row(row, source="scope_row_fallback") for row in rows]

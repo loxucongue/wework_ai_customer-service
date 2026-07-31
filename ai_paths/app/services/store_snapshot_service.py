@@ -15,6 +15,7 @@ from app.config import Settings
 from app.policies.constants import KNOWN_STORE_FACTS
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.coze_oauth import CozeOAuthTokenProvider
+from app.services.store_fact_integrity import filter_valid_store_facts
 
 
 def store_snapshot_rows(path: str | Path = Path("data/store_snapshot.json")) -> list[dict[str, Any]]:
@@ -44,7 +45,9 @@ def _cached_snapshot_rows(path: str, modified_ns: int) -> tuple[dict[str, Any], 
     stores_by_id = payload.get("stores_by_id") if isinstance(payload, dict) else {}
     if not isinstance(stores_by_id, dict):
         return ()
-    return tuple(dict(item) for item in stores_by_id.values() if isinstance(item, dict))
+    rows = [dict(item) for item in stores_by_id.values() if isinstance(item, dict)]
+    valid, _ = filter_valid_store_facts(rows)
+    return tuple(valid)
 
 
 class StoreSnapshotService:
@@ -124,8 +127,15 @@ class StoreSnapshotService:
             missing_ids.append(store_id)
             stores.append(self._store_from_row(row, detail={}, detail_source="scope_row_fallback"))
 
+        valid_stores, invalid_stores = filter_valid_store_facts(
+            stores,
+            known_stores=[
+                *[item for item in stores_by_id.values() if isinstance(item, dict)],
+                *stores,
+            ],
+        )
         stores = sorted(
-            [store for store in stores if store.get("store_id") and store.get("store_name")],
+            [store for store in valid_stores if store.get("store_id") and store.get("store_name")],
             key=lambda item: (
                 str(item.get("province") or ""),
                 str(item.get("city") or ""),
@@ -142,13 +152,20 @@ class StoreSnapshotService:
             "snapshot_store_count": snapshot.get("store_count", 0),
             "snapshot_source": snapshot.get("source", "store_snapshot"),
             "snapshot_refresh_error": snapshot.get("refresh_error", ""),
+            "invalid_store_facts": invalid_stores,
         }
 
     def store_by_id(self, store_id: str, *, request_context: dict[str, Any] | None = None) -> dict[str, Any]:
         snapshot = self.load_snapshot(request_context=request_context)
         stores_by_id = snapshot.get("stores_by_id") if isinstance(snapshot.get("stores_by_id"), dict) else {}
         cached = stores_by_id.get(str(store_id or "").strip())
-        return dict(cached) if isinstance(cached, dict) else {}
+        if not isinstance(cached, dict):
+            return {}
+        valid, _ = filter_valid_store_facts(
+            [cached],
+            known_stores=[item for item in stores_by_id.values() if isinstance(item, dict)],
+        )
+        return valid[0] if valid else {}
 
     def _hydrate_rows(self, rows: list[dict[str, Any]], request_context: dict[str, Any]) -> list[dict[str, Any]]:
         if not rows:
@@ -243,7 +260,12 @@ class StoreSnapshotService:
             return {}
 
     def _build_snapshot(self, stores: list[dict[str, Any]]) -> dict[str, Any]:
-        stores_by_id = {str(store.get("store_id")): store for store in stores if store.get("store_id")}
+        valid_stores, invalid_stores = filter_valid_store_facts(stores)
+        stores_by_id = {
+            str(store.get("store_id")): store
+            for store in valid_stores
+            if store.get("store_id")
+        }
         generated_at = datetime.now(timezone.utc).isoformat()
         return {
             "source": "platform_agent.option+store_info",
@@ -252,6 +274,8 @@ class StoreSnapshotService:
             "store_count": len(stores_by_id),
             "stores_by_id": stores_by_id,
             "grouped_by_region": group_stores_by_region(list(stores_by_id.values())),
+            "invalid_store_count": len(invalid_stores),
+            "invalid_stores": invalid_stores,
         }
 
     def _read_snapshot(self) -> dict[str, Any]:
@@ -259,7 +283,22 @@ class StoreSnapshotService:
             return {}
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                return {}
+            stores_by_id = data.get("stores_by_id") if isinstance(data.get("stores_by_id"), dict) else {}
+            rows = [dict(item) for item in stores_by_id.values() if isinstance(item, dict)]
+            valid_stores, invalid_stores = filter_valid_store_facts(rows)
+            output = dict(data)
+            output["stores_by_id"] = {
+                str(store.get("store_id") or store.get("id")): store
+                for store in valid_stores
+                if store.get("store_id") or store.get("id")
+            }
+            output["store_count"] = len(output["stores_by_id"])
+            output["grouped_by_region"] = group_stores_by_region(valid_stores)
+            output["invalid_store_count"] = len(invalid_stores)
+            output["invalid_stores"] = invalid_stores
+            return output
         except (OSError, json.JSONDecodeError):
             return {}
 

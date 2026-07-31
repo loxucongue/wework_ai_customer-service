@@ -23,6 +23,10 @@ from app.services.coze_client import CozeClient
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.customer_payment_state import is_paid_deposit_state, normalize_prepay_facts
 from app.services.customer_order_context import order_status_text
+from app.services.store_fact_integrity import (
+    filter_valid_store_facts,
+    store_fact_is_valid,
+)
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -1165,8 +1169,12 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     raw_query = str(tool.get("query") or tool.get("origin") or tool.get("address") or state.get("normalized_content") or "").strip()
     query = _clean_store_lookup_query(raw_query)
     purpose = str(tool.get("purpose") or "").strip()
-    stores = _customer_scope_stores(state)
-    scope_unavailable = _customer_store_scope_unavailable(state)
+    raw_scope_stores = _customer_scope_stores(state)
+    stores, invalid_scope_stores = filter_valid_store_facts(
+        raw_scope_stores,
+        known_stores=[*_snapshot_store_values(), *raw_scope_stores],
+    )
+    scope_unavailable = _customer_store_scope_unavailable(state) or bool(raw_scope_stores and not stores)
     if not query:
         return {
             "status": "missing_query",
@@ -1222,6 +1230,11 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     if not candidates and scope_unavailable and _snapshot_region_fallback_allowed(query, geocode):
         candidates = _snapshot_stores_for_region_query(query, geocode, purpose)
         source = "store_snapshot_region_fallback"
+    candidates, invalid_candidates = filter_valid_store_facts(
+        candidates,
+        known_stores=[*_snapshot_store_values(), *stores, *candidates],
+    )
+    filtered_invalid_stores = [*invalid_scope_stores, *invalid_candidates]
     pre_scope_fields = _store_lookup_scope_fields(
         {
             "query": query,
@@ -1251,6 +1264,15 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         "stores": normalized[:12],
         "candidate_stores": normalized,
         "candidate_store_count": len(normalized),
+        "filtered_invalid_stores": filtered_invalid_stores,
+        "tool_errors": [
+            {
+                "type": "invalid_store_fact",
+                "store_id": item.get("store_id", ""),
+                "violations": item.get("violations", []),
+            }
+            for item in filtered_invalid_stores
+        ],
         "missing": [] if normalized else (["store_scope_unavailable"] if scope_unavailable else ["matched_customer_scope_store"]),
     }
 
@@ -1263,11 +1285,26 @@ async def _distance_calculate(
 ) -> dict[str, Any]:
     origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or state.get("normalized_content") or "").strip()
     geocode_origin = _normalize_distance_origin_from_store_regions(_normalize_known_landmark_origin(origin), state)
-    candidates = _distance_candidate_stores(tool, state, tool_results or {})
+    raw_candidates = _distance_candidate_stores(tool, state, tool_results or {})
+    candidates, invalid_candidates = filter_valid_store_facts(
+        raw_candidates,
+        known_stores=[*_snapshot_store_values(), *raw_candidates],
+    )
     if not origin:
-        return {"status": "missing_origin", "candidate_stores": candidates, "error": "missing_origin"}
+        return {
+            "status": "missing_origin",
+            "candidate_stores": candidates,
+            "filtered_invalid_stores": invalid_candidates,
+            "error": "missing_origin",
+        }
     if not candidates:
-        return {"origin": origin, "status": "no_candidate_stores", "candidate_stores": [], "error": "no_candidate_stores"}
+        return {
+            "origin": origin,
+            "status": "no_candidate_stores",
+            "candidate_stores": [],
+            "filtered_invalid_stores": invalid_candidates,
+            "error": "no_candidate_stores",
+        }
     geocode_workflow_id = str(getattr(coze_client.settings, "geocode_workflow_id", "") or "").strip()
     distance_workflow_id = str(getattr(coze_client.settings, "distance_workflow_id", "") or "").strip()
     if not geocode_workflow_id:
@@ -1327,7 +1364,11 @@ async def _distance_calculate(
             return ranked
 
         ranked = await asyncio.gather(*(rank_store(store) for store in candidates[:12]), return_exceptions=True)
-        ranked_stores = [item for item in ranked if isinstance(item, dict)]
+        ranked_stores, invalid_ranked_stores = filter_valid_store_facts(
+            [item for item in ranked if isinstance(item, dict)],
+            known_stores=[*_snapshot_store_values(), *candidates],
+        )
+        invalid_candidates.extend(invalid_ranked_stores)
         ranked_stores.sort(
             key=lambda item: (
                 float(item.get("distance_km") if item.get("distance_km") is not None else 999999),
@@ -1339,9 +1380,10 @@ async def _distance_calculate(
             "geocode_origin": geocode_origin,
             "origin_geocode": {key: origin_geo.get(key) for key in ("formatted_address", "province", "city", "district", "location")},
             "distance_workflow_id": distance_workflow_id,
-            "status": "ok",
+            "status": "ok" if ranked_stores else "no_candidate_stores",
             "ranked_stores": ranked_stores,
             "candidate_store_count": len(candidates),
+            "filtered_invalid_stores": invalid_candidates,
             **_distance_lookup_scope_fields(tool, tool_results or {}),
         }
     except Exception as exc:
@@ -1525,6 +1567,10 @@ def _store_lookup_item(store: dict[str, Any]) -> dict[str, Any]:
         "parking_address": str(store.get("parking_address") or "").strip(),
         "map_url": str(store.get("map_url") or "").strip(),
         "location": str(store.get("location") or "").strip(),
+        "geocode_formatted_address": str(store.get("geocode_formatted_address") or "").strip(),
+        "store_fact_integrity": str(store.get("store_fact_integrity") or "valid").strip(),
+        "store_fact_integrity_violations": list(store.get("store_fact_integrity_violations") or []),
+        "store_fact_integrity_warnings": list(store.get("store_fact_integrity_warnings") or []),
     }
 
 
@@ -1541,6 +1587,10 @@ def _store_lookup_candidate_for_distance(item: dict[str, Any]) -> dict[str, Any]
         "parking_address": str(item.get("parking_address") or "").strip(),
         "map_url": str(item.get("map_url") or "").strip(),
         "location": str(item.get("location") or "").strip(),
+        "geocode_formatted_address": str(item.get("geocode_formatted_address") or "").strip(),
+        "store_fact_integrity": str(item.get("store_fact_integrity") or "valid").strip(),
+        "store_fact_integrity_violations": list(item.get("store_fact_integrity_violations") or []),
+        "store_fact_integrity_warnings": list(item.get("store_fact_integrity_warnings") or []),
     }
 
 
@@ -1861,7 +1911,9 @@ def _query_matches_snapshot_region(query: str) -> bool:
 
 
 def _usable_snapshot_store_values() -> list[dict[str, Any]]:
-    return [store for store in _snapshot_store_values() if _snapshot_store_is_usable(store)]
+    rows = [store for store in _snapshot_store_values() if _snapshot_store_is_usable(store)]
+    valid, _ = filter_valid_store_facts(rows)
+    return valid
 
 
 def _snapshot_store_is_usable(store: dict[str, Any]) -> bool:
@@ -1870,7 +1922,7 @@ def _snapshot_store_is_usable(store: dict[str, Any]) -> bool:
     store_id = str(store.get("store_id") or store.get("id") or "").strip()
     if not (store_id and name and address):
         return False
-    return "停业" not in name
+    return "停业" not in name and store_fact_is_valid(store)
 
 
 def _snapshot_store_name_matches_query(name: str, text: str) -> bool:

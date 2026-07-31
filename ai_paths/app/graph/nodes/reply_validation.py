@@ -19,6 +19,7 @@ from app.services.payment_collection import (
 )
 from app.services.customer_payment_state import is_paid_deposit_state
 from app.services.risk_hold import health_risk_hold, is_hard_health_risk_hold
+from app.services.store_fact_integrity import store_fact_is_valid
 
 VISIBLE_MESSAGE_TYPES = {"text", "image", "video", "payment_collection", "store_address"}
 ALLOWED_MESSAGE_TYPES = {"text", "image", "video", "human_handoff", "human_handoff_notice", "payment_collection", "store_address"}
@@ -639,6 +640,15 @@ def _validate_store_address_message_facts(messages: list[dict[str, Any]], state:
     store_ids = [item for item in store_ids if item]
     if not store_ids:
         return
+    records = _known_store_records_for_validation(state)
+    invalid_ids = {
+        str(record.get("store_id") or record.get("id") or "").strip()
+        for record in records
+        if isinstance(record, dict)
+        and not store_fact_is_valid(record, known_stores=records)
+    }
+    if any(store_id in invalid_ids for store_id in store_ids):
+        raise ValueError("invalid_store_fact_integrity")
     allowed_ids = _allowed_store_address_ids(state)
     missing_ids = [store_id for store_id in store_ids if store_id not in allowed_ids]
     if missing_ids:
@@ -927,7 +937,9 @@ def _authorized_store_facts_for_validation(state: dict[str, Any]) -> list[dict[s
     return [
         item
         for item in store_facts
-        if isinstance(item, dict) and _store_fact_allowed_by_customer_scope(item, scope_ids)
+        if isinstance(item, dict)
+        and store_fact_is_valid(item, known_stores=store_facts)
+        and _store_fact_allowed_by_customer_scope(item, scope_ids)
     ]
 
 
@@ -1220,6 +1232,17 @@ def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
             for item in region.get(key) or []:
                 if isinstance(item, dict):
                     _add_store_id(allowed, item)
+    known_store_records = _known_store_records_for_validation(state)
+    invalid_ids = {
+        str(item.get("store_id") or item.get("id") or "").strip()
+        for item in known_store_records
+        if isinstance(item, dict)
+        and not store_fact_is_valid(
+            item,
+            known_stores=known_store_records,
+        )
+    }
+    allowed.difference_update(invalid_ids)
     return allowed
 
 

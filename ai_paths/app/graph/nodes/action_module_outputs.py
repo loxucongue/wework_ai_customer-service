@@ -9,6 +9,7 @@ from app.graph.nodes.store_scope_summary import store_scope_ids
 from app.graph.state import AgentState
 from app.policies.business_rules import load_business_rules
 from app.services.customer_payment_state import resolved_payment_fact
+from app.services.store_fact_integrity import store_fact_is_valid
 
 
 def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:
@@ -518,12 +519,21 @@ def _store_fact_from_lookup_item(item: dict[str, Any], *, state: AgentState | di
         "map_url": str(item.get("map_url") or "").strip(),
         "location": str(item.get("location") or "").strip(),
         "geocode_formatted_address": str(item.get("geocode_formatted_address") or "").strip(),
+        "store_fact_integrity": str(item.get("store_fact_integrity") or "valid").strip(),
+        "store_fact_integrity_violations": list(item.get("store_fact_integrity_violations") or []),
+        "store_fact_integrity_warnings": list(item.get("store_fact_integrity_warnings") or []),
         "scope_authorized": scope_authorized,
     }
 
 
 def _authorized_customer_scope_store_items(items: list[Any], state: AgentState) -> list[dict[str, Any]]:
-    return [item for item in items if isinstance(item, dict) and _store_item_is_customer_scope_authorized(item, state)]
+    return [
+        item
+        for item in items
+        if isinstance(item, dict)
+        and store_fact_is_valid(item)
+        and _store_item_is_customer_scope_authorized(item, state)
+    ]
 
 
 def _store_item_is_customer_scope_authorized(item: dict[str, Any], state: AgentState | dict[str, Any]) -> bool:

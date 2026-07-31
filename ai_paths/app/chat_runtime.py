@@ -22,6 +22,7 @@ from app.services.platform_reply_coordinator import PlatformReplyCoordinator, Pl
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository
+from app.services.store_fact_integrity import store_fact_is_valid
 from app.services.trace_logger import TraceLogger, compact, utc_now_iso
 
 
@@ -1608,7 +1609,7 @@ def _store_fact_record_plan(state: AgentState, reply_messages: list[dict[str, An
     missing_store_ids: list[str] = []
     for store_id in store_address_ids:
         store = _store_by_id(state, store_id)
-        if store:
+        if store and store_fact_is_valid(store):
             records.append({"event_type": "store_address_sent", "store": store})
         else:
             missing_store_ids.append(store_id)
@@ -1620,7 +1621,7 @@ def _store_fact_record_plan(state: AgentState, reply_messages: list[dict[str, An
         }
 
     matched_store = _clear_matched_store_from_tool_facts(state)
-    if matched_store:
+    if matched_store and store_fact_is_valid(matched_store):
         return {
             "records": [{"event_type": "store_matched", "store": matched_store}],
             "store_address_message_ids": store_address_ids,
@@ -1723,6 +1724,9 @@ def _normalize_store_record(store: dict[str, Any]) -> dict[str, Any]:
         "parking_name": str(store.get("parking_name") or "").strip(),
         "parking_address": str(store.get("parking_address") or "").strip(),
         "map_url": str(store.get("map_url") or "").strip(),
+        "store_fact_integrity": str(store.get("store_fact_integrity") or "valid").strip(),
+        "store_fact_integrity_violations": list(store.get("store_fact_integrity_violations") or []),
+        "store_fact_integrity_warnings": list(store.get("store_fact_integrity_warnings") or []),
     }
 
 

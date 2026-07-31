@@ -898,6 +898,12 @@ def _reply_repair_hint(error: str) -> str:
         return "没有营业时间工具事实时，不要输出具体营业时间。"
     if "store_address_fact_required" in error:
         return "没有门店详情事实时，不要输出具体地址。"
+    if "invalid_store_fact_integrity" in error:
+        return (
+            "本轮候选门店的结构事实存在地区冲突，必须删除对应 store_address 卡片，不能沿用该门店。"
+            "只使用剩余 store_fact_integrity=valid 的真实候选重写；如果没有合法候选，不要输出“继续处理”或让客户重复同一地址，"
+            "直接询问客户平时更常去哪个城市、市区或附近哪里方便，再按常去范围重新匹配。"
+        )
     if "unsupported_store_address_message" in error:
         return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时，不要输出 store_address，只能用文字说明暂时没查到并继续确认城市、区域或门店。"
     if "store_cards_not_allowed_when_location_clarification_required" in error:
