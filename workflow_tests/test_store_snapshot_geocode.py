@@ -251,6 +251,27 @@ class StoreSnapshotGeocodeTests(unittest.TestCase):
 
         self.assertEqual(conflicts, [])
 
+    def test_long_autonomous_prefecture_name_allows_one_source_typo(self) -> None:
+        conflicts = geocode_region_conflicts(
+            {
+                "province": u(r"\u4e91\u5357\u7701"),
+                "city": u(r"\u7ea2\u6cb3\u54c8\u5c3c\u65cf\u5f5d\u65cf\u81ea\u6cbb\u5dde"),
+                "district": u(r"\u8499\u81ea\u5e02"),
+            },
+            address_region=(
+                u(r"\u4e91\u5357\u7701"),
+                u(r"\u8499\u81ea\u5e02"),
+                "",
+            ),
+            parking_region=(
+                u(r"\u4e91\u5357\u7701"),
+                u(r"\u7ea2\u6cb3\u54c8\u5c3c\u65cf\u84b8\u65cf\u81ea\u6cbb\u5dde"),
+                u(r"\u8499\u81ea\u5e02"),
+            ),
+        )
+
+        self.assertEqual(conflicts, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -630,7 +630,10 @@ def _region_values_equal(left: str, right: str) -> bool:
         return True
     if min(len(left_token), len(right_token)) < 5:
         return False
-    return SequenceMatcher(None, left_token, right_token).ratio() >= 0.88
+    # Long autonomous-prefecture names occasionally contain one source typo
+    # (for example 彝/蒸). Accept a close long-name match only after the city
+    # comparison has already scoped both values to the same evidence slot.
+    return SequenceMatcher(None, left_token, right_token).ratio() >= 0.85
 
 
 def _region_value_token(value: str) -> str:

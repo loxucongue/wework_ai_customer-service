@@ -52,6 +52,16 @@ def main() -> int:
         for row in hydrated
         if isinstance(row, dict)
     }
+    recommendable_ids = {
+        store_id
+        for store_id, option in option_by_id.items()
+        if _store_option_is_recommendable(option)
+    }
+    recommendable_stores = [
+        hydrated_by_id[store_id]
+        for store_id in recommendable_ids
+        if store_id in hydrated_by_id
+    ]
 
     raw_results = _raw_geocode_results(
         service,
@@ -60,7 +70,6 @@ def main() -> int:
     )
     records: list[dict[str, Any]] = []
     active_detail_errors: list[dict[str, str]] = []
-    recommendable_stores: list[dict[str, Any]] = []
 
     for store_id, option in option_by_id.items():
         store = hydrated_by_id.get(store_id) or {
@@ -69,7 +78,10 @@ def main() -> int:
             "detail_source": "hydrate_missing",
         }
         recommendable = _store_option_is_recommendable(option)
-        integrity = assess_store_fact_integrity(store, known_stores=hydrated)
+        integrity = assess_store_fact_integrity(
+            store,
+            known_stores=recommendable_stores if recommendable else hydrated,
+        )
         raw_result = raw_results.get(store_id) or {}
         raw_conflicts = geocode_region_conflicts(
             raw_result,
@@ -86,8 +98,6 @@ def main() -> int:
                     "detail_source": detail_source,
                 }
             )
-        if recommendable:
-            recommendable_stores.append(store)
         records.append(
             {
                 "store_id": store_id,
