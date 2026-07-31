@@ -258,13 +258,13 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_store_resolution_delivery_mode(messages, state)
     _validate_store_address_message_facts(messages, state)
     _validate_multi_store_address_same_district(messages, state)
-    _validate_store_address_card_consistency(messages, state)
     _validate_appointment_lookup_promise(messages, state)
     _validate_appointment_time_facts(messages, state)
     _validate_registration_confirmation_facts(messages, state)
     _validate_appointment_confirmation_facts(messages, state)
     _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
     _validate_fact_boundaries(messages, state)
+    _validate_store_address_card_consistency(messages, state)
     _validate_complete_store_listing_delivery(messages, state)
     _validate_recommended_store_delivery(messages, state)
     _validate_store_delivery_text_matches_cards(messages, state)
@@ -743,9 +743,12 @@ def _validate_store_resolution_delivery_mode(messages: list[dict[str, Any]], sta
         if isinstance(structured.get("store_resolution_fact"), dict)
         else {}
     )
-    if str(resolution.get("delivery_mode") or "") != "clarify_location":
+    delivery_mode = str(resolution.get("delivery_mode") or "")
+    if delivery_mode not in {"clarify_location", "clarify_service_area"}:
         return
     if _emitted_store_address_ids(messages):
+        if delivery_mode == "clarify_service_area":
+            raise ValueError("store_cards_not_allowed_when_service_area_clarification_required")
         raise ValueError("store_cards_not_allowed_when_location_clarification_required")
 
 
@@ -958,13 +961,25 @@ def _store_ids_in_requested_scope(store_ids: set[str], state: dict[str, Any]) ->
 def _validate_store_address_card_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     text = _combined_text(messages)
     current_content = str(state.get("normalized_content") or state.get("content") or "")
-    if not _promises_store_address_card(text) and not _current_message_requests_store_address_card(current_content):
+    promises_card = _promises_store_address_card(text)
+    customer_requests_card = _current_message_requests_store_address_card(current_content)
+    if not promises_card and not (customer_requests_card and _current_turn_store_address_ids(state)):
         return
     if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
         return
-    allowed_ids = _allowed_store_address_ids(state)
-    if allowed_ids:
-        raise ValueError("store_address_message_required_when_reply_promises_location_card")
+    raise ValueError("store_address_message_required_when_reply_promises_location_card")
+
+
+def _current_turn_store_address_ids(state: dict[str, Any]) -> set[str]:
+    structured = _structured_facts(state)
+    ids: set[str] = set()
+    for item in structured.get("store_facts") or []:
+        if isinstance(item, dict):
+            _add_store_id(ids, item)
+    recommended = structured.get("recommended_store")
+    if isinstance(recommended, dict):
+        _add_store_id(ids, recommended)
+    return ids
 
 
 def _validate_appointment_time_facts(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:

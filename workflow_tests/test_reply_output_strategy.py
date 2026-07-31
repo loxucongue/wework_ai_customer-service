@@ -5052,7 +5052,7 @@ def test_reply_validation_requires_city_cards_from_customer_visible_scope_withou
             ]
         },
     }
-    with pytest.raises(ValueError, match="store_address_message_required_when_reply_promises_location_card"):
+    with pytest.raises(ValueError, match="complete_store_listing_cards_required"):
         validate_reply_consistency([{"type": "text", "order": 1, "content": "荆州有两家门店。"}], state)
     with pytest.raises(ValueError, match="complete_store_listing_cards_required"):
         validate_reply_consistency(
@@ -5127,6 +5127,75 @@ def test_reply_validation_rejects_store_cards_when_resolution_requires_location_
         validate_reply_consistency(
             [
                 {"type": "text", "order": 1, "content": "我先发两家给您。"},
+                {"type": "store_address", "order": 2, "content": {"store_id": "241"}},
+            ],
+            state,
+        )
+
+
+def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_area() -> None:
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "no_match",
+                "raw_query": "黑龙江省绥化市望奎县望奎镇",
+                "query": "黑龙江省绥化市望奎县望奎镇",
+                "province": "黑龙江省",
+                "city": "绥化市",
+                "district": "望奎县",
+                "resolved_admin_level": "township",
+                "scope_match_level": "none",
+                "exact_scope_has_store": False,
+                "stores": [],
+                "missing": ["matched_customer_scope_store"],
+            },
+            "distance_calculate": {
+                "origin": "黑龙江省绥化市望奎县望奎镇，46.831729,126.473702",
+                "status": "no_candidate_stores",
+                "candidate_stores": [],
+                "error": "no_candidate_stores",
+            },
+        },
+        {},
+    )
+    structured = output["fact_envelope"]["structured_facts"]
+
+    assert structured["store_lookup_status"]["province"] == "黑龙江省"
+    assert structured["store_lookup_status"]["city"] == "绥化市"
+    assert structured["store_lookup_status"]["district"] == "望奎县"
+    assert structured["store_resolution_fact"]["resolved_admin_level"] == "township"
+    assert structured["store_resolution_fact"]["delivery_mode"] == "clarify_service_area"
+
+    state = {
+        **output,
+        "normalized_content": "定位卡片：望奎镇\n地址：黑龙江省绥化市望奎县",
+        "customer_store_knowledge": {
+            "stores": [
+                {"store_id": "241", "store_name": "荆州万达二店", "province": "湖北省", "city": "荆州市"}
+            ]
+        },
+    }
+    validate_reply_consistency(
+        [
+            {
+                "type": "text",
+                "order": 1,
+                "content": "望奎县这个位置我收到了。您平时还常去哪个城市或市区？我按您常去的地方给您匹配。",
+            }
+        ],
+        state,
+    )
+
+    with pytest.raises(ValueError, match="store_address_message_required_when_reply_promises_location_card"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "望奎县这个位置收到了，我把门店位置卡发您。"}],
+            state,
+        )
+
+    with pytest.raises(ValueError, match="store_cards_not_allowed_when_service_area_clarification_required"):
+        validate_reply_consistency(
+            [
+                {"type": "text", "order": 1, "content": "我先发一家给您。"},
                 {"type": "store_address", "order": 2, "content": {"store_id": "241"}},
             ],
             state,

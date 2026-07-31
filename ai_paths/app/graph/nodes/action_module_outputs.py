@@ -25,7 +25,11 @@ def _store_delivery_mode(
 ) -> str:
     if has_real_ranking and recommended_store_id:
         return "send_recommended"
-    if resolution_status in {"ambiguous_location", "no_match"} or resolved_level == "province":
+    if resolution_status == "ambiguous_location" or resolved_level == "province":
+        return "clarify_location"
+    if resolution_status in {"no_match", "no_candidate_stores"}:
+        if resolved_level in {"city", "district", "county", "township"}:
+            return "clarify_service_area"
         return "clarify_location"
     if resolution_status == "ok" and 1 <= visible_candidate_count <= 3:
         return "send_all_candidates"
@@ -155,6 +159,16 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             continue
 
         if key == "distance_calculate":
+            previous_lookup = (
+                dict(structured_facts["store_lookup_status"])
+                if isinstance(structured_facts.get("store_lookup_status"), dict)
+                else {}
+            )
+            previous_resolution = (
+                dict(structured_facts["store_resolution_fact"])
+                if isinstance(structured_facts.get("store_resolution_fact"), dict)
+                else {}
+            )
             candidate_stores = value.get("ranked_stores") if isinstance(value.get("ranked_stores"), list) else []
             if not candidate_stores:
                 candidate_stores = value.get("candidate_stores") if isinstance(value.get("candidate_stores"), list) else []
@@ -166,21 +180,35 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 and not str(item.get("distance_error") or "").strip()
             ]
             has_real_ranking = len(comparable_stores) >= 2
+            resolved_admin_level = str(
+                value.get("resolved_admin_level")
+                or previous_lookup.get("resolved_admin_level")
+                or previous_resolution.get("resolved_admin_level")
+                or ""
+            )
+            province = str(value.get("province") or previous_lookup.get("province") or previous_resolution.get("province") or "")
+            city = str(value.get("city") or previous_lookup.get("city") or previous_resolution.get("city") or "")
+            district = str(value.get("district") or previous_lookup.get("district") or previous_resolution.get("district") or "")
+            township = str(value.get("township") or previous_lookup.get("township") or previous_resolution.get("township") or "")
             structured_facts["store_lookup_status"] = {
                 "query": str(value.get("origin") or ""),
-                "province": str(value.get("province") or ""),
-                "city": str(value.get("city") or ""),
-                "district": str(value.get("district") or ""),
-                "township": str(value.get("township") or ""),
+                "province": province,
+                "city": city,
+                "district": district,
+                "township": township,
                 "location_preference": str(value.get("origin") or ""),
                 "distance_origin": str(value.get("origin") or ""),
                 "distance_lookup_required": bool(value.get("status") == "distance_tool_unavailable"),
                 "recommendation_status": (
                     str(value.get("status") or "") if has_real_ranking else "insufficient_comparable_candidates"
                 ),
-                "resolved_admin_level": str(value.get("resolved_admin_level") or ""),
-                "scope_match_level": str(value.get("scope_match_level") or ""),
-                "exact_scope_has_store": value.get("exact_scope_has_store"),
+                "resolved_admin_level": resolved_admin_level,
+                "scope_match_level": str(value.get("scope_match_level") or previous_lookup.get("scope_match_level") or ""),
+                "exact_scope_has_store": (
+                    value.get("exact_scope_has_store")
+                    if value.get("exact_scope_has_store") is not None
+                    else previous_lookup.get("exact_scope_has_store")
+                ),
                 "source": "distance_calculate",
                 "candidate_count": int(value.get("candidate_store_count") or len(value.get("ranked_stores") or value.get("candidate_stores") or [])),
                 "comparable_candidate_count": len(comparable_stores),
@@ -210,7 +238,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             )
             delivery_mode = _store_delivery_mode(
                 resolution_status=str(value.get("status") or ""),
-                resolved_level=str(value.get("resolved_admin_level") or ""),
+                resolved_level=resolved_admin_level,
                 visible_candidate_count=visible_candidate_count,
                 has_real_ranking=has_real_ranking,
                 recommended_store_id=ranked_recommended_store_id,
@@ -220,13 +248,21 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "raw_place": str(value.get("origin") or ""),
                     "normalized_query": str(value.get("origin") or ""),
                     "resolution_status": str(value.get("status") or ""),
-                    "resolved_admin_level": str(value.get("resolved_admin_level") or ""),
-                    "province": str(value.get("province") or ""),
-                    "city": str(value.get("city") or ""),
-                    "district": str(value.get("district") or ""),
-                    "township": str(value.get("township") or ""),
-                    "scope_match_level": str(value.get("scope_match_level") or ""),
-                    "exact_scope_has_store": value.get("exact_scope_has_store"),
+                    "resolved_admin_level": resolved_admin_level,
+                    "province": province,
+                    "city": city,
+                    "district": district,
+                    "township": township,
+                    "scope_match_level": str(
+                        value.get("scope_match_level")
+                        or previous_resolution.get("scope_match_level")
+                        or ""
+                    ),
+                    "exact_scope_has_store": (
+                        value.get("exact_scope_has_store")
+                        if value.get("exact_scope_has_store") is not None
+                        else previous_resolution.get("exact_scope_has_store")
+                    ),
                     "visible_candidate_ids": [
                         str(item.get("store_id") or item.get("id") or "")
                         for item in structured_facts["store_facts"]
