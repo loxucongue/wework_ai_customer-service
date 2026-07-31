@@ -89,6 +89,31 @@ class _FakeCoze:
         self.settings = Settings(geocode_workflow_id="", distance_workflow_id="")
 
 
+class _GeocodeFakeCoze:
+    def __init__(self) -> None:
+        self.settings = Settings(
+            geocode_workflow_id="geocode",
+            distance_workflow_id="",
+        )
+
+    async def run_workflow(
+        self,
+        workflow_id: str,
+        parameters: dict[str, object],
+    ) -> dict[str, object]:
+        assert workflow_id == "geocode"
+        return {
+            "data": {
+                "output": {
+                    "province": u(r"\u56db\u5ddd\u7701"),
+                    "city": u(r"\u5df4\u4e2d\u5e02"),
+                    "district": u(r"\u5e73\u660c\u53bf"),
+                    "location": "106.293,31.560",
+                }
+            }
+        }
+
+
 def test_distance_rejects_invalid_candidates_before_ranking() -> None:
     output = asyncio.run(
         _distance_calculate(
@@ -102,6 +127,49 @@ def test_distance_rejects_invalid_candidates_before_ranking() -> None:
     assert output["status"] == "no_candidate_stores"
     assert output["candidate_stores"] == []
     assert output["filtered_invalid_stores"][0]["store_id"] == "129"
+
+
+def test_distance_preselects_from_all_candidates_before_ranking() -> None:
+    candidates = [
+        {
+            "store_id": str(index),
+            "store_name": f"Store {index}",
+            "province": u(r"\u56db\u5ddd\u7701"),
+            "city": u(r"\u5df4\u4e2d\u5e02"),
+            "district": u(r"\u5df4\u5dde\u533a"),
+            "store_address": f"Address {index}",
+            "location": f"{103.0 + index * 0.01},30.0",
+        }
+        for index in range(1, 13)
+    ]
+    candidates.append(
+        {
+            "store_id": "99",
+            "store_name": "Nearest Store",
+            "province": u(r"\u56db\u5ddd\u7701"),
+            "city": u(r"\u5df4\u4e2d\u5e02"),
+            "district": u(r"\u5df4\u5dde\u533a"),
+            "store_address": "Nearest Address",
+            "location": "106.294,31.561",
+        }
+    )
+
+    output = asyncio.run(
+        _distance_calculate(
+            {
+                "origin": u(r"\u56db\u5ddd\u5df4\u4e2d\u5e73\u660c"),
+                "candidate_source": "customer_store_lookup",
+            },
+            {},
+            _GeocodeFakeCoze(),  # type: ignore[arg-type]
+            {"customer_store_lookup": {"candidate_stores": candidates}},
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["candidate_store_count"] == 13
+    assert output["ranked_candidate_count"] == 12
+    assert output["ranked_stores"][0]["store_id"] == "99"
 
 
 def test_reply_validation_rejects_invalid_store_card() -> None:

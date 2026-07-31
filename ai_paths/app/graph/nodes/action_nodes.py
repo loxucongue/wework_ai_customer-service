@@ -1286,18 +1286,18 @@ async def _distance_calculate(
     origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or state.get("normalized_content") or "").strip()
     geocode_origin = _normalize_distance_origin_from_store_regions(_normalize_known_landmark_origin(origin), state)
     raw_candidates = _distance_candidate_stores(tool, state, tool_results or {})
-    candidates, invalid_candidates = filter_valid_store_facts(
+    all_candidates, invalid_candidates = filter_valid_store_facts(
         raw_candidates,
         known_stores=[*_snapshot_store_values(), *raw_candidates],
     )
     if not origin:
         return {
             "status": "missing_origin",
-            "candidate_stores": candidates,
+            "candidate_stores": all_candidates,
             "filtered_invalid_stores": invalid_candidates,
             "error": "missing_origin",
         }
-    if not candidates:
+    if not all_candidates:
         return {
             "origin": origin,
             "status": "no_candidate_stores",
@@ -1310,7 +1310,7 @@ async def _distance_calculate(
     if not geocode_workflow_id:
         return {
             "origin": origin,
-            "candidate_stores": candidates,
+            "candidate_stores": all_candidates,
             "status": "distance_tool_unavailable",
             "error": "geocode_workflow_id_not_configured",
         }
@@ -1323,10 +1323,15 @@ async def _distance_calculate(
                 origin_geo = admin_geo
                 geocode_origin = admin_candidate["origin"]
         if not origin_geo.get("location"):
-            return {"origin": origin, "candidate_stores": candidates, "status": "origin_geocode_failed", "error": "origin_geocode_failed"}
+            return {"origin": origin, "candidate_stores": all_candidates, "status": "origin_geocode_failed", "error": "origin_geocode_failed"}
         origin_point = _parse_lng_lat(str(origin_geo.get("location") or ""))
         if not origin_point:
-            return {"origin": origin, "candidate_stores": candidates, "status": "origin_geocode_failed", "error": "invalid_origin_location"}
+            return {"origin": origin, "candidate_stores": all_candidates, "status": "origin_geocode_failed", "error": "invalid_origin_location"}
+        candidates = _preselect_distance_candidates(
+            all_candidates,
+            origin_point,
+            limit=12,
+        )
 
         async def rank_store(store: dict[str, Any]) -> dict[str, Any]:
             address = str(store.get("store_address") or "").strip()
@@ -1382,14 +1387,15 @@ async def _distance_calculate(
             "distance_workflow_id": distance_workflow_id,
             "status": "ok" if ranked_stores else "no_candidate_stores",
             "ranked_stores": ranked_stores,
-            "candidate_store_count": len(candidates),
+            "candidate_store_count": len(all_candidates),
+            "ranked_candidate_count": len(candidates),
             "filtered_invalid_stores": invalid_candidates,
             **_distance_lookup_scope_fields(tool, tool_results or {}),
         }
     except Exception as exc:
         return {
             "origin": origin,
-            "candidate_stores": candidates[:12],
+            "candidate_stores": all_candidates[:12],
             "status": "distance_tool_error",
             "error": f"{type(exc).__name__}: {exc}",
         }
@@ -1399,7 +1405,7 @@ def _distance_candidate_stores(tool: dict[str, Any], state: AgentState, tool_res
     if str(tool.get("candidate_source") or "").strip() == "customer_store_lookup":
         lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results, dict) else {}
         lookup_candidates = lookup.get("candidate_stores") if isinstance(lookup, dict) and isinstance(lookup.get("candidate_stores"), list) else []
-        return [_store_lookup_candidate_for_distance(item) for item in lookup_candidates[:12] if isinstance(item, dict)]
+        return [_store_lookup_candidate_for_distance(item) for item in lookup_candidates[:200] if isinstance(item, dict)]
     candidate_ids = tool.get("candidate_store_ids") if isinstance(tool.get("candidate_store_ids"), list) else []
     stores = []
     knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
@@ -1411,6 +1417,44 @@ def _distance_candidate_stores(tool: dict[str, Any], state: AgentState, tool_res
             continue
         stores.append(store)
     return stores[:12]
+
+
+def _preselect_distance_candidates(
+    candidates: list[dict[str, Any]],
+    origin_point: tuple[float, float],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if len(candidates) <= limit:
+        return candidates
+    located: list[tuple[float, int, dict[str, Any]]] = []
+    missing_location: list[dict[str, Any]] = []
+    for index, store in enumerate(candidates):
+        point = _parse_lng_lat(str(store.get("location") or "").strip())
+        if not point:
+            missing_location.append(store)
+            continue
+        located.append((_haversine_km(origin_point, point), index, store))
+    located.sort(key=lambda item: (item[0], item[1]))
+    reserve_for_missing = min(3, len(missing_location), limit)
+    located_limit = max(0, limit - reserve_for_missing)
+    selected = [
+        store
+        for _, _, store in located[:located_limit]
+    ]
+    selected.extend(missing_location[:reserve_for_missing])
+    if len(selected) < limit:
+        selected.extend(
+            store
+            for _, _, store in located[located_limit:limit]
+        )
+    if len(selected) < limit:
+        selected.extend(
+            missing_location[
+                reserve_for_missing : reserve_for_missing + limit - len(selected)
+            ]
+        )
+    return selected[:limit]
 
 
 def _stores_for_geocode(geocode: dict[str, Any], stores: list[dict[str, Any]], purpose: str) -> list[dict[str, Any]]:
