@@ -125,7 +125,11 @@ class ChatRuntime:
         if decision and not decision.should_run_graph:
             state = self._initial_state(request, request_id, request_context)
             state["reply_messages"] = []
-            state["reply_source"] = "platform_filtered"
+            state["reply_source"] = (
+                "platform_superseded"
+                if decision.mode == "input_batch_superseded"
+                else "platform_filtered"
+            )
             state["reply_control"] = self._platform_reply_coordinator.control_for_decision(decision)
             _set_sync_return(state, "empty", [])
             return self._persist_and_build_response(

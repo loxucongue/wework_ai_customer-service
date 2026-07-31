@@ -177,6 +177,21 @@ class Settings(BaseSettings):
     doubao_asr_timeout_seconds: float = Field(default=15.0, alias="DOUBAO_ASR_TIMEOUT_SECONDS")
     doubao_asr_poll_interval_seconds: float = Field(default=1.0, alias="DOUBAO_ASR_POLL_INTERVAL_SECONDS")
     doubao_asr_poll_attempts: int = Field(default=8, alias="DOUBAO_ASR_POLL_ATTEMPTS")
+    platform_voice_batch_enabled: bool = Field(default=True, alias="PLATFORM_VOICE_BATCH_ENABLED")
+    platform_voice_batch_settle_seconds: float = Field(default=1.2, alias="PLATFORM_VOICE_BATCH_SETTLE_SECONDS")
+    platform_voice_batch_hard_window_seconds: float = Field(
+        default=4.0,
+        alias="PLATFORM_VOICE_BATCH_HARD_WINDOW_SECONDS",
+    )
+    platform_voice_batch_timeout_seconds: float = Field(
+        default=15.0,
+        alias="PLATFORM_VOICE_BATCH_TIMEOUT_SECONDS",
+    )
+    platform_voice_batch_max_items: int = Field(default=6, alias="PLATFORM_VOICE_BATCH_MAX_ITEMS")
+    platform_voice_transcript_cache_seconds: float = Field(
+        default=900.0,
+        alias="PLATFORM_VOICE_TRANSCRIPT_CACHE_SECONDS",
+    )
 
     log_dir: Path = Path("logs/runs")
     trace_log_dir: Path | None = Field(default=None, alias="AI_PATHS_TRACE_LOG_DIR")

@@ -21,6 +21,7 @@ from app.services.outreach_service import OutreachService, classify_conversation
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.outreach_system_client import OutreachSystemClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
+from app.services.platform_voice_batch import PlatformVoiceBatchCoordinator
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_event_service import SopEventService
@@ -49,6 +50,7 @@ platform_agent_client = PlatformAgentClient(settings)
 outreach_send_client = OutreachSendClient(settings)
 outreach_system_client = OutreachSystemClient(settings)
 platform_reply_coordinator = PlatformReplyCoordinator(settings)
+platform_voice_batch_coordinator = PlatformVoiceBatchCoordinator(settings)
 customer_context_service = CustomerContextService(platform_agent_client)
 store_snapshot_service = StoreSnapshotService(settings, platform_agent_client)
 customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_client, store_snapshot_service)
@@ -240,6 +242,7 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await storage_retention_worker
         storage_retention_worker = None
+    await platform_voice_batch_coordinator.aclose()
     await model_client.aclose()
     await coze_client.aclose()
     await voice_transcription_client.aclose()
@@ -412,7 +415,7 @@ async def reply(
     background_tasks: BackgroundTasks,
     _: None = Depends(require_external_api_key),
 ) -> ChatResponse:
-    request = await transcribe_voice_request(request, voice_transcription_client)
+    request = await platform_voice_batch_coordinator.prepare(request, voice_transcription_client)
     response = await chat_runtime.run_platform_reply(request, background_tasks=background_tasks)
     _record_http_response_body(response.request_id, response.model_dump())
     return response
@@ -445,7 +448,11 @@ async def workflow_compatible_reply(
         request = normalize_workflow_request(payload)
     except ValueError as exc:
         return JSONResponse(status_code=400, content=workflow_error_response(str(exc)))
-    request = await transcribe_voice_request(request, voice_transcription_client)
+    request = (
+        await platform_voice_batch_coordinator.prepare(request, voice_transcription_client)
+        if platform_async
+        else await transcribe_voice_request(request, voice_transcription_client)
+    )
     response = (
         await chat_runtime.run_platform_reply(request, background_tasks=background_tasks)
         if platform_async

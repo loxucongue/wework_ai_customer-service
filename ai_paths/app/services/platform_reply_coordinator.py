@@ -40,6 +40,7 @@ class PlatformReplyDecision:
     merged_customer_messages: list[str] = field(default_factory=list)
     image_urls: list[str] = field(default_factory=list)
     superseded_request_id: str = ""
+    superseded_by_message_id: str = ""
     filter_hit: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -56,6 +57,19 @@ class PlatformReplyCoordinator:
 
     async def begin(self, request: ChatRequest, *, request_id: str, request_context: dict[str, Any]) -> PlatformReplyDecision:
         customer_key = _customer_key(request, request_context)
+        if str(request_context.get("platform_input_batch_role") or "") == "superseded":
+            return PlatformReplyDecision(
+                mode="input_batch_superseded",
+                request_id=request_id,
+                customer_key=customer_key,
+                generation_id=str(uuid4()),
+                effective_content=request.content,
+                effective_request_context=dict(request_context),
+                merged_customer_messages=list(request_context.get("merged_customer_messages") or []),
+                superseded_by_message_id=str(
+                    request_context.get("platform_input_batch_owner_msgid") or ""
+                ),
+            )
         filter_hit = self._match_filter_word(request.content)
         if filter_hit.get("matched"):
             return PlatformReplyDecision(
@@ -144,6 +158,7 @@ class PlatformReplyCoordinator:
             generation_id=decision.generation_id,
             superseded_request_id=decision.superseded_request_id,
             message_id=decision.record.message_id if decision.record else "",
+            superseded_by_message_id=decision.superseded_by_message_id,
             merged_customer_messages=decision.merged_customer_messages,
             image_urls=decision.image_urls,
             filter_hit=decision.filter_hit,
