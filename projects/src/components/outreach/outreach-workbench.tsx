@@ -13,7 +13,6 @@ import {
   GitBranch,
   History,
   Images,
-  ListChecks,
   LoaderCircle,
   MapPin,
   MessageSquareText,
@@ -1102,84 +1101,109 @@ export function OutreachWorkbench() {
           </div>
         </div>
       </section>
-      <section className="grid min-h-[620px] grid-cols-1 lg:h-[calc(100vh-460px)] lg:max-h-[820px] lg:grid-cols-[280px_minmax(380px,1fr)_300px] 2xl:grid-cols-[340px_minmax(520px,1fr)_360px]">
+
+      <section className="border-b border-zinc-200 bg-[#f7f8fb] px-3 py-4 sm:px-5">
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <Search className="h-4 w-4 text-zinc-500" />
+              <h2 className="text-sm font-semibold">客户计划工作台</h2>
+            </div>
+            <p className="mt-1 text-xs text-zinc-500">筛选客户后，在下方查看计划、客户画像和历史事件</p>
+          </div>
+          <span className="text-xs text-zinc-500">当前结果 {candidates.length} 位客户</span>
+        </div>
+        <form
+          className="grid grid-cols-1 gap-3 rounded-lg border border-zinc-200 bg-white p-3 shadow-sm sm:grid-cols-2 xl:flex xl:items-end"
+          onSubmit={(event) => {
+            event.preventDefault();
+            loadCandidates();
+          }}
+        >
+          <label className="w-full text-xs text-zinc-500 sm:col-span-2 xl:min-w-[240px] xl:flex-[1_1_320px]">
+            搜索客户
+            <input
+              className="mt-1 h-10 w-full rounded-md border border-zinc-200 px-3 text-sm outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
+              placeholder="昵称、客户 ID 或最近消息"
+              value={filters.keyword}
+              onChange={(event) => setFilters((prev) => ({ ...prev, keyword: event.target.value }))}
+            />
+          </label>
+          <label className="w-full shrink-0 text-xs text-zinc-500 xl:w-[140px]">
+            至少未回复
+            <select
+              className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
+              value={filters.silentMinutesMin}
+              onChange={(event) => setFilters((prev) => ({ ...prev, silentMinutesMin: event.target.value }))}
+            >
+              <option value="0">不限</option>
+              <option value="60">1小时</option>
+              <option value="180">3小时</option>
+              <option value="720">12小时</option>
+              <option value="1440">24小时</option>
+            </select>
+          </label>
+          <label className="w-full shrink-0 text-xs text-zinc-500 xl:w-[140px]">
+            唤醒状态
+            <select
+              className="mt-1 h-10 w-full rounded-md border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
+              value={filters.outreachStatus}
+              onChange={(event) => setFilters((prev) => ({ ...prev, outreachStatus: event.target.value }))}
+            >
+              <option value="">全部</option>
+              <option value="none">无计划</option>
+              <option value="draft">草稿</option>
+              <option value="active">执行中</option>
+              <option value="waiting">等待</option>
+              <option value="paused">暂停</option>
+              <option value="completed">已完成</option>
+              <option value="cancelled">已取消</option>
+              <option value="failed">失败</option>
+            </select>
+          </label>
+          <label className="w-full shrink-0 text-xs text-zinc-500 xl:w-[180px]">
+            当前成交阶段
+            <input
+              className="mt-1 h-10 w-full rounded-md border border-zinc-200 px-3 text-sm outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
+              placeholder="填写完整阶段值"
+              value={filters.lifecycleStage}
+              onChange={(event) => setFilters((prev) => ({ ...prev, lifecycleStage: event.target.value }))}
+            />
+          </label>
+          <label className="flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-md border border-zinc-200 px-3 text-xs text-zinc-700">
+            <input
+              type="checkbox"
+              checked={filters.noPlanOnly}
+              onChange={(event) => setFilters((prev) => ({ ...prev, noPlanOnly: event.target.checked }))}
+            />
+            仅看未生成计划
+          </label>
+          <label className="w-full shrink-0 text-xs text-zinc-500 xl:w-[96px]">
+            展示数量
+            <input
+              className="mt-1 h-10 w-full rounded-md border border-zinc-200 px-3 text-sm outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-100"
+              value={filters.limit}
+              onChange={(event) => setFilters((prev) => ({ ...prev, limit: event.target.value }))}
+            />
+          </label>
+          <button
+            type="submit"
+            className="inline-flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-zinc-900 px-5 text-sm text-white hover:bg-zinc-800 xl:w-auto"
+          >
+            <Search className="h-4 w-4" />
+            查询客户
+          </button>
+        </form>
+      </section>
+
+      <section className="grid min-h-[620px] grid-cols-1 bg-[#f7f8fb] lg:h-[calc(100vh-540px)] lg:max-h-[820px] lg:grid-cols-[280px_minmax(380px,1fr)_300px] 2xl:grid-cols-[340px_minmax(520px,1fr)_360px]">
         <aside className="flex h-full min-h-0 flex-col border-b border-zinc-200 bg-white lg:border-b-0 lg:border-r">
-          <div className="border-b border-zinc-200 p-4">
-            <div className="mb-3 flex items-center gap-2 text-sm font-medium">
-              <Search className="h-4 w-4" />
-              客户与计划筛选
+          <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold">客户列表</h2>
+              <p className="mt-0.5 text-xs text-zinc-500">按筛选条件展示 {candidates.length} 位</p>
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="col-span-2 text-xs text-zinc-500">
-                搜索客户
-                <input
-                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                  placeholder="昵称、客户 ID 或最近消息"
-                  value={filters.keyword}
-                  onChange={(event) => setFilters((prev) => ({ ...prev, keyword: event.target.value }))}
-                />
-              </label>
-              <label className="text-xs text-zinc-500">
-                至少未回复
-                <select
-                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
-                  value={filters.silentMinutesMin}
-                  onChange={(event) => setFilters((prev) => ({ ...prev, silentMinutesMin: event.target.value }))}
-                >
-                  <option value="0">不限</option>
-                  <option value="60">1小时</option>
-                  <option value="180">3小时</option>
-                  <option value="720">12小时</option>
-                  <option value="1440">24小时</option>
-                </select>
-              </label>
-              <label className="text-xs text-zinc-500">
-                唤醒状态
-                <select
-                  className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-2 text-sm text-zinc-900"
-                  value={filters.outreachStatus}
-                  onChange={(event) => setFilters((prev) => ({ ...prev, outreachStatus: event.target.value }))}
-                >
-                  <option value="">全部</option>
-                  <option value="none">无计划</option>
-                  <option value="draft">草稿</option>
-                  <option value="active">执行中</option>
-                  <option value="waiting">等待</option>
-                  <option value="paused">暂停</option>
-                  <option value="completed">已完成</option>
-                  <option value="cancelled">已取消</option>
-                  <option value="failed">失败</option>
-                </select>
-              </label>
-              <label className="col-span-2 text-xs text-zinc-500">
-                当前成交阶段
-                <input
-                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                  placeholder="填写完整阶段值"
-                  value={filters.lifecycleStage}
-                  onChange={(event) => setFilters((prev) => ({ ...prev, lifecycleStage: event.target.value }))}
-                />
-              </label>
-              <label className="flex items-center gap-2 text-xs text-zinc-600">
-                <input
-                  type="checkbox"
-                  checked={filters.noPlanOnly}
-                  onChange={(event) => setFilters((prev) => ({ ...prev, noPlanOnly: event.target.checked }))}
-                />
-                仅看未生成计划
-              </label>
-              <label className="text-xs text-zinc-500">
-                展示数量
-                <input
-                  className="mt-1 w-full rounded-md border border-zinc-200 px-2 py-2 text-sm"
-                  value={filters.limit}
-                  onChange={(event) => setFilters((prev) => ({ ...prev, limit: event.target.value }))}
-                />
-              </label>
-            </div>
-            <button onClick={loadCandidates} className="mt-3 w-full rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800">
-              查询客户
-            </button>
+            {loading ? <LoaderCircle className="h-4 w-4 animate-spin text-zinc-500" /> : null}
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -1244,18 +1268,22 @@ export function OutreachWorkbench() {
           </div>
         </aside>
 
-        <section className="min-h-0 overflow-y-auto p-5">
-          <div className="mb-4 grid grid-cols-3 gap-3">
-            <MetricCard icon={<UserRound className="h-4 w-4" />} label="候选客户" value={String(candidates.length)} />
-            <MetricCard icon={<Clock className="h-4 w-4" />} label="当前客户沉默" value={formatSilent(selectedCustomer?.silent_minutes)} />
-            <MetricCard icon={<ListChecks className="h-4 w-4" />} label="计划状态" value={statusLabel(selectedPlan?.status || selectedCustomer?.outreach_status)} />
-          </div>
-
+        <section className="min-h-0 overflow-y-auto p-4 lg:p-5">
           <div className="rounded-xl border border-zinc-200 bg-white">
             <div className="flex items-center justify-between border-b border-zinc-200 p-4">
               <div>
                 <h2 className="text-base font-semibold">唤醒计划详情</h2>
                 <p className="text-sm text-zinc-500">{selectedCustomer ? `${selectedCustomer.customer_id} · ${selectedCustomer.lifecycle_stage || "未分阶段"}` : "请选择客户"}</p>
+                {selectedCustomer ? (
+                  <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                    <span className="rounded bg-zinc-100 px-2 py-1 text-zinc-600">
+                      未回复 {formatSilent(selectedCustomer.silent_minutes)}
+                    </span>
+                    <span className="rounded bg-zinc-100 px-2 py-1 text-zinc-600">
+                      计划状态 {statusLabel(selectedPlan?.status || selectedCustomer.outreach_status)}
+                    </span>
+                  </div>
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
                 {selectedCustomer ? (
@@ -1515,18 +1543,6 @@ export function OutreachWorkbench() {
         </div>
       ) : null}
     </main>
-  );
-}
-
-function MetricCard({ icon, label, value }: { icon: ReactNode; label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-zinc-200 bg-white p-4">
-      <div className="flex items-center gap-2 text-xs text-zinc-500">
-        {icon}
-        {label}
-      </div>
-      <div className="mt-2 truncate text-lg font-semibold">{value}</div>
-    </div>
   );
 }
 
