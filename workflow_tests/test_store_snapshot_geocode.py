@@ -163,9 +163,51 @@ class StoreSnapshotGeocodeTests(unittest.TestCase):
         )
 
         self.assertIn(
-            u(r"\u0061\u0064\u0064\u0072\u0065\u0073\u0073\u005f\u0063\u0069\u0074\u0079\u003a\u592a\u539f\u5e02\u0021\u003d\u94f6\u5ddd\u5e02"),
+            u(r"\u0070\u0061\u0072\u006b\u0069\u006e\u0067\u005f\u0063\u0069\u0074\u0079\u003a\u592a\u539f\u5e02\u0021\u003d\u94f6\u5ddd\u5e02"),
             conflicts,
         )
+
+    def test_complete_parking_region_resolves_county_level_city_shorthand(self) -> None:
+        conflicts = geocode_region_conflicts(
+            {
+                "province": u(r"\u798f\u5efa\u7701"),
+                "city": u(r"\u6cc9\u5dde\u5e02"),
+                "district": u(r"\u664b\u6c5f\u5e02"),
+            },
+            address_region=(
+                "",
+                u(r"\u664b\u6c5f\u5e02"),
+                u(r"\u6885\u5cad\u8857\u9053"),
+            ),
+            parking_region=(
+                u(r"\u798f\u5efa\u7701"),
+                u(r"\u6cc9\u5dde\u5e02"),
+                u(r"\u664b\u6c5f\u5e02"),
+            ),
+        )
+
+        self.assertEqual(conflicts, [])
+
+    def test_complete_parking_region_resolves_composite_city_shorthand(self) -> None:
+        conflicts = geocode_region_conflicts(
+            {
+                "province": u(r"\u56db\u5ddd\u7701"),
+                "city": u(r"\u6210\u90fd\u5e02"),
+                "district": u(r"\u7b80\u9633\u5e02"),
+            },
+            address_region=(
+                u(r"\u56db\u5ddd\u7701"),
+                u(r"\u6210\u90fd\u7b80\u9633\u5e02"),
+                u(r"\u77f3\u6865\u9547"),
+            ),
+            parking_region=(
+                u(r"\u56db\u5ddd\u7701"),
+                u(r"\u6210\u90fd\u5e02"),
+                u(r"\u7b80\u9633\u5e02"),
+            ),
+        )
+
+        self.assertEqual(conflicts, [])
 
 
 if __name__ == "__main__":

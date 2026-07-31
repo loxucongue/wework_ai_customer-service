@@ -527,42 +527,86 @@ def geocode_region_conflicts(
     parking_province, parking_city, _ = parking_region
     conflicts: list[str] = []
 
-    for source, expected, actual in (
-        ("address_province", address_province, result_province),
-        ("address_city", address_city, result_city),
-        ("address_district", address_district, result_district),
-        ("parking_province", parking_province, result_province),
-        ("parking_city", parking_city, result_city),
+    parking_has_full_region = bool(parking_province and parking_city)
+    address_is_full_region = bool(address_province and address_city)
+    address_looks_composite = _address_region_contains_parking_scope(
+        address_city=address_city,
+        parking_city=parking_city,
+        parking_district=parking_region[2],
+    )
+    if parking_has_full_region and (
+        not address_is_full_region
+        or address_looks_composite
     ):
+        expected_values = (
+            ("parking_province", parking_province, result_province),
+            ("parking_city", parking_city, result_city),
+        )
+    else:
+        expected_values = (
+            ("address_province", address_province, result_province),
+            ("address_city", address_city, result_city),
+            ("address_district", address_district, result_district),
+        )
+
+    for source, expected, actual in expected_values:
         if expected and actual and not _region_values_equal(expected, actual):
             conflicts.append(f"{source}:{expected}!={actual}")
     return conflicts
 
 
-def _region_values_equal(left: str, right: str) -> bool:
-    def normalize(value: str) -> str:
-        text = clean_text(value)
-        for suffix in (
-            "壮族自治区",
-            "回族自治区",
-            "维吾尔自治区",
-            "特别行政区",
-            "自治州",
-            "自治县",
-            "自治区",
-            "地区",
-            "新区",
-            "省",
-            "市",
-            "区",
-            "县",
-            "旗",
-        ):
-            if text.endswith(suffix) and len(text) > len(suffix):
-                return text[: -len(suffix)]
-        return text
+def _address_region_contains_parking_scope(
+    *,
+    address_city: str,
+    parking_city: str,
+    parking_district: str,
+) -> bool:
+    address_token = _region_value_token(address_city)
+    parking_city_token = _region_value_token(parking_city)
+    parking_district_token = _region_value_token(parking_district)
+    if not address_token or not parking_city_token:
+        return False
+    if address_token == parking_district_token:
+        return True
+    if parking_city_token in address_token:
+        return True
+    return bool(
+        parking_district_token
+        and parking_district_token in address_token
+    )
 
-    return bool(normalize(left) and normalize(left) == normalize(right))
+
+def _region_values_equal(left: str, right: str) -> bool:
+    return bool(
+        _region_value_token(left)
+        and _region_value_token(left) == _region_value_token(right)
+    )
+
+
+def _region_value_token(value: str) -> str:
+    text = clean_text(value)
+    for suffix in (
+        "壮族自治区",
+        "回族自治区",
+        "维吾尔自治区",
+        "特别行政区",
+        "自治州",
+        "自治县",
+        "自治区",
+        "地区",
+        "新区",
+        "省",
+        "市",
+        "区",
+        "县",
+        "旗",
+        "街道",
+        "镇",
+        "乡",
+    ):
+        if text.endswith(suffix) and len(text) > len(suffix):
+            return text[: -len(suffix)]
+    return text
 
 
 def parse_geocode_workflow_response(raw: dict[str, Any]) -> dict[str, Any]:
