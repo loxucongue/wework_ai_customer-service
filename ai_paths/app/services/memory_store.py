@@ -118,13 +118,13 @@ class CustomerMemoryStore:
                 {
                     "event_id": f"case_image_sent_{request_id or uuid4()}",
                     "event_type": "case_image_sent",
-                    "created_at": now,
-                    "summary": "已向客户发送效果案例图片",
+                    "event_time": now,
                     "facts": {
                         "document_ids": clean_ids,
                         "image_urls": image_urls or [],
                         "request_id": request_id,
                     },
+                    "source": "reply_delivery",
                 }
             )
             data["history_events"] = events[-100:]
@@ -160,13 +160,13 @@ class CustomerMemoryStore:
                     {
                         "event_id": event_id,
                         "event_type": "activity_intro_image_sent",
-                        "created_at": now,
-                        "summary": "已发送活动宣传图",
+                        "event_time": now,
                         "facts": {
                             "image_url": clean_url,
                             "request_id": request_id,
                             "send_mode": send_mode,
                         },
+                        "source": "sop_delivery",
                     }
                 )
             data["history_events"] = events[-100:]
@@ -214,8 +214,7 @@ class CustomerMemoryStore:
             {
                 "event_id": event_id,
                 "event_type": "sop_pack_sent",
-                "created_at": created_at,
-                "summary": "已发送SOP话术包",
+                "event_time": created_at,
                 "facts": {
                     "sop_pack_id": clean_pack_id,
                     "sop_category": str(sop_category or "").strip(),
@@ -223,8 +222,7 @@ class CustomerMemoryStore:
                     "source_event_id": str(source_event_id or "").strip(),
                     "task_id": str(task_id or "").strip(),
                 },
-                "impact": "后续SOP判断应避免重复发送同一话术包。",
-                "confidence": 1.0,
+                "source": "sop_delivery",
             }
         )
         data["customer_id"] = customer_id
@@ -279,11 +277,9 @@ class CustomerMemoryStore:
                 {
                     "event_id": f"{event_type}_{facts.get('store_id') or store_name}_{request_id or uuid4()}",
                     "event_type": event_type,
-                    "created_at": now,
-                    "summary": "已记录客户当前匹配门店" if event_type == "store_matched" else "已发送门店位置卡片",
+                    "event_time": now,
                     "facts": facts,
-                    "impact": "后续客户追问位置、地图、导航或刚刚那家时优先继承该门店。",
-                    "confidence": 0.98,
+                    "source": "store_tool" if event_type == "store_matched" else "reply_delivery",
                 }
             )
             data["history_events"] = events[-100:]

@@ -2261,7 +2261,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(summary["applied_operations"], [{"op": "remove_text", "order": 3}])
         self.assertEqual(summary["rejected"][-1]["reason"], "trailing_action_text_required")
 
-    async def test_platform_task_directly_sends_platform_actions_without_model(self) -> None:
+    async def test_platform_task_sends_platform_actions_after_event_model_approval(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[{"direction": "staff", "content": "前面已正常沟通"}])
         selector = _Selector({"send_sop": True, "reason": "actions still useful"})
@@ -2283,9 +2283,63 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repo.tasks[0]["status"], "sent")
         self.assertEqual(repo.tasks[0]["sop_pack_id"], "platform_actions")
         self.assertEqual(repo.tasks[0]["reply_messages"][0]["content"]["text"], "平台建议文案")
-        self.assertEqual(repo.tasks[0]["send_payload"]["routing_mode"], "direct_platform_actions")
-        self.assertFalse(repo.tasks[0]["send_response"]["event_decision"]["model_called"])
-        self.assertEqual(selector.calls, [])
+        self.assertEqual(repo.tasks[0]["send_payload"]["routing_mode"], "event_guarded_platform_actions")
+        self.assertEqual(len(selector.calls), 1)
+
+    async def test_platform_payment_action_is_deferred_when_event_model_confirms_customer_busy(self) -> None:
+        repo = _Repo()
+        client = _OutreachClient(
+            messages=[
+                {
+                    "direction": "customer",
+                    "content": "我在工作，晚点说",
+                    "msgtime": "2026-07-31T09:00:00+08:00",
+                },
+                {
+                    "direction": "staff",
+                    "content": "好，您先忙，方便时再回我",
+                    "msgtime": "2026-07-31T09:01:00+08:00",
+                },
+            ]
+        )
+        selector = _Selector(
+            {
+                "decision": "defer",
+                "strategy": "availability_guard",
+                "send_sop": False,
+                "reason": "customer_busy_with_valid_acknowledgement",
+                "contact_availability_decision": {
+                    "status": "busy_now",
+                    "customer_evidence_ref": "conv_1",
+                    "assistant_acknowledgement_ref": "conv_2",
+                    "reason": "客户当前在工作，助手已承接等待",
+                },
+                "availability_guard": {"active": True, "minutes_since_ack": 45},
+            }
+        )
+        service = _service(repo=repo, client=client, selector=selector)
+        payload = _base_payload(
+            event_id="evt_platform_busy_payment",
+            event_type="sop_platform_task",
+            sop={
+                "actions": [
+                    {"type": "text", "content": "现在交10元预约金留名额"},
+                    {"type": "payment_collection", "content": {"amount": 10}},
+                ]
+            },
+            customers=[{"conversation": {"ai_auto_reply": True}}],
+            created_at="2026-07-31T09:46:00+08:00",
+        )
+
+        repo.create_sop_event(payload)
+        result = await service.process_event("evt_platform_busy_payment")
+
+        self.assertEqual(result["status"], "processed")
+        self.assertEqual(repo.tasks[0]["status"], "deferred_model")
+        self.assertEqual(client.send_calls, [])
+        self.assertEqual(len(selector.calls), 1)
+        self.assertEqual(selector.calls[0]["actions_reply_messages"][1]["type"], "payment_collection")
+        self.assertIn("event_policy_evidence", selector.calls[0])
 
     async def test_day1_platform_task_is_suppressed_to_avoid_duplicate_first_day_touch(self) -> None:
         repo = _Repo()
@@ -2310,7 +2364,11 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_platform_conversation_fetch_failure_is_retried_before_routing(self) -> None:
         repo = _Repo()
         client = _OutreachClient(fetch_result={"status": "failed", "error": "TimeoutError: timed out"})
-        service = _service(repo=repo, client=client)
+        service = _service(
+            repo=repo,
+            client=client,
+            selector=_Selector({"send_sop": True, "reason": "send after conversation recovery"}),
+        )
         payload = _base_payload(
             event_id="evt_platform_fetch_retry",
             event_type="sop_platform_task",
@@ -2441,7 +2499,12 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             repo = _Repo()
             client = _OutreachClient(messages=messages)
             context = _CustomerContextService({"source": "platform_agent", "orders": orders})
-            service = _service(repo=repo, client=client, customer_context_service=context)
+            service = _service(
+                repo=repo,
+                client=client,
+                selector=_Selector({"send_sop": True, "reason": "platform followup remains useful"}),
+                customer_context_service=context,
+            )
             payload = _base_payload(
                 event_id=f"evt_platform_day2_{suffix}",
                 event_type="sop_platform_task",
@@ -2494,10 +2557,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(routing["has_spoken_sources"]["persisted_customer_message_time"])
         self.assertEqual(client.send_calls, [])
 
-    async def test_platform_task_bypasses_model_when_ai_auto_reply_is_disabled(self) -> None:
+    async def test_platform_task_uses_event_model_even_when_ai_auto_reply_is_disabled(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[])
-        selector = _Selector({"send_sop": False, "reason": "must not run"})
+        selector = _Selector({"send_sop": True, "reason": "availability checked"})
         service = _service(repo=repo, client=client, selector=selector)
         payload = _base_payload(
             event_id="evt_platform_direct",
@@ -2515,9 +2578,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "processed")
         self.assertEqual(repo.tasks[0]["status"], "sent")
         self.assertEqual(repo.tasks[0]["reply_messages"][0]["content"]["text"], "直接转发文案")
-        self.assertEqual(repo.tasks[0]["send_payload"]["routing_mode"], "direct_platform_actions")
-        self.assertEqual(repo.tasks[0]["send_response"]["event_decision"]["model_called"], False)
-        self.assertEqual(selector.calls, [])
+        self.assertEqual(repo.tasks[0]["send_payload"]["routing_mode"], "event_guarded_platform_actions")
+        self.assertEqual(len(selector.calls), 1)
 
     async def test_paid_platform_task_still_sends_non_payment_arrival_followup(self) -> None:
         repo = _Repo()
@@ -2551,8 +2613,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "processed")
         self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual(selector.calls, [])
-        self.assertFalse(repo.tasks[0]["send_response"]["event_decision"]["model_called"])
+        self.assertEqual(len(selector.calls), 1)
         self.assertEqual(len(client.send_calls), 1)
 
     async def test_platform_action_decodes_json_quoted_message_content(self) -> None:
@@ -2571,7 +2632,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(repo.tasks[0]["reply_messages"][0]["content"]["text"], "催到店话术\n请回复时间")
 
-    async def test_platform_task_does_not_call_failing_model(self) -> None:
+    async def test_platform_task_model_failure_is_persisted_for_retry(self) -> None:
         repo = _Repo()
         client = _OutreachClient(messages=[])
         selector = _Selector(
@@ -2593,10 +2654,10 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         repo.create_sop_event(payload)
         result = await service.process_event("evt_platform_model_failed")
 
-        self.assertEqual(result["status"], "processed")
-        self.assertEqual(repo.tasks[0]["status"], "sent")
-        self.assertEqual(selector.calls, [])
-        self.assertEqual(len(client.send_calls), 1)
+        self.assertEqual(result["status"], "retry_pending_model")
+        self.assertEqual(repo.tasks[0]["status"], "failed_model_error")
+        self.assertEqual(len(selector.calls), 1)
+        self.assertEqual(client.send_calls, [])
 
     async def test_first_add_model_failure_is_persisted_and_retried(self) -> None:
         repo = _Repo()
@@ -3318,17 +3379,20 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("adjacent_merge_options", system_prompt)
         self.assertIn("editable_text_messages", system_prompt)
         self.assertIn("readonly_messages", system_prompt)
-        self.assertIn("最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件", system_prompt)
+        self.assertIn("最新聊天 > 当前事件事实 > 已实际发送的 SOP 与结构事实", system_prompt)
         self.assertIn("这是完整的效果案例铺垫原文，用于确认模型不会只根据截断摘要改写。", user_prompt)
         self.assertIn('"amount":10', user_prompt)
         self.assertIn('"direction":"staff"', user_prompt)
         self.assertIn('"source":"ai_reply"', user_prompt)
         self.assertIn('"message_type":"text"', user_prompt)
         self.assertIn('"message_time":1783728000000', user_prompt)
-        self.assertIn('"customer_profile":{"concern":"价格"}', user_prompt)
-        self.assertIn('"customer_basic_info":{"city":"深圳","confirmed_store_id":"101"}', user_prompt)
-        self.assertIn('"lifecycle_stage":"new_customer"', user_prompt)
-        self.assertIn('"history_events":[{"event_id":"history_1"', user_prompt)
+        self.assertNotIn('"customer_profile"', user_prompt)
+        self.assertNotIn('"lifecycle_stage"', user_prompt)
+        self.assertIn('"customer_fact_snapshot"', user_prompt)
+        self.assertIn('"basic_facts":{"city":"深圳","confirmed_store_id":"101"}', user_prompt)
+        self.assertNotIn('"event_id":"history_1"', user_prompt)
+        self.assertIn('"message_ref":"conv_1"', user_prompt)
+        self.assertIn('"contact_availability_evidence"', user_prompt)
         self.assertIn('"candidate_policy"', user_prompt)
         self.assertIn('"candidate_group":"due"', user_prompt)
         self.assertIn('"payment_collection_gate"', user_prompt)
@@ -3398,7 +3462,7 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(model.calls), 2)
         self.assertTrue(all(call.get("deadline_monotonic") for call in model.calls))
 
-    async def test_platform_task_model_exhaustion_forwards_platform_actions(self) -> None:
+    async def test_platform_task_model_exhaustion_does_not_blindly_forward_actions(self) -> None:
         model = _SequenceModel([TimeoutError("timeout 1"), TimeoutError("timeout 2"), TimeoutError("timeout 3")])
         service = SopExecutionService(
             repository=_Repo(),
@@ -3417,10 +3481,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             actions_reply_messages=[{"type": "text", "order": 1, "content": {"text": "触达内容"}}],
         )
 
-        self.assertEqual(result["mode"], "event_selected")
-        self.assertTrue(result["send_sop"])
-        self.assertEqual(result["sop_pack_id"], "platform_actions")
-        self.assertEqual(result["reason"], "event_model_error_platform_actions_fallback")
+        self.assertEqual(result["mode"], "event_model_error")
+        self.assertFalse(result["send_sop"])
+        self.assertEqual(result["reason"], "event_sop_model_retries_exhausted")
         self.assertEqual(len(result["model_attempts"]), 3)
         self.assertIn("TimeoutError", result["error"])
 

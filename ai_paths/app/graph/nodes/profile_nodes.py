@@ -10,6 +10,7 @@ from app.prompts.profile_analyzer import build_profile_analyzer_messages
 from app.services.memory_store import CustomerMemoryStore
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.model_client import ModelClient
+from app.services.storage.serialization import utc_now_iso
 from app.services.trace_logger import TraceLogger
 
 
@@ -44,32 +45,11 @@ def create_profile_event_extractor_node(
                 }
                 span["output_snapshot"] = output
                 return output
-            profile_update: dict[str, Any] = {}
-            event_updates: list[dict[str, Any]] = []
-            llm_profile_call: dict[str, Any] | None = None
-            conversation_history, conversation_fetch = await _profile_conversation_history(state, conversation_fetcher)
-            if model_client and model_client.available:
-                llm_profile_call = {
-                    "name": "profile_analyzer_model",
-                    "input": {"tier": "fast", "conversation_fetch": conversation_fetch},
-                }
-                try:
-                    profile_messages = _profile_messages_for_model(
-                        state,
-                        conversation_history=conversation_history,
-                    )
-                    llm_profile_call["input"]["messages"] = profile_messages
-                    llm_update = await _profile_update_from_model(model_client, messages=profile_messages)
-                    llm_profile_call["usage"] = model_usage_snapshot(model_client)
-                    llm_profile_call["raw_json_output"] = llm_update
-                    llm_profile_call["output"] = clean_model_value(llm_update, max_string_chars=600)
-                    profile_update = _normalize_profile_update(llm_update.get("profile_update", {}))
-                    event_updates = _normalize_llm_events(state, llm_update.get("event_updates", []))
-                except Exception as exc:
-                    llm_profile_call["error"] = f"{type(exc).__name__}: {exc}"
-            deterministic_update, deterministic_events = _deterministic_customer_state_updates(state, profile_update)
-            profile_update = _merge_profile_updates(profile_update, deterministic_update)
-            event_updates = [*event_updates, *deterministic_events]
+            # Keep the existing background node, but make it a deterministic fact recorder.
+            # Customer psychology and sales stage are evaluated from current chat by Planner/Reply.
+            deterministic_update, deterministic_events = _deterministic_customer_state_updates(state, {})
+            profile_update = deterministic_update
+            event_updates = [*deterministic_events, *_deterministic_media_events(state)]
             memory_error = None
             saved_memory = {}
             if memory_store:
@@ -90,11 +70,13 @@ def create_profile_event_extractor_node(
                 "event_updates": event_updates,
                 "saved_memory": compact_memory(saved_memory),
                 "memory_error": memory_error,
-                "profile_conversation_fetch": conversation_fetch,
+                "profile_conversation_fetch": {
+                    "status": "disabled",
+                    "reason": "soft_profile_model_retired_use_current_chat",
+                },
+                "profile_extraction_skipped": "soft_profile_model_retired",
                 "trace": state.get("trace", []),
             }
-            if llm_profile_call:
-                span["entry"]["tool_calls"] = [llm_profile_call]
             span["output_snapshot"] = output
             return output
 
@@ -229,7 +211,6 @@ def _deterministic_customer_state_updates(
     phone = str(model_basic.get("phone") or existing_basic.get("phone") or "").strip()
 
     basic_info: dict[str, Any] = {}
-    portrait: dict[str, Any] = {}
     events: list[dict[str, Any]] = []
     if payment:
         basic_info["deposit_state"] = {
@@ -240,8 +221,6 @@ def _deterministic_customer_state_updates(
             "order_no": payment.get("order_no"),
             "updated_at": payment.get("updated_at"),
         }
-        if is_paid_deposit_state(payment.get("deposit_state")):
-            portrait["deposit_state"] = "deposit_paid"
         if is_paid_deposit_state(payment.get("deposit_state")) and not is_paid_deposit_state(existing_state):
             events.append(
                 _state_event(
@@ -320,8 +299,102 @@ def _deterministic_customer_state_updates(
                     },
                 )
             )
-    update = {"basic_info": _drop_empty_mapping(basic_info), "portrait": _drop_empty_mapping(portrait)}
+    update = {"basic_info": _drop_empty_mapping(basic_info)}
     return _drop_empty_mapping(update), events
+
+
+def _deterministic_media_events(state: AgentState) -> list[dict[str, Any]]:
+    """Persist reusable media facts without signed URLs or narrative interpretation."""
+
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    request_id = str(state.get("request_id") or "unknown")
+    event_time = utc_now_iso()
+    events: list[dict[str, Any]] = []
+
+    transcriptions = request_context.get("voice_transcriptions")
+    if not isinstance(transcriptions, list):
+        voice = request_context.get("voice_transcription") if isinstance(request_context.get("voice_transcription"), dict) else {}
+        transcriptions = [
+            {
+                "msgid": request_context.get("msgid"),
+                "status": voice.get("status"),
+                "text": state.get("normalized_content") if voice.get("status") == "ok" else "",
+                "error": voice.get("error"),
+            }
+        ] if voice else []
+    for index, item in enumerate(transcriptions[:8], start=1):
+        if not isinstance(item, dict):
+            continue
+        msgid = str(item.get("msgid") or request_context.get("msgid") or f"{request_id}_{index}").strip()
+        status = str(item.get("status") or "unknown").strip()
+        text = str(item.get("text") or "").strip()
+        if not msgid and not text:
+            continue
+        events.append(
+            {
+                "event_id": f"evt_voice_{msgid}",
+                "event_time": event_time,
+                "event_type": "voice_transcript_received",
+                "facts": _drop_empty_mapping(
+                    {
+                        "message_id": msgid,
+                        "transcript": text[:1200],
+                        "status": status,
+                        "error": str(item.get("error") or "")[:200],
+                    }
+                ),
+                "source": "voice_transcription",
+            }
+        )
+
+    image_info = state.get("image_info") if isinstance(state.get("image_info"), dict) else {}
+    if image_info.get("has_image"):
+        msgid = str(request_context.get("msgid") or request_id).strip()
+        events.append(
+            {
+                "event_id": f"evt_image_{msgid}",
+                "event_time": event_time,
+                "event_type": "image_facts_received",
+                "facts": _drop_empty_mapping(
+                    {
+                        "message_id": msgid,
+                        "image_type": image_info.get("image_type"),
+                        "image_intent": image_info.get("image_intent"),
+                        "description": str(image_info.get("image_desc") or "")[:800],
+                        "visible_concerns": list(image_info.get("visible_concerns") or [])[:10],
+                        "ocr_text": list(image_info.get("extracted_text") or image_info.get("text_clues") or [])[:10],
+                        "payment_result": image_info.get("payment_result"),
+                        "payment_amount": image_info.get("payment_amount"),
+                        "confidence": image_info.get("confidence"),
+                    }
+                ),
+                "source": "vision",
+            }
+        )
+    reply_messages = state.get("reply_messages") if isinstance(state.get("reply_messages"), list) else []
+    payment_amounts = []
+    for message in reply_messages:
+        if not isinstance(message, dict) or str(message.get("type") or "").strip() != "payment_collection":
+            continue
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        amount = content.get("amount")
+        if amount not in (None, ""):
+            payment_amounts.append(amount)
+    if payment_amounts:
+        events.append(
+            {
+                "event_id": f"evt_{request_id}_payment_collection_sent",
+                "event_time": event_time,
+                "event_type": "payment_collection_sent",
+                "facts": {
+                    "amounts": payment_amounts,
+                    "message_count": len(payment_amounts),
+                    "request_id": request_id,
+                },
+                "source": "reply_delivery",
+            }
+        )
+    return events
 
 
 def _merge_profile_updates(base: dict[str, Any], authoritative: dict[str, Any]) -> dict[str, Any]:
@@ -401,18 +474,15 @@ def _state_event(
     state: AgentState,
     *,
     event_type: str,
-    summary: str,
     facts: dict[str, Any],
+    summary: str = "",
 ) -> dict[str, Any]:
     return {
         "event_id": f"evt_{state.get('request_id', 'unknown')}_{event_type}",
-        "event_time": "",
+        "event_time": utc_now_iso(),
         "event_type": event_type,
-        "stage": str(state.get("sop_stage") or ""),
-        "summary": summary,
         "facts": _drop_empty_mapping(facts),
-        "impact": "后续按结构化支付、订单和预约事实推进，不重复收款或编造预约结果。",
-        "confidence": 1.0,
+        "source": "deterministic_runtime_fact",
     }
 
 

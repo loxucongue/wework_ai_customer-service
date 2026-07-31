@@ -54,6 +54,25 @@ OUTREACH_MAX_STEP_GAP_MINUTES = 72 * 60
 OUTREACH_MAX_PLAN_MINUTES = 7 * 24 * 60
 OUTREACH_DAILY_TASK_LIMIT = 2
 OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
+OUTREACH_DURABLE_EVENT_TYPES = {
+    "voice_transcript_received",
+    "image_facts_received",
+    "store_matched",
+    "store_address_sent",
+    "store_confirmed",
+    "case_image_sent",
+    "activity_intro_image_sent",
+    "sop_pack_sent",
+    "activity_quote_completed",
+    "offer_explained",
+    "payment_collection_sent",
+    "deposit_payment_confirmed",
+    "appointment_confirmed",
+    "customer_relation_changed",
+    "complaint_or_refund_risk",
+    "health_risk",
+    "manual_handoff",
+}
 
 
 def classify_conversation_refresh_error(error: Exception | str) -> tuple[str, str]:
@@ -357,8 +376,19 @@ def build_outreach_activity_quote_fact(
     for event in memory_value.get("history_events") or []:
         if not isinstance(event, dict):
             continue
-        pack_id = _string(event.get("pack_id") or event.get("sop_pack_id")).lower()
-        category = _string(event.get("sop_category") or event.get("category")).lower()
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        pack_id = _string(
+            facts.get("sop_pack_id")
+            or facts.get("pack_id")
+            or event.get("pack_id")
+            or event.get("sop_pack_id")
+        ).lower()
+        category = _string(
+            facts.get("sop_category")
+            or facts.get("category")
+            or event.get("sop_category")
+            or event.get("category")
+        ).lower()
         if pack_id in {"s10_activity_intro", "event_s10_price_quote_60min"} or category in {
             "activity_intro",
             "s10_activity_intro",
@@ -370,6 +400,62 @@ def build_outreach_activity_quote_fact(
         "completed": bool(message_indexes or structured_sources),
         "message_indexes": message_indexes,
         "structured_sources": sorted(set(structured_sources)),
+    }
+
+
+def outreach_customer_fact_snapshot(memory: dict[str, Any] | None) -> dict[str, Any]:
+    """Remove model-authored portrait prose while retaining durable operational facts."""
+
+    value = memory if isinstance(memory, dict) else {}
+    basic = value.get("basic_info") if isinstance(value.get("basic_info"), dict) else {}
+    basic_keys = {
+        "name",
+        "phone",
+        "city",
+        "province",
+        "district",
+        "confirmed_store_id",
+        "confirmed_store_name",
+        "appointment_id",
+        "appointment_time",
+        "appointment",
+        "deposit_state",
+        "order_id",
+        "order_status",
+    }
+    basic_facts = {
+        key: basic.get(key)
+        for key in basic_keys
+        if basic.get(key) not in (None, "", [], {})
+    }
+    events: list[dict[str, Any]] = []
+    for event in value.get("history_events") or []:
+        if not isinstance(event, dict):
+            continue
+        event_type = _string(event.get("event_type"))
+        if event_type not in OUTREACH_DURABLE_EVENT_TYPES:
+            continue
+        facts = event.get("facts") if isinstance(event.get("facts"), dict) else {}
+        events.append(
+            {
+                "event_type": event_type,
+                "event_time": _string(event.get("event_time") or event.get("created_at")),
+                "facts": facts,
+                "source": _string(event.get("source")),
+            }
+        )
+    return {
+        "last_customer_message_at": _string(value.get("last_customer_message_at")),
+        "last_staff_message_at": _string(value.get("last_staff_message_at")),
+        "last_ai_reply_at": _string(value.get("last_ai_reply_at")),
+        "basic_facts": basic_facts,
+        "sop_progress": value.get("sop_progress") if isinstance(value.get("sop_progress"), dict) else {},
+        "sop_progress_evidence": (
+            value.get("sop_progress_evidence")
+            if isinstance(value.get("sop_progress_evidence"), dict)
+            else {}
+        ),
+        "history_events": events[-50:],
     }
 
 
@@ -999,7 +1085,7 @@ class OutreachService:
             "user_id": user_id,
             "wechat": wechat,
             "external_userid": external_userid,
-            "memory": memory,
+            "customer_fact_snapshot": outreach_customer_fact_snapshot(memory),
             "recent_messages": recent_messages,
             "conversation_activity": conversation_activity,
             "current_stage": current_stage,
@@ -1572,7 +1658,7 @@ class OutreachService:
         )
         source_context = {
             "memory": local_context.get("memory") or {},
-            "recent_messages": conversation_messages[-30:],
+            "recent_messages": conversation_messages[-50:],
             "conversation_activity": conversation_activity,
             "customer_context": customer_context,
             "customer_relation": customer_relation,
@@ -2472,7 +2558,15 @@ class OutreachService:
     @staticmethod
     def _customer_replied_after_plan(plan: dict[str, Any], latest_customer_message_at: Any) -> bool:
         latest = _parse_iso(_string(latest_customer_message_at))
-        anchor = _parse_iso(_string((plan.get("source_snapshot") or {}).get("memory", {}).get("last_customer_message_at")))
+        source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+        fact_snapshot = (
+            source_snapshot.get("customer_fact_snapshot")
+            if isinstance(source_snapshot.get("customer_fact_snapshot"), dict)
+            else source_snapshot.get("memory")
+            if isinstance(source_snapshot.get("memory"), dict)
+            else {}
+        )
+        anchor = _parse_iso(_string(fact_snapshot.get("last_customer_message_at")))
         if not anchor:
             anchor = _parse_iso(_string(plan.get("created_at")))
         return bool(latest and anchor and latest > anchor)

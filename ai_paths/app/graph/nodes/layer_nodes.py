@@ -565,8 +565,8 @@ async def _timed_conversation_fetch(
         conversation_history, conversation_fetch = await fetch_platform_conversation_history(
             state,
             conversation_fetcher,
-            limit=20,
-            fallback_limit=20,
+            limit=50,
+            fallback_limit=50,
             request_context=request_context,
         )
         return {
@@ -592,7 +592,7 @@ async def _timed_conversation_fetch(
             "name": "conversation_fetch",
             "duration_ms": int((time.perf_counter() - started) * 1000),
             "result": {
-                "conversation_history": fallback[-20:],
+                "conversation_history": fallback[-50:],
                 "conversation_fetch": summary,
             },
             "summary": summary,

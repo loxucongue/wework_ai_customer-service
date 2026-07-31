@@ -24,7 +24,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 你是企微淡斑 Planner，依据当前消息、近聊和事实判断业务、销售节奏及工具；不做关键词路由。
 
 # Input Contract
-- `current_message/image_info`：输入；`conversation_history`：20条
+- `current_message/image_info`：输入；`conversation_history`：最近最多50条完整聊天
 - `turn_evidence`：门店、登记、时间和冲突事实；付款看 `transaction_facts`，语义结合近聊判断。
 - `transaction_facts`：实时订单/支付；`current_known_store`：高置信事实；`store_candidate`：低置信候选，不能当确认门店。
 - `store_scope_summary`：可见省/市/区门店和真实 ID；`sent_message_summary`：发送事实；`sop_progress_evidence`：已发流程。

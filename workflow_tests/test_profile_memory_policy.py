@@ -29,6 +29,39 @@ class ProfileMemoryPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["profile_extraction_skipped"], "memory_persist_not_allowed")
         self.assertEqual(memory_store.saved, [])
 
+    async def test_persisted_profile_node_records_facts_without_calling_model(self) -> None:
+        memory_store = _MemoryStore()
+        model = _UnexpectedModel()
+        node = create_profile_event_extractor_node(
+            trace_logger=_TraceLogger(),
+            memory_store=memory_store,
+            model_client=model,
+            compact_memory=lambda value: value,
+        )
+
+        output = await node(
+            {
+                "request_id": "req-voice",
+                "sales_contact_key": "corp:wechat:customer",
+                "normalized_content": "我现在在上班",
+                "request_context": {
+                    "memory_persist_allowed": True,
+                    "msgid": "voice-1",
+                    "voice_transcription": {"status": "ok"},
+                },
+                "customer_context": {"orders": []},
+                "trace": [],
+            }
+        )
+
+        self.assertEqual(model.calls, 0)
+        self.assertEqual(output["profile_extraction_skipped"], "soft_profile_model_retired")
+        events = memory_store.saved[0]["event_updates"]
+        self.assertEqual(events[0]["event_type"], "voice_transcript_received")
+        self.assertEqual(events[0]["facts"]["transcript"], "我现在在上班")
+        self.assertNotIn("summary", events[0])
+        self.assertNotIn("impact", events[0])
+
 
 class _MemoryStore:
     def __init__(self) -> None:
@@ -43,6 +76,17 @@ class _MemoryStore:
             }
         )
         return {}
+
+
+class _UnexpectedModel:
+    available = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat_json(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        self.calls += 1
+        raise AssertionError("profile model must not be called")
 
 
 class _TraceLogger:

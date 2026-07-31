@@ -266,14 +266,10 @@ class SopEventService:
             first_added_at=_first_added_at(customer) if event_type in FIRST_ADD_EVENT_TYPES else None,
             event_at=_parse_time(payload.get("created_at") or payload.get("upstream_created_at")),
         )
-        event_policy_evidence = (
-            self._event_policy_evidence(
-                payload=payload,
-                identity=identity,
-                conversation_activity=conversation_activity,
-            )
-            if event_type in FIRST_ADD_EVENT_TYPES
-            else {}
+        event_policy_evidence = self._event_policy_evidence(
+            payload=payload,
+            identity=identity,
+            conversation_activity=conversation_activity,
         )
         if event_type in FIRST_ADD_EVENT_TYPES and conversation_activity["uncertain_customer_timing"]:
             return self._create_task_record(
@@ -454,6 +450,7 @@ class SopEventService:
                 conversation_activity=conversation_activity,
                 customer_memory=customer_memory,
                 customer_context=customer_context,
+                event_policy_evidence=event_policy_evidence,
             )
         raise RuntimeError("unreachable_sop_event_type")
 
@@ -908,6 +905,7 @@ class SopEventService:
         conversation_activity: dict[str, Any],
         customer_memory: dict[str, Any],
         customer_context: dict[str, Any],
+        event_policy_evidence: dict[str, Any],
     ) -> dict[str, Any]:
         customer_relation = (
             conversation_fetch.get("customer_relation")
@@ -1063,6 +1061,104 @@ class SopEventService:
                     "platform_task_routing": routing,
                 },
             )
+
+        decision = await self._event_decision(
+            payload=payload,
+            customer=customer,
+            identity=identity,
+            event_type="sop_platform_task",
+            conversation_messages=conversation_messages,
+            conversation_activity=conversation_activity,
+            customer_memory=customer_memory,
+            customer_context=customer_context,
+            candidate_packs=[],
+            actions_reply_messages=messages,
+            event_policy_evidence=event_policy_evidence,
+        )
+        decision_name = _string(decision.get("decision"))
+        if not decision_name:
+            selector_output = decision.get("selector_output") if isinstance(decision.get("selector_output"), dict) else {}
+            decision_name = _string(selector_output.get("decision"))
+        if not decision.get("send_sop"):
+            is_model_error = bool(decision.get("error"))
+            rejected_status = (
+                "deferred_model"
+                if decision_name == "defer"
+                else "skipped_handoff_to_ai_reply"
+                if decision_name == "handoff_to_ai_reply"
+                else "failed_model_error"
+                if is_model_error
+                else "skipped_model_rejected"
+            )
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="platform_actions",
+                sop_pack_name="platform_actions",
+                sop_category="platform_actions",
+                reply_messages=[],
+                status=rejected_status,
+                error=str(decision.get("error") or "") if is_model_error else "",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
+                    "message_sanitize": sanitize_summary,
+                    "ai_auto_reply": ai_auto_reply,
+                    "routing_mode": "event_guarded_platform_actions",
+                    "platform_task_routing": routing,
+                    "event_policy_evidence": event_policy_evidence,
+                    "event_decision_input": decision.get("selector_input", {}),
+                },
+                send_response={"event_decision": decision},
+            )
+
+        selector_output = decision.get("selector_output") if isinstance(decision.get("selector_output"), dict) else {}
+        if decision_name in {"send_ai_touch", "handoff_or_safety_notice"}:
+            touch_messages = selector_output.get("ai_touch_messages") if isinstance(selector_output.get("ai_touch_messages"), list) else []
+            final_messages, final_sanitize_summary = sanitize_sop_reply_messages(
+                touch_messages,
+                conversation_messages=conversation_messages,
+            )
+            adjustment_summary: dict[str, Any] = {"mode": "event_ai_touch"}
+        else:
+            adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
+                messages,
+                decision.get("text_adjustments"),
+                decision.get("message_operations"),
+            )
+            final_messages, final_sanitize_summary = sanitize_sop_reply_messages(
+                adjusted_messages,
+                conversation_messages=conversation_messages,
+            )
+        if not final_messages:
+            return self._create_task_record(
+                payload,
+                customer,
+                index=index,
+                identity=identity,
+                sop_pack_id="platform_actions",
+                sop_pack_name="platform_actions",
+                sop_category="platform_actions",
+                reply_messages=[],
+                status="skipped_empty_reply_messages",
+                error="platform_messages_empty_after_event_decision",
+                send_payload={
+                    "identity": identity,
+                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
+                    "conversation_activity": conversation_activity,
+                    "message_sanitize": final_sanitize_summary,
+                    "message_adjustment": adjustment_summary,
+                    "ai_auto_reply": ai_auto_reply,
+                    "routing_mode": "event_guarded_platform_actions",
+                    "platform_task_routing": routing,
+                    "event_policy_evidence": event_policy_evidence,
+                    "event_decision_input": decision.get("selector_input", {}),
+                },
+                send_response={"event_decision": decision},
+            )
         return self._create_task_record(
             payload,
             customer,
@@ -1071,25 +1167,22 @@ class SopEventService:
             sop_pack_id="platform_actions",
             sop_pack_name="platform_actions",
             sop_category="platform_actions",
-            reply_messages=messages,
+            reply_messages=final_messages,
             status="pending",
             error="",
             send_payload={
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                 "conversation_activity": conversation_activity,
-                "message_sanitize": sanitize_summary,
+                "message_sanitize": final_sanitize_summary,
+                "message_adjustment": adjustment_summary,
                 "ai_auto_reply": ai_auto_reply,
-                "routing_mode": "direct_platform_actions",
+                "routing_mode": "event_guarded_platform_actions",
                 "platform_task_routing": routing,
+                "event_policy_evidence": event_policy_evidence,
+                "event_decision_input": decision.get("selector_input", {}),
             },
-            send_response={
-                "event_decision": {
-                    "mode": "direct_platform_actions",
-                    "model_called": False,
-                    "ai_auto_reply": ai_auto_reply,
-                }
-            },
+            send_response={"event_decision": decision},
         )
 
     async def _event_decision(

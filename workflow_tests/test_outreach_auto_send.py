@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -248,7 +249,7 @@ class OutreachRepositoryDueTaskTests(unittest.TestCase):
             store = SQLiteStore(SimpleNamespace(db_path=Path(tmpdir) / "outreach.db"))
             store.initialize()
             repository = AppRepository(store)
-            now = "2026-07-28T12:00:00+00:00"
+            now = datetime.now(timezone.utc).isoformat()
             with store.connect() as conn:
                 conn.execute(
                     """

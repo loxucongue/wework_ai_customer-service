@@ -881,8 +881,8 @@ def test_planner_payload_keeps_context_for_low_information_message() -> None:
         }
     )
 
-    assert payload["conversation_history"] == [f"history-{index}" for index in range(15, 35)]
-    assert payload["customer_profile"]["decision_stage"] == "预约推进"
+    assert payload["conversation_history"] == [f"history-{index}" for index in range(35)]
+    assert "customer_profile" not in payload
     assert "history_events" not in payload
     assert "customer_context" not in payload
     assert "current_turn_context" not in payload
@@ -931,9 +931,7 @@ def test_planner_payload_does_not_send_long_sales_strategy_to_planner() -> None:
         }
     )
 
-    assert payload["customer_profile"]["decision_stage"] == "预约推进"
-    assert payload["customer_profile"]["deposit_state"] == "已支付"
-    assert "next_sales_strategy" not in payload["customer_profile"]
+    assert "customer_profile" not in payload
 
 
 def test_reply_payload_exposes_one_sanitized_turn_evidence_view() -> None:
@@ -2372,8 +2370,7 @@ def test_preferred_store_is_candidate_not_current_known_store() -> None:
     payload = _planner_payload_for_model(state)
 
     assert known == {}
-    assert payload["store_candidate"]["store_id"] == "562"
-    assert payload["store_candidate"]["source"] == "customer_profile"
+    assert "store_candidate" not in payload
     assert "confirmed_store" not in payload.get("current_turn_context", {})
 
 
@@ -6890,7 +6887,7 @@ def test_reply_payload_keeps_context_for_low_information_message() -> None:
     )
 
     assert payload["conversation_history"] == [f"history-{index}" for index in range(15)]
-    assert payload["customer_background_facts"]["profile"]["decision_stage"] == "预约推进"
+    assert "profile" not in payload.get("customer_background_facts", {})
     assert "customer_basic_info" not in payload
     assert "history_events" not in payload
     assert "fact_envelope" not in payload
@@ -6976,7 +6973,7 @@ def test_profile_conversation_history_falls_back_when_fetch_params_missing() -> 
     assert meta["reason"] == "missing_required_fields"
 
 
-def test_background_context_replaces_request_history_with_platform_20_messages() -> None:
+def test_background_context_replaces_request_history_with_platform_up_to_50_messages() -> None:
     calls: list[dict[str, object]] = []
 
     async def fetcher(**kwargs: object) -> dict[str, object]:
@@ -7012,13 +7009,13 @@ def test_background_context_replaces_request_history_with_platform_20_messages()
         )
     )
 
-    assert calls[0]["limit"] == 20
+    assert calls[0]["limit"] == 50
     assert calls[0]["customer_id"] == "external"
-    assert len(output["conversation_history"]) == 20
-    assert output["conversation_history"][0] == "用户: message-15"
-    assert output["conversation_history"][1] == "小贝: message-16"
+    assert len(output["conversation_history"]) == 35
+    assert output["conversation_history"][0] == "小贝: message-0"
+    assert output["conversation_history"][1] == "用户: message-1"
     assert output["conversation_fetch"]["status"] == "ok"
-    assert output["conversation_fetch"]["used_message_count"] == 20
+    assert output["conversation_fetch"]["used_message_count"] == 35
 
 
 def test_background_context_keeps_request_history_when_platform_fetch_fails() -> None:

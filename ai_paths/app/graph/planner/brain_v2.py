@@ -450,10 +450,9 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "normalized_current_message": state.get("normalized_content") or "",
         "input_quality_flags": list(state.get("input_quality_flags") or []),
         "location_card": location_card_from_state(state),
-        "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-20:],
+        "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-50:],
         "image_info": _compact_image_info(state.get("image_info") or {}),
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
-        "customer_profile": {} if suppress_memory else _compact_customer_profile_for_planner(state.get("customer_profile") or {}),
         "transaction_facts": {} if suppress_memory else _transaction_facts_for_planner(state),
         "current_known_store": current_known_store,
         "store_candidate": store_candidate,
@@ -656,13 +655,8 @@ def _current_known_store_for_planner(state: AgentState) -> dict[str, Any]:
 
 
 def _store_candidate_for_planner(state: AgentState) -> dict[str, Any]:
-    basic_info = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    preferred = _store_from_basic_info(basic_info)
-    if preferred:
-        preferred["candidate_type"] = "preferred_store"
-        preferred["confidence"] = "low"
-        preferred["usage"] = "candidate_only_lookup_or_confirm_before_customer_visible_fact"
-        return preferred
+    # Persisted preferred-store hints were historically model-authored soft memory.
+    # Real request fields, recent sent-card events and current tool facts are used instead.
     return {}
 
 

@@ -1302,7 +1302,7 @@ def test_deterministic_profile_state_persists_screenshot_payment() -> None:
         },
         {},
     )
-    assert update["portrait"]["deposit_state"] == "deposit_paid"
+    assert "portrait" not in update
     assert update["basic_info"]["deposit_state"]["status"] == "paid_by_screenshot"
     assert events[0]["event_type"] == "deposit_payment_confirmed"
 

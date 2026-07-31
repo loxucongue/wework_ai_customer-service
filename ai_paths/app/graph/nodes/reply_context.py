@@ -50,7 +50,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
     return _drop_empty({
         "current_message": state.get("normalized_content"),
         "location_card": location_card_from_state(state),
-        "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-20:],
+        "conversation_history": [] if suppress_profile_memory else state.get("conversation_history", [])[-50:],
         "image_info": state.get("image_info", {}),
         "customer_background_facts": {} if suppress_profile_memory else _compact_customer_background(state),
         "guardrail_result": state.get("guardrail_result", {}),
@@ -155,33 +155,18 @@ def reply_recovery_payload_for_model(state: AgentState) -> dict[str, Any]:
 
 
 def _compact_customer_background(state: AgentState) -> dict[str, Any]:
-    profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
+    """Expose only stable location facts; soft portrait semantics are recomputed from chat."""
+
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    allowed_profile_keys = (
-        "customer_stage",
-        "stage",
-        "decision_stage",
-        "main_concern",
-        "main_concerns",
-        "customer_tags",
-        "tags",
-        "deposit_state",
-        "appointment_state",
-    )
     allowed_basic_keys = ("city", "province", "district")
     return _drop_empty(
         {
-            "profile": {
-                key: profile.get(key)
-                for key in allowed_profile_keys
-                if profile.get(key) not in (None, "", [], {})
-            },
             "basic_location": {
                 key: basic.get(key)
                 for key in allowed_basic_keys
                 if basic.get(key) not in (None, "", [], {})
             },
-            "priority": "low_current_message_recent_history_and_tool_facts_win",
+            "priority": "location_hint_only_current_message_recent_history_and_tool_facts_win",
         }
     )
 
@@ -368,22 +353,7 @@ def _transaction_facts_for_reply(fact_envelope: dict[str, Any]) -> dict[str, Any
 
 
 def _store_candidate_for_reply(state: AgentState) -> dict[str, Any]:
-    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    store_id = str(basic.get("preferred_store_id") or "").strip()
-    store_name = str(basic.get("preferred_store_name") or "").strip()
-    if not (store_id or store_name):
-        return {}
-    return _drop_empty(
-        {
-            "store_id": store_id,
-            "store_name": store_name,
-            "city": str(basic.get("city") or "").strip(),
-            "source": "customer_profile",
-            "candidate_type": "preferred_store",
-            "confidence": "low",
-            "usage": "candidate_only_lookup_or_confirm_before_customer_visible_fact",
-        }
-    )
+    return {}
 
 
 def _drop_empty(value: dict[str, Any]) -> dict[str, Any]:

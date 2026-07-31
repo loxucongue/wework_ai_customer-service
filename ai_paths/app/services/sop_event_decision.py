@@ -50,7 +50,18 @@ def normalize_event_decision(
     }
     mode = _text(selector_input.get("mode"))
     selected_ids = _selected_pack_ids(output)
-    if mode == "platform_actions" and decision in {"skip", "defer", "send_ai_touch"} and _platform_actions_have_sendable_content(selector_input):
+    availability_decision, availability_guard, availability_violations = _normalize_contact_availability(
+        output,
+        selector_input,
+    )
+    violations.extend(availability_violations)
+    busy_guard_active = bool(availability_guard.get("active"))
+    if (
+        mode == "platform_actions"
+        and not busy_guard_active
+        and decision in {"skip", "defer", "send_ai_touch"}
+        and _platform_actions_have_sendable_content(selector_input)
+    ):
         decision = "send"
         output["decision"] = "send"
         output["strategy"] = _text(output.get("strategy")) or "platform_actions"
@@ -118,6 +129,17 @@ def normalize_event_decision(
         violations.append("ai_touch_messages_required")
     if decision not in {"send_ai_touch", "handoff_or_safety_notice"} and ai_touch_messages:
         violations.append("ai_touch_messages_only_allowed_for_touch_decision")
+    if busy_guard_active:
+        elapsed_minutes = _positive_int(availability_guard.get("minutes_since_ack"))
+        allowed = {"skip", "defer"} if elapsed_minutes < 360 else {"skip", "defer", "send_ai_touch"}
+        if decision not in allowed:
+            violations.append("busy_availability_decision_not_allowed")
+        if selected_ids:
+            violations.append("busy_availability_must_not_select_pack")
+        if decision == "send_ai_touch" and len(ai_touch_messages) != 1:
+            violations.append("busy_availability_requires_one_text_touch")
+        if _decision_contains_structured_send(output):
+            violations.append("busy_availability_forbids_structured_messages")
 
     event_policy = (
         selector_input.get("event_policy_evidence")
@@ -133,22 +155,24 @@ def normalize_event_decision(
     )
     if decision == "handoff_to_ai_reply" and not bool(ai_reply_policy.get("allowed")):
         violations.append("handoff_to_ai_reply_not_allowed_for_proactive_event")
-    strategy = _text(output.get("strategy"))
+    strategy = "availability_guard" if busy_guard_active else _text(output.get("strategy"))
     if decision in {"skip", "defer"} and strategy in {"continue_mainline", "recover_backlog"}:
         violations.append("non_send_decision_conflicts_with_send_strategy")
     if (
-        decision in {"skip", "defer"}
+        not busy_guard_active
+        and decision in {"skip", "defer"}
         and strategy == "frequency_guard"
         and not _frequency_guard_supported(event_policy)
     ):
         violations.append("frequency_guard_not_supported_by_event_evidence")
     if (
-        decision in {"skip", "defer"}
+        not busy_guard_active
+        and decision in {"skip", "defer"}
         and strategy == "conflict_guard"
         and not _conflict_guard_supported(selector_input, candidate_sops, completed_ids, completed_categories)
     ):
         violations.append("conflict_guard_missing_evidence_source")
-    if decision in {"skip", "defer"} and _repeated_candidates_should_be_ai_touch(
+    if not busy_guard_active and decision in {"skip", "defer"} and _repeated_candidates_should_be_ai_touch(
         selector_input=selector_input,
         candidates=candidate_sops,
         completed_ids=completed_ids,
@@ -157,14 +181,14 @@ def normalize_event_decision(
         strategy=strategy,
     ):
         violations.append("repeated_candidates_should_use_ai_touch")
-    if decision in {"skip", "defer"} and _completed_activity_with_deposit_candidate_should_continue(
+    if not busy_guard_active and decision in {"skip", "defer"} and _completed_activity_with_deposit_candidate_should_continue(
         selector_input=selector_input,
         candidates=candidate_sops,
         event_policy=event_policy,
         strategy=strategy,
     ):
         violations.append("completed_activity_with_deposit_candidate_should_continue")
-    if decision == "send_ai_touch" and _backlog_should_use_mainline_candidate(
+    if not busy_guard_active and decision == "send_ai_touch" and _backlog_should_use_mainline_candidate(
         selector_input=selector_input,
         candidates=candidate_sops,
         completed_ids=completed_ids,
@@ -194,6 +218,8 @@ def normalize_event_decision(
             "frequency_reason": _text(output.get("frequency_reason")),
             "backlog_handling": _text(output.get("backlog_handling")) or "none",
             "suggested_next_window": _text(output.get("suggested_next_window")),
+            "contact_availability_decision": availability_decision,
+            "availability_guard": availability_guard,
         }
     )
     return output, _unique(violations)
@@ -221,6 +247,93 @@ def _ai_touch_messages(output: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         messages.append({"type": "text", "order": index, "content": {"text": text[:500]}})
     return messages
+
+
+def _normalize_contact_availability(
+    output: dict[str, Any],
+    selector_input: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    raw = output.get("contact_availability_decision")
+    raw = raw if isinstance(raw, dict) else {}
+    status = _text(raw.get("status")).lower() or "unknown"
+    decision = {
+        "status": status,
+        "customer_evidence_ref": _text(raw.get("customer_evidence_ref")),
+        "assistant_acknowledgement_ref": _text(raw.get("assistant_acknowledgement_ref")),
+        "reason": _text(raw.get("reason"))[:300],
+    }
+    if status not in {"available", "busy_now", "unknown"}:
+        return decision, {}, ["invalid_contact_availability_status"]
+    if status != "busy_now":
+        return decision, {}, []
+
+    recent = selector_input.get("recent_conversation")
+    recent = recent if isinstance(recent, list) else []
+    by_ref = {
+        _text(item.get("message_ref")): (index, item)
+        for index, item in enumerate(recent)
+        if isinstance(item, dict) and _text(item.get("message_ref"))
+    }
+    customer_ref = decision["customer_evidence_ref"]
+    assistant_ref = decision["assistant_acknowledgement_ref"]
+    customer_match = by_ref.get(customer_ref)
+    assistant_match = by_ref.get(assistant_ref)
+    evidence = selector_input.get("contact_availability_evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    valid = bool(customer_match and assistant_match)
+    if valid:
+        customer_index, customer_message = customer_match
+        assistant_index, assistant_message = assistant_match
+        customer_direction = _text(customer_message.get("direction")).lower()
+        assistant_direction = _text(assistant_message.get("direction")).lower()
+        valid = bool(
+            customer_direction in {"customer", "user", "external"}
+            and assistant_direction in {"assistant", "staff", "ai", "agent", "employee"}
+            and customer_index < assistant_index
+            and bool(evidence.get("assistant_waiting_customer"))
+            and _positive_int(evidence.get("customer_messages_after_latest_assistant")) == 0
+            and not any(
+                _text(item.get("direction")).lower() in {"customer", "user", "external"}
+                for item in recent[assistant_index + 1 :]
+                if isinstance(item, dict)
+            )
+        )
+    if not valid:
+        return decision, {}, ["busy_availability_evidence_invalid"]
+    elapsed_by_ref = (
+        evidence.get("assistant_message_elapsed_minutes")
+        if isinstance(evidence.get("assistant_message_elapsed_minutes"), dict)
+        else {}
+    )
+    minutes_since_ack = (
+        _positive_int(elapsed_by_ref.get(assistant_ref))
+        if assistant_ref in elapsed_by_ref
+        else _positive_int(evidence.get("minutes_since_latest_assistant"))
+    )
+    return (
+        decision,
+        {
+            "active": True,
+            "strategy": "availability_guard",
+            "customer_evidence_ref": customer_ref,
+            "assistant_acknowledgement_ref": assistant_ref,
+            "minutes_since_ack": minutes_since_ack,
+            "customer_messages_after_ack": 0,
+        },
+        [],
+    )
+
+
+def _decision_contains_structured_send(output: dict[str, Any]) -> bool:
+    messages = output.get("reply_messages")
+    if not isinstance(messages, list):
+        messages = output.get("ai_touch_messages")
+    if not isinstance(messages, list):
+        return False
+    return any(
+        isinstance(item, dict) and _text(item.get("type") or "text") != "text"
+        for item in messages
+    )
 
 
 def _platform_actions_have_sendable_content(selector_input: dict[str, Any]) -> bool:

@@ -58,7 +58,7 @@ OUTREACH_PLAN_SYSTEM_PROMPT = """
 - `outreach_knowledge_facts`：唯一获准用于主动科普的事实目录。只能选择与客户事实相关、且历史没有讲过的条目；不能自行扩展医学知识。
 - `asset_catalog/recent_media_delivery`：只用于选择真实且未重复的图片或视频。
 - `activity_quote_fact`：判断能否在最后一步附预约金卡的唯一报价完成事实。
-- `memory/customer_context`：仅作补充，不能覆盖最近聊天和当前结构化状态。
+- `customer_fact_snapshot/customer_context`：仅含结构化事实，只作补充，不能覆盖最近聊天和当前状态；不得从旧画像推断当前心理。
 
 # Non-Negotiable Output Invariants
 输出前先满足以下硬合同，再考虑销售表达：

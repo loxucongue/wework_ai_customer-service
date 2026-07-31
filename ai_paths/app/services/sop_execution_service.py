@@ -67,7 +67,7 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 - `completed_sop_pack_ids`、`completed_sop_categories`：已经发送过的包与类目。
 - `event_policy_evidence`：代码整理的触达频率、夜间积压和普通 AI 接管资格事实。
 - `mainline`：当前配置的销售主线阶段，只用于判断未完成步骤和相邻步骤。
-- `customer_profile`、`customer_basic_info`、`lifecycle_stage`、`history_events`：已有客户画像、基础信息、生命周期和最近历史事件，只用于补充背景。
+- `customer_fact_snapshot`：支付、订单、门店、案例、活动报价、预约金卡、预约和媒体识别等持久化结构事实；不包含旧软画像或叙述性销售策略。
 
 `editable_text_messages` 是主要可操作文本素材。`readonly_messages` 中的图片、视频、门店卡和内部 notice 都是结构事实，不能修改、删除、重排或复制。
 `payment_collection` 也是结构事实；只有当输入里的 `payment_collection_gate.status` 明确为 `paid_skip_card`，且当前阶段仍适合轻触达时，才允许用 `message_operations.remove_message` 删除该预约金卡，并同步把 text 改成不承诺“已发入口/付完”的自然轻触达。缺匹配订单不是删卡理由。首次完整活动介绍只负责讲清活动与价格，不能同轮发送 `payment_collection`；只有历史已经完成活动报价、客户后续出现报名或付款推进时，才进入收款阶段。`activity_intro_required` 不能靠删卡绕过，必须选择活动介绍等合法前序候选或拒发。
@@ -79,10 +79,10 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
 3. 如果发送内容与当前对话的称呼、语气、消息数量或承接顺序明显不自然，才输出 `text_adjustments` 或 `message_operations` 调整 text；正常时输出空数组。
 
 # Decision Policy
-- 事实优先级必须是：最新聊天 > 当前事件事实 > 已实际发送的 SOP > 客户画像和较旧历史事件。低优先级信息不得覆盖高优先级事实。
+- 事实优先级必须是：最新聊天 > 当前事件事实 > 已实际发送的 SOP 与结构事实。任何较旧事实都不得覆盖最新聊天。
 - `platform_actions` 模式下，`current_platform_task.message_content` 是平台根据当前流程选出的本轮触达任务。除最新聊天或订单/支付等硬事实与它明确冲突外，必须优先分析它的阶段目的，不能因旧画像、历史累计或“客户已付”而整体忽略。
 - `platform_actions` 模式不受 `first_add_flow` 的新客主线前置限制。只要 `current_platform_task.message_content` 有完整 text/image，且没有正在聊天、明确拒绝、已付禁收款、健康投诉等硬冲突，就应 `send`；不要因为缺门店定位、缺活动铺垫或缺候选 SOP 而拒发平台任务。
-- `platform_actions` 模式如果输入已有可发送的 text/image 内容，不能改成 `send_ai_touch` 来替代平台任务；`send_ai_touch` 只用于 `first_add_flow` 固定候选都不合适但仍要轻触的场景。平台任务需要润色时，使用 `send + text_adjustments/message_operations`。
+- `platform_actions` 模式如果输入已有可发送的 text/image 内容，通常不能改成 `send_ai_touch` 来替代平台任务；唯一例外是有效 `busy_now` 已超过 360 分钟，此时可按可触达合同改成一条低压文字。其他平台任务需要润色时，使用 `send + text_adjustments/message_operations`。
 - 已支付预约金只禁止再次发送预约金卡或催付，不禁止催到店、姓名电话登记、活动服务说明及其他与已付状态一致的后续触达。平台内容属于后续到店推进时，应保留其目标并按上下文自然润色。
 - 客户画像和旧事件不是当前对话事实，不能成为强制发送依据，也不能覆盖近期聊天中的城市、问题、顾虑、拒绝或已经完成的行动。
 - 固定首次加微流程中，只有“最新真实客户消息还没被普通 AI/销售回复”会在代码层阻断。客户之前回复过、但最近是小贝/销售发完后客户沉默，属于主动触达场景，必须尽量发 SOP 或轻触，不得因为“客户曾回复过/之前追问过”而空拒。
@@ -236,6 +236,31 @@ SOP_EVENT_SYSTEM_PROMPT = f"""
   "message_operations": [{{"op": "insert_text_after", "after_order": 1, "text": "只新增一句无新事实的承接 text"}}]
 }}
 """.strip()
+
+SOP_EVENT_SYSTEM_PROMPT += """
+
+# Contact Availability Contract
+- `recent_conversation` contains the latest 30 messages. Every item has a stable `message_ref`.
+- `customer_fact_snapshot` contains durable structured facts only. Do not infer current psychology from old profile summaries.
+- `contact_availability_evidence` only describes message order and elapsed time. You must decide whether the customer is currently available.
+- If the customer explicitly said they are busy, working, driving, or will talk later, and a later assistant message acknowledged waiting, output `status=busy_now` and cite both message refs.
+- Do not reuse an old busy state when any newer customer message exists after the cited acknowledgement. The newest customer message always wins.
+- With valid `busy_now`: within 360 minutes choose only `skip` or `defer`; after 360 minutes choose `skip`, `defer`, or one low-pressure text through `send_ai_touch`.
+- A busy touch must contain at most one text message. It must not contain an SOP pack, image, video, or payment_collection.
+- This availability protection applies in both `first_add_flow` and `platform_actions`. Platform content priority cannot override a valid current busy state.
+- When the current customer message asks how to pay or asks for the payment card, treat it as new progress and resume the normal mainline.
+- `daily_soft_limit_reached` alone is soft evidence. Combined with valid busy evidence and no new customer progress, follow the busy rules above.
+
+Add this required object to the output JSON:
+"contact_availability_decision": {
+  "status": "available | busy_now | unknown",
+  "customer_evidence_ref": "message_ref or empty",
+  "assistant_acknowledgement_ref": "message_ref or empty",
+  "reason": "brief evidence-based reason"
+}
+
+`strategy` may also be `availability_guard` when the decision is controlled by this contract.
+"""
 
 
 class SopExecutionService:
@@ -825,25 +850,6 @@ class SopExecutionService:
                             }
                         )
                         return _finish(result, started)
-                    if event_type == "sop_platform_task":
-                        messages, sanitize_summary = sanitize_sop_reply_messages(
-                            actions_reply_messages,
-                            conversation_messages=conversation_messages,
-                        )
-                        send_sop = bool(messages)
-                        result.update(
-                            {
-                                "sop_pack_id": "platform_actions",
-                                "sop_pack_name": "platform_actions",
-                                "send_sop": send_sop,
-                                "reply_messages": messages,
-                                "message_sanitize": sanitize_summary,
-                                "mode": "event_selected" if send_sop else "event_rejected",
-                                "need_ai_reply": False,
-                                "reason": str(selector_output.get("reason") or "event_model_error_platform_actions_fallback"),
-                            }
-                        )
-                        return _finish(result, started)
                 result.update(
                     {
                         "mode": "event_model_error",
@@ -893,6 +899,19 @@ class SopExecutionService:
                     )
             elif event_type == "sop_platform_task":
                 send_sop = bool(selector_output.get("send_sop"))
+                if decision_name in {"send_ai_touch", "handoff_or_safety_notice"}:
+                    touch_messages = (
+                        selector_output.get("ai_touch_messages")
+                        if isinstance(selector_output.get("ai_touch_messages"), list)
+                        else []
+                    )
+                    messages, sanitize_summary = sanitize_sop_reply_messages(
+                        touch_messages,
+                        conversation_messages=conversation_messages,
+                    )
+                    send_sop = bool(send_sop and messages)
+                    result["reply_messages"] = messages
+                    result["message_sanitize"] = sanitize_summary
                 result.update({"sop_pack_id": "platform_actions", "sop_pack_name": "platform_actions", "send_sop": send_sop})
             else:
                 send_sop = False
@@ -1356,21 +1375,6 @@ def _model_error_event_fallback(
     """Non-business fallback for model outages: use already-built structural candidates."""
 
     if event_type == "sop_platform_task":
-        if actions_reply_messages:
-            return {
-                "decision": "send",
-                "strategy": "platform_actions_model_error_fallback",
-                "selected_pack_ids": [],
-                "merge_pack_ids": [],
-                "send_sop": True,
-                "sop_pack_id": "platform_actions",
-                "need_ai_reply": False,
-                "reason": "event_model_error_platform_actions_fallback",
-                "error": model_error,
-                "text_adjustments": [],
-                "message_operations": [],
-                "fallback_applied": True,
-            }
         return {}
 
     event_policy = (
@@ -1859,7 +1863,7 @@ def _event_time_summary(payload: dict[str, Any]) -> dict[str, Any]:
 def _conversation_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Preserve message provenance and timing in the event model context."""
     output: list[dict[str, Any]] = []
-    for item in messages[-30:]:
+    for position, item in enumerate(messages[-30:], start=1):
         if not isinstance(item, dict):
             continue
         direction = _string(item.get("direction") or item.get("role") or item.get("sender_type") or item.get("from"))
@@ -1874,6 +1878,7 @@ def _conversation_context(messages: list[dict[str, Any]]) -> list[dict[str, Any]
             continue
         output.append(
             {
+                "message_ref": f"conv_{position}",
                 "direction": direction,
                 "source": source,
                 "message_type": message_type,
@@ -1897,7 +1902,7 @@ def _message_text(value: Any) -> str:
 def _recent_history(history: Any) -> list[str]:
     if not isinstance(history, list):
         return []
-    return [str(item)[:240] for item in history[-8:] if str(item or "").strip()]
+    return [str(item)[:240] for item in history[-30:] if str(item or "").strip()]
 
 
 def _sop_summary(
@@ -2000,6 +2005,7 @@ def _event_selector_input(
     event_policy_evidence: dict[str, Any],
 ) -> dict[str, Any]:
     memory_context = _customer_memory_context(customer_memory)
+    recent_conversation = _conversation_context(conversation_messages)
     due_count = sum(1 for pack in candidate_packs if _string(pack.get("_candidate_group")) != "next_step")
     next_step_count = sum(1 for pack in candidate_packs if _string(pack.get("_candidate_group")) == "next_step")
     return {
@@ -2009,8 +2015,12 @@ def _event_selector_input(
             "priority": "current_outreach_objective_after_hard_facts",
             "message_content": _platform_task_message_content(payload, customer),
         },
-        "recent_conversation": _conversation_context(conversation_messages),
+        "recent_conversation": recent_conversation,
         "conversation_activity": conversation_activity,
+        "contact_availability_evidence": _contact_availability_evidence(
+            recent_conversation,
+            conversation_activity,
+        ),
         "candidate_policy": {
             "due_candidates": due_count,
             "next_step_candidates": next_step_count,
@@ -2381,16 +2391,109 @@ def _adjacent_merge_options(candidate_packs: list[dict[str, Any]]) -> list[dict[
 
 
 def _customer_memory_context(memory: dict[str, Any]) -> dict[str, Any]:
-    """Expose existing profile and recent events as low-priority model context."""
-    portrait = memory.get("portrait") if isinstance(memory.get("portrait"), dict) else {}
+    """Expose only durable facts; current chat owns customer psychology and stage."""
+
     basic_info = memory.get("basic_info") if isinstance(memory.get("basic_info"), dict) else {}
     history_events = memory.get("history_events") if isinstance(memory.get("history_events"), list) else []
-    return {
-        "customer_profile": portrait,
-        "customer_basic_info": basic_info,
-        "lifecycle_stage": _string(memory.get("lifecycle_stage")),
-        "history_events": [compact(item, max_chars=800) for item in history_events[-12:] if isinstance(item, dict)],
+    hard_event_types = {
+        "voice_transcript_received",
+        "image_facts_received",
+        "store_address_sent",
+        "store_confirmed",
+        "case_image_sent",
+        "activity_intro_image_sent",
+        "sop_pack_sent",
+        "activity_quote_completed",
+        "payment_collection_sent",
+        "deposit_payment_confirmed",
+        "order_created",
+        "order_reused",
+        "registration_updated",
+        "appointment_confirmed",
+        "customer_relation_changed",
+        "complaint_or_refund_risk",
+        "health_risk_state_changed",
+        "human_takeover_changed",
     }
+    hard_events: list[dict[str, Any]] = []
+    for event in history_events[-100:]:
+        if not isinstance(event, dict) or _string(event.get("event_type")) not in hard_event_types:
+            continue
+        hard_events.append(
+            _drop_empty(
+                {
+                    "event_type": _string(event.get("event_type")),
+                    "event_time": event.get("event_time") or event.get("time"),
+                    "facts": compact(event.get("facts") or {}, max_chars=900),
+                    "source": _string(event.get("source")),
+                }
+            )
+        )
+    allowed_basic_keys = {
+        "city",
+        "province",
+        "district",
+        "area_or_landmark",
+        "confirmed_store_id",
+        "confirmed_store_name",
+        "deposit_state",
+        "order_state",
+        "registration_state",
+        "appointment_state",
+    }
+    return {
+        "customer_fact_snapshot": {
+            "basic_facts": {
+                key: value
+                for key, value in basic_info.items()
+                if key in allowed_basic_keys and value not in (None, "", [], {})
+            },
+            "recent_structured_events": hard_events[-30:],
+            "priority": "current_conversation_and_realtime_order_facts_win",
+        }
+    }
+
+
+def _contact_availability_evidence(
+    recent_conversation: list[dict[str, Any]],
+    conversation_activity: dict[str, Any],
+) -> dict[str, Any]:
+    latest_customer: dict[str, Any] = {}
+    latest_assistant: dict[str, Any] = {}
+    latest_assistant_index = -1
+    for index, item in enumerate(recent_conversation):
+        direction = _string(item.get("direction")).lower()
+        if direction in {"customer", "user", "external"}:
+            latest_customer = item
+        elif direction in {"assistant", "staff", "ai", "agent", "employee"}:
+            latest_assistant = item
+            latest_assistant_index = index
+    customer_after_assistant = 0
+    if latest_assistant_index >= 0:
+        customer_after_assistant = sum(
+            1
+            for item in recent_conversation[latest_assistant_index + 1 :]
+            if _string(item.get("direction")).lower() in {"customer", "user", "external"}
+        )
+    assistant_elapsed_minutes: dict[str, int] = {}
+    event_at = conversation_activity.get("event_at")
+    for item in recent_conversation:
+        direction = _string(item.get("direction")).lower()
+        message_ref = _string(item.get("message_ref"))
+        message_time = _parse_prompt_time(item.get("message_time"))
+        if direction in {"assistant", "staff", "ai", "agent", "employee"} and message_ref and message_time:
+            assistant_elapsed_minutes[message_ref] = _elapsed_minutes(message_time, event_at)
+    return _drop_empty(
+        {
+            "latest_customer_message_ref": _string(latest_customer.get("message_ref")),
+            "latest_assistant_message_ref": _string(latest_assistant.get("message_ref")),
+            "assistant_waiting_customer": bool(conversation_activity.get("assistant_waiting_customer")),
+            "minutes_since_latest_assistant": conversation_activity.get("silence_after_assistant_minutes"),
+            "assistant_message_elapsed_minutes": assistant_elapsed_minutes,
+            "customer_messages_after_latest_assistant": customer_after_assistant,
+            "evidence_policy": "model_decides_semantics_code_validates_references_and_order",
+        }
+    )
 
 
 def _message_editing_context(messages: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:

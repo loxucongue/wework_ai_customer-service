@@ -336,13 +336,6 @@ def confirmed_appointment_from_state(state: dict[str, Any]) -> dict[str, Any]:
         appointment = _appointment_from_mapping(mapping, source=source)
         if appointment:
             return appointment
-    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    appointment = _appointment_from_mapping(
-        {"date": basic.get("intent_date"), "time": basic.get("intent_time")},
-        source="customer_profile",
-    )
-    if appointment:
-        return appointment
     return _appointment_from_history(state)
 
 
@@ -520,7 +513,7 @@ def _payment_collection_sent_count_from_events(state: dict[str, Any]) -> int:
 
 def _deposit_signal_mappings(state: dict[str, Any]) -> list[dict[str, Any]]:
     mappings: list[dict[str, Any]] = []
-    for key in ("customer_profile", "customer_basic_info", "customer_context", "appointment_cache", "request_context", "sent_message_summary"):
+    for key in ("customer_basic_info", "customer_context", "appointment_cache", "request_context", "sent_message_summary"):
         value = state.get(key)
         if isinstance(value, dict):
             mappings.append(value)
