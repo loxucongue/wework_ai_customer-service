@@ -710,7 +710,7 @@ def test_store_lookup_geocodes_structured_poi_message_before_matching_scope() ->
     assert [item["store_id"] for item in libo["stores"]] == ["301"]
 
 
-def test_store_lookup_preserves_cross_city_ambiguity_for_plain_landmark() -> None:
+def test_store_lookup_uses_first_geocode_candidate_for_plain_landmark() -> None:
     state = {
         "customer_store_knowledge": {
             "stores": [
@@ -740,12 +740,9 @@ def test_store_lookup_preserves_cross_city_ambiguity_for_plain_landmark() -> Non
         )
     )
 
-    assert output["status"] == "ambiguous_location"
-    assert output["source"] == "poi_to_geocode_ambiguous"
-    assert output["stores"] == []
-    assert output["missing"] == ["confirmed_city_or_district"]
-    assert output["geocode_candidate_count"] == 2
-    assert {item["city"] for item in output["geocode_candidate_regions"]} == {"上海市", "大连市"}
+    assert output["status"] == "ok"
+    assert [item["store_id"] for item in output["stores"]] == ["101"]
+    assert output["geocode"]["city"] == "上海市"
 
 
 def test_structured_poi_keeps_first_geocode_candidate_by_contract() -> None:

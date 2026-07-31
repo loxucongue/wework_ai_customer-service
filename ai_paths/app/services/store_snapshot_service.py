@@ -698,13 +698,9 @@ def _parse_geocode_payload(value: Any) -> Any:
 
 
 def _first_geocode_item(items: Any) -> dict[str, Any]:
-    if not isinstance(items, list):
+    if not isinstance(items, list) or not items:
         return {}
-    for item in items:
-        output = _geocode_item_from_dict(item)
-        if output:
-            return output
-    return {}
+    return _geocode_item_from_dict(items[0])
 
 
 def _geocode_item_from_dict(value: Any) -> dict[str, Any]:

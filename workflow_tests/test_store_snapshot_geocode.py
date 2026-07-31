@@ -45,6 +45,21 @@ class StoreSnapshotGeocodeTests(unittest.TestCase):
         self.assertEqual(parsed["district"], u(r"\u91d1\u57ce\u6c5f\u533a"))
         self.assertEqual(parsed["location"], "108.053148,24.695629")
 
+    def test_parse_geocode_list_never_skips_the_first_item(self) -> None:
+        raw = {
+            "code": 0,
+            "data": [
+                {},
+                {
+                    "province": u(r"\u5e7f\u4e1c\u7701"),
+                    "city": u(r"\u5e7f\u5dde\u5e02"),
+                    "location": "113.1,23.1",
+                },
+            ],
+        }
+
+        self.assertEqual(parse_geocode_workflow_response(raw), {})
+
     def test_store_from_row_uses_geocode_region(self) -> None:
         service = StoreSnapshotService(Settings(geocode_workflow_id=""), platform_client=None)
         service._geocode_store_address = lambda address: {  # type: ignore[method-assign]

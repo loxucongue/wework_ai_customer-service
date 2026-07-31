@@ -2128,30 +2128,17 @@ async def _geocode_address(coze_client: CozeClient, workflow_id: str, address: s
 
 
 def _first_geocode_candidate(items: list[Any]) -> dict[str, Any]:
-    candidates = [dict(item) for item in items if isinstance(item, dict)]
-    if not candidates:
+    if not items or not isinstance(items[0], dict):
         return {}
-    first = candidates[0]
-    regions: list[dict[str, str]] = []
-    region_keys: set[tuple[str, str, str]] = set()
-    for candidate in candidates:
-        region = {
-            key: str(candidate.get(key) or "").strip()
-            for key in ("province", "city", "district")
-            if str(candidate.get(key) or "").strip()
-        }
-        region_key = (
-            region.get("province", ""),
-            region.get("city", ""),
-            region.get("district", ""),
-        )
-        if not any(region_key) or region_key in region_keys:
-            continue
-        region_keys.add(region_key)
-        regions.append(region)
-    first["candidate_count"] = len(candidates)
-    first["candidate_regions"] = regions[:12]
-    first["ambiguous_regions"] = len(region_keys) > 1
+    first = dict(items[0])
+    first_region = {
+        key: str(first.get(key) or "").strip()
+        for key in ("province", "city", "district")
+        if str(first.get(key) or "").strip()
+    }
+    first["candidate_count"] = len(items)
+    first["candidate_regions"] = [first_region] if first_region else []
+    first["ambiguous_regions"] = False
     return first
 
 
