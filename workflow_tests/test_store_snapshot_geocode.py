@@ -209,6 +209,48 @@ class StoreSnapshotGeocodeTests(unittest.TestCase):
 
         self.assertEqual(conflicts, [])
 
+    def test_same_city_functional_district_alias_is_accepted(self) -> None:
+        conflicts = geocode_region_conflicts(
+            {
+                "province": u(r"\u91cd\u5e86\u5e02"),
+                "city": u(r"\u91cd\u5e86\u5e02"),
+                "district": u(r"\u4e24\u6c5f\u65b0\u533a"),
+            },
+            address_region=(
+                u(r"\u91cd\u5e86\u5e02"),
+                u(r"\u91cd\u5e86\u5e02"),
+                u(r"\u5317\u90e8\u65b0\u533a"),
+            ),
+            parking_region=(
+                u(r"\u91cd\u5e86\u5e02"),
+                u(r"\u91cd\u5e86\u5e02"),
+                u(r"\u6e1d\u5317\u533a"),
+            ),
+        )
+
+        self.assertEqual(conflicts, [])
+
+    def test_same_city_match_outweighs_malformed_province_text(self) -> None:
+        conflicts = geocode_region_conflicts(
+            {
+                "province": u(r"\u5e7f\u4e1c\u7701"),
+                "city": u(r"\u5e7f\u5dde\u5e02"),
+                "district": u(r"\u82b1\u90fd\u533a"),
+            },
+            address_region=(
+                u(r"\u5e7f\u5dde\u7701"),
+                u(r"\u5e7f\u5dde\u5e02"),
+                u(r"\u82b1\u90fd\u533a"),
+            ),
+            parking_region=(
+                u(r"\u4e00\u4e1c\u7701"),
+                u(r"\u5e7f\u5dde\u5e02"),
+                u(r"\u82b1\u90fd\u533a"),
+            ),
+        )
+
+        self.assertEqual(conflicts, [])
+
 
 if __name__ == "__main__":
     unittest.main()

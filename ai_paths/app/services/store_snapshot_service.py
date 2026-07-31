@@ -5,6 +5,7 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -227,6 +228,11 @@ class StoreSnapshotService:
             province = clean_text(geocode.get("province") or province)
             city = clean_text(geocode.get("city") or city)
             district = clean_text(geocode.get("district") or geocode.get("township") or district)
+            preferred_district = preferred_platform_district(
+                address_region=parse_region(address),
+                parking_region=parse_region(parking_address),
+            )
+            district = preferred_district or district
             address = address or clean_text(geocode.get("formatted_address") or "")
         if not district:
             district = parse_township(address) or parse_township(parking_address)
@@ -538,21 +544,60 @@ def geocode_region_conflicts(
         not address_is_full_region
         or address_looks_composite
     ):
-        expected_values = (
-            ("parking_province", parking_province, result_province),
-            ("parking_city", parking_city, result_city),
-        )
+        expected_province = parking_province
+        expected_city = parking_city
+        source = "parking"
     else:
-        expected_values = (
-            ("address_province", address_province, result_province),
-            ("address_city", address_city, result_city),
-            ("address_district", address_district, result_district),
-        )
+        expected_province = address_province
+        expected_city = address_city
+        source = "address"
 
-    for source, expected, actual in expected_values:
-        if expected and actual and not _region_values_equal(expected, actual):
-            conflicts.append(f"{source}:{expected}!={actual}")
+    city_matches = bool(
+        expected_city
+        and result_city
+        and _region_values_equal(expected_city, result_city)
+    )
+    if expected_city and result_city and not city_matches:
+        conflicts.append(f"{source}_city:{expected_city}!={result_city}")
+    if (
+        expected_province
+        and result_province
+        and not city_matches
+        and not _region_values_equal(expected_province, result_province)
+    ):
+        conflicts.append(
+            f"{source}_province:{expected_province}!={result_province}"
+        )
     return conflicts
+
+
+def preferred_platform_district(
+    *,
+    address_region: tuple[str, str, str],
+    parking_region: tuple[str, str, str],
+) -> str:
+    address_province, address_city, address_district = address_region
+    parking_province, parking_city, parking_district = parking_region
+    parking_has_full_region = bool(
+        parking_province
+        and parking_city
+        and parking_district
+    )
+    address_is_full_region = bool(
+        address_province
+        and address_city
+        and address_district
+    )
+    if parking_has_full_region and (
+        not address_is_full_region
+        or _address_region_contains_parking_scope(
+            address_city=address_city,
+            parking_city=parking_city,
+            parking_district=parking_district,
+        )
+    ):
+        return parking_district
+    return ""
 
 
 def _address_region_contains_parking_scope(
@@ -577,10 +622,15 @@ def _address_region_contains_parking_scope(
 
 
 def _region_values_equal(left: str, right: str) -> bool:
-    return bool(
-        _region_value_token(left)
-        and _region_value_token(left) == _region_value_token(right)
-    )
+    left_token = _region_value_token(left)
+    right_token = _region_value_token(right)
+    if not left_token or not right_token:
+        return False
+    if left_token == right_token:
+        return True
+    if min(len(left_token), len(right_token)) < 5:
+        return False
+    return SequenceMatcher(None, left_token, right_token).ratio() >= 0.88
 
 
 def _region_value_token(value: str) -> str:
