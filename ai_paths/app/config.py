@@ -87,6 +87,20 @@ class Settings(BaseSettings):
     )
     sop_event_retry_poll_seconds: float = Field(default=5.0, alias="SOP_EVENT_RETRY_POLL_SECONDS")
     sop_event_retry_batch_size: int = Field(default=5, alias="SOP_EVENT_RETRY_BATCH_SIZE")
+    sop_platform_pull_enabled: bool = Field(default=False, alias="SOP_PLATFORM_PULL_ENABLED")
+    sop_platform_shadow_mode: bool = Field(default=True, alias="SOP_PLATFORM_SHADOW_MODE")
+    sop_platform_base_url: str = Field(
+        default="https://test.api.customer.4ba.cn",
+        alias="SOP_PLATFORM_BASE_URL",
+    )
+    sop_platform_token: str = Field(default="", alias="SOP_PLATFORM_TOKEN", repr=False)
+    sop_platform_poll_seconds: float = Field(default=5.0, alias="SOP_PLATFORM_POLL_SECONDS")
+    sop_platform_lookback_seconds: int = Field(default=604800, alias="SOP_PLATFORM_LOOKBACK_SECONDS")
+    sop_platform_window_seconds: int = Field(default=60, alias="SOP_PLATFORM_WINDOW_SECONDS")
+    sop_platform_batch_size: int = Field(default=20, alias="SOP_PLATFORM_BATCH_SIZE")
+    sop_platform_timeout_seconds: float = Field(default=12.0, alias="SOP_PLATFORM_TIMEOUT_SECONDS")
+    sop_platform_model_timeout_seconds: float = Field(default=45.0, alias="SOP_PLATFORM_MODEL_TIMEOUT_SECONDS")
+    sop_platform_recovery_batch_size: int = Field(default=10, alias="SOP_PLATFORM_RECOVERY_BATCH_SIZE")
     model_json_max_tokens: int = 2048
     model_text_max_tokens: int = 2048
     memory_dir: Path = Path("logs/memory")
@@ -126,6 +140,10 @@ class Settings(BaseSettings):
     outreach_asset_library_path: Path = Field(
         default=Path("config/outreach_assets.json"),
         alias="OUTREACH_ASSET_LIBRARY_PATH",
+    )
+    sop_objection_materials_path: Path = Field(
+        default=Path("config/sop_objection_materials.json"),
+        alias="SOP_OBJECTION_MATERIALS_PATH",
     )
     sop_event_daily_touch_soft_limit: int = Field(default=2, alias="SOP_EVENT_DAILY_TOUCH_SOFT_LIMIT")
     outreach_send_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SEND_BASE_URL")

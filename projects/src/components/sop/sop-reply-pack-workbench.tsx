@@ -107,17 +107,8 @@ const MESSAGE_TYPES: Array<{ value: MessageType; label: string }> = [
   { value: "human_handoff_notice", label: "内部关注" },
 ];
 
-const SOP_EVENT_TYPES = [
-  { value: "__any", label: "不限制" },
-  { value: "sop_friend_added_immediate", label: "首次加微立即通知" },
-  { value: "sop_friend_added_schedule_batch", label: "首次加微定时通知" },
-  { value: "sop_platform_task", label: "平台任务即时转发" },
-];
-
 const SOP_SCOPES = [
   { value: "chat_gate", label: "AI 回复入口 SOP Gate" },
-  { value: "event_first_add", label: "/sop/events 首次加微" },
-  { value: "event_platform_task", label: "/sop/events 平台任务" },
 ];
 
 const SOP_CATEGORIES = [
@@ -212,28 +203,6 @@ export function SopReplyPackWorkbench() {
     }
   }
 
-  async function appendEventTemplates() {
-    setSaving(true);
-    setError("");
-    setStatus("");
-    try {
-      const response = await fetch("/api/sop-reply-packs/event-first-add-templates", {
-        method: "POST",
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.detail || data?.error || "追加事件专用包失败");
-      }
-      setConfig(normalizeConfig(data));
-      const appended = Array.isArray(data?.appended_pack_ids) ? data.appended_pack_ids.length : 0;
-      setStatus(appended > 0 ? `已追加 ${appended} 个事件专用包` : "事件专用包已存在，无需追加");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "追加事件专用包失败");
-    } finally {
-      setSaving(false);
-    }
-  }
-
   function addPack() {
     const nextOrder = config.packs.reduce((max, pack) => Math.max(max, pack.order), 0) + 10;
     const pack: SopPack = {
@@ -247,7 +216,7 @@ export function SopReplyPackWorkbench() {
       order: nextOrder,
       send_once: true,
       send_once_group: "",
-      event_type: "sop_friend_added_schedule_batch",
+      event_type: "",
       delay_minutes: 0,
       schedule_basis: "friend_added",
       min_gap_minutes: 0,
@@ -256,7 +225,7 @@ export function SopReplyPackWorkbench() {
       requires_payment_state: "",
       max_daily_sends: 0,
       silence_only: false,
-      day_stage: "day1",
+      day_stage: "",
       customer_state: "",
       stage_tag: "",
       triggers: [],
@@ -310,18 +279,14 @@ export function SopReplyPackWorkbench() {
               </Link>
             </Button>
             <div>
-              <h1 className="text-xl font-semibold leading-tight">SOP 话术包配置</h1>
-              <p className="text-sm text-zinc-500">配置固定消息顺序、触发标识和发送类型；不使用模板参数。</p>
+              <h1 className="text-xl font-semibold leading-tight">AI回复主线话术</h1>
+              <p className="text-sm text-zinc-500">仅在客户主动消息进入 AI 回复链路时生效，不负责主动触达时间与频率。</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" onClick={loadConfig} disabled={loading || saving}>
               <RefreshCw className={loading ? "animate-spin" : ""} />
               刷新
-            </Button>
-            <Button variant="outline" onClick={appendEventTemplates} disabled={loading || saving}>
-              <Plus />
-              追加事件专用包
             </Button>
             <Button onClick={saveConfig} disabled={saving || loading}>
               <Save />
@@ -430,7 +395,6 @@ function PackEditor({
   onMessagesChange: (messages: ReplyMessage[]) => void;
 }) {
   const triggerText = pack.triggers.join("\n");
-  const scopes = normalizeScopes(pack);
 
   function addMessage(type: MessageType = "text") {
     onMessagesChange([...pack.reply_messages, createMessage(type, pack.reply_messages.length + 1)]);
@@ -471,12 +435,6 @@ function PackEditor({
     const [message] = messages.splice(index, 1);
     messages.splice(nextIndex, 0, message);
     onMessagesChange(messages);
-  }
-
-  function toggleScope(scope: string, checked: boolean) {
-    const nextScopes = checked ? [...scopes, scope] : scopes.filter((item) => item !== scope);
-    const normalized = uniqueScopes(nextScopes);
-    onChange({ scopes: normalized, scope: normalized[0] || "chat_gate" });
   }
 
   return (
@@ -523,18 +481,8 @@ function PackEditor({
             />
           </div>
           <Field label="执行范围">
-            <div className="space-y-2 rounded-md border bg-white p-3">
-              {SOP_SCOPES.map((item) => (
-                <label key={item.value} className="flex items-center justify-between gap-3 text-sm">
-                  <span>{item.label}</span>
-                  <input
-                    type="checkbox"
-                    className="size-4 accent-zinc-950"
-                    checked={scopes.includes(item.value)}
-                    onChange={(event) => toggleScope(item.value, event.target.checked)}
-                  />
-                </label>
-              ))}
+            <div className="rounded-md border bg-zinc-50 px-3 py-2 text-sm text-zinc-700">
+              AI 回复入口 SOP Gate
             </div>
           </Field>
           <Field label="去重类目">
@@ -563,52 +511,6 @@ function PackEditor({
               className="min-h-20"
             />
           </Field>
-          <Field label="企微事件类型">
-            <Select
-              value={pack.event_type || "__any"}
-              onValueChange={(value) => onChange({ event_type: value === "__any" ? "" : value })}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {SOP_EVENT_TYPES.map((item) => (
-                  <SelectItem key={item.value} value={item.value}>
-                    {item.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field label="延迟分钟，0 为不限制">
-            <Input
-              type="number"
-              min={0}
-              value={pack.delay_minutes}
-              onChange={(event) => onChange({ delay_minutes: nonNegativeNumber(event.target.value, pack.delay_minutes) })}
-            />
-          </Field>
-          <Field label="计时基准">
-            <Select value={pack.schedule_basis} onValueChange={(value) => onChange({ schedule_basis: value })}>
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="friend_added">加微时间</SelectItem>
-                <SelectItem value="previous_stage_sent">上一阶段发送时间</SelectItem>
-                <SelectItem value="payment_card_sent">预约金卡发送时间</SelectItem>
-                <SelectItem value="local_clock">固定时段</SelectItem>
-              </SelectContent>
-            </Select>
-          </Field>
-          <Field label="最小间隔分钟">
-            <Input
-              type="number"
-              min={0}
-              value={pack.min_gap_minutes}
-              onChange={(event) => onChange({ min_gap_minutes: nonNegativeNumber(event.target.value, pack.min_gap_minutes) })}
-            />
-          </Field>
           <Field label="必须已完成类目，逗号分隔" className="col-span-2">
             <Input
               value={pack.requires_completed_categories.join(",")}
@@ -635,28 +537,6 @@ function PackEditor({
                 <SelectItem value="paid">已付</SelectItem>
               </SelectContent>
             </Select>
-          </Field>
-          <Field label="当天最多触达，0 为不限">
-            <Input
-              type="number"
-              min={0}
-              value={pack.max_daily_sends}
-              onChange={(event) => onChange({ max_daily_sends: nonNegativeNumber(event.target.value, pack.max_daily_sends) })}
-            />
-          </Field>
-          <ToggleField
-            label="仅客户沉默时发送"
-            checked={pack.silence_only}
-            onCheckedChange={(checked) => onChange({ silence_only: checked })}
-          />
-          <Field label="day_stage">
-            <Input value={pack.day_stage} onChange={(event) => onChange({ day_stage: event.target.value })} />
-          </Field>
-          <Field label="customer_state">
-            <Input value={pack.customer_state} onChange={(event) => onChange({ customer_state: event.target.value })} />
-          </Field>
-          <Field label="stage_tag" className="col-span-2">
-            <Input value={pack.stage_tag} onChange={(event) => onChange({ stage_tag: event.target.value })} />
           </Field>
           <Field label="触发标识，一行一个" className="col-span-2">
             <Textarea

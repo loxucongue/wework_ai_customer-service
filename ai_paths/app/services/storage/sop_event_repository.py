@@ -368,6 +368,44 @@ class SopEventRepositoryMixin:
             row = conn.execute("SELECT * FROM sop_send_tasks WHERE id=?", (task_id,)).fetchone()
         return self._decode_sop_send_task(dict(row)) if row else {}
 
+    def get_sop_send_task_by_idempotency_key(self, idempotency_key: str) -> dict[str, Any]:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM sop_send_tasks WHERE idempotency_key=?",
+                (str(idempotency_key or "").strip(),),
+            ).fetchone()
+        return self._decode_sop_send_task(dict(row)) if row else {}
+
+    def list_sop_events_by_statuses(
+        self,
+        statuses: list[str],
+        *,
+        limit: int = 10,
+        event_type: str = "",
+    ) -> list[dict[str, Any]]:
+        clean_statuses = [str(item or "").strip() for item in statuses if str(item or "").strip()]
+        if not clean_statuses:
+            return []
+        placeholders = ",".join("?" for _ in clean_statuses)
+        clauses = [f"status IN ({placeholders})"]
+        params: list[Any] = list(clean_statuses)
+        if event_type:
+            clauses.append("event_type=?")
+            params.append(str(event_type))
+        params.append(max(1, min(int(limit or 10), 100)))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM sop_events
+                WHERE {' AND '.join(clauses)}
+                ORDER BY updated_at ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [self._decode_sop_event(dict(row)) for row in rows]
+
     def list_sop_send_tasks_for_event(self, event_id: str) -> list[dict[str, Any]]:
         with self.store.connect() as conn:
             rows = conn.execute(

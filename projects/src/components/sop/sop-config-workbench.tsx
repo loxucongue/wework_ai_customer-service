@@ -13,14 +13,14 @@ export function SopConfigWorkbench({ section }: { section: SopConfigSection }) {
       <div className="sticky top-0 z-50 h-16 border-b bg-background/95 px-5 backdrop-blur">
         <div className="mx-auto flex h-full max-w-7xl items-center justify-between gap-4">
           <div className="min-w-0">
-            <div className="text-sm font-semibold">客户回复配置</div>
+            <div className="text-sm font-semibold">AI回复主线话术</div>
             <div className="hidden text-xs text-muted-foreground sm:block">
-              管理固定 SOP 话术包与精准问题回答策略
+              仅用于客户主动消息进入 AI 回复链路时的 SOP Gate 与精准回复
             </div>
           </div>
           <nav
             className="flex shrink-0 items-center gap-1 rounded-md border bg-muted/40 p-1"
-            aria-label="客户回复配置"
+            aria-label="AI回复主线话术"
           >
             <Button
               asChild
@@ -29,7 +29,7 @@ export function SopConfigWorkbench({ section }: { section: SopConfigSection }) {
             >
               <Link href="/sop" aria-current={section === "packs" ? "page" : undefined}>
                 <MessagesSquare />
-                话术包
+                主线话术
               </Link>
             </Button>
             <Button

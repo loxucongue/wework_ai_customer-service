@@ -12,7 +12,6 @@ import {
   Clock,
   GitBranch,
   History,
-  Images,
   LoaderCircle,
   MapPin,
   MessageSquareText,
@@ -228,6 +227,8 @@ type DashboardStats = {
     complaint_rate?: number | null;
   };
 };
+
+const LEGACY_OUTREACH_READ_ONLY = true;
 
 const DEFAULT_FILTERS: Filters = {
   keyword: "",
@@ -856,23 +857,6 @@ export function OutreachWorkbench() {
     [loadCandidates, refreshCustomerDetail]
   );
 
-  const runDue = useCallback(async () => {
-    setBusy("run-due");
-    setError("");
-    setNotice("");
-    try {
-      const response = await fetch("/api/outreach/run-due?limit=20", { method: "POST" });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data?.error || "执行到期任务失败");
-      if (selectedPlanId) await loadPlan(selectedPlanId, selectedCustomer);
-      await Promise.all([refreshCustomerDetail(), loadDashboard()]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
-  }, [loadDashboard, loadPlan, refreshCustomerDetail, selectedCustomer, selectedPlanId]);
-
   useEffect(() => {
     loadCandidates();
     loadDashboard();
@@ -929,24 +913,16 @@ export function OutreachWorkbench() {
             <ArrowLeft className="h-4 w-4" />
           </Link>
           <div>
-            <h1 className="text-base font-semibold">个性化主动唤醒</h1>
-            <p className="text-xs text-zinc-500">监控客户状态，自动生成计划，到点复查后触达</p>
+            <h1 className="text-base font-semibold">历史主动唤醒</h1>
+            <p className="text-xs text-zinc-500">旧计划与发送记录只读查询</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
           {notice ? <span className="hidden max-w-xl truncate text-xs text-amber-600 lg:inline">{notice}</span> : null}
           {error ? <span className="hidden max-w-xl truncate text-xs text-red-600 lg:inline">{error}</span> : null}
-          <Link
-            href="/outreach/assets"
-            className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50"
-          >
-            <Images className="h-4 w-4" />
-            素材库
-          </Link>
-          <button onClick={runDue} className="inline-flex items-center gap-2 rounded-md bg-zinc-900 px-3 py-2 text-sm text-white hover:bg-zinc-800">
-            <Activity className="h-4 w-4" />
-            执行到期任务
-          </button>
+          <span className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            历史只读
+          </span>
           <button
             onClick={() => {
               loadCandidates();
@@ -975,7 +951,7 @@ export function OutreachWorkbench() {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-sm font-semibold">自动唤醒运行总览</h2>
+              <h2 className="text-sm font-semibold">历史唤醒运行总览</h2>
               <span
                 className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-xs ${
                   dashboard.worker?.enabled ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
@@ -986,7 +962,7 @@ export function OutreachWorkbench() {
               </span>
             </div>
             <p className="mt-1 text-xs text-zinc-500">
-              第二天起，已开口但未预约客户由模型生成个性化计划，发送前复查客户回复和订单状态
+              旧 Outreach 已停止生成和发送；新的主动 SOP 由第三方平台排期，AI 系统只审核当前任务
             </p>
           </div>
           <div className="text-right text-xs text-zinc-500">
@@ -1274,7 +1250,7 @@ export function OutreachWorkbench() {
               <div>
                 <h2 className="text-base font-semibold">唤醒计划详情</h2>
                 <p className="text-sm text-zinc-500">{selectedCustomer ? `${selectedCustomer.customer_id} · ${selectedCustomer.lifecycle_stage || "未分阶段"}` : "请选择客户"}</p>
-                {selectedCustomer ? (
+                {selectedCustomer && !LEGACY_OUTREACH_READ_ONLY ? (
                   <div className="mt-2 flex flex-wrap gap-2 text-xs">
                     <span className="rounded bg-zinc-100 px-2 py-1 text-zinc-600">
                       未回复 {formatSilent(selectedCustomer.silent_minutes)}
@@ -1339,7 +1315,7 @@ export function OutreachWorkbench() {
                   <p className="text-xs font-medium text-zinc-500">递进逻辑</p>
                   <p className="mt-1 text-sm text-zinc-700">{selectedPlan.plan_arc || "-"}</p>
                 </div>
-                <div className="mt-4 flex items-center gap-2">
+                {!LEGACY_OUTREACH_READ_ONLY ? <div className="mt-4 flex items-center gap-2">
                   <button onClick={() => planAction("activate")} className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50">
                     <Play className="h-4 w-4" />
                     启用
@@ -1356,7 +1332,7 @@ export function OutreachWorkbench() {
                     <XCircle className="h-4 w-4" />
                     取消
                   </button>
-                </div>
+                </div> : null}
 
                 <div className="mt-5 space-y-3">
                   <h3 className="text-sm font-semibold">计划步骤</h3>
@@ -1409,7 +1385,7 @@ export function OutreachWorkbench() {
                               计划发送：{formatTime(task.scheduled_at)} · {boolLabel(task.should_send_payment_collection)} · 发送结果：{sendStatusLabel(task.send_status)}
                             </p>
                           </div>
-                          <div className="flex items-center gap-2">
+                          {!LEGACY_OUTREACH_READ_ONLY ? <div className="flex items-center gap-2">
                             <button
                               onClick={() => executeTask(task.id)}
                               className="inline-flex items-center gap-2 rounded-md border border-zinc-200 px-3 py-2 text-sm hover:bg-zinc-50 disabled:cursor-not-allowed disabled:bg-zinc-50 disabled:text-zinc-400"
@@ -1419,7 +1395,7 @@ export function OutreachWorkbench() {
                               <Send className="h-4 w-4" />
                               立即执行
                             </button>
-                          </div>
+                          </div> : null}
                         </div>
                         <div className="mt-4">
                           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -1437,7 +1413,7 @@ export function OutreachWorkbench() {
               </div>
             ) : (
               <div className="p-12 text-center text-sm text-zinc-500">
-                {selectedCustomer ? "该客户暂无计划，点击生成计划开始。" : "左侧选择一个客户后查看或生成计划。"}
+                {selectedCustomer ? "该客户没有历史计划。" : "左侧选择一个客户后查看历史计划。"}
               </div>
             )}
           </div>

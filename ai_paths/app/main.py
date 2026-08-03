@@ -26,6 +26,9 @@ from app.services.platform_agent_client import PlatformAgentClient
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_event_service import SopEventService
 from app.services.sop_execution_service import SopExecutionService
+from app.services.sop_objection_material_service import SopObjectionMaterialService
+from app.services.sop_platform_client import SopPlatformClient
+from app.services.sop_platform_task_service import SopPlatformTaskService
 from app.services.storage import AppRepository, build_store
 from app.services.store_service import StoreService
 from app.services.store_snapshot_service import StoreSnapshotService
@@ -49,6 +52,7 @@ memory_store = CustomerMemoryStore(settings, repository)
 platform_agent_client = PlatformAgentClient(settings)
 outreach_send_client = OutreachSendClient(settings)
 outreach_system_client = OutreachSystemClient(settings)
+sop_platform_client = SopPlatformClient(settings)
 platform_reply_coordinator = PlatformReplyCoordinator(settings)
 platform_voice_batch_coordinator = PlatformVoiceBatchCoordinator(settings)
 customer_context_service = CustomerContextService(platform_agent_client)
@@ -58,6 +62,7 @@ store_service = StoreService(platform_agent_client)
 sop_reply_pack_service = SopReplyPackService(settings)
 precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
 outreach_asset_library_service = OutreachAssetLibraryService(settings)
+sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
 outreach_service = OutreachService(
     repository=repository,
     model_client=model_client,
@@ -99,6 +104,14 @@ sop_event_service = SopEventService(
     persistent_retry_max_delay_seconds=settings.sop_event_persistent_retry_max_delay_seconds,
     retry_batch_size=settings.sop_event_retry_batch_size,
 )
+sop_platform_task_service = SopPlatformTaskService(
+    settings=settings,
+    repository=repository,
+    platform_client=sop_platform_client,
+    system_client=outreach_system_client,
+    model_client=model_client,
+    customer_context_service=customer_context_service,
+)
 reply_graphs = build_reply_graphs(
     coze_client,
     trace_logger,
@@ -126,60 +139,21 @@ chat_runtime = ChatRuntime(
 )
 app = FastAPI(title=settings.app_name)
 logger = logging.getLogger(__name__)
-sop_event_retry_worker: asyncio.Task[None] | None = None
-outreach_auto_send_worker: asyncio.Task[None] | None = None
-outreach_plan_monitor_worker: asyncio.Task[None] | None = None
+sop_platform_pull_worker: asyncio.Task[None] | None = None
 storage_retention_worker: asyncio.Task[None] | None = None
 
 
-async def _run_sop_event_retry_worker() -> None:
+async def _run_sop_platform_pull_worker() -> None:
     while True:
         try:
-            await sop_event_service.process_due_model_retries()
+            result = await sop_platform_task_service.poll_once()
+            if result.get("pending_count") or result.get("error_count"):
+                logger.info("Third-party SOP worker result: %s", result)
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("SOP event retry worker iteration failed")
-        await asyncio.sleep(max(1.0, settings.sop_event_retry_poll_seconds))
-
-
-async def _run_outreach_auto_send_worker() -> None:
-    while True:
-        try:
-            result = await outreach_service.execute_due_tasks(
-                limit=settings.outreach_auto_send_batch_size,
-                auto_approved_only=True,
-            )
-            if result.get("count"):
-                logger.info("Processed %s auto-approved outreach task(s)", result["count"])
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Outreach auto-send worker iteration failed")
-        await asyncio.sleep(max(1.0, settings.outreach_auto_send_poll_seconds))
-
-
-async def _run_outreach_plan_monitor_worker() -> None:
-    while True:
-        try:
-            result = await outreach_service.evaluate_silent_customers(
-                limit=settings.outreach_plan_monitor_batch_size,
-                silent_minutes=settings.outreach_plan_monitor_silent_minutes,
-                auto_activate=settings.outreach_plan_monitor_auto_activate,
-            )
-            if result.get("evaluated_count") or result.get("error_count"):
-                logger.info(
-                    "Outreach plan monitor evaluated=%s created=%s rejected=%s errors=%s",
-                    result.get("evaluated_count"),
-                    result.get("created_count"),
-                    result.get("rejected_count"),
-                    result.get("error_count"),
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Outreach plan monitor worker iteration failed")
-        await asyncio.sleep(max(5.0, settings.outreach_plan_monitor_poll_seconds))
+            logger.exception("Third-party SOP worker iteration failed")
+        await asyncio.sleep(max(1.0, settings.sop_platform_poll_seconds))
 
 
 async def _run_storage_retention_worker() -> None:
@@ -201,42 +175,24 @@ async def _run_storage_retention_worker() -> None:
 
 @app.on_event("startup")
 async def startup() -> None:
-    global outreach_auto_send_worker, outreach_plan_monitor_worker, sop_event_retry_worker, storage_retention_worker
+    global sop_platform_pull_worker, storage_retention_worker
     storage_store.initialize()
-    repository.recover_interrupted_sop_event_model_retries()
-    repository.recover_interrupted_outreach_tasks()
-    if sop_event_retry_worker is None or sop_event_retry_worker.done():
-        sop_event_retry_worker = asyncio.create_task(_run_sop_event_retry_worker())
-    if settings.outreach_auto_send_enabled and (
-        outreach_auto_send_worker is None or outreach_auto_send_worker.done()
+    if settings.sop_platform_pull_enabled and (
+        sop_platform_pull_worker is None or sop_platform_pull_worker.done()
     ):
-        outreach_auto_send_worker = asyncio.create_task(_run_outreach_auto_send_worker())
-    if settings.outreach_plan_monitor_enabled and (
-        outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()
-    ):
-        outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
+        sop_platform_pull_worker = asyncio.create_task(_run_sop_platform_pull_worker())
     if storage_retention_worker is None or storage_retention_worker.done():
         storage_retention_worker = asyncio.create_task(_run_storage_retention_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global outreach_auto_send_worker, outreach_plan_monitor_worker, sop_event_retry_worker, storage_retention_worker
-    if outreach_auto_send_worker is not None:
-        outreach_auto_send_worker.cancel()
+    global sop_platform_pull_worker, storage_retention_worker
+    if sop_platform_pull_worker is not None:
+        sop_platform_pull_worker.cancel()
         with suppress(asyncio.CancelledError):
-            await outreach_auto_send_worker
-        outreach_auto_send_worker = None
-    if outreach_plan_monitor_worker is not None:
-        outreach_plan_monitor_worker.cancel()
-        with suppress(asyncio.CancelledError):
-            await outreach_plan_monitor_worker
-        outreach_plan_monitor_worker = None
-    if sop_event_retry_worker is not None:
-        sop_event_retry_worker.cancel()
-        with suppress(asyncio.CancelledError):
-            await sop_event_retry_worker
-        sop_event_retry_worker = None
+            await sop_platform_pull_worker
+        sop_platform_pull_worker = None
     if storage_retention_worker is not None:
         storage_retention_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -248,6 +204,7 @@ async def shutdown() -> None:
     await voice_transcription_client.aclose()
     await outreach_send_client.aclose()
     await outreach_system_client.aclose()
+    await sop_platform_client.aclose()
     platform_agent_client.close()
     storage_store.close()
 
@@ -300,6 +257,10 @@ async def require_external_api_key(authorization: str | None = Header(default=No
         )
 
 
+def _reject_legacy_outreach_mutation() -> None:
+    raise HTTPException(status_code=410, detail="旧 Outreach 已转为历史只读")
+
+
 @app.post("/admin/store-snapshot/refresh", dependencies=[Depends(require_api_key)])
 async def admin_refresh_store_snapshot() -> dict[str, Any]:
     snapshot = store_snapshot_service.refresh_snapshot(allow_existing_on_error=False)
@@ -326,10 +287,7 @@ async def admin_update_sop_reply_packs(payload: dict[str, Any] = Body(...)) -> d
 
 @app.post("/admin/sop-reply-packs/event-first-add-templates", dependencies=[Depends(require_api_key)])
 async def admin_append_event_first_add_templates() -> dict[str, Any]:
-    try:
-        return sop_reply_pack_service.append_missing_event_first_add_templates()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=410, detail="主动事件话术已迁移到第三方 SOP 平台")
 
 
 @app.get("/admin/precision-qa-playbook", dependencies=[Depends(require_api_key)])
@@ -352,9 +310,19 @@ async def admin_outreach_assets() -> dict[str, Any]:
 
 @app.put("/admin/outreach/assets", dependencies=[Depends(require_api_key)])
 async def admin_update_outreach_assets(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    raise HTTPException(status_code=410, detail="旧 Outreach 已转为历史只读")
+
+
+@app.get("/admin/sop-objection-materials", dependencies=[Depends(require_api_key)])
+async def admin_sop_objection_materials() -> dict[str, Any]:
+    return sop_objection_material_service.load()
+
+
+@app.put("/admin/sop-objection-materials", dependencies=[Depends(require_api_key)])
+async def admin_update_sop_objection_materials(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
     try:
-        return outreach_asset_library_service.save(payload)
-    except ValueError as exc:
+        return sop_objection_material_service.save(payload)
+    except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -395,7 +363,7 @@ async def sop_events(
     payload: dict[str, Any] = Body(...),
 ) -> JSONResponse:
     try:
-        result = await sop_event_service.accept_event(payload, background_tasks=background_tasks)
+        result = await sop_event_service.accept_audit_only(payload)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"code": 400, "msg": str(exc), "data": {"accepted": False}})
     return JSONResponse(content={"code": 0, "msg": "ok", "data": result})
@@ -622,19 +590,25 @@ async def admin_outreach_dashboard() -> dict[str, Any]:
     return {
         **outreach_service.dashboard_stats(),
         "worker": {
-            "enabled": settings.outreach_auto_send_enabled,
-            "mode": "auto_approved",
+            "enabled": False,
+            "mode": "retired_read_only",
             "poll_seconds": settings.outreach_auto_send_poll_seconds,
             "batch_size": settings.outreach_auto_send_batch_size,
             "before_send_retry_seconds": settings.outreach_before_send_retry_seconds,
         },
         "plan_monitor": {
-            "enabled": settings.outreach_plan_monitor_enabled,
+            "enabled": False,
             "poll_seconds": settings.outreach_plan_monitor_poll_seconds,
             "silent_minutes": settings.outreach_plan_monitor_silent_minutes,
             "batch_size": settings.outreach_plan_monitor_batch_size,
             "auto_activate": settings.outreach_plan_monitor_auto_activate,
             **outreach_service.monitor_status(),
+        },
+        "platform_sop_worker": {
+            "enabled": settings.sop_platform_pull_enabled,
+            "shadow_mode": settings.sop_platform_shadow_mode,
+            "poll_seconds": settings.sop_platform_poll_seconds,
+            "batch_size": settings.sop_platform_batch_size,
         },
     }
 
@@ -664,6 +638,7 @@ async def admin_outreach_sop_plans(limit: int = 100) -> dict[str, Any]:
 
 @app.post("/admin/outreach/sops", dependencies=[Depends(require_api_key)])
 async def admin_outreach_create_sop_plan(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     try:
         return outreach_service.create_sop_plan(payload)
     except ValueError as exc:
@@ -672,6 +647,7 @@ async def admin_outreach_create_sop_plan(payload: dict[str, Any] = Body(...)) ->
 
 @app.put("/admin/outreach/sops/{sop_plan_id}", dependencies=[Depends(require_api_key)])
 async def admin_outreach_update_sop_plan(sop_plan_id: str, payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     try:
         return outreach_service.update_sop_plan(sop_plan_id, payload)
     except KeyError as exc:
@@ -680,6 +656,7 @@ async def admin_outreach_update_sop_plan(sop_plan_id: str, payload: dict[str, An
 
 @app.delete("/admin/outreach/sops/{sop_plan_id}", dependencies=[Depends(require_api_key)])
 async def admin_outreach_delete_sop_plan(sop_plan_id: str) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     if not outreach_service.delete_sop_plan(sop_plan_id):
         raise HTTPException(status_code=404, detail="SOP plan not found")
     return {"ok": True, "id": sop_plan_id}
@@ -690,6 +667,7 @@ async def admin_outreach_run_sop_plan(
     sop_plan_id: str,
     payload: dict[str, Any] | None = Body(default=None),
 ) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     payload = payload or {}
     try:
         return await outreach_service.run_sop_plan(
@@ -745,6 +723,7 @@ async def admin_outreach_refresh_conversation(
 
 @app.post("/admin/outreach/plans/generate", dependencies=[Depends(require_api_key)])
 async def admin_outreach_generate_plan(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     customer_id = str(payload.get("customer_id") or "").strip()
     if not customer_id:
         raise HTTPException(status_code=400, detail="customer_id is required")
@@ -779,36 +758,43 @@ async def admin_outreach_plan(plan_id: str) -> dict[str, Any]:
 
 @app.post("/admin/outreach/plans/{plan_id}/activate", dependencies=[Depends(require_api_key)])
 async def admin_outreach_activate_plan(plan_id: str) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     return outreach_service.activate_plan(plan_id)
 
 
 @app.post("/admin/outreach/plans/{plan_id}/pause", dependencies=[Depends(require_api_key)])
 async def admin_outreach_pause_plan(plan_id: str) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     return outreach_service.pause_plan(plan_id)
 
 
 @app.post("/admin/outreach/plans/{plan_id}/resume", dependencies=[Depends(require_api_key)])
 async def admin_outreach_resume_plan(plan_id: str) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     return outreach_service.resume_plan(plan_id)
 
 
 @app.post("/admin/outreach/plans/{plan_id}/cancel", dependencies=[Depends(require_api_key)])
 async def admin_outreach_cancel_plan(plan_id: str) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     return outreach_service.cancel_plan(plan_id)
 
 
 @app.post("/admin/outreach/tasks/{task_id}/preview", dependencies=[Depends(require_api_key)])
 async def admin_outreach_preview_task(task_id: str) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     return await outreach_service.preview_task(task_id)
 
 
 @app.post("/admin/outreach/tasks/{task_id}/execute", dependencies=[Depends(require_api_key)])
 async def admin_outreach_execute_task(task_id: str) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     return await outreach_service.execute_task(task_id)
 
 
 @app.post("/admin/outreach/run-due", dependencies=[Depends(require_api_key)])
 async def admin_outreach_run_due(limit: int = 20) -> dict[str, Any]:
+    _reject_legacy_outreach_mutation()
     return await outreach_service.execute_due_tasks(limit=limit)
 
 

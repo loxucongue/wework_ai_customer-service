@@ -96,6 +96,23 @@ class SopEventService:
             "duplicate": not bool(event.get("created")),
         }
 
+    async def accept_audit_only(self, payload: dict[str, Any]) -> dict[str, Any]:
+        event_id = str(payload.get("event_id") or "").strip()
+        event_type = str(payload.get("event_type") or "").strip()
+        if not event_id:
+            raise ValueError("event_id is required")
+        if not event_type:
+            raise ValueError("event_type is required")
+        event = self.repository.create_sop_event(payload)
+        self.repository.update_sop_event_status(event_id, status="retired_legacy_route")
+        return {
+            "accepted": True,
+            "event_id": event_id,
+            "duplicate": not bool(event.get("created")),
+            "status": "retired_legacy_route",
+            "executed": False,
+        }
+
     async def process_event(self, event_id: str) -> dict[str, Any]:
         event = self.repository.get_sop_event(event_id)
         payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}

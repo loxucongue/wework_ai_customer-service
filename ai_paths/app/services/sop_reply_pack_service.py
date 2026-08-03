@@ -392,22 +392,22 @@ class SopReplyPackService:
 
     def load(self) -> dict[str, Any]:
         if not self.path.exists():
-            normalized = deepcopy(DEFAULT_SOP_REPLY_PACKS)
+            normalized = self._normalize(deepcopy(DEFAULT_SOP_REPLY_PACKS), allow_legacy_event_scopes=True)
             normalized["audit"] = _audit_config(normalized)
             return normalized
         try:
             with self.path.open("r", encoding="utf-8") as file:
                 payload = json.load(file)
-            normalized = self._normalize(payload)
+            normalized = self._normalize(payload, allow_legacy_event_scopes=True)
             normalized["audit"] = _audit_config(normalized)
             return normalized
         except (OSError, json.JSONDecodeError, ValueError):
-            normalized = deepcopy(DEFAULT_SOP_REPLY_PACKS)
+            normalized = self._normalize(deepcopy(DEFAULT_SOP_REPLY_PACKS), allow_legacy_event_scopes=True)
             normalized["audit"] = _audit_config(normalized)
             return normalized
 
     def save(self, payload: dict[str, Any]) -> dict[str, Any]:
-        normalized = self._normalize(payload)
+        normalized = self._normalize(payload, allow_legacy_event_scopes=False)
         audit = _audit_config(normalized)
         errors = [issue for issue in audit["issues"] if issue.get("severity") == "error"]
         if errors:
@@ -420,30 +420,42 @@ class SopReplyPackService:
         return normalized
 
     def append_missing_event_first_add_templates(self) -> dict[str, Any]:
-        current = self.load()
-        existing_ids = {
-            str(pack.get("id") or "")
-            for pack in current.get("packs", [])
-            if isinstance(pack, dict)
-        }
-        appended = [
-            deepcopy(pack)
-            for pack in EVENT_FIRST_ADD_TEMPLATE_PACKS
-            if str(pack.get("id") or "") not in existing_ids
-        ]
-        if appended:
-            current["packs"] = [*current.get("packs", []), *appended]
-        saved = self.save(current)
-        saved["appended_pack_ids"] = [str(pack.get("id") or "") for pack in appended]
-        return saved
+        raise ValueError("主动事件话术已迁移到第三方 SOP 平台")
 
-    def _normalize(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _normalize(self, payload: dict[str, Any], *, allow_legacy_event_scopes: bool) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
         raw_packs = payload.get("packs")
         if not isinstance(raw_packs, list):
             raise ValueError("packs must be a list")
-        packs = [self._normalize_pack(item, index) for index, item in enumerate(raw_packs)]
+        packs: list[dict[str, Any]] = []
+        for index, item in enumerate(raw_packs):
+            if not isinstance(item, dict):
+                raise ValueError(f"pack #{index + 1} must be an object")
+            scopes = _normalize_scopes(item)
+            if "chat_gate" not in scopes:
+                if allow_legacy_event_scopes:
+                    continue
+                raise ValueError("AI reply mainline packs must use chat_gate scope")
+            if not allow_legacy_event_scopes and any(scope != "chat_gate" for scope in scopes):
+                raise ValueError("active event scopes are no longer supported")
+            pack = self._normalize_pack(item, index)
+            pack.update(
+                {
+                    "scope": "chat_gate",
+                    "scopes": ["chat_gate"],
+                    "event_type": "",
+                    "delay_minutes": 0,
+                    "schedule_basis": "friend_added",
+                    "min_gap_minutes": 0,
+                    "max_daily_sends": 0,
+                    "silence_only": False,
+                    "day_stage": "",
+                    "customer_state": "",
+                    "stage_tag": "",
+                }
+            )
+            packs.append(pack)
         seen_ids: set[str] = set()
         for pack in packs:
             if pack["id"] in seen_ids:
@@ -593,8 +605,16 @@ def _audit_config(config: dict[str, Any]) -> dict[str, Any]:
                 if enabled and not previous_text:
                     issues.append(_audit_issue("warning", "payment_without_intro_text", pack_id, "payment_collection 前应有 text 说明锁名额、到店抵扣和可退规则。", order=index))
 
-    _audit_first_add_candidates(packs, issues)
-    _audit_shared_activity_quote(packs, issues)
+    for pack in packs:
+        if isinstance(pack, dict) and _normalize_scopes(pack) != ["chat_gate"]:
+            issues.append(
+                _audit_issue(
+                    "error",
+                    "non_chat_gate_scope",
+                    str(pack.get("id") or ""),
+                    "AI回复主线话术只能用于 chat_gate。",
+                )
+            )
     errors = sum(1 for issue in issues if issue.get("severity") == "error")
     warnings = sum(1 for issue in issues if issue.get("severity") == "warning")
     return {
