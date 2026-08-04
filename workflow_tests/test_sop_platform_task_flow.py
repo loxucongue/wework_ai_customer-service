@@ -144,6 +144,29 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, [])
         self.assertEqual(system.conversation_calls, 0)
 
+    async def test_duplicate_non_ai_copy_platform_task_is_completed_without_resend(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        first = _task(use_ai_copy=False, message_content=[{"type": "text", "content": "平台原文"}])
+        first["task_id"] = 101
+        first["scheduledAt"] = "2026-08-04 22:39:25"
+        second = _task(use_ai_copy=False, message_content=[{"type": "text", "content": "平台原文"}])
+        second["task_id"] = 102
+        second["scheduledAt"] = "2026-08-04 22:39:25"
+
+        first_result = await service.process_task(first)
+        second_result = await service.process_task(second)
+
+        self.assertEqual(first_result["status"], "sent")
+        self.assertEqual(second_result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30), ("102", 20), ("102", 30)])
+        self.assertEqual(len(system.send_calls), 1)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        second_payload = repo.tasks["platform-sop:102"]["send_payload"]
+        self.assertEqual(second_payload["decision"]["reason"], "duplicate_platform_task_content")
+        self.assertEqual(repo.events["platform_sop_task:102"]["status"], "platform_completed")
+        self.assertEqual(model.calls, [])
+
     async def test_non_ai_copy_stale_task_still_sends_without_model(self) -> None:
         model = _Model([])
         service, _repo, platform, system = _service(model=model)
@@ -870,6 +893,16 @@ class _Repo:
 
     def get_sop_send_task_by_idempotency_key(self, idempotency_key):
         return dict(self.tasks.get(idempotency_key) or {})
+
+    def find_sop_send_task_delivery_duplicate(self, send_once_key, *, exclude_idempotency_key=""):
+        for task in self.tasks.values():
+            if task.get("idempotency_key") == exclude_idempotency_key:
+                continue
+            if task.get("send_once_key") != send_once_key:
+                continue
+            if task.get("status") in {"sent", "sending"} or task.get("error") == "active_send_timeout_unknown_result":
+                return dict(task)
+        return {}
 
     def update_sop_event_status(self, event_id, *, status, error=""):
         self.events[event_id]["status"] = status

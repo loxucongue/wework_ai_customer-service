@@ -440,6 +440,38 @@ class SopEventRepositoryMixin:
             ).fetchone()
         return self._decode_sop_send_task(dict(row)) if row else {}
 
+    def find_sop_send_task_delivery_duplicate(
+        self,
+        send_once_key: str,
+        *,
+        exclude_idempotency_key: str = "",
+    ) -> dict[str, Any]:
+        clean_key = str(send_once_key or "").strip()
+        if not clean_key:
+            return {}
+        params: list[Any] = [clean_key]
+        exclude_sql = ""
+        if exclude_idempotency_key:
+            exclude_sql = "AND idempotency_key<>?"
+            params.append(str(exclude_idempotency_key or "").strip())
+        with self.store.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM sop_send_tasks
+                WHERE send_once_key=?
+                  {exclude_sql}
+                  AND (
+                    status IN ('sent', 'sending')
+                    OR error='active_send_timeout_unknown_result'
+                  )
+                ORDER BY created_at ASC
+                LIMIT 1
+                """,
+                tuple(params),
+            ).fetchone()
+        return self._decode_sop_send_task(dict(row)) if row else {}
+
     def list_sop_events_by_statuses(
         self,
         statuses: list[str],

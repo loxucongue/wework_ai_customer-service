@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -354,6 +355,11 @@ class SopPlatformTaskService:
             raise ValueError("platform task_id is required")
         lock = self._locks.setdefault(task_id, asyncio.Lock())
         async with lock:
+            duplicate_key = _platform_duplicate_send_once_key(platform_task)
+            if duplicate_key:
+                content_lock = self._locks.setdefault(f"platform-content:{duplicate_key}", asyncio.Lock())
+                async with content_lock:
+                    return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
             return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
 
     def runtime_status(self) -> dict[str, Any]:
@@ -611,6 +617,7 @@ class SopPlatformTaskService:
         local_task = self.repository.create_sop_send_task(
             event_id=event_id,
             idempotency_key=f"platform-sop:{task_id}",
+            send_once_key=_platform_duplicate_send_once_key(platform_task),
             customer_id=identity["customer_id"],
             external_userid=identity["external_userid"],
             corp_id=identity["corp_id"],
@@ -649,6 +656,7 @@ class SopPlatformTaskService:
         local_task = self.repository.create_sop_send_task(
             event_id=event_id,
             idempotency_key=f"platform-sop:{task_id}",
+            send_once_key=_platform_duplicate_send_once_key(platform_task),
             customer_id=identity["customer_id"],
             external_userid=identity["external_userid"],
             corp_id=identity["corp_id"],
@@ -662,6 +670,47 @@ class SopPlatformTaskService:
             status="platform_received",
         )
         local_status = str(local_task.get("status") or "")
+        duplicate_reason = _duplicate_platform_task_reason(
+            self.repository,
+            local_task=local_task,
+            task_id=task_id,
+        )
+        if duplicate_reason:
+            decision = {"decision": "no_send", "reason": duplicate_reason, "reply_messages": []}
+            context = {
+                "source": "duplicate_platform_task_content",
+                "duplicate_of_task_id": str(local_task.get("duplicate_of_task_id") or ""),
+            }
+            if self.settings.sop_platform_shadow_mode:
+                self.repository.update_sop_send_task(
+                    str(local_task.get("id") or ""),
+                    status="shadow_no_send",
+                    send_payload={"decision": decision, "context": context},
+                )
+                self.repository.update_sop_event_status(event_id, status="shadow_no_send")
+                self._counters[duplicate_reason] += 1
+                return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
+            started = time.perf_counter()
+            claimed = await self.platform_client.consume(task_id=task_id, status=20)
+            self._observe("claim", time.perf_counter() - started)
+            _require_platform_status(claimed, 20)
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="completed_without_send",
+                send_payload={"decision": decision, "context": context},
+            )
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
+            self._counters[duplicate_reason] += 1
+            return {
+                "processed": True,
+                "status": "completed_without_send",
+                "task_id": task_id,
+                "decision": decision,
+                "platform_response": completed,
+            }
         if self.settings.sop_platform_shadow_mode and local_status in {"shadow_send", "shadow_no_send"}:
             return {"processed": False, "status": local_status, "task_id": task_id}
 
@@ -1136,6 +1185,51 @@ def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
             if str(normalized_content.get("url") or "").strip():
                 output.append({"type": "link", "order": index, "content": normalized_content})
     return output
+
+
+def _platform_duplicate_send_once_key(platform_task: dict[str, Any]) -> str:
+    messages = _platform_messages(platform_task)
+    if not messages:
+        return ""
+    identity = _task_identity(platform_task)
+    if not identity["corp_id"] or not identity["wechat"] or not (
+        identity["external_userid"] or identity["customer_id"]
+    ):
+        return ""
+    scheduled_epoch = _task_scheduled_epoch(platform_task) or time.time()
+    scheduled_day = datetime.fromtimestamp(scheduled_epoch, tz=_BEIJING_TZ).strftime("%Y%m%d")
+    canonical_messages = json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    content_hash = hashlib.sha256(canonical_messages.encode("utf-8")).hexdigest()[:24]
+    contact = "|".join(
+        [
+            identity["corp_id"].lower(),
+            identity["wechat"].lower(),
+            (identity["external_userid"] or identity["customer_id"]).lower(),
+        ]
+    )
+    task_type = _task_type(platform_task) or "unknown"
+    return f"platform_sop_content:{contact}:{scheduled_day}:{task_type}:{content_hash}"
+
+
+def _duplicate_platform_task_reason(
+    repository: Any,
+    *,
+    local_task: dict[str, Any],
+    task_id: str,
+) -> str:
+    if str(local_task.get("dedupe_reason") or "") == "send_once_key":
+        return "duplicate_platform_task_content"
+    send_once_key = str(local_task.get("send_once_key") or "").strip()
+    if not send_once_key or not hasattr(repository, "find_sop_send_task_delivery_duplicate"):
+        return ""
+    duplicate = repository.find_sop_send_task_delivery_duplicate(
+        send_once_key,
+        exclude_idempotency_key=f"platform-sop:{task_id}",
+    )
+    if duplicate:
+        local_task["duplicate_of_task_id"] = str(duplicate.get("id") or "")
+        return "duplicate_platform_task_content"
+    return ""
 
 
 def _manual_resend_messages(local_task: dict[str, Any], platform_task: dict[str, Any]) -> list[dict[str, Any]]:
