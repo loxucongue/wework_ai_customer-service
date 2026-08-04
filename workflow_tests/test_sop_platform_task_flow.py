@@ -576,6 +576,39 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "platform_queued")
         self.assertEqual(service.runtime_status()["queue_depth"], 1)
 
+    async def test_poll_loop_survives_transient_pending_error(self) -> None:
+        model = _Model([])
+        service, _repo, _platform, _system = _service(model=model, shadow_mode=True)
+        service.settings.sop_platform_poll_seconds = 0.2
+        service.process_recoveries = AsyncMock(return_value={"processed": 0})  # type: ignore[method-assign]
+        calls = 0
+        second_poll = asyncio.Event()
+
+        async def poll_once():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise TimeoutError("temporary platform timeout")
+            second_poll.set()
+            return {
+                "pending_count": 0,
+                "enqueued_count": 0,
+                "queue_depth": 0,
+                "in_flight_count": 0,
+                "error_count": 0,
+            }
+
+        service.poll_once = poll_once  # type: ignore[method-assign]
+        worker = asyncio.create_task(service.run())
+        try:
+            await asyncio.wait_for(second_poll.wait(), timeout=2)
+        finally:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+
+        self.assertGreaterEqual(calls, 2)
+        self.assertEqual(service.runtime_status()["counters"]["poll_loop_error"], 1)
+
     async def test_admin_logs_merge_platform_pending_and_local_decision(self) -> None:
         model = _Model([])
         service, repo, platform, _system = _service(model=model, shadow_mode=True)

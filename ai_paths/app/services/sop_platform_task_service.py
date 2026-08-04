@@ -174,7 +174,20 @@ class SopPlatformTaskService:
         )
         try:
             while True:
-                result = await self.poll_once()
+                try:
+                    result = await self.poll_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    self._counters["poll_loop_error"] += 1
+                    logger.exception("Third-party SOP polling iteration failed; worker will continue")
+                    result = {
+                        "pending_count": self._pending_total,
+                        "enqueued_count": 0,
+                        "queue_depth": self._queue.qsize(),
+                        "in_flight_count": len(self._in_flight_ids),
+                        "error_count": 1,
+                    }
                 if result.get("pending_count") or result.get("error_count"):
                     logger.info("Third-party SOP worker result: %s", result)
                 await asyncio.sleep(max(0.2, float(self.settings.sop_platform_poll_seconds)))
