@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.services.customer_payment_state import normalize_prepay_facts, paid_order_protection_fact, resolved_payment_fact
+from app.services.customer_payment_state import (
+    is_paid_deposit_state,
+    normalize_prepay_facts,
+    paid_order_protection_fact,
+    resolved_payment_fact,
+)
 from app.services.customer_scope import build_customer_scope
 from app.services.sop_event_service import _send_once_key as event_send_once_key
 from app.services.storage import AppRepository, SQLiteStore
@@ -130,6 +135,38 @@ def test_finished_paid_order_is_historical_not_current_deposit() -> None:
     assert normalized["deposit_state"] == "historical_paid_completed"
     assert normalized["paid_protection_status"] == "completed_order_expired"
     assert resolved_payment_fact(orders=[{**finished_order, **normalized}]) == {}
+
+
+def test_lost_refunded_paid_order_is_not_current_deposit() -> None:
+    refunded_order = {
+        "id": "refunded-paid",
+        "status": 0,
+        "prepay_required": "10.00",
+        "prepay_paid": "10.00",
+        "created_at": "2026-07-27T15:03:38+00:00",
+        "store_id": "147",
+        "store_name": "Chongqing Nan'an",
+    }
+
+    normalized = normalize_prepay_facts(refunded_order)
+    assert normalized["deposit_state"] == "historical_paid_inactive"
+    assert normalized["paid_protection_status"] == "inactive_order_expired"
+    assert not is_paid_deposit_state(normalized["deposit_state"])
+    assert resolved_payment_fact(orders=[{**refunded_order, **normalized}]) == {}
+
+
+def test_mapped_lost_refunded_paid_order_is_not_current_deposit() -> None:
+    refunded_order = {
+        "id": "refunded-paid",
+        "status": "lost_refunded",
+        "deposit_state": "paid_by_order",
+        "prepay_required": "10.00",
+        "prepay_paid": "10.00",
+        "created_at": "2026-07-27T15:03:38+00:00",
+    }
+
+    payment = resolved_payment_fact(orders=[refunded_order])
+    assert payment == {}
 
 
 def test_admin_clear_only_removes_selected_wechat_memory_and_sop(tmp_path: Path) -> None:

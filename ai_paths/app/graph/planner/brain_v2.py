@@ -35,7 +35,7 @@ from app.policies.business_rules import (
 )
 from app.policies.sales_flow import precision_qa_context_for_planner
 from app.policies.constants import KNOWN_STORE_NAMES
-from app.services.customer_payment_state import normalize_prepay_facts
+from app.services.customer_payment_state import is_inactive_order, normalize_prepay_facts
 from app.services.model_client import ModelClient
 from app.services.risk_hold import HEALTH_RISK_TERMS, current_health_risk_hold_for_model
 from app.services.runtime_budget import can_start_model_retry, model_deadline_monotonic, runtime_budget_snapshot
@@ -1018,6 +1018,8 @@ def _transaction_facts_for_planner(state: AgentState) -> dict[str, Any]:
             paid = raw.get("fee_paid")
         normalized_payment = normalize_prepay_facts(raw)
         deposit_state = str(raw.get("deposit_state") or normalized_payment.get("deposit_state") or "").strip()
+        if deposit_state == "paid_by_order" and is_inactive_order(raw):
+            deposit_state = str(normalized_payment.get("deposit_state") or "historical_paid_inactive")
         if not deposit_state:
             deposit_state = "paid_by_order" if _numeric_order_amount(paid) > 0 else (
                 "required_unpaid" if _numeric_order_amount(required) > 0 else "unknown"
@@ -1036,7 +1038,11 @@ def _transaction_facts_for_planner(state: AgentState) -> dict[str, Any]:
             "paid_time_value": raw.get("paid_time_value") or normalized_payment.get("paid_time_value"),
         }
         item = {key: value for key, value in item.items() if value not in (None, "", [], {})}
-        if deposit_state == "paid_by_order" and paid_protection_status != "expired":
+        if deposit_state == "paid_by_order" and paid_protection_status not in {
+            "expired",
+            "inactive_order_expired",
+            "completed_order_expired",
+        }:
             paid_orders.append(item)
         elif deposit_state == "required_unpaid" and _numeric_order_amount(required) > 0:
             unpaid_orders.append(item)
