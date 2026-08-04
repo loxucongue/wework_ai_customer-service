@@ -287,6 +287,63 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(model.kwargs[0]["max_parallel_candidates"], 1)
 
+    async def test_poll_persists_task_before_putting_it_in_memory_queue(self) -> None:
+        model = _Model([])
+        service, repo, platform, _system = _service(model=model, shadow_mode=True)
+
+        async def pending(*, limit=None):
+            return {"items": [_task()], "total": 1, "limit": limit}
+
+        platform.pending = pending  # type: ignore[method-assign]
+        result = await service.poll_once()
+
+        self.assertEqual(result["enqueued_count"], 1)
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_queued")
+        self.assertEqual(next(iter(repo.tasks.values()))["status"], "platform_queued")
+        self.assertEqual(service.runtime_status()["queue_depth"], 1)
+
+    async def test_admin_logs_merge_platform_pending_and_local_decision(self) -> None:
+        model = _Model([])
+        service, repo, platform, _system = _service(model=model, shadow_mode=True)
+        platform_task = _task()
+
+        async def pending(*, limit=None):
+            return {"items": [platform_task, {**_task(), "task_id": 202}], "total": 2, "limit": limit}
+
+        platform.pending = pending  # type: ignore[method-assign]
+        repo.list_platform_sop_task_records = lambda **_kwargs: [  # type: ignore[attr-defined]
+            {
+                "event_id": "platform_sop_task:101",
+                "event_status": "shadow_no_send",
+                "event_error": "",
+                "received_at": "2026-08-04T00:00:00+00:00",
+                "event_updated_at": "2026-08-04T00:00:01+00:00",
+                "platform_task": platform_task,
+                "local_task_id": "local-1",
+                "customer_id": "22000001",
+                "external_userid": "wm_external",
+                "corp_id": "ww_corp",
+                "user_id": "7294",
+                "wechat": "DY258",
+                "sop_pack_name": "test rule",
+                "task_status": "shadow_no_send",
+                "reply_messages": [_text("original")],
+                "send_payload": {"decision": {"decision": "no_send", "reason": "duplicate", "reply_messages": []}},
+                "send_response": {},
+                "task_error": "",
+                "task_created_at": "2026-08-04T00:00:00+00:00",
+                "task_updated_at": "2026-08-04T00:00:01+00:00",
+                "sent_at": "",
+            }
+        ]
+
+        result = await service.admin_task_logs()
+
+        self.assertEqual(result["summary"]["platform_pending_total"], 2)
+        self.assertEqual(result["summary"]["judged_no_send"], 1)
+        self.assertEqual(result["summary"]["platform_pending"], 1)
+        self.assertEqual({item["task_id"] for item in result["items"]}, {"101", "202"})
+
     async def test_queue_workers_never_exceed_configured_concurrency(self) -> None:
         settings = _settings(shadow_mode=True)
         settings.sop_platform_task_concurrency = 6

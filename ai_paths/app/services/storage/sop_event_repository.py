@@ -133,6 +133,70 @@ class SopEventRepositoryMixin:
             )
         return self.get_sop_event(event_id)
 
+    def list_platform_sop_task_records(
+        self,
+        *,
+        limit: int = 100,
+        task_id: str = "",
+        customer_id: str = "",
+    ) -> list[dict[str, Any]]:
+        clauses = ["e.event_type='platform_sop_task'"]
+        params: list[Any] = []
+        if task_id:
+            clauses.append("e.event_id=?")
+            params.append(f"platform_sop_task:{str(task_id).strip()}")
+        if customer_id:
+            clauses.append("t.customer_id=?")
+            params.append(str(customer_id).strip())
+        safe_limit = max(1, min(int(limit or 100), 500))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    e.event_id,
+                    e.status AS event_status,
+                    e.error AS event_error,
+                    e.received_at,
+                    e.updated_at AS event_updated_at,
+                    e.raw_payload_json,
+                    t.id AS local_task_id,
+                    t.customer_id,
+                    t.external_userid,
+                    t.corp_id,
+                    t.user_id,
+                    t.wechat,
+                    t.sop_pack_name,
+                    t.status AS task_status,
+                    t.reply_messages_json,
+                    t.send_payload_json,
+                    t.send_response_json,
+                    t.error AS task_error,
+                    t.created_at AS task_created_at,
+                    t.updated_at AS task_updated_at,
+                    t.sent_at
+                FROM sop_events e
+                LEFT JOIN sop_send_tasks t ON t.event_id=e.event_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY e.received_at DESC
+                LIMIT ?
+                """,
+                [*params, safe_limit],
+            ).fetchall()
+        records: list[dict[str, Any]] = []
+        for raw_row in rows:
+            row = dict(raw_row)
+            raw_payload = loads_dict(row.pop("raw_payload_json", "{}"))
+            row["platform_task"] = (
+                raw_payload.get("platform_task")
+                if isinstance(raw_payload.get("platform_task"), dict)
+                else {}
+            )
+            row["reply_messages"] = loads_list(row.pop("reply_messages_json", "[]"))
+            row["send_payload"] = loads_dict(row.pop("send_payload_json", "{}"))
+            row["send_response"] = loads_dict(row.pop("send_response_json", "{}"))
+            records.append(row)
+        return records
+
     def schedule_sop_event_model_retry(
         self,
         event_id: str,

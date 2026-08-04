@@ -140,7 +140,7 @@ export function RunLogViewer() {
     <main className="flex h-screen bg-slate-50 text-slate-950">
       <aside className="flex w-[420px] min-w-[360px] flex-col border-r bg-white">
         <header className="border-b p-4">
-          <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="mb-4 flex flex-wrap items-center gap-2">
             <Link href="/" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
               <ArrowLeft className="h-4 w-4" />
               返回对话
@@ -148,6 +148,10 @@ export function RunLogViewer() {
             <Link href="/logs/sop" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
               <Send className="h-4 w-4" />
               SOP
+            </Link>
+            <Link href="/logs/sop-platform" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
+              <Clock className="h-4 w-4" />
+              第三方任务
             </Link>
             <button
               type="button"

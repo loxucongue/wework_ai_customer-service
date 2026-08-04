@@ -351,6 +351,25 @@ async def admin_sop_event_detail(event_id: str) -> dict[str, Any]:
     return detail
 
 
+@app.get("/admin/sop-platform-tasks", dependencies=[Depends(require_api_key)])
+async def admin_sop_platform_tasks(
+    limit: int = 100,
+    bucket: str = "",
+    decision: str = "",
+    task_id: str = "",
+    customer_id: str = "",
+    refresh_platform: bool = True,
+) -> dict[str, Any]:
+    return await sop_platform_task_service.admin_task_logs(
+        limit=limit,
+        bucket=bucket,
+        decision=decision,
+        task_id=task_id,
+        customer_id=customer_id,
+        refresh_platform=refresh_platform,
+    )
+
+
 @app.post("/sop/events", dependencies=[Depends(require_external_api_key)])
 async def sop_events(
     background_tasks: BackgroundTasks,

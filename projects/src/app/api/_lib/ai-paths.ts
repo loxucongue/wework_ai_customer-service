@@ -345,6 +345,15 @@ export type AiPathsSopEventsQuery = {
   has_error?: string;
 };
 
+export type AiPathsSopPlatformTasksQuery = {
+  limit?: string;
+  bucket?: string;
+  decision?: string;
+  task_id?: string;
+  customer_id?: string;
+  refresh_platform?: string;
+};
+
 export async function listAiPathsRuns(query: AiPathsRunsQuery) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const headers = aiPathsAuthHeaders();
@@ -396,6 +405,20 @@ export async function getAiPathsSopEvent(eventId: string) {
   const headers = aiPathsAuthHeaders();
 
   return fetch(`${apiBase.replace(/\/$/, "")}/admin/sop-events/${encodeURIComponent(eventId)}`, {
+    method: "GET",
+    headers,
+    cache: "no-store",
+  });
+}
+
+export async function listAiPathsSopPlatformTasks(query: AiPathsSopPlatformTasksQuery) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers = aiPathsAuthHeaders();
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value) search.set(key, value);
+  }
+  return fetch(`${apiBase.replace(/\/$/, "")}/admin/sop-platform-tasks?${search.toString()}`, {
     method: "GET",
     headers,
     cache: "no-store",

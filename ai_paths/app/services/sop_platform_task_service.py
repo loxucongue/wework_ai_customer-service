@@ -40,6 +40,7 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 class SopPlatformTaskService:
     RECOVERY_STATUSES = [
         "platform_claiming",
+        "platform_judging",
         "platform_processing",
         "platform_processing_retry",
         "platform_send_uncertain",
@@ -170,6 +171,12 @@ class SopPlatformTaskService:
             if self._queue.full():
                 break
             task["_aics_pulled_at"] = pulled_at
+            try:
+                self._ensure_local_task(task, status="platform_queued")
+            except Exception:
+                self._counters["persistence_error"] += 1
+                logger.exception("Unable to persist pulled third-party SOP task: %s", task_id)
+                continue
             self._queued_ids.add(task_id)
             self._queue.put_nowait(task)
             enqueued += 1
@@ -275,6 +282,64 @@ class SopPlatformTaskService:
             "timings_ms": {name: _timing_summary(values) for name, values in self._timings.items()},
         }
 
+    async def admin_task_logs(
+        self,
+        *,
+        limit: int = 100,
+        bucket: str = "",
+        decision: str = "",
+        task_id: str = "",
+        customer_id: str = "",
+        refresh_platform: bool = True,
+    ) -> dict[str, Any]:
+        safe_limit = max(1, min(int(limit or 100), 500))
+        platform_page: dict[str, Any] = {"items": [], "total": 0}
+        platform_error = ""
+        if refresh_platform:
+            try:
+                platform_page = await self.platform_client.pending(limit=safe_limit)
+            except Exception as exc:
+                platform_error = f"{type(exc).__name__}: {exc}"
+        local_records = self.repository.list_platform_sop_task_records(
+            limit=safe_limit,
+            task_id=task_id,
+            customer_id=customer_id,
+        )
+        platform_items = platform_page.get("items") if isinstance(platform_page.get("items"), list) else []
+        items = _merge_platform_task_logs(platform_items=platform_items, local_records=local_records)
+        if task_id:
+            items = [item for item in items if item["task_id"] == str(task_id).strip()]
+        if customer_id:
+            items = [item for item in items if item["customer_id"] == str(customer_id).strip()]
+        if bucket:
+            items = [item for item in items if item["bucket"] == bucket]
+        if decision:
+            items = [item for item in items if item["decision"] == decision]
+        items = items[:safe_limit]
+        summary = Counter(item["bucket"] for item in items)
+        return {
+            "summary": {
+                "platform_pending_total": int(platform_page.get("total") or 0),
+                "visible_total": len(items),
+                "platform_pending": summary["platform_pending"],
+                "pulled_unjudged": summary["pulled_unjudged"],
+                "judging": summary["judging"],
+                "judged_send": summary["judged_send"],
+                "judged_no_send": summary["judged_no_send"],
+                "sending": summary["sending"],
+                "sent": summary["sent"],
+                "recovery": summary["recovery"],
+            },
+            "platform": {
+                "refreshed": refresh_platform,
+                "error": platform_error,
+                "query_start_time": platform_page.get("start_time"),
+                "query_end_time": platform_page.get("end_time"),
+            },
+            "worker": self.runtime_status(),
+            "items": items,
+        }
+
     def _observe(self, name: str, elapsed_seconds: float) -> None:
         values = self._timings.get(name)
         if values is not None:
@@ -301,6 +366,47 @@ class SopPlatformTaskService:
         self._terminal_order.append(task_id)
         while len(self._terminal_order) > 50_000:
             self._terminal_ids.discard(self._terminal_order.popleft())
+
+    def _ensure_local_task(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        status: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        task_id = _task_id(platform_task)
+        if not task_id:
+            raise ValueError("platform task_id is required")
+        event_id = f"platform_sop_task:{task_id}"
+        event = self.repository.create_sop_event(
+            {
+                "event_id": event_id,
+                "event_type": "platform_sop_task",
+                "source": "third_party_sop_pending",
+                "request_reply": False,
+                "created_at": str(platform_task.get("scheduledAt") or platform_task.get("scheduled_at") or ""),
+                "platform_task": platform_task,
+            }
+        )
+        current_status = str(event.get("status") or "")
+        if event.get("created") or current_status in {"", "accepted", "platform_received", "platform_queued"}:
+            event = self.repository.update_sop_event_status(event_id, status=status)
+        identity = _task_identity(platform_task)
+        local_task = self.repository.create_sop_send_task(
+            event_id=event_id,
+            idempotency_key=f"platform-sop:{task_id}",
+            customer_id=identity["customer_id"],
+            external_userid=identity["external_userid"],
+            corp_id=identity["corp_id"],
+            user_id=identity["user_id"],
+            wechat=identity["wechat"],
+            sop_pack_id=f"platform-sop-{task_id}",
+            sop_pack_name=str(platform_task.get("ruleName") or platform_task.get("sceneName") or "第三方SOP任务"),
+            sop_category="platform_task",
+            trigger_source="third_party_sop_pending",
+            reply_messages=_platform_messages(platform_task),
+            status=status,
+        )
+        return event, local_task
 
     async def _process_locked(
         self,
@@ -394,6 +500,13 @@ class SopPlatformTaskService:
             self.repository.update_sop_event_status(event_id, status="shadow_no_send")
             self._counters[preflight_reason] += 1
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
+
+        self.repository.update_sop_event_status(event_id, status="platform_judging")
+        self.repository.update_sop_send_task(
+            str(local_task.get("id") or ""),
+            status="judging",
+            send_payload={"platform_task_id": task_id, "phase": "loading_latest_context"},
+        )
 
         claimed = recovery_status in {
             "platform_processing",
@@ -801,6 +914,149 @@ def _task_timing(task: dict[str, Any]) -> dict[str, Any]:
         "pulled_at": task.get("_aics_pulled_at") or "",
         "lateness_seconds": round(max(0.0, time.time() - scheduled), 3) if scheduled else None,
     }
+
+
+def _merge_platform_task_logs(
+    *,
+    platform_items: list[dict[str, Any]],
+    local_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    local_by_id = {
+        _record_task_id(record): record
+        for record in local_records
+        if _record_task_id(record)
+    }
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for platform_task in platform_items:
+        task_id = _task_id(platform_task)
+        if not task_id:
+            continue
+        merged.append(
+            _platform_task_log_item(
+                platform_task=platform_task,
+                local_record=local_by_id.get(task_id, {}),
+                platform_visible=True,
+            )
+        )
+        seen.add(task_id)
+    for task_id, record in local_by_id.items():
+        if task_id in seen:
+            continue
+        stored_task = record.get("platform_task") if isinstance(record.get("platform_task"), dict) else {}
+        merged.append(
+            _platform_task_log_item(
+                platform_task=stored_task,
+                local_record=record,
+                platform_visible=False,
+            )
+        )
+    merged.sort(key=lambda item: float(item.pop("_sort_epoch", 0.0)), reverse=True)
+    return merged
+
+
+def _platform_task_log_item(
+    *,
+    platform_task: dict[str, Any],
+    local_record: dict[str, Any],
+    platform_visible: bool,
+) -> dict[str, Any]:
+    task_id = _task_id(platform_task) or _record_task_id(local_record)
+    event_status = str(local_record.get("event_status") or "")
+    task_status = str(local_record.get("task_status") or "")
+    bucket = _platform_task_bucket(event_status=event_status, task_status=task_status, has_local=bool(local_record))
+    send_payload = local_record.get("send_payload") if isinstance(local_record.get("send_payload"), dict) else {}
+    decision_payload = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
+    decision = str(decision_payload.get("decision") or "")
+    if not decision and task_status in {"shadow_send", "sending", "sent"}:
+        decision = "send"
+    if not decision and task_status in {"shadow_no_send", "completed_without_send"}:
+        decision = "no_send"
+    request_payload = send_payload.get("request") if isinstance(send_payload.get("request"), dict) else {}
+    final_messages = request_payload.get("reply_messages") if isinstance(request_payload.get("reply_messages"), list) else []
+    if not final_messages:
+        final_messages = (
+            decision_payload.get("reply_messages")
+            if isinstance(decision_payload.get("reply_messages"), list)
+            else local_record.get("reply_messages")
+            if isinstance(local_record.get("reply_messages"), list)
+            else []
+        )
+    identity = _task_identity(platform_task)
+    for key in identity:
+        if not identity[key]:
+            identity[key] = str(local_record.get(key) or "")
+    scheduled_at = platform_task.get("scheduledAt") or platform_task.get("scheduled_at") or ""
+    scheduled_epoch = _task_scheduled_epoch(platform_task)
+    received_at = str(local_record.get("received_at") or "")
+    return {
+        "task_id": task_id,
+        "bucket": bucket,
+        "stage_label": _PLATFORM_TASK_BUCKET_LABELS[bucket],
+        "platform_status": str(platform_task.get("status") or ("10" if platform_visible else "")),
+        "platform_visible": platform_visible,
+        "event_status": event_status,
+        "task_status": task_status,
+        "decision": decision,
+        "decision_reason": str(decision_payload.get("reason") or ""),
+        "error": str(local_record.get("task_error") or local_record.get("event_error") or ""),
+        "customer_id": identity["customer_id"],
+        "external_userid": identity["external_userid"],
+        "corp_id": identity["corp_id"],
+        "user_id": identity["user_id"],
+        "wechat": identity["wechat"],
+        "rule_name": str(platform_task.get("ruleName") or platform_task.get("sceneName") or local_record.get("sop_pack_name") or ""),
+        "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
+        "use_ai_copy": _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy"))),
+        "scheduled_at": scheduled_at,
+        "pulled_at": str(platform_task.get("_aics_pulled_at") or received_at),
+        "updated_at": str(local_record.get("task_updated_at") or local_record.get("event_updated_at") or ""),
+        "sent_at": str(local_record.get("sent_at") or ""),
+        "lateness_seconds": round(max(0.0, time.time() - scheduled_epoch), 3) if scheduled_epoch else None,
+        "original_messages": _platform_messages(platform_task),
+        "final_messages": final_messages,
+        "send_response": local_record.get("send_response") if isinstance(local_record.get("send_response"), dict) else {},
+        "_sort_epoch": max(scheduled_epoch, _parse_epoch(received_at)),
+    }
+
+
+def _record_task_id(record: dict[str, Any]) -> str:
+    platform_task = record.get("platform_task") if isinstance(record.get("platform_task"), dict) else {}
+    task_id = _task_id(platform_task)
+    if task_id:
+        return task_id
+    event_id = str(record.get("event_id") or "")
+    return event_id.split(":", 1)[1] if event_id.startswith("platform_sop_task:") else ""
+
+
+def _platform_task_bucket(*, event_status: str, task_status: str, has_local: bool) -> str:
+    if not has_local:
+        return "platform_pending"
+    if event_status in {"platform_send_uncertain", "platform_processing_retry", "platform_complete_pending", "platform_failed"} or task_status in {"processing_retry"}:
+        return "recovery"
+    if task_status == "sent":
+        return "sent"
+    if task_status == "sending":
+        return "sending"
+    if task_status in {"shadow_no_send", "completed_without_send"}:
+        return "judged_no_send"
+    if task_status == "shadow_send":
+        return "judged_send"
+    if task_status == "judging" or event_status in {"platform_judging", "platform_claiming", "platform_processing"}:
+        return "judging"
+    return "pulled_unjudged"
+
+
+_PLATFORM_TASK_BUCKET_LABELS = {
+    "platform_pending": "平台待拉取",
+    "pulled_unjudged": "已拉取待判断",
+    "judging": "判断中",
+    "judged_send": "已判断发送",
+    "judged_no_send": "已判断不发",
+    "sending": "发送中",
+    "sent": "已发送",
+    "recovery": "恢复中",
+}
 
 
 def _timing_summary(values: deque[float]) -> dict[str, float | int]:
