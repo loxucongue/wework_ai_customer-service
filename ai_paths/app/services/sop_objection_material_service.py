@@ -7,7 +7,7 @@ from typing import Any
 
 
 class SopObjectionMaterialService:
-    """Reserved business-managed material catalog for future AI-copy tasks."""
+    """Business-managed text slices used by third-party SOP AI-copy tasks."""
 
     def __init__(self, path: Path):
         self.path = path
@@ -49,14 +49,21 @@ class SopObjectionMaterialService:
             output.append(
                 {
                     "material_id": material_id,
+                    "name": str(item.get("name") or item.get("objective") or material_id).strip(),
                     "category": str(item.get("category") or "").strip(),
-                    "objective": str(item.get("objective") or "").strip(),
+                    "tags": _strings(item.get("tags")),
                     "applicable_scenes": _strings(item.get("applicable_scenes")),
-                    "reference_texts": _strings(item.get("reference_texts")),
-                    "assets": [dict(value) for value in item.get("assets", []) if isinstance(value, dict)],
-                    "facts": _strings(item.get("facts")),
-                    "forbidden_claims": _strings(item.get("forbidden_claims")),
-                    "business_note": str(item.get("business_note") or "").strip(),
+                    "response_approach": str(
+                        item.get("response_approach")
+                        or item.get("business_note")
+                        or item.get("objective")
+                        or ""
+                    ).strip(),
+                    "example_contents": _strings(
+                        item.get("example_contents")
+                        if isinstance(item.get("example_contents"), list)
+                        else item.get("reference_texts")
+                    ),
                 }
             )
         return {

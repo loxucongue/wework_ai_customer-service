@@ -94,3 +94,74 @@ AI 系统只能在任务到期后，通过第三方平台的 `pending` 接口拉
 - 平台只有 `10/20/30` 三种状态。基础设施失败后，AI 系统只能保留本地恢复记录和平台状态 `20`，不能回写失败或延期。
 - 当前不处理读取最新上下文与实际发送之间最后一秒出现新客户消息的竞态。
 - 生产仍保持 `SOP_PLATFORM_PULL_ENABLED=false` 和 `SOP_PLATFORM_SHADOW_MODE=true`，联调完成前不会消费或发送。
+
+## 2026-08-04 模型输入与改写补充合同
+
+### `useAiCopy` 的归属
+
+`useAiCopy` 由第三方 SOP 平台在 `pending` 任务中定义并返回，不是 AI 系统的环境变量，也不是“AI回复主线话术”页面的配置项。
+
+- `false`：AI 只判断 `send/no_send`。发送时必须逐条原样保留类型、内容、URL 和顺序。
+- `true`：AI 可以改写已有文字以自然承接最新聊天；图片、视频、链接、消息数量、类型和顺序不可改变。
+
+第三方平台需要为每条任务明确返回布尔值，不能省略后让 AI 猜测。
+
+### 任务类型
+
+第三方平台通过 `triggerEvent`（兼容 `trigger_event/eventType/event_type`）提供任务类型。`add_wecom` 表示首次加微任务。首次加微任务除客户删除、停止联系、待回复问题、忙碌已承接、人工接待、风险状态、重复内容或业务终态冲突外，默认倾向发送；`useAiCopy=true` 时可增加自然过渡。
+
+### 发送前上下文
+
+模型只接收必要上下文：
+
+```json
+{
+  "task": {
+    "task_id": "101",
+    "task_type": "add_wecom",
+    "scene": {},
+    "use_ai_copy": true,
+    "message_content": [],
+    "platform_metadata": {
+      "rule_id": "",
+      "rule_name": "",
+      "scene_id": ""
+    },
+    "timing": {
+      "scheduled_at": "",
+      "pulled_at": "",
+      "lateness_seconds": 0
+    }
+  },
+  "latest_context": {
+    "customer_relation": {},
+    "conversation_timeline": [],
+    "timeline_structure": {},
+    "business_state": {}
+  },
+  "material_library": [],
+  "authoritative_business_facts": {}
+}
+```
+
+聊天最多读取 80 条，按原始顺序输入。每条聊天包含 `message_ref/role/message_type/content`；有可靠时间时增加北京时间 `occurred_at_beijing`、距今时长 `time_ago` 和相邻消息间隔 `gap_from_previous`。`timeline_structure` 只提供消息计数、最后消息角色及最后客户消息后是否已有助手消息，防止模型误读长时间线。模型不再接收重复身份、请求路由、缓存命中和重复调度字段。
+
+### 内容冲突与素材库
+
+- `useAiCopy=false`：候选内容与客户、场景或硬事实冲突时只能 `no_send`。
+- `useAiCopy=true`：若冲突仅涉及文字，模型先分析最近聊天中的需求和卡点，再从异议素材库选择应对思路；素材库为空或没有合适切片时，使用当前权威业务事实生成。
+- 冲突涉及图片、视频或链接时不能替换媒体；无法仅靠文字解决则 `no_send`。
+
+异议素材库配置页为 `/sop-materials`，独立于 `/sop` 的“AI回复主线话术”。单条素材结构：
+
+```json
+{
+  "material_id": "price_001",
+  "name": "价格顾虑",
+  "category": "price",
+  "tags": ["价格", "信任"],
+  "applicable_scenes": ["客户担心到店加价"],
+  "response_approach": "先承接担心，再用透明费用事实降低风险感。",
+  "example_contents": ["示例只用于启发模型，不要求逐字发送。"]
+}
+```

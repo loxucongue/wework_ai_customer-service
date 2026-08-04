@@ -111,6 +111,7 @@ sop_platform_task_service = SopPlatformTaskService(
     system_client=outreach_system_client,
     model_client=model_client,
     customer_context_service=customer_context_service,
+    objection_material_service=sop_objection_material_service,
 )
 reply_graphs = build_reply_graphs(
     coze_client,

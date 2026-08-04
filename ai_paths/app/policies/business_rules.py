@@ -94,6 +94,26 @@ def outreach_business_facts_for_model() -> dict[str, Any]:
     }
 
 
+def sop_platform_business_facts_for_model() -> dict[str, Any]:
+    """Return the compact authoritative fallback facts for third-party SOP copy."""
+    rules = load_business_rules()
+    offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
+    return {
+        "version": rules.get("version"),
+        "identity": _selected_dict_fields(
+            rules.get("identity"),
+            ("public_role", "style", "goal"),
+        ),
+        "brand_trust": _selected_dict_fields(
+            rules.get("brand_trust_policy"),
+            ("allowed_points", "forbidden_points"),
+        ),
+        "offer": _offer_facts(offer),
+        "transaction_policy": rules.get("transaction_policy") or {},
+        "hard_forbidden": rules.get("forbidden") or [],
+    }
+
+
 def _planner_runtime_rules(rules: dict[str, Any]) -> dict[str, Any]:
     offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
     return {

@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   Clock3,
   Database,
+  Library,
   LoaderCircle,
   RefreshCw,
   Search,
@@ -158,15 +159,24 @@ export function SopPlatformLogViewer() {
               </div>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => void load()}
-            disabled={loading}
-            className="inline-flex items-center gap-2 rounded-md bg-slate-950 px-4 py-2 text-sm text-white disabled:opacity-60"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-            刷新
-          </button>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/sop-materials"
+              className="inline-flex items-center gap-2 rounded-md border bg-white px-4 py-2 text-sm hover:bg-slate-50"
+            >
+              <Library className="h-4 w-4" />
+              异议素材库
+            </Link>
+            <button
+              type="button"
+              onClick={() => void load()}
+              disabled={loading}
+              className="inline-flex items-center gap-2 rounded-md bg-slate-950 px-4 py-2 text-sm text-white disabled:opacity-60"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              刷新
+            </button>
+          </div>
         </div>
       </header>
 

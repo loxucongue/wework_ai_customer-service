@@ -12,6 +12,7 @@ from typing import Any
 
 from app.config import Settings
 from app.services.sop_platform_client import SopPlatformClient
+from app.services.sop_objection_material_service import SopObjectionMaterialService
 from app.services.sop_platform_task_service import SOP_PLATFORM_TASK_SYSTEM_PROMPT, SopPlatformTaskService
 from app.services.sop_reply_pack_service import SopReplyPackService
 
@@ -22,25 +23,25 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
     def test_platform_prompt_has_layered_send_audit_contract(self) -> None:
         required_sections = (
-            "# Node Role",
-            "# Business Background And Goal",
-            "# Responsibility Boundary",
-            "# Input Contract",
-            "# Fact And Instruction Priority",
-            "# Decision Workflow",
-            "# No-Send Boundaries",
-            "# Send Boundaries",
-            "# Copy Rules",
-            "# Calibration Examples",
-            "# Output Contract",
+            "# 1. 角色与任务",
+            "# 2. 业务目标",
+            "# 3. 输入说明",
+            "# 4. 事实与指令优先级",
+            "# 5. 决策流程",
+            "# 6. 特殊情况与 no_send 边界",
+            "# 7. 内容冲突时的处理",
+            "# 8. use_ai_copy 边界",
+            "# 9. 风格",
+            "# 10. 输出合同",
         )
         for section in required_sections:
             self.assertIn(section, SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("普通沉默不是拒发理由", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
-        self.assertIn("`message_content` 和 `scene` 的职责不同", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
-        self.assertIn("客户最新问题尚未被回答属于绝对门槛", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
-        self.assertIn("不得把“活动介绍、效果价值、到店提醒、操作要求”等任务内容", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
-        self.assertIn("禁止 `defer`", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("首次加微任务用于建立第一次有效接触", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("第三方任务字段，不是 AI 系统配置", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("从 `material_library` 选择适合当前场景", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("使用 `authoritative_business_facts`", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("不能延期、重排或创建后续任务", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("只返回小写 `json` 对象", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
 
     async def test_model_input_labels_executable_content_and_supporting_scene(self) -> None:
@@ -67,6 +68,48 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["task"]["platform_metadata"]["rule_id"], 81)
         self.assertEqual(payload["task"]["platform_metadata"]["scene_id"], 23)
         self.assertEqual(payload["task"]["message_content"], [_text("平台原文")])
+        self.assertNotIn("sender_type", payload["task"]["platform_metadata"])
+        self.assertIn("authoritative_business_facts", payload)
+
+    async def test_context_uses_80_message_timeline_with_beijing_time_scale(self) -> None:
+        model = _Model([{"decision": "no_send", "reason": "test", "reply_messages": []}])
+        service, _repo, _platform, system = _service(model=model)
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer" if index % 2 else "assistant",
+                "content": f"message-{index}",
+                "msgtime": 1_785_397_200_000 + index * 60_000,
+            }
+            for index in range(90)
+        ]
+
+        await service.process_task(_task(use_ai_copy=True))
+
+        self.assertEqual(system.conversation_limits, [80])
+        payload = json.loads(model.calls[0][1]["content"])
+        timeline = payload["latest_context"]["conversation_timeline"]
+        self.assertEqual(len(timeline), 80)
+        self.assertEqual(timeline[0]["content"], "message-10")
+        self.assertIn("occurred_at_beijing", timeline[0])
+        self.assertIn("time_ago", timeline[0])
+        self.assertIn("gap_from_previous", timeline[1])
+        self.assertEqual(payload["latest_context"]["timeline_structure"]["latest_message_role"], "customer")
+        self.assertFalse(payload["latest_context"]["timeline_structure"]["assistant_after_latest_customer"])
+        self.assertNotIn("task_timing", payload["latest_context"])
+
+    async def test_material_library_is_available_for_ai_copy_conflict_repair(self) -> None:
+        model = _Model([{"decision": "send", "reason": "material", "reply_messages": [_text("自然承接")]}])
+        material_service = _Materials()
+        service, _repo, _platform, system = _service(model=model, material_service=material_service)
+        task = _task(use_ai_copy=True)
+        task["triggerEvent"] = "add_wecom"
+
+        await service.process_task(task)
+
+        payload = json.loads(model.calls[0][1]["content"])
+        self.assertEqual(payload["task"]["task_type"], "add_wecom")
+        self.assertEqual(payload["material_library"][0]["material_id"], "price_001")
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("自然承接")])
 
     async def test_non_ai_copy_is_sent_exactly_and_completes_three_state_flow(self) -> None:
         model = _Model(
@@ -477,8 +520,41 @@ class SopReplyPackScopeTests(unittest.TestCase):
                     }
                 )
 
+    def test_objection_material_catalog_uses_simple_slice_schema(self) -> None:
+        with TemporaryDirectory() as directory:
+            service = SopObjectionMaterialService(Path(directory) / "materials.json")
+            saved = service.save(
+                {
+                    "version": 1,
+                    "materials": [
+                        {
+                            "material_id": "effect_001",
+                            "name": "效果顾虑",
+                            "category": "effect",
+                            "tags": ["效果", "信任"],
+                            "applicable_scenes": ["客户担心没效果"],
+                            "response_approach": "先共情，再用真实事实建立信任。",
+                            "example_contents": ["先给您看同类情况。"],
+                        }
+                    ],
+                }
+            )
 
-def _service(*, model: Any, shadow_mode: bool = False):
+            self.assertEqual(
+                set(saved["materials"][0]),
+                {
+                    "material_id",
+                    "name",
+                    "category",
+                    "tags",
+                    "applicable_scenes",
+                    "response_approach",
+                    "example_contents",
+                },
+            )
+
+
+def _service(*, model: Any, shadow_mode: bool = False, material_service: Any | None = None):
     repo = _Repo()
     platform = _Platform()
     system = _System()
@@ -489,6 +565,7 @@ def _service(*, model: Any, shadow_mode: bool = False):
         system_client=system,
         model_client=model,
         customer_context_service=_CustomerContext(),
+        objection_material_service=material_service,
     )
     return service, repo, platform, system
 
@@ -598,6 +675,7 @@ class _System:
         self.send_calls: list[dict[str, Any]] = []
         self.send_responses: list[dict[str, Any]] = []
         self.conversation_calls = 0
+        self.conversation_limits: list[int | None] = []
         self.conversation_payload = {
             "code": 0,
             "data": {
@@ -608,6 +686,7 @@ class _System:
 
     async def conversation(self, **_kwargs):
         self.conversation_calls += 1
+        self.conversation_limits.append(_kwargs.get("limit"))
         return self.conversation_payload
 
     async def send(self, **kwargs):
@@ -620,6 +699,24 @@ class _System:
 class _CustomerContext:
     def load(self, **_kwargs):
         return {"source": "test", "orders": [], "appointment": {}}
+
+
+class _Materials:
+    def load(self):
+        return {
+            "version": 1,
+            "materials": [
+                {
+                    "material_id": "price_001",
+                    "name": "价格顾虑",
+                    "category": "price",
+                    "tags": ["价格", "信任"],
+                    "applicable_scenes": ["客户担心加价"],
+                    "response_approach": "先承接担心，再说明透明事实。",
+                    "example_contents": ["费用按活动事实说清楚。"],
+                }
+            ],
+        }
 
 
 class _Model:

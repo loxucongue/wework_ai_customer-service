@@ -5,10 +5,11 @@ import json
 import logging
 import time
 from collections import Counter, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
 
+from app.policies.business_rules import sop_platform_business_facts_for_model
 from app.services.storage.serialization import utc_now_iso
 
 
@@ -126,6 +127,101 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 """.strip()
 
 
+# The earlier prompt is kept above only to avoid a risky mechanical rewrite of a large
+# historical constant. This assignment is the active runtime contract.
+SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
+# 1. 角色与任务
+你是第三方 SOP 到期任务的发送前审核与受限文案改写节点。
+第三方平台负责策略、任务类型、触发时间、频率和候选内容；你只根据发送前最新事实决定本任务现在 `send` 还是 `no_send`。你不能延期、重排或创建后续任务。
+
+# 2. 业务目标
+在不打断真实对话、不重复骚扰、不违背客户最新状态和权威业务事实的前提下，尽量保留第三方任务的触达价值。
+普通沉默不是拒发理由。首次加微任务用于建立第一次有效接触，除非命中明确的现实冲突或安全边界，默认倾向发送，并可在允许改写时增加自然过渡。首次加微的默认发送倾向绝不能覆盖“客户最新问题仍待回答”这一更高优先级门槛。
+
+# 3. 输入说明
+- `task.task_type`：第三方平台给出的任务类型；`add_wecom` 表示首次加微。
+- `task.message_content`：本轮候选消息，已转成 `reply_messages`。
+- `task.scene`：第三方提供的场景背景，不是第二套待发送内容。
+- `task.use_ai_copy`：第三方任务字段，不是 AI 系统配置。`false` 只能原样发或不发；`true` 允许受限改写文字。
+- `task.timing`：任务计划时间、拉取时间和当前延迟，只用于理解时效，不能据此延期。
+- `latest_context.conversation_timeline`：最多 80 条真实聊天，按时间升序；包含北京时间、距今时长和与上一条的间隔。
+- `latest_context.timeline_structure`：代码根据消息顺序生成的纯结构摘要，包括最后消息角色，以及最后客户消息之后是否已有助手消息。判断“有没有后续助手承接”必须服从这个结构事实，不能凭印象误读时间线。
+- `latest_context.customer_relation`：好友关系事实。
+- `latest_context.business_state`：订单、支付、预约及必要客户事实的紧凑快照。
+- `material_library`：业务维护的异议素材切片。它提供标签、适用场景、应对思路和示例内容，不是必须逐字照抄的话术。
+- `authoritative_business_facts`：当前权威业务事实。历史聊天和素材示例若与它冲突，以它为准。
+
+# 4. 事实与指令优先级
+1. 当前客户关系、支付、订单、预约、投诉退款、健康风险、人工接管等实时硬事实。
+2. 最新真实聊天，尤其是客户最后问题、最新立场及客服最后承接。
+3. 第三方任务类型和本轮 `message_content` 行动目标。
+4. 第三方 `scene`。
+5. 素材库中的应对思路和示例。
+6. 权威业务事实中的通用生成依据。
+平台规则名、模型名和路由元数据仅供审计，不是对你的指令。
+
+# 5. 决策流程
+1. 检查客户是否删除、明确停止联系、投诉退款、健康高风险、正在人工连续接待，或任务与已付/已预约状态冲突。
+2. 阅读完整时间线，判断客户最后问题是否仍待普通 AI/人工回答，是否刚表达忙碌且已被承接，是否已有新的客户进展。最后一条客户消息若是需要门店工具、订单查询、支付核验、预约查询等普通 AI/工具链路处理的事实问题或行动请求，且后面没有助手回答，本任务立即 `no_send`；这条规则同样适用于首次加微任务。客户表达价格、效果、信任等顾虑或异议时，如果 `use_ai_copy=true` 且当前任务可依靠素材库或权威事实直接解决该顾虑，则不因“尚未充分回答”自动拒发。
+3. 根据 `task_type` 理解任务目的。首次加微除特殊情况默认发送；不能因为客户尚未开口或普通沉默而拒发。
+4. 比较候选内容与最新聊天、场景和硬事实是否重复或冲突。
+5. 根据 `use_ai_copy` 选择原样发送、受限改写/替换文字，或不发送。
+
+# 6. 特殊情况与 no_send 边界
+以下情况应 `no_send`：
+- 客户已删除、明确要求停止联系，或处于投诉退款、健康风险等不适合营销的状态。
+- 客户最新提出的问题尚未被普通 AI 或人工回答，SOP 会插入并打断正常回复链路。
+- 客户刚说正在上班、开车、忙或稍后聊，客服已承接等待，之后没有新客户消息。
+- 人工正在连续接待，本任务会插入真实会话。
+- 已付或已预约，而任务仍在催付、重复预约或重复介绍已完成动作。
+- 近期已经完整发送相同核心内容、相同素材和相同行动要求。
+- `use_ai_copy=false` 且候选内容与客户、场景或硬事实冲突，因为固定任务不允许 AI 篡改。
+- 候选消息包含冲突媒体；图片、视频和链接不可替换，无法仅靠文字改写解决。
+
+# 7. 内容冲突时的处理
+当 `use_ai_copy=true` 且冲突只涉及文字时，不要机械 `no_send`：
+1. 先从最新聊天判断客户当前需求、主要顾虑、卡点和任务真正需要完成的动作。
+2. 从 `material_library` 选择适合当前场景的应对思路和示例，改写成自然微信表达。命中素材后必须直接解决客户当前卡点，并让素材的核心应对思路在客户可见文字中落地；`response_approach` 中并列写出的每个关键应对点都必须覆盖，不能擅自换成另一个更泛的活动事实。禁止退化成“我给您发详情、您先看看、方便再说”等没有解决顾虑的泛化承接。普通价格、效果、信任异议有匹配素材且不存在硬边界时，默认优先 `send` 改写后的直接答疑，不要把它误判成待工具处理问题。
+3. 如果素材库为空或没有合适切片，使用 `authoritative_business_facts` 按现行业务标准生成。
+4. 保留第三方任务的合理目标，但不得保留已经过时、重复或与客户当前状态冲突的具体表述。
+5. 只能改写已有文字；媒体、链接、数量、类型和顺序必须保持不变。若结构无法承载修复，返回 `no_send`。
+
+# 8. use_ai_copy 边界
+## false
+- 只判断发送或不发送。
+- `send` 时所有类型、内容、URL 和顺序必须与平台输入完全一致。
+
+## true
+- 可以改写已有 text，让它承接最新聊天，像真人微信沟通。
+- 不得改变权威价格、项目、门店、退款、支付和预约事实。
+- 不得增删消息，不得修改或重排 image/video/link。
+- `message_content` 为空时，可根据可信 scene、素材库或权威业务事实生成 1–2 条短 text；没有可信目标时 `no_send`。
+- 不得生成预约金卡、任意 URL 或平台未提供的素材。
+
+# 9. 风格
+- 简短、口语、自然，先承接当前上下文，再完成本轮任务。
+- 不写公告、公文、内部流程或“我继续帮您处理”式空话。
+- 不复述大段历史，不重复客户已经听过的同一事实。
+- 首次加微可以轻量修改开头，使第一句话自然，但不能把任务改成与首次接触无关的营销催促。
+
+# 9.1 校准案例
+1. `task_type=add_wecom`、客户从未开口或仅有企微自动欢迎语、没有现实冲突：倾向 `send`。
+2. `task_type=add_wecom`，但客户最后问“你们店在哪里”，之后没有任何助手回答：必须 `no_send`，由普通 AI 先调用门店工具回答。
+3. 客户说“我担心到店加价”，这属于可由素材和权威业务事实解决的异议，不等同于待工具处理的客户问题。素材库提供“先承接担心，再说明活动范围内费用透明且额外项目不强制”时，若允许改写且本轮适合发送，文字必须直接解释费用透明和不强制，不能只说“给您发详情”。
+4. `use_ai_copy=false` 且客户已付，但固定文案仍催预约金：`no_send`，不得改写成其他内容。
+
+# 10. 输出合同
+只返回小写 `json` 对象，不要 Markdown、解释或额外字段：
+{
+  "decision": "send | no_send",
+  "reason": "基于最新事实的简明依据",
+  "reply_messages": []
+}
+`send` 时 `reply_messages` 必须非空；`no_send` 时必须是空数组。
+文字消息示例：{"type":"text","order":1,"content":{"text":"客户可见内容"}}
+""".strip()
+
+
 class SopPlatformTaskService:
     RECOVERY_STATUSES = [
         "platform_claiming",
@@ -145,6 +241,7 @@ class SopPlatformTaskService:
         system_client: Any,
         model_client: Any,
         customer_context_service: Any,
+        objection_material_service: Any | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -152,6 +249,7 @@ class SopPlatformTaskService:
         self.system_client = system_client
         self.model_client = model_client
         self.customer_context_service = customer_context_service
+        self.objection_material_service = objection_material_service
         self._locks: dict[str, asyncio.Lock] = {}
         queue_size = max(1, int(getattr(settings, "sop_platform_queue_size", 24) or 24))
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=queue_size)
@@ -701,16 +799,19 @@ class SopPlatformTaskService:
         missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
         if missing:
             raise RuntimeError(f"platform task missing identity: {','.join(missing)}")
-        conversation = await self.system_client.conversation(**identity, limit=50)
+        conversation = await self.system_client.conversation(**identity, limit=80)
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
-        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
+        relation = _compact_customer_relation(
+            data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
+        )
         messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        timeline = _conversation_timeline(messages[-80:])
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
             return {
                 "customer_relation": relation,
-                "recent_conversation": messages[-50:],
+                "conversation_timeline": timeline,
                 "conversation_count": len(messages),
-                "customer_context": {"source": "skipped_customer_deleted"},
+                "business_state": {"source": "skipped_customer_deleted"},
                 "task_timing": _task_timing(platform_task),
             }
         request_context = {
@@ -731,9 +832,9 @@ class SopPlatformTaskService:
         )
         return {
             "customer_relation": relation,
-            "recent_conversation": messages[-50:],
+            "conversation_timeline": timeline,
             "conversation_count": len(messages),
-            "customer_context": customer_context,
+            "business_state": _compact_business_state(customer_context),
             "task_timing": _task_timing(platform_task),
         }
 
@@ -747,12 +848,19 @@ class SopPlatformTaskService:
             raise RuntimeError("platform task message_content is empty or unsupported")
         if not original_messages and not _has_trusted_ai_copy_source(platform_task):
             return {"decision": "no_send", "reason": "missing_trusted_platform_content", "reply_messages": []}
+        material_library = _material_catalog_for_model(self.objection_material_service)
         model_input = {
             "task": {
                 "task_id": _task_id(platform_task),
+                "task_type": str(
+                    platform_task.get("triggerEvent")
+                    or platform_task.get("trigger_event")
+                    or platform_task.get("eventType")
+                    or platform_task.get("event_type")
+                    or ""
+                ),
                 "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
                 "scene_role": "supporting_context",
-                "trigger_event": platform_task.get("triggerEvent") or platform_task.get("trigger_event"),
                 "use_ai_copy": use_ai_copy,
                 "message_content": original_messages,
                 "message_content_role": "executable_candidate",
@@ -760,12 +868,17 @@ class SopPlatformTaskService:
                     "rule_id": platform_task.get("ruleId") or platform_task.get("rule_id"),
                     "rule_name": platform_task.get("ruleName") or platform_task.get("rule_name"),
                     "scene_id": platform_task.get("sceneId") or platform_task.get("scene_id"),
-                    "sender_type": platform_task.get("senderType") or platform_task.get("sender_type"),
-                    "dispatch_mode": platform_task.get("dispatchMode") or platform_task.get("dispatch_mode"),
                 },
                 "timing": _task_timing(platform_task),
             },
-            "latest_context": context,
+            "latest_context": {
+                "customer_relation": context.get("customer_relation") or {},
+                "conversation_timeline": context.get("conversation_timeline") or [],
+                "timeline_structure": _timeline_structure(context.get("conversation_timeline") or []),
+                "business_state": context.get("business_state") or {},
+            },
+            "material_library": material_library,
+            "authoritative_business_facts": sop_platform_business_facts_for_model(),
             "output_contract": {
                 "decision": "send | no_send",
                 "reason": "string",
@@ -1184,7 +1297,15 @@ def _bool(value: Any) -> bool:
 def _has_trusted_ai_copy_source(task: dict[str, Any]) -> bool:
     scene = task.get("scene") if isinstance(task.get("scene"), dict) else {}
     engine = scene.get("engine") if isinstance(scene.get("engine"), dict) else {}
-    return any(
+    return bool(
+        str(
+            task.get("triggerEvent")
+            or task.get("trigger_event")
+            or task.get("eventType")
+            or task.get("event_type")
+            or ""
+        ).strip()
+    ) or any(
         str(value or "").strip()
         for value in (
             scene.get("sceneDesc"),
@@ -1204,9 +1325,212 @@ def _require_platform_status(response: dict[str, Any], expected: int) -> None:
         raise RuntimeError(f"platform consume status mismatch: expected {expected}, got {actual}")
 
 
+_BEIJING_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+
+
+def _compact_customer_relation(relation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: relation.get(key)
+        for key in ("status", "is_deleted", "deleted_at", "updated_at")
+        if relation.get(key) not in (None, "")
+    }
+
+
+def _conversation_timeline(messages: list[Any]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    previous_epoch = 0.0
+    now_epoch = time.time()
+    for index, item in enumerate(messages[-80:], start=1):
+        if not isinstance(item, dict):
+            continue
+        raw_direction = str(
+            item.get("direction")
+            or item.get("role")
+            or item.get("sender_type")
+            or item.get("from")
+            or ""
+        ).strip().lower()
+        if raw_direction in {"customer", "user", "external"}:
+            role = "customer"
+        elif raw_direction in {"assistant", "staff", "ai", "agent", "employee", "system"}:
+            role = "assistant"
+        else:
+            role = raw_direction or "unknown"
+        message_type = str(
+            item.get("msgtype") or item.get("message_type") or item.get("type") or "text"
+        ).strip().lower()
+        content = _timeline_message_content(item.get("content"))
+        raw_time = next(
+            (
+                item.get(key)
+                for key in ("msgtime", "timestamp", "created_at", "sent_at", "message_time", "time")
+                if item.get(key) not in (None, "")
+            ),
+            "",
+        )
+        epoch = _parse_epoch(raw_time) if raw_time not in (None, "") else 0.0
+        timeline_item: dict[str, Any] = {
+            "message_ref": f"msg_{index:03d}",
+            "role": role,
+            "message_type": message_type,
+            "content": content[:600],
+        }
+        if epoch:
+            timeline_item.update(
+                {
+                    "occurred_at_beijing": datetime.fromtimestamp(epoch, tz=_BEIJING_TZ).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    ),
+                    "time_ago": _human_duration(max(0.0, now_epoch - epoch)),
+                }
+            )
+            if previous_epoch:
+                timeline_item["gap_from_previous"] = _human_duration(max(0.0, epoch - previous_epoch))
+            previous_epoch = epoch
+        elif raw_time not in (None, ""):
+            timeline_item["raw_time"] = str(raw_time)
+        if any(value not in (None, "") for value in timeline_item.values()):
+            output.append(timeline_item)
+    return output
+
+
+def _timeline_message_content(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("text", "content", "transcript", "description", "url", "store_id"):
+            text = str(value.get(key) or "").strip()
+            if text:
+                return text
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))[:600]
+    return str(value or "").strip()
+
+
+def _timeline_structure(timeline: list[Any]) -> dict[str, Any]:
+    valid = [item for item in timeline if isinstance(item, dict)]
+    latest_customer_index = next(
+        (index for index in range(len(valid) - 1, -1, -1) if valid[index].get("role") == "customer"),
+        -1,
+    )
+    assistant_after_latest_customer = bool(
+        latest_customer_index >= 0
+        and any(item.get("role") == "assistant" for item in valid[latest_customer_index + 1 :])
+    )
+    return {
+        "message_count": len(valid),
+        "customer_message_count": sum(item.get("role") == "customer" for item in valid),
+        "assistant_message_count": sum(item.get("role") == "assistant" for item in valid),
+        "latest_message_ref": valid[-1].get("message_ref") if valid else "",
+        "latest_message_role": valid[-1].get("role") if valid else "",
+        "latest_customer_message_ref": (
+            valid[latest_customer_index].get("message_ref") if latest_customer_index >= 0 else ""
+        ),
+        "assistant_after_latest_customer": assistant_after_latest_customer,
+    }
+
+
+def _human_duration(seconds: float) -> str:
+    total_minutes = max(0, int(seconds // 60))
+    if total_minutes < 1:
+        return "不到1分钟"
+    if total_minutes < 60:
+        return f"{total_minutes}分钟"
+    total_hours = total_minutes // 60
+    remaining_minutes = total_minutes % 60
+    if total_hours < 24:
+        return f"{total_hours}小时" + (f"{remaining_minutes}分钟" if remaining_minutes else "")
+    days = total_hours // 24
+    remaining_hours = total_hours % 24
+    return f"{days}天" + (f"{remaining_hours}小时" if remaining_hours else "")
+
+
+def _compact_business_state(context: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {}
+    output: dict[str, Any] = {
+        "source": context.get("source"),
+        "customer": {
+            key: context.get("customer", {}).get(key)
+            for key in ("id", "name", "kind", "category_id")
+            if isinstance(context.get("customer"), dict)
+            and context.get("customer", {}).get(key) not in (None, "")
+        },
+        "appointment": context.get("appointment") if isinstance(context.get("appointment"), dict) else {},
+        "orders": [
+            {
+                key: order.get(key)
+                for key in (
+                    "id",
+                    "order_no",
+                    "status",
+                    "is_current_order",
+                    "fee_required",
+                    "fee_paid",
+                    "fee_paid_total",
+                    "prepay_paid",
+                    "paid_protection_status",
+                    "created_at",
+                    "store_id",
+                    "store_name",
+                    "appointment_time",
+                    "projects",
+                )
+                if order.get(key) not in (None, "", [], {})
+            }
+            for order in context.get("orders", [])[:5]
+            if isinstance(order, dict)
+        ],
+    }
+    for key in (
+        "payment_state",
+        "deposit_state",
+        "appointment_state",
+        "human_takeover",
+        "risk_state",
+        "complaint_state",
+        "refund_state",
+        "error",
+        "orders_error",
+    ):
+        if context.get(key) not in (None, "", [], {}):
+            output[key] = context.get(key)
+    return {key: value for key, value in output.items() if value not in (None, "", [], {})}
+
+
+def _material_catalog_for_model(service: Any | None) -> list[dict[str, Any]]:
+    if service is None:
+        return []
+    try:
+        payload = service.load()
+    except Exception as exc:
+        logger.warning("Unable to load SOP objection materials: %s: %s", type(exc).__name__, exc)
+        return []
+    materials = payload.get("materials") if isinstance(payload, dict) else []
+    if not isinstance(materials, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for item in materials[:100]:
+        if not isinstance(item, dict):
+            continue
+        output.append(
+            {
+                "material_id": str(item.get("material_id") or "")[:120],
+                "name": str(item.get("name") or "")[:160],
+                "category": str(item.get("category") or "")[:120],
+                "tags": [str(value)[:80] for value in item.get("tags", [])[:20]],
+                "applicable_scenes": [
+                    str(value)[:120] for value in item.get("applicable_scenes", [])[:20]
+                ],
+                "response_approach": str(item.get("response_approach") or "")[:1000],
+                "example_contents": [
+                    str(value)[:1000] for value in item.get("example_contents", [])[:10]
+                ],
+            }
+        )
+    return output
+
+
 def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
     relation = context.get("customer_relation") if isinstance(context.get("customer_relation"), dict) else {}
-    customer_context = context.get("customer_context") if isinstance(context.get("customer_context"), dict) else {}
+    customer_context = context.get("business_state") if isinstance(context.get("business_state"), dict) else {}
     return {
         "conversation_count": int(context.get("conversation_count") or 0),
         "customer_relation": relation,
