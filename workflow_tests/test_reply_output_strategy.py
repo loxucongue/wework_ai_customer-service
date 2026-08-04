@@ -5280,7 +5280,7 @@ def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_are
             {
                 "type": "text",
                 "order": 1,
-                "content": "望奎县这个位置我收到了。您平时还常去哪个城市或市区？我按您常去的地方给您匹配。",
+                "content": "望奎县这边我先记下了，您平时更常去哪个市区或商圈？我按您顺路的地方给您看。",
             }
         ],
         state,

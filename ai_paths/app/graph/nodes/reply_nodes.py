@@ -34,7 +34,7 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - 人数按到店总人数理解：“我朋友也一起”通常是本人+1位朋友=2位；“我带两个朋友”是本人+2位朋友=3位。卡片金额必须服从 Planner 的人数和金额决策。
 - 客户明确要入口/预约时，不要因为缺订单或开单失败暴露“入口没对上/不能发卡”，也不能再反问“如果你要我再发”；活动报价已铺垫且无硬阻断时按当前结构事实发卡，否则只补最小必要信息。
 - 没有真实 case_facts/image 不能说“我给您发图/图发您了”；有图且当前明确要图时才输出 image。上一轮顾虑已回答、客户只确认时不要擅自重发案例。
-- `store_resolution_fact.delivery_mode=clarify_service_area` 表示客户的位置已经识别清楚，但当前没有可发送的匹配门店。这个事实只供内部判断，客户可见文字不能说没有门店、暂无门店、没查到或查不到；不要承诺发送门店卡，不要让客户重复发同一个定位。直接承接已收到的位置，自然询问客户平时还常去哪个城市、市区或附近哪个地方方便，再按常去范围继续匹配。
+- `store_resolution_fact.delivery_mode=clarify_service_area` 表示客户的位置已经识别清楚，但当前没有可发送的匹配门店。这个事实只供内部判断，客户可见文字不能说没有门店、暂无门店、没查到或查不到；也不要说“不乱发、不确定的位置、真实门店、重新对”这类系统免责话。不要承诺发送门店卡，不要让客户重复发同一个定位。像微信真人一样承接：已解析到城市就问客户这个城市哪个区方便，或周边哪里常去；已解析到区县/乡镇就问更常去哪个市区/商圈。例：“海口这边我先记下了，您平时主要在海口哪个区方便？或者周边哪里也常去，我按您顺路的地方给您看。”
 - 退款、扣款异常只能先核对门店、时间、金额、项目或截图；不能说已经同意/正在办理退款，也不能承诺自动退回、原路到账或处理时效。
 - 不输出公里、分钟、车程；不承诺绝对效果；没有真实预约事实不能说已经安排好。
 - payment_collection、store_address、image、human_handoff_notice 必须使用输入中已核验的结构事实。
@@ -1000,7 +1000,7 @@ def _reply_repair_hint(error: str) -> str:
         return (
             "本轮候选门店的结构事实存在地区冲突，必须删除对应 store_address 卡片，不能沿用该门店。"
             "只使用剩余 store_fact_integrity=valid 的真实候选重写；如果没有合法候选，不要输出“继续处理”或让客户重复同一地址，"
-            "直接询问客户平时更常去哪个城市、市区或附近哪里方便，再按常去范围重新匹配。"
+            "已解析到城市就问客户这个城市哪个区方便，或周边哪里常去；已解析到区县/乡镇就问更常去哪个市区/商圈。语气要像微信真人，不要说“不乱发、不确定的位置、真实门店、重新对”。"
         )
     if "unsupported_store_address_message" in error:
         return "store_address 卡片的 store_id 必须来自本轮门店工具事实或请求里明确确认的门店 ID；没有匹配门店事实时，不要输出 store_address，只能用文字说明暂时没查到并继续确认城市、区域或门店。"
@@ -1013,9 +1013,9 @@ def _reply_repair_hint(error: str) -> str:
     if "recommended_store_card_required" in error:
         return "本轮 distance_calculate 已产生唯一 recommended_store。请基于该事实自然承接，并追加一条 content.store_id 等于 recommended_store.store_id 的 store_address；不要只在文字里承诺稍后发卡，也不要新增“已安排、已预约、已登记、已留位”等没有事实支持的状态。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
-        return "你在文本里承诺了发送地址、位置卡或让客户点开导航，但本轮没有对应门店卡。若有真实门店事实就追加对应 store_address；若 store_resolution_fact.delivery_mode=clarify_service_area，必须删除发卡承诺，不要对客户说没有门店、暂无门店、没查到或查不到，直接问客户平时还常去哪个城市、市区或附近哪里方便，也不要让客户重复发同一个定位。"
+        return "你在文本里承诺了发送地址、位置卡或让客户点开导航，但本轮没有对应门店卡。若有真实门店事实就追加对应 store_address；若 store_resolution_fact.delivery_mode=clarify_service_area，必须删除发卡承诺，不要对客户说没有门店、暂无门店、没查到或查不到，也不要说“不乱发、不确定的位置、真实门店、重新对”。已解析到城市就问客户这个城市哪个区方便，或周边哪里常去；已解析到区县/乡镇就问更常去哪个市区/商圈。"
     if "store_cards_not_allowed_when_service_area_clarification_required" in error:
-        return "客户当前地址已经识别清楚，但本轮没有可发送的匹配门店。删除所有 store_address 和发卡承诺，不要对客户说没有门店、暂无门店、没查到或查不到，也不要让客户重复提供同一位置；直接询问客户平时还常去哪个城市、市区或附近哪里方便，再按常去范围继续匹配。"
+        return "客户当前地址已经识别清楚，但本轮没有可发送的匹配门店。删除所有 store_address 和发卡承诺，不要对客户说没有门店、暂无门店、没查到或查不到，也不要让客户重复提供同一位置；承接客户已给的位置，已解析到城市就问这个城市哪个区方便，或周边哪里常去；已解析到区县/乡镇就问更常去哪个市区/商圈。语气要短、口语化，不要说“不乱发、不确定的位置、真实门店、重新对”。"
     if "distance_value_not_customer_visible" in error:
         return "distance_calculate 只用于内部排序门店。客户可见回复只说优先哪家或哪家更近一些，不要输出几公里、几分钟、车程或步行时长。"
     if "distance_fact_required" in error:
