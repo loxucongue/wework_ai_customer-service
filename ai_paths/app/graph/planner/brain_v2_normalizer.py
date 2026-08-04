@@ -302,6 +302,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = _complete_explicit_kb_search_arguments(required_tools, state)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
     required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
+    required_tools = _normalize_current_message_store_lookup_queries(required_tools, state)
     required_tools = _normalize_available_time_dates_from_context(required_tools, state)
     decision, planner_reply_messages, required_tools = _enforce_location_card_store_lookup(
         decision=decision,
@@ -875,6 +876,31 @@ def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]]
         else:
             rewritten.append(tool)
     return rewritten
+
+
+def _normalize_current_message_store_lookup_queries(
+    required_tools: list[dict[str, Any]], state: AgentState
+) -> list[dict[str, Any]]:
+    current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if not current_text or not _raw_text_mentions_store_location_request(current_text):
+        return required_tools
+    normalized: list[dict[str, Any]] = []
+    for tool in required_tools:
+        if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
+            normalized.append(tool)
+            continue
+        query = str(tool.get("query") or "").strip()
+        if not _store_lookup_query_comes_from_current_message(query, state):
+            normalized.append(tool)
+            continue
+        cleaned = _strip_location_answer_prefixes(_clean_scoped_location_query(query))
+        if cleaned and (_looks_like_bare_location_token(cleaned) or _looks_like_specific_region(_compact_text(cleaned))):
+            updated = dict(tool)
+            updated["query"] = cleaned
+            normalized.append(updated)
+        else:
+            normalized.append(tool)
+    return normalized
 
 
 def _should_rewrite_store_lookup_with_context_anchor(content: str, state: AgentState) -> bool:
@@ -2499,7 +2525,8 @@ def _enforce_explicit_location_store_lookup(
     )
     if not violations:
         return decision, messages, required_tools
-    query = str(state.get("normalized_content") or state.get("content") or "").strip()
+    raw_query = str(state.get("normalized_content") or state.get("content") or "").strip()
+    query = _strip_location_answer_prefixes(_clean_scoped_location_query(raw_query)) or raw_query
     if not query:
         return decision, messages, required_tools
     tools = [tool for tool in required_tools if str(tool.get("name") or "") != "no_tool"]

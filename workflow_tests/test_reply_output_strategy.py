@@ -2829,7 +2829,7 @@ def test_scoped_city_store_question_requires_lookup_when_city_has_limited_candid
     assert plan["planner_decision"] == "need_tools"
     assert plan["planner_reply_messages"] == []
     assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "厦门有门店吗"}
+        {"name": "customer_store_lookup", "purpose": "existence", "query": "厦门"}
     ]
 
 
@@ -2912,7 +2912,31 @@ def test_bare_county_store_question_is_normalized_to_store_lookup() -> None:
     assert plan["planner_decision"] == "need_tools"
     assert plan["planner_reply_messages"] == []
     assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "我在武平，店在哪里"}
+        {"name": "customer_store_lookup", "purpose": "existence", "query": "武平"}
+    ]
+
+
+def test_current_store_lookup_sentence_query_is_cleaned_to_location() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "我在武平，店在哪里"},
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [],
+            "tool_calls": [
+                {"name": "customer_store_lookup", "purpose": "existence", "query": "我在武平，店在哪里"}
+            ],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "existence", "query": "武平"}
     ]
 
 
@@ -3078,7 +3102,7 @@ def test_scoped_nearby_store_question_requires_lookup_before_direct_reply() -> N
     assert plan["planner_decision"] == "need_tools"
     assert plan["planner_reply_messages"] == []
     assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "厦门思明附近有门店吗"}
+        {"name": "customer_store_lookup", "purpose": "existence", "query": "厦门思明"}
     ]
 
 
