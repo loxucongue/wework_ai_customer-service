@@ -31,7 +31,7 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 - `task.task_type`：第三方平台给出的任务类型；`add_wecom` 表示首次加微。
 - `task.message_content`：本轮候选消息，已转成 `reply_messages`。
 - `task.scene`：第三方提供的场景背景，不是第二套待发送内容。
-- `task.use_ai_copy`：第三方任务字段，不是 AI 系统配置。`false` 只能原样发或不发；`true` 允许受限改写文字。
+- `task.use_ai_copy`：第三方任务字段，不是 AI 系统配置。无论 true/false 都必须先根据最新上下文判断 `send/no_send`；`false` 表示若发送则必须原样发送平台内容，`true` 表示允许受限改写文字。
 - `task.timing`：任务计划时间、拉取时间和当前延迟，只用于理解时效，不能据此延期。
 - `latest_context.conversation_timeline`：最多 80 条真实聊天，按时间升序；包含北京时间、距今时长和与上一条的间隔。
 - `latest_context.timeline_structure`：代码根据消息顺序生成的纯结构摘要，包括最后消息角色，以及最后客户消息之后是否已有助手消息。判断“有没有后续助手承接”必须服从这个结构事实，不能凭印象误读时间线。
@@ -54,7 +54,7 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 2. 阅读完整时间线，判断客户最后问题是否仍待普通 AI/人工回答，是否刚表达忙碌且已被承接，是否已有新的客户进展。最后一条客户消息若是需要门店工具、订单查询、支付核验、预约查询等普通 AI/工具链路处理的事实问题或行动请求，且后面没有助手回答，本任务立即 `no_send`；这条规则同样适用于首次加微任务。客户表达价格、效果、信任等顾虑或异议时，如果 `use_ai_copy=true` 且当前任务可依靠素材库或权威事实直接解决该顾虑，则不因“尚未充分回答”自动拒发。
 3. 根据 `task_type` 理解任务目的。首次加微除特殊情况默认发送；不能因为客户尚未开口或普通沉默而拒发。
 4. 比较候选内容与最新聊天、场景和硬事实是否重复或冲突。
-5. 根据 `use_ai_copy` 选择原样发送、受限改写/替换文字，或不发送。
+5. 所有任务都必须先完成 `send/no_send` 判断；再根据 `use_ai_copy` 选择原样发送或受限改写/替换文字。
 
 # 6. 特殊情况与 no_send 边界
 以下情况应 `no_send`：
@@ -65,7 +65,7 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 - 已付或已预约，而任务仍在催付、重复预约或重复介绍已完成动作。
 - 对非首次加微任务，近期已经完整发送相同核心内容、相同素材和相同行动要求。
 - 对首次加微任务，只有本轮全部消息的类型、顺序、文字和 URL 与近期某一完整发送批次逐项完全一致时，才按重复内容 `no_send`。文案不完全一致、仅语义相近、连续两次询问地址或多次推送不同效果内容都允许发送。
-- `use_ai_copy=false` 且候选内容与客户、场景或硬事实冲突，因为固定任务不允许 AI 篡改。
+- `use_ai_copy=false` 且候选内容与客户、场景或硬事实冲突，因为固定任务不允许 AI 篡改，只能 `no_send`。
 - 候选消息包含冲突媒体；图片、视频和链接不可替换，无法仅靠文字改写解决。
 
 # 7. 内容冲突时的处理
@@ -78,8 +78,9 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 
 # 8. use_ai_copy 边界
 ## false
-- 该分支由代码直接原样发送，不调用本模型判断。
-- 所有类型、内容、URL 和顺序必须与平台输入完全一致。
+- 必须调用本模型判断 `send/no_send`。
+- 若判断 `send`，最终发送的所有类型、内容、URL 和顺序必须与平台输入完全一致；模型输出的改写文本会被代码丢弃。
+- 若平台原文与最新聊天、客户状态或硬事实冲突，必须 `no_send`，不要试图改写修复。
 
 ## true
 - 可以改写已有 text，让它承接最新聊天，像真人微信沟通。
@@ -779,14 +780,14 @@ class SopPlatformTaskService:
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
         use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
-        processing_status = "platform_judging" if use_ai_copy else "platform_fixed_copy"
+        processing_status = "platform_judging"
         self.repository.update_sop_event_status(event_id, status=processing_status)
         self.repository.update_sop_send_task(
             str(local_task.get("id") or ""),
-            status="judging" if use_ai_copy else "platform_fixed_copy",
+            status="judging",
             send_payload={
                 "platform_task_id": task_id,
-                "phase": "loading_latest_context" if use_ai_copy else "direct_platform_copy",
+                "phase": "loading_latest_context",
             },
         )
 
@@ -813,14 +814,6 @@ class SopPlatformTaskService:
                 }
                 decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
                 self._counters[preflight_reason] += 1
-            elif not use_ai_copy:
-                context = {"source": "use_ai_copy_false_direct_send", "task_timing": _task_timing(platform_task)}
-                decision = {
-                    "decision": "send",
-                    "reason": "use_ai_copy_false_direct_send",
-                    "reply_messages": _platform_messages(platform_task),
-                }
-                self._counters["fixed_copy_direct_send"] += 1
             else:
                 started = time.perf_counter()
                 context = await self._load_context(platform_task, identity=identity)
