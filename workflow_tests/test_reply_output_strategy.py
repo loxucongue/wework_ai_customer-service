@@ -2893,6 +2893,57 @@ def test_county_location_direct_reply_is_normalized_to_store_lookup() -> None:
     ]
 
 
+def test_bare_county_store_question_is_normalized_to_store_lookup() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": "我在武平，店在哪里"},
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_CITY_ONLY",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "武平属于哪个城市呀？我给您查门店。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_reply_messages"] == []
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "existence", "query": "我在武平，店在哪里"}
+    ]
+
+
+def test_bare_location_answer_after_store_prompt_is_normalized_to_store_lookup() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "东坑",
+            "conversation_history": [
+                "小贝: 您在哪个城市哪个区？我帮您看附近方便的门店。",
+            ],
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_CITY_ONLY",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "东坑是哪个城市的？"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_reply_messages"] == []
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "existence", "query": "东坑"}
+    ]
+
+
 def test_many_store_city_can_ask_district_without_lookup() -> None:
     plan = build_planner_plan_v2(
         {

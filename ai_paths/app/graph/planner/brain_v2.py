@@ -22,6 +22,7 @@ from app.graph.planner.brain_v2_prompts import (
     PLANNER_REPAIR_PROMPT,
     PLANNER_PRECISION_QA_CONTRACT,
     PLANNER_RISK_PATCH_PROMPT,
+    PLANNER_STORE_LOCATION_LOOKUP_CONTRACT,
     PLANNER_SYSTEM_PROMPT,
     PLANNER_TRANSACTION_PATCH_PROMPT,
     PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT,
@@ -95,6 +96,7 @@ def planner_v2_messages_for_model(state: AgentState) -> list[dict[str, Any]]:
     payload = _planner_payload_for_model(state)
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": PLANNER_STORE_LOCATION_LOOKUP_CONTRACT},
         {"role": "system", "content": PLANNER_PRECISION_QA_CONTRACT},
         {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
@@ -117,6 +119,7 @@ def planner_v2_repair_messages_for_model(
     }
     return [
         {"role": "system", "content": PLANNER_SYSTEM_PROMPT},
+        {"role": "system", "content": PLANNER_STORE_LOCATION_LOOKUP_CONTRACT},
         {"role": "system", "content": PLANNER_PRECISION_QA_CONTRACT},
         {"role": "system", "content": "# Current Business Facts\n" + planner_business_rules_prompt_section()},
         {"role": "system", "content": PLANNER_RISK_PATCH_PROMPT},
@@ -135,6 +138,7 @@ def planner_v2_timeout_retry_messages_for_model(
     payload = _compact_timeout_retry_payload_for_model(state, previous_error=previous_error)
     return [
         {"role": "system", "content": PLANNER_TIMEOUT_RECOVERY_PROMPT},
+        {"role": "system", "content": PLANNER_STORE_LOCATION_LOOKUP_CONTRACT},
         {"role": "system", "content": "# Current Recovery Business Rules\n" + planner_recovery_business_rules_prompt_section()},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, separators=(",", ":"))},
     ]

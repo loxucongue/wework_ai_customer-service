@@ -2518,6 +2518,8 @@ def _current_message_has_explicit_location_for_lookup(text: str, state: AgentSta
         return False
     if _looks_like_specific_region(compact):
         return True
+    if _current_message_has_bare_location_for_store_lookup(compact, state):
+        return True
     return bool(_matching_current_message_region_tokens(compact, state))
 
 
@@ -2540,6 +2542,105 @@ def _strip_store_question_words(text: str) -> str:
         "",
         text,
     )
+
+
+def _current_message_has_bare_location_for_store_lookup(text: str, state: AgentState) -> bool:
+    stripped = _strip_location_answer_prefixes(_strip_store_question_words(text))
+    if not _looks_like_bare_location_token(stripped):
+        return False
+    return _current_message_asks_store_with_bare_location(text) or _recent_assistant_asked_for_store_location(state)
+
+
+def _current_message_asks_store_with_bare_location(text: str) -> bool:
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    return any(
+        term in compact
+        for term in (
+            "门店",
+            "店在哪里",
+            "店在哪",
+            "有店",
+            "有门店",
+            "附近",
+            "最近",
+            "地址",
+            "位置",
+            "定位",
+        )
+    )
+
+
+def _recent_assistant_asked_for_store_location(state: AgentState) -> bool:
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in reversed(history[-6:]):
+        text = _history_item_text(item)
+        if not text:
+            continue
+        compact = _compact_text(text)
+        is_assistant = compact.startswith(("小贝:", "客服:", "员工:", "助手:", "ai:"))
+        if isinstance(item, dict):
+            role = _compact_text(item.get("role") or item.get("sender") or item.get("speaker") or "")
+            if role in {"assistant", "ai", "staff", "employee", "agent"}:
+                is_assistant = True
+        if not is_assistant:
+            continue
+        asks_scope = any(term in compact for term in ("哪个城市", "哪个区", "城市哪个区", "城市或区域", "发个定位", "发定位", "附近方便", "最近门店"))
+        mentions_store = any(term in compact for term in ("门店", "店", "地址", "位置", "定位", "附近"))
+        if asks_scope and mentions_store:
+            return True
+    return False
+
+
+def _strip_location_answer_prefixes(text: str) -> str:
+    output = re.sub(r"[，,。.!！?？、：:；;（）()【】\[\]\"']", "", text)
+    output = re.sub(r"^(我在|人在|就在|在|我是|这边是|这边|附近是|离|靠近|到)", "", output)
+    output = re.sub(r"(发个|发一下|发我|给我|一下|一个|这边|附近)$", "", output)
+    return output.strip()
+
+
+def _looks_like_bare_location_token(text: str) -> bool:
+    compact = _compact_text(text)
+    if not compact:
+        return False
+    if not re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9]{2,16}", compact):
+        return False
+    if any(term in compact for term in ("我", "你", "您", "他", "她", "这家", "那家", "这个", "那个", "昨天", "今天", "明天", "没去", "把")):
+        return False
+    non_location_terms = {
+        "你好",
+        "您好",
+        "好的",
+        "可以",
+        "行",
+        "嗯",
+        "哦",
+        "谢谢",
+        "多少钱",
+        "价格",
+        "贵不贵",
+        "怎么付费",
+        "怎么预约",
+        "没时间",
+        "不方便",
+        "不用",
+        "不要了",
+        "考虑",
+        "效果",
+        "反弹",
+        "痘印",
+        "痘坑",
+        "发个",
+        "发一下",
+        "发我",
+        "给我",
+        "一下",
+        "一个",
+        "这家",
+        "那家",
+    }
+    return compact not in non_location_terms
 
 
 def _snapshot_store_ids_for_current_location(text: str) -> set[str]:
