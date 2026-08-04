@@ -33,7 +33,7 @@ sequenceDiagram
     W->>P: consume(taskId, 30)
 ```
 
-平台只返回已经到期的任务，AI 系统看不到 `dispatch_wait`。Worker 每秒拉取一次，把任务放入容量 24 的本地队列，默认由 6 个执行槽并发处理。任务进入执行槽后才调用 `consume(20)`，未开始执行的任务仍由平台保持状态 10。
+平台只返回已经到期的任务，AI 系统看不到 `dispatch_wait`。Worker 默认每 10 秒拉取一次，把任务放入容量 24 的本地队列，默认由 6 个执行槽并发处理。任务进入执行槽后才调用 `consume(20)`，未开始执行的任务仍由平台保持状态 10。10 秒轮询在接口调用量和到期延迟之间更平衡；10 分钟轮询会产生平均约 5 分钟、最坏接近 10 分钟的额外延迟，不适合作为生产默认值。
 
 模型判断使用 `gpt-5.4-mini`，明确失败后顺序回退 `gpt-5.4`。SOP 调用关闭并行 hedge，避免与普通客户回复争抢供应商总并发。
 
@@ -102,7 +102,7 @@ sequenceDiagram
 ```env
 SOP_PLATFORM_PULL_ENABLED=false
 SOP_PLATFORM_SHADOW_MODE=true
-SOP_PLATFORM_POLL_SECONDS=1
+SOP_PLATFORM_POLL_SECONDS=10
 SOP_PLATFORM_BATCH_SIZE=50
 SOP_PLATFORM_TASK_CONCURRENCY=6
 SOP_PLATFORM_QUEUE_SIZE=24

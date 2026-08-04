@@ -94,7 +94,7 @@ class Settings(BaseSettings):
         alias="SOP_PLATFORM_BASE_URL",
     )
     sop_platform_token: str = Field(default="", alias="SOP_PLATFORM_TOKEN", repr=False)
-    sop_platform_poll_seconds: float = Field(default=1.0, alias="SOP_PLATFORM_POLL_SECONDS")
+    sop_platform_poll_seconds: float = Field(default=10.0, alias="SOP_PLATFORM_POLL_SECONDS")
     sop_platform_lookback_seconds: int = Field(default=604800, alias="SOP_PLATFORM_LOOKBACK_SECONDS")
     sop_platform_window_seconds: int = Field(default=60, alias="SOP_PLATFORM_WINDOW_SECONDS")
     sop_platform_batch_size: int = Field(default=50, alias="SOP_PLATFORM_BATCH_SIZE")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import unittest
 from unittest.mock import AsyncMock
@@ -9,12 +10,62 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import Any
 
+from app.config import Settings
 from app.services.sop_platform_client import SopPlatformClient
-from app.services.sop_platform_task_service import SopPlatformTaskService
+from app.services.sop_platform_task_service import SOP_PLATFORM_TASK_SYSTEM_PROMPT, SopPlatformTaskService
 from app.services.sop_reply_pack_service import SopReplyPackService
 
 
 class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
+    def test_platform_poll_default_is_ten_seconds(self) -> None:
+        self.assertEqual(Settings.model_fields["sop_platform_poll_seconds"].default, 10.0)
+
+    def test_platform_prompt_has_layered_send_audit_contract(self) -> None:
+        required_sections = (
+            "# Node Role",
+            "# Business Background And Goal",
+            "# Responsibility Boundary",
+            "# Input Contract",
+            "# Fact And Instruction Priority",
+            "# Decision Workflow",
+            "# No-Send Boundaries",
+            "# Send Boundaries",
+            "# Copy Rules",
+            "# Calibration Examples",
+            "# Output Contract",
+        )
+        for section in required_sections:
+            self.assertIn(section, SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("普通沉默不是拒发理由", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("`message_content` 和 `scene` 的职责不同", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("禁止 `defer`", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("只返回小写 `json` 对象", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+
+    async def test_model_input_labels_executable_content_and_supporting_scene(self) -> None:
+        model = _Model([{"decision": "no_send", "reason": "test", "reply_messages": []}])
+        service, _repo, _platform, _system = _service(model=model)
+        task = _task(use_ai_copy=True)
+        task.update(
+            {
+                "ruleId": 81,
+                "ruleName": "沉默客户价值触达",
+                "sceneId": 23,
+                "senderType": "online_service",
+                "dispatchMode": "scheduled",
+                "scene": {"sceneName": "效果价值", "sceneDesc": "补充真实效果价值"},
+            }
+        )
+
+        await service.process_task(task)
+
+        self.assertEqual(len(model.calls), 1)
+        payload = json.loads(model.calls[0][1]["content"])
+        self.assertEqual(payload["task"]["message_content_role"], "executable_candidate")
+        self.assertEqual(payload["task"]["scene_role"], "supporting_context")
+        self.assertEqual(payload["task"]["platform_metadata"]["rule_id"], 81)
+        self.assertEqual(payload["task"]["platform_metadata"]["scene_id"], 23)
+        self.assertEqual(payload["task"]["message_content"], [_text("平台原文")])
+
     async def test_non_ai_copy_is_sent_exactly_and_completes_three_state_flow(self) -> None:
         model = _Model(
             [
