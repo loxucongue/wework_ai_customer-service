@@ -1222,6 +1222,20 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                         ),
                     }
                 )
+            elif _store_lookup_conflicts_with_accepted_binding(query, state):
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "customer_store_lookup",
+                        "missing": "store_lookup_conflicts_with_accepted_binding",
+                        "note": (
+                            "store_binding_decision accepts a real store, but customer_store_lookup.query does not identify "
+                            "that store. Keep the accepted store without a new lookup, or change store_binding_decision to "
+                            "exploring/ambiguous and use location evidence from the current customer message. Do not treat an "
+                            "unrelated short reply as a new location."
+                        ),
+                    }
+                )
             continue
         if name == "distance_calculate":
             origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or "").strip()
@@ -1403,6 +1417,34 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
             continue
 
     return violations
+
+
+def _store_lookup_conflicts_with_accepted_binding(query: str, state: AgentState) -> bool:
+    binding = state.get("store_binding_decision") if isinstance(state.get("store_binding_decision"), dict) else {}
+    if str(binding.get("status") or "").strip() not in {"accepted_explicit", "accepted_implicit"}:
+        return False
+    bound_store_id = str(binding.get("store_id") or "").strip()
+    bound_store_name = str(binding.get("store_name") or "").strip()
+    if not bound_store_name and bound_store_id:
+        bound_store_name = _store_name_for_id(bound_store_id, state)
+    compact_query = _compact_text(query)
+    compact_name = _compact_text(bound_store_name)
+    return not bool(compact_query and compact_name and _store_name_query_matches(compact_name, compact_query))
+
+
+def _store_name_for_id(store_id: str, state: AgentState) -> str:
+    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
+    stores = knowledge.get("stores") if isinstance(knowledge.get("stores"), list) else []
+    for store in stores:
+        if not isinstance(store, dict):
+            continue
+        candidate_id = str(store.get("store_id") or store.get("id") or "").strip()
+        if candidate_id == store_id:
+            return str(store.get("store_name") or store.get("name") or "").strip()
+    request_store_id = str(state.get("confirmed_store_id") or state.get("store_id") or "").strip()
+    if request_store_id == store_id:
+        return str(state.get("confirmed_store_name") or state.get("store_name") or "").strip()
+    return ""
 
 
 def _complete_explicit_kb_search_arguments(

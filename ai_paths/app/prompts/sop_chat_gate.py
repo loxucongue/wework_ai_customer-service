@@ -103,16 +103,24 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
   "sop_pack_id": "unfinished_sops 中的 id 或空字符串",
   "resume_stage": "mainline stage id 或空字符串",
   "reason": "一句内部判断原因",
+  "party_size_evidence": {"party_size": 2, "customer_evidence_ref": "chat_3", "evidence_quote": "我们两个人"},
   "text_adjustments": [{"order": 1, "text": "所选包已有 text 的完整改写"}],
   "message_operations": [{"op": "remove_text", "order": 1}]
 }
+
+# Participant Evidence Contract
+- `conversation_evidence` contains stable references and message direction for the recent conversation and current customer message.
+- If the selected SOP contains a payment card above 10 yuan, the output must include `party_size_evidence` with `party_size`, `customer_evidence_ref`, and an exact `evidence_quote` from that customer message.
+- The payment amount must equal `party_size * 10`. Body areas, treatment locations, store count, and repeated messages are not participant counts.
+- If direct customer evidence is absent, do not select a multi-person payment pack. Choose a single-person-compatible pack or `ai_only`; never infer participant count from assistant text.
+- For a selected pack without a multi-person payment card, output `party_size_evidence` as an empty object.
 
 # Output Consistency
 - `sop_only` 必须是 `coverage=exact` 并选择真实候选包。
 - `ai_then_sop` 必须是 `coverage=partial` 并选择真实候选包。
 - `ai_only` 必须是 `coverage=none` 且不选择 SOP。
 - 选择 SOP 时 `resume_stage` 必须等于该包的 `mainline_stage`。
-- 不输出客户成品回复、内部思考或额外字段。
+- 不输出客户成品回复、内部思考或上述 schema 之外的额外字段。
 """
 ).strip()
 

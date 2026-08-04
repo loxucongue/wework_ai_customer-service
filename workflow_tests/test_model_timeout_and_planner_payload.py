@@ -522,9 +522,16 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call["tier"] for call in client.calls], ["planner", "fast"])
         retry_user_payload = client.calls[1]["messages"][-1]["content"]
         self.assertIn("timeout_recovery", retry_user_payload)
-        self.assertEqual(len(client.calls[1]["messages"]), 3)
+        retry_messages = client.calls[1]["messages"]
+        self.assertEqual(len(retry_messages), 4)
+        retry_system_text = "\n".join(
+            str(message.get("content") or "")
+            for message in retry_messages
+            if message.get("role") == "system"
+        )
+        self.assertIn("Store Location Lookup Contract", retry_system_text)
+        self.assertIn("Current Recovery Business Rules", retry_system_text)
         self.assertIn("Planner Timeout Recovery", client.calls[1]["messages"][0]["content"])
-        self.assertIn("Current Recovery Business Rules", client.calls[1]["messages"][1]["content"])
         retry_messages = json.dumps(client.calls[1]["messages"], ensure_ascii=False)
         self.assertIn("scene_index", retry_messages)
         self.assertNotIn("customer_psychology", retry_user_payload)

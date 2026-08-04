@@ -511,6 +511,34 @@ def test_store_lookup_short_place_does_not_match_one_character_region_token() ->
     assert output["stores"] == []
 
 
+def test_store_lookup_rejects_partial_multi_fragment_geocode_match() -> None:
+    coze = _FakeGeocodeCoze(
+        {
+            "我在兆京，良乡": {
+                "province": "广东省",
+                "city": "梅州市",
+                "district": "丰顺县",
+                "township": "留隍镇",
+                "formatted_address": "广东省梅州市丰顺县留隍镇良乡村",
+                "location": "116.5,23.8",
+            }
+        }
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "我在兆京，良乡", "purpose": "nearby_candidates"},
+            {"customer_store_knowledge": {"stores": []}},
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "geocode_query_conflict"
+    assert output["candidate_stores"] == []
+    assert output["query_consistency"]["matched_fragments"] == ["良乡"]
+    assert output["query_consistency"]["unresolved_fragments"] == ["兆京"]
+
+
 def test_store_lookup_uses_snapshot_region_fallback_when_scope_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(
         action_nodes,

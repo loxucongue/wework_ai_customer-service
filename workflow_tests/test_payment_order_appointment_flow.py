@@ -757,6 +757,32 @@ def test_planner_accepted_store_binding_does_not_require_order_resolution_before
     assert all(item.get("type") != "payment_collection" for item in plan["planner_reply_messages"])
 
 
+def test_planner_accepted_store_binding_rejects_unrelated_short_reply_lookup() -> None:
+    state = {
+        **_base_state(),
+        "normalized_content": "十多年了吧",
+    }
+    plan = build_planner_plan_v2(
+        state,
+        {
+            "decision": "need_tools",
+            "store_binding_decision": {
+                "status": "accepted_implicit",
+                "store_id": "386",
+                "confidence": "high",
+            },
+            "tool_calls": [
+                {"name": "customer_store_lookup", "query": "十多年了吧", "purpose": "existence"},
+            ],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "store_lookup_conflicts_with_accepted_binding"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_planner_unverified_store_event_cannot_be_accepted_implicit() -> None:
     state = {
         **_base_state(),

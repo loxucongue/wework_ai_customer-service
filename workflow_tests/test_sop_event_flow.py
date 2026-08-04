@@ -18,6 +18,7 @@ from app.services.sop_execution_service import (
     SOP_EVENT_SYSTEM_PROMPT,
     SopExecutionService,
     _event_selector_input,
+    _chat_gate_output_violations,
     first_add_candidate_packs,
     is_platform_auto_opening_message,
 )
@@ -29,6 +30,67 @@ from app.services.storage import AppRepository, SQLiteStore
 
 
 class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
+    def test_chat_gate_multi_person_payment_rejects_assistant_only_evidence(self) -> None:
+        selector_input = {
+            "mainline": {"stages": [{"id": "deposit_decision"}]},
+            "precision_qa_index": [],
+            "conversation_evidence": [
+                {"message_ref": "chat_1", "direction": "assistant", "content": "两位一共20元"},
+                {"message_ref": "current_message", "direction": "customer", "content": "手和脸都可以做吗"},
+            ],
+            "unfinished_sops": [
+                {
+                    "id": "two_people_pack",
+                    "mainline_stage": "deposit_decision",
+                    "payment_collection_gate": {"amounts": [20]},
+                }
+            ],
+        }
+        output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "two_people_pack",
+            "resume_stage": "deposit_decision",
+            "party_size_evidence": {
+                "party_size": 2,
+                "customer_evidence_ref": "chat_1",
+                "evidence_quote": "两位一共20元",
+            },
+        }
+
+        violations = _chat_gate_output_violations(output, selector_input)
+
+        self.assertIn("multi_person_payment_requires_customer_evidence_ref", violations)
+
+    def test_chat_gate_multi_person_payment_accepts_exact_customer_reference(self) -> None:
+        selector_input = {
+            "mainline": {"stages": [{"id": "deposit_decision"}]},
+            "precision_qa_index": [],
+            "conversation_evidence": [
+                {"message_ref": "current_message", "direction": "customer", "content": "我们两个人一起过去"},
+            ],
+            "unfinished_sops": [
+                {
+                    "id": "two_people_pack",
+                    "mainline_stage": "deposit_decision",
+                    "payment_collection_gate": {"amounts": [20]},
+                }
+            ],
+        }
+        output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "two_people_pack",
+            "resume_stage": "deposit_decision",
+            "party_size_evidence": {
+                "party_size": 2,
+                "customer_evidence_ref": "current_message",
+                "evidence_quote": "我们两个人",
+            },
+        }
+
+        self.assertEqual(_chat_gate_output_violations(output, selector_input), [])
+
     async def test_retired_sop_event_route_only_records_audit(self) -> None:
         repo = _Repo()
         client = _OutreachClient()

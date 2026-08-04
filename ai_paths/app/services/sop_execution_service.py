@@ -1759,9 +1759,14 @@ def _chat_selector_input(
     customer_memory: dict[str, Any] | None = None,
     customer_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    conversation_evidence = _chat_conversation_evidence(
+        request.conversation_history,
+        current_message=str(request.content or "").strip(),
+    )
     return {
         "current_message": str(request.content or "").strip(),
         "recent_conversation": _recent_history(request.conversation_history),
+        "conversation_evidence": conversation_evidence,
         "recent_sop_delivery_evidence": recent_delivery_evidence or [],
         "mainline": sales_mainline_for_model(),
         "mainline_progress": sop_progress_evidence or {},
@@ -1775,6 +1780,44 @@ def _chat_selector_input(
             for pack in unfinished_packs
         ],
     }
+
+
+def _chat_conversation_evidence(history: Any, *, current_message: str) -> list[dict[str, str]]:
+    items = history[-30:] if isinstance(history, list) else []
+    output: list[dict[str, str]] = []
+    for position, raw in enumerate(items, start=1):
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        direction = "unknown"
+        content = text
+        for prefix, candidate_direction in (
+            ("用户:", "customer"),
+            ("客户:", "customer"),
+            ("小贝:", "assistant"),
+            ("员工:", "assistant"),
+            ("AI:", "assistant"),
+        ):
+            if text.startswith(prefix):
+                direction = candidate_direction
+                content = text[len(prefix) :].strip()
+                break
+        output.append(
+            {
+                "message_ref": f"chat_{position}",
+                "direction": direction,
+                "content": content[:300],
+            }
+        )
+    if current_message:
+        output.append(
+            {
+                "message_ref": "current_message",
+                "direction": "customer",
+                "content": current_message[:300],
+            }
+        )
+    return output
 
 
 def _recent_chat_sop_delivery_evidence(
@@ -2735,6 +2778,8 @@ def _chat_gate_output_violations(
             violations.append("selected_pack_missing_or_not_unfinished")
         elif resume_stage != _string(packs[pack_id].get("mainline_stage")):
             violations.append("resume_stage_must_match_selected_pack")
+        if pack_id in packs:
+            violations.extend(_chat_gate_party_size_violations(selector_output, selector_input, packs[pack_id]))
     else:
         if pack_id:
             violations.append("ai_only_must_not_select_pack")
@@ -2745,6 +2790,40 @@ def _chat_gate_output_violations(
         }:
             violations.append("unknown_resume_stage")
     return violations
+
+
+def _chat_gate_party_size_violations(
+    selector_output: dict[str, Any],
+    selector_input: dict[str, Any],
+    selected_pack: dict[str, Any],
+) -> list[str]:
+    gate = selected_pack.get("payment_collection_gate") if isinstance(selected_pack.get("payment_collection_gate"), dict) else {}
+    amounts = [int(value) for value in gate.get("amounts") or [] if str(value or "").isdigit()]
+    amount = max(amounts, default=0)
+    if amount <= 10:
+        return []
+    evidence = selector_output.get("party_size_evidence") if isinstance(selector_output.get("party_size_evidence"), dict) else {}
+    try:
+        party_size = int(evidence.get("party_size") or 0)
+    except (TypeError, ValueError):
+        party_size = 0
+    evidence_ref = _string(evidence.get("customer_evidence_ref"))
+    evidence_quote = _string(evidence.get("evidence_quote"))
+    referenced = next(
+        (
+            item
+            for item in selector_input.get("conversation_evidence") or []
+            if isinstance(item, dict) and _string(item.get("message_ref")) == evidence_ref
+        ),
+        None,
+    )
+    if party_size * 10 != amount:
+        return ["multi_person_payment_amount_requires_matching_party_size_evidence"]
+    if not referenced or _string(referenced.get("direction")) != "customer":
+        return ["multi_person_payment_requires_customer_evidence_ref"]
+    if not evidence_quote or evidence_quote not in _string(referenced.get("content")):
+        return ["multi_person_payment_evidence_quote_must_match_customer_message"]
+    return []
 
 
 def _pack_messages(pack: dict[str, Any]) -> list[dict[str, Any]]:

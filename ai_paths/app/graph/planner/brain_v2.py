@@ -58,6 +58,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 预约金由 payment_decision 决定；客户口头声称已付不能确认到账。当前订单 `prepay_paid>0`、清晰支付成功截图或结构化 `deposit_state=paid_by_platform_transfer_event` 才是权威已付，可推进付款后信息确认。
 - `stage/sub_rule_id` 必须从 Current Recovery Business Rules 的 `scene_index` 选择，不能自造英文场景名。
 - `need_tools` 必须提供可执行的扁平 `tool_calls`，工具名字段只能是 `name`；禁止 `tool_name/arguments/tool/args` 包装。门店查询示例：`{"name":"customer_store_lookup","query":"双流区","purpose":"existence"}`。
+- `customer_store_lookup.query` 必须来自当前客户消息里的明确位置、定位、地标或门店名，不能把客户回答的斑点时长、效果、价格、确认短句当成地址。若 `store_binding_decision` 已接受最近真实门店，当前客户没有提出新位置或换店，就沿用该门店并推进当前主线，不再查门店；若客户确实改了位置，先把门店决策改为 `exploring/ambiguous`，再按当前位置查询，不能同时“已接受旧店”和“查询无关新地址”。
 - `direct_reply` 必须有对象数组 reply_messages 且 tool_calls=[]；`need_tools` 必须 reply_messages=[] 且 tool_calls 非空。
 
 # Output JSON Schema

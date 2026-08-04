@@ -1219,6 +1219,26 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "missing": ["confirmed_city_or_district"],
         }
 
+    query_consistency = _geocode_query_consistency(query, geocode)
+    if query_consistency.get("status") == "conflict":
+        return {
+            "status": "geocode_query_conflict",
+            "raw_query": raw_query,
+            "query": query,
+            "purpose": purpose,
+            "source": "poi_to_geocode_query_conflict",
+            "geocode": {
+                key: geocode.get(key)
+                for key in ("formatted_address", "province", "city", "district", "township", "location")
+                if geocode.get(key)
+            },
+            "query_consistency": query_consistency,
+            "stores": [],
+            "candidate_stores": [],
+            "candidate_store_count": 0,
+            "missing": ["confirmed_location"],
+        }
+
     geocode_conflict = _geocode_conflicts_with_query_scope(query, geocode, stores)
     candidates = [] if geocode_conflict else _stores_for_geocode(geocode, stores, purpose)
     source = "customer_scope_geocode_conflict_ignored" if geocode_conflict else "customer_scope_geocode"
@@ -1567,6 +1587,48 @@ def _geocode_conflicts_with_query_scope(query: str, geocode: dict[str, Any], sto
     explicit_ids = {str(store.get("store_id") or store.get("id") or "").strip() for store in explicit_matches}
     geocode_ids = {str(store.get("store_id") or store.get("id") or "").strip() for store in geocode_matches}
     return bool(explicit_ids and geocode_ids and explicit_ids.isdisjoint(geocode_ids))
+
+
+def _geocode_query_consistency(query: str, geocode: dict[str, Any]) -> dict[str, Any]:
+    """Expose partial multi-fragment geocode matches instead of silently dropping text."""
+
+    if not isinstance(geocode, dict) or not geocode.get("location"):
+        return {"status": "unavailable"}
+    geocode_text = _compact_text(
+        "".join(
+            str(geocode.get(key) or "")
+            for key in ("province", "city", "district", "township", "formatted_address")
+        )
+    )
+    fragments = _location_query_fragments(query)
+    if not geocode_text or len(fragments) < 2:
+        return {"status": "not_applicable", "fragments": fragments}
+    matched = [fragment for fragment in fragments if _compact_text(fragment) in geocode_text]
+    unresolved = [fragment for fragment in fragments if fragment not in matched]
+    if matched and unresolved:
+        return {
+            "status": "conflict",
+            "fragments": fragments,
+            "matched_fragments": matched,
+            "unresolved_fragments": unresolved,
+        }
+    return {
+        "status": "consistent" if matched else "unverified",
+        "fragments": fragments,
+        "matched_fragments": matched,
+    }
+
+
+def _location_query_fragments(query: str) -> list[str]:
+    pieces = re.split(r"[，,、;/；|]+", str(query or ""))
+    output: list[str] = []
+    for piece in pieces:
+        text = re.sub(r"^(?:我在|人在|位置在|定位在|地址在|住在|目前在|现在在)", "", piece.strip())
+        compact = _compact_text(text)
+        if len(compact) < 2 or compact in output:
+            continue
+        output.append(compact)
+    return output
 
 
 def _store_text_match_score(text: str, store: dict[str, Any]) -> int:

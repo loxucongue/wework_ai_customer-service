@@ -1374,11 +1374,21 @@ def _merge_ai_then_sop_reply_messages(ai_messages: list[dict[str, Any]], sop_mes
     if ai_text_count > 1 and ai_prefix and _message_type(ai_prefix[-1]) == "text" and _message_text(ai_prefix[-1]):
         trailing_ai_text = ai_prefix.pop()
 
+    # The final customer-visible turn has one transaction decision. Prefer the
+    # AI card, which was produced from the latest context, over a static SOP
+    # card and never expose conflicting amounts in the same turn.
+    ai_has_payment = any(_message_type(message) == "payment_collection" for message in ai_messages)
+    payment_kept = False
     merged: list[dict[str, Any]] = []
     seen = set()
     for message in [*ai_prefix, *([bridge_sop_text] if bridge_sop_text else []), *sop_structural[:3], *([trailing_ai_text] if trailing_ai_text else [])]:
         if not isinstance(message, dict):
             continue
+        if _message_type(message) == "payment_collection":
+            is_ai_message = message in ai_messages
+            if payment_kept or (ai_has_payment and not is_ai_message):
+                continue
+            payment_kept = True
         identity = _message_identity(message)
         if identity and identity in seen:
             continue

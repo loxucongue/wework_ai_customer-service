@@ -370,6 +370,24 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("fixed sop question", json.dumps(merged))
         self.assertEqual([message["order"] for message in merged], [1, 2, 3, 4, 5, 6])
 
+    def test_ai_then_sop_merge_keeps_only_latest_ai_payment_card(self) -> None:
+        ai_messages = [
+            {"type": "text", "order": 1, "content": {"text": "按您一位先留名额"}},
+            {"type": "payment_collection", "order": 2, "content": {"amount": 10}},
+        ]
+        sop_messages = [
+            {"type": "text", "order": 1, "content": {"text": "固定活动说明"}},
+            {"type": "payment_collection", "order": 2, "content": {"amount": 20}},
+            {"type": "image", "order": 3, "content": {"url": "https://example.invalid/activity.jpg"}},
+        ]
+
+        merged = _merge_ai_then_sop_reply_messages(ai_messages, sop_messages)
+
+        cards = [message for message in merged if message["type"] == "payment_collection"]
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["content"]["amount"], 10)
+        self.assertEqual([message["order"] for message in merged], list(range(1, len(merged) + 1)))
+
 
 class _SlowPlannerGraph:
     def __init__(self) -> None:
