@@ -896,6 +896,8 @@ def _current_message_has_explicit_store_or_location_scope(content: str, state: A
 def _store_lookup_query_has_explicit_scope(query: str, state: AgentState) -> bool:
     if not str(query or "").strip():
         return False
+    if _store_lookup_query_comes_from_current_message(query, state):
+        return True
     if _query_matches_current_message_store_name(query, state):
         return True
     if _query_is_unique_real_store_name(query, state):
@@ -903,6 +905,54 @@ def _store_lookup_query_has_explicit_scope(query: str, state: AgentState) -> boo
     if _query_matches_scope_store_name(query, state):
         return True
     return False
+
+
+def _store_lookup_query_comes_from_current_message(query: str, state: AgentState) -> bool:
+    query_text = str(query or "").strip()
+    query_compact = _compact_text(query_text)
+    if not query_compact:
+        return False
+    current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    current_compact = _compact_text(current_text)
+    if not current_compact:
+        return False
+    if query_compact == current_compact:
+        return True
+    stripped_current = _strip_location_answer_prefixes(_strip_store_question_words(current_text))
+    stripped_compact = _compact_text(stripped_current)
+    if stripped_compact and query_compact == stripped_compact and _looks_like_bare_location_token(stripped_current):
+        return True
+    if (
+        query_compact in current_compact
+        and _looks_like_short_place_query(query_text)
+        and _raw_text_mentions_store_location_request(current_text)
+    ):
+        return True
+    return False
+
+
+def _looks_like_short_place_query(value: str) -> bool:
+    text = re.sub(r"[\s,，。？！?：:;；、\"'()（）\[\]【】<>《》]+", "", str(value or "").strip())
+    return bool(2 <= len(text) <= 16 and re.fullmatch(r"[\u4e00-\u9fffA-Za-z0-9]+", text))
+
+
+def _raw_text_mentions_store_location_request(value: str) -> bool:
+    text = str(value or "")
+    return any(
+        term in text
+        for term in (
+            "门店",
+            "店在哪里",
+            "店在哪",
+            "有店",
+            "附近",
+            "最近",
+            "地址",
+            "位置",
+            "定位",
+            "导航",
+        )
+    )
 
 
 def _clean_scoped_location_query(value: str) -> str:
@@ -2992,6 +3042,8 @@ def _ambiguous_location_tool_violation(tool_name: str) -> dict[str, str]:
 def _generic_store_question_uses_history_query(query: str, state: AgentState) -> bool:
     current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
     if not _is_generic_store_location_question_without_current_scope(current_text, state):
+        return False
+    if _store_lookup_query_comes_from_current_message(query, state):
         return False
     if _generic_store_question_can_use_contextual_anchor(state, query=query):
         return False

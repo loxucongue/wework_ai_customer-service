@@ -2916,6 +2916,34 @@ def test_bare_county_store_question_is_normalized_to_store_lookup() -> None:
     ]
 
 
+def test_current_bare_location_lookup_query_is_not_rejected_as_history_anchor() -> None:
+    plan = build_planner_plan_v2(
+        {"normalized_content": _u(r"\u6211\u5728\u6b66\u5e73\uff0c\u5e97\u5728\u54ea\u91cc")},
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [],
+            "tool_calls": [
+                {"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": _u(r"\u6b66\u5e73")}
+            ],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "nearby_candidates", "query": _u(r"\u6b66\u5e73")}
+    ]
+    assert not any(
+        item.get("missing") == "store_lookup_query_over_anchors_history"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_bare_location_answer_after_store_prompt_is_normalized_to_store_lookup() -> None:
     plan = build_planner_plan_v2(
         {
