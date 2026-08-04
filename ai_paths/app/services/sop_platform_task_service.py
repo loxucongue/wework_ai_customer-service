@@ -61,7 +61,8 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 - 客户刚说正在上班、开车、忙或稍后聊，客服已承接等待，之后没有新客户消息。
 - 人工正在连续接待，本任务会插入真实会话。
 - 已付或已预约，而任务仍在催付、重复预约或重复介绍已完成动作。
-- 近期已经完整发送相同核心内容、相同素材和相同行动要求。
+- 对非首次加微任务，近期已经完整发送相同核心内容、相同素材和相同行动要求。
+- 对首次加微任务，只有本轮全部消息的类型、顺序、文字和 URL 与近期某一完整发送批次逐项完全一致时，才按重复内容 `no_send`。文案不完全一致、仅语义相近、连续两次询问地址或多次推送不同效果内容都允许发送。
 - `use_ai_copy=false` 且候选内容与客户、场景或硬事实冲突，因为固定任务不允许 AI 篡改。
 - 候选消息包含冲突媒体；图片、视频和链接不可替换，无法仅靠文字改写解决。
 
@@ -75,8 +76,8 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 
 # 8. use_ai_copy 边界
 ## false
-- 只判断发送或不发送。
-- `send` 时所有类型、内容、URL 和顺序必须与平台输入完全一致。
+- 该分支由代码直接原样发送，不调用本模型判断。
+- 所有类型、内容、URL 和顺序必须与平台输入完全一致。
 
 ## true
 - 可以改写已有 text，让它承接最新聊天，像真人微信沟通。
@@ -95,7 +96,7 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 1. `task_type=add_wecom`、客户从未开口或仅有企微自动欢迎语、没有现实冲突：倾向 `send`。
 2. `task_type=add_wecom`，但客户最后问“你们店在哪里”，之后没有任何助手回答：必须 `no_send`，由普通 AI 先调用门店工具回答。
 3. 客户说“我担心到店加价”，这属于可由素材和权威业务事实解决的异议，不等同于待工具处理的客户问题。素材库提供“先承接担心，再说明活动范围内费用透明且额外项目不强制”时，若允许改写且本轮适合发送，文字必须直接解释费用透明和不强制，不能只说“给您发详情”。
-4. `use_ai_copy=false` 且客户已付，但固定文案仍催预约金：`no_send`，不得改写成其他内容。
+4. 首次加微近期发过“请问您在哪个区”，本轮是“您方便发城市或定位吗”：两段文案并不完全一致，应允许发送；不同效果文案或不同效果素材的连续推送同理。
 
 # 10. 输出合同
 只返回小写 `json` 对象，不要 Markdown、解释或额外字段：
@@ -575,11 +576,16 @@ class SopPlatformTaskService:
             self._counters[preflight_reason] += 1
             return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
 
-        self.repository.update_sop_event_status(event_id, status="platform_judging")
+        use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
+        processing_status = "platform_judging" if use_ai_copy else "platform_fixed_copy"
+        self.repository.update_sop_event_status(event_id, status=processing_status)
         self.repository.update_sop_send_task(
             str(local_task.get("id") or ""),
-            status="judging",
-            send_payload={"platform_task_id": task_id, "phase": "loading_latest_context"},
+            status="judging" if use_ai_copy else "platform_fixed_copy",
+            send_payload={
+                "platform_task_id": task_id,
+                "phase": "loading_latest_context" if use_ai_copy else "direct_platform_copy",
+            },
         )
 
         claimed = recovery_status in {
@@ -601,6 +607,14 @@ class SopPlatformTaskService:
                 context = {"source": "preflight", "task_timing": _task_timing(platform_task)}
                 decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
                 self._counters[preflight_reason] += 1
+            elif not use_ai_copy:
+                context = {"source": "use_ai_copy_false_direct_send", "task_timing": _task_timing(platform_task)}
+                decision = {
+                    "decision": "send",
+                    "reason": "use_ai_copy_false_direct_send",
+                    "reply_messages": _platform_messages(platform_task),
+                }
+                self._counters["fixed_copy_direct_send"] += 1
             else:
                 started = time.perf_counter()
                 context = await self._load_context(platform_task, identity=identity)
@@ -916,7 +930,7 @@ def _task_preflight_no_send_reason(
         return "missing_trusted_platform_content"
     scheduled = _task_scheduled_epoch(platform_task)
     max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 21600) or 0))
-    if scheduled and max_age and time.time() - scheduled > max_age:
+    if use_ai_copy and scheduled and max_age and time.time() - scheduled > max_age:
         return "stale_task"
     live_not_before = _parse_epoch(getattr(settings, "sop_platform_live_not_before", ""))
     if live_not_before and (not scheduled or scheduled < live_not_before):

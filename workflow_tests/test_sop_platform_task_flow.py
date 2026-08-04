@@ -39,6 +39,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("普通沉默不是拒发理由", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("首次加微任务用于建立第一次有效接触", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("第三方任务字段，不是 AI 系统配置", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("该分支由代码直接原样发送，不调用本模型判断", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("文案不完全一致、仅语义相近", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("从 `material_library` 选择适合当前场景", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("使用 `authoritative_business_facts`", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("不能延期、重排或创建后续任务", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
@@ -132,6 +134,22 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls[0]["plan_id"], "platform-sop-101")
         self.assertEqual(system.send_calls[0]["task_id"], "platform-sop-send-101")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+        self.assertEqual(model.calls, [])
+        self.assertEqual(system.conversation_calls, 0)
+
+    async def test_non_ai_copy_stale_task_still_sends_without_model(self) -> None:
+        model = _Model([])
+        service, _repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=False)
+        task["scheduledAt"] = time.time() - 86400
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(model.calls, [])
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
 
     async def test_no_send_is_business_success_without_customer_message(self) -> None:
         model = _Model([{"decision": "no_send", "reason": "already paid", "reply_messages": []}])
@@ -553,6 +571,17 @@ class SopReplyPackScopeTests(unittest.TestCase):
                 },
             )
 
+    def test_repository_objection_material_catalog_has_initial_business_slices(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "config" / "sop_objection_materials.json"
+        catalog = SopObjectionMaterialService(path).load()
+        material_ids = {item["material_id"] for item in catalog["materials"]}
+
+        self.assertGreaterEqual(len(material_ids), 10)
+        self.assertIn("price_transparency_001", material_ids)
+        self.assertIn("effect_confidence_001", material_ids)
+        self.assertIn("scope_spots_acne_001", material_ids)
+        self.assertIn("brand_trust_001", material_ids)
+
 
 def _service(*, model: Any, shadow_mode: bool = False, material_service: Any | None = None):
     repo = _Repo()
@@ -589,7 +618,7 @@ def _settings(*, shadow_mode: bool = False):
     )
 
 
-def _task(*, use_ai_copy: bool = False, message_content: list[dict[str, Any]] | None = None):
+def _task(*, use_ai_copy: bool = True, message_content: list[dict[str, Any]] | None = None):
     return {
         "task_id": 101,
         "ruleName": "test rule",
