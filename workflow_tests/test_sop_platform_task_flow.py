@@ -38,6 +38,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(section, SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("普通沉默不是拒发理由", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("`message_content` 和 `scene` 的职责不同", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("客户最新问题尚未被回答属于绝对门槛", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
+        self.assertIn("不得把“活动介绍、效果价值、到店提醒、操作要求”等任务内容", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("禁止 `defer`", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("只返回小写 `json` 对象", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
 
