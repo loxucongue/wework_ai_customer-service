@@ -469,7 +469,7 @@ class ChatRuntime:
                 return state
             ai_reply_usable = _ai_reply_usable_before_sop(final_state, ai_messages)
             if ai_reply_usable:
-                messages = _merge_reply_message_groups(ai_messages, sop_messages)
+                messages = _merge_ai_then_sop_reply_messages(ai_messages, sop_messages)
                 _confirm_deferred_chat_sop_task(
                     self._sop_execution_service,
                     sop_state,
@@ -1353,6 +1353,69 @@ def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str,
             copied["order"] = len(messages) + 1
             messages.append(copied)
     return messages
+
+
+def _merge_ai_then_sop_reply_messages(ai_messages: list[dict[str, Any]], sop_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not any(_message_type(message) == "text" and _message_text(message) for message in ai_messages):
+        return _merge_reply_message_groups(ai_messages, sop_messages)
+
+    sop_structural = [
+        message
+        for message in sop_messages
+        if isinstance(message, dict) and _message_type(message) in {"image", "video", "store_address", "payment_collection", "human_handoff_notice"}
+    ]
+    if not sop_structural:
+        return _merge_reply_message_groups(ai_messages, sop_messages)
+
+    ai_text_count = sum(1 for message in ai_messages if _message_type(message) == "text" and _message_text(message))
+    bridge_sop_text = _first_text_message(sop_messages) if ai_text_count <= 1 else None
+    trailing_ai_text: dict[str, Any] | None = None
+    ai_prefix = list(ai_messages)
+    if ai_text_count > 1 and ai_prefix and _message_type(ai_prefix[-1]) == "text" and _message_text(ai_prefix[-1]):
+        trailing_ai_text = ai_prefix.pop()
+
+    merged: list[dict[str, Any]] = []
+    seen = set()
+    for message in [*ai_prefix, *([bridge_sop_text] if bridge_sop_text else []), *sop_structural[:3], *([trailing_ai_text] if trailing_ai_text else [])]:
+        if not isinstance(message, dict):
+            continue
+        identity = _message_identity(message)
+        if identity and identity in seen:
+            continue
+        if identity:
+            seen.add(identity)
+        copied = dict(message)
+        copied["order"] = len(merged) + 1
+        merged.append(copied)
+    return merged
+
+
+def _message_type(message: dict[str, Any]) -> str:
+    return str(message.get("type") or "").strip().lower()
+
+
+def _first_text_message(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for message in messages:
+        if isinstance(message, dict) and _message_type(message) == "text" and _message_text(message):
+            return message
+    return None
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, dict):
+        return str(content.get("text") or "").strip()
+    return str(content or "").strip()
+
+
+def _message_identity(message: dict[str, Any]) -> tuple[str, str]:
+    msg_type = _message_type(message)
+    content = message.get("content")
+    if isinstance(content, dict):
+        value = str(content.get("url") or content.get("store_id") or content.get("amount") or content.get("text") or "").strip()
+    else:
+        value = str(content or "").strip()
+    return (msg_type, value)
 
 
 def _ai_reply_usable_before_sop(state: AgentState, messages: list[dict[str, Any]]) -> bool:

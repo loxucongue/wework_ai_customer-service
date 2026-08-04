@@ -8,7 +8,12 @@ from pathlib import Path
 from unittest.mock import patch
 from typing import Any
 
-from app.chat_runtime import ChatRuntime, _planner_sync_reply_messages, _should_run_async_finalize
+from app.chat_runtime import (
+    ChatRuntime,
+    _merge_ai_then_sop_reply_messages,
+    _planner_sync_reply_messages,
+    _should_run_async_finalize,
+)
 from app.config import Settings
 from app.schemas import ChatRequest
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator
@@ -343,6 +348,27 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         recovered = [state for state in repository.saved_states if state.get("reply_source") == "deterministic_runtime_exception_fallback"]
         self.assertTrue(recovered)
         self.assertEqual(recovered[-1]["async_final_reply"]["status"], "error_recovered_sync")
+
+    def test_ai_then_sop_merge_keeps_structural_material_without_sop_text_stack(self) -> None:
+        ai_messages = [
+            {"type": "text", "order": 1, "content": {"text": "answer current question"}},
+            {"type": "store_address", "order": 2, "content": {"store_id": "216"}},
+            {"type": "text", "order": 3, "content": {"text": "closing action"}},
+        ]
+        sop_messages = [
+            {"type": "text", "order": 1, "content": {"text": "fixed sop explanation"}},
+            {"type": "image", "order": 2, "content": {"url": "https://example.invalid/a.jpg"}},
+            {"type": "image", "order": 3, "content": {"url": "https://example.invalid/b.jpg"}},
+            {"type": "image", "order": 4, "content": {"url": "https://example.invalid/c.jpg"}},
+            {"type": "text", "order": 5, "content": {"text": "fixed sop question"}},
+        ]
+
+        merged = _merge_ai_then_sop_reply_messages(ai_messages, sop_messages)
+
+        self.assertEqual([message["type"] for message in merged], ["text", "store_address", "image", "image", "image", "text"])
+        self.assertNotIn("fixed sop explanation", json.dumps(merged))
+        self.assertNotIn("fixed sop question", json.dumps(merged))
+        self.assertEqual([message["order"] for message in merged], [1, 2, 3, 4, 5, 6])
 
 
 class _SlowPlannerGraph:
