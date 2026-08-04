@@ -476,6 +476,77 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。",
         )
 
+    async def test_reply_failure_uses_store_resolution_fallback_when_cards_are_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=FakeAlwaysFailReplyModelClient(),
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-store-resolution-fallback",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "我在武平，店在哪里",
+                "normalized_content": "我在武平，店在哪里",
+                "planner_decision": "need_tools",
+                "planner_reply_messages": [],
+                "fact_envelope": {
+                    "structured_facts": {
+                        "store_lookup_status": {
+                            "status": "ok",
+                            "raw_query": "武平",
+                            "query": "武平",
+                            "resolved_admin_level": "district",
+                            "scope_match_level": "city_fallback",
+                            "exact_scope_has_store": False,
+                            "candidate_count": 1,
+                        },
+                        "store_resolution_fact": {
+                            "raw_place": "武平",
+                            "delivery_mode": "send_all_candidates",
+                            "visible_candidate_ids": ["321"],
+                        },
+                        "store_facts": [
+                            {
+                                "store_id": "321",
+                                "store_name": "龙岩新罗店",
+                                "city": "龙岩市",
+                                "district": "新罗区",
+                                "store_address": "龙岩市新罗区西陂街道龙岩大道326号水晶兰天商务楼",
+                                "store_fact_integrity": "valid",
+                                "scope_authorized": True,
+                            }
+                        ],
+                    }
+                },
+                "customer_store_knowledge": {
+                    "stores": [
+                        {
+                            "store_id": "321",
+                            "store_name": "龙岩新罗店",
+                            "city": "龙岩市",
+                            "district": "新罗区",
+                        }
+                    ]
+                },
+                "required_tools": [{"name": "customer_store_lookup", "purpose": "existence", "query": "武平"}],
+            }
+
+            output = await node(state)
+
+        self.assertEqual(output["errors"], [])
+        self.assertEqual(output["reply_source"], "deterministic_store_resolution_fallback")
+        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "store_address"])
+        self.assertEqual(output["reply_messages"][1]["content"]["store_id"], "321")
+
     async def test_handoff_notice_fallback_when_reply_model_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             node = create_synthesize_reply_node(

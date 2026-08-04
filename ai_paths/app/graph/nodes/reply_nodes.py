@@ -120,21 +120,44 @@ def create_synthesize_reply_node(
                     model_call["stale_handoff_notice_removed"] = True
             fallback_source = ""
             if not messages and errors:
-                messages = _neutral_final_fallback_messages()
-                reply_source = "deterministic_neutral_final_fallback"
-                fallback_source = reply_source
+                store_fallback_messages = _store_resolution_final_fallback_messages(state)
+                if store_fallback_messages:
+                    try:
+                        messages = _prepare_structural_messages(store_fallback_messages, state, warnings)
+                        validate_reply_consistency(messages, state)
+                        reply_source = "deterministic_store_resolution_fallback"
+                        fallback_source = reply_source
+                    except Exception:
+                        messages = []
+                if not messages:
+                    messages = _neutral_final_fallback_messages()
+                    reply_source = "deterministic_neutral_final_fallback"
+                    fallback_source = reply_source
                 recovered_error = errors.pop() if errors else None
                 if recovered_error:
                     warnings.append(
                         {
                             "node": "synthesize_reply",
-                            "message": "final_reply_recovered_by_neutral_fallback",
+                            "message": (
+                                "final_reply_recovered_by_store_resolution_fallback"
+                                if reply_source == "deterministic_store_resolution_fallback"
+                                else "final_reply_recovered_by_neutral_fallback"
+                            ),
                             "detail": str(recovered_error.get("detail") if isinstance(recovered_error, dict) else recovered_error),
                         }
                     )
-                warnings.append({"node": "synthesize_reply", "message": "neutral_final_fallback_used"})
+                warnings.append(
+                    {
+                        "node": "synthesize_reply",
+                        "message": (
+                            "store_resolution_fallback_used"
+                            if reply_source == "deterministic_store_resolution_fallback"
+                            else "neutral_final_fallback_used"
+                        ),
+                    }
+                )
                 if model_call:
-                    model_call["fallback"] = {"strategy": "deterministic_neutral_final"}
+                    model_call["fallback"] = {"strategy": reply_source}
                     model_call["output"] = {"messages": len(messages)}
                 messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
                 if handoff_notice_appended_after_fallback:
@@ -522,6 +545,66 @@ def _needs_strong_reply_model(state: AgentState) -> bool:
 
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
     return [{"type": "text", "order": 1, "content": "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。"}]
+
+
+def _store_resolution_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
+    records = _store_resolution_fallback_records(state)
+    if not records:
+        return []
+    envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
+    resolution = structured.get("store_resolution_fact") if isinstance(structured.get("store_resolution_fact"), dict) else {}
+    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    raw_place = str(resolution.get("raw_place") or lookup.get("raw_query") or lookup.get("query") or "").strip()
+    place_prefix = f"{raw_place}这边" if raw_place else "您这个位置"
+    names = [str(item.get("store_name") or item.get("name") or "").strip() for item in records]
+    names = [name for name in names if name]
+    if len(records) == 1:
+        name = names[0] if names else "这家门店"
+        text = f"收到亲，{place_prefix}我先按您发的位置查了，当前可对接的是{name}，我把位置发您。您脸上斑点大概多久了？我按情况跟您说下适合怎么改善。"
+    else:
+        text = f"收到亲，{place_prefix}我先按您发的位置查了，当前有这几家可对接的门店，我都发您，您看哪个区过去合适。您脸上斑点大概多久了？"
+    messages: list[dict[str, Any]] = [{"type": "text", "order": 1, "content": text}]
+    for record in records[:3]:
+        store_id = str(record.get("store_id") or record.get("id") or "").strip()
+        if store_id:
+            messages.append({"type": "store_address", "order": len(messages) + 1, "content": {"store_id": store_id}})
+    return _renumber(messages)
+
+
+def _store_resolution_fallback_records(state: AgentState) -> list[dict[str, Any]]:
+    envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
+    structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
+    resolution = structured.get("store_resolution_fact") if isinstance(structured.get("store_resolution_fact"), dict) else {}
+    if str(resolution.get("delivery_mode") or "").strip() != "send_all_candidates":
+        return []
+    expected_ids = [
+        str(item or "").strip()
+        for item in resolution.get("visible_candidate_ids") or []
+        if str(item or "").strip()
+    ]
+    if not 1 <= len(expected_ids) <= 3:
+        return []
+    records_by_id: dict[str, dict[str, Any]] = {}
+    for item in structured.get("store_facts") or []:
+        if not isinstance(item, dict):
+            continue
+        store_id = str(item.get("store_id") or item.get("id") or "").strip()
+        if not store_id or not _store_record_valid_for_fallback(item):
+            continue
+        records_by_id[store_id] = item
+    records = [records_by_id[store_id] for store_id in expected_ids if store_id in records_by_id]
+    return records if len(records) == len(expected_ids) else []
+
+
+def _store_record_valid_for_fallback(record: dict[str, Any]) -> bool:
+    if record.get("scope_authorized") is False:
+        return False
+    integrity = str(record.get("store_fact_integrity") or "valid").strip().lower()
+    if integrity and integrity != "valid":
+        return False
+    violations = record.get("store_fact_integrity_violations")
+    return not (isinstance(violations, list) and violations)
 
 
 def _maybe_append_required_store_address(
