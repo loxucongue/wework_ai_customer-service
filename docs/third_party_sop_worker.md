@@ -39,11 +39,22 @@ sequenceDiagram
 
 ## 文案处理
 
-- `useAiCopy=false`：模型只判断发不发，平台文字、图片、视频、链接及顺序原样发送。
+- `useAiCopy=false`：通过基础执行校验和夜间保护后直接原样发送，不读取业务上下文、不调用模型。
 - `useAiCopy=true`：模型可改写文字以承接最新聊天；图片、视频、链接不得修改或新增。
 - AI 文案任务的 `message_content` 为空时，只能根据 `scene.sceneDesc`、`scene.knowledgeText` 或 `scene.engine.generateNote` 生成 1–2 条文字。
 - 平台没有提供可信内容时直接 `no_send`，不得编造活动、素材或业务事实。
 - Worker 不生成预约金卡。
+
+## 夜间保护
+
+- 使用北京时间 `Asia/Shanghai`，默认窗口为 `00:00-08:00`。
+- 普通客户主动消息仍由普通 AI 回复链路及时处理；这里只拦截第三方主动 SOP。
+- 夜间保护优先于 `useAiCopy`，固定文案任务也不能绕过。
+- 第二天及以后的营销任务在夜间直接 `completed_without_send`，平台仍按 `20→30` 完成。
+- `add_wecom` 首次加微任务仅在最近客户活动或平台自动开场不足 30 分钟、客户没有待回复消息时允许继续。
+- 活跃时间未知、沉默达到 30 分钟、客户问题待回复或关系已删除时不发送。
+- 夜间任务不由 AI 延期、不创建早间补发任务；是否再次触达由第三方平台生成新任务。
+- 判断以任务 `scheduledAt` 为准，因此夜间任务即使延迟到白天才被拉取，也不会绕过保护。
 
 ## 失败恢复
 
@@ -110,6 +121,10 @@ SOP_PLATFORM_RECOVERY_CONCURRENCY=2
 SOP_PLATFORM_MODEL_TIMEOUT_SECONDS=20
 SOP_PLATFORM_MAX_TASK_AGE_SECONDS=21600
 SOP_PLATFORM_LIVE_NOT_BEFORE=
+SOP_PLATFORM_QUIET_HOURS_ENABLED=true
+SOP_PLATFORM_QUIET_START_HOUR=0
+SOP_PLATFORM_QUIET_END_HOUR=8
+SOP_PLATFORM_QUIET_FIRST_ADD_GRACE_MINUTES=30
 ```
 
 部署后先配置平台地址和 token，再开启拉取并保持影子模式。影子模式只拉取和判断，不认领、不发送、不回写。完成影子数据审核和隔离账号发送测试后，才能单独关闭影子模式。

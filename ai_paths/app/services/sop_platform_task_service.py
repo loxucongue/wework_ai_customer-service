@@ -10,6 +10,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.policies.business_rules import sop_platform_business_facts_for_model
+from app.services.sop_execution_service import is_platform_auto_opening_message
 from app.services.storage.serialization import utc_now_iso
 
 
@@ -353,6 +354,22 @@ class SopPlatformTaskService:
             "oldest_due_lag_seconds": round(self._oldest_due_lag_seconds, 3),
             "last_poll_at": self._last_poll_at,
             "last_poll_error": self._last_poll_error,
+            "quiet_hours": {
+                "enabled": bool(getattr(self.settings, "sop_platform_quiet_hours_enabled", True)),
+                "timezone": "Asia/Shanghai",
+                "start_hour": _bounded_hour(
+                    getattr(self.settings, "sop_platform_quiet_start_hour", 0),
+                    default=0,
+                ),
+                "end_hour": _bounded_hour(
+                    getattr(self.settings, "sop_platform_quiet_end_hour", 8),
+                    default=8,
+                ),
+                "first_add_grace_minutes": max(
+                    0,
+                    int(getattr(self.settings, "sop_platform_quiet_first_add_grace_minutes", 30) or 0),
+                ),
+            },
             "counters": dict(self._counters),
             "timings_ms": {name: _timing_summary(values) for name, values in self._timings.items()},
         }
@@ -565,12 +582,23 @@ class SopPlatformTaskService:
             identity=identity,
             settings=self.settings,
         )
+        quiet_hours: dict[str, Any] = {}
+        if not preflight_reason:
+            quiet_hours = await self._quiet_hours_guard(platform_task, identity=identity)
+            if quiet_hours.get("blocked"):
+                preflight_reason = str(quiet_hours.get("reason") or "quiet_hours_blocked")
         if self.settings.sop_platform_shadow_mode and preflight_reason:
             decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
             self.repository.update_sop_send_task(
                 str(local_task.get("id") or ""),
                 status="shadow_no_send",
-                send_payload={"decision": decision, "context": {"source": "preflight"}},
+                send_payload={
+                    "decision": decision,
+                    "context": {
+                        "source": "preflight",
+                        "quiet_hours": quiet_hours,
+                    },
+                },
             )
             self.repository.update_sop_event_status(event_id, status="shadow_no_send")
             self._counters[preflight_reason] += 1
@@ -604,7 +632,11 @@ class SopPlatformTaskService:
 
         try:
             if preflight_reason:
-                context = {"source": "preflight", "task_timing": _task_timing(platform_task)}
+                context = {
+                    "source": "preflight",
+                    "task_timing": _task_timing(platform_task),
+                    "quiet_hours": quiet_hours,
+                }
                 decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
                 self._counters[preflight_reason] += 1
             elif not use_ai_copy:
@@ -695,6 +727,77 @@ class SopPlatformTaskService:
                     error=f"{type(exc).__name__}: {exc}",
                 )
             raise
+
+    async def _quiet_hours_guard(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        identity: dict[str, str],
+    ) -> dict[str, Any]:
+        summary = _quiet_hours_base_summary(platform_task, settings=self.settings)
+        if not summary.get("in_quiet_hours"):
+            return summary
+
+        task_type = _task_type(platform_task)
+        summary["task_type"] = task_type
+        if task_type != "add_wecom":
+            return {
+                **summary,
+                "blocked": True,
+                "reason": "quiet_hours_marketing_blocked",
+            }
+
+        cutoff_epoch = float(summary.get("reference_epoch") or 0.0)
+        try:
+            conversation = await self.system_client.conversation(**identity, limit=80)
+        except Exception as exc:
+            return {
+                **summary,
+                "blocked": True,
+                "reason": "quiet_hours_unknown_activity",
+                "activity_error": f"{type(exc).__name__}: {exc}",
+            }
+
+        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
+        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
+        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
+            return {
+                **summary,
+                "blocked": True,
+                "reason": "customer_relation_deleted",
+                "customer_relation": _compact_customer_relation(relation),
+            }
+        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        activity = _quiet_hours_activity(messages[-80:], before_epoch=cutoff_epoch)
+        summary["activity"] = activity
+        grace_minutes = max(
+            0,
+            int(getattr(self.settings, "sop_platform_quiet_first_add_grace_minutes", 30) or 0),
+        )
+        if not activity.get("activity_epoch"):
+            return {
+                **summary,
+                "blocked": True,
+                "reason": "quiet_hours_unknown_activity",
+            }
+        if activity.get("customer_pending_reply"):
+            return {
+                **summary,
+                "blocked": True,
+                "reason": "quiet_hours_customer_pending_reply",
+            }
+        inactivity_minutes = int(activity.get("inactivity_minutes") or 0)
+        if inactivity_minutes >= grace_minutes:
+            return {
+                **summary,
+                "blocked": True,
+                "reason": "quiet_hours_first_add_inactive",
+            }
+        return {
+            **summary,
+            "blocked": False,
+            "reason": "quiet_hours_recent_first_add_allowed",
+        }
 
     async def _load_context(self, platform_task: dict[str, Any], *, identity: dict[str, str]) -> dict[str, Any]:
         missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
@@ -938,6 +1041,137 @@ def _task_preflight_no_send_reason(
     return ""
 
 
+def _quiet_hours_base_summary(platform_task: dict[str, Any], *, settings: Any) -> dict[str, Any]:
+    enabled = bool(getattr(settings, "sop_platform_quiet_hours_enabled", True))
+    start_hour = _bounded_hour(
+        getattr(settings, "sop_platform_quiet_start_hour", 0),
+        default=0,
+    )
+    end_hour = _bounded_hour(
+        getattr(settings, "sop_platform_quiet_end_hour", 8),
+        default=8,
+    )
+    scheduled_epoch = _task_scheduled_epoch(platform_task)
+    reference_epoch = scheduled_epoch or time.time()
+    local_time = datetime.fromtimestamp(reference_epoch, tz=_BEIJING_TZ)
+    in_quiet_hours = bool(enabled and _hour_in_window(local_time.hour, start_hour=start_hour, end_hour=end_hour))
+    return {
+        "enabled": enabled,
+        "timezone": "Asia/Shanghai",
+        "window": f"{start_hour:02d}:00-{end_hour:02d}:00",
+        "scheduled_at": platform_task.get("scheduledAt") or platform_task.get("scheduled_at") or "",
+        "reference_source": "scheduled_at" if scheduled_epoch else "processing_time",
+        "reference_epoch": reference_epoch,
+        "reference_at_beijing": local_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "in_quiet_hours": in_quiet_hours,
+        "blocked": False,
+        "reason": "",
+    }
+
+
+def _quiet_hours_activity(messages: list[Any], *, before_epoch: float) -> dict[str, Any]:
+    real_customer_times: list[float] = []
+    auto_opening_times: list[float] = []
+    assistant_times: list[float] = []
+    unknown_time_count = 0
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = _raw_message_role(item)
+        if role not in {"customer", "assistant"}:
+            continue
+        message_epoch = _raw_message_epoch(item)
+        if not message_epoch:
+            unknown_time_count += 1
+            continue
+        if message_epoch > before_epoch:
+            continue
+        if role == "assistant":
+            assistant_times.append(message_epoch)
+            continue
+        content = _timeline_message_content(item.get("content"))
+        if is_platform_auto_opening_message(content):
+            auto_opening_times.append(message_epoch)
+        else:
+            real_customer_times.append(message_epoch)
+
+    latest_customer = max(real_customer_times, default=0.0)
+    latest_auto_opening = max(auto_opening_times, default=0.0)
+    activity_epoch = latest_customer or latest_auto_opening
+    assistant_after_customer = bool(
+        latest_customer and any(latest_customer < value <= before_epoch for value in assistant_times)
+    )
+    inactivity_minutes = (
+        max(0, int((before_epoch - activity_epoch) // 60))
+        if activity_epoch
+        else None
+    )
+
+    def format_time(value: float) -> str:
+        if not value:
+            return ""
+        return datetime.fromtimestamp(value, tz=_BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    return {
+        "source": "customer_message" if latest_customer else "platform_auto_opening" if latest_auto_opening else "",
+        "activity_epoch": activity_epoch,
+        "activity_at_beijing": format_time(activity_epoch),
+        "latest_customer_at_beijing": format_time(latest_customer),
+        "latest_auto_opening_at_beijing": format_time(latest_auto_opening),
+        "assistant_after_latest_customer": assistant_after_customer,
+        "customer_pending_reply": bool(latest_customer and not assistant_after_customer),
+        "inactivity_minutes": inactivity_minutes,
+        "unknown_time_message_count": unknown_time_count,
+    }
+
+
+def _raw_message_role(item: dict[str, Any]) -> str:
+    value = str(
+        item.get("direction")
+        or item.get("role")
+        or item.get("sender_type")
+        or item.get("from")
+        or ""
+    ).strip().lower()
+    if value in {"customer", "user", "external"}:
+        return "customer"
+    if value in {"assistant", "staff", "ai", "agent", "employee", "system"}:
+        return "assistant"
+    return ""
+
+
+def _raw_message_epoch(item: dict[str, Any]) -> float:
+    for key in ("msgtime", "timestamp", "created_at", "sent_at", "message_time", "time"):
+        if item.get(key) not in (None, ""):
+            return _parse_epoch(item.get(key))
+    return 0.0
+
+
+def _task_type(task: dict[str, Any]) -> str:
+    return str(
+        task.get("triggerEvent")
+        or task.get("trigger_event")
+        or task.get("eventType")
+        or task.get("event_type")
+        or ""
+    ).strip().lower()
+
+
+def _bounded_hour(value: Any, *, default: int) -> int:
+    try:
+        return max(0, min(23, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _hour_in_window(hour: int, *, start_hour: int, end_hour: int) -> bool:
+    if start_hour == end_hour:
+        return False
+    if start_hour < end_hour:
+        return start_hour <= hour < end_hour
+    return hour >= start_hour or hour < end_hour
+
+
 def _platform_message_error(platform_task: dict[str, Any]) -> str:
     raw = platform_task.get("message_content")
     if not isinstance(raw, list):
@@ -1015,7 +1249,8 @@ def _parse_epoch(value: Any) -> float:
     except ValueError:
         return 0.0
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        # The SOP platform returns human-readable scheduledAt values in Beijing time.
+        parsed = parsed.replace(tzinfo=_BEIJING_TZ)
     return parsed.timestamp()
 
 
@@ -1432,9 +1667,13 @@ def _material_catalog_for_model(service: Any | None) -> list[dict[str, Any]]:
 def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
     relation = context.get("customer_relation") if isinstance(context.get("customer_relation"), dict) else {}
     customer_context = context.get("business_state") if isinstance(context.get("business_state"), dict) else {}
+    quiet_hours = context.get("quiet_hours") if isinstance(context.get("quiet_hours"), dict) else {}
     return {
+        "source": str(context.get("source") or ""),
         "conversation_count": int(context.get("conversation_count") or 0),
         "customer_relation": relation,
         "customer_context_source": customer_context.get("source"),
         "customer_context_error": customer_context.get("error"),
+        "task_timing": context.get("task_timing") if isinstance(context.get("task_timing"), dict) else {},
+        "quiet_hours": quiet_hours,
     }

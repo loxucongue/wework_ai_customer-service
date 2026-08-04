@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,6 +21,12 @@ from app.services.sop_reply_pack_service import SopReplyPackService
 class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
     def test_platform_poll_default_is_ten_seconds(self) -> None:
         self.assertEqual(Settings.model_fields["sop_platform_poll_seconds"].default, 10.0)
+
+    def test_platform_quiet_hours_defaults_match_production_contract(self) -> None:
+        self.assertTrue(Settings.model_fields["sop_platform_quiet_hours_enabled"].default)
+        self.assertEqual(Settings.model_fields["sop_platform_quiet_start_hour"].default, 0)
+        self.assertEqual(Settings.model_fields["sop_platform_quiet_end_hour"].default, 8)
+        self.assertEqual(Settings.model_fields["sop_platform_quiet_first_add_grace_minutes"].default, 30)
 
     def test_platform_prompt_has_layered_send_audit_contract(self) -> None:
         required_sections = (
@@ -150,6 +157,126 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model.calls, [])
         self.assertEqual(system.conversation_calls, 0)
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+
+    async def test_quiet_hours_blocks_fixed_marketing_before_direct_send(self) -> None:
+        model = _Model([])
+        settings = _settings(quiet_hours_enabled=True)
+        service, repo, platform, system = _service(model=model, settings=settings)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "schedule"
+        task["scheduledAt"] = _beijing_epoch("2026-08-05 01:00:00")
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(payload["decision"]["reason"], "quiet_hours_marketing_blocked")
+        self.assertEqual(payload["context"]["quiet_hours"]["window"], "00:00-08:00")
+
+    async def test_quiet_hours_blocks_ai_copy_marketing_before_model(self) -> None:
+        model = _Model([])
+        settings = _settings(quiet_hours_enabled=True)
+        settings.sop_platform_max_task_age_seconds = 0
+        service, _repo, platform, system = _service(model=model, settings=settings)
+        task = _task(use_ai_copy=True)
+        task["triggerEvent"] = "schedule"
+        task["scheduledAt"] = _beijing_epoch("2026-08-05 00:00:00")
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+
+    async def test_quiet_hours_allows_recent_first_add_auto_opening(self) -> None:
+        model = _Model([])
+        settings = _settings(quiet_hours_enabled=True)
+        service, _repo, platform, system = _service(model=model, settings=settings)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "add_wecom"
+        task["scheduledAt"] = _beijing_epoch("2026-08-05 01:00:00")
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "我已经添加了你，现在我们可以开始聊天了。",
+                "msgtime": _beijing_epoch("2026-08-05 00:31:00") * 1000,
+            }
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.conversation_calls, 1)
+        self.assertEqual(len(system.send_calls), 1)
+        self.assertEqual(model.calls, [])
+
+    async def test_quiet_hours_blocks_inactive_first_add(self) -> None:
+        model = _Model([])
+        settings = _settings(quiet_hours_enabled=True)
+        service, repo, platform, system = _service(model=model, settings=settings)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "add_wecom"
+        task["scheduledAt"] = "2026-08-05 01:00:00"
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "我已经添加了你，现在我们可以开始聊天了。",
+                "msgtime": _beijing_epoch("2026-08-05 00:30:00") * 1000,
+            }
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(payload["decision"]["reason"], "quiet_hours_first_add_inactive")
+        self.assertEqual(payload["context"]["quiet_hours"]["reference_at_beijing"], "2026-08-05 01:00:00")
+
+    async def test_quiet_hours_blocks_first_add_with_unanswered_customer_message(self) -> None:
+        model = _Model([])
+        settings = _settings(quiet_hours_enabled=True)
+        service, repo, platform, system = _service(model=model, settings=settings)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "add_wecom"
+        task["scheduledAt"] = _beijing_epoch("2026-08-05 01:00:00")
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "你们店在哪里",
+                "msgtime": _beijing_epoch("2026-08-05 00:55:00") * 1000,
+            }
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(system.send_calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(payload["decision"]["reason"], "quiet_hours_customer_pending_reply")
+
+    async def test_quiet_hours_end_boundary_sends_fixed_copy(self) -> None:
+        model = _Model([])
+        settings = _settings(quiet_hours_enabled=True)
+        service, _repo, platform, system = _service(model=model, settings=settings)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "schedule"
+        task["scheduledAt"] = _beijing_epoch("2026-08-05 08:00:00")
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(len(system.send_calls), 1)
 
     async def test_no_send_is_business_success_without_customer_message(self) -> None:
         model = _Model([{"decision": "no_send", "reason": "already paid", "reply_messages": []}])
@@ -583,12 +710,18 @@ class SopReplyPackScopeTests(unittest.TestCase):
         self.assertIn("brand_trust_001", material_ids)
 
 
-def _service(*, model: Any, shadow_mode: bool = False, material_service: Any | None = None):
+def _service(
+    *,
+    model: Any,
+    shadow_mode: bool = False,
+    material_service: Any | None = None,
+    settings: Any | None = None,
+):
     repo = _Repo()
     platform = _Platform()
     system = _System()
     service = SopPlatformTaskService(
-        settings=_settings(shadow_mode=shadow_mode),
+        settings=settings or _settings(shadow_mode=shadow_mode),
         repository=repo,
         platform_client=platform,
         system_client=system,
@@ -599,7 +732,7 @@ def _service(*, model: Any, shadow_mode: bool = False, material_service: Any | N
     return service, repo, platform, system
 
 
-def _settings(*, shadow_mode: bool = False):
+def _settings(*, shadow_mode: bool = False, quiet_hours_enabled: bool = False):
     return SimpleNamespace(
         sop_platform_token="token",
         sop_platform_base_url="http://example.invalid",
@@ -615,7 +748,17 @@ def _settings(*, shadow_mode: bool = False):
         sop_platform_model_timeout_seconds=10,
         sop_platform_max_task_age_seconds=21600,
         sop_platform_live_not_before="",
+        sop_platform_quiet_hours_enabled=quiet_hours_enabled,
+        sop_platform_quiet_start_hour=0,
+        sop_platform_quiet_end_hour=8,
+        sop_platform_quiet_first_add_grace_minutes=30,
     )
+
+
+def _beijing_epoch(value: str) -> float:
+    return datetime.strptime(value, "%Y-%m-%d %H:%M:%S").replace(
+        tzinfo=timezone(timedelta(hours=8)),
+    ).timestamp()
 
 
 def _task(*, use_ai_copy: bool = True, message_content: list[dict[str, Any]] | None = None):
