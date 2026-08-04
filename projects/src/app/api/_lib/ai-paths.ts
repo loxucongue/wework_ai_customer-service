@@ -425,6 +425,16 @@ export async function listAiPathsSopPlatformTasks(query: AiPathsSopPlatformTasks
   });
 }
 
+export async function resendAiPathsSopPlatformTask(taskId: string) {
+  const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
+  const headers = aiPathsAuthHeaders();
+  return fetch(`${apiBase.replace(/\/$/, "")}/admin/sop-platform-tasks/${encodeURIComponent(taskId)}/resend`, {
+    method: "POST",
+    headers,
+    cache: "no-store",
+  });
+}
+
 export async function proxyAiPathsAdmin(path: string, init: RequestInit = {}) {
   const apiBase = process.env.AI_PATHS_API_BASE || "http://127.0.0.1:8000";
   const targetPath = path.startsWith("/") ? path : `/${path}`;

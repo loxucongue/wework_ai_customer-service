@@ -432,6 +432,118 @@ class SopPlatformTaskService:
             "items": items,
         }
 
+    async def admin_resend_task(self, task_id: str) -> dict[str, Any]:
+        clean_task_id = str(task_id or "").strip()
+        if not clean_task_id:
+            raise ValueError("task_id is required")
+        lock = self._locks.setdefault(clean_task_id, asyncio.Lock())
+        async with lock:
+            return await self._admin_resend_task_locked(clean_task_id)
+
+    async def _admin_resend_task_locked(self, task_id: str) -> dict[str, Any]:
+        event_id = f"platform_sop_task:{task_id}"
+        event = self.repository.get_sop_event(event_id)
+        if not event:
+            raise ValueError("platform task not found")
+        payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
+        platform_task = payload.get("platform_task") if isinstance(payload.get("platform_task"), dict) else {}
+        if not platform_task:
+            raise ValueError("platform task payload is missing")
+
+        event_status = str(event.get("status") or "")
+        local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
+        if not local_task:
+            _event, local_task = self._ensure_local_task(platform_task, status="platform_received")
+        task_status = str(local_task.get("status") or "")
+        if task_status in {"sent", "sending"} or event_status == "platform_send_uncertain":
+            raise RuntimeError("task already sent or sending")
+
+        identity = _task_identity(platform_task)
+        preflight_reason = _task_preflight_no_send_reason(
+            platform_task,
+            identity=identity,
+            settings=self.settings,
+        )
+        if preflight_reason and preflight_reason != "pre_cutover_task":
+            raise RuntimeError(f"task cannot be resent: {preflight_reason}")
+
+        await self._manual_resend_relation_guard(identity)
+        messages = _manual_resend_messages(local_task, platform_task)
+        decision_reason = "manual_resend"
+        context: dict[str, Any] = {
+            "source": "manual_resend",
+            "original_event_status": event_status,
+            "original_task_status": task_status,
+        }
+        if not messages:
+            context = await self._load_context(platform_task, identity=identity)
+            decision = await self._decide(platform_task, context=context)
+            if decision["decision"] != "send" or not decision["reply_messages"]:
+                raise RuntimeError(f"manual resend produced no sendable content: {decision.get('reason') or 'no_send'}")
+            messages = decision["reply_messages"]
+            decision_reason = f"manual_resend_ai_copy:{decision.get('reason') or ''}"
+
+        send_payload = {
+            **identity,
+            "plan_id": f"platform-sop-{task_id}",
+            "task_id": f"platform-sop-send-{task_id}",
+            "reply_messages": messages,
+        }
+        audit_payload = {
+            "decision": {"decision": "send", "reason": decision_reason, "reply_messages": messages},
+            "request": send_payload,
+            "context": _context_audit(context),
+        }
+        self.repository.update_sop_send_task(str(local_task.get("id") or ""), status="sending", send_payload=audit_payload)
+        started = time.perf_counter()
+        send_result = await self.system_client.send(**send_payload)
+        self._observe("send", time.perf_counter() - started)
+        send_status = str((send_result.get("data") or {}).get("send_status") or send_result.get("msg") or "")
+        if send_status == "accepted_no_response":
+            self.repository.update_sop_event_status(event_id, status="platform_send_uncertain", error="active_send_timeout_unknown_result")
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="processing_retry",
+                send_payload=audit_payload,
+                error="active_send_timeout_unknown_result",
+            )
+            raise RuntimeError("active_send_timeout_unknown_result")
+
+        self.repository.update_sop_send_task(
+            str(local_task.get("id") or ""),
+            status="sent",
+            send_payload=audit_payload,
+            send_response=send_result,
+            sent_at=utc_now_iso(),
+        )
+        if event_status != "platform_completed" and not self.settings.sop_platform_shadow_mode:
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
+        self._remember_terminal(task_id)
+        self._counters["manual_resend"] += 1
+        return {
+            "processed": True,
+            "status": "sent",
+            "task_id": task_id,
+            "reply_messages": messages,
+            "send_response": send_result,
+        }
+
+    async def _manual_resend_relation_guard(self, identity: dict[str, str]) -> None:
+        missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
+        if missing:
+            raise RuntimeError(f"task cannot be resent: invalid_identity:{','.join(missing)}")
+        try:
+            conversation = await self.system_client.conversation(**identity, limit=1)
+        except Exception as exc:
+            raise RuntimeError(f"manual resend relation check failed: {type(exc).__name__}: {exc}") from exc
+        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
+        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
+        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
+            raise RuntimeError("task cannot be resent: customer_relation_deleted")
+
     def _observe(self, name: str, elapsed_seconds: float) -> None:
         values = self._timings.get(name)
         if values is not None:
@@ -1011,6 +1123,25 @@ def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
             if str(normalized_content.get("url") or "").strip():
                 output.append({"type": "link", "order": index, "content": normalized_content})
     return output
+
+
+def _manual_resend_messages(local_task: dict[str, Any], platform_task: dict[str, Any]) -> list[dict[str, Any]]:
+    use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
+    send_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+    request_payload = send_payload.get("request") if isinstance(send_payload.get("request"), dict) else {}
+    request_messages = request_payload.get("reply_messages")
+    if isinstance(request_messages, list) and request_messages:
+        return request_messages
+    decision_payload = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
+    decision_messages = decision_payload.get("reply_messages")
+    if isinstance(decision_messages, list) and decision_messages:
+        return decision_messages
+    if use_ai_copy:
+        return []
+    stored_messages = local_task.get("reply_messages")
+    if isinstance(stored_messages, list) and stored_messages:
+        return stored_messages
+    return _platform_messages(platform_task)
 
 
 def _task_preflight_no_send_reason(

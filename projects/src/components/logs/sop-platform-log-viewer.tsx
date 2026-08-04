@@ -106,6 +106,8 @@ export function SopPlatformLogViewer() {
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [resendingId, setResendingId] = useState("");
+  const [notice, setNotice] = useState("");
 
   const items = data.items || [];
   const selected = useMemo(
@@ -134,6 +136,36 @@ export function SopPlatformLogViewer() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const resend = useCallback(
+    async (task: TaskItem) => {
+      if (!task.task_id || resendingId) return;
+      if (!window.confirm(`确认补发任务 #${task.task_id} 吗？系统会按同一幂等 ID 发送，已发送任务会被后端拒绝。`)) {
+        return;
+      }
+      setResendingId(task.task_id);
+      setNotice("");
+      setError("");
+      try {
+        const response = await fetch(`/api/logs/sop-platform/${encodeURIComponent(task.task_id)}/resend`, {
+          method: "POST",
+          cache: "no-store",
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = isRecord(payload) ? String(payload.detail || payload.error || "") : "";
+          throw new Error(detail || `补发失败：${response.status}`);
+        }
+        setNotice(`任务 #${task.task_id} 已补发成功`);
+        await load();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "补发失败");
+      } finally {
+        setResendingId("");
+      }
+    },
+    [load, resendingId]
+  );
 
   const summary = data.summary || {};
   const worker = data.worker || {};
@@ -230,6 +262,12 @@ export function SopPlatformLogViewer() {
             {error}
           </div>
         ) : null}
+        {notice ? (
+          <div className="mt-3 flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+            <CheckCircle2 className="h-4 w-4 shrink-0" />
+            {notice}
+          </div>
+        ) : null}
       </section>
 
       <section className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)]">
@@ -260,7 +298,11 @@ export function SopPlatformLogViewer() {
         </aside>
 
         <div className="max-h-[calc(100vh-260px)] overflow-y-auto p-5">
-          {selected ? <TaskDetail task={selected} /> : <div className="border bg-white p-8 text-sm text-slate-500">请选择任务</div>}
+          {selected ? (
+            <TaskDetail task={selected} onResend={resend} resending={resendingId === selected.task_id} />
+          ) : (
+            <div className="border bg-white p-8 text-sm text-slate-500">请选择任务</div>
+          )}
         </div>
       </section>
     </main>
@@ -296,7 +338,8 @@ function FilterSelect({ label, value, options, onChange }: { label: string; valu
   );
 }
 
-function TaskDetail({ task }: { task: TaskItem }) {
+function TaskDetail({ task, onResend, resending }: { task: TaskItem; onResend: (task: TaskItem) => void; resending: boolean }) {
+  const canResend = isResendable(task);
   return (
     <div className="space-y-4">
       <section className="border bg-white p-5">
@@ -311,6 +354,16 @@ function TaskDetail({ task }: { task: TaskItem }) {
           <div className="text-right text-xs text-slate-500">
             <div>平台状态 {task.platform_status || "-"}</div>
             <div className="mt-1">本地状态 {task.task_status || task.event_status || "尚未拉取"}</div>
+            <button
+              type="button"
+              onClick={() => onResend(task)}
+              disabled={!canResend || resending}
+              title={canResend ? "按当前任务内容手动补发" : "已发送、发送中或平台待拉取任务不能补发"}
+              className="mt-3 inline-flex items-center gap-2 rounded-md border bg-white px-3 py-2 text-sm text-slate-900 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {resending ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+              补发
+            </button>
           </div>
         </div>
         <div className="mt-5 grid gap-x-6 gap-y-3 border-t pt-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
@@ -364,6 +417,14 @@ function TaskDetail({ task }: { task: TaskItem }) {
       ) : null}
     </div>
   );
+}
+
+function isResendable(task: TaskItem) {
+  if (!task.task_id || task.bucket === "platform_pending" || task.sent_at) return false;
+  if (task.task_status === "sent" || task.task_status === "sending" || task.event_status === "platform_send_uncertain") {
+    return false;
+  }
+  return ["judged_no_send", "judged_send", "recovery", "pulled_unjudged"].includes(task.bucket);
 }
 
 function TimelineStep({ label, time, done }: { label: string; time: string; done: boolean }) {

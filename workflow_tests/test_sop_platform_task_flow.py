@@ -158,6 +158,39 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.conversation_calls, 0)
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
 
+    async def test_manual_resend_pre_cutover_task_sends_original_without_reclaiming_platform(self) -> None:
+        model = _Model([])
+        settings = _settings()
+        settings.sop_platform_live_not_before = "2999-01-01T00:00:00+08:00"
+        service, repo, platform, system = _service(model=model, settings=settings)
+        task = _task(use_ai_copy=False)
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        platform.consume_calls.clear()
+
+        resend = await service.admin_resend_task("101")
+
+        self.assertEqual(resend["status"], "sent")
+        self.assertEqual(system.conversation_calls, 1)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["plan_id"], "platform-sop-101")
+        self.assertEqual(system.send_calls[0]["task_id"], "platform-sop-send-101")
+        self.assertEqual(platform.consume_calls, [])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+        self.assertEqual(next(iter(repo.tasks.values()))["status"], "sent")
+
+    async def test_manual_resend_rejects_already_sent_task(self) -> None:
+        model = _Model([])
+        service, _repo, _platform, _system = _service(model=model)
+        await service.process_task(_task(use_ai_copy=False))
+
+        with self.assertRaisesRegex(RuntimeError, "already sent"):
+            await service.admin_resend_task("101")
+
     async def test_quiet_hours_blocks_fixed_marketing_before_direct_send(self) -> None:
         model = _Model([])
         settings = _settings(quiet_hours_enabled=True)
@@ -801,6 +834,9 @@ class _Repo:
 
     def get_sop_event(self, event_id):
         return dict(self.events.get(event_id) or {})
+
+    def get_sop_send_task_by_idempotency_key(self, idempotency_key):
+        return dict(self.tasks.get(idempotency_key) or {})
 
     def update_sop_event_status(self, event_id, *, status, error=""):
         self.events[event_id]["status"] = status

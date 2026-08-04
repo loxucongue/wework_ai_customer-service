@@ -371,6 +371,16 @@ async def admin_sop_platform_tasks(
     )
 
 
+@app.post("/admin/sop-platform-tasks/{task_id}/resend", dependencies=[Depends(require_api_key)])
+async def admin_sop_platform_task_resend(task_id: str) -> dict[str, Any]:
+    try:
+        return await sop_platform_task_service.admin_resend_task(task_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/sop/events", dependencies=[Depends(require_external_api_key)])
 async def sop_events(
     background_tasks: BackgroundTasks,
