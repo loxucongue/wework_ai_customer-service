@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 import unittest
 from unittest.mock import AsyncMock
 from pathlib import Path
@@ -206,6 +208,26 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
+    async def test_uncertain_send_recovery_reuses_request_without_rerunning_model(self) -> None:
+        model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
+        service, repo, platform, system = _service(model=model)
+        system.send_responses = [
+            {"code": 0, "data": {"send_status": "accepted_no_response"}},
+            {"code": 0, "data": {"send_status": "sent"}},
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "unknown_result"):
+            await service.process_task(_task())
+
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_send_uncertain")
+        result = await service.process_task(_task(), recovery_status="platform_send_uncertain")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(len(system.send_calls), 2)
+        self.assertEqual(system.send_calls[0], system.send_calls[1])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+
     def test_platform_client_rejects_non_contract_statuses(self) -> None:
         client = SopPlatformClient(_settings())
         with self.assertRaisesRegex(ValueError, "20 or 30"):
@@ -221,12 +243,86 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         client = SopPlatformClient(settings)
         client._request = AsyncMock(return_value={"code": 200, "data": {"list": []}})  # type: ignore[method-assign]
 
-        await client.pending()
+        page = await client.pending()
 
         payload = client._request.await_args.kwargs["json_body"]  # type: ignore[union-attr]
         self.assertIsInstance(payload["start_time"], int)
         self.assertIsInstance(payload["end_time"], int)
         self.assertEqual(payload["limit"], 500)
+        self.assertEqual(page["items"], [])
+        self.assertEqual(page["total"], 0)
+
+    async def test_invalid_identity_is_completed_without_model_or_send(self) -> None:
+        model = _Model([])
+        service, _repo, platform, system = _service(model=model)
+        task = _task()
+        task["corp_id"] = ""
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(model.calls, [])
+        self.assertEqual(system.send_calls, [])
+
+    async def test_stale_shadow_task_is_audited_without_consuming_or_calling_model(self) -> None:
+        model = _Model([])
+        service, _repo, platform, system = _service(model=model, shadow_mode=True)
+        task = _task()
+        task["scheduledAt"] = time.time() - 21601
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "shadow_no_send")
+        self.assertEqual(result["decision"]["reason"], "stale_task")
+        self.assertEqual(platform.consume_calls, [])
+        self.assertEqual(model.calls, [])
+        self.assertEqual(system.send_calls, [])
+
+    async def test_ai_decision_disables_parallel_model_candidates(self) -> None:
+        model = _Model([{"decision": "no_send", "reason": "test", "reply_messages": []}])
+        service, _repo, _platform, _system = _service(model=model)
+
+        await service.process_task(_task())
+
+        self.assertEqual(model.kwargs[0]["max_parallel_candidates"], 1)
+
+    async def test_queue_workers_never_exceed_configured_concurrency(self) -> None:
+        settings = _settings(shadow_mode=True)
+        settings.sop_platform_task_concurrency = 6
+        settings.sop_platform_queue_size = 1000
+        service = SopPlatformTaskService(
+            settings=settings,
+            repository=_Repo(),
+            platform_client=_Platform(),
+            system_client=_System(),
+            model_client=_Model([]),
+            customer_context_service=_CustomerContext(),
+        )
+        active = 0
+        maximum = 0
+
+        async def fake_process(task, **_kwargs):
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
+            await asyncio.sleep(0.001)
+            active -= 1
+            return {"processed": True, "status": "shadow_no_send", "task_id": str(task["task_id"])}
+
+        service.process_task = fake_process  # type: ignore[method-assign]
+        workers = [asyncio.create_task(service._queue_worker(index)) for index in range(6)]
+        for task_id in range(1000):
+            task = {"task_id": str(task_id)}
+            service._queued_ids.add(str(task_id))
+            service._queue.put_nowait(task)
+        await service._queue.join()
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
+        self.assertEqual(maximum, 6)
+        self.assertEqual(service.runtime_status()["queue_depth"], 0)
 
     async def test_platform_client_rejects_non_json_success_response(self) -> None:
         client = SopPlatformClient(_settings())
@@ -295,9 +391,14 @@ def _settings(*, shadow_mode: bool = False):
         sop_platform_lookback_seconds=300,
         sop_platform_window_seconds=60,
         sop_platform_batch_size=20,
+        sop_platform_task_concurrency=6,
+        sop_platform_queue_size=24,
+        sop_platform_recovery_concurrency=2,
         sop_platform_recovery_batch_size=10,
         sop_platform_shadow_mode=shadow_mode,
         sop_platform_model_timeout_seconds=10,
+        sop_platform_max_task_age_seconds=21600,
+        sop_platform_live_not_before="",
     )
 
 
@@ -378,13 +479,14 @@ class _Platform:
             return self.consume_responses.pop(0)
         return {"code": 200, "data": {"task_id": task_id, "status": status}}
 
-    async def pending(self):
-        return []
+    async def pending(self, *, limit=None):
+        return {"items": [], "total": 0, "limit": limit}
 
 
 class _System:
     def __init__(self):
         self.send_calls: list[dict[str, Any]] = []
+        self.send_responses: list[dict[str, Any]] = []
         self.conversation_calls = 0
         self.conversation_payload = {
             "code": 0,
@@ -400,6 +502,8 @@ class _System:
 
     async def send(self, **kwargs):
         self.send_calls.append(kwargs)
+        if self.send_responses:
+            return self.send_responses.pop(0)
         return {"code": 0, "data": {"send_status": "sent"}}
 
 
@@ -412,9 +516,11 @@ class _Model:
     def __init__(self, outputs: list[dict[str, Any]]):
         self.outputs = list(outputs)
         self.calls: list[list[dict[str, Any]]] = []
+        self.kwargs: list[dict[str, Any]] = []
 
-    async def chat_json(self, messages, **_kwargs):
+    async def chat_json(self, messages, **kwargs):
         self.calls.append(messages)
+        self.kwargs.append(kwargs)
         if not self.outputs:
             raise AssertionError("unexpected model call")
         return self.outputs.pop(0)

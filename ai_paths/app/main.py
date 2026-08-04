@@ -144,16 +144,7 @@ storage_retention_worker: asyncio.Task[None] | None = None
 
 
 async def _run_sop_platform_pull_worker() -> None:
-    while True:
-        try:
-            result = await sop_platform_task_service.poll_once()
-            if result.get("pending_count") or result.get("error_count"):
-                logger.info("Third-party SOP worker result: %s", result)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Third-party SOP worker iteration failed")
-        await asyncio.sleep(max(1.0, settings.sop_platform_poll_seconds))
+    await sop_platform_task_service.run()
 
 
 async def _run_storage_retention_worker() -> None:
@@ -210,8 +201,11 @@ async def shutdown() -> None:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "platform_sop_worker": sop_platform_task_service.runtime_status(),
+    }
 
 
 @app.get("/chat")
@@ -609,6 +603,12 @@ async def admin_outreach_dashboard() -> dict[str, Any]:
             "shadow_mode": settings.sop_platform_shadow_mode,
             "poll_seconds": settings.sop_platform_poll_seconds,
             "batch_size": settings.sop_platform_batch_size,
+            "task_concurrency": settings.sop_platform_task_concurrency,
+            "queue_size": settings.sop_platform_queue_size,
+            "recovery_concurrency": settings.sop_platform_recovery_concurrency,
+            "model_timeout_seconds": settings.sop_platform_model_timeout_seconds,
+            "max_task_age_seconds": settings.sop_platform_max_task_age_seconds,
+            **sop_platform_task_service.runtime_status(),
         },
     }
 

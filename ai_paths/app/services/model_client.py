@@ -89,6 +89,7 @@ class ModelClient:
         tier: ModelTier = "balanced",
         temperature: float = 0.0,
         deadline_monotonic: float | None = None,
+        max_parallel_candidates: int | None = None,
     ) -> dict[str, Any]:
         if not self.available:
             raise RuntimeError("No model API key configured")
@@ -123,6 +124,7 @@ class ModelClient:
                     consume=consume,
                     failure_label="All JSON model candidates failed",
                     deadline_monotonic=deadline,
+                    max_parallel_candidates=max_parallel_candidates,
                 ),
                 deadline_monotonic=deadline,
                 deadline_seconds=deadline_seconds,
@@ -144,6 +146,7 @@ class ModelClient:
                         consume=consume,
                         failure_label="All JSON no-response-format model candidates failed",
                         deadline_monotonic=deadline,
+                        max_parallel_candidates=max_parallel_candidates,
                     ),
                     deadline_monotonic=deadline,
                     deadline_seconds=max(0.0, deadline - request_started_at),
@@ -278,6 +281,7 @@ class ModelClient:
         consume: Callable[[dict[str, Any]], Awaitable[T]],
         failure_label: str,
         deadline_monotonic: float | None = None,
+        max_parallel_candidates: int | None = None,
     ) -> T:
         if not models:
             raise RuntimeError(f"{failure_label}: no model candidates")
@@ -285,7 +289,12 @@ class ModelClient:
         errors: list[str] = []
         pending: dict[asyncio.Task[tuple[T, dict[str, Any]]], tuple[int, str]] = {}
         next_index = 0
-        max_parallel = max(1, min(2, int(self.settings.model_hedge_max_parallel or 1)))
+        configured_parallel = (
+            self.settings.model_hedge_max_parallel
+            if max_parallel_candidates is None
+            else max_parallel_candidates
+        )
+        max_parallel = max(1, min(2, int(configured_parallel or 1)))
         hedge_delay = self._hedge_delay_for_tier(tier)
         configured_total_timeout = self._total_timeout_for_tier(tier)
         started_at = time.perf_counter()

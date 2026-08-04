@@ -33,6 +33,10 @@ sequenceDiagram
     W->>P: consume(taskId, 30)
 ```
 
+平台只返回已经到期的任务，AI 系统看不到 `dispatch_wait`。Worker 每秒拉取一次，把任务放入容量 24 的本地队列，默认由 6 个执行槽并发处理。任务进入执行槽后才调用 `consume(20)`，未开始执行的任务仍由平台保持状态 10。
+
+模型判断使用 `gpt-5.4-mini`，明确失败后顺序回退 `gpt-5.4`。SOP 调用关闭并行 hedge，避免与普通客户回复争抢供应商总并发。
+
 ## 文案处理
 
 - `useAiCopy=false`：模型只判断发不发，平台文字、图片、视频、链接及顺序原样发送。
@@ -48,6 +52,26 @@ sequenceDiagram
 - 主动发送使用 `platform-sop-<task_id>` 和 `platform-sop-send-<task_id>` 作为稳定幂等标识。
 - 客户消息已经发送而平台 `30` 回写失败时，本地保留 `platform_complete_pending`；恢复只重试回写 `30`，不得再次发送。
 - 发送超时且结果不确定时保留 `platform_send_uncertain`，不得伪造平台成功。
+- `platform_send_uncertain` 恢复时复用原始 `plan_id/task_id/reply_messages`，不重新运行模型。
+- 缺少完整客户身份、消息结构非法、缺少可信文案来源、任务超过 6 小时或早于 Live 切换时间时，安全地按 `completed_without_send` 完成并写明原因。
+
+## 观测指标
+
+`/health` 和 Outreach 管理统计返回队列深度、执行中数量、平台待发送总数、最老任务延迟、各阶段 P50/P90/最大耗时，以及发送、不发送、恢复、身份缺失、过期和不确定发送计数。任务延迟超过 120 秒会记录 warning，发送结果不确定会记录 error。
+
+## 当前可实现范围与限制
+
+可以实现：到期后近实时拉取、发送前读取最近 50 条聊天和实时业务事实、`send/no_send`、受控文字改写、有界并发、幂等发送和服务重启恢复。
+
+当前限制：
+
+- 无法提前读取尚未到期的 `dispatch_wait`，不能预计算。
+- 同一时刻大量到期时只能排队，不能保证精确到秒。
+- `pending` 单次最多 500 且无游标，只能通过认领后重复拉取排空。
+- 平台只有 10/20/30，基础设施失败必须保留 20 并在 AI 系统本地恢复。
+- 暂不处理读取上下文后、真正发送前出现新客户消息的最后一秒竞态。
+- 缺少企业、客服或客户身份时不能跨租户猜测补齐，只能不发送。
+- SQLite 单进程适合当前规模，不支持多实例并行消费。
 
 ## 旧链路状态
 
@@ -63,6 +87,14 @@ sequenceDiagram
 ```env
 SOP_PLATFORM_PULL_ENABLED=false
 SOP_PLATFORM_SHADOW_MODE=true
+SOP_PLATFORM_POLL_SECONDS=1
+SOP_PLATFORM_BATCH_SIZE=50
+SOP_PLATFORM_TASK_CONCURRENCY=6
+SOP_PLATFORM_QUEUE_SIZE=24
+SOP_PLATFORM_RECOVERY_CONCURRENCY=2
+SOP_PLATFORM_MODEL_TIMEOUT_SECONDS=20
+SOP_PLATFORM_MAX_TASK_AGE_SECONDS=21600
+SOP_PLATFORM_LIVE_NOT_BEFORE=
 ```
 
 部署后先配置平台地址和 token，再开启拉取并保持影子模式。影子模式只拉取和判断，不认领、不发送、不回写。完成影子数据审核和隔离账号发送测试后，才能单独关闭影子模式。

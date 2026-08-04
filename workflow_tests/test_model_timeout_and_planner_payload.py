@@ -247,6 +247,38 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage.get("winner_model"), "fast-model")
         self.assertIn("slow-model", usage.get("cancelled_models") or [])
 
+    async def test_json_call_can_disable_hedging_without_changing_global_default(self) -> None:
+        class SequentialJsonClient(ModelClient):
+            def __init__(self, settings: Settings) -> None:
+                super().__init__(settings)
+                self.models: list[str] = []
+
+            async def _post_chat(self, payload, *, tier, fallback_index, errors):
+                self.models.append(str(payload.get("model") or ""))
+                await asyncio.sleep(0.03)
+                return {"choices": [{"message": {"content": '{"decision":"no_send"}'}}]}
+
+        client = SequentialJsonClient(
+            _settings(
+                model_provider="relay",
+                model_relay_api_key="relay-key",
+                model_fast="primary-model",
+                model_fast_fallbacks="fallback-model",
+                model_hedge_delay_seconds=0.001,
+                model_timeout_seconds=1,
+            )
+        )
+
+        result = await client.chat_json(
+            [{"role": "user", "content": "Return valid json only."}],
+            tier="fast",
+            max_parallel_candidates=1,
+        )
+
+        self.assertEqual(result, {"decision": "no_send"})
+        self.assertEqual(client.models, ["primary-model"])
+        self.assertFalse((client.last_usage or {}).get("hedge_started"))
+
     async def test_model_client_cancellation_cleans_up_hedged_candidates(self) -> None:
         class CancelledModelClient(ModelClient):
             def __init__(self, settings: Settings) -> None:

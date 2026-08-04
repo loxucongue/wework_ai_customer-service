@@ -94,13 +94,18 @@ class Settings(BaseSettings):
         alias="SOP_PLATFORM_BASE_URL",
     )
     sop_platform_token: str = Field(default="", alias="SOP_PLATFORM_TOKEN", repr=False)
-    sop_platform_poll_seconds: float = Field(default=5.0, alias="SOP_PLATFORM_POLL_SECONDS")
+    sop_platform_poll_seconds: float = Field(default=1.0, alias="SOP_PLATFORM_POLL_SECONDS")
     sop_platform_lookback_seconds: int = Field(default=604800, alias="SOP_PLATFORM_LOOKBACK_SECONDS")
     sop_platform_window_seconds: int = Field(default=60, alias="SOP_PLATFORM_WINDOW_SECONDS")
-    sop_platform_batch_size: int = Field(default=20, alias="SOP_PLATFORM_BATCH_SIZE")
+    sop_platform_batch_size: int = Field(default=50, alias="SOP_PLATFORM_BATCH_SIZE")
+    sop_platform_task_concurrency: int = Field(default=6, alias="SOP_PLATFORM_TASK_CONCURRENCY")
+    sop_platform_queue_size: int = Field(default=24, alias="SOP_PLATFORM_QUEUE_SIZE")
+    sop_platform_recovery_concurrency: int = Field(default=2, alias="SOP_PLATFORM_RECOVERY_CONCURRENCY")
     sop_platform_timeout_seconds: float = Field(default=12.0, alias="SOP_PLATFORM_TIMEOUT_SECONDS")
-    sop_platform_model_timeout_seconds: float = Field(default=45.0, alias="SOP_PLATFORM_MODEL_TIMEOUT_SECONDS")
+    sop_platform_model_timeout_seconds: float = Field(default=20.0, alias="SOP_PLATFORM_MODEL_TIMEOUT_SECONDS")
     sop_platform_recovery_batch_size: int = Field(default=10, alias="SOP_PLATFORM_RECOVERY_BATCH_SIZE")
+    sop_platform_max_task_age_seconds: int = Field(default=21600, alias="SOP_PLATFORM_MAX_TASK_AGE_SECONDS")
+    sop_platform_live_not_before: str = Field(default="", alias="SOP_PLATFORM_LIVE_NOT_BEFORE")
     model_json_max_tokens: int = 2048
     model_text_max_tokens: int = 2048
     memory_dir: Path = Path("logs/memory")

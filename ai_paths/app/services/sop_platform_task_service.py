@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
+from collections import Counter, deque
+from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from app.services.storage.serialization import utc_now_iso
+
+
+logger = logging.getLogger(__name__)
 
 
 SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
@@ -56,25 +63,160 @@ class SopPlatformTaskService:
         self.model_client = model_client
         self.customer_context_service = customer_context_service
         self._locks: dict[str, asyncio.Lock] = {}
+        queue_size = max(1, int(getattr(settings, "sop_platform_queue_size", 24) or 24))
+        self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=queue_size)
+        self._queued_ids: set[str] = set()
+        self._in_flight_ids: set[str] = set()
+        self._terminal_ids: set[str] = set()
+        self._terminal_order: deque[str] = deque()
+        self._workers: list[asyncio.Task[None]] = []
+        self._recovery_worker: asyncio.Task[None] | None = None
+        self._running = False
+        self._counters: Counter[str] = Counter()
+        self._timings: dict[str, deque[float]] = {
+            name: deque(maxlen=500)
+            for name in ("pull", "claim", "context", "model", "send", "task", "queue_lag")
+        }
+        self._last_poll_at = ""
+        self._last_poll_error = ""
+        self._pending_total = 0
+        self._oldest_due_lag_seconds = 0.0
+
+    async def run(self) -> None:
+        if self._running:
+            raise RuntimeError("third-party SOP worker is already running")
+        self._running = True
+        concurrency = max(1, int(getattr(self.settings, "sop_platform_task_concurrency", 6) or 6))
+        self._workers = [
+            asyncio.create_task(self._queue_worker(index), name=f"sop-platform-worker-{index}")
+            for index in range(concurrency)
+        ]
+        self._recovery_worker = asyncio.create_task(
+            self._recovery_loop(),
+            name="sop-platform-recovery",
+        )
+        try:
+            while True:
+                result = await self.poll_once()
+                if result.get("pending_count") or result.get("error_count"):
+                    logger.info("Third-party SOP worker result: %s", result)
+                await asyncio.sleep(max(0.2, float(self.settings.sop_platform_poll_seconds)))
+        finally:
+            self._running = False
+            tasks = [*self._workers]
+            if self._recovery_worker is not None:
+                tasks.append(self._recovery_worker)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            self._workers = []
+            self._recovery_worker = None
 
     async def poll_once(self) -> dict[str, int]:
-        recovered = await self.process_recoveries()
-        tasks = await self.platform_client.pending()
-        processed = 0
-        errors = 0
+        free_slots = max(0, self._queue.maxsize - self._queue.qsize())
+        if free_slots <= 0:
+            return {
+                "pending_count": self._pending_total,
+                "enqueued_count": 0,
+                "queue_depth": self._queue.qsize(),
+                "in_flight_count": len(self._in_flight_ids),
+                "error_count": 0,
+            }
+        limit = min(
+            free_slots,
+            max(1, min(int(self.settings.sop_platform_batch_size), 500)),
+        )
+        started = time.perf_counter()
+        self._last_poll_at = utc_now_iso()
+        try:
+            page = await self.platform_client.pending(limit=limit)
+            self._last_poll_error = ""
+        except Exception as exc:
+            self._last_poll_error = f"{type(exc).__name__}: {exc}"
+            self._counters["poll_error"] += 1
+            raise
+        finally:
+            self._observe("pull", time.perf_counter() - started)
+        if isinstance(page, list):
+            page = {"items": page, "total": len(page)}
+        tasks = page.get("items") if isinstance(page.get("items"), list) else []
+        tasks = sorted(
+            (dict(item) for item in tasks if isinstance(item, dict)),
+            key=lambda item: (_task_scheduled_epoch(item) or float("inf"), _task_id(item)),
+        )
+        self._pending_total = max(len(tasks), int(page.get("total") or 0))
+        now_epoch = time.time()
+        lags = [max(0.0, now_epoch - value) for value in map(_task_scheduled_epoch, tasks) if value]
+        self._oldest_due_lag_seconds = max(lags, default=0.0)
+        if self._oldest_due_lag_seconds > 120:
+            logger.warning(
+                "Third-party SOP queue lag is %.1fs (pending=%s)",
+                self._oldest_due_lag_seconds,
+                self._pending_total,
+            )
+        enqueued = 0
+        pulled_at = utc_now_iso()
         for task in tasks:
-            try:
-                result = await self.process_task(task)
-                if result.get("processed"):
-                    processed += 1
-            except Exception:
-                errors += 1
+            task_id = _task_id(task)
+            if (
+                not task_id
+                or task_id in self._queued_ids
+                or task_id in self._in_flight_ids
+                or task_id in self._terminal_ids
+            ):
+                self._counters["duplicate_poll"] += 1
+                continue
+            if self._queue.full():
+                break
+            task["_aics_pulled_at"] = pulled_at
+            self._queued_ids.add(task_id)
+            self._queue.put_nowait(task)
+            enqueued += 1
+        self._counters["fetched"] += len(tasks)
+        self._counters["enqueued"] += enqueued
         return {
-            "pending_count": len(tasks),
-            "processed_count": processed,
-            "recovered_count": recovered,
-            "error_count": errors,
+            "pending_count": self._pending_total,
+            "enqueued_count": enqueued,
+            "queue_depth": self._queue.qsize(),
+            "in_flight_count": len(self._in_flight_ids),
+            "terminal_dedupe_count": len(self._terminal_ids),
+            "error_count": 0,
         }
+
+    async def _queue_worker(self, _index: int) -> None:
+        while True:
+            platform_task = await self._queue.get()
+            task_id = _task_id(platform_task)
+            self._queued_ids.discard(task_id)
+            self._in_flight_ids.add(task_id)
+            started = time.perf_counter()
+            scheduled = _task_scheduled_epoch(platform_task)
+            if scheduled:
+                self._observe("queue_lag", max(0.0, time.time() - scheduled))
+            try:
+                result = await self.process_task(platform_task)
+                self._record_result(result)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._counters["retry"] += 1
+                logger.exception("Third-party SOP task failed and remains recoverable: %s", task_id)
+            finally:
+                self._observe("task", time.perf_counter() - started)
+                self._in_flight_ids.discard(task_id)
+                self._queue.task_done()
+
+    async def _recovery_loop(self) -> None:
+        while True:
+            try:
+                await self.process_recoveries()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._counters["recovery_error"] += 1
+                logger.exception("Third-party SOP recovery iteration failed")
+            await asyncio.sleep(max(1.0, float(self.settings.sop_platform_poll_seconds)))
 
     async def process_recoveries(self) -> int:
         events = self.repository.list_sop_events_by_statuses(
@@ -82,8 +224,10 @@ class SopPlatformTaskService:
             limit=self.settings.sop_platform_recovery_batch_size,
             event_type="platform_sop_task",
         )
-        processed = 0
-        for event in events:
+        concurrency = max(1, int(getattr(self.settings, "sop_platform_recovery_concurrency", 2) or 2))
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def recover(event: dict[str, Any]) -> int:
             payload = event.get("raw_payload") if isinstance(event.get("raw_payload"), dict) else {}
             task = payload.get("platform_task") if isinstance(payload.get("platform_task"), dict) else {}
             if not task:
@@ -92,14 +236,21 @@ class SopPlatformTaskService:
                     status="platform_failed",
                     error="missing_platform_task_payload",
                 )
-                continue
-            try:
-                result = await self.process_task(task, recovery_status=str(event.get("status") or ""))
-                if result.get("processed"):
-                    processed += 1
-            except Exception:
-                continue
-        return processed
+                return 0
+            task_id = _task_id(task)
+            if task_id in self._queued_ids or task_id in self._in_flight_ids:
+                return 0
+            async with semaphore:
+                try:
+                    result = await self.process_task(task, recovery_status=str(event.get("status") or ""))
+                    self._record_result(result)
+                    return 1 if result.get("processed") else 0
+                except Exception:
+                    return 0
+
+        if not events:
+            return 0
+        return sum(await asyncio.gather(*(recover(event) for event in events)))
 
     async def process_task(self, platform_task: dict[str, Any], *, recovery_status: str = "") -> dict[str, Any]:
         task_id = _task_id(platform_task)
@@ -108,6 +259,48 @@ class SopPlatformTaskService:
         lock = self._locks.setdefault(task_id, asyncio.Lock())
         async with lock:
             return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
+
+    def runtime_status(self) -> dict[str, Any]:
+        return {
+            "running": self._running,
+            "queue_depth": self._queue.qsize(),
+            "queue_capacity": self._queue.maxsize,
+            "queued_count": len(self._queued_ids),
+            "in_flight_count": len(self._in_flight_ids),
+            "pending_total": self._pending_total,
+            "oldest_due_lag_seconds": round(self._oldest_due_lag_seconds, 3),
+            "last_poll_at": self._last_poll_at,
+            "last_poll_error": self._last_poll_error,
+            "counters": dict(self._counters),
+            "timings_ms": {name: _timing_summary(values) for name, values in self._timings.items()},
+        }
+
+    def _observe(self, name: str, elapsed_seconds: float) -> None:
+        values = self._timings.get(name)
+        if values is not None:
+            values.append(max(0.0, float(elapsed_seconds)) * 1000)
+
+    def _record_result(self, result: dict[str, Any]) -> None:
+        status = str(result.get("status") or "unknown")
+        if status in {"sent", "completed_without_send", "platform_completed", "shadow_send", "shadow_no_send"}:
+            self._remember_terminal(str(result.get("task_id") or ""))
+        if status == "sent":
+            self._counters["sent"] += 1
+        elif status in {"completed_without_send", "shadow_no_send"}:
+            self._counters["no_send"] += 1
+        elif status == "shadow_send":
+            self._counters["shadow_send"] += 1
+        elif status == "platform_send_uncertain":
+            self._counters["send_uncertain"] += 1
+            logger.error("Third-party SOP send result is uncertain: %s", result.get("task_id"))
+
+    def _remember_terminal(self, task_id: str) -> None:
+        if not task_id or task_id in self._terminal_ids:
+            return
+        self._terminal_ids.add(task_id)
+        self._terminal_order.append(task_id)
+        while len(self._terminal_order) > 50_000:
+            self._terminal_ids.discard(self._terminal_order.popleft())
 
     async def _process_locked(
         self,
@@ -150,7 +343,9 @@ class SopPlatformTaskService:
             return {"processed": False, "status": local_status, "task_id": task_id}
 
         if not self.settings.sop_platform_shadow_mode and recovery_status == "platform_complete_pending":
+            started = time.perf_counter()
             completed = await self.platform_client.consume(task_id=task_id, status=30)
+            self._observe("claim", time.perf_counter() - started)
             _require_platform_status(completed, 30)
             self.repository.update_sop_event_status(event_id, status="platform_completed")
             return {
@@ -160,6 +355,46 @@ class SopPlatformTaskService:
                 "platform_response": completed,
             }
 
+        if not self.settings.sop_platform_shadow_mode and recovery_status == "platform_send_uncertain":
+            stored_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            send_payload = stored_payload.get("request") if isinstance(stored_payload.get("request"), dict) else {}
+            if not send_payload:
+                raise RuntimeError("uncertain send recovery is missing the original idempotent request")
+            started = time.perf_counter()
+            send_result = await self.system_client.send(**send_payload)
+            self._observe("send", time.perf_counter() - started)
+            send_status = str((send_result.get("data") or {}).get("send_status") or send_result.get("msg") or "")
+            if send_status == "accepted_no_response":
+                raise RuntimeError("active_send_timeout_unknown_result")
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="sent",
+                send_payload=stored_payload,
+                send_response=send_result,
+                sent_at=utc_now_iso(),
+            )
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
+            return {"processed": True, "status": "sent", "task_id": task_id, "platform_response": completed}
+
+        preflight_reason = _task_preflight_no_send_reason(
+            platform_task,
+            identity=identity,
+            settings=self.settings,
+        )
+        if self.settings.sop_platform_shadow_mode and preflight_reason:
+            decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="shadow_no_send",
+                send_payload={"decision": decision, "context": {"source": "preflight"}},
+            )
+            self.repository.update_sop_event_status(event_id, status="shadow_no_send")
+            self._counters[preflight_reason] += 1
+            return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
+
         claimed = recovery_status in {
             "platform_processing",
             "platform_processing_retry",
@@ -168,13 +403,24 @@ class SopPlatformTaskService:
         }
         if not self.settings.sop_platform_shadow_mode and not claimed:
             self.repository.update_sop_event_status(event_id, status="platform_claiming")
+            started = time.perf_counter()
             claim_response = await self.platform_client.consume(task_id=task_id, status=20)
+            self._observe("claim", time.perf_counter() - started)
             _require_platform_status(claim_response, 20)
             self.repository.update_sop_event_status(event_id, status="platform_processing")
 
         try:
-            context = await self._load_context(platform_task, identity=identity)
-            decision = await self._decide(platform_task, context=context)
+            if preflight_reason:
+                context = {"source": "preflight", "task_timing": _task_timing(platform_task)}
+                decision = {"decision": "no_send", "reason": preflight_reason, "reply_messages": []}
+                self._counters[preflight_reason] += 1
+            else:
+                started = time.perf_counter()
+                context = await self._load_context(platform_task, identity=identity)
+                self._observe("context", time.perf_counter() - started)
+                started = time.perf_counter()
+                decision = await self._decide(platform_task, context=context)
+                self._observe("model", time.perf_counter() - started)
             if self.settings.sop_platform_shadow_mode:
                 status = f"shadow_{decision['decision']}"
                 self.repository.update_sop_send_task(
@@ -198,7 +444,14 @@ class SopPlatformTaskService:
                     "task_id": f"platform-sop-send-{task_id}",
                     "reply_messages": decision["reply_messages"],
                 }
+                self.repository.update_sop_send_task(
+                    str(local_task.get("id") or ""),
+                    status="sending",
+                    send_payload={"decision": decision, "request": send_payload, "context": _context_audit(context)},
+                )
+                started = time.perf_counter()
                 send_result = await self.system_client.send(**send_payload)
+                self._observe("send", time.perf_counter() - started)
                 send_status = str((send_result.get("data") or {}).get("send_status") or send_result.get("msg") or "")
                 if send_status == "accepted_no_response":
                     self.repository.update_sop_event_status(
@@ -233,7 +486,7 @@ class SopPlatformTaskService:
                     status="platform_processing_retry",
                     error=f"{type(exc).__name__}: {exc}",
                 )
-            if event_status != "platform_complete_pending":
+            if event_status not in {"platform_send_uncertain", "platform_complete_pending"}:
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="processing_retry",
@@ -256,6 +509,7 @@ class SopPlatformTaskService:
                 "recent_conversation": messages[-50:],
                 "conversation_count": len(messages),
                 "customer_context": {"source": "skipped_customer_deleted"},
+                "task_timing": _task_timing(platform_task),
             }
         request_context = {
             "source_protocol": "third_party_sop_pending",
@@ -278,6 +532,7 @@ class SopPlatformTaskService:
             "recent_conversation": messages[-50:],
             "conversation_count": len(messages),
             "customer_context": customer_context,
+            "task_timing": _task_timing(platform_task),
         }
 
     async def _decide(self, platform_task: dict[str, Any], *, context: dict[str, Any]) -> dict[str, Any]:
@@ -297,6 +552,7 @@ class SopPlatformTaskService:
                 "trigger_event": platform_task.get("triggerEvent") or platform_task.get("trigger_event"),
                 "use_ai_copy": use_ai_copy,
                 "message_content": original_messages,
+                "timing": _task_timing(platform_task),
             },
             "latest_context": context,
             "output_contract": {
@@ -310,7 +566,13 @@ class SopPlatformTaskService:
             {"role": "user", "content": json.dumps(model_input, ensure_ascii=False)},
         ]
         deadline = time.monotonic() + max(5.0, float(self.settings.sop_platform_model_timeout_seconds))
-        raw = await self.model_client.chat_json(messages, tier="balanced", temperature=0.0, deadline_monotonic=deadline)
+        raw = await self.model_client.chat_json(
+            messages,
+            tier="balanced",
+            temperature=0.0,
+            deadline_monotonic=deadline,
+            max_parallel_candidates=1,
+        )
         error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
         if error:
             repair_messages = [
@@ -328,6 +590,7 @@ class SopPlatformTaskService:
                 tier="balanced",
                 temperature=0.0,
                 deadline_monotonic=deadline,
+                max_parallel_candidates=1,
             )
             error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
         if error:
@@ -422,6 +685,64 @@ def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
     return output
 
 
+def _task_preflight_no_send_reason(
+    platform_task: dict[str, Any],
+    *,
+    identity: dict[str, str],
+    settings: Any,
+) -> str:
+    missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
+    if missing:
+        return "invalid_identity"
+    payload_error = _platform_message_error(platform_task)
+    if payload_error:
+        return "invalid_message_content"
+    messages = _platform_messages(platform_task)
+    use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
+    if not messages and not use_ai_copy:
+        return "invalid_message_content"
+    if not messages and not _has_trusted_ai_copy_source(platform_task):
+        return "missing_trusted_platform_content"
+    scheduled = _task_scheduled_epoch(platform_task)
+    max_age = max(0, int(getattr(settings, "sop_platform_max_task_age_seconds", 21600) or 0))
+    if scheduled and max_age and time.time() - scheduled > max_age:
+        return "stale_task"
+    live_not_before = _parse_epoch(getattr(settings, "sop_platform_live_not_before", ""))
+    if live_not_before and (not scheduled or scheduled < live_not_before):
+        return "pre_cutover_task"
+    return ""
+
+
+def _platform_message_error(platform_task: dict[str, Any]) -> str:
+    raw = platform_task.get("message_content")
+    if not isinstance(raw, list):
+        raw = platform_task.get("messageContent")
+    if raw is None:
+        return ""
+    if not isinstance(raw, list):
+        return "message_content_not_list"
+    for item in raw:
+        if not isinstance(item, dict):
+            return "message_not_object"
+        message_type = str(item.get("type") or "").strip().lower()
+        if message_type not in {"text", "image", "video", "link"}:
+            return "unsupported_message_type"
+        content = item.get("content")
+        if message_type == "text":
+            text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
+            if not text:
+                return "empty_text"
+            continue
+        if message_type == "link" and isinstance(content, dict):
+            url = str(content.get("url") or "").strip()
+        else:
+            url = str(content.get("url") if isinstance(content, dict) else content or "").strip()
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return "invalid_media_url"
+    return ""
+
+
 def _task_identity(task: dict[str, Any]) -> dict[str, str]:
     external = str(
         task.get("customer_wechat_id")
@@ -441,6 +762,63 @@ def _task_identity(task: dict[str, Any]) -> dict[str, str]:
 
 def _task_id(task: dict[str, Any]) -> str:
     return str(task.get("task_id") or task.get("taskId") or task.get("id") or "").strip()
+
+
+def _task_scheduled_epoch(task: dict[str, Any]) -> float:
+    return _parse_epoch(
+        task.get("scheduledAt")
+        or task.get("scheduled_at")
+        or task.get("executeTime")
+        or task.get("execute_time")
+    )
+
+
+def _parse_epoch(value: Any) -> float:
+    if value in (None, ""):
+        return 0.0
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return number / 1000 if number > 10_000_000_000 else number
+    text = str(value).strip()
+    try:
+        number = float(text)
+        return number / 1000 if number > 10_000_000_000 else number
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def _task_timing(task: dict[str, Any]) -> dict[str, Any]:
+    scheduled = _task_scheduled_epoch(task)
+    return {
+        "scheduled_at": task.get("scheduledAt") or task.get("scheduled_at") or "",
+        "pulled_at": task.get("_aics_pulled_at") or "",
+        "lateness_seconds": round(max(0.0, time.time() - scheduled), 3) if scheduled else None,
+    }
+
+
+def _timing_summary(values: deque[float]) -> dict[str, float | int]:
+    if not values:
+        return {"count": 0, "avg": 0.0, "p50": 0.0, "p90": 0.0, "max": 0.0}
+    ordered = sorted(values)
+    count = len(ordered)
+
+    def percentile(ratio: float) -> float:
+        return ordered[min(count - 1, max(0, int((count - 1) * ratio)))]
+
+    return {
+        "count": count,
+        "avg": round(sum(ordered) / count, 3),
+        "p50": round(percentile(0.5), 3),
+        "p90": round(percentile(0.9), 3),
+        "max": round(ordered[-1], 3),
+    }
 
 
 def _bool(value: Any) -> bool:

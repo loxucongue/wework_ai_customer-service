@@ -24,7 +24,7 @@ class SopPlatformClient:
     def available(self) -> bool:
         return bool(self.settings.sop_platform_token)
 
-    async def pending(self) -> list[dict[str, Any]]:
+    async def pending(self, *, limit: int | None = None) -> dict[str, Any]:
         if not self.available:
             raise RuntimeError("SOP_PLATFORM_TOKEN is not configured")
         now = datetime.now(timezone.utc)
@@ -35,18 +35,34 @@ class SopPlatformClient:
             "end_time": int(end.timestamp()),
             "corp_id": "",
             "wechat": "",
-            "limit": max(1, min(int(self.settings.sop_platform_batch_size), 500)),
+            "limit": max(1, min(int(limit or self.settings.sop_platform_batch_size), 500)),
         }
         response = await self._request("POST", "/event/trigger/pending", json_body=payload)
         data = response.get("data")
+        items: list[dict[str, Any]] = []
+        total = 0
         if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
+            items = [item for item in data if isinstance(item, dict)]
+            total = len(items)
         if isinstance(data, dict):
+            try:
+                total = max(0, int(data.get("total") or 0))
+            except (TypeError, ValueError):
+                total = 0
             for key in ("list", "items", "records", "tasks"):
-                items = data.get(key)
-                if isinstance(items, list):
-                    return [item for item in items if isinstance(item, dict)]
-        return []
+                raw_items = data.get(key)
+                if isinstance(raw_items, list):
+                    items = [item for item in raw_items if isinstance(item, dict)]
+                    break
+        if not total:
+            total = len(items)
+        return {
+            "items": items,
+            "total": total,
+            "start_time": payload["start_time"],
+            "end_time": payload["end_time"],
+            "limit": payload["limit"],
+        }
 
     async def consume(self, *, task_id: str | int, status: int) -> dict[str, Any]:
         if status not in {20, 30}:
