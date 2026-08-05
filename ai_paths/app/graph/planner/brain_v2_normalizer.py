@@ -1197,6 +1197,22 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                         "note": "customer_store_lookup requires the customer's non-empty location or store query.",
                     }
                 )
+            elif (
+                str(tool.get("location_specificity") or "").strip() == "typo_or_alias"
+                and not list(tool.get("location_candidates") or [])
+            ):
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "customer_store_lookup",
+                        "missing": "store_lookup_typo_candidate_required",
+                        "note": (
+                            "The Planner classified the customer's location as typo_or_alias, so it must preserve the raw "
+                            "query and provide 1-3 location_candidates for geocode validation. Candidates are hypotheses, "
+                            "not confirmed facts, and must require customer confirmation before any store card is sent."
+                        ),
+                    }
+                )
             elif _store_lookup_reopens_stale_location_context(query, state):
                 violations.append(
                     {
@@ -2945,6 +2961,11 @@ def _distance_tool_violations(required_tools: list[dict[str, Any]]) -> list[dict
         if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
             continue
         if str(tool.get("purpose") or "").strip() == "nearby_candidates":
+            if str(tool.get("location_specificity") or "").strip() in {
+                "generic_landmark_without_region",
+                "ambiguous_place_without_region",
+            }:
+                return []
             return [
                 {
                     "task_type": "tool_required",

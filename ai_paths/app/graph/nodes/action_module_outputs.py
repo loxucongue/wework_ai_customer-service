@@ -163,6 +163,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "raw_place": str(value.get("raw_query") or value.get("query") or ""),
                     "normalized_query": str(value.get("query") or ""),
                     "location_evidence": value.get("location_evidence") or {},
+                    "normalization_evidence": value.get("normalization_evidence") or {},
                     "resolution_status": resolution_status,
                     "resolved_admin_level": resolved_level,
                     "province": structured_facts["store_lookup_status"].get("province"),

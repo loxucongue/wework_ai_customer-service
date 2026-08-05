@@ -40,6 +40,19 @@ def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
         query = str(item.get("query") or "").strip()
         if query:
             tool["query"] = query
+        if name == "customer_store_lookup":
+            location_candidates = _normalize_location_candidates(item.get("location_candidates"))
+            if location_candidates:
+                tool["location_candidates"] = location_candidates
+            location_specificity = str(item.get("location_specificity") or "").strip()
+            if location_specificity in {
+                "confirmed_region",
+                "specific_place",
+                "typo_or_alias",
+                "generic_landmark_without_region",
+                "ambiguous_place_without_region",
+            }:
+                tool["location_specificity"] = location_specificity
         for key in (
             "reason",
             "origin",
@@ -73,6 +86,32 @@ def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
                 tool[key] = item[key]
         tools.append(tool)
     return tools
+
+
+def _normalize_location_candidates(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value[:3]:
+        if isinstance(item, str):
+            query = item.strip()
+            candidate: dict[str, Any] = {"query": query}
+        elif isinstance(item, dict):
+            query = str(item.get("query") or item.get("normalized_query") or "").strip()
+            candidate = {
+                "query": query,
+                "reason": str(item.get("reason") or "").strip()[:180],
+                "confidence": str(item.get("confidence") or "").strip(),
+                "requires_confirmation": bool(item.get("requires_confirmation", True)),
+            }
+        else:
+            continue
+        if not query or query in seen:
+            continue
+        seen.add(query)
+        output.append({key: item for key, item in candidate.items() if item not in (None, "")})
+    return output
 
 
 def dedupe_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

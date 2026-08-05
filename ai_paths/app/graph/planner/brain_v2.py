@@ -58,6 +58,9 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 预约金由 payment_decision 决定；客户口头声称已付不能确认到账。当前订单 `prepay_paid>0`、清晰支付成功截图或结构化 `deposit_state=paid_by_platform_transfer_event` 才是权威已付，可推进付款后信息确认。
 - `stage/sub_rule_id` 必须从 Current Recovery Business Rules 的 `scene_index` 选择，不能自造英文场景名。
 - `need_tools` 必须提供可执行的扁平 `tool_calls`，工具名字段只能是 `name`；禁止 `tool_name/arguments/tool/args` 包装。门店查询示例：`{"name":"customer_store_lookup","query":"双流区","purpose":"existence"}`。
+- 门店查询必须输出 `location_specificity`：明确行政区或已确认上下文用 `confirmed_region`，唯一具体地点用 `specific_place`，疑似错别字/简称用 `typo_or_alias`；孤立的“人民广场、火车站、新城”等泛地标且没有近期上级行政区证据用 `generic_landmark_without_region`，像“东坑”这种存在多个行政归属且无上级地区证据用 `ambiguous_place_without_region`。后两类只补问城市/区县，不让 POI 第一条替客户选城市。
+- 地址疑似有错别字、简称或口语地名时，保留客户原话在 `query`，并必须提供 1–3 个 `location_candidates`，格式为 `{"query":"可能的完整标准地址","reason":"纠错依据","confidence":"high|medium|low","requires_confirmation":true}`。例如“防成港”候选“广西防城港市”、“东管长安”候选“广东省东莞市长安镇”、“厦们湖里”候选“福建省厦门市湖里区”、“温洲龙湾”候选“浙江省温州市龙湾区”。候选只用于地理工具验证，不能自行认定为客户地址。
+- 错别字地址的完整工具示例：`{"name":"customer_store_lookup","query":"防成港","purpose":"existence","location_specificity":"typo_or_alias","location_candidates":[{"query":"广西壮族自治区防城港市","reason":"疑似同音错别字，需地理工具验证","confidence":"high","requires_confirmation":true}]}`。`location_candidates` 必须放在对应的 `tool_calls` 项内部，不能放到顶层、reason 或 reply_messages。
 - `customer_store_lookup.query` 必须可追溯到当前客户位置、定位卡，或近期客户已经明确提供且未被新位置推翻的地址证据。允许组合连续地址片段，例如客户先说“温州龙湾”、后说“滨海路”，查询可组合为“浙江省温州市龙湾区滨海路”；不能把斑点时长、价格、效果或“好的/是的”等短句本身当成新地址。
 - 近期地址证据不等于当前门店意图。只有客户当前提出位置/门店问题，或正在回答上一轮尚未完成的位置补问/确认时才查店；当前只说“好的/嗯/谢谢”或转问价格、效果、斑点情况时，不得仅凭历史地址重新查店或重发门店卡。
 - 只有省份时补问城市和区县；只有城市时补问区县或定位；只有区县、乡镇、村、道路或地标且上级行政区来自 POI 推断时，先用 customer_store_lookup 得到 `need_location_confirmation`，再向客户自然确认。客户确认了你上一轮提出的完整地区后，工具调用可设置 `confirmed_by_customer=true`。完整省市区、详细地址或定位卡无需重复确认。

@@ -23,6 +23,9 @@ PLANNER_STORE_LOCATION_LOOKUP_CONTRACT = """
   1. 客户只给到省级范围，例如“湖北省”，没有更细位置。
   2. 工具已经返回同名歧义、无法解析或候选超过 3 家，需要客户补上级城市、常去区域或定位。
 - `customer_store_lookup.query` 使用客户原话或定位卡完整地址；不要把“武平、东坑、甲良镇、乌林村、嘉兴秀洲区”这类口语地名当成无效地址。
+- 每次 `customer_store_lookup` 都输出 `location_specificity`：`confirmed_region | specific_place | typo_or_alias | generic_landmark_without_region | ambiguous_place_without_region`。孤立泛地标或多地同名地点没有近期上级行政区证据时，必须选择后两类，先补问城市/区县，禁止让 POI 第一条替客户确定城市。
+- 客户地址疑似存在错别字、方言简称或省市区缺字时，`query` 必须保留原话，并在 `location_candidates` 中给出 1–3 个可能的完整标准地址和纠错依据。校准：“防成港→广西防城港市”“东管长安→广东省东莞市长安镇”“厦们湖里→福建省厦门市湖里区”“温洲龙湾→浙江省温州市龙湾区”。不得用候选直接发门店卡；工具会逐个验证，凡是模型补全或纠错的地区都先让客户确认。搜索片段或模型常识只能提出候选，不是门店或行政区权威事实。
+- 合法错别字工具结构必须完整，例如：`{"name":"customer_store_lookup","query":"防成港","purpose":"existence","location_specificity":"typo_or_alias","location_candidates":[{"query":"广西壮族自治区防城港市","reason":"疑似同音错别字，需地理工具验证","confidence":"high","requires_confirmation":true}]}`。候选数组必须位于该 `tool_calls` 项内部。
 - 近期地址证据只是可用事实，不代表当前仍在问门店。只有客户当前提出位置/门店问题，或正在回答你上一轮尚未完成的位置补问/确认时，才调用 `customer_store_lookup`。客户当前只说“好的、嗯、知道了、谢谢、多少钱、斑点五年”等确认或其他业务问题时，不得仅因历史存在地址而重新查店或重发门店卡。
 - 工具返回 1 家真实候选时发该门店卡；返回 2-3 家真实候选时同轮全部发卡；本地无确认门店但有上级/省内合法候选时，说“当前相对方便的是”，不要说“没有门店/查不到”。
 - 门店卡发送后必须回到销售主线：斑点情况、同类案例、活动价或预约金决策；不要停在“我继续帮您处理/您看方便不方便”。
@@ -143,7 +146,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 10. 两店并列未选才澄清；上一条唯一推荐+“这家可以”则承接。
 11. 接送/路费问题且客户位置未知：直接回答交通政策并询问城市区；`appointment_decision.action=ask_store`、`next_step=ask_intent`，不得写 lookup_store 或调用占位门店工具。
 12. 广告定位与实际区不一致且本轮无权威门店事实：必须 `need_tools + customer_store_lookup`；有 distance 推荐结果只发送推荐第一家卡，不把同城其他区门店全部发出。
-13. 客户只给“东坑、人民广场、新城”这类缺少上级行政区的孤立地名：可以先 `customer_store_lookup(purpose=existence)` 解析；在工具确认行政归属前禁止 `nearby_candidates/distance_calculate`。如果近聊已经在问门店/地址，客户回复县城、乡镇、车站附近或地标，例如“武平”“武平车站附近”，不要先问“哪个城市”，先查工具。工具返回 unresolved/no_match 后只补问城市、省份或定位，不猜“是不是某城市”。
+13. 客户只给“东坑、人民广场、新城、火车站附近”这类缺少上级行政区的孤立地名或同名地点：调用 `customer_store_lookup` 时标记 `generic_landmark_without_region` 或 `ambiguous_place_without_region`，工具只返回补问，不做 POI 盲选；在上级地区确认前禁止 `nearby_candidates/distance_calculate`。县城、明确乡镇或足以唯一解析的具体地名，例如“武平”“甲良镇”，可以标记 `specific_place` 先查工具；若行政归属来自推断，必须先让客户确认，不能直接发卡。
 14. “做完到底能变成什么样/能改善到什么程度”也是明确效果证据诉求，不只是次数问题；没有权威近期案例图时必须 `need_tools + kb_search(case_studies)`，不能只用文字描述效果后直接问门店。
 15. 当前明确出现起泡且疼、过敏肿胀或其他正在发生的严重不适，与“怕反黑/怕做坏”的普通顾虑不同：必须 `need_tools + professional_assist`，停止付款推进，最终回复包含正面承接 text 和内部 `human_handoff_notice`；不得把它降成普通效果问答。
 16. `confirmed_store_id` 来源为 request，且存在同店同金额 `required_unpaid` 订单时，客户明确参加、付款或要求重发卡，直接复用该订单发卡；`order_decision=use_existing` 与 `create_work_order` 不能同时出现。

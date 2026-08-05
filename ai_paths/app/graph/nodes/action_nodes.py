@@ -1193,29 +1193,138 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "error": "missing_query",
         }
 
-    workflow_id = str(getattr(coze_client.settings, "geocode_workflow_id", "") or "").strip()
-    geocode: dict[str, Any] = {}
-    if workflow_id:
-        geocode = await _geocode_address(coze_client, workflow_id, query)
+    location_specificity = str(tool.get("location_specificity") or "").strip()
+    if location_specificity in {"generic_landmark_without_region", "ambiguous_place_without_region"}:
+        location_evidence = build_location_evidence(
+            state,
+            raw_text=raw_query,
+            query=query,
+            geocode={},
+            confirmed_by_customer=False,
+        )
+        return {
+            "status": (
+                "ambiguous_location"
+                if location_specificity == "ambiguous_place_without_region"
+                else "need_location"
+            ),
+            "raw_query": raw_query,
+            "query": query,
+            "purpose": purpose,
+            "source": "planner_location_specificity",
+            "location_specificity": location_specificity,
+            "location_evidence": location_evidence,
+            "normalization_evidence": {
+                "selected_source": "customer_raw",
+                "selected_reason": "",
+                "selected_confidence": "",
+                "requires_confirmation": True,
+                "attempts": [],
+            },
+            "stores": [],
+            "candidate_stores": [],
+            "candidate_store_count": 0,
+            "missing": ["city_or_district"],
+        }
 
-    text_candidates = _stores_for_text_query(query, stores, purpose)
+    workflow_id = str(getattr(coze_client.settings, "geocode_workflow_id", "") or "").strip()
+    geocode_queries = _store_lookup_geocode_queries(tool, query)
+    geocode_attempts: list[dict[str, Any]] = []
+    geocode: dict[str, Any] = {}
+    resolved_query = query
+    selected_candidate: dict[str, Any] = {}
+    if workflow_id:
+        geocode_results = await asyncio.gather(
+            *(_geocode_address(coze_client, workflow_id, item["query"]) for item in geocode_queries),
+            return_exceptions=True,
+        )
+        if geocode_results and all(isinstance(result, BaseException) for result in geocode_results):
+            raise geocode_results[0]
+        valid_geocodes: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for candidate, result in zip(geocode_queries, geocode_results):
+            candidate_geocode = result if isinstance(result, dict) else {}
+            explicit_conflict = _geocode_explicit_region_conflict(candidate["query"], candidate_geocode, stores)
+            consistency = _geocode_query_consistency(candidate["query"], candidate_geocode)
+            usable = bool(candidate_geocode.get("location")) and not explicit_conflict and consistency.get("status") != "conflict"
+            geocode_attempts.append(
+                {
+                    "query": candidate["query"],
+                    "source": candidate["source"],
+                    "status": "accepted" if usable else "rejected",
+                    "reason": (
+                        "explicit_region_conflict"
+                        if explicit_conflict
+                        else "query_fragment_conflict"
+                        if consistency.get("status") == "conflict"
+                        else "geocode_unavailable"
+                        if not candidate_geocode.get("location")
+                        else "valid"
+                    ),
+                    "geocode_region": {
+                        key: candidate_geocode.get(key)
+                        for key in ("province", "city", "district", "township")
+                        if candidate_geocode.get(key)
+                    },
+                }
+            )
+            if usable:
+                valid_geocodes.append((candidate, candidate_geocode))
+
+        raw_valid = next(
+            ((candidate, candidate_geocode) for candidate, candidate_geocode in valid_geocodes if candidate["source"] == "customer_raw"),
+            None,
+        )
+        raw_confirmed = False
+        if raw_valid:
+            raw_evidence = build_location_evidence(
+                state,
+                raw_text=raw_query,
+                query=query,
+                geocode=raw_valid[1],
+                confirmed_by_customer=bool(tool.get("confirmed_by_customer")),
+            )
+            raw_confirmed = str(raw_evidence.get("confirmation_status") or "") == "confirmed"
+        preferred = raw_valid if raw_confirmed else next(
+            ((candidate, candidate_geocode) for candidate, candidate_geocode in valid_geocodes if candidate["source"] != "customer_raw"),
+            raw_valid,
+        )
+        if preferred:
+            selected_candidate, geocode = preferred
+            resolved_query = selected_candidate["query"]
+
+        if not geocode and geocode_results:
+            raw_index = next(
+                (index for index, candidate in enumerate(geocode_queries) if candidate["source"] == "customer_raw"),
+                0,
+            )
+            raw_result = geocode_results[raw_index]
+            if isinstance(raw_result, dict):
+                geocode = raw_result
+
+    text_candidates = _stores_for_text_query(resolved_query, stores, purpose)
     exact_store_reference = any(
         _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
         and _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
-        in _compact_store_text(query)
+        in _compact_store_text(resolved_query)
         for item in text_candidates
     )
     location_evidence = build_location_evidence(
         state,
         raw_text=raw_query,
-        query=query,
+        query=resolved_query,
         geocode=geocode,
         confirmed_by_customer=bool(tool.get("confirmed_by_customer")),
     )
+    if (
+        str(selected_candidate.get("source") or "") == "planner_normalized_candidate"
+        and not bool(tool.get("confirmed_by_customer"))
+    ):
+        location_evidence["confirmation_status"] = "needs_confirmation"
+        location_evidence["confidence"] = "medium"
 
     ambiguous_location = _geocode_location_is_ambiguous(
         raw_query=raw_query,
-        query=query,
+        query=resolved_query,
         geocode=geocode,
         stores=stores,
     )
@@ -1223,7 +1332,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         return {
             "status": "ambiguous_location",
             "raw_query": raw_query,
-            "query": query,
+            "query": resolved_query,
             "purpose": purpose,
             "source": "poi_to_geocode_ambiguous",
             "geocode": {
@@ -1234,18 +1343,19 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "geocode_candidate_count": int(geocode.get("candidate_count") or 0),
             "geocode_candidate_regions": list(geocode.get("candidate_regions") or [])[:6],
             "location_evidence": location_evidence,
+            "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
             "stores": [],
             "candidate_stores": [],
             "candidate_store_count": 0,
             "missing": ["confirmed_city_or_district"],
         }
 
-    query_consistency = _geocode_query_consistency(query, geocode)
+    query_consistency = _geocode_query_consistency(resolved_query, geocode)
     if query_consistency.get("status") == "conflict":
         return {
             "status": "geocode_query_conflict",
             "raw_query": raw_query,
-            "query": query,
+            "query": resolved_query,
             "purpose": purpose,
             "source": "poi_to_geocode_query_conflict",
             "geocode": {
@@ -1255,19 +1365,40 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             },
             "location_evidence": location_evidence,
             "query_consistency": query_consistency,
+            "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
             "stores": [],
             "candidate_stores": [],
             "candidate_store_count": 0,
             "missing": ["confirmed_location"],
         }
 
+    explicit_region_conflict = _geocode_explicit_region_conflict(resolved_query, geocode, stores)
+    if explicit_region_conflict:
+        return {
+            "status": "geocode_query_conflict",
+            "raw_query": raw_query,
+            "query": resolved_query,
+            "purpose": purpose,
+            "source": "poi_to_geocode_region_conflict",
+            "geocode": {
+                key: geocode.get(key)
+                for key in ("formatted_address", "province", "city", "district", "township", "location")
+                if geocode.get(key)
+            },
+            "location_evidence": location_evidence,
+            "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
+            "stores": [],
+            "candidate_stores": [],
+            "candidate_store_count": 0,
+            "missing": ["confirmed_location"],
+        }
 
     location_resolution_status = resolution_status_for_location(location_evidence)
     if location_resolution_status and not exact_store_reference:
         return {
             "status": location_resolution_status,
             "raw_query": raw_query,
-            "query": query,
+            "query": resolved_query,
             "purpose": purpose,
             "source": "location_evidence_v2",
             "geocode": {
@@ -1276,6 +1407,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
                 if geocode.get(key)
             },
             "location_evidence": location_evidence,
+            "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
             "stores": [],
             "candidate_stores": [],
             "candidate_store_count": 0,
@@ -1286,17 +1418,36 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             ),
         }
 
-    geocode_conflict = _geocode_conflicts_with_query_scope(query, geocode, stores)
+    geocode_conflict = _geocode_conflicts_with_query_scope(resolved_query, geocode, stores)
+    if geocode_conflict and not selected_candidate:
+        return {
+            "status": "geocode_query_conflict",
+            "raw_query": raw_query,
+            "query": resolved_query,
+            "purpose": purpose,
+            "source": "poi_to_geocode_region_conflict",
+            "geocode": {
+                key: geocode.get(key)
+                for key in ("formatted_address", "province", "city", "district", "township", "location")
+                if geocode.get(key)
+            },
+            "location_evidence": location_evidence,
+            "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
+            "stores": [],
+            "candidate_stores": [],
+            "candidate_store_count": 0,
+            "missing": ["confirmed_location"],
+        }
     candidates = [] if geocode_conflict else _stores_for_geocode(geocode, stores, purpose)
     source = "customer_scope_geocode_conflict_ignored" if geocode_conflict else "customer_scope_geocode"
-    if not candidates:
+    if not candidates and exact_store_reference:
         candidates = text_candidates
-        source = "customer_scope_text_match"
+        source = "customer_scope_exact_store_name"
     if not candidates and scope_unavailable:
-        candidates = _snapshot_stores_for_exact_query(query)
+        candidates = _snapshot_stores_for_exact_query(resolved_query)
         source = "store_snapshot_exact_name"
-    if not candidates and scope_unavailable and _snapshot_region_fallback_allowed(query, geocode):
-        candidates = _snapshot_stores_for_region_query(query, geocode, purpose)
+    if not candidates and scope_unavailable and _snapshot_region_fallback_allowed(resolved_query, geocode):
+        candidates = _snapshot_stores_for_region_query(resolved_query, geocode, purpose)
         source = "store_snapshot_region_fallback"
     candidates, invalid_candidates = filter_valid_store_facts(
         candidates,
@@ -1305,7 +1456,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     filtered_invalid_stores = [*invalid_scope_stores, *invalid_candidates]
     pre_scope_fields = _store_lookup_scope_fields(
         {
-            "query": query,
+            "query": resolved_query,
             "geocode": geocode,
             "candidate_stores": [_store_lookup_item(store) for store in candidates[:60]],
         }
@@ -1314,7 +1465,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     normalized = [_store_lookup_item(store) for store in candidates[:60]]
     scope_fields = _store_lookup_scope_fields(
         {
-            "query": query,
+            "query": resolved_query,
             "geocode": geocode,
             "candidate_stores": normalized,
         }
@@ -1323,12 +1474,13 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     return {
         "status": status,
         "raw_query": raw_query,
-        "query": query,
+        "query": resolved_query,
         "purpose": purpose,
         "source": source,
         "geocode_conflict_ignored": geocode_conflict,
         "geocode": {key: geocode.get(key) for key in ("formatted_address", "province", "city", "district", "township", "location") if geocode.get(key)},
         "location_evidence": location_evidence,
+        "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
         **scope_fields,
         "stores": normalized[:12],
         "candidate_stores": normalized,
@@ -1344,6 +1496,68 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         ],
         "missing": [] if normalized else (["store_scope_unavailable"] if scope_unavailable else ["matched_customer_scope_store"]),
     }
+
+
+def _store_lookup_geocode_queries(tool: dict[str, Any], query: str) -> list[dict[str, Any]]:
+    raw = {"query": query, "source": "customer_raw", "reason": "", "confidence": "", "requires_confirmation": False}
+    candidates: list[dict[str, Any]] = []
+    for item in tool.get("location_candidates") if isinstance(tool.get("location_candidates"), list) else []:
+        if isinstance(item, str):
+            candidate_query = item.strip()
+            candidate = {"query": candidate_query}
+        elif isinstance(item, dict):
+            candidate_query = str(item.get("query") or item.get("normalized_query") or "").strip()
+            candidate = dict(item)
+        else:
+            continue
+        if not candidate_query or _compact_text(candidate_query) == _compact_text(query):
+            continue
+        candidates.append(
+            {
+                "query": candidate_query,
+                "source": "planner_normalized_candidate",
+                "reason": str(candidate.get("reason") or "").strip()[:180],
+                "confidence": str(candidate.get("confidence") or "").strip(),
+                "requires_confirmation": True,
+            }
+        )
+        if len(candidates) >= 3:
+            break
+    return [*candidates, raw] if candidates else [raw]
+
+
+def _store_normalization_evidence(selected: dict[str, Any], attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "selected_source": str(selected.get("source") or "customer_raw"),
+        "selected_reason": str(selected.get("reason") or ""),
+        "selected_confidence": str(selected.get("confidence") or ""),
+        "requires_confirmation": bool(selected.get("requires_confirmation")),
+        "attempts": attempts,
+    }
+
+
+def _geocode_explicit_region_conflict(query: str, geocode: dict[str, Any], stores: list[dict[str, Any]]) -> bool:
+    if not isinstance(geocode, dict) or not geocode.get("location"):
+        return False
+    text = _compact_text(query)
+    if not text:
+        return False
+    for field in ("province", "city", "district"):
+        result_value = str(geocode.get(field) or "").strip()
+        if not result_value:
+            continue
+        explicit_values = {
+            str(store.get(field) or "").strip()
+            for store in stores
+            if str(store.get(field) or "").strip()
+            and any(
+                len(_compact_text(token)) >= 2 and _compact_text(token) in text
+                for token in _region_tokens(str(store.get(field) or ""))
+            )
+        }
+        if explicit_values and not any(_region_equal(value, result_value) for value in explicit_values):
+            return True
+    return False
 
 
 def _compact_store_text(value: str) -> str:
@@ -1882,9 +2096,7 @@ def _snapshot_stores_for_exact_query(query: str) -> list[dict[str, Any]]:
 
 def _snapshot_stores_for_region_query(query: str, geocode: dict[str, Any], purpose: str) -> list[dict[str, Any]]:
     stores = _usable_snapshot_store_values()
-    candidates = _stores_for_text_query(query, stores, purpose)
-    if not candidates:
-        candidates = _stores_for_geocode(geocode, stores, purpose)
+    candidates = _stores_for_geocode(geocode, stores, purpose)
     return _dedupe_snapshot_stores(candidates)[:60]
 
 
