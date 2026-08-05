@@ -169,6 +169,14 @@
           "location": "114.430000,30.500000",
           "candidate_count": 1
         },
+        "广州": {
+          "formatted_address": "广东省广州市",
+          "province": "广东省",
+          "city": "广州市",
+          "district": "",
+          "location": "113.330000,23.130000",
+          "candidate_count": 1
+        },
         "广州惠州": [
           {
             "formatted_address": "广东省广州市",
@@ -227,7 +235,7 @@
       "critical": true,
       "semantic_goal": "只有城市时补区县或定位，不发送全城门店卡。",
       "timeline": [{"kind": "customer_message", "content": "我在广州"}],
-      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"], "forbidden_phrases": ["惠州"]}
     },
     {
       "id": "store_v2_inferred_district_confirm",
