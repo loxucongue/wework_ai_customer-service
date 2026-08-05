@@ -314,7 +314,10 @@ def _is_active_order(order: dict[str, Any]) -> bool:
     status = str(order.get("status") or "").strip().lower()
     if status not in {"1", "2", "3", "pending", "waiting_schedule", "scheduled"}:
         return False
-    return normalize_prepay_facts(order).get("deposit_state") != "historical_paid_expired"
+    return normalize_prepay_facts(order).get("deposit_state") in {
+        "required_unpaid",
+        "paid_by_order",
+    }
 
 
 def _order_matches_scope(order: dict[str, Any], *, store_id: str, category_id: str) -> bool:

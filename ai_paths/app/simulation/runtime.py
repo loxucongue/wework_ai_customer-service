@@ -616,7 +616,7 @@ def _hard_check(
             errors.append(f"scenario.missing_payment_amount:{int(expected_amount)}")
 
     visible_text = "\n".join(_message_text(message) for message in visible_messages)
-    if "我在，继续帮您处理" in visible_text:
+    if "我在，继续帮您处理" in visible_text or visible_text.strip() == "您稍等一下":
         errors.append("scenario.neutral_fallback_used")
     if _contains_customer_visible_route_value(visible_text):
         errors.append("scenario.customer_visible_distance_value")

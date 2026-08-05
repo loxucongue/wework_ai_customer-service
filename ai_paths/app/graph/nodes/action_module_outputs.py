@@ -154,6 +154,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 if v2_status == "send_single" and recommended_store_id
                 else candidate_store_ids if v2_status == "send_multiple" else []
             )
+            lookup_missing = [str(item) for item in (value.get("missing") or []) if str(item)]
+            candidate_search_complete = "store_scope_unavailable" not in lookup_missing
             if v2_status == "send_single" and not delivery_store_ids and candidate_store_ids:
                 delivery_store_ids = [candidate_store_ids[0]]
                 recommended_store_id = candidate_store_ids[0]
@@ -175,6 +177,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "candidate_store_ids": candidate_store_ids,
                     "visible_candidate_ids": candidate_store_ids,
                     "visible_candidate_count": visible_candidate_count,
+                    "candidate_search_complete": candidate_search_complete,
+                    "candidate_search_scope": "province" if v2_status == "no_valid_candidate" else "",
                     "recommended_store_id": recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,
                     "ranking_method": "scope_match",
@@ -183,7 +187,7 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "delivery_mode": legacy_delivery_mode(v2_status),
                 }
             )
-            missing_slots.extend(str(item) for item in (value.get("missing") or [])[:4])
+            missing_slots.extend(lookup_missing[:4])
             continue
 
         if key == "distance_calculate":
@@ -315,6 +319,14 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "candidate_store_ids": candidate_store_ids,
                     "visible_candidate_ids": candidate_store_ids,
                     "visible_candidate_count": visible_candidate_count,
+                    "candidate_search_complete": bool(
+                        previous_resolution.get("candidate_search_complete", True)
+                    ),
+                    "candidate_search_scope": (
+                        "province"
+                        if v2_status == "no_valid_candidate"
+                        else str(previous_resolution.get("candidate_search_scope") or "")
+                    ),
                     "distance_ranking_available": has_real_ranking,
                     "recommended_store_id": ranked_recommended_store_id,
                     "delivery_store_ids": delivery_store_ids,

@@ -62,10 +62,10 @@ class Settings(BaseSettings):
     model_planner_recovery_budget_seconds: float = 10.0
     model_reply_primary_budget_seconds: float = 30.0
     model_reply_recovery_budget_seconds: float = 15.0
-    model_round_budget_enforced: bool = False
-    model_round_timeout_seconds: float = 60.0
-    model_strong_round_timeout_seconds: float = 75.0
-    model_reply_reserve_seconds: float = 15.0
+    model_round_budget_enforced: bool = True
+    model_round_timeout_seconds: float = 120.0
+    model_strong_round_timeout_seconds: float = 120.0
+    model_reply_reserve_seconds: float = 30.0
     model_min_retry_remaining_seconds: float = 8.0
     model_vision_total_timeout_seconds: float = 15.0
     model_request_retry_attempts: int = 2

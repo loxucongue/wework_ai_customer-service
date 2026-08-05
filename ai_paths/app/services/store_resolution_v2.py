@@ -108,6 +108,8 @@ def build_location_evidence(
         "confirmation_status": confirmation_status,
         "confidence": confidence,
         "geocode_candidate_count": int(geocode.get("candidate_count") or 0),
+        "geocode_candidate_regions": list(geocode.get("candidate_regions") or [])[:6],
+        "geocode_ambiguous_regions": bool(geocode.get("ambiguous_regions")),
         "geocode_first_region": {
             "province": province,
             "city": city,

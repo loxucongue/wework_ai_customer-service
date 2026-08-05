@@ -90,4 +90,7 @@ def _is_current_flow_order(order: dict[str, Any]) -> bool:
         status = -1
     if status not in {1, 2, 3}:
         return False
-    return normalize_prepay_facts(order).get("deposit_state") != "historical_paid_expired"
+    return normalize_prepay_facts(order).get("deposit_state") in {
+        "required_unpaid",
+        "paid_by_order",
+    }

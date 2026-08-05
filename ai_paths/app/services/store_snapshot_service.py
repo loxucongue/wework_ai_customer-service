@@ -722,13 +722,38 @@ def _first_geocode_item(items: Any) -> dict[str, Any]:
     first = _geocode_item_from_dict(items[0])
     if not first:
         return {}
+    candidate_regions = _geocode_candidate_regions(items)
     first["candidate_count"] = len(items)
     first["first_candidate_region"] = {
         key: first.get(key)
         for key in ("province", "city", "district")
         if first.get(key)
     }
+    first["candidate_regions"] = candidate_regions
+    first["ambiguous_regions"] = len(candidate_regions) > 1
     return first
+
+
+def _geocode_candidate_regions(items: list[Any]) -> list[dict[str, str]]:
+    regions: list[dict[str, str]] = []
+    signatures: set[tuple[str, str, str]] = set()
+    for value in items:
+        item = _geocode_item_from_dict(value)
+        if not item:
+            continue
+        region = {
+            key: clean_text(item.get(key))
+            for key in ("province", "city", "district")
+            if clean_text(item.get(key))
+        }
+        signature = tuple(_region_value_token(region.get(key, "")) for key in ("province", "city", "district"))
+        if not any(signature) or signature in signatures:
+            continue
+        signatures.add(signature)
+        regions.append(region)
+        if len(regions) >= 6:
+            break
+    return regions
 
 
 def _geocode_item_from_dict(value: Any) -> dict[str, Any]:

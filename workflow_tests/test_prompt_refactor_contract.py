@@ -204,11 +204,11 @@ def test_store_location_prompts_do_not_expose_local_no_store_wording() -> None:
     rules_text = json.dumps(rules, ensure_ascii=False)
     planner_facts = json.dumps(planner_business_rules_prompt_section(), ensure_ascii=False)
 
-    assert "no_valid_candidate询问客户常去的市区或商圈" in rules_text
+    assert "status=no_valid_candidate时，才如实说明客户已确认的地区目前暂时没有门店" in rules_text
     assert "温州龙湾" in PLANNER_SYSTEM_PROMPT
     assert "POI 推断出的上级行政区必须先确认" in planner_facts
     assert "也不要说“XX没有门店/当地暂无门店/本地没有门店”" in REPLY_SYSTEM_PROMPT
-    assert "询问客户平时常去的市区或商圈" in REPLY_SYSTEM_PROMPT
+    assert "询问客户平时常去哪个城市" in REPLY_SYSTEM_PROMPT
 
 
 def test_acne_marks_and_scars_are_online_bookable_scope() -> None:
@@ -291,6 +291,11 @@ def test_runtime_business_fact_views_preserve_all_current_rule_semantics() -> No
     assert reply_facts.get("transaction_policy", {}).get("payment_order_policy")
     assert reply_facts.get("customer_visible_evidence_policy")
     assert reply_facts.get("tool_policy", {}).get("boundaries")
+    for facts in (planner_facts, reply_facts):
+        disclosure = facts.get("store_address_disclosure_policy") or {}
+        assert "真实门店卡" in disclosure.get("public_store_address", "")
+        assert "楼号" in disclosure.get("arrival_guidance", "")
+        assert "不创建排客" in disclosure.get("current_flow_boundary", "")
 
     planner_text = json.dumps(planner_facts, ensure_ascii=False, separators=(",", ":"))
     reply_text = json.dumps(reply_facts, ensure_ascii=False, separators=(",", ":"))

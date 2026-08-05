@@ -28,9 +28,10 @@ INACTIVE_ORDER_STATUSES = {
     "预约超时",
 }
 PAID_ORDER_PROTECTION_MONTHS = 3
+UNPAID_ORDER_CURRENT_MONTHS = 3
 
 
-def normalize_prepay_facts(order: dict[str, Any]) -> dict[str, Any]:
+def normalize_prepay_facts(order: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     """Normalize current and legacy platform prepayment fields without inferring intent."""
     required_raw = order.get("prepay_required")
     if required_raw in (None, ""):
@@ -44,7 +45,7 @@ def normalize_prepay_facts(order: dict[str, Any]) -> dict[str, Any]:
     needs_binding = paid and _order_binding_missing(order, required=required)
     inactive = is_inactive_order(order)
     completed = is_completed_order(order)
-    protection = paid_order_protection_fact(order) if paid else {}
+    protection = paid_order_protection_fact(order, now=now) if paid else unpaid_order_recency_fact(order, now=now)
     deposit_state = "paid_by_order" if paid else ("required_unpaid" if required else "unknown")
     if paid and inactive:
         deposit_state = "historical_paid_inactive"
@@ -52,6 +53,8 @@ def normalize_prepay_facts(order: dict[str, Any]) -> dict[str, Any]:
         deposit_state = "historical_paid_completed"
     elif protection.get("paid_protection_status") == "expired":
         deposit_state = "historical_paid_expired"
+    elif required and protection.get("order_recency_status") == "historical_unpaid_expired":
+        deposit_state = "historical_unpaid_expired"
     return {
         "prepay_required": required_raw,
         "prepay_paid": paid_raw,
@@ -59,6 +62,40 @@ def normalize_prepay_facts(order: dict[str, Any]) -> dict[str, Any]:
         "deposit_source": "platform_agent.order_index",
         "order_binding_state": "needs_binding" if needs_binding else ("bound" if paid or required else "unknown"),
         **protection,
+    }
+
+
+def unpaid_order_recency_fact(order: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Classify an active unpaid order without turning old contact history into a current booking."""
+    if _positive_number(order.get("prepay_paid") if order.get("prepay_paid") not in (None, "") else order.get("fee_paid")):
+        return {}
+    if not _positive_number(order.get("prepay_required") if order.get("prepay_required") not in (None, "") else order.get("fee_required")):
+        return {}
+    if is_inactive_order(order) or is_completed_order(order):
+        return {
+            "order_recency_status": "historical_unpaid_inactive",
+            "order_time_source": "order_status",
+            "order_time_value": _order_status_value(order),
+        }
+    raw_created_at = order_created_at_value(order)
+    created_at = _parse_datetime(raw_created_at)
+    if created_at is None:
+        return {
+            "order_recency_status": "unknown_time_current",
+            "order_time_source": "order_created_at",
+            "order_time_value": raw_created_at,
+        }
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    cutoff = _subtract_months(current.astimezone(timezone.utc), UNPAID_ORDER_CURRENT_MONTHS)
+    return {
+        "order_recency_status": (
+            "historical_unpaid_expired" if created_at < cutoff else "current_unpaid"
+        ),
+        "order_time_source": "order_created_at",
+        "order_time_value": created_at.isoformat(),
+        "order_recency_cutoff": cutoff.isoformat(),
     }
 
 

@@ -310,6 +310,13 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools=required_tools,
         state=state,
     )
+    decision, planner_reply_messages, required_tools = _enforce_declared_store_detail_lookup(
+        decision=decision,
+        sub_rule_id=sub_rule_id,
+        messages=planner_reply_messages,
+        required_tools=required_tools,
+        state=state,
+    )
     decision, planner_reply_messages, required_tools = _enforce_explicit_location_store_lookup(
         decision=decision,
         messages=planner_reply_messages,
@@ -673,7 +680,7 @@ def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailabl
                 {
                     "type": "text",
                     "order": 1,
-                    "content": {"text": "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。"},
+                    "content": {"text": "您稍等一下"},
                 },
                 {
                     "type": "human_handoff_notice",
@@ -705,7 +712,7 @@ def planner_unavailable_fallback_plan(state: AgentState, *, reason: str = "Plann
                 {
                     "type": "text",
                     "order": 1,
-                    "content": {"text": "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。"},
+                    "content": {"text": "您稍等一下"},
                 }
             ],
             "tool_calls": [],
@@ -2555,6 +2562,61 @@ def _store_detail_tool_violations(
             ),
         }
     ]
+
+
+def _enforce_declared_store_detail_lookup(
+    *,
+    decision: str,
+    sub_rule_id: str,
+    messages: list[dict[str, Any]],
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Require factual detail lookup after Planner has declared a store-detail scene."""
+    if sub_rule_id not in {"S2_LOCATION_DETAIL", "S2_ADDRESS_PARKING_HOURS"}:
+        return decision, messages, required_tools
+    if _has_tool(required_tools, "customer_store_lookup"):
+        return decision, messages, required_tools
+    if decision != "direct_reply":
+        return decision, messages, required_tools
+
+    reply_text = " ".join(
+        _message_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    query = (
+        str(_store_from_current_message(state).get("store_name") or "").strip()
+        or str(_request_store_from_state(state).get("store_name") or "").strip()
+        or _generic_store_contextual_anchor_name(state)
+        or _recent_store_name_from_context(state)
+        or _store_name_from_reply_messages(messages, state)
+    )
+    if not query and _direct_text_requires_store_detail_tool(reply_text):
+        query = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if not query:
+        return decision, messages, required_tools
+
+    tools = [tool for tool in required_tools if str(tool.get("name") or "") != "no_tool"]
+    tools.append(
+        {
+            "name": "customer_store_lookup",
+            "purpose": "detail",
+            "query": query,
+        }
+    )
+    return "need_tools", [], _dedupe_tools(tools)
+
+
+def _store_name_from_reply_messages(messages: list[dict[str, Any]], state: AgentState) -> str:
+    text = " ".join(
+        _message_text(item.get("content"))
+        for item in messages
+        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
+    )
+    matched = [name for name in _known_store_names_for_state(state) if name and name in text]
+    matched = _without_subsumed_store_names(_dedupe_names(matched))
+    return matched[0] if len(matched) == 1 else ""
 
 
 def _enforce_location_card_store_lookup(

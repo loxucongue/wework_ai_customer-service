@@ -8,13 +8,14 @@ from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_nodes import (
     _customer_store_lookup,
     _distance_calculate,
+    _distance_origin_geocode_from_lookup,
     _filter_invalid_planned_tools,
     _geocode_explicit_region_conflict,
     _lookup_result_allows_distance_calculate,
 )
 from app.graph.planner.planner_schema_normalizer import normalize_tools
 from app.services.store_resolution_v2 import build_location_evidence, resolution_status_for_location
-from app.services.store_snapshot_service import StoreSnapshotService
+from app.services.store_snapshot_service import StoreSnapshotService, parse_geocode_workflow_response
 
 
 class _GeocodeClient:
@@ -66,6 +67,33 @@ def test_location_evidence_combines_recent_confirmed_region_and_current_road() -
     assert "current_message" in evidence["source_message_refs"]
     assert "conv_1" in evidence["source_message_refs"]
     assert resolution_status_for_location(evidence) == ""
+
+
+def test_distance_origin_prefers_platform_location_card_coordinates_over_text_geocode() -> None:
+    origin = _distance_origin_geocode_from_lookup(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "query": "杭州市富阳区灵璟闻涛府",
+                "geocode": {
+                    "location": "120.000000,30.000000",
+                    "city": "杭州市",
+                    "district": "富阳区",
+                },
+                "location_evidence": {
+                    "normalized_query": "杭州市富阳区灵璟闻涛府",
+                    "longitude": 119.900001,
+                    "latitude": 30.100002,
+                    "province": "浙江省",
+                    "city": "杭州市",
+                    "district": "富阳区",
+                },
+            }
+        }
+    )
+
+    assert origin["location"] == "119.900001,30.100002"
+    assert origin["origin_source"] == "platform_location_card"
 
 
 def test_province_only_location_requires_more_location() -> None:
@@ -735,3 +763,172 @@ def test_store_lookup_blocks_explicit_district_when_first_poi_conflicts() -> Non
     assert result["status"] == "geocode_query_conflict"
     assert result["stores"] == []
     assert result["normalization_evidence"]["attempts"][0]["reason"] == "explicit_region_conflict"
+
+
+def test_geocode_multiple_regions_uses_first_but_preserves_ambiguity() -> None:
+    from app.graph.nodes.action_nodes import _first_geocode_candidate
+
+    result = _first_geocode_candidate(
+        [
+            {
+                "province": "广东省",
+                "city": "东莞市",
+                "district": "东坑镇",
+                "location": "113.94,22.99",
+            },
+            {
+                "province": "江西省",
+                "city": "赣州市",
+                "district": "章贡区",
+                "location": "114.94,25.83",
+            },
+        ]
+    )
+
+    assert result["province"] == "广东省"
+    assert result["candidate_count"] == 2
+    assert result["ambiguous_regions"] is True
+    assert result["candidate_regions"] == [
+        {"province": "广东省", "city": "东莞市", "district": "东坑镇"},
+        {"province": "江西省", "city": "赣州市", "district": "章贡区"},
+    ]
+
+
+def test_lookup_blocks_unconfirmed_cross_region_poi_results() -> None:
+    query = "东坑"
+    state = {
+        "normalized_content": query,
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "dg-1",
+                    "store_name": "东莞店",
+                    "province": "广东省",
+                    "city": "东莞市",
+                    "district": "东坑镇",
+                    "store_address": "广东省东莞市东坑镇测试路1号",
+                    "location": "113.94,22.99",
+                    "store_fact_integrity": "valid",
+                }
+            ]
+        },
+    }
+    client = _GeocodeClient(
+        {
+            query: [
+                {
+                    "province": "广东省",
+                    "city": "东莞市",
+                    "district": "东坑镇",
+                    "location": "113.94,22.99",
+                },
+                {
+                    "province": "江西省",
+                    "city": "赣州市",
+                    "district": "章贡区",
+                    "location": "114.94,25.83",
+                },
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        _customer_store_lookup(
+            {
+                "name": "customer_store_lookup",
+                "query": query,
+                "purpose": "nearby_candidates",
+                "location_specificity": "specific_place",
+            },
+            state,
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result["status"] == "need_location_confirmation"
+    assert result["stores"] == []
+    assert result["geocode_candidate_count"] == 2
+    assert len(result["geocode_candidate_regions"]) == 2
+
+
+def test_explicit_full_region_can_use_consistent_first_poi_candidate() -> None:
+    query = "广东省东莞市东坑镇"
+    state = {
+        "normalized_content": query,
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "dg-1",
+                    "store_name": "东莞店",
+                    "province": "广东省",
+                    "city": "东莞市",
+                    "district": "东坑镇",
+                    "store_address": "广东省东莞市东坑镇测试路1号",
+                    "location": "113.94,22.99",
+                    "store_fact_integrity": "valid",
+                }
+            ]
+        },
+    }
+    client = _GeocodeClient(
+        {
+            query: [
+                {
+                    "province": "广东省",
+                    "city": "东莞市",
+                    "district": "东坑镇",
+                    "location": "113.94,22.99",
+                },
+                {
+                    "province": "江西省",
+                    "city": "赣州市",
+                    "district": "章贡区",
+                    "location": "114.94,25.83",
+                },
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        _customer_store_lookup(
+            {
+                "name": "customer_store_lookup",
+                "query": query,
+                "purpose": "nearby_candidates",
+                "location_specificity": "confirmed_region",
+            },
+            state,
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["candidate_store_count"] == 1
+    assert result["location_evidence"]["confirmation_status"] == "confirmed"
+    assert result["location_evidence"]["geocode_ambiguous_regions"] is True
+
+
+def test_snapshot_geocode_parser_keeps_all_region_candidates_for_audit() -> None:
+    result = parse_geocode_workflow_response(
+        {
+            "data": [
+                {
+                    "province": "广东省",
+                    "city": "东莞市",
+                    "district": "东坑镇",
+                    "location": "113.94,22.99",
+                },
+                {
+                    "province": "江西省",
+                    "city": "赣州市",
+                    "district": "章贡区",
+                    "location": "114.94,25.83",
+                },
+            ]
+        }
+    )
+
+    assert result["province"] == "广东省"
+    assert result["candidate_count"] == 2
+    assert result["ambiguous_regions"] is True
+    assert len(result["candidate_regions"]) == 2

@@ -1449,10 +1449,12 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         query=resolved_query,
         geocode=geocode,
         stores=stores,
+        location_evidence=location_evidence,
+        exact_store_reference=exact_store_reference,
     )
     if ambiguous_location:
         return {
-            "status": "ambiguous_location",
+            "status": "need_location_confirmation",
             "raw_query": raw_query,
             "query": resolved_query,
             "purpose": purpose,
@@ -1859,10 +1861,29 @@ def _distance_origin_geocode_from_lookup(tool_results: dict[str, Any]) -> dict[s
     lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results, dict) else {}
     if not isinstance(lookup, dict) or str(lookup.get("status") or "") != "ok":
         return {}
+    location_evidence = lookup.get("location_evidence") if isinstance(lookup.get("location_evidence"), dict) else {}
+    longitude = location_evidence.get("longitude")
+    latitude = location_evidence.get("latitude")
+    if longitude not in (None, "") and latitude not in (None, ""):
+        try:
+            return {
+                "location": f"{float(longitude)},{float(latitude)}",
+                "formatted_address": str(
+                    lookup.get("query")
+                    or location_evidence.get("normalized_query")
+                    or ""
+                ).strip(),
+                "province": location_evidence.get("province"),
+                "city": location_evidence.get("city"),
+                "district": location_evidence.get("district"),
+                "origin_source": "platform_location_card",
+            }
+        except (TypeError, ValueError):
+            pass
     geocode = lookup.get("geocode") if isinstance(lookup.get("geocode"), dict) else {}
     if not _parse_lng_lat(str(geocode.get("location") or "")):
         return {}
-    return dict(geocode)
+    return {**geocode, "origin_source": "geocode"}
 
 
 def _preselect_distance_candidates(
@@ -1976,14 +1997,18 @@ def _geocode_location_is_ambiguous(
     query: str,
     geocode: dict[str, Any],
     stores: list[dict[str, Any]],
+    location_evidence: dict[str, Any] | None = None,
+    exact_store_reference: bool = False,
 ) -> bool:
     """Keep cross-city geocode ambiguity as a fact instead of selecting a city for the model."""
 
     if not bool(geocode.get("ambiguous_regions")):
         return False
-    if _has_structured_location_label(raw_query):
+    if str((location_evidence or {}).get("confirmation_status") or "") == "confirmed":
         return False
-    return not bool(_stores_for_text_query(query, stores, ""))
+    if exact_store_reference or _has_structured_location_label(raw_query):
+        return False
+    return True
 
 
 def _has_structured_location_label(value: str) -> bool:
@@ -2625,15 +2650,32 @@ def _first_geocode_candidate(items: list[Any]) -> dict[str, Any]:
     if not items or not isinstance(items[0], dict):
         return {}
     first = dict(items[0])
-    first_region = {
-        key: str(first.get(key) or "").strip()
-        for key in ("province", "city", "district")
-        if str(first.get(key) or "").strip()
-    }
+    candidate_regions: list[dict[str, str]] = []
+    signatures: set[tuple[str, str, str]] = set()
+    for value in items:
+        if not isinstance(value, dict):
+            continue
+        region = {
+            key: str(value.get(key) or "").strip()
+            for key in ("province", "city", "district")
+            if str(value.get(key) or "").strip()
+        }
+        signature = tuple(_region_signature_value(region.get(key, "")) for key in ("province", "city", "district"))
+        if not any(signature) or signature in signatures:
+            continue
+        signatures.add(signature)
+        candidate_regions.append(region)
+        if len(candidate_regions) >= 6:
+            break
     first["candidate_count"] = len(items)
-    first["candidate_regions"] = [first_region] if first_region else []
-    first["ambiguous_regions"] = False
+    first["candidate_regions"] = candidate_regions
+    first["ambiguous_regions"] = len(candidate_regions) > 1
     return first
+
+
+def _region_signature_value(value: str) -> str:
+    tokens = _region_tokens(value)
+    return _compact_text(min(tokens, key=len)) if tokens else ""
 
 
 def _parse_lng_lat(value: str) -> tuple[float, float] | None:

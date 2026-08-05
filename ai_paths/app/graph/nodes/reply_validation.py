@@ -269,6 +269,7 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
     _validate_fact_boundaries(messages, state)
     _validate_store_address_card_consistency(messages, state)
+    _validate_store_detail_public_card_delivery(messages, state)
     _validate_complete_store_listing_delivery(messages, state)
     _validate_recommended_store_delivery(messages, state)
     _validate_store_delivery_text_matches_cards(messages, state)
@@ -714,6 +715,51 @@ def _validate_complete_store_listing_delivery(messages: list[dict[str, Any]], st
         return
     if not store_ids.issubset(_emitted_store_address_ids(messages)):
         raise ValueError("complete_store_listing_cards_required")
+
+
+def _validate_store_detail_public_card_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """Keep detail replies grounded when Planner chose registration/visit intent as the next step."""
+
+    if str(state.get("planner_sub_rule_id") or "") not in {
+        "S2_LOCATION_DETAIL",
+        "S2_ADDRESS_PARKING_HOURS",
+    }:
+        return
+    closing_move = state.get("closing_move") if isinstance(state.get("closing_move"), dict) else {}
+    if str(closing_move.get("action") or "") not in {"ask_registration", "ask_visit_intent"}:
+        return
+    structured = _structured_facts(state)
+    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
+    if str(lookup.get("purpose") or "") != "detail":
+        return
+    store_facts = _authorized_store_facts_for_validation(state)
+    if not store_facts:
+        return
+    has_arrival_guidance = any(
+        any(
+            str(item.get(key) or "").strip()
+            for key in (
+                "floor",
+                "room",
+                "room_number",
+                "suite",
+                "arrival_guidance",
+                "arrival_instructions",
+                "reception_guidance",
+            )
+        )
+        for item in store_facts
+        if isinstance(item, dict)
+    )
+    if has_arrival_guidance:
+        return
+    required_ids = {
+        str(item.get("store_id") or item.get("id") or "").strip()
+        for item in store_facts
+        if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
+    }
+    if required_ids and not required_ids.issubset(_emitted_store_address_ids(messages)):
+        raise ValueError("store_detail_public_card_required")
 
 
 def _current_turn_requires_complete_store_listing(state: dict[str, Any]) -> bool:
@@ -1806,6 +1852,9 @@ def _asserts_appointment_confirmed(text: str) -> bool:
             "已安排好",
             "已经安排好",
             "安排好了",
+            "已排客",
+            "已经排客",
+            "排客成功",
             "预约好了",
             "准时等您",
         )

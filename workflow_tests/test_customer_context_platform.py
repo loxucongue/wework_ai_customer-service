@@ -59,6 +59,23 @@ class CustomerContextPlatformTests(unittest.TestCase):
         self.assertEqual(first["orders"][0]["id"], "order-current")
         self.assertTrue(first["orders"][0]["is_current_order"])
 
+    def test_old_unpaid_order_is_kept_as_history_but_not_marked_current(self) -> None:
+        service = CustomerContextService(platform_client=_OldUnpaidOrderPlatformClient())  # type: ignore[arg-type]
+        context = service.load(
+            customer_id="20612106",
+            memory={"basic_info": {"confirmed_store_id": "383"}},
+            request_context={
+                "user_id": 7294,
+                "corp_id": "ww943af61cd5d2afe4",
+                "wechat": "CS001",
+                "external_userid": "external_1",
+            },
+        )
+
+        self.assertEqual(len(context["orders"]), 1)
+        self.assertEqual(context["orders"][0]["deposit_state"], "historical_unpaid_expired")
+        self.assertFalse(context["orders"][0].get("is_current_order", False))
+
 
 class _TimeoutOrdersPlatformClient:
     available = True
@@ -98,6 +115,21 @@ class _CountingOrdersPlatformClient(_TimeoutOrdersPlatformClient):
                 "prepay_required": "10.00",
                 "prepay_paid": "0.00",
             },
+        ]
+
+
+class _OldUnpaidOrderPlatformClient(_TimeoutOrdersPlatformClient):
+    def list_orders(self, **_: object) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "order-2024",
+                "status": 1,
+                "store_id": 383,
+                "category_id": 10,
+                "prepay_required": "10.00",
+                "prepay_paid": "0.00",
+                "created_at": "2024-08-05T00:00:00+00:00",
+            }
         ]
 
 

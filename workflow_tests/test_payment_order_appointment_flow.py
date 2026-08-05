@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import asyncio
+from datetime import datetime, timezone
 import tempfile
 
 import pytest
@@ -14,7 +15,7 @@ from app.graph.nodes.profile_nodes import _deterministic_customer_state_updates
 from app.graph.nodes.reply_validation import validate_reply_consistency
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
-from app.services.customer_order_context import compact_order
+from app.services.customer_order_context import appointment_from_orders, compact_order
 from app.services.customer_payment_state import normalize_prepay_facts, resolved_payment_fact
 from app.services.trace_logger import TraceLogger
 
@@ -92,6 +93,50 @@ def test_order_context_supports_new_prepay_fields() -> None:
     assert order["prepay_paid"] == 20
     assert order["deposit_state"] == "paid_by_order"
     assert order["order_binding_state"] == "needs_binding"
+
+
+def test_old_unpaid_order_is_historical_and_not_a_current_appointment() -> None:
+    now = datetime(2026, 8, 5, tzinfo=timezone.utc)
+    normalized = normalize_prepay_facts(
+        {
+            "id": "old-unpaid",
+            "status": 1,
+            "store_id": 383,
+            "prepay_required": 10,
+            "prepay_paid": 0,
+            "created_at": "2024-08-05T00:00:00+00:00",
+        },
+        now=now,
+    )
+
+    assert normalized["deposit_state"] == "historical_unpaid_expired"
+    assert normalized["order_recency_status"] == "historical_unpaid_expired"
+    assert resolved_payment_fact(
+        orders=[
+            {
+                "id": "old-unpaid",
+                "status": 1,
+                "store_id": 383,
+                "prepay_required": 10,
+                "prepay_paid": 0,
+                "created_at": "2024-08-05T00:00:00+00:00",
+            }
+        ]
+    ) == {}
+    appointment = appointment_from_orders(
+        [
+            {
+                "id": "old-unpaid",
+                "status": 1,
+                "store_id": 383,
+                "store_name": "杭州富阳店",
+                "prepay_required": 10,
+                "prepay_paid": 0,
+                "created_at": "2024-08-05T00:00:00+00:00",
+            }
+        ]
+    )
+    assert appointment["has_active"] is False
 
 
 def test_successful_payment_screenshot_is_paid_and_is_not_downgraded() -> None:

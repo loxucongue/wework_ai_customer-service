@@ -31,6 +31,7 @@ def planner_recovery_business_rules_prompt_section() -> str:
         {
             "version": rules.get("version"),
             "offer_facts": _offer_facts(offer),
+            "store_address_disclosure_policy": rules.get("store_address_disclosure_policy") or {},
             "transaction_policy": rules.get("transaction_policy") or {},
             "scene_index": [
                 {
@@ -65,6 +66,7 @@ def reply_business_rules_for_model(*, stage: str = "", sub_rule_id: str = "") ->
             ("allowed_points", "forbidden_points"),
         ),
         "offer_facts": _offer_facts(offer),
+        "store_address_disclosure_policy": rules.get("store_address_disclosure_policy") or {},
         "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
         "transaction_policy": rules.get("transaction_policy") or {},
         "conversion_psychology": _conversion_psychology(rules),
@@ -124,6 +126,7 @@ def _planner_runtime_rules(rules: dict[str, Any]) -> dict[str, Any]:
             ("allowed_points", "forbidden_points"),
         ),
         "offer_facts": _offer_facts(offer),
+        "store_address_disclosure_policy": rules.get("store_address_disclosure_policy") or {},
         "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
         "transaction_policy": rules.get("transaction_policy") or {},
         "conversion_psychology": _conversion_psychology(rules),

@@ -34,7 +34,7 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - 人数按到店总人数理解：“我朋友也一起”通常是本人+1位朋友=2位；“我带两个朋友”是本人+2位朋友=3位。卡片金额必须服从 Planner 的人数和金额决策。
 - 客户明确要入口/预约时，不要因为缺订单或开单失败暴露“入口没对上/不能发卡”，也不能再反问“如果你要我再发”；活动报价已铺垫且无硬阻断时按当前结构事实发卡，否则只补最小必要信息。
 - 没有真实 case_facts/image 不能说“我给您发图/图发您了”；有图且当前明确要图时才输出 image。上一轮顾虑已回答、客户只确认时不要擅自重发案例。
-- `store_resolution_fact.status=no_valid_candidate` 表示客户位置已经识别，但当前没有可发送的合法候选。不要承诺发卡，也不要说没有门店、暂无门店、没查到、查不到、不乱发、不确定的位置、真实门店或重新对。像微信真人一样问客户平时常去的市区或商圈，例如：“平昌这边我记下了，您平时更常去南充、广元还是成都？我按您常去的方向给您看。”
+- `store_resolution_fact.status=no_valid_candidate` 且 `candidate_search_complete=true` 表示客户位置已经确认，完整查询后该省范围当前没有可发送的合法门店。不要承诺发卡；要如实、简短地说“您这个地区目前暂时没有门店”，然后只问客户平时常去哪个城市，例如：“亲，您这个地区目前暂时没有门店，您平时更常去哪个城市？我再按您常去的城市帮您看。”不要继续问当前地区的商圈，也不要说“没查到、查不到、不乱发、不确定的位置、真实门店或重新对”。若 `candidate_search_complete=false`，这是门店事实加载不完整，不能对客户断言没有门店。
 - 退款、扣款异常只能先核对门店、时间、金额、项目或截图；不能说已经同意/正在办理退款，也不能承诺自动退回、原路到账或处理时效。
 - 不输出公里、分钟、车程；不承诺绝对效果；没有真实预约事实不能说已经安排好。
 - payment_collection、store_address、image、human_handoff_notice 必须使用输入中已核验的结构事实。
@@ -544,7 +544,7 @@ def _needs_strong_reply_model(state: AgentState) -> bool:
 
 
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
-    return [{"type": "text", "order": 1, "content": "亲，刚才这条我没接完整，麻烦您再发我一下，我马上接着回您。"}]
+    return [{"type": "text", "order": 1, "content": "您稍等一下"}]
 
 
 def _store_resolution_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
@@ -561,9 +561,9 @@ def _store_resolution_final_fallback_messages(state: AgentState) -> list[dict[st
     names = [name for name in names if name]
     if len(records) == 1:
         name = names[0] if names else "这家门店"
-        text = f"收到亲，{place_prefix}我先按您发的位置查了，当前可对接的是{name}，我把位置发您。您脸上斑点大概多久了？我按情况跟您说下适合怎么改善。"
+        text = f"收到亲，{place_prefix}当前可对接的是{name}，我把公开位置发您核对。"
     else:
-        text = f"收到亲，{place_prefix}我先按您发的位置查了，当前有这几家可对接的门店，我都发您，您看哪个区过去合适。您脸上斑点大概多久了？"
+        text = f"收到亲，{place_prefix}当前有这几家可对接的门店，我把公开位置都发您核对。"
     messages: list[dict[str, Any]] = [{"type": "text", "order": 1, "content": text}]
     for record in records[:3]:
         store_id = str(record.get("store_id") or record.get("id") or "").strip()
@@ -576,9 +576,12 @@ def _store_resolution_fallback_records(state: AgentState) -> list[dict[str, Any]
     envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
     resolution = structured.get("store_resolution_fact") if isinstance(structured.get("store_resolution_fact"), dict) else {}
-    if str(resolution.get("status") or "").strip() != "send_multiple" and str(
-        resolution.get("delivery_mode") or ""
-    ).strip() != "send_all_candidates":
+    status = str(resolution.get("status") or "").strip()
+    delivery_mode = str(resolution.get("delivery_mode") or "").strip()
+    if status not in {"send_single", "send_multiple"} and delivery_mode not in {
+        "send_recommended",
+        "send_all_candidates",
+    }:
         return []
     expected_ids = [
         str(item or "").strip()
@@ -1012,12 +1015,14 @@ def _reply_repair_hint(error: str) -> str:
         return "客户当前只给了省份，且没有可靠的城市、区县或定位事实。删除所有 store_address，不按省中心猜门店；只自然追问具体城市、区县或请客户发定位。"
     if "complete_store_listing_cards_required" in error:
         return "本轮门店工具已经返回 purpose=existence 的完整 1 至 3 家真实门店。请保留自然说明，并为 tool_facts.store_facts 中每个 store_id 各输出一条 store_address；不能只用编号或文字列出门店来代替卡片。"
+    if "store_detail_public_card_required" in error:
+        return "客户在追问具体到店指引，但本轮还没有权威楼号或房间号。请先解释预约登记和避免跑空的原因，并为 tool_facts.store_facts 中的真实门店追加对应 store_address 供客户核对；最后只确认登记或到店意向，不要转问斑点、案例、活动或预约金。"
     if "recommended_store_card_required" in error:
         return "本轮 store_resolution_fact.status=send_single，必须只发送 delivery_store_ids 中唯一门店卡。请自然承接并追加对应 store_address；不要自行选择其他门店，也不要新增“已安排、已预约、已登记、已留位”等没有事实支持的状态。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
         return "你在文本里承诺了发送地址或位置卡，但本轮没有对应门店卡。只有 store_resolution_fact.status=send_single/send_multiple 时，才按 delivery_store_ids 追加对应 store_address；其他状态必须删除发卡承诺，并按状态补问地区、确认解析结果或询问客户常去的市区/商圈。"
     if "store_cards_not_allowed_when_service_area_clarification_required" in error:
-        return "客户当前地址已经识别清楚，但本轮没有可发送的匹配门店。删除所有 store_address 和发卡承诺，不要对客户说没有门店、暂无门店、没查到或查不到，也不要让客户重复提供同一位置；承接客户已给的位置，已解析到城市就问这个城市哪个区方便，或周边哪里常去；已解析到区县/乡镇就问更常去哪个市区/商圈。语气要短、口语化，不要说“不乱发、不确定的位置、真实门店、重新对”。"
+        return "客户当前地址已经确认，完整查询后该地区目前没有可发送的合法门店。删除所有 store_address 和发卡承诺，如实、简短地说明“您这个地区目前暂时没有门店”，然后只问客户平时常去哪个城市；不要继续问当前地区的区县或商圈，也不要让客户重复提供同一位置。语气要短、口语化，不要说“没查到、查不到、不乱发、不确定的位置、真实门店、重新对”。"
     if "distance_value_not_customer_visible" in error:
         return "Haversine 直线距离只用于内部排序门店。客户可见最多说“按您这个位置，这家相对近一些”，不要输出公里、分钟、车程、路线或步行时长。"
     if "distance_fact_required" in error:

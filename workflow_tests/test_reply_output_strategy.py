@@ -2540,7 +2540,7 @@ def test_payment_entry_request_does_not_trigger_ambiguous_store_lookup_guard() -
     )
 
 
-def test_store_detail_direct_reply_with_missing_fact_is_flagged_without_forced_tool() -> None:
+def test_store_detail_direct_reply_with_current_appointment_anchor_forces_detail_tool() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "我昨天没去，你把门店地址发我一下",
@@ -2571,12 +2571,11 @@ def test_store_detail_direct_reply_with_missing_fact_is_flagged_without_forced_t
         },
     )
 
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["planner_tool_calls"] == []
-    assert any(
-        item.get("missing") == "store_lookup_action_requires_tool_or_store_card"
-        for item in plan["tool_policy_violations"]
-    )
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "detail", "query": "银川兴庆店"}
+    ]
+    assert plan["tool_policy_violations"] == []
 
 
 def test_current_scoped_store_lookup_query_is_not_overwritten_by_old_appointment_anchor() -> None:
@@ -2684,9 +2683,51 @@ def test_direct_store_address_text_requires_store_lookup() -> None:
             "tool_calls": [],
         },
     )
-    assert plan["planner_decision"] == "direct_reply"
-    assert plan["planner_tool_calls"] == []
-    assert any(item.get("missing") == "store_detail_tool_required" for item in plan["tool_policy_violations"])
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_reply_messages"] == []
+    assert plan["planner_tool_calls"] == [
+        {
+            "name": "customer_store_lookup",
+            "purpose": "detail",
+            "query": _u(r"\u53d1\u4e2a\u4f4d\u7f6e"),
+        }
+    ]
+    assert not any(item.get("missing") == "store_detail_tool_required" for item in plan["tool_policy_violations"])
+
+
+def test_declared_store_detail_scene_uses_recent_authoritative_store_anchor() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "丁香花园几号楼？",
+            "conversation_history": ["小贝: 杭州富阳店", "小贝: 门店位置：杭州富阳店"],
+            "customer_store_knowledge": {
+                "stores": [{"store_id": "383", "store_name": "杭州富阳店", "city": "杭州市"}]
+            },
+            "current_turn_context": {
+                "current_store_anchor": {
+                    "store_id": "383",
+                    "store_name": "杭州富阳店",
+                    "source": "recent_store_card",
+                }
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_ADDRESS_PARKING_HOURS",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "trust",
+            "next_step": "lookup_store",
+            "reply_messages": [{"type": "text", "content": {"text": "具体楼号暂时没核到。"}}],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {"name": "customer_store_lookup", "purpose": "detail", "query": "杭州富阳店"}
+    ]
 
 
 def test_direct_store_parking_text_requires_store_lookup() -> None:
@@ -5164,6 +5205,63 @@ def test_reply_validation_requires_all_cards_for_small_complete_store_listing() 
     )
 
 
+def test_reply_validation_requires_public_card_when_arrival_guidance_is_missing() -> None:
+    state = {
+        "planner_sub_rule_id": "S2_ADDRESS_PARKING_HOURS",
+        "closing_move": {"action": "ask_visit_intent"},
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {"purpose": "detail", "status": "ok"},
+                "store_facts": [
+                    {
+                        "store_id": "383",
+                        "store_name": "杭州富阳店",
+                        "address": "杭州市富阳区公开地址",
+                    }
+                ],
+            }
+        },
+    }
+    with pytest.raises(ValueError, match="store_detail_public_card_required"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "具体楼号登记到店意向后发您，您哪天过去？"}],
+            state,
+        )
+
+    validate_reply_consistency(
+        [
+            {"type": "text", "order": 1, "content": "具体楼号登记到店意向后发您，我先把公开位置发您核对。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "383"}},
+        ],
+        state,
+    )
+
+
+def test_reply_validation_does_not_require_public_card_when_arrival_guidance_exists() -> None:
+    state = {
+        "planner_sub_rule_id": "S2_ADDRESS_PARKING_HOURS",
+        "closing_move": {"action": "ask_visit_intent"},
+        "fact_envelope": {
+            "structured_facts": {
+                "store_lookup_status": {"purpose": "detail", "status": "ok"},
+                "store_facts": [
+                    {
+                        "store_id": "383",
+                        "store_name": "杭州富阳店",
+                        "address": "杭州市富阳区公开地址",
+                        "floor": "2楼",
+                        "room": "205室",
+                    }
+                ],
+            }
+        },
+    }
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "门店在2楼205室，您哪天过去？"}],
+        state,
+    )
+
+
 def test_reply_validation_requires_city_cards_from_customer_visible_scope_without_tool_call() -> None:
     state = {
         "normalized_content": "荆州的店发我",
@@ -5334,6 +5432,8 @@ def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_are
     assert structured["store_lookup_status"]["district"] == "望奎县"
     assert structured["store_resolution_fact"]["resolved_admin_level"] == "township"
     assert structured["store_resolution_fact"]["delivery_mode"] == "clarify_service_area"
+    assert structured["store_resolution_fact"]["candidate_search_complete"] is True
+    assert structured["store_resolution_fact"]["candidate_search_scope"] == "province"
 
     state = {
         **output,
@@ -5369,6 +5469,29 @@ def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_are
             ],
             state,
         )
+
+
+def test_no_candidate_fact_does_not_claim_complete_search_when_scope_is_unavailable() -> None:
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "no_match",
+                "raw_query": "Test Province Test City Test District",
+                "query": "Test Province Test City Test District",
+                "province": "Test Province",
+                "city": "Test City",
+                "district": "Test District",
+                "resolved_admin_level": "district",
+                "stores": [],
+                "missing": ["store_scope_unavailable"],
+            }
+        },
+        {},
+    )
+
+    resolution = output["fact_envelope"]["structured_facts"]["store_resolution_fact"]
+    assert resolution["status"] == "no_valid_candidate"
+    assert resolution["candidate_search_complete"] is False
 
 
 def test_reply_validation_rejects_store_cards_for_province_only_scope_without_tool_resolution() -> None:
