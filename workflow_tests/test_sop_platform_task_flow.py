@@ -142,7 +142,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls[0]["task_id"], "platform-sop-send-101")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
         self.assertEqual(len(model.calls), 1)
-        self.assertEqual(system.conversation_calls, 1)
+        self.assertEqual(system.conversation_calls, 2)
 
     async def test_duplicate_non_ai_copy_platform_task_is_completed_without_resend(self) -> None:
         model = _Model(
@@ -194,7 +194,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "sent")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         self.assertEqual(len(model.calls), 1)
-        self.assertEqual(system.conversation_calls, 1)
+        self.assertEqual(system.conversation_calls, 2)
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
 
     async def test_manual_resend_pre_cutover_task_sends_original_without_reclaiming_platform(self) -> None:
@@ -309,7 +309,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(system.conversation_calls, 2)
+        self.assertEqual(system.conversation_calls, 3)
         self.assertEqual(len(system.send_calls), 1)
         self.assertEqual(len(model.calls), 1)
 
@@ -379,7 +379,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(system.conversation_calls, 1)
+        self.assertEqual(system.conversation_calls, 2)
         self.assertEqual(len(system.send_calls), 1)
 
     async def test_no_send_is_business_success_without_customer_message(self) -> None:
@@ -553,25 +553,64 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
-    async def test_uncertain_send_recovery_reuses_request_without_rerunning_model(self) -> None:
+    async def test_uncertain_send_recovery_confirms_existing_delivery_without_resend(self) -> None:
         model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
         service, repo, platform, system = _service(model=model)
         system.send_responses = [
             {"code": 0, "data": {"send_status": "accepted_no_response"}},
-            {"code": 0, "data": {"send_status": "sent"}},
         ]
 
         with self.assertRaisesRegex(RuntimeError, "unknown_result"):
             await service.process_task(_task())
 
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_send_uncertain")
+        system.conversation_payload["data"]["messages"].append(
+            {
+                "from": "staff",
+                "msgid": "ai-outreach-platform-sop-101-platform-sop-send-101-0001-text-existing",
+                "msgtype": "text",
+                "content": "只生成一次",
+            }
+        )
         result = await service.process_task(_task(), recovery_status="platform_send_uncertain")
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(len(model.calls), 1)
-        self.assertEqual(len(system.send_calls), 2)
-        self.assertEqual(system.send_calls[0], system.send_calls[1])
+        self.assertEqual(len(system.send_calls), 1)
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+
+    async def test_uncertain_send_recovery_does_not_resend_without_confirmed_delivery(self) -> None:
+        model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
+        service, repo, platform, system = _service(model=model)
+        system.send_responses = [{"code": 0, "data": {"send_status": "accepted_no_response"}}]
+
+        with self.assertRaisesRegex(RuntimeError, "unknown_result"):
+            await service.process_task(_task())
+
+        result = await service.process_task(_task(), recovery_status="platform_send_uncertain")
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(len(system.send_calls), 1)
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+
+    async def test_existing_platform_delivery_prevents_normal_resend(self) -> None:
+        model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("平台原文")]}])
+        service, repo, platform, system = _service(model=model)
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "from": "staff",
+                "msgid": "ai-outreach-platform-sop-101-platform-sop-send-101-0001-text-existing",
+                "msgtype": "text",
+                "content": "平台原文",
+            }
+        ]
+
+        result = await service.process_task(_task(use_ai_copy=False))
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
     def test_platform_client_rejects_non_contract_statuses(self) -> None:
         client = SopPlatformClient(_settings())

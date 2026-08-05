@@ -564,6 +564,27 @@ class SopPlatformTaskService:
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
             raise RuntimeError("task cannot be resent: customer_relation_deleted")
 
+    async def _existing_platform_delivery(
+        self,
+        *,
+        identity: dict[str, str],
+        send_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            conversation = await self.system_client.conversation(**identity, limit=30)
+        except Exception as exc:
+            return {"found": False, "error": f"{type(exc).__name__}: {exc}"}
+        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
+        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        return _platform_delivery_match(
+            messages,
+            plan_id=str(send_payload.get("plan_id") or ""),
+            task_id=str(send_payload.get("task_id") or ""),
+            reply_messages=(
+                send_payload.get("reply_messages") if isinstance(send_payload.get("reply_messages"), list) else []
+            ),
+        )
+
     def _observe(self, name: str, elapsed_seconds: float) -> None:
         values = self._timings.get(name)
         if values is not None:
@@ -728,30 +749,6 @@ class SopPlatformTaskService:
                 "platform_response": completed,
             }
 
-        if not self.settings.sop_platform_shadow_mode and recovery_status == "platform_send_uncertain":
-            stored_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
-            send_payload = stored_payload.get("request") if isinstance(stored_payload.get("request"), dict) else {}
-            if not send_payload:
-                raise RuntimeError("uncertain send recovery is missing the original idempotent request")
-            started = time.perf_counter()
-            send_result = await self.system_client.send(**send_payload)
-            self._observe("send", time.perf_counter() - started)
-            send_status = str((send_result.get("data") or {}).get("send_status") or send_result.get("msg") or "")
-            if send_status == "accepted_no_response":
-                raise RuntimeError("active_send_timeout_unknown_result")
-            self.repository.update_sop_send_task(
-                str(local_task.get("id") or ""),
-                status="sent",
-                send_payload=stored_payload,
-                send_response=send_result,
-                sent_at=utc_now_iso(),
-            )
-            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
-            completed = await self.platform_client.consume(task_id=task_id, status=30)
-            _require_platform_status(completed, 30)
-            self.repository.update_sop_event_status(event_id, status="platform_completed")
-            return {"processed": True, "status": "sent", "task_id": task_id, "platform_response": completed}
-
         preflight_reason = _task_preflight_no_send_reason(
             platform_task,
             identity=identity,
@@ -805,6 +802,53 @@ class SopPlatformTaskService:
             _require_platform_status(claim_response, 20)
             self.repository.update_sop_event_status(event_id, status="platform_processing")
 
+        if not self.settings.sop_platform_shadow_mode and recovery_status == "platform_send_uncertain":
+            stored_payload = local_task.get("send_payload") if isinstance(local_task.get("send_payload"), dict) else {}
+            send_payload = stored_payload.get("request") if isinstance(stored_payload.get("request"), dict) else {}
+            if not send_payload:
+                raise RuntimeError("uncertain send recovery is missing the original idempotent request")
+            existing_delivery = await self._existing_platform_delivery(identity=identity, send_payload=send_payload)
+            if existing_delivery.get("found"):
+                self.repository.update_sop_send_task(
+                    str(local_task.get("id") or ""),
+                    status="sent",
+                    send_payload=stored_payload,
+                    send_response={
+                        "code": 0,
+                        "msg": "existing_delivery_confirmed",
+                        "data": existing_delivery,
+                    },
+                    sent_at=utc_now_iso(),
+                )
+                self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+                completed = await self.platform_client.consume(task_id=task_id, status=30)
+                _require_platform_status(completed, 30)
+                self.repository.update_sop_event_status(event_id, status="platform_completed")
+                return {"processed": True, "status": "sent", "task_id": task_id, "platform_response": completed}
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="completed_without_send",
+                send_payload={
+                    **stored_payload,
+                    "recovery_decision": {
+                        "decision": "no_resend",
+                        "reason": "send_uncertain_without_confirmed_delivery",
+                        "existing_delivery": existing_delivery,
+                    },
+                },
+                error="send_uncertain_no_resend",
+            )
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
+            return {
+                "processed": True,
+                "status": "completed_without_send",
+                "task_id": task_id,
+                "platform_response": completed,
+            }
+
         try:
             if preflight_reason:
                 context = {
@@ -844,6 +888,36 @@ class SopPlatformTaskService:
                     "task_id": f"platform-sop-send-{task_id}",
                     "reply_messages": decision["reply_messages"],
                 }
+                existing_delivery = await self._existing_platform_delivery(identity=identity, send_payload=send_payload)
+                if existing_delivery.get("found"):
+                    duplicate_decision = {
+                        "decision": "no_send",
+                        "reason": "existing_platform_delivery",
+                        "reply_messages": [],
+                    }
+                    self.repository.update_sop_send_task(
+                        str(local_task.get("id") or ""),
+                        status="completed_without_send",
+                        send_payload={
+                            "decision": duplicate_decision,
+                            "request": send_payload,
+                            "context": {
+                                **_context_audit(context),
+                                "existing_delivery": existing_delivery,
+                            },
+                        },
+                    )
+                    self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+                    completed = await self.platform_client.consume(task_id=task_id, status=30)
+                    _require_platform_status(completed, 30)
+                    self.repository.update_sop_event_status(event_id, status="platform_completed")
+                    return {
+                        "processed": True,
+                        "status": "completed_without_send",
+                        "task_id": task_id,
+                        "decision": duplicate_decision,
+                        "platform_response": completed,
+                    }
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="sending",
@@ -1223,6 +1297,69 @@ def _duplicate_platform_task_reason(
         local_task["duplicate_of_task_id"] = str(duplicate.get("id") or "")
         return "duplicate_platform_task_content"
     return ""
+
+
+def _platform_delivery_match(
+    messages: list[Any],
+    *,
+    plan_id: str,
+    task_id: str,
+    reply_messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    normalized_plan = plan_id.strip().lower()
+    normalized_task = task_id.strip().lower()
+    assistant_messages = [
+        item for item in messages if isinstance(item, dict) and _raw_message_role(item) == "assistant"
+    ]
+    for item in assistant_messages:
+        msgid = str(item.get("msgid") or item.get("system_msgid") or "").strip().lower()
+        if normalized_plan and normalized_task and normalized_plan in msgid and normalized_task in msgid:
+            return {
+                "found": True,
+                "match_type": "platform_task_msgid",
+                "msgid": str(item.get("msgid") or item.get("system_msgid") or ""),
+            }
+
+    expected_texts: list[str] = []
+    expected_images: list[str] = []
+    for message in reply_messages:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(message.get("type") or "").strip().lower()
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        if message_type == "text":
+            text = str(content.get("text") or content.get("content") or "").strip()
+            if text:
+                expected_texts.append(text)
+        elif message_type == "image":
+            url = str(content.get("url") or content.get("content") or "").strip()
+            if url:
+                expected_images.append(url)
+
+    if not expected_texts and not expected_images:
+        return {"found": False, "match_type": "none"}
+
+    actual_texts = {_timeline_message_content(item.get("content")).strip() for item in assistant_messages}
+    actual_images = {
+        _timeline_message_content(item.get("content")).strip()
+        for item in assistant_messages
+        if str(item.get("msgtype") or item.get("message_type") or item.get("type") or "").strip().lower() == "image"
+    }
+    text_match = all(text in actual_texts for text in expected_texts)
+    image_match = all((url in actual_images or url in actual_texts) for url in expected_images)
+    if text_match and image_match:
+        return {
+            "found": True,
+            "match_type": "platform_task_content",
+            "text_count": len(expected_texts),
+            "image_count": len(expected_images),
+        }
+    return {
+        "found": False,
+        "match_type": "none",
+        "expected_text_count": len(expected_texts),
+        "expected_image_count": len(expected_images),
+    }
 
 
 def _manual_resend_messages(local_task: dict[str, Any], platform_task: dict[str, Any]) -> list[dict[str, Any]]:

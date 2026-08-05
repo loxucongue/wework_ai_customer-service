@@ -180,10 +180,15 @@ class OutreachSendClient:
         url = urljoin(self._base_url, path)
         headers = {"X-Agent-Token": self._token}
         last_exc: Exception | None = None
+        non_idempotent_send = method.upper() == "POST" and path.rstrip("/").endswith("/ai-outreach/send")
         for attempt in range(_REQUEST_RETRY_ATTEMPTS):
             try:
                 response = await client.request(method, url, params=params, json=json, headers=headers)
-                if response.status_code in _RETRYABLE_STATUS_CODES and attempt < (_REQUEST_RETRY_ATTEMPTS - 1):
+                if (
+                    response.status_code in _RETRYABLE_STATUS_CODES
+                    and not non_idempotent_send
+                    and attempt < (_REQUEST_RETRY_ATTEMPTS - 1)
+                ):
                     await asyncio.sleep(_REQUEST_RETRY_BACKOFF_SECONDS * (attempt + 1))
                     continue
                 return response
