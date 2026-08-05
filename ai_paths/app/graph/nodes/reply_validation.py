@@ -259,6 +259,7 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_effect_absolute_safety_claims(messages, state)
     _validate_province_only_store_delivery(messages, state)
     _validate_store_resolution_v2_contract(messages, state)
+    _validate_incomplete_store_scope_reply(messages, state)
     _validate_store_resolution_delivery_mode(messages, state)
     _validate_store_address_message_facts(messages, state)
     _validate_multi_store_address_same_district(messages, state)
@@ -853,6 +854,28 @@ def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state
     if status == "send_multiple":
         if not 2 <= len(delivery_ids) <= 3 or emitted != delivery_ids:
             raise ValueError("store_resolution_send_multiple_contract_violation")
+
+
+def _validate_incomplete_store_scope_reply(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """Do not turn an incomplete store snapshot into invented location options."""
+
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    if str(resolution.get("status") or "") != "no_valid_candidate":
+        return
+    if bool(resolution.get("candidate_search_complete")):
+        return
+    text = _combined_text(messages)
+    if any(value in text for value in ("乱发", "乱指", "瞎推荐", "不敢乱说")):
+        raise ValueError("store_scope_incomplete_system_disclaimer")
+    if re.search(r"(?:还是|或者).{0,18}(?:方便|常去|城市|市区)", text) or re.search(
+        r"(?:城市|市区).{0,18}(?:还是|或者)", text
+    ):
+        raise ValueError("store_scope_incomplete_unsupported_location_options")
 
 
 def _validate_province_only_store_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:

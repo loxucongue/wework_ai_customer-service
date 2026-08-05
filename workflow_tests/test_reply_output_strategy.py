@@ -5493,6 +5493,25 @@ def test_no_candidate_fact_does_not_claim_complete_search_when_scope_is_unavaila
     assert resolution["status"] == "no_valid_candidate"
     assert resolution["candidate_search_complete"] is False
 
+    state = {
+        **output,
+        "normalized_content": "我在黑龙江绥化望奎县，这边门店在哪里？",
+    }
+    with pytest.raises(ValueError, match="store_scope_incomplete_unsupported_location_options"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "您平时去绥化市区还是哈尔滨更方便？"}],
+            state,
+        )
+    with pytest.raises(ValueError, match="store_scope_incomplete_system_disclaimer"):
+        validate_reply_consistency(
+            [{"type": "text", "order": 1, "content": "我先不给您乱指位置，您再说个城市。"}],
+            state,
+        )
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "亲，您平时还常去哪个城市？我按您常去的地方再帮您看。"}],
+        state,
+    )
+
 
 def test_reply_validation_rejects_store_cards_for_province_only_scope_without_tool_resolution() -> None:
     state = {

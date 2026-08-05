@@ -1023,6 +1023,8 @@ def _reply_repair_hint(error: str) -> str:
         return "你在文本里承诺了发送地址或位置卡，但本轮没有对应门店卡。只有 store_resolution_fact.status=send_single/send_multiple 时，才按 delivery_store_ids 追加对应 store_address；其他状态必须删除发卡承诺，并按状态补问地区、确认解析结果或询问客户常去的市区/商圈。"
     if "store_cards_not_allowed_when_service_area_clarification_required" in error:
         return "客户当前地址已经确认，完整查询后该地区目前没有可发送的合法门店。删除所有 store_address 和发卡承诺，如实、简短地说明“您这个地区目前暂时没有门店”，然后只问客户平时常去哪个城市；不要继续问当前地区的区县或商圈，也不要让客户重复提供同一位置。语气要短、口语化，不要说“没查到、查不到、不乱发、不确定的位置、真实门店、重新对”。"
+    if "store_scope_incomplete_system_disclaimer" in error or "store_scope_incomplete_unsupported_location_options" in error:
+        return "本轮门店范围事实加载不完整，不能断言没有门店，也不能自行列出事实中没有的城市让客户二选一。删除“我不乱发、不乱指、不瞎推荐、不敢乱说”这类系统免责话；位置已确认时不要重复索要同一地址，只用一条短、口语化文字询问客户平时还常去哪个城市，不要给具体城市选项。"
     if "distance_value_not_customer_visible" in error:
         return "Haversine 直线距离只用于内部排序门店。客户可见最多说“按您这个位置，这家相对近一些”，不要输出公里、分钟、车程、路线或步行时长。"
     if "distance_fact_required" in error:
