@@ -43,6 +43,13 @@ class _FakeCoze:
         geocode_workflow_id = ""
 
 
+class _StoreScopeRecoveryPlatformClient:
+    available = True
+
+    def list_stores(self, **_: object) -> list[dict[str, object]]:
+        return [{"id": "350"}, {"id": "557"}, {"id": "not-in-snapshot"}]
+
+
 class _FakeGeocodeCoze:
     class settings:
         geocode_workflow_id = "geo-workflow"
@@ -107,6 +114,66 @@ class _Snapshot:
             "snapshot_source": "test",
             "snapshot_refresh_error": "",
         }
+
+
+def test_action_layer_recovers_timed_out_customer_store_scope(monkeypatch) -> None:
+    snapshot = [
+        {
+            "store_id": "350",
+            "store_name": "苏州姑苏店",
+            "province": "江苏省",
+            "city": "苏州市",
+            "district": "姑苏区",
+            "store_address": "江苏省苏州市姑苏区广济南路19号",
+            "location": "120.600121,31.305249",
+            "store_fact_integrity": "valid",
+        },
+        {
+            "store_id": "557",
+            "store_name": "苏州工业园二店",
+            "province": "江苏省",
+            "city": "苏州市",
+            "district": "吴中区",
+            "store_address": "江苏省苏州市吴中区星港街283号",
+            "location": "120.676601,31.326341",
+            "store_fact_integrity": "valid",
+        },
+    ]
+    monkeypatch.setattr(action_nodes, "_snapshot_store_values", lambda: snapshot)
+
+    output = asyncio.run(
+        action_nodes._recover_customer_store_scope(
+            {
+                "customer_id": "22089120",
+                "customer_add_wechat_id": "22089120",
+                "customer_context": {
+                    "platform_customer_id": "14618712",
+                    "customer_id": "14618712",
+                    "customer_add_wechat_id": "22089120",
+                    "identity": {
+                        "platform_customer_id": "14618712",
+                        "customer_add_wechat_id": "22089120",
+                    },
+                },
+                "request_context": {
+                    "customer_id": "22089120",
+                    "external_userid": "external-1",
+                    "corp_id": "corp-1",
+                    "wechat": "DY258",
+                },
+                "customer_store_knowledge": {
+                    "source": "customer_store_knowledge_timeout",
+                    "stores": [],
+                },
+            },
+            _StoreScopeRecoveryPlatformClient(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["customer_id"] == "14618712"
+    assert output["customer_add_wechat_id"] == "22089120"
+    assert [item["store_id"] for item in output["stores"]] == ["350", "557"]
+    assert output["missing_snapshot_store_ids"] == ["not-in-snapshot"]
 
 
 def test_store_scope_uses_stale_cache_when_platform_store_index_fails() -> None:

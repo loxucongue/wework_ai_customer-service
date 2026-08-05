@@ -200,6 +200,16 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
             candidate_stores = value.get("ranked_stores") if isinstance(value.get("ranked_stores"), list) else []
             if not candidate_stores:
                 candidate_stores = value.get("candidate_stores") if isinstance(value.get("candidate_stores"), list) else []
+            if (
+                str(previous_resolution.get("status") or "")
+                in {"need_location", "need_location_confirmation", "ambiguous_location"}
+                and not candidate_stores
+            ):
+                facts.append(
+                    "distance_calculate: skipped_fact_override="
+                    f"{previous_resolution.get('status')}; status={value.get('status') or ''}"
+                )
+                continue
             comparable_stores = [
                 item
                 for item in candidate_stores
@@ -310,7 +320,13 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "delivery_store_ids": delivery_store_ids,
                     "ranking_method": "haversine" if has_real_ranking else "scope_match",
                     "customer_claim_level": "relative_near" if has_real_ranking else "candidate_list",
-                    "reason": "confirmed_location_and_valid_coordinates" if has_real_ranking else "insufficient_coordinates",
+                    "reason": (
+                        "confirmed_location_and_valid_coordinates"
+                        if has_real_ranking
+                        else "candidate_coordinates_unavailable"
+                        if candidate_stores
+                        else "no_authorized_candidate_stores"
+                    ),
                     "delivery_mode": legacy_delivery_mode(v2_status),
                 }
             )

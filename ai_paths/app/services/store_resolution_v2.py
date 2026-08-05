@@ -67,6 +67,11 @@ def build_location_evidence(
         and mentioned["district"]
         and mentioned["detail"]
         and len(_compact(detail)) >= 2
+    ) or (
+        mentioned["district"]
+        and mentioned["detail"]
+        and len(_compact(detail)) >= 2
+        and _geocode_has_unique_point(geocode)
     ):
         confirmation_status = "confirmed"
         confidence = "high"
@@ -190,6 +195,16 @@ def _parse_lng_lat(value: str) -> tuple[float, float] | None:
         return float(parts[0]), float(parts[1])
     except (TypeError, ValueError):
         return None
+
+
+def _geocode_has_unique_point(geocode: dict[str, Any]) -> bool:
+    if not _parse_lng_lat(str(geocode.get("location") or "")):
+        return False
+    try:
+        candidate_count = int(geocode.get("candidate_count") or 0)
+    except (TypeError, ValueError):
+        candidate_count = 0
+    return candidate_count in {0, 1}
 
 
 def _location_detail(query: str, *, province: str, city: str, district: str) -> str:

@@ -38,6 +38,7 @@ from app.services.trace_logger import TraceLogger
 _STORE_SNAPSHOT_CACHE: dict[str, Any] | None = None
 _STORE_SNAPSHOT_CACHE_KEY: tuple[str, int] | None = None
 _ACTION_TOOL_TIMEOUT_SECONDS = 12.0
+_STORE_SCOPE_RECOVERY_TIMEOUT_SECONDS = 4.5
 
 
 def create_execute_actions_node(
@@ -69,10 +70,34 @@ def create_execute_actions_node(
             required_tools = _dedupe_planned_tools(required_tools)
             required_tools = _filter_invalid_planned_tools(required_tools, state, tool_results, tool_calls)
 
+            execution_state: AgentState = dict(state)
+            recovered_store_knowledge: dict[str, Any] = {}
+            if _needs_customer_store_lookup(required_tools) and platform_agent_client:
+                recovered_store_knowledge = await _recover_customer_store_scope(
+                    execution_state,
+                    platform_agent_client,
+                )
+                if recovered_store_knowledge:
+                    execution_state["customer_store_knowledge"] = recovered_store_knowledge
+                    tool_calls.append(
+                        {
+                            "name": "customer_store_scope_recovery",
+                            "input": {
+                                "reason": "background_store_scope_unavailable",
+                                "timeout_seconds": _STORE_SCOPE_RECOVERY_TIMEOUT_SECONDS,
+                            },
+                            "output": {
+                                "status": "recovered",
+                                "store_count": len(recovered_store_knowledge.get("stores") or []),
+                                "source": recovered_store_knowledge.get("source"),
+                            },
+                        }
+                    )
+
             for tool in required_tools:
                 _queue_planned_tool_tasks(
                     tool=tool,
-                    state=state,
+                    state=execution_state,
                     coze_client=coze_client,
                     tool_results=tool_results,
                     tool_calls=tool_calls,
@@ -83,14 +108,14 @@ def create_execute_actions_node(
                 lookup_tool = _planned_tool(required_tools, "customer_store_lookup")
                 try:
                     result = await asyncio.wait_for(
-                        _customer_store_lookup(lookup_tool, state, coze_client),
+                        _customer_store_lookup(lookup_tool, execution_state, coze_client),
                         timeout=_ACTION_TOOL_TIMEOUT_SECONDS,
                     )
                 except Exception as exc:
                     result = _tool_execution_error_result(
                         tool_name="customer_store_lookup",
                         tool=lookup_tool,
-                        state=state,
+                        state=execution_state,
                         exc=exc,
                     )
                 tool_results["customer_store_lookup"] = result
@@ -105,31 +130,31 @@ def create_execute_actions_node(
                     }
                     try:
                         result = await asyncio.wait_for(
-                            _distance_calculate(distance_tool, state, coze_client, tool_results),
+                            _distance_calculate(distance_tool, execution_state, coze_client, tool_results),
                             timeout=_ACTION_TOOL_TIMEOUT_SECONDS,
                         )
                     except Exception as exc:
                         result = _tool_execution_error_result(
                             tool_name="distance_calculate",
                             tool=distance_tool,
-                            state=state,
+                            state=execution_state,
                             exc=exc,
                         )
                     tool_results["distance_calculate"] = result
                     tool_calls.append({"name": "distance_calculate", "input": distance_tool, "output": result, "auto_enriched": True})
 
-            if _needs_distance_calculate(required_tools):
+            if _needs_distance_calculate(required_tools) and _lookup_result_allows_distance_calculate(tool_results):
                 distance_tool = _planned_tool(required_tools, "distance_calculate")
                 try:
                     result = await asyncio.wait_for(
-                        _distance_calculate(distance_tool, state, coze_client, tool_results),
+                        _distance_calculate(distance_tool, execution_state, coze_client, tool_results),
                         timeout=_ACTION_TOOL_TIMEOUT_SECONDS,
                     )
                 except Exception as exc:
                     result = _tool_execution_error_result(
                         tool_name="distance_calculate",
                         tool=distance_tool,
-                        state=state,
+                        state=execution_state,
                         exc=exc,
                     )
                 tool_results["distance_calculate"] = result
@@ -224,16 +249,18 @@ def create_execute_actions_node(
                 )
                 _filter_case_studies_by_sent_documents(tool_results, state, tool_calls)
 
-            planner_fact_output = build_planner_fact_output(tool_results, state)
+            planner_fact_output = build_planner_fact_output(tool_results, execution_state)
             fact_envelope = dict(planner_fact_output.get("fact_envelope") or {})
 
             span["entry"]["tool_calls"] = tool_calls
-            output = {
+            output: dict[str, Any] = {
                 "tool_results": tool_results,
                 "fact_envelope": fact_envelope,
                 "trace": state.get("trace", []),
             }
             span["output_snapshot"] = output
+            if recovered_store_knowledge:
+                return {**output, "customer_store_knowledge": recovered_store_knowledge}
             return output
 
     return execute_actions
@@ -1087,6 +1114,101 @@ def _tool_execution_error_result(
 
 def _needs_distance_calculate(required_tools: list[dict[str, Any]]) -> bool:
     return any(str(item.get("name") or "") == "distance_calculate" for item in required_tools if isinstance(item, dict))
+
+
+def _lookup_result_allows_distance_calculate(tool_results: dict[str, Any]) -> bool:
+    """Do not let a dependent distance call erase a location clarification fact."""
+    lookup = tool_results.get("customer_store_lookup")
+    if not isinstance(lookup, dict):
+        return True
+    candidates = lookup.get("candidate_stores") if isinstance(lookup.get("candidate_stores"), list) else []
+    return str(lookup.get("status") or "") == "ok" and bool(candidates)
+
+
+async def _recover_customer_store_scope(
+    state: AgentState,
+    platform_client: PlatformAgentClient,
+) -> dict[str, Any]:
+    """Retry an unavailable customer store scope at the point it is actually needed."""
+    if not _customer_store_scope_unavailable(state) or not platform_client.available:
+        return {}
+
+    context = state.get("customer_context") if isinstance(state.get("customer_context"), dict) else {}
+    identity = context.get("identity") if isinstance(context.get("identity"), dict) else {}
+    platform_customer_id = str(
+        context.get("platform_customer_id")
+        or context.get("customer_id")
+        or identity.get("platform_customer_id")
+        or ""
+    ).strip()
+    customer_add_wechat_id = str(
+        context.get("customer_add_wechat_id")
+        or identity.get("customer_add_wechat_id")
+        or state.get("customer_add_wechat_id")
+        or ""
+    ).strip()
+    if not platform_customer_id or not customer_add_wechat_id:
+        return {}
+
+    request_context = dict(_request_context(state))
+    request_context.update(
+        {
+            "input_customer_id": request_context.get("customer_id"),
+            "platform_customer_id": platform_customer_id,
+            "customer_id": platform_customer_id,
+            "customer_add_wechat_id": customer_add_wechat_id,
+        }
+    )
+    try:
+        rows = await asyncio.wait_for(
+            asyncio.to_thread(
+                platform_client.list_stores,
+                customer_id=platform_customer_id,
+                customer_add_wechat_id=customer_add_wechat_id,
+                request_context=request_context,
+            ),
+            timeout=_STORE_SCOPE_RECOVERY_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        return {}
+
+    authorized_ids = {
+        str(row.get("id") or row.get("store_id") or "").strip()
+        for row in rows
+        if isinstance(row, dict) and str(row.get("id") or row.get("store_id") or "").strip()
+    }
+    snapshot_rows = _snapshot_store_values()
+    scoped_rows = [
+        store
+        for store in snapshot_rows
+        if str(store.get("store_id") or store.get("id") or "").strip() in authorized_ids
+    ]
+    valid_stores, invalid_stores = filter_valid_store_facts(scoped_rows, known_stores=snapshot_rows)
+    if not valid_stores:
+        return {}
+    return {
+        "source": "platform_agent.store_index_action_recovery+store_snapshot",
+        "identity": {
+            "input_customer_id": _request_context(state).get("customer_id"),
+            "platform_customer_id": platform_customer_id,
+            "customer_add_wechat_id": customer_add_wechat_id,
+            "external_userid": _request_context(state).get("external_userid"),
+        },
+        "customer_id": platform_customer_id,
+        "customer_add_wechat_id": customer_add_wechat_id,
+        "store_count": len(valid_stores),
+        "stores": valid_stores,
+        "invalid_store_facts": invalid_stores,
+        "missing_snapshot_store_ids": sorted(
+            authorized_ids
+            - {
+                str(store.get("store_id") or store.get("id") or "").strip()
+                for store in scoped_rows
+            }
+        ),
+        "appointment_extra_stores": [],
+        "cache": {"store_scope_hit": False, "store_scope_status": "action_recovery"},
+    }
 
 
 def _lookup_result_needs_distance_enrichment(result: dict[str, Any]) -> bool:
@@ -2071,6 +2193,7 @@ def _customer_store_scope_unavailable(state: AgentState) -> bool:
         "platform_agent_unavailable",
         "platform_agent.store_index_error",
         "customer_store_knowledge_error",
+        "customer_store_knowledge_timeout",
     }:
         return True
     if knowledge.get("error") or knowledge.get("store_scope_error"):

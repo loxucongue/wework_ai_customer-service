@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 from app.config import Settings
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
-from app.graph.nodes.action_nodes import _customer_store_lookup, _distance_calculate, _filter_invalid_planned_tools
+from app.graph.nodes.action_nodes import (
+    _customer_store_lookup,
+    _distance_calculate,
+    _filter_invalid_planned_tools,
+    _lookup_result_allows_distance_calculate,
+)
 from app.graph.planner.planner_schema_normalizer import normalize_tools
 from app.services.store_resolution_v2 import build_location_evidence, resolution_status_for_location
 from app.services.store_snapshot_service import StoreSnapshotService
@@ -77,6 +82,47 @@ def test_province_only_location_requires_more_location() -> None:
 
     assert evidence["confirmation_status"] == "incomplete"
     assert resolution_status_for_location(evidence) == "need_location"
+
+
+def test_unique_county_level_place_with_detail_is_confirmed() -> None:
+    evidence = build_location_evidence(
+        {"normalized_content": "昆山正仪镇南桥"},
+        raw_text="昆山正仪镇南桥",
+        query="昆山正仪镇南桥",
+        geocode={
+            "province": "江苏省",
+            "city": "苏州市",
+            "district": "昆山市",
+            "township": "正仪镇",
+            "formatted_address": "江苏省苏州市昆山市正仪镇南桥公交站",
+            "location": "120.853701,31.370878",
+            "candidate_count": 1,
+        },
+    )
+
+    assert evidence["confirmation_status"] == "confirmed"
+    assert evidence["district"] == "昆山市"
+    assert evidence["detail"] == "正仪镇南桥"
+    assert resolution_status_for_location(evidence) == ""
+
+
+def test_distance_tool_requires_successful_lookup_candidates() -> None:
+    assert not _lookup_result_allows_distance_calculate(
+        {
+            "customer_store_lookup": {
+                "status": "need_location_confirmation",
+                "candidate_stores": [],
+            }
+        }
+    )
+    assert _lookup_result_allows_distance_calculate(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "candidate_stores": [{"store_id": "350"}],
+            }
+        }
+    )
 
 
 def test_city_and_district_without_province_requires_confirmation() -> None:
@@ -269,6 +315,36 @@ def test_planner_fact_output_emits_single_v2_delivery_contract() -> None:
     assert resolution["delivery_store_ids"] == ["1"]
     assert resolution["ranking_method"] == "haversine"
     assert resolution["customer_claim_level"] == "relative_near"
+
+
+def test_empty_distance_result_does_not_erase_location_confirmation_contract() -> None:
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "need_location_confirmation",
+                "raw_query": "东坑",
+                "query": "东坑",
+                "location_evidence": {
+                    "raw_text": "东坑",
+                    "confirmation_status": "needs_confirmation",
+                },
+                "stores": [],
+                "candidate_stores": [],
+                "missing": ["confirmed_location"],
+            },
+            "distance_calculate": {
+                "status": "no_candidate_stores",
+                "origin": "东坑",
+                "candidate_stores": [],
+                "error": "no_candidate_stores",
+            },
+        },
+        {"customer_store_knowledge": {"stores": []}, "guardrail_result": {}},
+    )
+
+    resolution = output["structured_facts"]["store_resolution_fact"]
+    assert resolution["status"] == "need_location_confirmation"
+    assert resolution["location_evidence"]["raw_text"] == "东坑"
 
 
 def test_snapshot_keeps_platform_region_and_does_not_use_parking_for_membership() -> None:
