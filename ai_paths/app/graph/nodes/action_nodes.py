@@ -1672,14 +1672,46 @@ def _geocode_explicit_region_conflict(query: str, geocode: dict[str, Any], store
             str(store.get(field) or "").strip()
             for store in stores
             if str(store.get(field) or "").strip()
-            and any(
-                len(_compact_text(token)) >= 2 and _compact_text(token) in text
-                for token in _region_tokens(str(store.get(field) or ""))
+            and _region_value_explicit_at_level(
+                query_text=text,
+                value=str(store.get(field) or ""),
+                field=field,
+                geocode=geocode,
             )
         }
         if explicit_values and not any(_region_equal(value, result_value) for value in explicit_values):
             return True
     return False
+
+
+def _region_value_explicit_at_level(
+    *,
+    query_text: str,
+    value: str,
+    field: str,
+    geocode: dict[str, Any],
+) -> bool:
+    """Avoid treating a parent-city alias as an explicit district mention."""
+    full_value = _compact_text(value)
+    if len(full_value) >= 2 and full_value in query_text:
+        return True
+    parent_fields = {
+        "province": (),
+        "city": ("province",),
+        "district": ("province", "city"),
+    }.get(field, ())
+    parent_tokens = {
+        _compact_text(token)
+        for parent_field in parent_fields
+        for token in _region_tokens(str(geocode.get(parent_field) or ""))
+        if _compact_text(token)
+    }
+    return any(
+        len(_compact_text(token)) >= 2
+        and _compact_text(token) not in parent_tokens
+        and _compact_text(token) in query_text
+        for token in _region_tokens(value)
+    )
 
 
 def _compact_store_text(value: str) -> str:

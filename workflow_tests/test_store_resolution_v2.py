@@ -9,6 +9,7 @@ from app.graph.nodes.action_nodes import (
     _customer_store_lookup,
     _distance_calculate,
     _filter_invalid_planned_tools,
+    _geocode_explicit_region_conflict,
     _lookup_result_allows_distance_calculate,
 )
 from app.graph.planner.planner_schema_normalizer import normalize_tools
@@ -122,6 +123,36 @@ def test_distance_tool_requires_successful_lookup_candidates() -> None:
                 "candidate_stores": [{"store_id": "350"}],
             }
         }
+    )
+
+
+def test_parent_city_alias_does_not_create_false_district_conflict() -> None:
+    stores = [
+        {
+            "store_id": "589",
+            "store_name": "荆州万达二店",
+            "province": "湖北省",
+            "city": "荆州市",
+            "district": "荆州区",
+            "store_address": "湖北省荆州市荆州区万达广场",
+        }
+    ]
+    geocode = {
+        "province": "湖北省",
+        "city": "荆州市",
+        "district": "洪湖市",
+        "location": "113.475984,29.827256",
+    }
+
+    assert not _geocode_explicit_region_conflict(
+        "湖北省荆州市洪湖市",
+        geocode,
+        stores,
+    )
+    assert _geocode_explicit_region_conflict(
+        "湖北省荆州市荆州区",
+        geocode,
+        stores,
     )
 
 
