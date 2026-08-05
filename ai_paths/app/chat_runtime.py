@@ -1105,7 +1105,7 @@ def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, 
     state["fallback_retry_count"] = len(state.get("recovery_attempts") or [])
     state["fallback_violation"] = str(state.get("recovery_reason") or "")[:500]
     state["fallback_remaining_budget"] = runtime_budget_snapshot(state, tier="reply")
-    return [{"type": "text", "order": 1, "content": {"text": "您稍等一下"}}]
+    return [{"type": "text", "order": 1, "content": {"text": "亲，刚才这条我没接完整，麻烦您再发一下。"}}]
 
 
 def _has_structured_professional_assist(state: AgentState) -> bool:

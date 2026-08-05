@@ -680,7 +680,7 @@ def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailabl
                 {
                     "type": "text",
                     "order": 1,
-                    "content": {"text": "您稍等一下"},
+                    "content": {"text": "亲，刚才这条我没接完整，麻烦您再发一下。"},
                 },
                 {
                     "type": "human_handoff_notice",
@@ -712,7 +712,7 @@ def planner_unavailable_fallback_plan(state: AgentState, *, reason: str = "Plann
                 {
                     "type": "text",
                     "order": 1,
-                    "content": {"text": "您稍等一下"},
+                    "content": {"text": "亲，刚才这条我没接完整，麻烦您再发一下。"},
                 }
             ],
             "tool_calls": [],
