@@ -1755,13 +1755,18 @@ async def _distance_calculate(
             "error": "geocode_workflow_id_not_configured",
         }
     try:
-        admin_candidate = _administrative_area_origin_candidate(origin, state)
-        origin_geo = await _geocode_address(coze_client, geocode_workflow_id, geocode_origin)
-        if admin_candidate and not _geocode_matches_area(origin_geo, admin_candidate["area"]):
-            admin_geo = await _geocode_address(coze_client, geocode_workflow_id, admin_candidate["origin"])
-            if _geocode_matches_area(admin_geo, admin_candidate["area"]) or _geocode_has_unconflicted_location(admin_geo):
-                origin_geo = admin_geo
-                geocode_origin = admin_candidate["origin"]
+        origin_geo = _distance_origin_geocode_from_lookup(tool_results or {})
+        if origin_geo:
+            lookup = (tool_results or {}).get("customer_store_lookup") or {}
+            geocode_origin = str(lookup.get("query") or origin).strip()
+        else:
+            admin_candidate = _administrative_area_origin_candidate(origin, state)
+            origin_geo = await _geocode_address(coze_client, geocode_workflow_id, geocode_origin)
+            if admin_candidate and not _geocode_matches_area(origin_geo, admin_candidate["area"]):
+                admin_geo = await _geocode_address(coze_client, geocode_workflow_id, admin_candidate["origin"])
+                if _geocode_matches_area(admin_geo, admin_candidate["area"]) or _geocode_has_unconflicted_location(admin_geo):
+                    origin_geo = admin_geo
+                    geocode_origin = admin_candidate["origin"]
         if not origin_geo.get("location"):
             return {"origin": origin, "candidate_stores": all_candidates, "status": "origin_geocode_failed", "error": "origin_geocode_failed"}
         origin_point = _parse_lng_lat(str(origin_geo.get("location") or ""))
@@ -1848,6 +1853,16 @@ def _distance_candidate_stores(tool: dict[str, Any], state: AgentState, tool_res
             continue
         stores.append(store)
     return stores[:12]
+
+
+def _distance_origin_geocode_from_lookup(tool_results: dict[str, Any]) -> dict[str, Any]:
+    lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results, dict) else {}
+    if not isinstance(lookup, dict) or str(lookup.get("status") or "") != "ok":
+        return {}
+    geocode = lookup.get("geocode") if isinstance(lookup.get("geocode"), dict) else {}
+    if not _parse_lng_lat(str(geocode.get("location") or "")):
+        return {}
+    return dict(geocode)
 
 
 def _preselect_distance_candidates(
@@ -2143,7 +2158,14 @@ def _normalize_distance_origin_from_store_regions(origin: str, state: AgentState
         city_tokens = _region_tokens(city)
         district_tokens = _region_tokens(district)
         has_city = any(token and token in text for token in city_tokens)
-        has_district = any(token and token in text for token in district_tokens)
+        city_aliases = {_compact_text(token) for token in city_tokens if token}
+        district_full = _compact_text(district)
+        has_district = bool(district_full and district_full in _compact_text(text)) or any(
+            token
+            and _compact_text(token) not in city_aliases
+            and token in text
+            for token in district_tokens
+        )
         if not has_district:
             continue
         score = 2 if has_city else 1

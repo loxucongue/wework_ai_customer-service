@@ -313,6 +313,60 @@ def test_distance_calculate_uses_haversine_without_route_workflow() -> None:
     assert all("origin" not in parameters and "destination" not in parameters for _, parameters in client.calls)
 
 
+def test_distance_calculate_reuses_confirmed_lookup_coordinates() -> None:
+    stores = [
+        {
+            "store_id": "589",
+            "store_name": "荆州万达二店",
+            "province": "湖北省",
+            "city": "荆州市",
+            "district": "荆州区",
+            "store_address": "湖北省荆州市荆州区万达广场",
+            "location": "112.239,30.335",
+            "store_fact_integrity": "valid",
+        }
+    ]
+    client = _GeocodeClient(
+        {
+            "湖北省荆州市荆州区": {
+                "province": "湖北省",
+                "city": "荆州市",
+                "district": "荆州区",
+                "location": "112.239,30.335",
+            }
+        }
+    )
+    lookup = {
+        "status": "ok",
+        "query": "湖北省荆州市洪湖市",
+        "geocode": {
+            "province": "湖北省",
+            "city": "荆州市",
+            "district": "洪湖市",
+            "location": "113.475984,29.827256",
+        },
+        "candidate_stores": stores,
+    }
+
+    result = asyncio.run(
+        _distance_calculate(
+            {
+                "name": "distance_calculate",
+                "origin": "湖北省荆州市洪湖市",
+                "candidate_source": "customer_store_lookup",
+            },
+            {"normalized_content": "洪湖市", "customer_store_knowledge": {"stores": stores}},
+            client,  # type: ignore[arg-type]
+            {"customer_store_lookup": lookup},
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["origin_geocode"]["district"] == "洪湖市"
+    assert result["ranked_stores"][0]["distance_km"] > 100
+    assert client.calls == []
+
+
 def test_planner_fact_output_emits_single_v2_delivery_contract() -> None:
     stores = [
         {**_store("1", "近店", location="120.821,27.911"), "distance_km": 0.2, "distance_source": "haversine"},
