@@ -310,6 +310,12 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools=required_tools,
         state=state,
     )
+    decision, planner_reply_messages, required_tools = _enforce_sop_gate_active_task(
+        decision=decision,
+        messages=planner_reply_messages,
+        required_tools=required_tools,
+        state=state,
+    )
     decision, planner_reply_messages, required_tools = _enforce_declared_store_detail_lookup(
         decision=decision,
         sub_rule_id=sub_rule_id,
@@ -2686,6 +2692,37 @@ def _enforce_location_card_store_lookup(
             "name": "customer_store_lookup",
             "purpose": "nearby_candidates",
             "query": query,
+        }
+    )
+    return "need_tools", [], _dedupe_tools(tools)
+
+
+def _enforce_sop_gate_active_task(
+    *,
+    decision: str,
+    messages: list[dict[str, Any]],
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Honor the preceding model's structured task without re-deciding customer semantics in Python."""
+    gate = state.get("sop_gate_decision") if isinstance(state.get("sop_gate_decision"), dict) else {}
+    task = gate.get("active_task") if isinstance(gate.get("active_task"), dict) else {}
+    if str(task.get("status") or "") != "pending":
+        return decision, messages, required_tools
+    required_tool = str(task.get("required_tool") or "").strip()
+    query = str(task.get("query") or "").strip()
+    if required_tool != "customer_store_lookup" or not query:
+        return decision, messages, required_tools
+    if _has_tool(required_tools, required_tool):
+        return "need_tools", [], required_tools
+    tools = [tool for tool in required_tools if str(tool.get("name") or "") != "no_tool"]
+    tools.append(
+        {
+            "name": "customer_store_lookup",
+            "purpose": "existence",
+            "query": query,
+            "location_specificity": "confirmed_region",
+            "confirmed_by_customer": True,
         }
     )
     return "need_tools", [], _dedupe_tools(tools)

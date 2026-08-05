@@ -8,6 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.graph.nodes.common import model_usage_snapshot
+from app.graph.nodes.conversation_history_fetch import history_strings_to_turns
 from app.graph.nodes.current_turn_context import (
     build_current_turn_context,
     can_use_contextual_store_for_message,
@@ -47,7 +48,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 # Principles
 - 当前消息优先；近聊、turn_evidence、customer_context 只作证据，不替你决定业务动作。
 - `input_quality_flags` 含 `suspected_short_mojibake` 时，原文可能在入站前已损坏。不得猜测它必然等于“行、好、是”；结合最近历史低置信度承接当前任务，避免复读无关流程。
-- 历史客服消息“付款给：某公司”是平台对已发送预约金卡的文字渲染，不代表客户选择转账或已经支付。活动已报价、客户未付且在卡后新回复“行/好/谢谢”时，默认继续成交并重发小程序收款卡；只有客户本人明确选择转账时才走 manual_transfer，未付前不收姓名电话。
+- 历史客服消息“付款给：某公司”是平台对已发送预约金卡的文字渲染，不代表客户选择转账或已经支付。只有 `latest_exchange.previous_assistant_turn` 正在要求客户操作刚发的收款卡，且其后没有新的地址确认、门店选择或其他未完任务时，客户短回复才可以承接付款；更早出现过收款卡不能抢占当前紧邻问答。
 - 不把技术超时理解成客户高风险；除非客户当前消息本身明确健康高风险、投诉退款、付款异常、严重不适或强人工诉求，否则不要输出 human_handoff_notice。
 - 不编造门店、地址、停车、营业时间、距离、档期、案例图、价格、支付状态、订单状态或医疗结论。
 - 需要具体门店/地址/停车/营业时间/导航/附近候选时，用 customer_store_lookup。
@@ -62,7 +63,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 地址疑似有错别字、简称或口语地名时，保留客户原话在 `query`，并必须提供 1–3 个 `location_candidates`，格式为 `{"query":"可能的完整标准地址","reason":"纠错依据","confidence":"high|medium|low","requires_confirmation":true}`。例如“防成港”候选“广西防城港市”、“东管长安”候选“广东省东莞市长安镇”、“厦们湖里”候选“福建省厦门市湖里区”、“温洲龙湾”候选“浙江省温州市龙湾区”。候选只用于地理工具验证，不能自行认定为客户地址。
 - 错别字地址的完整工具示例：`{"name":"customer_store_lookup","query":"防成港","purpose":"existence","location_specificity":"typo_or_alias","location_candidates":[{"query":"广西壮族自治区防城港市","reason":"疑似同音错别字，需地理工具验证","confidence":"high","requires_confirmation":true}]}`。`location_candidates` 必须放在对应的 `tool_calls` 项内部，不能放到顶层、reason 或 reply_messages。
 - `customer_store_lookup.query` 必须可追溯到当前客户位置、定位卡，或近期客户已经明确提供且未被新位置推翻的地址证据。允许组合连续地址片段，例如客户先说“温州龙湾”、后说“滨海路”，查询可组合为“浙江省温州市龙湾区滨海路”；不能把斑点时长、价格、效果或“好的/是的”等短句本身当成新地址。
-- 近期地址证据不等于当前门店意图。只有客户当前提出位置/门店问题，或正在回答上一轮尚未完成的位置补问/确认时才查店；当前只说“好的/嗯/谢谢”或转问价格、效果、斑点情况时，不得仅凭历史地址重新查店或重发门店卡。
+- 近期地址证据不等于当前门店意图。必须先看 `latest_exchange`：上一句若正在确认解析地区，客户当前短回复确认后必须查店并设置 `confirmed_by_customer=true`；上一句与门店无关时，才不得仅凭历史地址重新查店或重发门店卡。
 - 只有省份时补问城市和区县。客户明确给出城市、区县、乡镇、村、道路、地标或定位卡时，先调用 customer_store_lookup；若工具得到唯一且内部一致的解析结果，可在同一轮自然带一句解析地区并直接匹配门店卡，不需要等客户再确认一次。只有同名多地域、多个同级城市冲突、解析失败或错别字/简称修正候选时，才等待客户确认。客户确认了你上一轮提出的地区后，工具调用可设置 `confirmed_by_customer=true`。例如“武汉市东湖高新区”可直接查店；“广州惠州”包含两个城市，必须先确认客户指广州还是惠州。
 - 若 `store_binding_decision` 已接受最近真实门店，当前客户没有提出新位置或换店，就沿用该门店并推进当前主线，不再查门店；若客户确实改了位置，先把门店决策改为 `exploring/ambiguous`，再按当前位置查询，不能同时“已接受旧店”和“查询无关新地址”。
 - `direct_reply` 必须有对象数组 reply_messages 且 tool_calls=[]；`need_tools` 必须 reply_messages=[] 且 tool_calls 非空。
@@ -453,6 +454,7 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
     )
     risk_hold = {} if suppress_memory else current_health_risk_hold_for_model(state)
     turn_evidence = _turn_evidence_for_planner(current_turn_context)
+    recent_turns = [] if suppress_memory else _recent_turns_for_planner(state)
     payload = {
         "current_date": _current_date_iso(),
         "timezone": "Asia/Shanghai",
@@ -462,6 +464,8 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         "input_quality_flags": list(state.get("input_quality_flags") or []),
         "location_card": location_card_from_state(state),
         "conversation_history": [] if suppress_memory else (state.get("conversation_history") or [])[-50:],
+        "recent_turns": recent_turns,
+        "latest_exchange": _latest_exchange_for_planner(recent_turns, state),
         "image_info": _compact_image_info(state.get("image_info") or {}),
         "category_id": str(((state.get("request_context") or {}).get("category_id") or "")).strip(),
         "transaction_facts": {} if suppress_memory else _transaction_facts_for_planner(state),
@@ -494,6 +498,8 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "normalized_current_message": base.get("normalized_current_message"),
         "input_quality_flags": base.get("input_quality_flags"),
         "conversation_history": (base.get("conversation_history") or [])[-8:],
+        "recent_turns": (base.get("recent_turns") or [])[-12:],
+        "latest_exchange": base.get("latest_exchange"),
         "image_info": base.get("image_info"),
         "category_id": base.get("category_id"),
         "transaction_facts": base.get("transaction_facts"),
@@ -870,7 +876,11 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
     return _drop_empty(
         {
             "route": raw.get("route"),
+            "mode": raw.get("mode"),
+            "need_ai_reply": raw.get("need_ai_reply"),
             "coverage": raw.get("coverage"),
+            "reason": raw.get("reason"),
+            "task": _compact_gate_task(raw.get("active_task")),
             "priority_question_id": raw.get("priority_question_id"),
             "resume_stage": raw.get("resume_stage"),
             "sop_pack_id": raw.get("sop_pack_id"),
@@ -881,6 +891,94 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
                 "这是前置模型的语义路由证据，不是代码决定。请结合当前消息复核；"
                 "若语义一致，优先使用其精准问题和主线恢复方向。"
             ),
+        }
+    )
+
+
+def _recent_turns_for_planner(state: AgentState, *, limit: int = 20) -> list[dict[str, Any]]:
+    raw_turns = state.get("conversation_turns") if isinstance(state.get("conversation_turns"), list) else []
+    if not raw_turns:
+        history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+        raw_turns = history_strings_to_turns(history, limit=limit)
+    output: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_turns[-limit:], start=1):
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        role = str(item.get("role") or "unknown").strip().lower()
+        if role in {"user", "external", "incoming"}:
+            role = "customer"
+        elif role in {"staff", "service", "bot", "agent"}:
+            role = "assistant"
+        turn = {
+            "message_ref": str(item.get("message_ref") or f"turn_{index:03d}")[:120],
+            "role": role if role in {"customer", "assistant"} else "unknown",
+            "content": content[:500],
+        }
+        for key in ("occurred_at", "minutes_before_latest"):
+            if item.get(key) not in (None, ""):
+                turn[key] = item.get(key)
+        output.append(turn)
+    return output
+
+
+def _latest_exchange_for_planner(recent_turns: list[dict[str, Any]], state: AgentState) -> dict[str, Any]:
+    current_message = str(state.get("normalized_content") or state.get("content") or "").strip()
+    customer_index = -1
+    if current_message:
+        for index in range(len(recent_turns) - 1, -1, -1):
+            turn = recent_turns[index]
+            if str(turn.get("role") or "") == "customer" and str(turn.get("content") or "").strip() == current_message:
+                customer_index = index
+                break
+    if customer_index < 0:
+        for index in range(len(recent_turns) - 1, -1, -1):
+            if str(recent_turns[index].get("role") or "") == "customer":
+                customer_index = index
+                break
+    latest_customer = dict(recent_turns[customer_index]) if customer_index >= 0 else {}
+    if current_message and (not latest_customer or str(latest_customer.get("content") or "").strip() != current_message):
+        latest_customer = {
+            "message_ref": "current_request_message",
+            "role": "customer",
+            "content": current_message[:500],
+        }
+        customer_index = len(recent_turns)
+    previous_assistant: dict[str, Any] = {}
+    for index in range(min(customer_index - 1, len(recent_turns) - 1), -1, -1):
+        if str(recent_turns[index].get("role") or "") == "assistant":
+            previous_assistant = dict(recent_turns[index])
+            break
+    return _drop_empty(
+        {
+            "previous_assistant_turn": previous_assistant,
+            "current_customer_turn": latest_customer,
+            "instruction": (
+                "先判断当前客户消息在回答 previous_assistant_turn 的哪个问题或动作；"
+                "不得让更早的付款卡、门店卡或活动记录越过这组最新问答。"
+            ),
+        }
+    )
+
+
+def _compact_gate_task(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return _drop_empty(
+        {
+            key: value.get(key)
+            for key in (
+                "type",
+                "action",
+                "status",
+                "query",
+                "location",
+                "customer_need",
+                "required_tool",
+                "evidence_refs",
+            )
         }
     )
 

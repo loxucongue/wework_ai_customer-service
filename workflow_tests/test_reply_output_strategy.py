@@ -11,7 +11,7 @@ from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_nodes import _snapshot_stores_for_exact_query
 from app.graph.nodes.common import repair_mojibake_text
 from app.graph.nodes.contextual_short_message import short_message_context_for_model
-from app.graph.nodes.conversation_history_fetch import platform_messages_to_history
+from app.graph.nodes.conversation_history_fetch import platform_messages_to_history, platform_messages_to_turns
 from app.graph.nodes.current_turn_context import build_current_turn_context
 from app.graph.nodes.layer_nodes import create_background_context_layer, create_input_normalization_layer
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model, reply_user_payload_for_model
@@ -655,6 +655,83 @@ def test_platform_history_preserves_order_when_timestamp_missing() -> None:
     )
 
     assert history == ["小贝: message-2", "用户: message-3"]
+
+
+def test_platform_history_exposes_ordered_turns_with_beijing_time_and_refs() -> None:
+    turns = platform_messages_to_turns(
+        [
+            {
+                "id": "assistant-confirm",
+                "direction": "staff",
+                "content": "确认是广东省东莞市长安镇对吧？",
+                "created_at": "2026-08-05T20:09:00+08:00",
+            },
+            {
+                "id": "customer-confirm",
+                "direction": "customer",
+                "content": "是的啊",
+                "created_at": "2026-08-05T20:10:00+08:00",
+            },
+        ],
+        limit=50,
+    )
+
+    assert turns == [
+        {
+            "message_ref": "assistant-confirm",
+            "role": "assistant",
+            "content": "确认是广东省东莞市长安镇对吧？",
+            "occurred_at": "2026-08-05T20:09:00+08:00",
+            "minutes_before_latest": 1,
+        },
+        {
+            "message_ref": "customer-confirm",
+            "role": "customer",
+            "content": "是的啊",
+            "occurred_at": "2026-08-05T20:10:00+08:00",
+            "minutes_before_latest": 0,
+        },
+    ]
+
+
+def test_sop_gate_pending_location_task_structurally_blocks_stale_payment_plan() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "content": "是的啊",
+            "normalized_content": "是的啊",
+            "sop_gate_decision": {
+                "route": "ai_only",
+                "active_task": {
+                    "type": "location_confirmation",
+                    "status": "pending",
+                    "query": "广东省东莞市长安镇",
+                    "required_tool": "customer_store_lookup",
+                },
+            },
+            **_ACTIVITY_INTRO_EVIDENCE,
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S3",
+            "sub_rule_id": "S3_PAYMENT_COLLECTION",
+            "payment_state": "needs_payment",
+            "payment_action": "send_now",
+            "payment_decision": {"action": "resend", "method": "mini_program", "party_size": 1, "amount": 10},
+            "store_binding_decision": {"status": "accepted_implicit", "store_id": "197"},
+            "order_decision": {"action": "use_existing", "order_id": "9127026", "store_id": "68", "amount": 10},
+            "reply_messages": [
+                {"type": "text", "content": "我把预约金卡再发您。"},
+                {"type": "payment_collection", "content": {"amount": 10}},
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_reply_messages"] == []
+    lookup = next(tool for tool in plan["planner_tool_calls"] if tool["name"] == "customer_store_lookup")
+    assert lookup["query"] == "广东省东莞市长安镇"
+    assert lookup["confirmed_by_customer"] is True
 
 
 def test_current_turn_context_post_deposit_time_confirmation_missing_store() -> None:

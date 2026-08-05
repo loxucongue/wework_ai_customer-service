@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
+from zoneinfo import ZoneInfo
 
 from app.graph.state import AgentState
 
 
 ConversationFetcher = Callable[..., Awaitable[dict[str, Any]]]
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
 async def fetch_platform_conversation_history(
@@ -18,12 +20,14 @@ async def fetch_platform_conversation_history(
     request_context: dict[str, Any] | None = None,
 ) -> tuple[list[str], dict[str, Any]]:
     fallback = request_conversation_history(state, limit=fallback_limit)
+    fallback_turns = history_strings_to_turns(fallback)
     if not conversation_fetcher:
         return fallback, {
             "status": "skipped",
             "reason": "conversation_fetcher_unavailable",
             "used_message_count": len(fallback),
             "limit": limit,
+            "recent_turns": fallback_turns,
         }
     params = conversation_fetch_params(state, request_context=request_context, limit=limit)
     missing = [key for key, value in params.items() if key != "limit" and not str(value or "").strip()]
@@ -34,6 +38,7 @@ async def fetch_platform_conversation_history(
             "missing": missing,
             "used_message_count": len(fallback),
             "limit": limit,
+            "recent_turns": fallback_turns,
         }
     try:
         result = await conversation_fetcher(**params)
@@ -43,10 +48,12 @@ async def fetch_platform_conversation_history(
             "error": f"{type(exc).__name__}: {exc}",
             "used_message_count": len(fallback),
             "limit": limit,
+            "recent_turns": fallback_turns,
         }
 
     messages = result.get("messages") if isinstance(result, dict) and isinstance(result.get("messages"), list) else []
     history = platform_messages_to_history(messages, limit=limit)
+    recent_turns = platform_messages_to_turns(messages, limit=limit)
     if not history:
         return fallback, {
             "status": str(result.get("status") or "empty") if isinstance(result, dict) else "empty",
@@ -55,6 +62,7 @@ async def fetch_platform_conversation_history(
             "message_count": len(messages),
             "used_message_count": len(fallback),
             "limit": limit,
+            "recent_turns": fallback_turns,
         }
     used = history[-limit:]
     return used, {
@@ -62,6 +70,7 @@ async def fetch_platform_conversation_history(
         "message_count": len(messages),
         "used_message_count": len(used),
         "limit": limit,
+        "recent_turns": recent_turns,
     }
 
 
@@ -103,6 +112,56 @@ def platform_messages_to_history(messages: list[dict[str, Any]], *, limit: int) 
         if not text:
             continue
         output.append(f"{message_role_label(item)}: {text[:220]}")
+    return output
+
+
+def platform_messages_to_turns(messages: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    ordered_messages = _ordered_platform_messages(messages)
+    selected = ordered_messages[-limit:]
+    latest_timestamp = next(
+        (
+            timestamp
+            for timestamp in reversed([_message_timestamp(item) for item in selected])
+            if timestamp is not None
+        ),
+        None,
+    )
+    for index, item in enumerate(selected, start=1):
+        text = message_text(item.get("content"))
+        if not text:
+            text = message_text(item.get("text") or item.get("message") or item.get("body"))
+        if not text:
+            continue
+        timestamp = _message_timestamp(item)
+        turn = {
+            "message_ref": _message_ref(item, index=index),
+            "role": message_role(item),
+            "content": text[:500],
+        }
+        if timestamp is not None:
+            occurred_at = datetime.fromtimestamp(timestamp, tz=timezone.utc).astimezone(BEIJING_TZ)
+            turn["occurred_at"] = occurred_at.isoformat(timespec="seconds")
+            if latest_timestamp is not None:
+                turn["minutes_before_latest"] = max(0, int((latest_timestamp - timestamp) / 60))
+        output.append(turn)
+    return output
+
+
+def history_strings_to_turns(history: list[Any], *, limit: int = 50) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for index, item in enumerate(history[-limit:], start=1):
+        text = str(item or "").strip()
+        if not text:
+            continue
+        role = "unknown"
+        content = text
+        for prefix, candidate_role in (("用户:", "customer"), ("小贝:", "assistant"), ("客服:", "assistant"), ("AI回复:", "assistant")):
+            if text.startswith(prefix):
+                role = candidate_role
+                content = text[len(prefix) :].strip()
+                break
+        output.append({"message_ref": f"history_{index:03d}", "role": role, "content": content[:500]})
     return output
 
 
@@ -161,19 +220,31 @@ def _parse_timestamp(value: Any) -> float | None:
 
 
 def message_role_label(item: dict[str, Any]) -> str:
+    return "用户" if message_role(item) == "customer" else "小贝"
+
+
+def message_role(item: dict[str, Any]) -> str:
     raw = str(item.get("direction") or item.get("role") or item.get("sender_type") or item.get("from") or "").lower()
     if raw in {"customer", "user", "external", "incoming", "in", "received", "receive", "contact"}:
-        return "用户"
+        return "customer"
     if raw in {"assistant", "staff", "service", "cs", "internal", "outgoing", "out", "sent", "send", "bot", "agent"}:
-        return "小贝"
+        return "assistant"
     if item.get("is_from_customer") is True:
-        return "用户"
+        return "customer"
     if item.get("is_from_customer") is False:
-        return "小贝"
+        return "assistant"
     sender = str(item.get("sender_type") or item.get("sender_role") or "").lower()
     if "external" in sender or "customer" in sender:
-        return "用户"
-    return "小贝"
+        return "customer"
+    return "assistant"
+
+
+def _message_ref(item: dict[str, Any], *, index: int) -> str:
+    for key in ("message_ref", "message_id", "msgid", "msg_id", "id"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value[:120]
+    return f"conv_{index:03d}"
 
 
 def message_text(content: Any) -> str:

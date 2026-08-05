@@ -458,6 +458,7 @@ class SopExecutionService:
             result["coverage"] = _chat_gate_coverage(selector_output)
             result["priority_question_id"] = _string(selector_output.get("priority_question_id"))
             result["resume_stage"] = _string(selector_output.get("resume_stage"))
+            result["active_task"] = _chat_gate_active_task(selector_output.get("active_task"))
             result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
             result["message_operations"] = _message_operations(selector_output.get("message_operations"))
             selected = _selected_pack(selector_output, unfinished)
@@ -2753,6 +2754,7 @@ def _chat_gate_output_violations(
     pack_id = _string(selector_output.get("sop_pack_id"))
     resume_stage = _string(selector_output.get("resume_stage"))
     priority_question_id = _string(selector_output.get("priority_question_id"))
+    active_task = _chat_gate_active_task(selector_output.get("active_task"))
     packs = {
         _string(item.get("id")): item
         for item in selector_input.get("unfinished_sops") or []
@@ -2773,6 +2775,9 @@ def _chat_gate_output_violations(
         violations.append(f"route_coverage_mismatch:{route}:{coverage}")
     if priority_question_id and priority_question_id not in question_ids:
         violations.append("unknown_priority_question_id")
+    if active_task.get("type") == "location_confirmation":
+        if active_task.get("required_tool") != "customer_store_lookup" or not active_task.get("query"):
+            violations.append("location_confirmation_requires_store_lookup_task")
     if route in {"sop_only", "ai_then_sop"}:
         if not pack_id or pack_id not in packs:
             violations.append("selected_pack_missing_or_not_unfinished")
@@ -2790,6 +2795,29 @@ def _chat_gate_output_violations(
         }:
             violations.append("unknown_resume_stage")
     return violations
+
+
+def _chat_gate_active_task(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    task_type = _string(value.get("type"))
+    if task_type not in {"location_confirmation", "store_lookup", "precision_answer", "sop_delivery", "payment", "other"}:
+        task_type = ""
+    status = _string(value.get("status"))
+    if status not in {"pending", "resolved"}:
+        status = ""
+    return {
+        key: item
+        for key, item in {
+            "type": task_type,
+            "status": status,
+            "query": _string(value.get("query"))[:240],
+            "required_tool": _string(value.get("required_tool"))[:80],
+            "customer_evidence_ref": _string(value.get("customer_evidence_ref"))[:120],
+            "assistant_evidence_ref": _string(value.get("assistant_evidence_ref"))[:120],
+        }.items()
+        if item
+    }
 
 
 def _chat_gate_party_size_violations(

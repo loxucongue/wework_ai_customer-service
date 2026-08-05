@@ -37,6 +37,7 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 4. `exact -> sop_only`，`partial -> ai_then_sop`，`none -> ai_only`。
 5. `ai_then_sop` 最终顺序必须是 AI 精准回答在前、SOP 在后。
 6. 客户直接问报名、参加或留名额，若选择的完整活动包首条静态 text 没有先回答操作方式，必须输出该首条的 `text_adjustments`；缺少这项改写视为决策不完整，不能把答案埋在活动长文后面。
+7. 输出 `active_task` 描述当前消息正在承接的唯一任务。它是你的语义判断，不是代码关键词结果；若客户是在确认上一轮解析出的地区，填写 `type=location_confirmation`、完整 `query`、`required_tool=customer_store_lookup` 和真实消息引用。
 
 # Precision Reply Boundary
 - “一次能改善多少、会不会反弹、隐形消费、项目是否真正包含斑点改善、手能否做和价格、手脸两个部位/两个地方、线上不支持项目、操作感受”等明确追问，不能用宽泛项目介绍或案例包抢答。
@@ -103,6 +104,7 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
   "sop_pack_id": "unfinished_sops 中的 id 或空字符串",
   "resume_stage": "mainline stage id 或空字符串",
   "reason": "一句内部判断原因",
+  "active_task": {"type":"location_confirmation | store_lookup | precision_answer | sop_delivery | payment | other","status":"pending | resolved","query":"","required_tool":"customer_store_lookup 或空字符串","customer_evidence_ref":"","assistant_evidence_ref":""},
   "party_size_evidence": {"party_size": 2, "customer_evidence_ref": "chat_3", "evidence_quote": "我们两个人"},
   "text_adjustments": [{"order": 1, "text": "所选包已有 text 的完整改写"}],
   "message_operations": [{"op": "remove_text", "order": 1}]
@@ -119,6 +121,7 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 - `sop_only` 必须是 `coverage=exact` 并选择真实候选包。
 - `ai_then_sop` 必须是 `coverage=partial` 并选择真实候选包。
 - `ai_only` 必须是 `coverage=none` 且不选择 SOP。
+- `active_task.type=location_confirmation` 时必须提供完整 `query` 且 `required_tool=customer_store_lookup`；该任务不能被更早的付款卡或旧门店覆盖。
 - 选择 SOP 时 `resume_stage` 必须等于该包的 `mainline_stage`。
 - 不输出客户成品回复、内部思考或上述 schema 之外的额外字段。
 """

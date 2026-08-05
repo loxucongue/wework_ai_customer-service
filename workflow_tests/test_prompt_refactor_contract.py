@@ -27,6 +27,7 @@ from app.prompts.profile_analyzer import PROFILE_ANALYZER_SYSTEM_PROMPT
 from app.prompts.reply_synthesizer import REPLY_SYSTEM_PROMPT, REPLY_TRANSACTION_PATCH_PROMPT
 from app.prompts.reply_synthesizer import build_reply_messages
 from app.prompts.sop_chat_gate import build_sop_chat_gate_messages
+from app.prompts.sop_chat_gate import SOP_CHAT_GATE_SYSTEM_PROMPT
 from app.policies.business_rules import (
     load_business_rules,
     outreach_business_facts_for_model,
@@ -78,6 +79,12 @@ def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_informat
     assert "订单和开单不是发卡前置" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不调用 available_time/create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "客户口头说“我付了/转好了”不能单独确认已到账" in PLANNER_TRANSACTION_PATCH_PROMPT
+
+
+def test_sop_gate_exposes_structured_active_task_for_planner_causality() -> None:
+    assert '"active_task"' in SOP_CHAT_GATE_SYSTEM_PROMPT
+    assert "type=location_confirmation" in SOP_CHAT_GATE_SYSTEM_PROMPT
+    assert "required_tool=customer_store_lookup" in SOP_CHAT_GATE_SYSTEM_PROMPT
 
 
 def test_store_reply_prompt_does_not_suggest_route_copy_without_route_facts() -> None:
@@ -139,6 +146,7 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "sales_progression",
         "closing_move",
         "manual_transfer",
+        "latest_exchange",
         "ask_party_size",
         "payment_decision.method",
         "mini_program",
@@ -178,7 +186,9 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "孕期可说明等生完或身体状态方便时再来咨询",
         "隐形消费或收费透明顾虑答清、活动已说明但无门店",
         "发卡前置是活动报价已完成/已铺垫",
-        "短消息须承接最近未完动作",
+        "短消息必须承接紧邻的未完动作",
+        "更早出现过活动报价或预约金卡，只能证明交易背景",
+        "广东省东莞市长安镇对吧",
         "不列选项重问意图",
         "不能答无需预约金",
         "有 case_facts 同轮发 image",

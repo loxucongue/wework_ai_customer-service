@@ -339,6 +339,7 @@ def create_background_context_layer(
                     timeout_seconds=BACKGROUND_EXTERNAL_TIMEOUT_SECONDS,
                     timeout_result={
                         "conversation_history": list(state.get("conversation_history") or []),
+                        "conversation_turns": list(state.get("conversation_turns") or []),
                         "conversation_fetch": {
                             "status": "timeout",
                             "limit": 20,
@@ -365,6 +366,9 @@ def create_background_context_layer(
             conversation_history = conversation_result.get("conversation_history")
             if not isinstance(conversation_history, list):
                 conversation_history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+            conversation_turns = conversation_result.get("conversation_turns")
+            if not isinstance(conversation_turns, list):
+                conversation_turns = state.get("conversation_turns") if isinstance(state.get("conversation_turns"), list) else []
             substeps.extend(
                 [
                     _without_result(customer_result_timed),
@@ -435,6 +439,7 @@ def create_background_context_layer(
                 **customer_result,
                 "customer_store_knowledge": customer_store_knowledge,
                 "conversation_history": conversation_history,
+                "conversation_turns": conversation_turns,
                 "conversation_fetch": conversation_result.get("conversation_fetch", {}),
                 "background_substeps": substeps,
                 "store_context_status": store_context_status,
@@ -574,6 +579,7 @@ async def _timed_conversation_fetch(
             "duration_ms": int((time.perf_counter() - started) * 1000),
             "result": {
                 "conversation_history": conversation_history,
+                "conversation_turns": list(conversation_fetch.get("recent_turns") or []),
                 "conversation_fetch": conversation_fetch,
             },
             "summary": conversation_fetch,
@@ -593,6 +599,7 @@ async def _timed_conversation_fetch(
             "duration_ms": int((time.perf_counter() - started) * 1000),
             "result": {
                 "conversation_history": fallback[-50:],
+                "conversation_turns": list(state.get("conversation_turns") or []),
                 "conversation_fetch": summary,
             },
             "summary": summary,

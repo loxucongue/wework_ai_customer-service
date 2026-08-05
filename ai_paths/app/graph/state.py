@@ -27,6 +27,7 @@ class AgentState(TypedDict, total=False):
     file_image: str | None
     image_urls: list[str]
     conversation_history: list[str]
+    conversation_turns: list[dict[str, Any]]
     user_id: int | None
     wechat: str | None
     external_userid: str | None

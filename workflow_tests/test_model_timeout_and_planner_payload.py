@@ -984,6 +984,52 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(payload["store_scope_summary"], {"source": "platform_scope", "store_count": 0})
 
+    def test_planner_payload_keeps_latest_exchange_and_gate_reason_for_short_confirmation(self) -> None:
+        payload = _planner_payload_for_model(
+            {
+                "content": "是的啊",
+                "normalized_content": "是的啊",
+                "conversation_history": [
+                    "用户: 东莞市长安镇",
+                    "小贝: 收到，您是在广东省东莞市长安镇对吧？确认后我按这个位置给您匹配门店。",
+                    "用户: 是的啊",
+                ],
+                "conversation_turns": [
+                    {
+                        "message_ref": "assistant-location-confirm",
+                        "role": "assistant",
+                        "content": "收到，您是在广东省东莞市长安镇对吧？确认后我按这个位置给您匹配门店。",
+                        "occurred_at": "2026-08-05T20:09:00+08:00",
+                    },
+                    {
+                        "message_ref": "customer-confirm",
+                        "role": "customer",
+                        "content": "是的啊",
+                        "occurred_at": "2026-08-05T20:10:00+08:00",
+                    },
+                ],
+                "sop_gate_decision": {
+                    "route": "ai_only",
+                    "reason": "客户确认东莞长安位置，需要查询真实门店",
+                    "active_task": {
+                        "type": "location_confirmation",
+                        "query": "广东省东莞市长安镇",
+                        "required_tool": "customer_store_lookup",
+                        "evidence_refs": ["assistant-location-confirm", "customer-confirm"],
+                    },
+                },
+                "customer_store_knowledge": {},
+            }
+        )
+
+        self.assertEqual(
+            payload["latest_exchange"]["previous_assistant_turn"]["message_ref"],
+            "assistant-location-confirm",
+        )
+        self.assertEqual(payload["latest_exchange"]["current_customer_turn"]["content"], "是的啊")
+        self.assertEqual(payload["sop_gate_decision"]["reason"], "客户确认东莞长安位置，需要查询真实门店")
+        self.assertEqual(payload["sop_gate_decision"]["task"]["required_tool"], "customer_store_lookup")
+
 
 if __name__ == "__main__":
     unittest.main()
