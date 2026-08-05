@@ -179,6 +179,31 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(response.reply_messages[0].content, {"text": "我在，继续帮您处理。"})
         self.assertEqual(repository.saved_states[-1]["reply_source"], "deterministic_empty_reply_fallback")
 
+    async def test_superseded_final_state_does_not_inject_empty_reply_fallback(self) -> None:
+        repository = _Repository()
+        runtime = ChatRuntime(
+            full_graph=_EmptyReplyGraph(),
+            trace_logger=_TraceLogger(),
+            repository=repository,
+        )
+        state = runtime._initial_state(_request("older message"), "request-id", {})
+        state["reply_messages"] = []
+        state["reply_control"] = {"mode": "superseded", "sync_return": {"type": "empty", "reply_messages": []}}
+        state["async_final_reply"] = {"scheduled": False, "status": "superseded"}
+
+        response = runtime._persist_and_build_response(
+            request=_request("older message"),
+            request_id="request-id",
+            conversation_id="conversation-id",
+            final_state=state,
+            allow_empty_reply=False,
+        )
+
+        self.assertEqual(response.reply_messages, [])
+        self.assertEqual(repository.saved_states[-1]["reply_messages"], [])
+        self.assertEqual(repository.saved_states[-1]["reply_source"], "platform_superseded")
+        self.assertEqual(repository.saved_states[-1]["reply_control"]["sync_return"]["type"], "empty")
+
     async def test_platform_auto_opening_returns_sop_before_planner(self) -> None:
         graph = _UnexpectedGraph()
         repository = _Repository()

@@ -943,6 +943,13 @@ class ChatRuntime:
     ) -> ChatResponse:
         route_result = planner_public_route(final_state)
         model_usage = collect_model_usage(final_state.get("trace", []))
+        if _final_state_superseded(final_state):
+            final_state["reply_messages"] = []
+            final_state["sync_reply_messages"] = []
+            final_state["reply_source"] = "platform_superseded"
+            final_state["async_final_reply"] = {"scheduled": False, "status": "superseded"}
+            _set_sync_return(final_state, "empty", [])
+            allow_empty_reply = True
         raw_reply_messages = final_state.get("reply_messages") or []
         if not raw_reply_messages and not allow_empty_reply:
             final_state.setdefault("errors", []).append(
@@ -1105,7 +1112,19 @@ def _deterministic_final_fallback_messages(state: AgentState) -> list[dict[str, 
     state["fallback_retry_count"] = len(state.get("recovery_attempts") or [])
     state["fallback_violation"] = str(state.get("recovery_reason") or "")[:500]
     state["fallback_remaining_budget"] = runtime_budget_snapshot(state, tier="reply")
-    return [{"type": "text", "order": 1, "content": {"text": "亲，刚才这条我没接完整，麻烦您再发一下。"}}]
+    return [{"type": "text", "order": 1, "content": {"text": "您稍等一下"}}]
+
+
+def _final_state_superseded(state: AgentState) -> bool:
+    control = state.get("reply_control") if isinstance(state.get("reply_control"), dict) else {}
+    if str(control.get("mode") or "") == "superseded":
+        return True
+    async_final = state.get("async_final_reply") if isinstance(state.get("async_final_reply"), dict) else {}
+    if str(async_final.get("status") or "") == "superseded":
+        return True
+    if str(state.get("reply_source") or "") == "platform_superseded":
+        return True
+    return False
 
 
 def _has_structured_professional_assist(state: AgentState) -> bool:
