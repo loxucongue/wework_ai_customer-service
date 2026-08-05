@@ -145,6 +145,9 @@ class Settings(BaseSettings):
     store_snapshot_ttl_hours: int = 24
     store_snapshot_refresh_enabled: bool = True
     store_snapshot_refresh_interval_seconds: int = 24 * 60 * 60
+    store_snapshot_refresh_user_id: int | None = None
+    store_snapshot_refresh_corp_id: str = ""
+    store_snapshot_refresh_wechat: str = ""
     platform_filter_words_path: Path = Path("config/platform_filter_words.json")
     sop_reply_packs_path: Path = Field(default=Path("config/sop_reply_packs.json"), alias="SOP_REPLY_PACKS_PATH")
     precision_qa_playbook_path: Path = Field(

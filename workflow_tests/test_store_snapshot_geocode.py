@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app.config import Settings
 from app.services.store_snapshot_service import (
@@ -18,6 +20,43 @@ def u(value: str) -> str:
 
 
 class StoreSnapshotGeocodeTests(unittest.TestCase):
+    def test_refresh_uses_dedicated_store_snapshot_identity(self) -> None:
+        class FakePlatformClient:
+            available = True
+
+            def __init__(self) -> None:
+                self.contexts: list[dict[str, object]] = []
+
+            def list_store_options(self, *, request_context=None):
+                self.contexts.append(dict(request_context or {}))
+                return [{"id": "1", "name": "Test Store", "status": 1, "shore_show": 1}]
+
+            def store_info(self, store_id, *, request_context=None):
+                self.contexts.append(dict(request_context or {}))
+                return {"tencent_address": "浙江省温州市龙湾区滨海路1号"}
+
+        with TemporaryDirectory() as tmp_dir:
+            client = FakePlatformClient()
+            settings = Settings(
+                geocode_workflow_id="",
+                store_snapshot_path=Path(tmp_dir) / "snapshot.json",
+                store_snapshot_refresh_user_id=7294,
+                store_snapshot_refresh_corp_id="ww-test",
+                store_snapshot_refresh_wechat="DY258",
+            )
+            service = StoreSnapshotService(settings, client)
+
+            snapshot = service.refresh_snapshot(allow_existing_on_error=False)
+
+        self.assertEqual(snapshot["store_count"], 1)
+        self.assertTrue(client.contexts)
+        self.assertTrue(
+            all(
+                context == {"user_id": 7294, "corp_id": "ww-test", "wechat": "DY258"}
+                for context in client.contexts
+            )
+        )
+
     def test_platform_inactive_or_hidden_store_is_not_recommendable(self) -> None:
         self.assertFalse(_store_option_is_recommendable({"status": 0, "shore_show": 1}))
         self.assertFalse(_store_option_is_recommendable({"status": 1, "shore_show": 2}))

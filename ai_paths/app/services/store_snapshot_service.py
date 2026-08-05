@@ -67,6 +67,15 @@ class StoreSnapshotService:
         self._platform_client = platform_client
         self._max_workers = max_workers
         self._settings = settings
+        self._refresh_request_context = {
+            key: value
+            for key, value in {
+                "user_id": settings.store_snapshot_refresh_user_id,
+                "corp_id": settings.store_snapshot_refresh_corp_id,
+                "wechat": settings.store_snapshot_refresh_wechat,
+            }.items()
+            if value not in (None, "")
+        }
         self._geocode_workflow_id = str(getattr(settings, "geocode_workflow_id", "") or "").strip()
         self._coze_oauth_provider = CozeOAuthTokenProvider(settings) if self._geocode_workflow_id else None
         self._refresh_lock = Lock()
@@ -86,6 +95,7 @@ class StoreSnapshotService:
     ) -> dict[str, Any]:
         with self._refresh_lock:
             existing = self._read_snapshot()
+            effective_context = dict(request_context or self._refresh_request_context)
             if not self._platform_client or not self._platform_client.available:
                 if allow_existing_on_error and existing:
                     existing["refresh_error"] = "platform_agent_unavailable"
@@ -93,10 +103,10 @@ class StoreSnapshotService:
                 return self._empty_snapshot(source="platform_agent_unavailable", refresh_error="platform_agent_unavailable")
 
             try:
-                rows = self._platform_client.list_store_options(request_context=request_context)
+                rows = self._platform_client.list_store_options(request_context=effective_context)
                 eligible_rows = [row for row in rows if _store_option_is_recommendable(row)]
                 excluded_rows = [row for row in rows if not _store_option_is_recommendable(row)]
-                stores = self._hydrate_rows(eligible_rows, request_context or {})
+                stores = self._hydrate_rows(eligible_rows, effective_context)
                 snapshot = self._build_snapshot(stores)
                 snapshot["platform_store_count"] = len(rows)
                 snapshot["platform_recommendable_count"] = len(eligible_rows)
