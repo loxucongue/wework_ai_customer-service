@@ -807,36 +807,16 @@ class SopPlatformTaskService:
             send_payload = stored_payload.get("request") if isinstance(stored_payload.get("request"), dict) else {}
             if not send_payload:
                 raise RuntimeError("uncertain send recovery is missing the original idempotent request")
-            existing_delivery = await self._existing_platform_delivery(identity=identity, send_payload=send_payload)
-            if existing_delivery.get("found"):
-                self.repository.update_sop_send_task(
-                    str(local_task.get("id") or ""),
-                    status="sent",
-                    send_payload=stored_payload,
-                    send_response={
-                        "code": 0,
-                        "msg": "existing_delivery_confirmed",
-                        "data": existing_delivery,
-                    },
-                    sent_at=utc_now_iso(),
-                )
-                self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
-                completed = await self.platform_client.consume(task_id=task_id, status=30)
-                _require_platform_status(completed, 30)
-                self.repository.update_sop_event_status(event_id, status="platform_completed")
-                return {"processed": True, "status": "sent", "task_id": task_id, "platform_response": completed}
             self.repository.update_sop_send_task(
                 str(local_task.get("id") or ""),
-                status="completed_without_send",
-                send_payload={
-                    **stored_payload,
-                    "recovery_decision": {
-                        "decision": "no_resend",
-                        "reason": "send_uncertain_without_confirmed_delivery",
-                        "existing_delivery": existing_delivery,
-                    },
+                status="sent",
+                send_payload=stored_payload,
+                send_response={
+                    "code": 0,
+                    "msg": "accepted_no_response_assumed_sent",
+                    "data": {"send_status": "accepted_no_response", "assumed_sent": True},
                 },
-                error="send_uncertain_no_resend",
+                sent_at=utc_now_iso(),
             )
             self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
             completed = await self.platform_client.consume(task_id=task_id, status=30)
@@ -844,7 +824,7 @@ class SopPlatformTaskService:
             self.repository.update_sop_event_status(event_id, status="platform_completed")
             return {
                 "processed": True,
-                "status": "completed_without_send",
+                "status": "sent",
                 "task_id": task_id,
                 "platform_response": completed,
             }
@@ -928,12 +908,14 @@ class SopPlatformTaskService:
                 self._observe("send", time.perf_counter() - started)
                 send_status = str((send_result.get("data") or {}).get("send_status") or send_result.get("msg") or "")
                 if send_status == "accepted_no_response":
-                    self.repository.update_sop_event_status(
-                        event_id,
-                        status="platform_send_uncertain",
-                        error="active_send_timeout_unknown_result",
-                    )
-                    raise RuntimeError("active_send_timeout_unknown_result")
+                    send_result = {
+                        **send_result,
+                        "msg": "accepted_no_response_assumed_sent",
+                        "data": {
+                            **(send_result.get("data") if isinstance(send_result.get("data"), dict) else {}),
+                            "assumed_sent": True,
+                        },
+                    }
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="sent",

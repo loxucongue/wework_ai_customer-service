@@ -553,46 +553,56 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
-    async def test_uncertain_send_recovery_confirms_existing_delivery_without_resend(self) -> None:
+    async def test_accepted_no_response_is_recorded_as_sent(self) -> None:
         model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
         service, repo, platform, system = _service(model=model)
         system.send_responses = [
             {"code": 0, "data": {"send_status": "accepted_no_response"}},
         ]
 
-        with self.assertRaisesRegex(RuntimeError, "unknown_result"):
-            await service.process_task(_task())
+        result = await service.process_task(_task())
 
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_send_uncertain")
-        system.conversation_payload["data"]["messages"].append(
-            {
-                "from": "staff",
-                "msgid": "ai-outreach-platform-sop-101-platform-sop-send-101-0001-text-existing",
-                "msgtype": "text",
-                "content": "只生成一次",
-            }
-        )
-        result = await service.process_task(_task(), recovery_status="platform_send_uncertain")
-
+        self.assertTrue(result["processed"])
         self.assertEqual(result["status"], "sent")
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(len(system.send_calls), 1)
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        stored = next(iter(repo.tasks.values()))
+        self.assertEqual(stored["status"], "sent")
+        self.assertEqual(stored["send_response"]["msg"], "accepted_no_response_assumed_sent")
+        self.assertTrue(stored["send_response"]["data"]["assumed_sent"])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
-    async def test_uncertain_send_recovery_does_not_resend_without_confirmed_delivery(self) -> None:
+    async def test_legacy_uncertain_recovery_marks_sent_without_resend(self) -> None:
         model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
         service, repo, platform, system = _service(model=model)
-        system.send_responses = [{"code": 0, "data": {"send_status": "accepted_no_response"}}]
-
-        with self.assertRaisesRegex(RuntimeError, "unknown_result"):
-            await service.process_task(_task())
-
+        _, local_task = service._ensure_local_task(_task(), status="sending")
+        repo.update_sop_send_task(
+            local_task["id"],
+            status="sending",
+            send_payload={
+                "decision": {"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]},
+                "request": {
+                    "corp_id": "c1",
+                    "external_userid": "u1",
+                    "wechat": "w1",
+                    "user_id": "u",
+                    "plan_id": "platform-sop-101",
+                    "task_id": "platform-sop-send-101",
+                    "reply_messages": [_text("只生成一次")],
+                },
+            },
+        )
+        repo.update_sop_event_status("platform_sop_task:101", status="platform_send_uncertain")
         result = await service.process_task(_task(), recovery_status="platform_send_uncertain")
 
-        self.assertEqual(result["status"], "completed_without_send")
-        self.assertEqual(len(model.calls), 1)
-        self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(model.calls), 0)
+        self.assertEqual(len(system.send_calls), 0)
+        self.assertEqual(platform.consume_calls, [("101", 30)])
+        stored = next(iter(repo.tasks.values()))
+        self.assertEqual(stored["status"], "sent")
+        self.assertEqual(stored["send_response"]["msg"], "accepted_no_response_assumed_sent")
 
     async def test_existing_platform_delivery_prevents_normal_resend(self) -> None:
         model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("平台原文")]}])
