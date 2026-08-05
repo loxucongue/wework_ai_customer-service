@@ -209,6 +209,8 @@ def test_store_location_prompts_do_not_expose_local_no_store_wording() -> None:
     assert "POI 推断出的上级行政区必须先确认" in planner_facts
     assert "也不要说“XX没有门店/当地暂无门店/本地没有门店”" in REPLY_SYSTEM_PROMPT
     assert "询问客户平时常去哪个城市" in REPLY_SYSTEM_PROMPT
+    assert "我不乱发、不乱指、不瞎推荐、不敢乱说" in REPLY_SYSTEM_PROMPT
+    assert "不得主动猜测或列举权威门店事实中没有出现的城市" in REPLY_SYSTEM_PROMPT
 
 
 def test_acne_marks_and_scars_are_online_bookable_scope() -> None:
