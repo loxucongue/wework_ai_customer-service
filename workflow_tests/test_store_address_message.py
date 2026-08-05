@@ -105,6 +105,46 @@ class StoreAddressMessageTests(unittest.TestCase):
             ["text", "store_address", "store_address", "store_address", "text"],
         )
 
+    def test_planner_rejects_repeating_history_store_card_for_unrelated_short_reply(self) -> None:
+        state = {
+            "normalized_content": "好的",
+            "conversation_history": [
+                "用户: 我在浙江省温州市龙湾区",
+                "小贝: 龙湾区这边我记下了。",
+            ],
+            "customer_store_knowledge": {
+                "stores": [
+                    {
+                        "store_id": "701",
+                        "store_name": "温州龙湾店",
+                        "province": "浙江省",
+                        "city": "温州市",
+                        "district": "龙湾区",
+                    }
+                ]
+            },
+        }
+        plan = build_planner_plan_v2(
+            state,
+            {
+                "decision": "direct_reply",
+                "stage": "S2",
+                "sub_rule_id": "S2_STORE_MATCH",
+                "reply_messages": [
+                    {"type": "text", "content": {"text": "温州龙湾店的位置发您。"}},
+                    {"type": "store_address", "content": {"store_id": "701"}},
+                ],
+                "tool_calls": [],
+            },
+        )
+
+        self.assertTrue(
+            any(
+                item.get("missing") == "store_card_requires_current_turn_support"
+                for item in plan["tool_policy_violations"]
+            )
+        )
+
     def test_reply_validation_allows_requested_district_cards_with_followup_text(self) -> None:
         messages = [
             {"type": "text", "order": 1, "content": "双流这边这几家门店我都发您看下。"},

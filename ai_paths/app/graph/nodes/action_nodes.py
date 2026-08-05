@@ -1367,6 +1367,14 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             candidate_geocode = result if isinstance(result, dict) else {}
             explicit_conflict = _geocode_explicit_region_conflict(candidate["query"], candidate_geocode, stores)
             consistency = _geocode_query_consistency(candidate["query"], candidate_geocode)
+            if (
+                consistency.get("status") == "conflict"
+                and _location_card_address_matches_geocode(state, candidate_geocode)
+            ):
+                consistency = {
+                    **consistency,
+                    "status": "structured_location_card_consistent",
+                }
             usable = bool(candidate_geocode.get("location")) and not explicit_conflict and consistency.get("status") != "conflict"
             geocode_attempts.append(
                 {
@@ -1475,6 +1483,14 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         }
 
     query_consistency = _geocode_query_consistency(resolved_query, geocode)
+    if (
+        query_consistency.get("status") == "conflict"
+        and _location_card_address_matches_geocode(state, geocode)
+    ):
+        query_consistency = {
+            **query_consistency,
+            "status": "structured_location_card_consistent",
+        }
     if query_consistency.get("status") == "conflict":
         return {
             "status": "geocode_query_conflict",
@@ -2067,6 +2083,27 @@ def _geocode_query_consistency(query: str, geocode: dict[str, Any]) -> dict[str,
         "fragments": fragments,
         "matched_fragments": matched,
     }
+
+
+def _location_card_address_matches_geocode(state: AgentState, geocode: dict[str, Any]) -> bool:
+    """Treat a card title as detail when its explicit address matches the geocoder region."""
+
+    context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    address = _compact_text(context.get("location_address"))
+    if not address or not isinstance(geocode, dict) or not geocode.get("location"):
+        return False
+    compared = False
+    for key in ("province", "city", "district"):
+        region = str(geocode.get(key) or "").strip()
+        if not region:
+            continue
+        compared = True
+        if not any(
+            _compact_text(token) and _compact_text(token) in address
+            for token in _region_tokens(region)
+        ):
+            return False
+    return compared
 
 
 def _location_query_fragments(query: str) -> list[str]:

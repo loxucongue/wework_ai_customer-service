@@ -26,6 +26,15 @@
           "location": "112.250000,30.320000"
         },
         {
+          "store_id": "243",
+          "store_name": "武汉光谷店",
+          "province": "湖北省",
+          "city": "武汉市",
+          "district": "洪山区",
+          "store_address": "湖北省武汉市洪山区光谷大道",
+          "location": "114.440000,30.500000"
+        },
+        {
           "store_id": "301",
           "store_name": "广州番禺店",
           "province": "广东省",
@@ -152,6 +161,30 @@
           "district": "秀洲区",
           "location": "120.690000,30.760000"
         },
+        "武汉市东湖高新区": {
+          "formatted_address": "湖北省武汉市东湖新技术开发区",
+          "province": "湖北省",
+          "city": "武汉市",
+          "district": "洪山区",
+          "location": "114.430000,30.500000",
+          "candidate_count": 1
+        },
+        "广州惠州": [
+          {
+            "formatted_address": "广东省广州市",
+            "province": "广东省",
+            "city": "广州市",
+            "district": "天河区",
+            "location": "113.330000,23.130000"
+          },
+          {
+            "formatted_address": "广东省惠州市",
+            "province": "广东省",
+            "city": "惠州市",
+            "district": "惠城区",
+            "location": "114.420000,23.090000"
+          }
+        ],
         "浙江省嘉兴市秀洲区": {
           "formatted_address": "浙江省嘉兴市秀洲区",
           "province": "浙江省",
@@ -203,6 +236,22 @@
       "semantic_goal": "明确嘉兴秀洲区且POI唯一一致时，顺带确认解析地区并同轮发送对应门店卡。",
       "timeline": [{"kind": "customer_message", "content": "嘉兴秀洲区"}],
       "expected": {"must_reply": true, "required_types": ["store_address"], "required_store_ids": ["702"]}
+    },
+    {
+      "id": "store_v2_explicit_wuhan_high_tech_send",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "武汉市东湖高新区是明确且唯一的地址，顺带确认解析结果并同轮发送武汉光谷店卡。",
+      "timeline": [{"kind": "customer_message", "content": "武汉市东湖高新区"}],
+      "expected": {"must_reply": true, "required_types": ["store_address"], "required_store_ids": ["243"]}
+    },
+    {
+      "id": "store_v2_conflicting_cities_confirm",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "广州惠州包含两个同级城市，必须确认客户指广州还是惠州，不发送门店卡。",
+      "timeline": [{"kind": "customer_message", "content": "广州惠州"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
     },
     {
       "id": "store_v2_full_district_send",
@@ -435,7 +484,7 @@
       "variants": [
         {"content": "定位卡片：萤火虫大厦", "expected": {"required_types": ["store_address"], "required_store_ids": ["601"]}},
         {"content": "定位卡片：双流人民广场", "location_title": "双流人民广场", "location_address": "四川省成都市双流区", "expected": {"required_types": ["store_address"], "required_store_ids": ["401"]}},
-        {"content": "定位卡片：洪湖市新堤街道", "location_title": "新堤街道", "location_address": "湖北省荆州市洪湖市", "expected": {"required_types": ["store_address"], "required_store_ids": ["241"]}},
+        {"content": "定位卡片：洪湖市新堤街道", "location_title": "新堤街道", "location_address": "湖北省荆州市洪湖市", "expected": {"required_types": ["store_address"], "required_store_ids": ["242"]}},
         {"content": "定位卡片：甲良镇", "location_title": "甲良镇", "location_address": "贵州省荔波县甲良镇", "expected": {"required_types": ["store_address"], "required_store_ids": ["501"]}}
       ]
     },

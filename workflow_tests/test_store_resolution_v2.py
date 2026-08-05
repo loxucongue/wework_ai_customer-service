@@ -1009,6 +1009,60 @@ def test_lookup_blocks_unconfirmed_cross_region_poi_results() -> None:
     assert len(result["geocode_candidate_regions"]) == 2
 
 
+def test_structured_location_card_title_does_not_conflict_with_matching_full_address() -> None:
+    query = "双流人民广场，四川省成都市双流区"
+    state = {
+        "normalized_content": "定位卡片：双流人民广场",
+        "request_context": {
+            "msgtype": "location",
+            "location_title": "双流人民广场",
+            "location_address": "四川省成都市双流区",
+        },
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "401",
+                    "store_name": "成都双流店",
+                    "province": "四川省",
+                    "city": "成都市",
+                    "district": "双流区",
+                    "store_address": "四川省成都市双流区蛟龙港",
+                    "location": "103.95,30.58",
+                    "store_fact_integrity": "valid",
+                }
+            ]
+        },
+    }
+    client = _GeocodeClient(
+        {
+            query: {
+                "province": "四川省",
+                "city": "成都市",
+                "district": "双流区",
+                "formatted_address": "四川省成都市双流区",
+                "location": "103.92,30.57",
+            }
+        }
+    )
+
+    result = asyncio.run(
+        _customer_store_lookup(
+            {
+                "name": "customer_store_lookup",
+                "query": query,
+                "purpose": "nearby_candidates",
+                "location_specificity": "specific_place",
+            },
+            state,
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["candidate_store_count"] == 1
+    assert result["location_evidence"]["confirmation_status"] == "confirmed"
+
+
 def test_explicit_full_region_can_use_consistent_first_poi_candidate() -> None:
     query = "广东省东莞市东坑镇"
     state = {

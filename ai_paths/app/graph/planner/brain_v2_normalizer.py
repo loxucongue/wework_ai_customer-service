@@ -2530,10 +2530,28 @@ def _store_detail_tool_violations(
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     )
     current_text = str(state.get("normalized_content") or state.get("content") or "")
-    if _has_store_address_message(messages) and _store_address_messages_are_requested_district_backed(messages, state):
+    has_store_card = _has_store_address_message(messages)
+    scope_backed_store_card = has_store_card and (
+        _store_address_messages_are_requested_district_backed(messages, state)
+        or _store_address_messages_are_scope_backed(messages, state)
+    )
+    if scope_backed_store_card and not _current_turn_supports_store_card(state, current_text):
+        return [
+            {
+                "task_type": "reply_fact_consistency",
+                "subtype": "stale_store_card",
+                "missing": "store_card_requires_current_turn_support",
+                "note": (
+                    "The proposed store card is backed only by earlier conversation or store scope facts, while the current "
+                    "customer message does not provide a location, ask for store details, or name a store. Remove the repeated "
+                    "store_address and answer the current message. Do not start a new store lookup unless the current turn needs it."
+                ),
+            }
+        ]
+    if has_store_card and _store_address_messages_are_requested_district_backed(messages, state):
         return []
     if (
-        _has_store_address_message(messages)
+        has_store_card
         and _store_address_messages_are_scope_backed(messages, state)
         and not _asserts_store_address_detail(text)
     ):
@@ -2562,6 +2580,35 @@ def _store_detail_tool_violations(
             ),
         }
     ]
+
+
+def _current_turn_supports_store_card(state: AgentState, current_text: str) -> bool:
+    if location_card_from_state(state):
+        return True
+    if _current_message_has_explicit_location_for_lookup(current_text, state):
+        return True
+    if _current_message_requests_store_detail(current_text):
+        return True
+    if _current_message_mentions_basic_location(state, current_text):
+        return True
+    current_store = _store_from_current_message(state)
+    return bool(current_store and not current_store.get("ambiguous"))
+
+
+def _current_message_mentions_basic_location(state: AgentState, current_text: str) -> bool:
+    compact = _compact_text(current_text)
+    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
+    for key in ("province", "city", "current_city", "district", "area_or_landmark", "region"):
+        value = _compact_text(basic.get(key))
+        if not value:
+            continue
+        variants = {value}
+        for suffix in ("自治区", "特别行政区", "自治州", "自治县", "新区", "省", "市", "区", "县", "镇", "乡", "村"):
+            if value.endswith(suffix) and len(value) > len(suffix):
+                variants.add(value[: -len(suffix)])
+        if any(len(item) >= 2 and item in compact for item in variants):
+            return True
+    return False
 
 
 def _enforce_declared_store_detail_lookup(
