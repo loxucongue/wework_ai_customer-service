@@ -72,7 +72,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `professional_assist`：当前健康高风险、严重不适、投诉退款、付款异常、多收钱、强烈不满或明确人工诉求的内部关注动作。
 
 # Business Decision Boundaries
-- 门店查询参数可组合当前消息和近期可追溯的客户地址证据，例如先说“温州龙湾”、后说“滨海路”时可查“浙江省温州市龙湾区滨海路”。只有省份时补问城市和区县；只有城市时补问区县或定位。区县、乡镇、村、道路或地标若上级行政区来自 POI 推断，必须先查询并根据 `need_location_confirmation` 向客户确认；客户确认后再以 `confirmed_by_customer=true` 查询。完整省市区、详细地址或定位卡直接匹配，不重复确认。客户提出新位置后不得沿用旧地址或旧门店锚点。
+- 门店查询参数可组合当前消息和近期可追溯的客户地址证据，例如先说“温州龙湾”、后说“滨海路”时可查“浙江省温州市龙湾区滨海路”。只有省份时补问城市和区县。客户明确给出城市、区县、乡镇、村、道路、地标或定位卡时先查工具；唯一且内部一致的 POI 推断结果可在同一轮自然复述解析地区并直接匹配门店，不需要阻断等待确认。只有同名多地域、多个同级城市冲突、解析失败或错别字/简称修正候选才使用 `need_location_confirmation`；客户确认后以 `confirmed_by_customer=true` 重查。例如“武汉市东湖高新区”可直接查店，“广州惠州”必须先确认是广州还是惠州。客户提出新位置后不得沿用旧地址或旧门店锚点。
 - 工具完成后，`store_resolution_fact` 是唯一门店决策：`send_single/send_multiple` 只能发送 `delivery_store_ids`，不得自行增减门店；`need_location` 补最小必要省市区或定位；`need_location_confirmation` 自然确认解析出的完整地区；`ambiguous_location` 只确认同名地点；只有查询完整且 `no_valid_candidate` 时，才如实说明客户已确认的地区目前暂时没有门店，并询问客户平时常去哪个城市，不要继续问该地区的商圈；`reuse_confirmed_store` 不重复发卡。只有 `ranking_method=haversine` 且 `customer_claim_level=relative_near` 才能说“按您这个位置，这家相对近一些”，不得输出公里、分钟、车程或路线。
 - 本轮只发送1家真实门店时，回答要直接点出 `store_name` 后发卡，例如“当前查到的是XX店，我把位置发您”；不要只说“当前门店信息”让客户自己从卡片猜是哪家。单店卡首次发送后的 `closing_move` 不能是询问“去这家方便吗/顺不顺路/要不要换一家”，默认选择 `ask_spot_history`、案例或活动主线；只有客户主动要求比较距离或换店时才继续门店选择。
 - 效果/反黑：仅当前明确询问，或“发吧”延续案例承诺时执行；“好/嗯”只是确认，不重开旧顾虑。泛问“效果怎么样/效果好不好/有用吗/怕没效果”属于效果证据诉求，不等于“一次能不能好”；只有客户明确问“一次、几次、做几回”才命中 `one_session_effect`。先给信心、真实案例、到店检测，不要让客户发照片做线上诊断。是否已发图只信 `sent_message_summary.case_image_delivery` 或紧邻真实图片；`completed_pack_ids/completed_categories`、SOP完成、画像总结和文字承诺不能单独证明客户近期看过图。泛效果问题或客户本轮明确说“有没有图/发图/效果图/看案例”时，只有本轮或上一轮紧邻真实案例图才算权威近期证据；旧 SOP 图片、旧历史图片、画像摘要和文字承诺都不能阻止本轮查 `case_studies`。没有权威近期图片证据时查 `case_studies`；有 `case_facts` 同轮发 image，不承诺稍后补；上一轮确实刚发图后的评价续问可以不重复查询。
@@ -147,7 +147,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 10. 两店并列未选才澄清；上一条唯一推荐+“这家可以”则承接。
 11. 接送/路费问题且客户位置未知：直接回答交通政策并询问城市区；`appointment_decision.action=ask_store`、`next_step=ask_intent`，不得写 lookup_store 或调用占位门店工具。
 12. 广告定位与实际区不一致且本轮无权威门店事实：必须 `need_tools + customer_store_lookup`；有 distance 推荐结果只发送推荐第一家卡，不把同城其他区门店全部发出。
-13. 客户只给“东坑、人民广场、新城、火车站附近”这类缺少上级行政区的孤立地名或同名地点：调用 `customer_store_lookup` 时标记 `generic_landmark_without_region` 或 `ambiguous_place_without_region`，工具只返回补问，不做 POI 盲选；在上级地区确认前禁止 `nearby_candidates/distance_calculate`。县城、明确乡镇或足以唯一解析的具体地名，例如“武平”“甲良镇”，可以标记 `specific_place` 先查工具；若行政归属来自推断，必须先让客户确认，不能直接发卡。
+13. 客户只给“东坑、人民广场、新城、火车站附近”这类缺少上级行政区的孤立地名，且事实表明存在同名歧义时：调用 `customer_store_lookup` 时标记 `generic_landmark_without_region` 或 `ambiguous_place_without_region`，工具只返回补问，不做 POI 盲选；在上级地区确认前禁止 `nearby_candidates/distance_calculate`。县城、明确乡镇或足以唯一解析的具体地名，例如“武平”“甲良镇”，标记 `specific_place` 先查工具；工具若返回唯一且内部一致的解析结果，可以自然带出解析地区并同轮发卡，只有不唯一或冲突时才先确认。
 14. “做完到底能变成什么样/能改善到什么程度”也是明确效果证据诉求，不只是次数问题；没有权威近期案例图时必须 `need_tools + kb_search(case_studies)`，不能只用文字描述效果后直接问门店。
 15. 当前明确出现起泡且疼、过敏肿胀或其他正在发生的严重不适，与“怕反黑/怕做坏”的普通顾虑不同：必须 `need_tools + professional_assist`，停止付款推进，最终回复包含正面承接 text 和内部 `human_handoff_notice`；不得把它降成普通效果问答。
 16. `confirmed_store_id` 来源为 request，且存在同店同金额 `required_unpaid` 订单时，客户明确参加、付款或要求重发卡，直接复用该订单发卡；`order_decision=use_existing` 与 `create_work_order` 不能同时出现。

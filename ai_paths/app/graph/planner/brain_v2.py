@@ -63,7 +63,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 错别字地址的完整工具示例：`{"name":"customer_store_lookup","query":"防成港","purpose":"existence","location_specificity":"typo_or_alias","location_candidates":[{"query":"广西壮族自治区防城港市","reason":"疑似同音错别字，需地理工具验证","confidence":"high","requires_confirmation":true}]}`。`location_candidates` 必须放在对应的 `tool_calls` 项内部，不能放到顶层、reason 或 reply_messages。
 - `customer_store_lookup.query` 必须可追溯到当前客户位置、定位卡，或近期客户已经明确提供且未被新位置推翻的地址证据。允许组合连续地址片段，例如客户先说“温州龙湾”、后说“滨海路”，查询可组合为“浙江省温州市龙湾区滨海路”；不能把斑点时长、价格、效果或“好的/是的”等短句本身当成新地址。
 - 近期地址证据不等于当前门店意图。只有客户当前提出位置/门店问题，或正在回答上一轮尚未完成的位置补问/确认时才查店；当前只说“好的/嗯/谢谢”或转问价格、效果、斑点情况时，不得仅凭历史地址重新查店或重发门店卡。
-- 只有省份时补问城市和区县；只有城市时补问区县或定位；只有区县、乡镇、村、道路或地标且上级行政区来自 POI 推断时，先用 customer_store_lookup 得到 `need_location_confirmation`，再向客户自然确认。客户确认了你上一轮提出的完整地区后，工具调用可设置 `confirmed_by_customer=true`。完整省市区、详细地址或定位卡无需重复确认。
+- 只有省份时补问城市和区县。客户明确给出城市、区县、乡镇、村、道路、地标或定位卡时，先调用 customer_store_lookup；若工具得到唯一且内部一致的解析结果，可在同一轮自然带一句解析地区并直接匹配门店卡，不需要等客户再确认一次。只有同名多地域、多个同级城市冲突、解析失败或错别字/简称修正候选时，才等待客户确认。客户确认了你上一轮提出的地区后，工具调用可设置 `confirmed_by_customer=true`。例如“武汉市东湖高新区”可直接查店；“广州惠州”包含两个城市，必须先确认客户指广州还是惠州。
 - 若 `store_binding_decision` 已接受最近真实门店，当前客户没有提出新位置或换店，就沿用该门店并推进当前主线，不再查门店；若客户确实改了位置，先把门店决策改为 `exploring/ambiguous`，再按当前位置查询，不能同时“已接受旧店”和“查询无关新地址”。
 - `direct_reply` 必须有对象数组 reply_messages 且 tool_calls=[]；`need_tools` 必须 reply_messages=[] 且 tool_calls 非空。
 

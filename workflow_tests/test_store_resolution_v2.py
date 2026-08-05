@@ -184,7 +184,7 @@ def test_parent_city_alias_does_not_create_false_district_conflict() -> None:
     )
 
 
-def test_city_and_district_without_province_requires_confirmation() -> None:
+def test_city_and_district_without_province_can_match_with_informational_echo() -> None:
     evidence = build_location_evidence(
         {"normalized_content": "嘉兴秀洲区"},
         raw_text="嘉兴秀洲区",
@@ -197,8 +197,166 @@ def test_city_and_district_without_province_requires_confirmation() -> None:
         },
     )
 
-    assert evidence["confirmation_status"] == "needs_confirmation"
-    assert resolution_status_for_location(evidence) == "need_location_confirmation"
+    assert evidence["confirmation_status"] == "confirmed"
+    assert evidence["confirmation_mode"] == "informational_echo"
+    assert evidence["confirmation_required_before_match"] is False
+    assert resolution_status_for_location(evidence) == ""
+
+
+def test_explicit_city_with_unique_geocode_can_match_without_blocking_confirmation() -> None:
+    evidence = build_location_evidence(
+        {"normalized_content": "武汉市"},
+        raw_text="武汉市",
+        query="武汉市",
+        geocode={
+            "province": "湖北省",
+            "city": "武汉市",
+            "district": "武昌区",
+            "location": "114.30,30.59",
+            "candidate_count": 1,
+        },
+    )
+
+    assert evidence["confirmation_status"] == "confirmed"
+    assert evidence["confirmation_mode"] == "informational_echo"
+    assert resolution_status_for_location(evidence) == ""
+
+
+def test_explicit_wuhan_high_tech_district_can_match_same_turn() -> None:
+    evidence = build_location_evidence(
+        {"normalized_content": "武汉市东湖高新区"},
+        raw_text="武汉市东湖高新区",
+        query="武汉市东湖高新区",
+        geocode={
+            "province": "湖北省",
+            "city": "武汉市",
+            "district": "洪山区",
+            "formatted_address": "湖北省武汉市东湖新技术开发区",
+            "location": "114.43,30.50",
+            "candidate_count": 1,
+        },
+    )
+
+    assert evidence["confirmation_status"] == "confirmed"
+    assert evidence["confirmation_mode"] == "informational_echo"
+    assert resolution_status_for_location(evidence) == ""
+
+
+def test_lookup_explicit_wuhan_high_tech_district_returns_store_same_turn() -> None:
+    query = "武汉市东湖高新区"
+    state = {
+        "normalized_content": query,
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "wh-1",
+                    "store_name": "武汉光谷店",
+                    "province": "湖北省",
+                    "city": "武汉市",
+                    "district": "洪山区",
+                    "store_address": "湖北省武汉市洪山区光谷大道1号",
+                    "location": "114.44,30.50",
+                    "store_fact_integrity": "valid",
+                }
+            ]
+        },
+    }
+    client = _GeocodeClient(
+        {
+            query: {
+                "province": "湖北省",
+                "city": "武汉市",
+                "district": "洪山区",
+                "formatted_address": "湖北省武汉市东湖新技术开发区",
+                "location": "114.43,30.50",
+                "candidate_count": 1,
+            }
+        }
+    )
+
+    result = asyncio.run(
+        _customer_store_lookup(
+            {
+                "name": "customer_store_lookup",
+                "query": query,
+                "purpose": "nearby_candidates",
+                "location_specificity": "confirmed_region",
+            },
+            state,
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["candidate_store_count"] == 1
+    assert result["candidate_stores"][0]["store_id"] == "wh-1"
+    assert result["location_evidence"]["confirmation_mode"] == "informational_echo"
+
+
+def test_conflicting_guangzhou_huizhou_cities_require_confirmation() -> None:
+    query = "广州惠州"
+    state = {
+        "normalized_content": query,
+        "customer_store_knowledge": {
+            "stores": [
+                {
+                    "store_id": "gz-1",
+                    "store_name": "广州店",
+                    "province": "广东省",
+                    "city": "广州市",
+                    "district": "天河区",
+                    "store_address": "广东省广州市天河区测试路1号",
+                    "location": "113.33,23.13",
+                    "store_fact_integrity": "valid",
+                },
+                {
+                    "store_id": "hz-1",
+                    "store_name": "惠州店",
+                    "province": "广东省",
+                    "city": "惠州市",
+                    "district": "惠城区",
+                    "store_address": "广东省惠州市惠城区测试路1号",
+                    "location": "114.42,23.09",
+                    "store_fact_integrity": "valid",
+                },
+            ]
+        },
+    }
+    client = _GeocodeClient(
+        {
+            query: [
+                {
+                    "province": "广东省",
+                    "city": "广州市",
+                    "district": "天河区",
+                    "location": "113.33,23.13",
+                },
+                {
+                    "province": "广东省",
+                    "city": "惠州市",
+                    "district": "惠城区",
+                    "location": "114.42,23.09",
+                },
+            ]
+        }
+    )
+
+    result = asyncio.run(
+        _customer_store_lookup(
+            {
+                "name": "customer_store_lookup",
+                "query": query,
+                "purpose": "nearby_candidates",
+                "location_specificity": "specific_place",
+            },
+            state,
+            client,  # type: ignore[arg-type]
+        )
+    )
+
+    assert result["status"] == "need_location_confirmation"
+    assert result["candidate_stores"] == []
+    assert result["location_evidence"]["confirmation_required_before_match"] is True
 
 
 def test_store_tool_normalization_keeps_customer_confirmation_fact() -> None:

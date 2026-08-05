@@ -356,10 +356,11 @@ def test_store_lookup_city_query_augments_customer_scope_with_snapshot_city_stor
         )
     )
 
-    assert output["status"] == "need_location"
-    assert output["source"] == "location_evidence_v2"
-    assert output["stores"] == []
+    assert output["status"] == "ok"
+    assert output["source"] == "customer_scope_geocode"
+    assert [item["store_id"] for item in output["stores"]] == ["589"]
     assert output["location_evidence"]["city"] == "荆州市"
+    assert output["location_evidence"]["confirmation_mode"] == "informational_echo"
 
 
 def test_store_lookup_town_without_local_store_uses_customer_scope_province_candidates(monkeypatch) -> None:
@@ -421,13 +422,14 @@ def test_store_lookup_town_without_local_store_uses_customer_scope_province_cand
         )
     )
 
-    assert output["status"] == "need_location_confirmation"
-    assert output["source"] == "location_evidence_v2"
-    assert output["candidate_stores"] == []
+    assert output["status"] == "ok"
+    assert output["source"] == "customer_scope_geocode"
+    assert [item["store_id"] for item in output["candidate_stores"]] == ["581"]
     assert output["location_evidence"]["district"] == "荔波县"
+    assert output["location_evidence"]["confirmation_mode"] == "informational_echo"
 
 
-def test_store_lookup_requires_confirmation_before_using_poi_completed_district(monkeypatch) -> None:
+def test_store_lookup_explicit_city_district_uses_unique_poi_same_turn(monkeypatch) -> None:
     monkeypatch.setattr(
         action_nodes,
         "_STORE_SNAPSHOT_CACHE",
@@ -494,10 +496,11 @@ def test_store_lookup_requires_confirmation_before_using_poi_completed_district(
         )
     )
 
-    assert output["status"] == "need_location_confirmation"
-    assert output["source"] == "location_evidence_v2"
-    assert output["candidate_stores"] == []
-    assert output["location_evidence"]["confirmation_status"] == "needs_confirmation"
+    assert output["status"] == "ok"
+    assert output["source"] == "customer_scope_geocode"
+    assert {item["store_id"] for item in output["candidate_stores"]} == {"350", "216"}
+    assert output["location_evidence"]["confirmation_status"] == "confirmed"
+    assert output["location_evidence"]["confirmation_mode"] == "informational_echo"
 
 
 def test_planner_fact_output_filters_store_facts_to_customer_scope() -> None:
@@ -795,13 +798,13 @@ def test_store_lookup_geocodes_structured_poi_message_before_matching_scope() ->
     assert xiamen["query"] == "五缘湾湿地公园-花溪"
     assert xiamen["geocode"]["city"] == "厦门市"
     assert xiamen["geocode"]["district"] == "湖里区"
-    assert xiamen["status"] == "need_location_confirmation"
-    assert xiamen["stores"] == []
+    assert xiamen["status"] == "ok"
+    assert [item["store_id"] for item in xiamen["stores"]] == ["201"]
     assert libo["query"] == "甲良镇新市场(黄江路)"
     assert libo["geocode"]["city"] == "黔南布依族苗族自治州"
     assert libo["geocode"]["district"] == "荔波县"
-    assert libo["status"] == "need_location_confirmation"
-    assert libo["stores"] == []
+    assert libo["status"] == "ok"
+    assert [item["store_id"] for item in libo["stores"]] == ["301"]
 
 
 def test_store_lookup_uses_first_geocode_candidate_for_plain_landmark() -> None:

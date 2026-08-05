@@ -54,10 +54,30 @@ def build_location_evidence(
         "detail": _value_mentioned(detail, evidence_rows),
     }
 
+    unique_geocode = _geocode_has_unique_point(geocode)
+    explicit_resolved_area = bool(
+        unique_geocode
+        and (
+            mentioned["city"]
+            or mentioned["district"]
+            or (
+                mentioned["detail"]
+                and _detail_is_specific_place(detail, geocode)
+            )
+        )
+    )
+
     if card_point:
         confirmation_status = "confirmed"
         confidence = "high"
+        confirmation_mode = "authoritative_location_card"
         source_refs = ["location_card", *[ref for ref in source_refs if ref != "location_card"]]
+    elif mentioned["province"] and not (
+        mentioned["city"] or mentioned["district"] or mentioned["detail"]
+    ):
+        confirmation_status = "incomplete"
+        confidence = "medium"
+        confirmation_mode = "blocking_more_location"
     elif (
         mentioned["province"]
         and mentioned["city"]
@@ -71,28 +91,28 @@ def build_location_evidence(
         mentioned["district"]
         and mentioned["detail"]
         and len(_compact(detail)) >= 2
-        and _geocode_has_unique_point(geocode)
-    ):
+        and unique_geocode
+    ) or explicit_resolved_area:
+        # A unique, internally consistent geocode can be used immediately. Reply may
+        # echo the parsed area naturally, but matching does not wait for another turn.
         confirmation_status = "confirmed"
         confidence = "high"
+        confirmation_mode = "informational_echo"
     elif confirmed_by_customer and _assistant_proposed_location(query, assistant_messages):
         confirmation_status = "confirmed"
         confidence = "high"
+        confirmation_mode = "customer_confirmed"
         source_refs.extend(ref for ref, _ in assistant_messages[-3:] if ref not in source_refs)
         if "current_message" not in source_refs:
             source_refs.insert(0, "current_message")
     elif not (province or city or district or card_point):
         confirmation_status = "incomplete"
         confidence = "low"
-    elif mentioned["province"] and not mentioned["city"]:
-        confirmation_status = "incomplete"
-        confidence = "medium"
-    elif mentioned["city"] and not (mentioned["district"] or mentioned["detail"]):
-        confirmation_status = "incomplete"
-        confidence = "medium"
+        confirmation_mode = "blocking_more_location"
     else:
         confirmation_status = "needs_confirmation"
         confidence = "medium" if geocode else "low"
+        confirmation_mode = "blocking_confirmation"
 
     longitude, latitude = card_point or _parse_lng_lat(str(geocode.get("location") or "")) or (None, None)
     return {
@@ -106,6 +126,8 @@ def build_location_evidence(
         "longitude": longitude,
         "latitude": latitude,
         "confirmation_status": confirmation_status,
+        "confirmation_mode": confirmation_mode,
+        "confirmation_required_before_match": confirmation_status != "confirmed",
         "confidence": confidence,
         "geocode_candidate_count": int(geocode.get("candidate_count") or 0),
         "geocode_candidate_regions": list(geocode.get("candidate_regions") or [])[:6],
@@ -216,6 +238,36 @@ def _location_detail(query: str, *, province: str, city: str, district: str) -> 
             detail = detail.replace(value, "")
             detail = detail.replace(_region_alias(value), "")
     return re.sub(r"[\s,，。]+", "", detail).strip()
+
+
+def _detail_is_specific_place(detail: str, geocode: dict[str, Any]) -> bool:
+    """Distinguish a concrete place from an isolated short name such as '东坑'."""
+
+    compact = _compact(detail)
+    if len(compact) >= 4:
+        return True
+    township = str(geocode.get("township") or "").strip()
+    if township and _region_or_text_mentioned(township, detail):
+        return True
+    return any(
+        compact.endswith(suffix)
+        for suffix in (
+            "区",
+            "县",
+            "市",
+            "镇",
+            "乡",
+            "村",
+            "街道",
+            "路",
+            "街",
+            "大道",
+            "广场",
+            "公园",
+            "车站",
+            "机场",
+        )
+    )
 
 
 def _matching_source_refs(rows: list[tuple[str, str]], *, values: tuple[str, ...]) -> list[str]:
