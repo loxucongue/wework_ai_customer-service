@@ -405,6 +405,52 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
 
+    async def test_first_add_invalid_no_send_reason_repairs_then_defaults_to_send(self) -> None:
+        model = _Model(
+            [
+                {"decision": "no_send", "reason_code": "no_expressed_demand", "reason": "silent", "reply_messages": []},
+                {"decision": "no_send", "reason_code": "similar_content", "reason": "similar", "reply_messages": []},
+            ]
+        )
+        service, repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=False, message_content=[{"type": "text", "content": "平台原文"}])
+        task["triggerEvent"] = "add_wecom"
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        stored = next(iter(repo.tasks.values()))
+        self.assertEqual(stored["send_payload"]["decision"]["reason"], "first_add_default_send_after_invalid_no_send_reason")
+
+    async def test_first_add_allowed_no_send_reason_still_completes_without_send(self) -> None:
+        model = _Model(
+            [
+                {
+                    "decision": "no_send",
+                    "reason_code": "unresolved_customer_question",
+                    "reason": "latest customer asks for store lookup and no assistant has answered",
+                    "reply_messages": [],
+                }
+            ]
+        )
+        service, repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=True)
+        task["triggerEvent"] = "add_wecom"
+        system.conversation_payload["data"]["messages"] = [
+            {"direction": "customer", "content": "你们店在哪里", "msgtime": _beijing_epoch("2026-08-05 10:00:00") * 1000}
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        stored = next(iter(repo.tasks.values()))
+        self.assertEqual(stored["send_payload"]["decision"]["reason_code"], "unresolved_customer_question")
+
     async def test_ai_copy_can_only_rewrite_text_and_preserves_media(self) -> None:
         original_image = {"type": "image", "order": 2, "content": {"url": "https://cdn.example/a.jpg"}}
         model = _Model(

@@ -110,7 +110,60 @@ SOP_PLATFORM_TASK_SYSTEM_PROMPT = """
 }
 `send` 时 `reply_messages` 必须非空；`no_send` 时必须是空数组。
 文字消息示例：{"type":"text","order":1,"content":{"text":"客户可见内容"}}
+""".strip() + """
+
+# AICS platform SOP decision guard
+This section is authoritative when it conflicts with vague wording above.
+
+You are not the scheduler. The third-party SOP platform owns task timing,
+frequency, strategy and message candidates. AICS only performs a final
+send/no_send check against the latest customer state.
+
+Decision hierarchy:
+1. Hard no_send: deleted customer, explicit stop contact, complaint/refund,
+   health risk, paid/appointment conflict, active human takeover, invalid task.
+2. Unresolved latest customer request: no_send only when the latest customer
+   message asks for a concrete action or fact that still needs the normal AI
+   chain or a human/tool answer, such as store lookup, order/payment check, or
+   appointment lookup.
+3. Exact duplicate: no_send only when the full candidate batch has the same
+   message types, order, text and media/link URLs as a recently sent full batch.
+   Similar topic, similar intent, or non-identical wording is not duplicate.
+4. First-add tasks (`add_wecom`) default to send. Silence, no expressed demand,
+   old resolved store context, ordinary hesitation, or `use_ai_copy=false` are
+   never valid no_send reasons for first-add tasks.
+5. If `use_ai_copy=false`, still judge send/no_send. If send, AICS will send
+   the original platform messages exactly and ignore rewritten text.
+
+When decision is no_send, include:
+{
+  "decision": "no_send",
+  "reason_code": "one allowed code",
+  "reason": "short evidence-based reason",
+  "reply_messages": []
+}
+
+Allowed first-add no_send reason_code values:
+customer_deleted, explicit_stop_contact, complaint_or_refund, health_risk,
+paid_or_appointment_conflict, human_takeover, unresolved_customer_question,
+exact_duplicate, invalid_task.
+
+When decision is send, `reason_code` may be omitted or set to `send`.
+Return lowercase valid json only.
 """.strip()
+
+
+FIRST_ADD_NO_SEND_REASON_CODES = {
+    "customer_deleted",
+    "explicit_stop_contact",
+    "complaint_or_refund",
+    "health_risk",
+    "paid_or_appointment_conflict",
+    "human_takeover",
+    "unresolved_customer_question",
+    "exact_duplicate",
+    "invalid_task",
+}
 
 
 class SopPlatformTaskService:
@@ -1108,8 +1161,10 @@ class SopPlatformTaskService:
             "authoritative_business_facts": sop_platform_business_facts_for_model(),
             "output_contract": {
                 "decision": "send | no_send",
+                "reason_code": "required for no_send; optional for send",
                 "reason": "string",
                 "reply_messages": "send must be non-empty; no_send must be []",
+                "first_add_no_send_allowed_reason_codes": sorted(FIRST_ADD_NO_SEND_REASON_CODES),
             },
         }
         messages = [
@@ -1125,6 +1180,7 @@ class SopPlatformTaskService:
             max_parallel_candidates=1,
         )
         error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
+        policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if error:
             repair_messages = [
                 *messages,
@@ -1144,17 +1200,56 @@ class SopPlatformTaskService:
                 max_parallel_candidates=1,
             )
             error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
+            policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
+        if not error and policy_error:
+            repair_messages = [
+                *messages,
+                {"role": "assistant", "content": json.dumps(raw, ensure_ascii=False)},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Decision violates first-add policy: {policy_error}. "
+                        "Return valid json only. If this is a first-add no_send, use one allowed reason_code "
+                        "with concrete evidence. Similar wording, normal silence, no demand, old resolved context, "
+                        "or use_ai_copy=false are not allowed no_send reasons."
+                    ),
+                },
+            ]
+            raw = await self.model_client.chat_json(
+                repair_messages,
+                tier="balanced",
+                temperature=0.0,
+                deadline_monotonic=deadline,
+                max_parallel_candidates=1,
+            )
+            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
+            policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if error:
             raise RuntimeError(f"invalid_sop_platform_model_output: {error}")
+        if policy_error:
+            if _task_type(platform_task) == "add_wecom" and original_messages:
+                return {
+                    "decision": "send",
+                    "reason": "first_add_default_send_after_invalid_no_send_reason",
+                    "reason_code": "send",
+                    "reply_messages": original_messages,
+                }
+            raise RuntimeError(f"invalid_sop_platform_model_output: {policy_error}")
         decision = str(raw.get("decision") or "")
         if decision == "no_send":
-            return {"decision": decision, "reason": str(raw.get("reason") or ""), "reply_messages": []}
+            return {
+                "decision": decision,
+                "reason": str(raw.get("reason") or ""),
+                "reason_code": str(raw.get("reason_code") or ""),
+                "reply_messages": [],
+            }
         output_messages = raw.get("reply_messages") if isinstance(raw.get("reply_messages"), list) else []
         if not model_input["task"]["use_ai_copy"]:
             output_messages = original_messages
         return {
             "decision": decision,
             "reason": str(raw.get("reason") or ""),
+            "reason_code": str(raw.get("reason_code") or ""),
             "reply_messages": output_messages,
         }
 
@@ -1162,7 +1257,7 @@ class SopPlatformTaskService:
 def _decision_error(raw: Any, *, original_messages: list[dict[str, Any]], use_ai_copy: bool) -> str:
     if not isinstance(raw, dict):
         return "output must be an object"
-    unexpected = set(raw).difference({"decision", "reason", "reply_messages"})
+    unexpected = set(raw).difference({"decision", "reason", "reason_code", "reply_messages"})
     if unexpected:
         return f"unexpected output fields: {','.join(sorted(unexpected))}"
     decision = str(raw.get("decision") or "").strip()
@@ -1204,6 +1299,20 @@ def _decision_error(raw: Any, *, original_messages: list[dict[str, Any]], use_ai
         elif candidate != original:
             return f"reply message {index} media/link content must remain unchanged"
     return ""
+
+
+def _decision_policy_error(raw: dict[str, Any], *, platform_task: dict[str, Any]) -> str:
+    if str(raw.get("decision") or "").strip() != "no_send":
+        return ""
+    if _task_type(platform_task) != "add_wecom":
+        return ""
+    code = str(raw.get("reason_code") or "").strip()
+    if code in FIRST_ADD_NO_SEND_REASON_CODES:
+        return ""
+    return (
+        "first-add no_send requires reason_code in "
+        + ",".join(sorted(FIRST_ADD_NO_SEND_REASON_CODES))
+    )
 
 
 def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
