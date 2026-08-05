@@ -200,9 +200,9 @@
       "id": "store_v2_inferred_district_confirm",
       "category": "门店V2",
       "critical": true,
-      "semantic_goal": "区县上级行政区由POI补全时先确认浙江嘉兴秀洲，不直接发卡。",
+      "semantic_goal": "明确嘉兴秀洲区且POI唯一一致时，顺带确认解析地区并同轮发送对应门店卡。",
       "timeline": [{"kind": "customer_message", "content": "嘉兴秀洲区"}],
-      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+      "expected": {"must_reply": true, "required_types": ["store_address"], "required_store_ids": ["702"]}
     },
     {
       "id": "store_v2_full_district_send",
@@ -216,25 +216,25 @@
       "id": "store_v2_county_confirm",
       "category": "门店V2",
       "critical": true,
-      "semantic_goal": "武平县归属由POI解析后先确认福建龙岩武平，不直接发卡。",
+      "semantic_goal": "武平唯一解析为福建龙岩武平县时，同轮发送省内相对合适的合法门店卡。",
       "timeline": [{"kind": "customer_message", "content": "武平"}],
-      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+      "expected": {"must_reply": true, "required_types": ["store_address"], "required_store_ids": ["601"]}
     },
     {
       "id": "store_v2_town_confirm",
       "category": "门店V2",
       "critical": true,
-      "semantic_goal": "甲良镇归属由POI解析后先确认贵州荔波，不直接发卡。",
+      "semantic_goal": "甲良镇唯一解析为贵州荔波时，同轮发送省内相对合适的合法门店卡。",
       "timeline": [{"kind": "customer_message", "content": "甲良镇"}],
-      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+      "expected": {"must_reply": true, "required_types": ["store_address"], "required_store_ids": ["501"]}
     },
     {
       "id": "store_v2_village_confirm",
       "category": "门店V2",
       "critical": true,
-      "semantic_goal": "乌林村归属由POI解析后先确认湖北荆州洪湖，不直接发卡。",
+      "semantic_goal": "乌林镇乌林村唯一解析为湖北荆州洪湖时，同轮发送相对合适的合法门店卡。",
       "timeline": [{"kind": "customer_message", "content": "乌林镇乌林村"}],
-      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+      "expected": {"must_reply": true, "required_types": ["store_address"], "required_store_ids": ["242"]}
     },
     {
       "id": "store_v2_ambiguous_place",
