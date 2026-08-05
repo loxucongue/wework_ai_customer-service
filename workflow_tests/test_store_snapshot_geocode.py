@@ -101,7 +101,7 @@ class StoreSnapshotGeocodeTests(unittest.TestCase):
         self.assertEqual(city, u(r"\u4e2d\u5c71\u5e02"))
         self.assertEqual(district, u(r"\u4e1c\u533a"))
 
-    def test_incomplete_address_uses_parking_region_before_raw_poi(self) -> None:
+    def test_incomplete_address_does_not_use_parking_region_for_store_membership(self) -> None:
         service = StoreSnapshotService(Settings(geocode_workflow_id=""), platform_client=None)
         calls: list[str] = []
 
@@ -140,11 +140,10 @@ class StoreSnapshotGeocodeTests(unittest.TestCase):
             detail_source="test",
         )
 
-        self.assertTrue(calls[0].startswith(u(r"\u5e7f\u4e1c\u7701\u5e7f\u5dde\u5e02")))
-        self.assertEqual(store["province"], u(r"\u5e7f\u4e1c\u7701"))
-        self.assertEqual(store["city"], u(r"\u5e7f\u5dde\u5e02"))
-        self.assertEqual(store["district"], u(r"\u756a\u79ba\u533a"))
-        self.assertEqual(store["location"], "113.350056,23.006945")
+        self.assertFalse(any(u(r"\u5174\u5357\u5927\u9053") in call for call in calls))
+        self.assertEqual(store["province"], u(r"\u56db\u5ddd\u7701"))
+        self.assertEqual(store["city"], u(r"\u5357\u5145\u5e02"))
+        self.assertEqual(store["parking_address"], u(r"\u5e7f\u4e1c\u7701\u5e7f\u5dde\u5e02\u756a\u79ba\u533a\u5174\u5357\u5927\u9053368\u53f7"))
 
     def test_store_name_disambiguates_address_without_region(self) -> None:
         candidates = geocode_query_candidates(

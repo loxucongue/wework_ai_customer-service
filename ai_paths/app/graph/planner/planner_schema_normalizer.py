@@ -66,6 +66,7 @@ def normalize_tools(raw_tools: Any) -> list[dict[str, Any]]:
             "teacher_id",
             "seat_check",
             "store_confirmation_source",
+            "confirmed_by_customer",
             "availability_source",
         ):
             if key in item:

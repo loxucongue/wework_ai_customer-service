@@ -87,6 +87,24 @@
           "district": "湖里区",
           "store_address": "福建省厦门市湖里区岐山北二路1000号萤火虫大厦",
           "location": "118.152077,24.535414"
+        },
+        {
+          "store_id": "701",
+          "store_name": "温州龙湾店",
+          "province": "浙江省",
+          "city": "温州市",
+          "district": "龙湾区",
+          "store_address": "浙江省温州市龙湾区滨海大道",
+          "location": "120.830000,27.900000"
+        },
+        {
+          "store_id": "702",
+          "store_name": "嘉兴秀洲店",
+          "province": "浙江省",
+          "city": "嘉兴市",
+          "district": "秀洲区",
+          "store_address": "浙江省嘉兴市秀洲区中山西路",
+          "location": "120.690000,30.760000"
         }
       ],
       "case_facts": [
@@ -126,6 +144,34 @@
           "city": "成都市",
           "district": "双流区",
           "location": "103.920000,30.570000"
+        },
+        "嘉兴秀洲区": {
+          "formatted_address": "浙江省嘉兴市秀洲区",
+          "province": "浙江省",
+          "city": "嘉兴市",
+          "district": "秀洲区",
+          "location": "120.690000,30.760000"
+        },
+        "浙江省嘉兴市秀洲区": {
+          "formatted_address": "浙江省嘉兴市秀洲区",
+          "province": "浙江省",
+          "city": "嘉兴市",
+          "district": "秀洲区",
+          "location": "120.690000,30.760000"
+        },
+        "武平": {
+          "formatted_address": "福建省龙岩市武平县",
+          "province": "福建省",
+          "city": "龙岩市",
+          "district": "武平县",
+          "location": "116.100000,25.100000"
+        },
+        "浙江省温州市龙湾区滨海路": {
+          "formatted_address": "浙江省温州市龙湾区滨海路",
+          "province": "浙江省",
+          "city": "温州市",
+          "district": "龙湾区",
+          "location": "120.830000,27.900000"
         }
       }
     },
@@ -133,6 +179,90 @@
       "must_reply": true
     }
   },
+  "scenarios": [
+    {
+      "id": "store_v2_province_need_location",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "只有省份时只补城市和区县或定位，不发送门店卡。",
+      "timeline": [{"kind": "customer_message", "content": "湖北省"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+    },
+    {
+      "id": "store_v2_city_need_district",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "只有城市时补区县或定位，不发送全城门店卡。",
+      "timeline": [{"kind": "customer_message", "content": "我在广州"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+    },
+    {
+      "id": "store_v2_inferred_district_confirm",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "区县上级行政区由POI补全时先确认浙江嘉兴秀洲，不直接发卡。",
+      "timeline": [{"kind": "customer_message", "content": "嘉兴秀洲区"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+    },
+    {
+      "id": "store_v2_full_district_send",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "完整省市区直接匹配并只发送对应合法门店卡。",
+      "timeline": [{"kind": "customer_message", "content": "我在浙江省嘉兴市秀洲区"}],
+      "expected": {"must_reply": true, "required_types": ["store_address"], "required_store_ids": ["702"]}
+    },
+    {
+      "id": "store_v2_county_confirm",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "武平县归属由POI解析后先确认福建龙岩武平，不直接发卡。",
+      "timeline": [{"kind": "customer_message", "content": "武平"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+    },
+    {
+      "id": "store_v2_town_confirm",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "甲良镇归属由POI解析后先确认贵州荔波，不直接发卡。",
+      "timeline": [{"kind": "customer_message", "content": "甲良镇"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+    },
+    {
+      "id": "store_v2_village_confirm",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "乌林村归属由POI解析后先确认湖北荆州洪湖，不直接发卡。",
+      "timeline": [{"kind": "customer_message", "content": "乌林镇乌林村"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+    },
+    {
+      "id": "store_v2_ambiguous_place",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "东坑无法唯一解析时只补上级城市或定位，不猜店。",
+      "timeline": [{"kind": "customer_message", "content": "东坑"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+    },
+    {
+      "id": "store_v2_composed_location",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "当前滨海路与近期确认的温州龙湾组合后直接匹配温州龙湾店。",
+      "initial": {"conversation": ["用户: 我在浙江省温州市龙湾区"]},
+      "timeline": [{"kind": "customer_message", "content": "滨海路"}],
+      "expected": {"must_reply": true, "required_types": ["store_address"], "required_store_ids": ["701"]}
+    },
+    {
+      "id": "store_v2_non_location_short_message",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "客户在旧地址对话后只说好的，不得启动新门店查询或重复发卡。",
+      "initial": {"conversation": ["用户: 我在浙江省温州市龙湾区", "小贝: 龙湾区这边我记下了。"]},
+      "timeline": [{"kind": "customer_message", "content": "好的"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"]}
+    }
+  ],
   "templates": [
     {
       "id": "opening_to_need",
@@ -219,7 +349,7 @@
         "forbidden_types": ["store_address"]
       },
       "timeline": [{"kind": "customer_message", "content": "湖北省"}],
-      "followup": "我先了解一下效果",
+      "followup": "荆州市荆州区",
       "variants": ["湖北省", "我在广东", "四川这边有吗", "贵州有店不"]
     },
     {
@@ -232,50 +362,47 @@
         "forbidden_types": ["store_address"]
       },
       "timeline": [{"kind": "customer_message", "content": "广州有吗"}],
-      "followup": "我先看看效果怎么样",
+      "followup": "番禺区",
       "variants": ["广州有吗", "我在广州市", "广州哪里有店", "广州这边最近是哪家"]
     },
     {
       "id": "city_few_stores",
       "category": "门店匹配",
       "critical": true,
-      "semantic_goal": "市内只有1到3家真实门店时直接发送全部真实门店卡供选择。",
+      "semantic_goal": "只有城市时先补区县或定位，客户补充完整区县后再匹配门店。",
       "expected": {
         "must_reply": true,
-        "required_types": ["store_address"],
-        "required_store_ids": ["241", "242"]
+        "forbidden_types": ["store_address"]
       },
       "timeline": [{"kind": "customer_message", "content": "荆州市有门店吗"}],
-      "followup": "我看荆州区这家",
+      "followup": "荆州区",
       "variants": ["荆州市有门店吗", "荆州的店发我", "我在荆州市区", "荆州哪里能做"]
     },
     {
       "id": "county_parent_city",
       "category": "门店匹配",
       "critical": true,
-      "semantic_goal": "县级市无本级门店时推荐客户可见范围内最近的父级城市真实门店，不让客户重复报地名。",
+      "semantic_goal": "只有县级市时先解析并确认上级省市，客户确认后才匹配合法候选。",
       "expected": {
         "must_reply": true,
-        "required_types": ["store_address"],
-        "required_any_store_ids": ["241", "242"],
+        "forbidden_types": ["store_address"],
         "forbidden_phrases": ["重新发一下城市", "再说一下城市"]
       },
       "timeline": [{"kind": "customer_message", "content": "洪湖市"}],
-      "followup": "那活动现在多少钱",
+      "followup": "对的，就是湖北荆州洪湖市",
       "variants": ["洪湖市", "我人在洪湖城区", "洪湖这边最近哪家", "湖北荆州洪湖市"]
     },
     {
       "id": "town_parent_province",
       "category": "门店匹配",
       "critical": true,
-      "semantic_goal": "识别乡镇所属县市后，在客户可见范围中推荐真实候选。",
+      "semantic_goal": "乡镇所属省市区由POI推断时先确认，客户确认后才匹配真实候选。",
       "expected": {
         "must_reply": true,
-        "required_types": ["store_address"],
-        "required_store_ids": ["501"]
+        "forbidden_types": ["store_address"]
       },
       "timeline": [{"kind": "customer_message", "content": "甲良镇"}],
-      "followup": "这家活动也一样吧",
+      "followup": "对的，就是贵州荔波县甲良镇",
       "variants": ["甲良镇", "贵州甲良镇", "荔波县甲良", "我住甲良这边"]
     },
     {

@@ -924,6 +924,8 @@ def _store_lookup_query_has_explicit_scope(query: str, state: AgentState) -> boo
         return False
     if _store_lookup_query_comes_from_current_message(query, state):
         return True
+    if _store_lookup_query_comes_from_recent_customer_location(query, state):
+        return True
     if _query_matches_current_message_store_name(query, state):
         return True
     if _query_is_unique_real_store_name(query, state):
@@ -1193,6 +1195,19 @@ def _tool_policy_violations(required_tools: list[dict[str, Any]], state: AgentSt
                         "subtype": "customer_store_lookup",
                         "missing": "store_lookup_missing_query",
                         "note": "customer_store_lookup requires the customer's non-empty location or store query.",
+                    }
+                )
+            elif _store_lookup_reopens_stale_location_context(query, state):
+                violations.append(
+                    {
+                        "task_type": "tool_argument",
+                        "subtype": "customer_store_lookup",
+                        "missing": "store_lookup_not_relevant_to_current_turn",
+                        "note": (
+                            "The lookup query only comes from older location/store context, while the current customer "
+                            "message neither asks about a store nor contributes a location fragment. Do not reopen a "
+                            "completed store lookup. Continue the current conversation/mainline without this tool call."
+                        ),
                     }
                 )
             elif _ambiguous_reference_store_lookup_query(query, state):
@@ -3102,7 +3117,7 @@ def _ambiguous_location_tool_violation(tool_name: str) -> dict[str, str]:
         "missing": "location_query_missing_city_or_region",
         "note": (
             "Nearby/distance store tools require a query/origin that includes a concrete city or region from the current "
-            "message, recent conversation, or customer profile. If only a nationwide ambiguous landmark is known, do not "
+            "message or traceable recent customer conversation. If only a nationwide ambiguous landmark is known, do not "
             "call store/distance tools; ask the customer which city or district first."
         ),
     }
@@ -3114,11 +3129,66 @@ def _generic_store_question_uses_history_query(query: str, state: AgentState) ->
         return False
     if _store_lookup_query_comes_from_current_message(query, state):
         return False
+    if _store_lookup_query_comes_from_recent_customer_location(query, state):
+        return False
     if _generic_store_question_can_use_contextual_anchor(state, query=query):
         return False
     query_compact = _compact_text(query)
     current_compact = _compact_text(current_text)
     return bool(query_compact and query_compact != current_compact)
+
+
+def _store_lookup_query_comes_from_recent_customer_location(query: str, state: AgentState) -> bool:
+    """Allow composed location facts from recent customer messages, not soft profile data."""
+
+    query_compact = _compact_text(query)
+    if not query_compact:
+        return False
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    matched_fragments: list[str] = []
+    for item in history[-20:]:
+        role, text = _history_item_role_text(item)
+        if role != "customer":
+            continue
+        compact = _compact_text(_strip_location_answer_prefixes(_strip_store_question_words(text)))
+        if len(compact) < 2 or compact not in query_compact:
+            continue
+        matched_fragments.append(compact)
+    current = _compact_text(
+        _strip_location_answer_prefixes(
+            _strip_store_question_words(str(state.get("normalized_content") or state.get("content") or ""))
+        )
+    )
+    if len(current) >= 2 and current in query_compact:
+        matched_fragments.append(current)
+    return len(set(matched_fragments)) >= 2
+
+
+def _store_lookup_reopens_stale_location_context(query: str, state: AgentState) -> bool:
+    """Reject a historical location lookup that has no current-turn factual trigger."""
+
+    current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if not current_text or _store_lookup_query_comes_from_current_message(query, state):
+        return False
+    if location_card_from_state(state):
+        return False
+    if _raw_text_mentions_store_location_request(current_text):
+        return False
+    if _current_message_has_explicit_location_for_lookup(current_text, state):
+        return False
+
+    query_compact = _compact_text(query)
+    if not query_compact:
+        return False
+    history = state.get("conversation_history") if isinstance(state.get("conversation_history"), list) else []
+    for item in history[-20:]:
+        role, text = _history_item_role_text(item)
+        if role != "customer":
+            continue
+        fragment = _compact_text(_strip_location_answer_prefixes(_strip_store_question_words(text)))
+        if len(fragment) >= 2 and fragment in query_compact:
+            return True
+    return False
 
 
 def _generic_store_question_can_use_contextual_anchor(state: AgentState, *, query: str = "") -> bool:
@@ -3417,6 +3487,26 @@ def _history_item_text(item: Any) -> str:
             return str(content.get("text") or content.get("url") or "").strip()
         return str(content or "").strip()
     return str(item or "").strip()
+
+
+def _history_item_role_text(item: Any) -> tuple[str, str]:
+    if isinstance(item, dict):
+        text = _history_item_text(item)
+        role = str(item.get("role") or item.get("sender_type") or item.get("direction") or "").lower()
+        if role in {"user", "customer", "external", "inbound"}:
+            return "customer", text
+        if role in {"assistant", "staff", "employee", "ai", "outbound"}:
+            return "assistant", text
+        return "", text
+    text = str(item or "").strip()
+    lowered = text.lower()
+    for prefix in ("用户:", "客户:", "user:", "customer:"):
+        if lowered.startswith(prefix.lower()):
+            return "customer", text[len(prefix) :].strip()
+    for prefix in ("小贝:", "助手:", "员工:", "assistant:", "staff:"):
+        if lowered.startswith(prefix.lower()):
+            return "assistant", text[len(prefix) :].strip()
+    return "", text
 
 
 def _payment_consistency_violations(

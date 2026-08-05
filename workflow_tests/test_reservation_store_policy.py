@@ -56,10 +56,10 @@ def test_store_scope_exposes_every_real_store_in_requested_district() -> None:
     assert [item["store_id"] for item in region["requested_district_stores"]] == ["1", "2", "3", "4", "5"]
 
 
-def test_planner_treats_complete_requested_district_scope_as_direct_reply_fact() -> None:
-    assert "该区完整真实门店集合" in PLANNER_SYSTEM_PROMPT
-    assert "不需要再次 `customer_store_lookup`" in PLANNER_SYSTEM_PROMPT
-    assert "可 direct_reply" in PLANNER_SYSTEM_PROMPT
+def test_planner_uses_store_resolution_v2_as_the_only_delivery_contract() -> None:
+    assert "`store_resolution_fact` 是唯一门店决策" in PLANNER_SYSTEM_PROMPT
+    assert "只能发送 `delivery_store_ids`" in PLANNER_SYSTEM_PROMPT
+    assert "不得自行增减门店" in PLANNER_SYSTEM_PROMPT
 
 
 def test_transaction_output_gate_does_not_require_matching_order_before_payment_card() -> None:

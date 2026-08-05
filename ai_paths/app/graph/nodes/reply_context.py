@@ -490,8 +490,8 @@ def _fact_notes_for_model(
     recommended_store = structured_facts.get("recommended_store") or {}
     if isinstance(recommended_store, dict) and recommended_store.get("name"):
         notes.append("已有推荐门店事实，可优先按推荐门店回答。")
-        if recommended_store.get("reason") == "distance_calculate_rank_1":
-            notes.append("客户问附近或最近门店时，必须优先回答 distance_calculate 排序第一的推荐门店；距离只用于排序，客户可见回复不要输出几公里、几分钟、车程或步行时长。")
+        if recommended_store.get("reason") in {"distance_calculate_rank_1", "haversine_rank_1"}:
+            notes.append("客户问附近或最近门店时，只能按 Haversine 直线距离排序第一的推荐门店回答；客户可见不要输出几公里、几分钟、车程、路线或步行时长。")
 
     store_lookup_status = structured_facts.get("store_lookup_status") or {}
     if isinstance(store_lookup_status, dict) and store_lookup_status.get("distance_lookup_required"):

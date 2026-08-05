@@ -27,6 +27,10 @@ from app.services.store_fact_integrity import (
     filter_valid_store_facts,
     store_fact_is_valid,
 )
+from app.services.store_resolution_v2 import (
+    build_location_evidence,
+    resolution_status_for_location,
+)
 from app.services.store_service import StoreService
 from app.services.trace_logger import TraceLogger
 
@@ -885,6 +889,7 @@ def _invalid_tool_policy_by_name(state: AgentState) -> dict[str, dict[str, Any]]
             "location_query_missing_city_or_region",
             "store_lookup_query_over_anchors_history",
             "store_lookup_query_over_ambiguous_reference",
+            "store_lookup_not_relevant_to_current_turn",
         }:
             output["customer_store_lookup"] = item
         if subtype == "professional_assist" and missing == "professional_assist_from_advisory_health_context":
@@ -1193,6 +1198,21 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     if workflow_id:
         geocode = await _geocode_address(coze_client, workflow_id, query)
 
+    text_candidates = _stores_for_text_query(query, stores, purpose)
+    exact_store_reference = any(
+        _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
+        and _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
+        in _compact_store_text(query)
+        for item in text_candidates
+    )
+    location_evidence = build_location_evidence(
+        state,
+        raw_text=raw_query,
+        query=query,
+        geocode=geocode,
+        confirmed_by_customer=bool(tool.get("confirmed_by_customer")),
+    )
+
     ambiguous_location = _geocode_location_is_ambiguous(
         raw_query=raw_query,
         query=query,
@@ -1213,6 +1233,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             },
             "geocode_candidate_count": int(geocode.get("candidate_count") or 0),
             "geocode_candidate_regions": list(geocode.get("candidate_regions") or [])[:6],
+            "location_evidence": location_evidence,
             "stores": [],
             "candidate_stores": [],
             "candidate_store_count": 0,
@@ -1232,6 +1253,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
                 for key in ("formatted_address", "province", "city", "district", "township", "location")
                 if geocode.get(key)
             },
+            "location_evidence": location_evidence,
             "query_consistency": query_consistency,
             "stores": [],
             "candidate_stores": [],
@@ -1239,11 +1261,36 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "missing": ["confirmed_location"],
         }
 
+
+    location_resolution_status = resolution_status_for_location(location_evidence)
+    if location_resolution_status and not exact_store_reference:
+        return {
+            "status": location_resolution_status,
+            "raw_query": raw_query,
+            "query": query,
+            "purpose": purpose,
+            "source": "location_evidence_v2",
+            "geocode": {
+                key: geocode.get(key)
+                for key in ("formatted_address", "province", "city", "district", "township", "location")
+                if geocode.get(key)
+            },
+            "location_evidence": location_evidence,
+            "stores": [],
+            "candidate_stores": [],
+            "candidate_store_count": 0,
+            "missing": (
+                ["city_or_district"]
+                if location_resolution_status == "need_location"
+                else ["location_confirmation"]
+            ),
+        }
+
     geocode_conflict = _geocode_conflicts_with_query_scope(query, geocode, stores)
     candidates = [] if geocode_conflict else _stores_for_geocode(geocode, stores, purpose)
     source = "customer_scope_geocode_conflict_ignored" if geocode_conflict else "customer_scope_geocode"
     if not candidates:
-        candidates = _stores_for_text_query(query, stores, purpose)
+        candidates = text_candidates
         source = "customer_scope_text_match"
     if not candidates and scope_unavailable:
         candidates = _snapshot_stores_for_exact_query(query)
@@ -1281,6 +1328,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         "source": source,
         "geocode_conflict_ignored": geocode_conflict,
         "geocode": {key: geocode.get(key) for key in ("formatted_address", "province", "city", "district", "township", "location") if geocode.get(key)},
+        "location_evidence": location_evidence,
         **scope_fields,
         "stores": normalized[:12],
         "candidate_stores": normalized,
@@ -1296,6 +1344,10 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         ],
         "missing": [] if normalized else (["store_scope_unavailable"] if scope_unavailable else ["matched_customer_scope_store"]),
     }
+
+
+def _compact_store_text(value: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z\u4e00-\u9fff]+", "", str(value or "")).lower()
 
 
 async def _distance_calculate(
@@ -1327,7 +1379,6 @@ async def _distance_calculate(
             "error": "no_candidate_stores",
         }
     geocode_workflow_id = str(getattr(coze_client.settings, "geocode_workflow_id", "") or "").strip()
-    distance_workflow_id = str(getattr(coze_client.settings, "distance_workflow_id", "") or "").strip()
     if not geocode_workflow_id:
         return {
             "origin": origin,
@@ -1374,17 +1425,8 @@ async def _distance_calculate(
             ranked = dict(store)
             ranked["geocode"] = {key: geo.get(key) for key in ("formatted_address", "province", "city", "district", "location")}
             if point:
-                destination = str(geo.get("location") or cached_location or "").strip()
-                distance = await _distance_between_points(coze_client, distance_workflow_id, str(origin_geo.get("location") or ""), destination)
-                if distance.get("distance_km") is not None:
-                    ranked["distance_km"] = distance["distance_km"]
-                    ranked["distance_meters"] = distance.get("distance_meters")
-                    ranked["duration_seconds"] = distance.get("duration_seconds")
-                    ranked["distance_source"] = distance.get("source")
-                else:
-                    ranked["distance_km"] = round(_haversine_km(origin_point, point), 2)
-                    ranked["distance_source"] = "haversine_fallback"
-                    ranked["distance_error"] = distance.get("error") or "distance_workflow_failed"
+                ranked["distance_km"] = round(_haversine_km(origin_point, point), 2)
+                ranked["distance_source"] = "haversine"
             else:
                 ranked["distance_error"] = "store_geocode_failed"
             return ranked
@@ -1405,7 +1447,7 @@ async def _distance_calculate(
             "origin": origin,
             "geocode_origin": geocode_origin,
             "origin_geocode": {key: origin_geo.get(key) for key in ("formatted_address", "province", "city", "district", "location")},
-            "distance_workflow_id": distance_workflow_id,
+            "ranking_method": "haversine",
             "status": "ok" if ranked_stores else "no_candidate_stores",
             "ranked_stores": ranked_stores,
             "candidate_store_count": len(all_candidates),
@@ -1898,6 +1940,7 @@ def _distance_lookup_scope_fields(tool: dict[str, Any], tool_results: dict[str, 
 
 
 _STORE_LOOKUP_SCOPE_FIELD_NAMES = (
+    "location_evidence",
     "province",
     "city",
     "district",
@@ -2202,60 +2245,6 @@ def _first_geocode_candidate(items: list[Any]) -> dict[str, Any]:
     first["candidate_regions"] = [first_region] if first_region else []
     first["ambiguous_regions"] = False
     return first
-
-
-async def _distance_between_points(coze_client: CozeClient, workflow_id: str, origin: str, destination: str) -> dict[str, Any]:
-    if not workflow_id:
-        return {"source": "distance_workflow", "error": "distance_workflow_id_not_configured"}
-    if not origin or not destination:
-        return {"source": "distance_workflow", "error": "missing_origin_or_destination"}
-    try:
-        raw = await coze_client.run_workflow(workflow_id, {"origin": origin, "destination": destination})
-    except Exception as exc:
-        return {"source": "distance_workflow", "error": f"{type(exc).__name__}: {exc}"}
-    parsed = _parse_workflow_data(raw)
-    output = parsed.get("output") if isinstance(parsed, dict) else None
-    if isinstance(output, str) and output:
-        try:
-            output = json.loads(output)
-        except json.JSONDecodeError:
-            output = {}
-    if not isinstance(output, dict):
-        output = parsed if isinstance(parsed, dict) else {}
-    meters = _to_float(output.get("distance"))
-    duration = _to_float(output.get("duration"))
-    if meters is None:
-        return {"source": "distance_workflow", "raw": output, "error": "distance_missing"}
-    result: dict[str, Any] = {
-        "source": "distance_workflow",
-        "distance_meters": int(meters),
-        "distance_km": round(meters / 1000, 2),
-    }
-    if duration is not None:
-        result["duration_seconds"] = int(duration)
-    return result
-
-
-def _parse_workflow_data(raw: dict[str, Any]) -> dict[str, Any]:
-    data = raw.get("data") if isinstance(raw, dict) else None
-    if isinstance(data, str) and data:
-        try:
-            parsed = json.loads(data)
-            return parsed if isinstance(parsed, dict) else {"output": parsed}
-        except json.JSONDecodeError:
-            return {"output": data}
-    if isinstance(data, dict):
-        return data
-    return raw if isinstance(raw, dict) else {}
-
-
-def _to_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _parse_lng_lat(value: str) -> tuple[float, float] | None:

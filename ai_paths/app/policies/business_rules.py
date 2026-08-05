@@ -203,8 +203,8 @@ def _tool_policy(rules: dict[str, Any]) -> dict[str, Any]:
         "configured": configured,
         "boundaries": {
             "kb_search": "案例和效果图只来自本轮真实 case_studies 结果。",
-            "customer_store_lookup": "保留客户原始地名；具体门店、地址、停车和营业时间只来自真实结果。",
-            "distance_calculate": "只排序真实候选；客户可见不输出公里、分钟或车程；有推荐结果时只发推荐门店卡。",
+            "customer_store_lookup": "保留当前消息和近期已确认地址证据；具体门店、地址、停车和营业时间只来自真实结果。",
+            "distance_calculate": "仅用合法经纬度执行 Haversine 直线距离排序；客户可见不输出公里、分钟、车程或路线。",
             "appointment_record_query": "只查既有预约；无记录不能承诺改约、取消或已安排。",
             "create_work_order": str(transaction.get("payment_order_policy_description") or "订单和开单不作为发卡前置；支付后再收姓名电话并尝试后台关联。"),
             "add_customer_mobile": "只同步客户明确提供的完整11位手机号；失败不能让回复为空。",
@@ -223,9 +223,9 @@ def _fact_boundary_for_rule(
     if "kb_search(case_studies)" in tools:
         return "案例与效果图必须来自真实 case_studies 工具事实；旧 SOP 完成状态不能替代近期真实发图证据。"
     if "distance_calculate" in tools:
-        return "门店存在性和详情来自 customer_store_lookup；最近或方便排序来自 distance_calculate；有 recommended_store 时只发推荐门店卡，无排序且完整候选仅1至3家时才可发全部；客户可见不输出公里、分钟或车程。本级无店事实只作内部依据，客户可见不说“当地没有/暂无门店”，改为承接当前匹配到的真实候选。"
+        return "门店存在性和详情来自 customer_store_lookup；距离工具只按合法经纬度执行 Haversine 排序。最终只按 store_resolution_fact.status 和 delivery_store_ids 发卡，不得自行增减；客户可见不输出公里、分钟、车程或路线。"
     if "customer_store_lookup" in tools:
-        return "具体门店、地址、停车和营业时间必须来自 customer_store_lookup；只有工具确认歧义或无法解析才补问位置。本级无店事实只作内部依据，客户可见不说“当地没有/暂无门店”，改为承接当前匹配到的真实候选。"
+        return "具体门店、地址、停车和营业时间必须来自 customer_store_lookup。省或城市信息不足时补问；POI 推断出的上级行政区必须先确认；完整省市区、详细地址或定位卡才可直接匹配。"
     if "appointment_record_query" in tools:
         return "既有预约、改约和取消必须以 appointment_record_query 的真实结果为准。"
     if "professional_assist" in tools:

@@ -142,6 +142,7 @@ app = FastAPI(title=settings.app_name)
 logger = logging.getLogger(__name__)
 sop_platform_pull_worker: asyncio.Task[None] | None = None
 storage_retention_worker: asyncio.Task[None] | None = None
+store_snapshot_refresh_worker: asyncio.Task[None] | None = None
 
 
 async def _run_sop_platform_pull_worker() -> None:
@@ -165,9 +166,27 @@ async def _run_storage_retention_worker() -> None:
         await asyncio.sleep(6 * 60 * 60)
 
 
+async def _run_store_snapshot_refresh_worker() -> None:
+    while True:
+        try:
+            snapshot = await asyncio.to_thread(store_snapshot_service.load_snapshot)
+            logger.info(
+                "Store snapshot ready: generated_at=%s stores=%s invalid=%s refresh_error=%s",
+                snapshot.get("generated_at"),
+                snapshot.get("store_count"),
+                snapshot.get("invalid_store_count"),
+                snapshot.get("refresh_error"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Store snapshot refresh worker iteration failed")
+        await asyncio.sleep(max(300, int(settings.store_snapshot_refresh_interval_seconds)))
+
+
 @app.on_event("startup")
 async def startup() -> None:
-    global sop_platform_pull_worker, storage_retention_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
     storage_store.initialize()
     if settings.sop_platform_pull_enabled and (
         sop_platform_pull_worker is None or sop_platform_pull_worker.done()
@@ -175,11 +194,15 @@ async def startup() -> None:
         sop_platform_pull_worker = asyncio.create_task(_run_sop_platform_pull_worker())
     if storage_retention_worker is None or storage_retention_worker.done():
         storage_retention_worker = asyncio.create_task(_run_storage_retention_worker())
+    if settings.store_snapshot_refresh_enabled and (
+        store_snapshot_refresh_worker is None or store_snapshot_refresh_worker.done()
+    ):
+        store_snapshot_refresh_worker = asyncio.create_task(_run_store_snapshot_refresh_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global sop_platform_pull_worker, storage_retention_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
     if sop_platform_pull_worker is not None:
         sop_platform_pull_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -190,6 +213,11 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await storage_retention_worker
         storage_retention_worker = None
+    if store_snapshot_refresh_worker is not None:
+        store_snapshot_refresh_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await store_snapshot_refresh_worker
+        store_snapshot_refresh_worker = None
     await platform_voice_batch_coordinator.aclose()
     await model_client.aclose()
     await coze_client.aclose()

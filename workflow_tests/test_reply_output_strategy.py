@@ -2968,6 +2968,40 @@ def test_current_bare_location_lookup_query_is_not_rejected_as_history_anchor() 
     )
 
 
+def test_short_non_location_message_cannot_reopen_historical_store_lookup() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "好的",
+            "conversation_history": [
+                "用户: 我在浙江省温州市龙湾区",
+                "小贝: 温州龙湾店的位置已经发您了。",
+            ],
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_STORE_LOCATION",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "existence",
+                    "query": "浙江省温州市龙湾区",
+                }
+            ],
+        },
+    )
+
+    assert any(
+        item.get("missing") == "store_lookup_not_relevant_to_current_turn"
+        for item in plan["tool_policy_violations"]
+    )
+
+
 def test_bare_location_answer_after_store_prompt_is_normalized_to_store_lookup() -> None:
     plan = build_planner_plan_v2(
         {
@@ -4935,7 +4969,7 @@ def test_distance_fact_output_hides_customer_visible_numbers() -> None:
                         "distance_km": 3.2,
                         "distance_meters": 3200,
                         "duration_seconds": 600,
-                        "distance_source": "amap",
+                        "distance_source": "haversine",
                     },
                     {
                         "store_id": "228",
@@ -4944,7 +4978,7 @@ def test_distance_fact_output_hides_customer_visible_numbers() -> None:
                         "distance_km": 5.1,
                         "distance_meters": 5100,
                         "duration_seconds": 900,
-                        "distance_source": "amap",
+                        "distance_source": "haversine",
                     },
                 ],
             }
@@ -4952,7 +4986,7 @@ def test_distance_fact_output_hides_customer_visible_numbers() -> None:
         {},
     )
     structured = output["fact_envelope"]["structured_facts"]
-    assert structured["recommended_store"]["reason"] == "distance_calculate_rank_1"
+    assert structured["recommended_store"]["reason"] == "haversine_rank_1"
     assert "distance_km" not in structured["recommended_store"]
     assert "distance_meters" not in structured["store_facts"][0]
     assert "duration_seconds" not in structured["store_facts"][0]
@@ -5231,6 +5265,41 @@ def test_reply_validation_rejects_store_cards_when_resolution_requires_location_
             ],
             state,
         )
+
+
+def test_v2_location_confirmation_is_not_overridden_by_legacy_complete_listing_rule() -> None:
+    state = {
+        "normalized_content": "嘉兴秀洲区",
+        "fact_envelope": {
+            "structured_facts": {
+                "store_resolution_fact": {
+                    "status": "need_location_confirmation",
+                    "delivery_mode": "clarify_location",
+                    "location_evidence": {
+                        "province": "浙江省",
+                        "city": "嘉兴市",
+                        "district": "秀洲区",
+                        "confirmation_status": "needs_confirmation",
+                    },
+                    "delivery_store_ids": [],
+                },
+                "store_lookup_status": {
+                    "status": "need_location_confirmation",
+                    "city": "嘉兴市",
+                    "district": "秀洲区",
+                    "candidate_count": 0,
+                },
+                "store_facts": [
+                    {"store_id": "702", "store_name": "嘉兴秀洲店", "city": "嘉兴市", "district": "秀洲区"}
+                ],
+            }
+        },
+    }
+
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "您是在浙江嘉兴秀洲区这边对吗？我确认一下再给您匹配门店。"}],
+        state,
+    )
 
 
 def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_area() -> None:
@@ -5628,7 +5697,7 @@ def test_reply_structure_appends_only_ranked_recommended_store_card() -> None:
     ] == ["303"]
 
 
-def test_single_distance_candidate_is_not_a_ranking_fact() -> None:
+def test_single_haversine_candidate_is_a_valid_single_delivery_fact() -> None:
     output = build_planner_fact_output(
         {
             "distance_calculate": {
@@ -5639,7 +5708,7 @@ def test_single_distance_candidate_is_not_a_ranking_fact() -> None:
                         "store_id": "12",
                         "store_name": "厦门思明店",
                         "distance_km": 18.0,
-                        "distance_source": "amap",
+                        "distance_source": "haversine",
                     }
                 ],
             }
@@ -5647,10 +5716,12 @@ def test_single_distance_candidate_is_not_a_ranking_fact() -> None:
         {},
     )
     structured = output["fact_envelope"]["structured_facts"]
-    assert structured["recommended_store"] == {}
-    assert structured["store_lookup_status"]["recommendation_status"] == "insufficient_comparable_candidates"
+    assert structured["recommended_store"]["store_id"] == "12"
+    assert structured["recommended_store"]["reason"] == "haversine_rank_1"
     assert structured["store_lookup_status"]["comparable_candidate_count"] == 1
-    with pytest.raises(ValueError, match="distance_fact_required"):
+    assert structured["store_resolution_fact"]["status"] == "send_single"
+    assert structured["store_resolution_fact"]["delivery_store_ids"] == ["12"]
+    with pytest.raises(ValueError, match="store_resolution_send_single_contract_violation"):
         validate_reply_consistency(
             [{"type": "text", "order": 1, "content": {"text": "给您优先这家：厦门思明店。"}}],
             output,

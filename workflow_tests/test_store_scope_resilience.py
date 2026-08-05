@@ -186,9 +186,9 @@ def test_store_lookup_snapshot_fallback_reads_env_path(monkeypatch, tmp_path) ->
         )
     )
 
-    assert output["status"] == "ok"
-    assert output["source"] == "store_snapshot_region_fallback"
-    assert output["stores"][0]["store_id"] == "301"
+    assert output["status"] == "need_location"
+    assert output["source"] == "location_evidence_v2"
+    assert output["stores"] == []
 
 
 def test_store_lookup_cross_city_candidates_trigger_distance_enrichment() -> None:
@@ -289,11 +289,10 @@ def test_store_lookup_city_query_augments_customer_scope_with_snapshot_city_stor
         )
     )
 
-    assert output["status"] == "ok"
-    assert output["source"] == "customer_scope_geocode"
-    assert {item["store_id"] for item in output["stores"]} == {"589"}
-    assert output["resolved_admin_level"] == "city"
-    assert output["exact_scope_has_store"] is True
+    assert output["status"] == "need_location"
+    assert output["source"] == "location_evidence_v2"
+    assert output["stores"] == []
+    assert output["location_evidence"]["city"] == "荆州市"
 
 
 def test_store_lookup_town_without_local_store_uses_customer_scope_province_candidates(monkeypatch) -> None:
@@ -355,15 +354,13 @@ def test_store_lookup_town_without_local_store_uses_customer_scope_province_cand
         )
     )
 
-    assert output["status"] == "ok"
-    assert output["source"] == "customer_scope_geocode"
-    assert {item["store_id"] for item in output["candidate_stores"]} == {"581"}
-    assert output["resolved_admin_level"] == "township"
-    assert output["exact_scope_has_store"] is False
-    assert output["scope_match_level"] == "province_fallback"
+    assert output["status"] == "need_location_confirmation"
+    assert output["source"] == "location_evidence_v2"
+    assert output["candidate_stores"] == []
+    assert output["location_evidence"]["district"] == "荔波县"
 
 
-def test_store_lookup_does_not_expand_customer_scope_with_snapshot_same_city(monkeypatch) -> None:
+def test_store_lookup_requires_confirmation_before_using_poi_completed_district(monkeypatch) -> None:
     monkeypatch.setattr(
         action_nodes,
         "_STORE_SNAPSHOT_CACHE",
@@ -430,10 +427,10 @@ def test_store_lookup_does_not_expand_customer_scope_with_snapshot_same_city(mon
         )
     )
 
-    assert output["status"] == "ok"
-    assert output["source"] == "customer_scope_geocode"
-    assert {item["store_id"] for item in output["candidate_stores"]} == {"350", "216"}
-    assert "557" not in {item["store_id"] for item in output["candidate_stores"]}
+    assert output["status"] == "need_location_confirmation"
+    assert output["source"] == "location_evidence_v2"
+    assert output["candidate_stores"] == []
+    assert output["location_evidence"]["confirmation_status"] == "needs_confirmation"
 
 
 def test_planner_fact_output_filters_store_facts_to_customer_scope() -> None:
@@ -507,7 +504,7 @@ def test_store_lookup_short_place_does_not_match_one_character_region_token() ->
         )
     )
 
-    assert output["status"] == "no_match"
+    assert output["status"] == "need_location_confirmation"
     assert output["stores"] == []
 
 
@@ -581,9 +578,9 @@ def test_store_lookup_uses_snapshot_region_fallback_when_scope_unavailable(monke
         )
     )
 
-    assert output["status"] == "ok"
-    assert output["source"] == "store_snapshot_region_fallback"
-    assert [item["store_name"] for item in output["stores"]] == ["厦门思明店", "厦门百星湖里店"]
+    assert output["status"] == "need_location"
+    assert output["source"] == "location_evidence_v2"
+    assert output["stores"] == []
 
 
 def test_store_lookup_does_not_use_snapshot_region_fallback_for_generic_question(monkeypatch) -> None:
@@ -612,9 +609,9 @@ def test_store_lookup_does_not_use_snapshot_region_fallback_for_generic_question
         )
     )
 
-    assert output["status"] == "no_match"
-    assert output["source"] == "store_snapshot_exact_name"
-    assert output["missing"] == ["store_scope_unavailable"]
+    assert output["status"] == "need_location"
+    assert output["source"] == "location_evidence_v2"
+    assert output["missing"] == ["city_or_district"]
 
 
 def test_store_lookup_strips_structured_location_label_and_prefers_text_scope() -> None:
@@ -657,8 +654,8 @@ def test_store_lookup_strips_structured_location_label_and_prefers_text_scope() 
 
     assert output["raw_query"] == "门店位置：双流人民广场"
     assert output["query"] == "双流人民广场"
-    assert output["status"] == "ok"
-    assert [item["store_id"] for item in output["stores"]] == ["379", "522"]
+    assert output["status"] == "need_location"
+    assert output["stores"] == []
 
 
 def test_store_lookup_geocodes_structured_poi_message_before_matching_scope() -> None:
@@ -731,11 +728,13 @@ def test_store_lookup_geocodes_structured_poi_message_before_matching_scope() ->
     assert xiamen["query"] == "五缘湾湿地公园-花溪"
     assert xiamen["geocode"]["city"] == "厦门市"
     assert xiamen["geocode"]["district"] == "湖里区"
-    assert [item["store_id"] for item in xiamen["stores"]] == ["201"]
+    assert xiamen["status"] == "need_location_confirmation"
+    assert xiamen["stores"] == []
     assert libo["query"] == "甲良镇新市场(黄江路)"
     assert libo["geocode"]["city"] == "黔南布依族苗族自治州"
     assert libo["geocode"]["district"] == "荔波县"
-    assert [item["store_id"] for item in libo["stores"]] == ["301"]
+    assert libo["status"] == "need_location_confirmation"
+    assert libo["stores"] == []
 
 
 def test_store_lookup_uses_first_geocode_candidate_for_plain_landmark() -> None:
@@ -768,8 +767,8 @@ def test_store_lookup_uses_first_geocode_candidate_for_plain_landmark() -> None:
         )
     )
 
-    assert output["status"] == "ok"
-    assert [item["store_id"] for item in output["stores"]] == ["101"]
+    assert output["status"] == "need_location_confirmation"
+    assert output["stores"] == []
     assert output["geocode"]["city"] == "上海市"
 
 
@@ -803,9 +802,9 @@ def test_structured_poi_keeps_first_geocode_candidate_by_contract() -> None:
         )
     )
 
-    assert output["status"] == "ok"
+    assert output["status"] == "need_location_confirmation"
     assert output["query"] == "人民广场"
-    assert [item["store_id"] for item in output["stores"]] == ["101"]
+    assert output["stores"] == []
 
 
 def test_store_tool_facts_keep_detail_fields_for_reply_model() -> None:

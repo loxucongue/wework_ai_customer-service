@@ -34,7 +34,7 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - 人数按到店总人数理解：“我朋友也一起”通常是本人+1位朋友=2位；“我带两个朋友”是本人+2位朋友=3位。卡片金额必须服从 Planner 的人数和金额决策。
 - 客户明确要入口/预约时，不要因为缺订单或开单失败暴露“入口没对上/不能发卡”，也不能再反问“如果你要我再发”；活动报价已铺垫且无硬阻断时按当前结构事实发卡，否则只补最小必要信息。
 - 没有真实 case_facts/image 不能说“我给您发图/图发您了”；有图且当前明确要图时才输出 image。上一轮顾虑已回答、客户只确认时不要擅自重发案例。
-- `store_resolution_fact.delivery_mode=clarify_service_area` 表示客户的位置已经识别清楚，但当前没有可发送的匹配门店。这个事实只供内部判断，客户可见文字不能说没有门店、暂无门店、没查到或查不到；也不要说“不乱发、不确定的位置、真实门店、重新对”这类系统免责话。不要承诺发送门店卡，不要让客户重复发同一个定位。像微信真人一样承接：已解析到城市就问客户这个城市哪个区方便，或周边哪里常去；已解析到区县/乡镇就问更常去哪个市区/商圈。例：“海口这边我先记下了，您平时主要在海口哪个区方便？或者周边哪里也常去，我按您顺路的地方给您看。”
+- `store_resolution_fact.status=no_valid_candidate` 表示客户位置已经识别，但当前没有可发送的合法候选。不要承诺发卡，也不要说没有门店、暂无门店、没查到、查不到、不乱发、不确定的位置、真实门店或重新对。像微信真人一样问客户平时常去的市区或商圈，例如：“平昌这边我记下了，您平时更常去南充、广元还是成都？我按您常去的方向给您看。”
 - 退款、扣款异常只能先核对门店、时间、金额、项目或截图；不能说已经同意/正在办理退款，也不能承诺自动退回、原路到账或处理时效。
 - 不输出公里、分钟、车程；不承诺绝对效果；没有真实预约事实不能说已经安排好。
 - payment_collection、store_address、image、human_handoff_notice 必须使用输入中已核验的结构事实。
@@ -576,11 +576,13 @@ def _store_resolution_fallback_records(state: AgentState) -> list[dict[str, Any]
     envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
     structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
     resolution = structured.get("store_resolution_fact") if isinstance(structured.get("store_resolution_fact"), dict) else {}
-    if str(resolution.get("delivery_mode") or "").strip() != "send_all_candidates":
+    if str(resolution.get("status") or "").strip() != "send_multiple" and str(
+        resolution.get("delivery_mode") or ""
+    ).strip() != "send_all_candidates":
         return []
     expected_ids = [
         str(item or "").strip()
-        for item in resolution.get("visible_candidate_ids") or []
+        for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
         if str(item or "").strip()
     ]
     if not 1 <= len(expected_ids) <= 3:
@@ -1011,15 +1013,15 @@ def _reply_repair_hint(error: str) -> str:
     if "complete_store_listing_cards_required" in error:
         return "本轮门店工具已经返回 purpose=existence 的完整 1 至 3 家真实门店。请保留自然说明，并为 tool_facts.store_facts 中每个 store_id 各输出一条 store_address；不能只用编号或文字列出门店来代替卡片。"
     if "recommended_store_card_required" in error:
-        return "本轮 distance_calculate 已产生唯一 recommended_store。请基于该事实自然承接，并追加一条 content.store_id 等于 recommended_store.store_id 的 store_address；不要只在文字里承诺稍后发卡，也不要新增“已安排、已预约、已登记、已留位”等没有事实支持的状态。"
+        return "本轮 store_resolution_fact.status=send_single，必须只发送 delivery_store_ids 中唯一门店卡。请自然承接并追加对应 store_address；不要自行选择其他门店，也不要新增“已安排、已预约、已登记、已留位”等没有事实支持的状态。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
-        return "你在文本里承诺了发送地址、位置卡或让客户点开导航，但本轮没有对应门店卡。若有真实门店事实就追加对应 store_address；若 store_resolution_fact.delivery_mode=clarify_service_area，必须删除发卡承诺，不要对客户说没有门店、暂无门店、没查到或查不到，也不要说“不乱发、不确定的位置、真实门店、重新对”。已解析到城市就问客户这个城市哪个区方便，或周边哪里常去；已解析到区县/乡镇就问更常去哪个市区/商圈。"
+        return "你在文本里承诺了发送地址或位置卡，但本轮没有对应门店卡。只有 store_resolution_fact.status=send_single/send_multiple 时，才按 delivery_store_ids 追加对应 store_address；其他状态必须删除发卡承诺，并按状态补问地区、确认解析结果或询问客户常去的市区/商圈。"
     if "store_cards_not_allowed_when_service_area_clarification_required" in error:
         return "客户当前地址已经识别清楚，但本轮没有可发送的匹配门店。删除所有 store_address 和发卡承诺，不要对客户说没有门店、暂无门店、没查到或查不到，也不要让客户重复提供同一位置；承接客户已给的位置，已解析到城市就问这个城市哪个区方便，或周边哪里常去；已解析到区县/乡镇就问更常去哪个市区/商圈。语气要短、口语化，不要说“不乱发、不确定的位置、真实门店、重新对”。"
     if "distance_value_not_customer_visible" in error:
-        return "distance_calculate 只用于内部排序门店。客户可见回复只说优先哪家或哪家更近一些，不要输出几公里、几分钟、车程或步行时长。"
+        return "Haversine 直线距离只用于内部排序门店。客户可见最多说“按您这个位置，这家相对近一些”，不要输出公里、分钟、车程、路线或步行时长。"
     if "distance_fact_required" in error:
-        return "没有 distance_calculate 排序事实时，不要输出最近、离您最近、较近、就近等距离排序表达。只回答门店名、地址、停车或营业时间等已有门店事实，再问客户哪个区域/哪家更方便。"
+        return "没有 store_resolution_fact.ranking_method=haversine 和 customer_claim_level=relative_near 时，不要输出最近、离您最近、较近、就近或交通方便等排序表达。只使用已有门店事实，并按当前主线自然承接。"
     if "nearby_store_claim_without_location_fact" in error:
         return "没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”。请改成“我给您看下门店/对下城市或区域”，不要编距离感。"
     if "available_time_fact_required" in error:
@@ -1210,10 +1212,32 @@ def _append_required_store_address_actions(
         if isinstance(structured.get("store_resolution_fact"), dict)
         else {}
     )
-    if str(resolution.get("delivery_mode") or "") == "clarify_location":
+    resolution_status = str(resolution.get("status") or "")
+    if resolution_status in {
+        "need_location",
+        "need_location_confirmation",
+        "ambiguous_location",
+        "no_valid_candidate",
+        "reuse_confirmed_store",
+    } or str(resolution.get("delivery_mode") or "") == "clarify_location":
         return messages, False
 
-    required_ids: list[str] = []
+    required_ids = list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in resolution.get("delivery_store_ids") or []
+            if str(item or "").strip()
+        )
+    )
+    if required_ids:
+        expected_count = 1 if resolution_status == "send_single" else len(required_ids)
+        if resolution_status == "send_single" and len(required_ids) != 1:
+            return messages, False
+        if resolution_status == "send_multiple" and not 2 <= len(required_ids) <= 3:
+            return messages, False
+        if expected_count != len(required_ids):
+            return messages, False
+
     recommended = (
         structured.get("recommended_store")
         if isinstance(structured.get("recommended_store"), dict)
@@ -1221,13 +1245,13 @@ def _append_required_store_address_actions(
     )
     recommended_id = str(recommended.get("store_id") or recommended.get("id") or "").strip()
     delivery_mode = str(resolution.get("delivery_mode") or "")
-    if (
+    if not required_ids and (
         delivery_mode in {"", "send_recommended"}
         and recommended_id
-        and str(recommended.get("reason") or "") == "distance_calculate_rank_1"
+        and str(recommended.get("reason") or "") in {"distance_calculate_rank_1", "haversine_rank_1"}
     ):
         required_ids = [recommended_id]
-    elif delivery_mode == "send_all_candidates":
+    elif not required_ids and delivery_mode == "send_all_candidates":
         required_ids = list(
             dict.fromkeys(
                 str(item or "").strip()
@@ -1237,7 +1261,7 @@ def _append_required_store_address_actions(
         )
         if not 1 <= len(required_ids) <= 3:
             return messages, False
-    else:
+    elif not required_ids:
         lookup = (
             structured.get("store_lookup_status")
             if isinstance(structured.get("store_lookup_status"), dict)

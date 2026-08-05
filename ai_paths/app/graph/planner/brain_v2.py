@@ -51,14 +51,17 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 不把技术超时理解成客户高风险；除非客户当前消息本身明确健康高风险、投诉退款、付款异常、严重不适或强人工诉求，否则不要输出 human_handoff_notice。
 - 不编造门店、地址、停车、营业时间、距离、档期、案例图、价格、支付状态、订单状态或医疗结论。
 - 需要具体门店/地址/停车/营业时间/导航/附近候选时，用 customer_store_lookup。
-- 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；客户可见不要输出公里、分钟、车程。
+- 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；该工具只按经纬度直线距离排序，客户可见不要输出公里、分钟、车程或路线。
 - 当前普通流程只登记到店日期和时间意向，不调用 available_time/create_order_plan；没有既有正式预约事实不能承诺已安排或已留位。
 - 效果、怕没效果、怕反黑、要效果图时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。
 - 客户已经发送皮肤图片时直接使用 `image_info`；需要效果证据只查 case_studies。当前没有询问门店且近聊已有门店锚点时，不得因图片 URL 或合并消息调用门店工具；案例后必须推进一个未完成主线动作。
 - 预约金由 payment_decision 决定；客户口头声称已付不能确认到账。当前订单 `prepay_paid>0`、清晰支付成功截图或结构化 `deposit_state=paid_by_platform_transfer_event` 才是权威已付，可推进付款后信息确认。
 - `stage/sub_rule_id` 必须从 Current Recovery Business Rules 的 `scene_index` 选择，不能自造英文场景名。
 - `need_tools` 必须提供可执行的扁平 `tool_calls`，工具名字段只能是 `name`；禁止 `tool_name/arguments/tool/args` 包装。门店查询示例：`{"name":"customer_store_lookup","query":"双流区","purpose":"existence"}`。
-- `customer_store_lookup.query` 必须来自当前客户消息里的明确位置、定位、地标或门店名，不能把客户回答的斑点时长、效果、价格、确认短句当成地址。若 `store_binding_decision` 已接受最近真实门店，当前客户没有提出新位置或换店，就沿用该门店并推进当前主线，不再查门店；若客户确实改了位置，先把门店决策改为 `exploring/ambiguous`，再按当前位置查询，不能同时“已接受旧店”和“查询无关新地址”。
+- `customer_store_lookup.query` 必须可追溯到当前客户位置、定位卡，或近期客户已经明确提供且未被新位置推翻的地址证据。允许组合连续地址片段，例如客户先说“温州龙湾”、后说“滨海路”，查询可组合为“浙江省温州市龙湾区滨海路”；不能把斑点时长、价格、效果或“好的/是的”等短句本身当成新地址。
+- 近期地址证据不等于当前门店意图。只有客户当前提出位置/门店问题，或正在回答上一轮尚未完成的位置补问/确认时才查店；当前只说“好的/嗯/谢谢”或转问价格、效果、斑点情况时，不得仅凭历史地址重新查店或重发门店卡。
+- 只有省份时补问城市和区县；只有城市时补问区县或定位；只有区县、乡镇、村、道路或地标且上级行政区来自 POI 推断时，先用 customer_store_lookup 得到 `need_location_confirmation`，再向客户自然确认。客户确认了你上一轮提出的完整地区后，工具调用可设置 `confirmed_by_customer=true`。完整省市区、详细地址或定位卡无需重复确认。
+- 若 `store_binding_decision` 已接受最近真实门店，当前客户没有提出新位置或换店，就沿用该门店并推进当前主线，不再查门店；若客户确实改了位置，先把门店决策改为 `exploring/ambiguous`，再按当前位置查询，不能同时“已接受旧店”和“查询无关新地址”。
 - `direct_reply` 必须有对象数组 reply_messages 且 tool_calls=[]；`need_tools` 必须 reply_messages=[] 且 tool_calls 非空。
 
 # Output JSON Schema

@@ -216,26 +216,32 @@ class StoreSnapshotService:
         parking = detail.get("parking_info") if isinstance(detail.get("parking_info"), dict) else {}
         address = clean_text(detail.get("tencent_address") or row.get("tencent_address") or row.get("address") or "")
         parking_address = clean_text(parking.get("park_address") or "")
-        province, city, district = parse_region(address)
-        if not (province or city or district):
-            province, city, district = parse_region(parking_address)
+        platform_region = parse_region(address)
+        province, city, district = platform_region
         geocode, geocode_query, rejected_geocodes = self._resolve_store_geocode(
             store_name=store_name,
             address=address,
             parking_address=parking_address,
         )
-        if geocode:
-            province = clean_text(geocode.get("province") or province)
-            city = clean_text(geocode.get("city") or city)
-            district = clean_text(geocode.get("district") or geocode.get("township") or district)
-            preferred_district = preferred_platform_district(
-                address_region=parse_region(address),
-                parking_region=parse_region(parking_address),
-            )
-            district = preferred_district or district
-            address = address or clean_text(geocode.get("formatted_address") or "")
+        derived_region = (
+            clean_text(geocode.get("province") if geocode else ""),
+            clean_text(geocode.get("city") if geocode else ""),
+            clean_text(
+                (geocode.get("district") or geocode.get("township"))
+                if geocode
+                else ""
+            ),
+        )
+        # Platform address fields remain authoritative. Geocoding only fills
+        # missing values and supplies coordinates; it never overwrites a
+        # conflicting platform region. Parking data is not a store region.
+        province = province or derived_region[0]
+        city = city or derived_region[1]
+        district = district or derived_region[2]
+        if not address and geocode:
+            address = clean_text(geocode.get("formatted_address") or "")
         if not district:
-            district = parse_township(address) or parse_township(parking_address)
+            district = parse_township(address)
         begin = str(row.get("business_hours_begin") or detail.get("business_hours_begin") or "").strip()
         end = str(row.get("business_hours_end") or detail.get("business_hours_end") or "").strip()
         return {
@@ -244,6 +250,16 @@ class StoreSnapshotService:
             "province": province,
             "city": city,
             "district": district,
+            "platform_region": {
+                "province": platform_region[0],
+                "city": platform_region[1],
+                "district": platform_region[2],
+            },
+            "derived_region": {
+                "province": derived_region[0],
+                "city": derived_region[1],
+                "district": derived_region[2],
+            },
             "store_address": address,
             "business_hours": f"{begin}-{end}".strip("-"),
             "is_open": bool(begin and end),
@@ -278,7 +294,6 @@ class StoreSnapshotService:
         parking_address: str,
     ) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
         address_region = parse_region(address)
-        parking_region = parse_region(parking_address)
         rejected: list[dict[str, Any]] = []
         for query in geocode_query_candidates(
             store_name=store_name,
@@ -292,7 +307,7 @@ class StoreSnapshotService:
             conflicts = geocode_region_conflicts(
                 geocode,
                 address_region=address_region,
-                parking_region=parking_region,
+                parking_region=("", "", ""),
             )
             if conflicts:
                 rejected.append(
@@ -492,23 +507,17 @@ def geocode_query_candidates(
 
     store_name = clean_text(store_name)
     address = clean_text(address)
-    parking_address = clean_text(parking_address)
+    del parking_address
     address_region = parse_region(address)
-    parking_region = parse_region(parking_address)
     address_has_city = bool(address_region[1])
-    parking_has_city = bool(parking_region[1])
     candidates: list[str] = []
 
     if address and address_has_city:
         candidates.append(address)
-    if address and parking_address and parking_has_city:
-        candidates.append(f"{parking_address} {address}")
     if address and store_name:
         candidates.append(f"{store_name} {address}")
     if address:
         candidates.append(address)
-    if parking_address:
-        candidates.append(parking_address)
 
     output: list[str] = []
     for candidate in candidates:
@@ -700,7 +709,16 @@ def _parse_geocode_payload(value: Any) -> Any:
 def _first_geocode_item(items: Any) -> dict[str, Any]:
     if not isinstance(items, list) or not items:
         return {}
-    return _geocode_item_from_dict(items[0])
+    first = _geocode_item_from_dict(items[0])
+    if not first:
+        return {}
+    first["candidate_count"] = len(items)
+    first["first_candidate_region"] = {
+        key: first.get(key)
+        for key in ("province", "city", "district")
+        if first.get(key)
+    }
+    return first
 
 
 def _geocode_item_from_dict(value: Any) -> dict[str, Any]:

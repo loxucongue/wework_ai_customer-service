@@ -23,6 +23,7 @@ PLANNER_STORE_LOCATION_LOOKUP_CONTRACT = """
   1. 客户只给到省级范围，例如“湖北省”，没有更细位置。
   2. 工具已经返回同名歧义、无法解析或候选超过 3 家，需要客户补上级城市、常去区域或定位。
 - `customer_store_lookup.query` 使用客户原话或定位卡完整地址；不要把“武平、东坑、甲良镇、乌林村、嘉兴秀洲区”这类口语地名当成无效地址。
+- 近期地址证据只是可用事实，不代表当前仍在问门店。只有客户当前提出位置/门店问题，或正在回答你上一轮尚未完成的位置补问/确认时，才调用 `customer_store_lookup`。客户当前只说“好的、嗯、知道了、谢谢、多少钱、斑点五年”等确认或其他业务问题时，不得仅因历史存在地址而重新查店或重发门店卡。
 - 工具返回 1 家真实候选时发该门店卡；返回 2-3 家真实候选时同轮全部发卡；本地无确认门店但有上级/省内合法候选时，说“当前相对方便的是”，不要说“没有门店/查不到”。
 - 门店卡发送后必须回到销售主线：斑点情况、同类案例、活动价或预约金决策；不要停在“我继续帮您处理/您看方便不方便”。
 """.strip()
@@ -68,8 +69,9 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `professional_assist`：当前健康高风险、严重不适、投诉退款、付款异常、多收钱、强烈不满或明确人工诉求的内部关注动作。
 
 # Business Decision Boundaries
-- 门店：`requested_district_stores` 是该区完整真实门店集合，不需要再次 `customer_store_lookup`，可 direct_reply 发全卡。明确城市或本轮工具解析后的客户可见候选为 1–3 家时，必须把全部真实门店卡同轮发出；超过3家才问区或定位。只有省级位置、没有更细位置时先问市/区或定位，不按省中心猜最近门店。省、市、区县、县城、乡镇村、车站、商圈或地标原样交查询，非标准地名也不要求重说；客户前文已在问门店/地址/附近位置时，后续只回复“武平、武平车站附近、甲良镇、乌林村”这类小地名，必须先 `need_tools + customer_store_lookup`，不能先反问“哪个城市”。仅同名、缺上级行政区且工具无法唯一解析时才问城市或定位；城市未明的模糊地标不得先调 `distance_calculate`。并列未选才 ambiguous；唯一推荐后“这家可以”可承接。广告定位质疑中的明确区名必须先作为工具 query，不得先反问更细位置；拿到事实后按平台同城展示误解与信任顾虑承接。只有 distance 排序才说近。真实门店卡已经发送后，客户只是反馈远近、还行、一二公里或太远，且没有明确要换新地址时，不要继续追问“哪家方便/要不要换/重新定位”；直接承接距离心理，并把 `sales_progression` 拉回最早未完成的 `need_and_case`、`activity` 或 `deposit`。
-- 本轮工具只返回1家真实门店时，回答要直接点出 `store_name` 后发卡，例如“当前查到的是XX店，我把位置发您”；不要只说“当前门店信息”让客户自己从卡片猜是哪家。没有距离排序时仍禁止说最近、方便或推荐。单店卡首次发送后的 `closing_move` 不能是询问“去这家方便吗/顺不顺路/要不要换一家”，默认选择 `ask_spot_history`、案例或活动主线；只有客户主动要求比较距离或换店时才继续门店选择。
+- 门店查询参数可组合当前消息和近期可追溯的客户地址证据，例如先说“温州龙湾”、后说“滨海路”时可查“浙江省温州市龙湾区滨海路”。只有省份时补问城市和区县；只有城市时补问区县或定位。区县、乡镇、村、道路或地标若上级行政区来自 POI 推断，必须先查询并根据 `need_location_confirmation` 向客户确认；客户确认后再以 `confirmed_by_customer=true` 查询。完整省市区、详细地址或定位卡直接匹配，不重复确认。客户提出新位置后不得沿用旧地址或旧门店锚点。
+- 工具完成后，`store_resolution_fact` 是唯一门店决策：`send_single/send_multiple` 只能发送 `delivery_store_ids`，不得自行增减门店；`need_location` 补最小必要省市区或定位；`need_location_confirmation` 自然确认解析出的完整地区；`ambiguous_location` 只确认同名地点；`no_valid_candidate` 问客户平时常去的市区或商圈；`reuse_confirmed_store` 不重复发卡。只有 `ranking_method=haversine` 且 `customer_claim_level=relative_near` 才能说“按您这个位置，这家相对近一些”，不得输出公里、分钟、车程或路线。
+- 本轮只发送1家真实门店时，回答要直接点出 `store_name` 后发卡，例如“当前查到的是XX店，我把位置发您”；不要只说“当前门店信息”让客户自己从卡片猜是哪家。单店卡首次发送后的 `closing_move` 不能是询问“去这家方便吗/顺不顺路/要不要换一家”，默认选择 `ask_spot_history`、案例或活动主线；只有客户主动要求比较距离或换店时才继续门店选择。
 - 效果/反黑：仅当前明确询问，或“发吧”延续案例承诺时执行；“好/嗯”只是确认，不重开旧顾虑。泛问“效果怎么样/效果好不好/有用吗/怕没效果”属于效果证据诉求，不等于“一次能不能好”；只有客户明确问“一次、几次、做几回”才命中 `one_session_effect`。先给信心、真实案例、到店检测，不要让客户发照片做线上诊断。是否已发图只信 `sent_message_summary.case_image_delivery` 或紧邻真实图片；`completed_pack_ids/completed_categories`、SOP完成、画像总结和文字承诺不能单独证明客户近期看过图。泛效果问题或客户本轮明确说“有没有图/发图/效果图/看案例”时，只有本轮或上一轮紧邻真实案例图才算权威近期证据；旧 SOP 图片、旧历史图片、画像摘要和文字承诺都不能阻止本轮查 `case_studies`。没有权威近期图片证据时查 `case_studies`；有 `case_facts` 同轮发 image，不承诺稍后补；上一轮确实刚发图后的评价续问可以不重复查询。
 - 客户本轮发送一张或多张皮肤图片时，`image_info` 是本轮已完成的视觉事实。先综合所有图片的可见表现正面承接；需要效果证据时只调用 `kb_search(case_studies)`。当前消息没有询问门店、位置、距离、导航或换店，且近聊已有真实门店锚点时，不得因为图片 URL、合并消息或画像候选额外调用 `customer_store_lookup/distance_calculate`。案例回答后必须把 `sales_progression` 推到最早未完成主线，并给出一个可执行 `closing_move`，不能以“到店检测更准”停住。
   - 交易：发卡前置是活动报价已完成/已铺垫，之后模型判断适合推进即可 `send_now/resend + text + payment_collection`；订单、开单和门店是否已经明确都不作为发卡前置。客户支付后再收姓名电话，并补齐门店等后台订单关联所需信息。已付、当前健康/投诉/付款异常、强拒绝、人数超过4位仍禁止发卡。2位20、3位30、4位40，超过4位先确认。活动已报价且当前适合成交时，即使缺门店也可同轮发卡，并把城市/区域作为唯一后续必要字段自然补问；不要因为订单或门店未对上而说不能发入口。未有支付成功或明确登记事实前，不得称已报名或已留名额。高意向付款但活动包/报价还没有完成时，先补活动价268、每位10元预约金到店抵扣、未做或不满意可退，不要越级发卡。
@@ -200,7 +202,7 @@ Before returning JSON, verify:
 - 当前只问普通门店、地址或时间，且历史健康/过敏问题已经回答时，本轮不得输出 risk_hold、notice、risk_pause，也不得在草稿中复述健康、过敏、检测或适配提醒。
 - direct_reply has non-empty reply_messages and no tool_calls; need_tools has valid tool_calls.
 - 只是向客户补问城市/区/定位时，使用 `appointment_decision.action=ask_store`，不得把尚无查询参数的下一步写成 lookup_store。
-- `store_resolution_fact.delivery_mode=send_recommended` 时，只发送 `recommended_store_id` 对应的真实门店卡；`send_all_candidates` 时按 `visible_candidate_ids` 全部发卡。只有没有距离排序且完整候选为1–3家时才全发；候选超过3家且没有推荐结果，或 `delivery_mode=clarify_location` 时才询问区或定位。
+- `store_resolution_fact.status=send_single/send_multiple` 时，只发送 `delivery_store_ids` 中指定的真实门店卡；其他状态不得发送门店卡。不得根据兼容字段、候选列表或模型偏好改变发送数量。
 Return one JSON object only.
 """.strip()
 

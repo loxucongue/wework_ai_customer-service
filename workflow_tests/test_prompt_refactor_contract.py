@@ -78,6 +78,11 @@ def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_informat
     assert "订单和开单不是发卡前置" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不调用 available_time/create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "客户口头说“我付了/转好了”不能单独确认已到账" in PLANNER_TRANSACTION_PATCH_PROMPT
+
+
+def test_store_reply_prompt_does_not_suggest_route_copy_without_route_facts() -> None:
+    assert "具体路线点门店卡看更准" not in REPLY_SYSTEM_PROMPT
+    assert "不要补充路线、公里、分钟或车程" in REPLY_SYSTEM_PROMPT
     assert "截图方便时可发" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "姓名、电话、门店、到店日期和时间" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "不查档期、不创建排客" in REPLY_TRANSACTION_PATCH_PROMPT
@@ -149,14 +154,14 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "客户可见不输出公里、分钟、车程",
         "旧健康风险、旧门店、旧预约任务只有在客户当前明确延续时才主导本轮",
         "preferred_store/store_candidate 不是 confirmed store",
-        "平台同城展示误解与信任顾虑",
+        "平台同城展示",
         "客户只是反馈距离、说近/远、几公里、还可以",
         "已筛选的斑点改善意向人群",
         "不要让客户发照片做线上诊断",
         "sent_message_summary.case_image_delivery",
         "小程序收款卡/收款码或转账",
         "manual_transfer",
-        "requested_district_stores",
+        "store_resolution_fact",
         "平台结构化 POI",
         "不反问客户是否要看或了解",
         "当前普通已付流程只登记到店意向",
@@ -181,8 +186,8 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
         "不得称已报名或已留名额",
         "仅客户当前询问可退或退款时主动展开",
         "“好/嗯”只是确认，不重开旧顾虑",
-        "武平、武平车站附近",
-        "不能先反问“哪个城市”",
+        "温州龙湾",
+        "POI 推断",
     ]:
         assert business_rule in PLANNER_SYSTEM_PROMPT
     assert GLOBAL_STRUCTURED_NODE_CONTRACT in PLANNER_SYSTEM_PROMPT
@@ -199,11 +204,11 @@ def test_store_location_prompts_do_not_expose_local_no_store_wording() -> None:
     rules_text = json.dumps(rules, ensure_ascii=False)
     planner_facts = json.dumps(planner_business_rules_prompt_section(), ensure_ascii=False)
 
-    assert "本级无店时客户可见不说" in rules_text
-    assert "武平、武平车站附近" in PLANNER_SYSTEM_PROMPT
-    assert "客户可见不说“当地没有/暂无门店”" in planner_facts
+    assert "no_valid_candidate询问客户常去的市区或商圈" in rules_text
+    assert "温州龙湾" in PLANNER_SYSTEM_PROMPT
+    assert "POI 推断出的上级行政区必须先确认" in planner_facts
     assert "也不要说“XX没有门店/当地暂无门店/本地没有门店”" in REPLY_SYSTEM_PROMPT
-    assert "当前给您匹配到的是这家/这几家" in REPLY_SYSTEM_PROMPT
+    assert "询问客户平时常去的市区或商圈" in REPLY_SYSTEM_PROMPT
 
 
 def test_acne_marks_and_scars_are_online_bookable_scope() -> None:
@@ -487,7 +492,8 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "`current_known_store` 不覆盖歧义" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "unresolved/no_match" in REPLY_SYSTEM_PROMPT
     assert "不得用常识、相似地名或猜测补成某个城市" in REPLY_SYSTEM_PROMPT
-    assert "必须为 `visible_candidate_ids` 的 1–3 家真实门店逐一发送门店卡" in REPLY_SYSTEM_PROMPT
+    assert "`status=send_single` 时只发送 `delivery_store_ids` 中唯一真实门店卡" in REPLY_SYSTEM_PROMPT
+    assert "`send_multiple` 时发齐其中 2–3 家" in REPLY_SYSTEM_PROMPT
     assert "孤立地名" in PLANNER_SYSTEM_PROMPT
     assert "禁止 `nearby_candidates/distance_calculate`" in PLANNER_SYSTEM_PROMPT
 
@@ -947,7 +953,7 @@ def test_ad_location_objection_requires_store_facts_before_replying() -> None:
     assert "不要直接说“某区没有门店、暂无门店、没有对应门店”" in REPLY_SYSTEM_PROMPT
     assert "不自动等于退出" in REPLY_SYSTEM_PROMPT
     assert "到店时间后面按客户方便安排" in REPLY_SYSTEM_PROMPT
-    assert "只有 `recommended_store.reason=distance_calculate_rank_1`" in REPLY_SYSTEM_PROMPT
+    assert "只有 `store_resolution_fact.ranking_method=haversine`" in REPLY_SYSTEM_PROMPT
 
 
 def test_vision_prompt_is_sectioned_json_only_and_non_diagnostic() -> None:

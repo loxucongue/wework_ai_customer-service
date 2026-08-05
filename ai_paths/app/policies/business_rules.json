@@ -166,7 +166,7 @@
       "appointment_record_query",
       "professional_assist"
     ],
-    "store_policy": "门店覆盖概览来自store_scope_summary；具体门店、地址、停车、营业时间只能来自customer_store_lookup；distance_calculate只用于排序推荐门店，客户可见回复不输出公里、分钟或车程"
+    "store_policy": "门店覆盖概览来自store_scope_summary；具体门店、地址、停车、营业时间只能来自customer_store_lookup；距离工具仅用合法经纬度执行Haversine直线距离排序；最终只按store_resolution_fact.status和delivery_store_ids发卡，客户可见不输出公里、分钟、车程或路线"
   },
   "conversion_psychology": {
     "goal": "先解决客户当前最大心理阻力，再推进一个最自然的成交动作，最终把兴趣推进到门店时间和10元预约金。",
@@ -268,16 +268,16 @@
         {
           "id": "S2_CITY_ONLY",
           "scenes": ["只给城市", "问城市有没有门店"],
-          "decision": "省、市、区县、县级市、乡镇、村或地标都先调用customer_store_lookup解析行政归属。客户前文在问门店/地址/附近门店时，后续只回复县城、乡镇、车站、商圈或小地名，也视为门店查询参数，先查工具，不先反问“哪个城市”。明确城市且完整候选仅2至3家时直接发送全部真实门店卡；超过3家再询问区县或定位。本级无门店时使用父级或省内真实候选，并在客户要求最近或方便时调用distance_calculate排序。只有省份过宽、地名无法解析或存在歧义时才补问上级地区或定位。",
+          "decision": "门店查询地址来自当前消息和近期可追溯的客户地址证据。只有省份时补问城市和区县；只有城市时补问区县或定位；区县、乡镇、村、道路或地标若由POI补全上级行政区，先向客户确认，确认后再匹配。完整省市区、详细地址或定位卡直接匹配。工具完成后只按store_resolution_fact.status和delivery_store_ids发送门店卡。",
           "tools": ["customer_store_lookup", "distance_calculate"],
-          "reply_focus": "小城市仅2至3家时全部发卡让客户选择；本级无店时客户可见不说“当地没有/暂无门店”，改说“我给您匹配到当前可去/相对合适的真实门店”并发真实候选；有distance_calculate推荐结果时才可说最近或更方便；省份过宽、城市门店较多或地名歧义时只补一个必要位置事实。"
+          "reply_focus": "信息不足只补一个必要位置事实；推断地区先自然确认；send_single发送唯一门店卡，send_multiple发送2至3家，no_valid_candidate询问客户常去的市区或商圈。只有Haversine排序事实时可说相对近，不说最近、交通方便、公里或车程。"
         },
         {
           "id": "S2_LOCATION_DETAIL",
           "scenes": ["区", "机场", "地铁站", "商圈", "地标", "附近哪家"],
-          "decision": "用客户范围门店候选；需要最近排序时调用距离工具",
+          "decision": "先建立可追溯LocationEvidence；推断地区经客户确认后再从客户范围合法门店中匹配，具备双方合法经纬度时用Haversine排序",
           "tools": ["customer_store_lookup", "distance_calculate"],
-          "reply_focus": "有距离事实只说优先哪家/哪家更近一些，不输出几公里、几分钟或车程"
+          "reply_focus": "有Haversine排序事实只说按客户位置相对近一些，不输出公里、分钟、车程、路线或交通最方便"
         },
         {
           "id": "S2_ADDRESS_PARKING_HOURS",

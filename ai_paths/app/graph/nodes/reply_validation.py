@@ -153,10 +153,12 @@ def _requested_store_scope_regions(state: dict[str, Any]) -> list[set[str]]:
         if isinstance(structured.get("store_resolution_fact"), dict)
         else {}
     )
-    if str(resolution.get("delivery_mode") or "") == "send_all_candidates":
+    if str(resolution.get("status") or "") == "send_multiple" or str(
+        resolution.get("delivery_mode") or ""
+    ) == "send_all_candidates":
         resolution_ids = {
             str(item or "").strip()
-            for item in resolution.get("visible_candidate_ids") or []
+            for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
             if str(item or "").strip()
         }
         if 1 <= len(resolution_ids) <= 3:
@@ -256,6 +258,7 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_case_image_priority(messages, state)
     _validate_effect_absolute_safety_claims(messages, state)
     _validate_province_only_store_delivery(messages, state)
+    _validate_store_resolution_v2_contract(messages, state)
     _validate_store_resolution_delivery_mode(messages, state)
     _validate_store_address_message_facts(messages, state)
     _validate_multi_store_address_same_district(messages, state)
@@ -722,7 +725,12 @@ def _current_turn_requires_complete_store_listing(state: dict[str, Any]) -> bool
         if isinstance(structured.get("store_resolution_fact"), dict)
         else {}
     )
-    if str(resolution.get("delivery_mode") or "") == "send_all_candidates":
+    resolution_status = str(resolution.get("status") or "")
+    if resolution_status:
+        return resolution_status == "send_multiple"
+    if str(
+        resolution.get("delivery_mode") or ""
+    ) == "send_all_candidates":
         return True
     lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
     if str(lookup.get("status") or "") == "ok":
@@ -760,6 +768,45 @@ def _validate_store_resolution_delivery_mode(messages: list[dict[str, Any]], sta
         if delivery_mode == "clarify_service_area":
             raise ValueError("store_cards_not_allowed_when_service_area_clarification_required")
         raise ValueError("store_cards_not_allowed_when_location_clarification_required")
+
+
+def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    structured = _structured_facts(state)
+    resolution = (
+        structured.get("store_resolution_fact")
+        if isinstance(structured.get("store_resolution_fact"), dict)
+        else {}
+    )
+    status = str(resolution.get("status") or "")
+    if not status:
+        return
+    emitted = _emitted_store_address_ids(messages)
+    delivery_ids = {
+        str(item or "").strip()
+        for item in resolution.get("delivery_store_ids") or []
+        if str(item or "").strip()
+    }
+    if status in {
+        "need_location",
+        "need_location_confirmation",
+        "ambiguous_location",
+        "no_valid_candidate",
+        "reuse_confirmed_store",
+    }:
+        if emitted:
+            if status == "no_valid_candidate":
+                raise ValueError("store_cards_not_allowed_when_service_area_clarification_required")
+            if status in {"need_location", "need_location_confirmation", "ambiguous_location"}:
+                raise ValueError("store_cards_not_allowed_when_location_clarification_required")
+            raise ValueError(f"store_cards_not_allowed_for_resolution_status:{status}")
+        return
+    if status == "send_single":
+        if len(delivery_ids) != 1 or emitted != delivery_ids:
+            raise ValueError("store_resolution_send_single_contract_violation")
+        return
+    if status == "send_multiple":
+        if not 2 <= len(delivery_ids) <= 3 or emitted != delivery_ids:
+            raise ValueError("store_resolution_send_multiple_contract_violation")
 
 
 def _validate_province_only_store_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
@@ -851,10 +898,15 @@ def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
         if isinstance(structured.get("store_resolution_fact"), dict)
         else {}
     )
-    if str(resolution.get("delivery_mode") or "") == "send_all_candidates":
+    resolution_status = str(resolution.get("status") or "")
+    if resolution_status and resolution_status != "send_multiple":
+        return set()
+    if resolution_status == "send_multiple" or str(
+        resolution.get("delivery_mode") or ""
+    ) == "send_all_candidates":
         ids = {
             str(item or "").strip()
-            for item in resolution.get("visible_candidate_ids") or []
+            for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
             if str(item or "").strip()
         }
         if 1 <= len(ids) <= 3:
@@ -1200,10 +1252,12 @@ def _has_distance_ranking_fact(structured: dict[str, Any]) -> bool:
         comparable_candidate_count = int(store_lookup_status.get("comparable_candidate_count") or 0)
     except (TypeError, ValueError):
         comparable_candidate_count = 0
+    resolution = structured.get("store_resolution_fact") if isinstance(structured.get("store_resolution_fact"), dict) else {}
     return (
-        recommended_store.get("reason") == "distance_calculate_rank_1"
+        recommended_store.get("reason") in {"distance_calculate_rank_1", "haversine_rank_1"}
         and store_lookup_status.get("source") == "distance_calculate"
-        and comparable_candidate_count >= 2
+        and comparable_candidate_count >= 1
+        and str(resolution.get("ranking_method") or "haversine") == "haversine"
         and recommendation_status not in {"distance_tool_unavailable", "insufficient_comparable_candidates", "error", "failed"}
     )
 

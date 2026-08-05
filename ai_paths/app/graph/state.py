@@ -66,6 +66,8 @@ class AgentState(TypedDict, total=False):
     store_context_status: str
     store_context_elapsed_ms: int
     store_context_skipped_steps: list[str]
+    location_evidence: dict[str, Any]
+    store_resolution_fact: dict[str, Any]
     input_quality_flags: list[str]
     model_deadline: dict[str, Any]
     model_context_metrics: dict[str, Any]
