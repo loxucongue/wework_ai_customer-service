@@ -8,6 +8,25 @@ MIN_REQUIRED_SIMULATION_SCENARIOS = 100
 MIN_REQUIRED_SIMULATION_ATTEMPTS = 3
 MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS = 5
 SECRET_LIKE_PATTERN = re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9][A-Za-z0-9_-]{10,}")
+REQUIRED_SIMULATION_COVERAGE_CATEGORIES = (
+    "门店V2",
+    "SOP主线",
+    "效果案例",
+    "精准问答",
+    "项目范围",
+    "健康风险",
+    "门店匹配",
+    "门店工具",
+    "门店异议",
+    "SOP Gate",
+    "预约金",
+    "已付登记",
+    "客户异议",
+    "明确拒绝",
+    "SOP Event",
+    "消息归一",
+    "模型恢复",
+)
 
 
 def payload_isolation_report_blockers(report: dict[str, Any]) -> list[str]:
@@ -278,6 +297,17 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     coverage = _dict(simulation.get("coverage"))
     if coverage.get("schema_version") != "offline_simulation_coverage_audit_v1":
         blockers.append("simulation_missing_coverage_audit")
+    required_categories = _list_strings(coverage.get("required_categories"))
+    if not required_categories:
+        blockers.append("simulation_missing_required_category_manifest")
+    else:
+        required_set = set(required_categories)
+        canonical_set = set(REQUIRED_SIMULATION_COVERAGE_CATEGORIES)
+        for item in REQUIRED_SIMULATION_COVERAGE_CATEGORIES:
+            if item not in required_set:
+                blockers.append(f"simulation_required_category_manifest_missing:{item}")
+        for item in sorted(required_set - canonical_set):
+            blockers.append(f"simulation_required_category_manifest_unapproved:{item}")
     missing_categories = _list_strings(coverage.get("missing_required_categories"))
     if missing_categories:
         blockers.extend(f"simulation_missing_required_category:{item}" for item in missing_categories)

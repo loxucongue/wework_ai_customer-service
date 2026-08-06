@@ -4,6 +4,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from app.services.reply_chain_external_gate_evidence import (
+    REQUIRED_SIMULATION_COVERAGE_CATEGORIES,
     business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
     model_semantics_ownership_report_blockers,
@@ -103,6 +104,7 @@ def _simulation_ready() -> dict:
         },
         "coverage": {
             "schema_version": "offline_simulation_coverage_audit_v1",
+            "required_categories": list(REQUIRED_SIMULATION_COVERAGE_CATEGORIES),
             "missing_required_categories": [],
             "missing_critical_required_categories": [],
         },
@@ -708,6 +710,7 @@ def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:
     simulation = _simulation_ready()
     simulation["coverage"] = {
         "schema_version": "offline_simulation_coverage_audit_v1",
+        "required_categories": list(REQUIRED_SIMULATION_COVERAGE_CATEGORIES),
         "missing_required_categories": ["健康风险"],
     }
     simulation["summary"]["acceptance"]["scenario_coverage_complete"] = False
@@ -716,6 +719,27 @@ def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:
 
     assert "simulation_missing_required_category:健康风险" in blockers
     assert "simulation_scenario_coverage_incomplete" in blockers
+
+
+def test_external_gate_evidence_blocks_simulation_coverage_manifest_drift() -> None:
+    simulation = _simulation_ready()
+    simulation["coverage"]["required_categories"] = [
+        item for item in REQUIRED_SIMULATION_COVERAGE_CATEGORIES if item != "明确拒绝"
+    ] + ["自定义未审批分类"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_required_category_manifest_missing:明确拒绝" in blockers
+    assert "simulation_required_category_manifest_unapproved:自定义未审批分类" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_simulation_coverage_manifest() -> None:
+    simulation = _simulation_ready()
+    del simulation["coverage"]["required_categories"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_required_category_manifest" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_or_failed_simulation_infrastructure_acceptance() -> None:
