@@ -6,6 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PLAN_PATH = ROOT / "docs" / "parallel_gate_planner_refactor_plan.md"
 MATRIX_PATH = ROOT / "docs" / "rule_ownership_matrix.md"
+CHECKLIST_PATH = ROOT / "docs" / "reply_chain_refactor_execution_checklist.md"
 
 
 def test_refactor_plan_keeps_review_and_test_gates() -> None:
@@ -140,6 +141,33 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "must check all sixteen gates",
         "diagnostic evidence only",
         "must not be deployed from this branch",
+    ]:
+        assert marker in text
+
+
+def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None:
+    text = CHECKLIST_PATH.read_text(encoding="utf-8")
+
+    for marker in [
+        "run_refactor_model_matrix.py",
+        "--profiles claude,gemini,openai",
+        "--require-keys",
+        "claude-opus-4-7",
+        "gemini-3.5-flash",
+        "gpt-5.4",
+        "schema_version=reply_chain_refactor_model_matrix_v1",
+        "profiles_requested",
+        "profile_summary.semantic_pass_rate",
+        "p50_ms",
+        "p90_ms",
+        "profile_summary.accepted_by_release_thresholds=true",
+        "safety.api_keys_written_to_report=false",
+        "safety.production_customer_messages_sent=false",
+        "safety.production_writes_allowed=false",
+        "reply_chain_behavior_switch_guard(model_matrix_report=...)",
+        "a valid matrix report",
+        "authoritative evidence",
+        "rg -n \"sk-[A-Za-z0-9]",
     ]:
         assert marker in text
 

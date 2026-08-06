@@ -276,7 +276,8 @@ python ai_paths/scripts/run_refactor_model_matrix.py `
   --profiles claude,gemini,openai `
   --attempts 3 `
   --critical-attempts 5 `
-  --concurrency 2
+  --concurrency 2 `
+  --require-keys
 ```
 
 The matrix currently compares:
@@ -287,6 +288,31 @@ The matrix currently compares:
 
 The keys must only live in local or server environment variables. Do not write
 them into committed tests, fixtures, reports, Markdown, or `.env` files.
+
+Required matrix report:
+
+- `schema_version=reply_chain_refactor_model_matrix_v1`
+- `profiles_requested` includes `claude`, `gemini`, and `openai`
+- each profile is `completed`
+- each completed profile has `profile_summary.semantic_pass_rate`, `p50_ms`, and `p90_ms`
+- at least one profile has `profile_summary.accepted_by_release_thresholds=true`
+- `safety.api_keys_written_to_report=false`
+- `safety.production_customer_messages_sent=false`
+- `safety.production_writes_allowed=false`
+
+Before any behavior-switch review, attach the matrix report to
+`reply_chain_behavior_switch_guard(model_matrix_report=...)`. The release
+diagnostics may list `model_matrix_review` as missing, but a valid matrix report
+is the authoritative evidence that proves that gate. If the report is missing,
+incomplete, skipped because of absent keys, or contains any safety marker other
+than the values above, the guard must block.
+
+After running the matrix, scan changed files and reports for secrets before
+committing:
+
+```powershell
+rg -n "sk-[A-Za-z0-9]|REFACTOR_MODEL_.*_API_KEY=.*[^>]" docs workflow_tests ai_paths .tmp_runtime
+```
 
 ### T8 Core Regression Bundle
 
