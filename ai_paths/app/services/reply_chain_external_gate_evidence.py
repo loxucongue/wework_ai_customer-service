@@ -42,6 +42,9 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     missing_categories = _list_strings(coverage.get("missing_required_categories"))
     if missing_categories:
         blockers.extend(f"simulation_missing_required_category:{item}" for item in missing_categories)
+    missing_critical_categories = _list_strings(coverage.get("missing_critical_required_categories"))
+    if missing_critical_categories:
+        blockers.extend(f"simulation_missing_critical_required_category:{item}" for item in missing_critical_categories)
     summary = _dict(simulation.get("summary"))
     if _int_value(summary.get("infrastructure_failures")) != 0:
         blockers.append(f"simulation_infrastructure_failures:{summary.get('infrastructure_failures')}")

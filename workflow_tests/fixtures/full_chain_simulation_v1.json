@@ -324,6 +324,7 @@
     {
       "id": "opening_to_need",
       "category": "SOP主线",
+      "critical": true,
       "semantic_goal": "真人式承接新客并主动进入斑点需求或门店主线。",
       "timeline": [{"kind": "customer_message", "content": "你好"}],
       "followup": "脸上的斑有五六年了",
@@ -595,6 +596,7 @@
     {
       "id": "soft_refusal",
       "category": "客户异议",
+      "critical": true,
       "semantic_goal": "识别为暂缓而非永久放弃，用一个自然理由继续推进活动资格。",
       "initial": {
         "conversation": ["小贝: 当前活动总价268，每位10元可以先留活动名额。"],

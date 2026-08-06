@@ -132,6 +132,7 @@ def _simulation_ready() -> dict:
         "coverage": {
             "schema_version": "offline_simulation_coverage_audit_v1",
             "missing_required_categories": [],
+            "missing_critical_required_categories": [],
         },
         "effect_review": {
             "schema_version": "offline_simulation_effect_review_v1",

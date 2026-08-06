@@ -378,7 +378,10 @@ def _aggregate(
                 "semantic_at_least_90": semantic_pass_rate >= 0.9,
                 "critical_all_pass": not failed_critical_scenarios,
                 "infrastructure_failures_zero": infrastructure_failures == 0,
-                "scenario_coverage_complete": not coverage["missing_required_categories"],
+                "scenario_coverage_complete": (
+                    not coverage["missing_required_categories"]
+                    and not coverage["missing_critical_required_categories"]
+                ),
                 "isolation_audit_passed": isolation_audit["passed"],
             },
         },
@@ -402,10 +405,14 @@ def _coverage_audit(scenarios: list[dict[str, Any]]) -> dict[str, Any]:
         if bool(scenario.get("critical")):
             critical_category_counts[category] = critical_category_counts.get(category, 0) + 1
     missing = [category for category in REQUIRED_SIMULATION_CATEGORIES if category_counts.get(category, 0) <= 0]
+    missing_critical = [
+        category for category in REQUIRED_SIMULATION_CATEGORIES if critical_category_counts.get(category, 0) <= 0
+    ]
     return {
         "schema_version": "offline_simulation_coverage_audit_v1",
         "required_categories": list(REQUIRED_SIMULATION_CATEGORIES),
         "missing_required_categories": missing,
+        "missing_critical_required_categories": missing_critical,
         "category_counts": dict(sorted(category_counts.items())),
         "critical_category_counts": dict(sorted(critical_category_counts.items())),
     }
@@ -486,10 +493,15 @@ def render_markdown(report: dict[str, Any]) -> str:
     ]
     coverage = report.get("coverage") if isinstance(report.get("coverage"), dict) else {}
     missing_categories = coverage.get("missing_required_categories") or []
+    missing_critical_categories = coverage.get("missing_critical_required_categories") or []
     if missing_categories:
         lines.append(f"- 缺失必测分类：{', '.join(str(item) for item in missing_categories)}")
     else:
         lines.append("- 必测分类：完整")
+    if missing_critical_categories:
+        lines.append(f"- 缺失关键场景分类：{', '.join(str(item) for item in missing_critical_categories)}")
+    else:
+        lines.append("- 关键场景分类：完整")
     lines.extend(["", "| 分类 | 场景数 | 关键场景数 |", "|---|---:|---:|"])
     category_counts = coverage.get("category_counts") if isinstance(coverage.get("category_counts"), dict) else {}
     critical_counts = (

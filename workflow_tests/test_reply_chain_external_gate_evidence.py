@@ -46,6 +46,7 @@ def _simulation_ready() -> dict:
         "coverage": {
             "schema_version": "offline_simulation_coverage_audit_v1",
             "missing_required_categories": [],
+            "missing_critical_required_categories": [],
         },
         "effect_review": {
             "schema_version": "offline_simulation_effect_review_v1",
@@ -301,6 +302,17 @@ def test_external_gate_evidence_blocks_missing_simulation_review_artifacts() -> 
     blockers = simulation_report_blockers(simulation)
 
     assert "simulation_missing_review_artifacts" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_critical_simulation_category() -> None:
+    simulation = _simulation_ready()
+    simulation["coverage"]["missing_critical_required_categories"] = ["精准问答"]
+    simulation["summary"]["acceptance"]["scenario_coverage_complete"] = False
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_critical_required_category:精准问答" in blockers
+    assert "simulation_scenario_coverage_incomplete" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_simulation_effect_review() -> None:
