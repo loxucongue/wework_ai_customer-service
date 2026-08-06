@@ -16,7 +16,7 @@
 2. Planner 同时承载工具规划、成交节奏、客户心理、主线推进和客户可见草稿。
 3. Reply 在 Planner 之外又补动作，导致历史承接和当前意图不稳定。
 4. 客户画像、历史事件和旧策略摘要有时压过最新聊天原话。
-5. “回答当前问题后带一个主线动作”过于粗糙，容易在客户已经反复表示时间不确定、正在忙、明确拒绝或存在健康风险时机械追问。
+5. “回答当前问题后带一个主线动作”过于粗糙，容易在客户反复表示时间不确定、正在忙、明确拒绝或存在健康风险时机械追问。
 
 重构目标不是让 Gate 变成新的大脑，也不是让 Planner 继续决定客户心理，而是：
 
@@ -291,7 +291,7 @@ Tool Planner 只规划只读工具事实，不能输出客户话术，不能判�
     }
   ],
   "required_fact_fields": ["resolved_location", "visible_store_candidates"],
-  "stop_conditions": ["获得1到3家完整可见门店"],
+  "stop_conditions": ["获得 1 到 3 家完整可见门店"],
   "customer_question_if_incomplete": {
     "required": false,
     "field": "",
@@ -316,73 +316,69 @@ Tool Planner 只规划只读工具事实，不能输出客户话术，不能判�
 
 工具失败不能让模型凭空编造事实。Reply 可以基于缺失事实生成最小反问。
 
-早执行只读工具前必须通过依赖审计：
-
-- 每个被 `depends_on` 引用的 `call_id` 必须存在于同一批只读工具计划中。
-- `call_id` 不能重复。
-- 依赖缺失或重复时只能进入 shadow blocker，不能提前执行。
-
 ## 10. Deterministic Join
 
 Join 是确定性合并层，不是第三个模型大脑。
 
-### 10.1 负责
+负责：
 
 - 合并 Gate 候选、Tool Planner 计划、工具事实和权威事实。
 - 判断是否具备 Gate 安全直回条件。
 - 为 Reply 准备清晰 handoff。
-- 记录冲突和阻断原因。
 - 输出 `direct_reply_guard_audit`，证明 Gate 直回只在静态候选存在、无动态事实、无只读工具和无未知工具时成立。
+- 输出 `model_semantics_ownership`，证明 Gate/Tool Planner/Join 没有接管客户心理、销售节奏或最终话术。
 
-### 10.2 不负责
+不负责：
 
-- 生成客户可见业务话术。
-- 选择销售心理、逼单理由或主线动作。
-- 修改 SOP 文案。
-- 用代码判断普通客户意图。
+- 生成新客户话术。
+- 选择成交理由。
+- 判断客户是否应该被继续推进。
+- 修改 SOP 或精准话术。
 
 ## 11. Reply
 
 Reply 是复杂场景最终业务大脑。
 
-### 11.1 输入
+输入：
 
 - 完整带时间聊天。
-- 当前客户消息。
-- 权威事实账本。
+- 当前消息。
+- 权威事实。
 - Gate 的 SOP/精准话术/简单场景候选。
 - Tool Planner 的工具计划和只读工具事实。
-- Join 的路由与冲突说明。
-- 业务规则包和硬边界。
+- 结构 blocker 和缺失事实说明。
 
-### 11.2 负责
+负责：
 
 - 精准回答当前问题。
-- 理解完整历史和客户当前态度。
-- 判断本轮唯一主线动作。
-- 将 SOP 或精准话术自然融入微信对话。
-- 根据工具事实生成最终客户可见消息。
-- 在客户不适合继续推进时停止压单或改为轻触。
+- 结合完整历史判断客户当前真实状态和意向。
+- 只选择一个自然主线动作；可以是继续推进，也可以是停止压单、等待、解释、收信息或安抚。
+- 将 SOP/精准话术自然融合，不机械拼接。
+- 使用真实门店、案例、订单、支付事实。
+- 不输出“继续帮您处理”“安排下一步”等机器人句式。
 
-### 11.3 不负责
+不负责：
 
-- 编造门店、案例、订单、支付、距离或档期事实。
-- 覆盖代码提供的已付、风险、门店可见范围等硬事实。
-- 一轮推进多个无关主线动作。
-- 输出内部接口失败、入口未对上、模型错误等系统状态。
+- 绕过硬边界。
+- 编造门店、案例、地址、订单、支付、档期、距离或老师事实。
+- 直接写数据库或主动发送。
 
-## 12. Commit Coordinator 与延后写操作
+## 12. Commit Coordinator
 
-所有写操作必须在最终回复硬校验后执行：
+Commit Coordinator 只在最终回复校验通过后执行持久化和写动作。
 
-- SOP task 创建与发送记录。
-- send_once 更新。
-- 客户画像和状态写入。
-- 订单创建或关联。
-- 手机号同步。
-- 主动发送。
+允许：
 
-并行阶段不得写库、不得发送、不得改变线上状态。
+- 写虚拟/真实 outbox。
+- 记录 SOP task、send_once、发送计数。
+- 在已付且姓名电话齐全后尝试后台订单创建或关联。
+- 记录审计 trace。
+
+不允许：
+
+- 在 Reply 前执行真实写操作。
+- 因并行分支预测结果提前发消息。
+- 使用失败的 shadow 输出影响生产链路。
 
 ## 13. 关键业务规则保护
 
@@ -402,9 +398,7 @@ Reply 是复杂场景最终业务大脑。
 
 ## 14. Review 安排
 
-每阶段两轮 Review：结构 review 和业务规则保护 review。任何阶段缺一轮都不能进入下一阶段，也不能作为行为切换证据。
-
-每个批次必须做两轮 review。
+每个阶段两轮 review：结构 review 和业务规则保护 review。任何阶段缺一轮都不能进入下一阶段，也不能作为行为切换证据。
 
 结构 review：
 
@@ -434,20 +428,20 @@ Reply 是复杂场景最终业务大脑。
 - T5：Reply handoff 与旧 Planner 语义残留测试。
 - T6：并行组合测试。
 - T7：离线全链路仿真。
-- T8：Shadow 对比。
+- T8：Shadow 对比与行为开关审核。
 
 基础静态测试：
 
 ```powershell
 git diff --check
-$env:PYTHONPATH='ai_paths'
+$env:PYTHONPATH='.;ai_paths'
 python -m py_compile <本批次改动的 Python 文件>
 ```
 
 核心重构回归：
 
 ```powershell
-$env:PYTHONPATH='ai_paths'
+$env:PYTHONPATH='.;ai_paths'
 python -m pytest `
   workflow_tests/test_reply_chain_refactor_contract.py `
   workflow_tests/test_reply_chain_refactor_settings.py `
@@ -484,6 +478,7 @@ python -m pytest `
 - 模型矩阵必须是 full release gate candidate，不能用 targeted smoke 替代。
 - 模型矩阵不能跳过语义评审，普通场景 attempts 至少 3，关键场景 attempts 至少 5。
 - 报告中列出新旧链路客户可见回复差异，且人工确认没有偏离项目初衷。
+- `reply_chain_behavior_switch_guard` 只有在所有外部证据、rollback 计划和人工审核 reviewed evidence 齐全时才允许行为切换。
 
 ## 17. 回滚策略
 
@@ -493,14 +488,20 @@ python -m pytest `
 - `main` 保持生产唯一来源。
 - 本分支提交不得部署。
 
-## 18. 当前下一步
+## 18. 当前状态与下一步
 
-当前 `codex/reply-chain-refactor` 已完成 B0-B6 的主要 shadow 骨架：
+当前 `codex/reply-chain-refactor` 已完成 B0-B8 的主要 shadow 骨架和行为开关审核门禁：
 
 1. 当前生产串行行为保持不变。
 2. Shared Context、Gate、Tool Planner、Join、Reply handoff、Commit shadow、Parallel runner、Comparison、Diagnostics、Bundle audit 均有结构审计。
 3. Gate/Tool Planner/Join 不成为业务大脑的边界已有自动 blocker。
-4. Release review checklist 仍是诊断证据，不自称批准行为切换。
-5. 当前所有改动只允许提交到 `codex/reply-chain-refactor`，不得部署，不得合入 `main`。
+4. 离线仿真报告、三模型矩阵报告、payload isolation、business wording freeze、rollback evidence、model semantics ownership 都已纳入行为开关证据要求。
+5. Human review 不能只写 `approved=true`；必须列出已审核的证据清单和 rollback plan。
+6. 当前所有改动只允许提交到 `codex/reply-chain-refactor`，不得部署，不得合入 `main`。
 
-下一阶段应进入 B7：完善离线全链路仿真门禁，使用脱敏历史和模拟多轮场景证明新链路不丢业务规则、不让 Gate/Planner 重新接管客户心理和销售节奏。
+下一阶段不是启用行为切换，而是继续补强效果验证：
+
+- 使用真实模型完成三模型矩阵准确率和速度评估。
+- 使用离线仿真反复覆盖门店、支付、已付、健康风险、SOP、精准回复和软拒绝组合场景。
+- 对任何效果退化先修 prompt、上下文和事实输入，不新增 Python 关键词业务分支。
+- 行为切换仍保持 blocked，直到人工审核基于完整证据明确批准。

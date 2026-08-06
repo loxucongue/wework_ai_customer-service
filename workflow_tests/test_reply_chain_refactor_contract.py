@@ -17,15 +17,15 @@ def test_refactor_plan_keeps_review_and_test_gates() -> None:
         "Gate 不是最终表达大脑",
         "Tool Planner 不输出客户话术",
         "Reply 是复杂场景最终业务大脑",
-        "每阶段两轮 Review",
+        "每个阶段两轮 review",
         "T0：合同与隔离测试",
         "T4：Join 确定性测试",
         "T6：并行组合测试",
         "T7：离线全链路仿真",
-        "T8：Shadow 对比",
+        "T8：Shadow 对比与行为开关审核",
         "不得提交到 `main`，不得部署，不得主动发送真实客户消息",
         "Gate 必须提供非空静态 `direct_reply_candidate`，否则交 Reply 恢复表达",
-        "依赖缺失或重复时只能进入 shadow blocker，不能提前执行",
+        "行为切换仍保持 blocked，直到人工审核基于完整证据明确批准",
     ]:
         assert marker in text
 
@@ -33,14 +33,18 @@ def test_refactor_plan_keeps_review_and_test_gates() -> None:
 def test_refactor_plan_is_readable_utf8_without_common_encoding_damage() -> None:
     text = PLAN_PATH.read_text(encoding="utf-8")
     damaged_markers = [
-        "�",
+        "锟",
         "????",
+        "閵",
+        "閸",
+        "娑撳秴",
+        "缁惧灝",
+        "閻",
+        "閺傚洦",
         "銆",
-        "鍙",
-        "涓嶅",
-        "绾垮",
-        "鐩",
-        "鏂囨",
+        "绗",
+        "鍒",
+        "杈",
     ]
 
     for marker in damaged_markers:
@@ -61,6 +65,19 @@ def test_refactor_plan_keeps_gate_and_planner_from_becoming_brains() -> None:
         assert marker in text
 
 
+def test_refactor_plan_documents_current_behavior_switch_status_without_claiming_deployment() -> None:
+    text = PLAN_PATH.read_text(encoding="utf-8")
+
+    for marker in [
+        "当前 `codex/reply-chain-refactor` 已完成 B0-B8 的主要 shadow 骨架和行为开关审核门禁",
+        "Human review 不能只写 `approved=true`",
+        "当前所有改动只允许提交到 `codex/reply-chain-refactor`，不得部署，不得合入 `main`",
+        "使用真实模型完成三模型矩阵准确率和速度评估",
+        "对任何效果退化先修 prompt、上下文和事实输入，不新增 Python 关键词业务分支",
+    ]:
+        assert marker in text
+
+    assert "下一阶段应进入 B7" not in text
 def test_rule_matrix_active_rules_have_target_owner_and_tests() -> None:
     rows = _matrix_rows()
     assert rows, "rule ownership matrix must not be empty"
