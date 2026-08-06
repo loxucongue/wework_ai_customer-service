@@ -33,6 +33,113 @@ FACT_AND_TOOL_FIELDS = (
     "read_only_tool_executor_shadow",
     "reply_chain_join_shadow",
 )
+LEGACY_FIELD_TARGETS: dict[str, dict[str, str]] = {
+    "planner_reply_messages": {
+        "target_reply_contract": "reply_output_schema.final_customer_visible_messages",
+        "migration_rule": "Reply must generate final customer-visible messages; legacy Planner drafts are reference-only until removed.",
+        "owner_after_migration": "reply",
+    },
+    "planner_decision": {
+        "target_reply_contract": "reply_input.turn_context.legacy_route_signal",
+        "migration_rule": "Reply may inspect old route signals during shadow comparison, but Tool Planner and Join own factual routing.",
+        "owner_after_migration": "reply",
+    },
+    "planner_stage": {
+        "target_reply_contract": "reply_input.turn_context.legacy_stage_signal",
+        "migration_rule": "Reply decides final turn stage from complete chat and facts; this field is only migration evidence.",
+        "owner_after_migration": "reply",
+    },
+    "planner_sub_rule_id": {
+        "target_reply_contract": "reply_input.turn_context.legacy_rule_signal",
+        "migration_rule": "Reply uses selected SOP/precision content from Gate, not Planner sub-rule IDs, after migration.",
+        "owner_after_migration": "reply",
+    },
+    "conversion_stage": {
+        "target_reply_contract": "reply_input.customer_state_signals.conversion_stage_reference",
+        "migration_rule": "Reply owns conversion-stage interpretation from the timestamped chat; legacy value is reference-only.",
+        "owner_after_migration": "reply",
+    },
+    "customer_type": {
+        "target_reply_contract": "reply_input.customer_state_signals.customer_type_reference",
+        "migration_rule": "Reply may consider this as soft evidence only; it must not override current chat.",
+        "owner_after_migration": "reply",
+    },
+    "main_blocker": {
+        "target_reply_contract": "reply_input.customer_state_signals.objection_reference",
+        "migration_rule": "Reply owns blocker/objection interpretation from current message and history.",
+        "owner_after_migration": "reply",
+    },
+    "next_step": {
+        "target_reply_contract": "reply_output_schema.single_mainline_action",
+        "migration_rule": "Reply chooses one final next action; legacy Planner next_step must not be authoritative.",
+        "owner_after_migration": "reply",
+    },
+    "primary_task": {
+        "target_reply_contract": "reply_output_schema.single_mainline_action",
+        "migration_rule": "Reply chooses the final primary task from complete chat, Gate content, and tool facts.",
+        "owner_after_migration": "reply",
+    },
+    "secondary_tasks": {
+        "target_reply_contract": "reply_input.turn_context.deprioritized_task_references",
+        "migration_rule": "Secondary tasks are references only; Reply must not stack multiple unrelated actions.",
+        "owner_after_migration": "reply",
+    },
+    "payment_state": {
+        "target_reply_contract": "reply_input.authoritative_facts.payment",
+        "migration_rule": "Payment state must come from authoritative facts; legacy Planner value is only compared in shadow.",
+        "owner_after_migration": "reply",
+    },
+    "payment_action": {
+        "target_reply_contract": "reply_output_schema.payment_action",
+        "migration_rule": "Reply chooses payment expression; validation enforces paid/risk/refusal hard boundaries.",
+        "owner_after_migration": "reply",
+    },
+    "payment_decision": {
+        "target_reply_contract": "reply_output_schema.payment_action",
+        "migration_rule": "Reply owns send/explain/resend/manual-transfer choice from chat and authoritative facts.",
+        "owner_after_migration": "reply",
+    },
+    "store_binding_decision": {
+        "target_reply_contract": "reply_input.authoritative_facts.store_anchor",
+        "migration_rule": "Store binding must be grounded in visible store facts; Reply interprets acceptance from chat.",
+        "owner_after_migration": "reply",
+    },
+    "order_decision": {
+        "target_reply_contract": "reply_commit_handoff.deferred_order_action",
+        "migration_rule": "Write actions remain deferred after Reply validation; Reply may propose but not execute.",
+        "owner_after_migration": "commit_phase_after_reply_validation",
+    },
+    "appointment_decision": {
+        "target_reply_contract": "reply_input.registration_flow.visit_intent",
+        "migration_rule": "Reply handles registration-only visit intent; current ordinary flow does not promise slot booking.",
+        "owner_after_migration": "reply",
+    },
+    "sales_progression": {
+        "target_reply_contract": "reply_output_schema.single_mainline_action",
+        "migration_rule": "Reply owns final sales progression; code must not infer ordinary sales rhythm.",
+        "owner_after_migration": "reply",
+    },
+    "precision_qa_decision": {
+        "target_reply_contract": "reply_input.gate_content_candidates.precision_qa",
+        "migration_rule": "Gate selects precision QA candidates; Reply naturally answers and bridges to one mainline action.",
+        "owner_after_migration": "reply",
+    },
+    "reply_strategy": {
+        "target_reply_contract": "reply_output_schema.expression_style",
+        "migration_rule": "Reply owns tone and wording; legacy strategy is only a migration comparison signal.",
+        "owner_after_migration": "reply",
+    },
+    "handoff": {
+        "target_reply_contract": "reply_input.turn_context.legacy_handoff_notes",
+        "migration_rule": "Handoff notes are reference-only and must not override authoritative chat or facts.",
+        "owner_after_migration": "reply",
+    },
+    "memory_update_hint": {
+        "target_reply_contract": "reply_commit_handoff.deferred_memory_update",
+        "migration_rule": "Memory writes are deferred until after final Reply validation and commit coordination.",
+        "owner_after_migration": "commit_phase_after_reply_validation",
+    },
+}
 
 
 def reply_final_brain_handoff_shadow_from_planner_output(
@@ -51,10 +158,13 @@ def reply_final_brain_handoff_shadow_from_planner_output(
     turn_outcome_fields = _present_fields(output, TURN_OUTCOME_FIELDS)
     sales_decision_fields = _present_fields(output, SALES_DECISION_FIELDS)
     fact_and_tool_fields = _present_fields(output, FACT_AND_TOOL_FIELDS)
+    legacy_business_fields = [*customer_message_fields, *turn_outcome_fields, *sales_decision_fields]
+    migration_mapping_audit = _legacy_field_mapping_audit(legacy_business_fields)
     handoff_readiness_audit = _handoff_readiness_audit(
         output=output,
         reply_chain_shadow_context=reply_chain_shadow_context or {},
         gate_router_shadow=gate_router_shadow or {},
+        migration_mapping_audit=migration_mapping_audit,
     )
     return _drop_empty(
         {
@@ -73,8 +183,9 @@ def reply_final_brain_handoff_shadow_from_planner_output(
                 "turn_outcome_field_count": len(turn_outcome_fields),
                 "sales_decision_field_count": len(sales_decision_fields),
                 "fact_and_tool_field_count": len(fact_and_tool_fields),
-                "legacy_business_field_count": len(customer_message_fields) + len(turn_outcome_fields) + len(sales_decision_fields),
+                "legacy_business_field_count": len(legacy_business_fields),
                 "requires_reply_schema_before_activation": True,
+                "field_mapping_audit": migration_mapping_audit,
             },
             "handoff_readiness_audit": handoff_readiness_audit,
             "ownership_contract": {
@@ -106,6 +217,7 @@ def _handoff_readiness_audit(
     output: dict[str, Any],
     reply_chain_shadow_context: dict[str, Any],
     gate_router_shadow: dict[str, Any],
+    migration_mapping_audit: dict[str, Any],
 ) -> dict[str, Any]:
     authority_audit = reply_chain_shadow_context.get("authority_audit")
     if not isinstance(authority_audit, dict):
@@ -191,6 +303,9 @@ def _handoff_readiness_audit(
         blockers.append("join_may_generate_customer_visible_text")
     if final_expression_boundary.get("join_decides_sales_psychology") is not False:
         blockers.append("join_may_decide_sales_psychology")
+    unmapped_fields = migration_mapping_audit.get("unmapped_legacy_business_fields")
+    if isinstance(unmapped_fields, list):
+        blockers.extend([f"unmapped_legacy_business_field:{field}" for field in unmapped_fields if isinstance(field, str) and field])
 
     return _drop_empty(
         {
@@ -203,6 +318,7 @@ def _handoff_readiness_audit(
                 "final_reply_schema_required_before_activation": True,
                 "commit_phase_must_follow_reply_validation": True,
                 "legacy_planner_outputs_shadow_only": True,
+                "all_legacy_business_fields_must_have_target_contract": True,
             },
             "observed_inputs": {
                 "reply_chain_context_schema": reply_chain_shadow_context.get("schema_version"),
@@ -230,9 +346,40 @@ def _handoff_readiness_audit(
                 "final_expression_boundary_schema": final_expression_boundary.get("schema_version"),
                 "join_generates_customer_visible_text": final_expression_boundary.get("join_generates_customer_visible_text"),
                 "join_decides_sales_psychology": final_expression_boundary.get("join_decides_sales_psychology"),
+                "legacy_business_field_mapping_schema": migration_mapping_audit.get("schema_version"),
+                "mapped_legacy_business_field_count": migration_mapping_audit.get("mapped_legacy_business_field_count"),
+                "unmapped_legacy_business_field_count": len(unmapped_fields) if isinstance(unmapped_fields, list) else None,
             },
             "ready_for_reply_payload_switch_shadow": not blockers,
             "blockers": blockers,
+        }
+    )
+
+
+def _legacy_field_mapping_audit(legacy_business_fields: list[str]) -> dict[str, Any]:
+    mapped: list[dict[str, str]] = []
+    unmapped: list[str] = []
+    for field in legacy_business_fields:
+        target = LEGACY_FIELD_TARGETS.get(field)
+        if not target:
+            unmapped.append(field)
+            continue
+        mapped.append(
+            {
+                "legacy_field": field,
+                "target_reply_contract": target["target_reply_contract"],
+                "migration_rule": target["migration_rule"],
+                "owner_after_migration": target["owner_after_migration"],
+            }
+        )
+    return _drop_empty(
+        {
+            "schema_version": "reply_legacy_field_mapping_audit_v1",
+            "legacy_business_field_count": len(legacy_business_fields),
+            "mapped_legacy_business_field_count": len(mapped),
+            "unmapped_legacy_business_fields": unmapped,
+            "all_legacy_business_fields_mapped": not unmapped,
+            "mappings": mapped,
         }
     )
 
