@@ -792,12 +792,16 @@ python -m pytest workflow_tests/test_parallel_reply_chain_runner.py workflow_tes
 
 ## 19. 当前下一步
 
+当前 `codex/reply-chain-refactor` 已经完成 B0-B6 的主要 shadow 骨架：
+
 1. 保持当前生产串行行为不变。
-2. 继续完善 shadow 合同和诊断。
-3. 补齐 Shared Context 的完整聊天和权威事实审计。
-4. 补齐 Gate/Tool Planner/Join/Reply handoff 的隔离测试。
-5. 运行核心重构回归。
-6. 只在 `codex/reply-chain-refactor` 提交。
+2. Shared Context、Gate、Tool Planner、Join、Reply handoff、Commit shadow、Parallel runner、Comparison、Diagnostics、Bundle audit 均已有结构审计。
+3. Gate/Tool Planner/Join 不成为业务大脑的边界已有自动 blocker。
+4. Reply handoff 里旧 Planner 客户话术和销售语义残留已有 blocker；旧 Planner group/source 不能进入未来 Reply active input。
+5. Release review checklist 仍是诊断证据，不能自称批准行为切换。
+6. 当前所有改动仍只允许提交到 `codex/reply-chain-refactor`，不得部署，不得合入 `main`。
+
+下一阶段不应直接切生产行为，也不应先改客户话术。优先进入 B7：建立离线全链路仿真门禁，把真实脱敏历史和模拟多轮场景跑在 shadow/隔离环境里，证明新链路不会丢业务规则、不会让 Gate/Planner 重新接管客户心理和销售节奏。
 
 ## 20. 开发执行方案
 
@@ -904,10 +908,17 @@ python -m pytest `
 
 ### 20.6 当前建议的下一处开发点
 
-下一步不应直接改 Reply 行为，而应补一个 shadow blocker：如果 `reply_final_brain_handoff` 里仍存在旧 Planner 的客户话术或销售语义残留，`parallel_reply_chain_diagnostics` 必须阻止进入“可人工审查行为切换”的状态。
+下一步不应直接改 Reply 行为，而应补 B7 离线仿真门禁：
+
+1. 建立或完善完全隔离的仿真入口，只允许真实模型调用，平台客户、门店、订单、支付、消息发送和状态更新全部使用本地适配器。
+2. 固化一批脱敏历史轨迹和裂变场景，覆盖 SOP、精准问答、门店、效果图、价格、预约金、已付登记、健康风险、投诉退款、软拒绝、模型失败和工具失败。
+3. 每轮把虚拟发送写入本地 outbox，再作为下一轮历史输入，检验多轮主线承接，而不是只测单轮 JSON 合法。
+4. 报告必须区分结构硬错误、业务语义失败、模型供应商失败和工具夹具失败。
+5. 行为切换前必须有 B7 报告路径和人工 review 结论；否则 `simulation_regression_review` 继续保持未通过。
 
 原因：
 
-- 这能防止 Planner 继续以隐藏字段影响 Reply，避免重构后只是把旧大脑换个入口传下去。
-- 这是审计和诊断改动，不改变线上回复。
-- 它直接服务于项目宪法：Planner/Tool Planner 不能继续拥有最终销售语义，Reply 才是复杂场景最终表达 owner。
+- B0-B6 证明的是“结构上可迁移”，还不能证明“回复效果不退化”。
+- 过去线上问题往往来自多轮历史、SOP 进度、门店事实、支付状态和客户软拒绝组合，单节点测试无法充分覆盖。
+- 离线仿真能在不碰生产客户、不部署、不写线上状态的前提下提前发现回复效果问题。
+- 这直接服务于项目宪法：让模型在完整上下文中判断业务语义，同时用代码和仿真门禁证明事实、工具、schema、幂等和安全边界没有被破坏。
