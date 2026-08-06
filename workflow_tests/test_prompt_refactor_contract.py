@@ -666,6 +666,16 @@ def test_planner_and_reply_do_not_invent_body_area_boundaries_for_face_confirmat
         assert "不主动展开手脸同次操作" in prompt
 
 
+
+def test_s1_need_answer_moves_to_real_case_instead_of_symptom_loop() -> None:
+    assert "时长、斑型、部位、数量、年龄、图片" in PLANNER_SYSTEM_PROMPT
+    assert "必须 `need_tools + kb_search(case_studies)`" in PLANNER_SYSTEM_PROMPT
+    assert "脸上有几颗扁平疣/有几颗斑/脸上几个点" in PLANNER_SYSTEM_PROMPT
+    assert "不得 `direct_reply` 空口说“给您接同类参考/给您发效果图”" in PLANNER_SYSTEM_PROMPT
+    assert "没有 `case_facts` 或 `sop_gate_decision.sop_image_count` 时不要承诺" in REPLY_SYSTEM_PROMPT
+    assert "不得承诺“给您接同类参考/发效果图”" in REPLY_SYSTEM_PROMPT
+
+
 def test_runtime_prompts_no_longer_carry_legacy_non_refund_policy() -> None:
     for path in [
         ROOT / "ai_paths/app/prompts/global_contract.py",
