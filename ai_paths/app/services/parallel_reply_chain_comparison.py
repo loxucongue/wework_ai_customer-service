@@ -20,12 +20,14 @@ def parallel_reply_chain_comparison(
     runner_mode = str(runner_shadow.get("mode") or "missing")
     branch_errors = _branch_errors(runner_shadow)
     output_contract_blockers = _runner_output_contract_blockers(runner_shadow)
+    safety_blockers = _runner_safety_blockers(runner_shadow)
     runner_gate = _runner_gate_shadow(runner_shadow)
     runner_tool_plan = _runner_tool_plan(runner_shadow)
     comparable = (
         runner_mode == "completed_shadow"
         and not branch_errors
         and not output_contract_blockers
+        and not safety_blockers
         and bool(runner_gate)
         and bool(runner_tool_plan)
     )
@@ -57,6 +59,8 @@ def parallel_reply_chain_comparison(
                 "read_tool_signatures": _read_tool_signatures(runner_tool_plan),
                 "branch_errors": branch_errors,
                 "output_contract_blockers": output_contract_blockers,
+                "safety_blockers": safety_blockers,
+                "runner_safety": _runner_safety(runner_shadow),
             },
             "review_gate": {
                 "requires_human_review_before_behavior_switch": True,
@@ -141,6 +145,25 @@ def _runner_output_contract_blockers(runner_shadow: dict[str, Any]) -> list[str]
     if isinstance(blockers, list) and blockers:
         return [str(item) for item in blockers if str(item)]
     return ["runner_branch_output_contract_not_ready"]
+
+
+def _runner_safety_blockers(runner_shadow: dict[str, Any]) -> list[str]:
+    if str(runner_shadow.get("mode") or "") != "completed_shadow":
+        return []
+    safety = _runner_safety(runner_shadow)
+    required_true = {
+        "no_runtime_behavior_change": "runner_missing_no_runtime_behavior_change",
+        "branch_state_isolated": "runner_missing_branch_state_isolated",
+        "initial_state_unchanged": "runner_missing_initial_state_unchanged",
+        "no_customer_messages_sent": "runner_missing_no_customer_messages_sent",
+        "no_database_writes": "runner_missing_no_database_writes",
+    }
+    return [blocker for field, blocker in required_true.items() if safety.get(field) is not True]
+
+
+def _runner_safety(runner_shadow: dict[str, Any]) -> dict[str, Any]:
+    safety = runner_shadow.get("safety") if isinstance(runner_shadow.get("safety"), dict) else {}
+    return dict(safety)
 
 
 def _route(value: dict[str, Any]) -> str:
