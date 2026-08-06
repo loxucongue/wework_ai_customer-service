@@ -160,6 +160,9 @@ Purpose:
 - Current message is present as the latest authoritative customer message.
 - Full timestamped chat is preferred over profile summaries.
 - Authoritative facts are present and source-audited.
+- Timeline truncation exposes retained oldest/newest message refs, source counts,
+  and retained current-request refs so reviewers can verify what history Reply
+  would actually receive.
 
 ### T2 SOP Chat Gate
 

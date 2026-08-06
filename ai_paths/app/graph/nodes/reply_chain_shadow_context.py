@@ -151,6 +151,8 @@ def _timeline_window_audit(
         blockers.append("timeline_exceeds_max_window")
     if source_count and included_count <= 0:
         blockers.append("timeline_empty_with_source_messages")
+    retained_oldest = timeline[0] if timeline else {}
+    retained_newest = timeline[-1] if timeline else {}
 
     return _drop_empty(
         {
@@ -167,6 +169,21 @@ def _timeline_window_audit(
             "full_window_required": full_window_required,
             "source_window_complete": source_window_complete,
             "current_request_preserved_or_in_source": current_preserved,
+            "retained_window": {
+                "schema_version": "reply_chain_retained_timeline_window_v1",
+                "oldest_message_ref": _string(retained_oldest.get("message_ref")),
+                "oldest_sent_at": _string(retained_oldest.get("sent_at")),
+                "oldest_source": _string(retained_oldest.get("source")),
+                "newest_message_ref": _string(retained_newest.get("message_ref")),
+                "newest_sent_at": _string(retained_newest.get("sent_at")),
+                "newest_source": _string(retained_newest.get("source")),
+                "source_counts": _source_counts(timeline),
+                "current_request_message_refs": [
+                    _string(item.get("message_ref"))
+                    for item in timeline
+                    if _string(item.get("source")) == "current_request"
+                ][:MAX_FACT_ITEMS],
+            },
             "ready_for_authoritative_model_input": not blockers,
             "blockers": blockers,
         }

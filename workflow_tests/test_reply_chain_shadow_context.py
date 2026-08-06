@@ -73,6 +73,13 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         )
         self.assertTrue(context["authority_audit"]["timeline_window_audit"]["source_window_complete"])
         self.assertFalse(context["authority_audit"]["timeline_window_audit"]["truncated"])
+        retained = context["authority_audit"]["timeline_window_audit"]["retained_window"]
+        self.assertEqual(retained["schema_version"], "reply_chain_retained_timeline_window_v1")
+        self.assertEqual(retained["oldest_message_ref"], "m1")
+        self.assertEqual(retained["newest_message_ref"], "m_current")
+        self.assertEqual(retained["newest_source"], "current_request")
+        self.assertEqual(retained["source_counts"], {"conversation_turns": 2, "current_request": 1})
+        self.assertEqual(retained["current_request_message_refs"], ["m_current"])
         self.assertTrue(context["authority_audit"]["current_message_audit"]["current_message_in_timeline"])
         self.assertTrue(context["authority_audit"]["current_message_audit"]["current_message_is_last"])
         self.assertTrue(context["authority_audit"]["current_message_audit"]["ready_for_authoritative_model_input"])
@@ -205,6 +212,12 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertEqual(audit["available_timeline_count"], 106)
         self.assertTrue(audit["truncated"])
         self.assertEqual(audit["dropped_message_count"], 6)
+        retained = audit["retained_window"]
+        self.assertEqual(retained["oldest_message_ref"], "m6")
+        self.assertEqual(retained["newest_message_ref"], "current")
+        self.assertEqual(retained["newest_source"], "current_request")
+        self.assertEqual(retained["source_counts"], {"conversation_turns": 99, "current_request": 1})
+        self.assertEqual(retained["current_request_message_refs"], ["current"])
         self.assertTrue(audit["ready_for_authoritative_model_input"])
         self.assertEqual(messages[-1]["message_ref"], "current")
 
