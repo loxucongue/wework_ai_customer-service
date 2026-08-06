@@ -177,6 +177,7 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     if _int_value(model_matrix.get("executed_profile_count")) != len(required):
         blockers.append(f"model_matrix_executed_profile_count_mismatch:{model_matrix.get('executed_profile_count')}")
     profiles = model_matrix.get("profiles") if isinstance(model_matrix.get("profiles"), list) else []
+    ranking = model_matrix.get("ranking") if isinstance(model_matrix.get("ranking"), list) else []
     completed_names = {
         str((_dict(item.get("model_profile")).get("name") or "")).strip()
         for item in profiles
@@ -185,6 +186,23 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     missing_completed = sorted(required - completed_names)
     if missing_completed:
         blockers.extend(f"model_matrix_profile_not_completed:{item}" for item in missing_completed)
+    ranking_names = {str(_dict(item).get("name") or "").strip() for item in ranking if isinstance(item, dict)}
+    missing_ranked = sorted(completed_names - ranking_names)
+    if missing_ranked:
+        blockers.extend(f"model_matrix_ranking_missing_completed_profile:{item}" for item in missing_ranked)
+    for item in ranking:
+        if not isinstance(item, dict):
+            continue
+        ranking_name = str(item.get("name") or "unknown").strip() or "unknown"
+        for field in (
+            "semantic_pass_rate",
+            "p90_ms",
+            "effect_issue_count",
+            "effect_low_score_count",
+            "effect_hard_or_infra_count",
+        ):
+            if not _has_number(item.get(field)):
+                blockers.append(f"model_matrix_ranking_missing_{field}:{ranking_name}")
     for item in profiles:
         if not isinstance(item, dict) or item.get("status") != "timed_out":
             continue

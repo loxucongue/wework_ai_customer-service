@@ -138,6 +138,44 @@ def _model_matrix_ready() -> dict:
                 },
             },
         ],
+        "ranking": [
+            {
+                "name": "openai",
+                "model": "gpt-5.4",
+                "semantic_pass_rate": 0.94,
+                "hard_error_count": 0,
+                "infrastructure_failures": 0,
+                "p50_ms": 4800,
+                "p90_ms": 8200,
+                "effect_issue_count": 0,
+                "effect_low_score_count": 0,
+                "effect_hard_or_infra_count": 0,
+            },
+            {
+                "name": "claude",
+                "model": "claude-opus-4-7",
+                "semantic_pass_rate": 0.91,
+                "hard_error_count": 0,
+                "infrastructure_failures": 0,
+                "p50_ms": 6200,
+                "p90_ms": 11000,
+                "effect_issue_count": 0,
+                "effect_low_score_count": 0,
+                "effect_hard_or_infra_count": 0,
+            },
+            {
+                "name": "gemini",
+                "model": "gemini-3.5-flash",
+                "semantic_pass_rate": 0.9,
+                "hard_error_count": 0,
+                "infrastructure_failures": 0,
+                "p50_ms": 3900,
+                "p90_ms": 7600,
+                "effect_issue_count": 1,
+                "effect_low_score_count": 1,
+                "effect_hard_or_infra_count": 0,
+            },
+        ],
         "safety": {
             "api_keys_written_to_report": False,
             "production_customer_messages_sent": False,
@@ -423,6 +461,17 @@ def test_external_gate_evidence_blocks_model_matrix_missing_effect_review_counts
     assert "model_matrix_missing_effect_issue_count:gemini" in blockers
     assert "model_matrix_missing_effect_low_score_count:gemini" in blockers
     assert "model_matrix_missing_effect_hard_or_infra_count:gemini" in blockers
+
+
+def test_external_gate_evidence_blocks_model_matrix_incomplete_ranking() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["ranking"] = [item for item in model_matrix["ranking"] if item["name"] != "gemini"]
+    del model_matrix["ranking"][0]["effect_issue_count"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_ranking_missing_completed_profile:gemini" in blockers
+    assert "model_matrix_ranking_missing_effect_issue_count:openai" in blockers
 
 
 def test_bundle_audit_does_not_import_final_behavior_switch_guard_private_helpers() -> None:
