@@ -289,6 +289,11 @@ Required report:
 - `coverage.missing_critical_required_categories=[]`
 - `summary.acceptance.scenario_coverage_complete=true`
 - `summary.acceptance.baseline_comparison_passed=true`
+- `semantic_ownership_audit.schema_version=offline_simulation_semantic_ownership_audit_v1`
+- `semantic_ownership_audit.passed=true`
+- `semantic_ownership_audit.missing_evidence_count=0`
+- `semantic_ownership_audit.violation_count=0`
+- `summary.acceptance.semantic_ownership_passed=true`
 - failed critical scenarios: `[]`
 - semantic pass rate: at least `0.90`
 - `safety.production_customer_messages_sent=false`

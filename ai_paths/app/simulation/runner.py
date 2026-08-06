@@ -413,6 +413,7 @@ def _aggregate(
         baseline_comparison.get("available") is True
         and not baseline_comparison.get("regressed")
     )
+    semantic_ownership_audit = _semantic_ownership_audit(results)
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
@@ -447,12 +448,14 @@ def _aggregate(
                 ),
                 "isolation_audit_passed": isolation_audit["passed"],
                 "baseline_comparison_passed": baseline_comparison_passed,
+                "semantic_ownership_passed": semantic_ownership_audit["passed"],
             },
         },
         "coverage": coverage,
         "scenario_summary": scenario_summary,
         "effect_review": _effect_review(results),
         "review_artifacts": _review_artifacts(results),
+        "semantic_ownership_audit": semantic_ownership_audit,
         "baseline_comparison": baseline_comparison,
         "results": results,
     }
@@ -538,6 +541,127 @@ def _simulation_isolation_audit(results: list[dict[str, Any]]) -> dict[str, Any]
             item.get("real_connector_credentials_present") is True for item in audits
         ),
     }
+
+
+def _semantic_ownership_audit(results: list[dict[str, Any]]) -> dict[str, Any]:
+    observations = [_semantic_ownership_observation(result) for result in results]
+    violations = [
+        {
+            "scenario_id": item["scenario_id"],
+            "attempt": item["attempt"],
+            "violation": violation,
+        }
+        for item in observations
+        for violation in item["violations"]
+    ]
+    missing = [item for item in observations if item["evidence_count"] <= 0]
+    return {
+        "schema_version": "offline_simulation_semantic_ownership_audit_v1",
+        "result_count": len(results),
+        "evidence_result_count": len(results) - len(missing),
+        "missing_evidence_count": len(missing),
+        "violation_count": len(violations),
+        "passed": bool(results) and not missing and not violations,
+        "required_evidence": [
+            "chat_gate_commit_boundary_v1",
+            "tool_plan_preview_v2",
+            "reply_chain_join_shadow_v1",
+            "parallel_reply_chain_shadow_v1",
+        ],
+        "checks": [
+            "gate_shadow_cannot_commit_or_send",
+            "tool_planner_has_zero_business_semantic_residue",
+            "join_does_not_generate_customer_visible_text",
+            "join_does_not_decide_sales_psychology",
+            "reply_remains_final_expression_owner_for_complex_turns",
+        ],
+        "violations": violations[:50],
+    }
+
+
+def _semantic_ownership_observation(result: dict[str, Any]) -> dict[str, Any]:
+    snapshots = _collect_semantic_ownership_snapshots(result)
+    violations: list[str] = []
+    if not snapshots:
+        violations.append("missing_semantic_ownership_shadow_evidence")
+    for snapshot in snapshots:
+        schema = str(snapshot.get("schema_version") or "")
+        if schema == "chat_gate_commit_boundary_v1":
+            for field in (
+                "this_shadow_creates_sop_task",
+                "this_shadow_updates_send_once",
+                "this_shadow_sends_customer_messages",
+                "this_shadow_writes_database",
+            ):
+                if snapshot.get(field) is not False:
+                    violations.append(f"gate_commit_boundary_{field}_not_false")
+        elif schema == "tool_plan_preview_v2":
+            migration = snapshot.get("migration_audit") if isinstance(snapshot.get("migration_audit"), dict) else {}
+            if _safe_int(migration.get("legacy_residue_count")) != 0:
+                violations.append(f"tool_planner_legacy_residue:{migration.get('legacy_residue_count')}")
+            if migration.get("tool_planner_only_ready") is not True:
+                violations.append("tool_planner_not_tool_only_ready")
+        elif schema == "reply_chain_join_shadow_v1":
+            boundary = (
+                snapshot.get("final_expression_boundary")
+                if isinstance(snapshot.get("final_expression_boundary"), dict)
+                else {}
+            )
+            if boundary.get("final_customer_message_owner") != "reply":
+                violations.append(f"join_final_owner_not_reply:{boundary.get('final_customer_message_owner') or 'missing'}")
+            if boundary.get("join_generates_customer_visible_text") is not False:
+                violations.append("join_generates_customer_visible_text")
+            if boundary.get("join_decides_sales_psychology") is not False:
+                violations.append("join_decides_sales_psychology")
+        elif schema == "parallel_reply_chain_shadow_v1":
+            observation = (
+                snapshot.get("current_serial_observation")
+                if isinstance(snapshot.get("current_serial_observation"), dict)
+                else {}
+            )
+            if observation.get("join_generates_customer_visible_text") is not False:
+                violations.append("parallel_join_generates_customer_visible_text")
+            if observation.get("join_decides_sales_psychology") is not False:
+                violations.append("parallel_join_decides_sales_psychology")
+            if observation.get("tool_planner_only_ready") is not True:
+                violations.append("parallel_tool_planner_not_tool_only_ready")
+    return {
+        "scenario_id": str(result.get("scenario_id") or ""),
+        "attempt": int(result.get("attempt") or 0),
+        "evidence_count": len(snapshots),
+        "violations": sorted(set(violations)),
+    }
+
+
+def _collect_semantic_ownership_snapshots(value: Any) -> list[dict[str, Any]]:
+    targets = {
+        "chat_gate_commit_boundary_v1",
+        "tool_plan_preview_v2",
+        "reply_chain_join_shadow_v1",
+        "parallel_reply_chain_shadow_v1",
+    }
+    found: list[dict[str, Any]] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            schema = str(item.get("schema_version") or "")
+            if schema in targets:
+                found.append(item)
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    return found
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def render_markdown(report: dict[str, Any]) -> str:

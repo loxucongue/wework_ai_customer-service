@@ -46,6 +46,44 @@ def _isolation_audit(passed: bool = True) -> dict:
     }
 
 
+def _semantic_ownership_shadow_bundle(*, join_decides_sales_psychology: bool = False) -> dict:
+    return {
+        "chat_gate_commit_boundary": {
+            "schema_version": "chat_gate_commit_boundary_v1",
+            "shadow_output_only": True,
+            "this_shadow_creates_sop_task": False,
+            "this_shadow_updates_send_once": False,
+            "this_shadow_sends_customer_messages": False,
+            "this_shadow_writes_database": False,
+        },
+        "tool_plan_preview": {
+            "schema_version": "tool_plan_preview_v2",
+            "migration_audit": {
+                "schema_version": "tool_planner_migration_audit_v1",
+                "legacy_residue_count": 0,
+                "tool_planner_only_ready": True,
+            },
+        },
+        "reply_chain_join_shadow": {
+            "schema_version": "reply_chain_join_shadow_v1",
+            "final_expression_boundary": {
+                "schema_version": "reply_final_expression_boundary_v1",
+                "final_customer_message_owner": "reply",
+                "join_generates_customer_visible_text": False,
+                "join_decides_sales_psychology": join_decides_sales_psychology,
+            },
+        },
+        "parallel_reply_chain_shadow": {
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "current_serial_observation": {
+                "tool_planner_only_ready": True,
+                "join_generates_customer_visible_text": False,
+                "join_decides_sales_psychology": join_decides_sales_psychology,
+            },
+        },
+    }
+
+
 class FullChainSimulationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -211,6 +249,74 @@ class FullChainSimulationTests(unittest.TestCase):
 
         self.assertFalse(without_baseline["summary"]["acceptance"]["baseline_comparison_passed"])
         self.assertTrue(with_baseline["summary"]["acceptance"]["baseline_comparison_passed"])
+
+    def test_aggregate_exposes_semantic_ownership_audit_from_shadow_evidence(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "ownership_ok", "category": "门店V2", "critical": True}],
+            results=[
+                {
+                    "scenario_id": "ownership_ok",
+                    "attempt": 1,
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                    "run": {"node_traces": [_semantic_ownership_shadow_bundle()]},
+                }
+            ],
+            baseline={},
+        )
+
+        ownership = report["semantic_ownership_audit"]
+        self.assertEqual(ownership["schema_version"], "offline_simulation_semantic_ownership_audit_v1")
+        self.assertEqual(ownership["result_count"], 1)
+        self.assertEqual(ownership["evidence_result_count"], 1)
+        self.assertEqual(ownership["missing_evidence_count"], 0)
+        self.assertEqual(ownership["violation_count"], 0)
+        self.assertTrue(ownership["passed"])
+        self.assertTrue(report["summary"]["acceptance"]["semantic_ownership_passed"])
+
+    def test_aggregate_blocks_semantic_ownership_when_shadow_evidence_missing_or_violates_boundary(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[
+                {"id": "ownership_missing", "category": "门店V2", "critical": True},
+                {"id": "ownership_violation", "category": "门店V2", "critical": True},
+            ],
+            results=[
+                {
+                    "scenario_id": "ownership_missing",
+                    "attempt": 1,
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                },
+                {
+                    "scenario_id": "ownership_violation",
+                    "attempt": 1,
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                    "run": {
+                        "node_traces": [
+                            _semantic_ownership_shadow_bundle(join_decides_sales_psychology=True)
+                        ]
+                    },
+                },
+            ],
+            baseline={},
+        )
+
+        ownership = report["semantic_ownership_audit"]
+        self.assertEqual(ownership["missing_evidence_count"], 1)
+        self.assertGreaterEqual(ownership["violation_count"], 1)
+        self.assertFalse(ownership["passed"])
+        self.assertFalse(report["summary"]["acceptance"]["semantic_ownership_passed"])
+        self.assertIn(
+            {
+                "scenario_id": "ownership_violation",
+                "attempt": 1,
+                "violation": "join_decides_sales_psychology",
+            },
+            ownership["violations"],
+        )
 
     def test_aggregate_blocks_acceptance_when_required_simulation_category_is_missing(self) -> None:
         report = _aggregate(

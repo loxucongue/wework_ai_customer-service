@@ -107,6 +107,8 @@ python ai_paths/scripts/run_full_chain_simulation.py `
 
 套件报告同时输出 `coverage.schema_version=offline_simulation_coverage_audit_v1`，用于确认发布前仿真没有漏掉必测业务类别。当前必测类别包括门店、SOP 主线、效果案例、精准问答、项目范围、健康风险、预约金、已付登记、客户异议、明确拒绝、SOP Event、消息归一和模型恢复等。`summary.acceptance.scenario_coverage_complete` 必须为 `true`，否则不能把报告作为行为切换证据。报告还必须包含可用的基线对比且无退化，聚合字段为 `summary.acceptance.baseline_comparison_passed=true`。
 
+套件报告还必须输出 `semantic_ownership_audit.schema_version=offline_simulation_semantic_ownership_audit_v1`，用于证明仿真结果中包含 Gate、Tool Planner、Join 和 Parallel Shadow 的所有权证据。`summary.acceptance.semantic_ownership_passed` 必须为 `true`，否则不能把报告作为行为切换证据。该字段只检查结构边界：Gate shadow 不提交或发送、Tool Planner 没有客户可见文案或成交心理残留、Join 不生成客户文案且不决定销售心理，最终复杂回复仍由 Reply 负责。
+
 仿真报告只用于审核和发布门禁，不会自动修改 Prompt、部署或发送客户消息。
 
 ## 凌晨报告覆盖

@@ -108,7 +108,30 @@ def _simulation_ready() -> dict:
                 "scenario_coverage_complete": True,
                 "isolation_audit_passed": True,
                 "baseline_comparison_passed": True,
+                "semantic_ownership_passed": True,
             },
+        },
+        "semantic_ownership_audit": {
+            "schema_version": "offline_simulation_semantic_ownership_audit_v1",
+            "result_count": 300,
+            "evidence_result_count": 300,
+            "missing_evidence_count": 0,
+            "violation_count": 0,
+            "passed": True,
+            "required_evidence": [
+                "chat_gate_commit_boundary_v1",
+                "tool_plan_preview_v2",
+                "reply_chain_join_shadow_v1",
+                "parallel_reply_chain_shadow_v1",
+            ],
+            "checks": [
+                "gate_shadow_cannot_commit_or_send",
+                "tool_planner_has_zero_business_semantic_residue",
+                "join_does_not_generate_customer_visible_text",
+                "join_does_not_decide_sales_psychology",
+                "reply_remains_final_expression_owner_for_complex_turns",
+            ],
+            "violations": [],
         },
         "coverage": {
             "schema_version": "offline_simulation_coverage_audit_v1",
@@ -642,6 +665,26 @@ def test_external_gate_evidence_blocks_payload_isolation_leaks() -> None:
 
     assert "payload_isolation_leaked_field:planner:parallel_reply_chain_diagnostics" in blockers
     assert "payload_isolation_not_passed" in blockers
+
+
+def test_external_gate_evidence_blocks_simulation_without_semantic_ownership_evidence() -> None:
+    report = _simulation_ready()
+    report["summary"]["acceptance"]["semantic_ownership_passed"] = False
+    report["semantic_ownership_audit"]["passed"] = False
+    report["semantic_ownership_audit"]["evidence_result_count"] = 299
+    report["semantic_ownership_audit"]["missing_evidence_count"] = 1
+    report["semantic_ownership_audit"]["violation_count"] = 1
+    report["semantic_ownership_audit"]["violations"] = [
+        {"scenario_id": "sim_case_1", "attempt": 1, "violation": "join_decides_sales_psychology"}
+    ]
+
+    blockers = simulation_report_blockers(report)
+
+    assert "simulation_semantic_ownership_acceptance_missing_or_false" in blockers
+    assert "simulation_semantic_ownership_evidence_below_attempt_count:299<300" in blockers
+    assert "simulation_semantic_ownership_missing_evidence:1" in blockers
+    assert "simulation_semantic_ownership_violations:1" in blockers
+    assert "simulation_semantic_ownership_not_passed" in blockers
 
 
 def test_external_gate_evidence_blocks_payload_isolation_missing_payloads_or_safety() -> None:

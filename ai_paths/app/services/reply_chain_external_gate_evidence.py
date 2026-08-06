@@ -374,6 +374,37 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         blockers.append("simulation_isolation_acceptance_missing_or_false")
     if acceptance.get("baseline_comparison_passed") is not True:
         blockers.append("simulation_baseline_acceptance_missing_or_false")
+    if acceptance.get("semantic_ownership_passed") is not True:
+        blockers.append("simulation_semantic_ownership_acceptance_missing_or_false")
+    ownership = _dict(simulation.get("semantic_ownership_audit"))
+    if ownership.get("schema_version") != "offline_simulation_semantic_ownership_audit_v1":
+        blockers.append("simulation_missing_semantic_ownership_audit")
+    else:
+        if _int_value(ownership.get("result_count")) < attempt_count:
+            blockers.append(
+                "simulation_semantic_ownership_result_count_below_attempt_count:"
+                f"{ownership.get('result_count')}<{simulation.get('attempt_count')}"
+            )
+        if _int_value(ownership.get("evidence_result_count")) < attempt_count:
+            blockers.append(
+                "simulation_semantic_ownership_evidence_below_attempt_count:"
+                f"{ownership.get('evidence_result_count')}<{simulation.get('attempt_count')}"
+            )
+        if _int_value(ownership.get("missing_evidence_count")) != 0:
+            blockers.append(f"simulation_semantic_ownership_missing_evidence:{ownership.get('missing_evidence_count')}")
+        if _int_value(ownership.get("violation_count")) != 0:
+            blockers.append(f"simulation_semantic_ownership_violations:{ownership.get('violation_count')}")
+        if ownership.get("passed") is not True:
+            blockers.append("simulation_semantic_ownership_not_passed")
+        required = set(_list_strings(ownership.get("required_evidence")))
+        for item in (
+            "chat_gate_commit_boundary_v1",
+            "tool_plan_preview_v2",
+            "reply_chain_join_shadow_v1",
+            "parallel_reply_chain_shadow_v1",
+        ):
+            if item not in required:
+                blockers.append(f"simulation_semantic_ownership_missing_required_evidence:{item}")
     effect_review = _dict(simulation.get("effect_review"))
     if effect_review.get("schema_version") != "offline_simulation_effect_review_v1":
         blockers.append("simulation_missing_effect_review")
