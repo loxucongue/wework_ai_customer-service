@@ -221,6 +221,18 @@ def _release_review_gate_checklist(
             ),
         ),
         _gate(
+            "reply_target_input_schema_review",
+            "automated_shadow_evidence",
+            "target_reply_input_schema_audit_ready",
+            passed=(
+                observation.get("reply_target_input_schema_audit_schema")
+                == "reply_final_brain_target_input_schema_audit_v1"
+                and observation.get("reply_target_input_schema_version")
+                == "reply_final_brain_target_input_schema_v1"
+                and observation.get("reply_target_input_schema_ready") is True
+            ),
+        ),
+        _gate(
             "reply_handoff_semantic_residue_review",
             "automated_shadow_evidence",
             "reply_handoff_has_no_legacy_planner_business_fields",

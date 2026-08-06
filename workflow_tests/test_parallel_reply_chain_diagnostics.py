@@ -181,7 +181,7 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
     assert diagnostics["commit"]["requires_reply_validation_before_commit"] is True
     assert diagnostics["release_review"]["schema_version"] == "reply_chain_release_review_checklist_v1"
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
-    assert diagnostics["release_review"]["required_gate_count"] == 14
+    assert diagnostics["release_review"]["required_gate_count"] == 15
     assert "simulation_regression_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
 
 
@@ -212,6 +212,9 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
                 "direct_reply_guard_ready": False,
                 "reply_handoff_readiness_schema": "reply_final_brain_handoff_readiness_audit_v1",
                 "reply_handoff_ready_for_payload_switch_shadow": True,
+                "reply_target_input_schema_audit_schema": "reply_final_brain_target_input_schema_audit_v1",
+                "reply_target_input_schema_version": "reply_final_brain_target_input_schema_v1",
+                "reply_target_input_schema_ready": True,
                 "reply_handoff_legacy_business_field_count": 0,
             },
         },
@@ -231,6 +234,7 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
     assert gates["final_expression_owner_review"]["passed"] is True
     assert gates["direct_reply_guard_review"]["passed"] is True
     assert gates["reply_handoff_readiness_review"]["passed"] is True
+    assert gates["reply_target_input_schema_review"]["passed"] is True
     assert gates["reply_handoff_semantic_residue_review"]["passed"] is True
     assert gates["commit_phase_shadow_review"]["passed"] is True
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False

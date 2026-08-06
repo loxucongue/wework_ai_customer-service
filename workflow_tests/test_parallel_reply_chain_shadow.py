@@ -53,6 +53,14 @@ def _reply_final_brain_handoff_shadow(
 ) -> dict:
     return {
         "schema_version": "reply_final_brain_handoff_shadow_v1",
+        "target_reply_input_schema_audit": {
+            "schema_version": "reply_final_brain_target_input_schema_audit_v1",
+            "target_schema_version": "reply_final_brain_target_input_schema_v1",
+            "ready_for_reply_payload_design_review": True,
+            "active_group_count": 5,
+            "shadow_only_group_count": 4,
+            "blockers": [],
+        },
         "migration_audit": {
             "legacy_business_field_count": legacy_business_field_count,
             "requires_reply_schema_before_activation": requires_reply_schema_before_activation,
@@ -200,6 +208,17 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             "reply_final_brain_handoff_readiness_audit_v1",
         )
         self.assertTrue(shadow["current_serial_observation"]["reply_handoff_ready_for_payload_switch_shadow"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["reply_target_input_schema_audit_schema"],
+            "reply_final_brain_target_input_schema_audit_v1",
+        )
+        self.assertEqual(
+            shadow["current_serial_observation"]["reply_target_input_schema_version"],
+            "reply_final_brain_target_input_schema_v1",
+        )
+        self.assertTrue(shadow["current_serial_observation"]["reply_target_input_schema_ready"])
+        self.assertEqual(shadow["current_serial_observation"]["reply_target_input_active_group_count"], 5)
+        self.assertEqual(shadow["current_serial_observation"]["reply_target_input_shadow_only_group_count"], 4)
         self.assertIn("final_closing_move", shadow["ownership_contract"]["sop_chat_gate"]["must_not_own"])
         self.assertIn("customer_visible_text", shadow["ownership_contract"]["tool_planner"]["must_not_own"])
         self.assertIn("single_mainline_action", shadow["ownership_contract"]["reply"]["owns"])

@@ -48,6 +48,9 @@ def parallel_reply_chain_shadow(
     reply_handoff_readiness = (reply_final_brain_handoff_shadow or {}).get("handoff_readiness_audit")
     if not isinstance(reply_handoff_readiness, dict):
         reply_handoff_readiness = {}
+    target_reply_input_schema_audit = (reply_final_brain_handoff_shadow or {}).get("target_reply_input_schema_audit")
+    if not isinstance(target_reply_input_schema_audit, dict):
+        target_reply_input_schema_audit = {}
     return _drop_empty(
         {
             "schema_version": "parallel_reply_chain_shadow_v1",
@@ -127,6 +130,12 @@ def parallel_reply_chain_shadow(
                 "reply_handoff_readiness_schema": reply_handoff_readiness.get("schema_version"),
                 "reply_handoff_ready_for_payload_switch_shadow": reply_handoff_readiness.get("ready_for_reply_payload_switch_shadow"),
                 "reply_handoff_blockers": reply_handoff_readiness.get("blockers"),
+                "reply_target_input_schema_audit_schema": target_reply_input_schema_audit.get("schema_version"),
+                "reply_target_input_schema_version": target_reply_input_schema_audit.get("target_schema_version"),
+                "reply_target_input_schema_ready": target_reply_input_schema_audit.get("ready_for_reply_payload_design_review"),
+                "reply_target_input_active_group_count": target_reply_input_schema_audit.get("active_group_count"),
+                "reply_target_input_shadow_only_group_count": target_reply_input_schema_audit.get("shadow_only_group_count"),
+                "reply_target_input_schema_blockers": target_reply_input_schema_audit.get("blockers"),
                 "refactor_mode": (refactor_flags or {}).get("mode"),
             },
             "safety": {
