@@ -262,6 +262,11 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
             graph.states[0]["sop_gate_preview"]["commit_policy"],
             "defer_sop_commit_until_ai_reply_is_usable",
         )
+        self.assertEqual(graph.states[0]["sop_gate_router_shadow"]["route_suggestion"], "content_only_reply")
+        self.assertEqual(
+            graph.states[0]["sop_gate_router_shadow"]["selected_content"]["sop_pack_ids"],
+            ["s10_need_and_case"],
+        )
 
     async def test_precision_ai_failure_withholds_sop_and_returns_nonempty_fallback(self) -> None:
         repository = _Repository()

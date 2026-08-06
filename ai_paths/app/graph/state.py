@@ -62,6 +62,7 @@ class AgentState(TypedDict, total=False):
     sop_gate: dict[str, Any]
     sop_gate_decision: dict[str, Any]
     sop_gate_preview: dict[str, Any]
+    sop_gate_router_shadow: dict[str, Any]
     sop_progress_evidence: dict[str, Any]
     background_substeps: list[dict[str, Any]]
     background_fact_views: dict[str, Any]

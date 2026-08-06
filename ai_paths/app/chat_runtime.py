@@ -17,6 +17,7 @@ from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
 from app.services.customer_scope import customer_scope_from_state
 from app.services.chat_gate_preview import chat_gate_preview_from_result
+from app.services.chat_gate_router_shadow import chat_gate_router_shadow_from_result
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
@@ -160,6 +161,7 @@ class ChatRuntime:
         sop_gate = await self._evaluate_sop_gate(effective_request, request_id, effective_context)
         initial_state["sop_gate"] = sop_gate
         initial_state["sop_gate_preview"] = chat_gate_preview_from_result(sop_gate)
+        initial_state["sop_gate_router_shadow"] = chat_gate_router_shadow_from_result(sop_gate)
         initial_state["sop_gate_decision"] = {
             "route": str(sop_gate.get("route") or sop_gate.get("mode") or ""),
             "coverage": str(sop_gate.get("coverage") or ""),
