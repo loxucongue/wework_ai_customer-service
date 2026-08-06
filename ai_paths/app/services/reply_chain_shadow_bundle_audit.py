@@ -136,6 +136,7 @@ def _cross_component_blockers(
     if _list_strings((parallel_shadow.get("activation") or {}).get("blockers")):
         blockers.append("parallel_contract_has_blockers")
     blockers.extend(_tool_plan_migration_blockers(state))
+    blockers.extend(_reply_handoff_migration_blockers(state))
     runner_shadow = _dict(state.get("parallel_gate_planner_runner_shadow"))
     if str(runner_shadow.get("mode") or "") != "completed_shadow":
         blockers.append(f"parallel_runner_not_completed:{runner_shadow.get('mode') or 'missing'}")
@@ -333,10 +334,35 @@ def _tool_plan_migration_blockers(state: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def _reply_handoff_migration_blockers(state: dict[str, Any]) -> list[str]:
+    handoff = _dict(state.get("reply_final_brain_handoff_shadow"))
+    if handoff.get("schema_version") != "reply_final_brain_handoff_shadow_v1":
+        return []
+    audit = _dict(handoff.get("migration_audit"))
+    if not audit:
+        return ["reply_handoff_missing_migration_audit"]
+    blockers: list[str] = []
+    residue_count = _int_value(audit.get("legacy_business_field_count"))
+    if residue_count > 0:
+        blockers.append(f"reply_handoff_legacy_business_field_residue:{residue_count}")
+    mapping_audit = _dict(audit.get("field_mapping_audit"))
+    if mapping_audit.get("schema_version") != "reply_legacy_field_mapping_audit_v1":
+        blockers.append("reply_handoff_missing_legacy_field_mapping_audit")
+    elif mapping_audit.get("all_legacy_business_fields_mapped") is not True:
+        unmapped = _list_strings(mapping_audit.get("unmapped_legacy_business_fields"))
+        if unmapped:
+            blockers.extend(f"reply_handoff_unmapped_legacy_business_field:{item}" for item in unmapped)
+        else:
+            blockers.append("reply_handoff_legacy_business_fields_not_mapped")
+    return blockers
+
+
 def _review_gates(state: dict[str, Any], *, require_commit_shadow: bool) -> dict[str, dict[str, Any]]:
     parallel_shadow = _dict(state.get("parallel_reply_chain_shadow"))
     observation = _dict(parallel_shadow.get("current_serial_observation"))
     tool_plan_migration = _dict(_dict(state.get("tool_plan_preview")).get("migration_audit"))
+    reply_handoff_migration = _dict(_dict(state.get("reply_final_brain_handoff_shadow")).get("migration_audit"))
+    reply_handoff_mapping = _dict(reply_handoff_migration.get("field_mapping_audit"))
     runner = _dict(state.get("parallel_gate_planner_runner_shadow"))
     comparison = _dict(state.get("parallel_reply_chain_comparison"))
     diagnostics = _dict(state.get("parallel_reply_chain_diagnostics"))
@@ -393,6 +419,15 @@ def _review_gates(state: dict[str, Any], *, require_commit_shadow: bool) -> dict
         "reply_handoff_ready": {
             "passed": (observation.get("reply_handoff_ready_for_payload_switch_shadow") is True),
             "purpose": "reply_can_receive_gate_and_tool_facts_without_losing_context",
+        },
+        "reply_handoff_has_no_legacy_business_residue": {
+            "passed": (
+                bool(reply_handoff_migration)
+                and _int_value(reply_handoff_migration.get("legacy_business_field_count")) == 0
+                and reply_handoff_mapping.get("schema_version") == "reply_legacy_field_mapping_audit_v1"
+                and reply_handoff_mapping.get("all_legacy_business_fields_mapped") is True
+            ),
+            "purpose": "legacy_planner_business_semantics_are_not_carried_into_reply_switch_inputs",
         },
         "runner_contract_ready": {
             "passed": _dict(runner.get("branch_output_contract_audit")).get("ready") is True,

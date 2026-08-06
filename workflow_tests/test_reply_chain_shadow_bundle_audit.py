@@ -19,7 +19,19 @@ def _ready_state() -> dict:
         },
         "read_only_tool_executor_shadow": {"schema_version": "read_only_tool_executor_shadow_v1"},
         "reply_chain_join_shadow": {"schema_version": "reply_chain_join_shadow_v1"},
-        "reply_final_brain_handoff_shadow": {"schema_version": "reply_final_brain_handoff_shadow_v1"},
+        "reply_final_brain_handoff_shadow": {
+            "schema_version": "reply_final_brain_handoff_shadow_v1",
+            "migration_audit": {
+                "legacy_business_field_count": 0,
+                "field_mapping_audit": {
+                    "schema_version": "reply_legacy_field_mapping_audit_v1",
+                    "legacy_business_field_count": 0,
+                    "mapped_legacy_business_field_count": 0,
+                    "unmapped_legacy_business_fields": [],
+                    "all_legacy_business_fields_mapped": True,
+                },
+            },
+        },
         "parallel_reply_chain_shadow": {
             "schema_version": "parallel_reply_chain_shadow_v1",
             "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
@@ -598,6 +610,34 @@ def test_bundle_audit_reports_postcommit_shadow_bundle_ready() -> None:
     assert audit["ready_for_refactor_review"] is True
     assert audit["components"]["reply_chain_commit_shadow"]["valid"] is True
     assert audit["review_gates"]["commit_phase_ready"]["passed"] is True
+
+
+def test_bundle_audit_blocks_reply_handoff_without_migration_audit() -> None:
+    state = _ready_state()
+    state["reply_final_brain_handoff_shadow"].pop("migration_audit")
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "reply_handoff_missing_migration_audit" in audit["blockers"]
+    assert "review_gate_not_ready:reply_handoff_has_no_legacy_business_residue" in audit["blockers"]
+    assert audit["review_gates"]["reply_handoff_has_no_legacy_business_residue"]["passed"] is False
+
+
+def test_bundle_audit_blocks_reply_handoff_legacy_business_residue() -> None:
+    state = _ready_state()
+    migration_audit = state["reply_final_brain_handoff_shadow"]["migration_audit"]
+    migration_audit["legacy_business_field_count"] = 2
+    mapping_audit = migration_audit["field_mapping_audit"]
+    mapping_audit["legacy_business_field_count"] = 2
+    mapping_audit["mapped_legacy_business_field_count"] = 2
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "reply_handoff_legacy_business_field_residue:2" in audit["blockers"]
+    assert "review_gate_not_ready:reply_handoff_has_no_legacy_business_residue" in audit["blockers"]
+    assert audit["review_gates"]["reply_handoff_has_no_legacy_business_residue"]["passed"] is False
 
 
 def test_bundle_audit_blocks_postcommit_without_write_action_inventory() -> None:
