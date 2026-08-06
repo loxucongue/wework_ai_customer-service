@@ -3258,6 +3258,53 @@ def test_scoped_nearby_store_question_requires_lookup_before_direct_reply() -> N
     ]
 
 
+def test_current_nearby_location_overrides_stale_store_lookup_anchor() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": _u(
+                r"\u5927\u5cad\u5c71\u9644\u8fd1\u95e8\u5e97\u5730\u5740\u7ed9\u6211\u6211\u53bb\u770b\u770b"
+            ),
+            "current_known_store": {
+                "store_id": "32",
+                "store_name": _u(r"\u4e1c\u839e\u5357\u57ce\u5e97"),
+                "source": "history_event",
+            },
+        },
+        {
+            "decision": "need_tools",
+            "stage": "S2",
+            "sub_rule_id": "S2_LOCATION_DETAIL",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "lookup_store",
+            "reply_messages": [],
+            "tool_calls": [
+                {
+                    "name": "customer_store_lookup",
+                    "purpose": "detail",
+                    "query": _u(r"\u4e1c\u839e\u5357\u57ce\u5e97"),
+                }
+            ],
+        },
+    )
+
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {
+            "name": "customer_store_lookup",
+            "purpose": "nearby_candidates",
+            "query": _u(r"\u5927\u5cad\u5c71"),
+        },
+        {
+            "name": "distance_calculate",
+            "origin": _u(r"\u5927\u5cad\u5c71"),
+            "candidate_source": "customer_store_lookup",
+        },
+    ]
+    assert not any(item.get("missing") == "distance_calculate_required" for item in plan["tool_policy_violations"])
+
+
 def test_scoped_nearby_landmark_preserves_landmark_in_distance_origin() -> None:
     plan = build_planner_plan_v2(
         {

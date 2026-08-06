@@ -544,7 +544,7 @@ def _needs_strong_reply_model(state: AgentState) -> bool:
 
 
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
-    return [{"type": "text", "order": 1, "content": "亲，刚才这条我没接完整，麻烦您再发一下。"}]
+    return [{"type": "text", "order": 1, "content": "您稍等一下"}]
 
 
 def _store_resolution_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:

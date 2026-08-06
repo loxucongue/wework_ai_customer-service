@@ -442,7 +442,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
         self.assertEqual(
             output["reply_messages"][0]["content"],
-            "亲，刚才这条我没接完整，麻烦您再发一下。",
+            "您稍等一下",
         )
 
     async def test_no_reply_explicit_stop_stays_empty(self) -> None:
@@ -473,7 +473,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
         self.assertEqual(
             output["reply_messages"][0]["content"],
-            "亲，刚才这条我没接完整，麻烦您再发一下。",
+            "您稍等一下",
         )
 
     async def test_reply_failure_uses_store_resolution_fallback_when_cards_are_required(self) -> None:
@@ -579,7 +579,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
         self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "human_handoff_notice"])
         self.assertEqual(
-            "亲，刚才这条我没接完整，麻烦您再发一下。",
+            "您稍等一下",
             output["reply_messages"][0]["content"],
         )
 

@@ -686,7 +686,7 @@ def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailabl
                 {
                     "type": "text",
                     "order": 1,
-                    "content": {"text": "亲，刚才这条我没接完整，麻烦您再发一下。"},
+                    "content": {"text": "您稍等一下"},
                 },
                 {
                     "type": "human_handoff_notice",
@@ -718,7 +718,7 @@ def planner_unavailable_fallback_plan(state: AgentState, *, reason: str = "Plann
                 {
                     "type": "text",
                     "order": 1,
-                    "content": {"text": "亲，刚才这条我没接完整，麻烦您再发一下。"},
+                    "content": {"text": "您稍等一下"},
                 }
             ],
             "tool_calls": [],
@@ -897,6 +897,7 @@ def _normalize_current_message_store_lookup_queries(
     current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
     if not current_text or not _raw_text_mentions_store_location_request(current_text):
         return required_tools
+    current_query = _current_message_store_lookup_query(current_text)
     normalized: list[dict[str, Any]] = []
     for tool in required_tools:
         if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
@@ -904,7 +905,14 @@ def _normalize_current_message_store_lookup_queries(
             continue
         query = str(tool.get("query") or "").strip()
         if not _store_lookup_query_comes_from_current_message(query, state):
-            normalized.append(tool)
+            if current_query:
+                updated = dict(tool)
+                updated["query"] = current_query
+                if _current_message_asks_nearby_store(current_text):
+                    updated["purpose"] = "nearby_candidates"
+                normalized.append(updated)
+            else:
+                normalized.append(tool)
             continue
         cleaned = _strip_location_answer_prefixes(_clean_scoped_location_query(query))
         if cleaned and (_looks_like_bare_location_token(cleaned) or _looks_like_specific_region(_compact_text(cleaned))):
@@ -913,7 +921,28 @@ def _normalize_current_message_store_lookup_queries(
             normalized.append(updated)
         else:
             normalized.append(tool)
+    if current_query and _current_message_asks_nearby_store(current_text) and not _has_tool(normalized, "distance_calculate"):
+        normalized.append(
+            {
+                "name": "distance_calculate",
+                "origin": current_query,
+                "candidate_source": "customer_store_lookup",
+            }
+        )
     return normalized
+
+
+def _current_message_store_lookup_query(current_text: str) -> str:
+    cleaned = _strip_location_answer_prefixes(_strip_store_question_words(_clean_scoped_location_query(current_text)))
+    cleaned = re.sub(r"(我)?(现在)?(过去|去)?(看看|看下|看一看|瞧瞧|了解一下)$", "", cleaned).strip()
+    if cleaned and (_looks_like_bare_location_token(cleaned) or _looks_like_specific_region(_compact_text(cleaned))):
+        return cleaned
+    return ""
+
+
+def _current_message_asks_nearby_store(current_text: str) -> bool:
+    compact = _compact_text(current_text)
+    return any(term in compact for term in ("附近", "最近", "近一点", "近点", "周边", "旁边"))
 
 
 def _should_rewrite_store_lookup_with_context_anchor(content: str, state: AgentState) -> bool:
