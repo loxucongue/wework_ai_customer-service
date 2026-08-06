@@ -183,6 +183,14 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
     assert diagnostics["release_review"]["required_gate_count"] == 15
     assert "simulation_regression_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
+    groups = diagnostics["release_review"]["blocker_groups"]
+    assert groups["contract"]["ready"] is True
+    assert groups["runner"]["ready"] is True
+    assert groups["comparison"]["ready"] is True
+    assert groups["commit"]["ready"] is True
+    assert groups["migration"]["ready"] is True
+    assert groups["manual_review"]["ready"] is False
+    assert "gate_not_proven:simulation_regression_review" in groups["manual_review"]["blockers"]
 
 
 def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
@@ -239,6 +247,8 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
     assert gates["commit_phase_shadow_review"]["passed"] is True
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
     assert "business_wording_freeze_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
+    assert diagnostics["release_review"]["blocker_groups"]["reply_payload_schema"]["ready"] is True
+    assert diagnostics["release_review"]["blocker_groups"]["manual_review"]["ready"] is False
 
 
 def test_diagnostics_blocks_when_commit_shadow_has_wrong_owner() -> None:
@@ -373,6 +383,52 @@ def test_diagnostics_blocks_when_reply_handoff_still_has_legacy_planner_semantic
     assert diagnostics["migration"]["blockers"] == ["reply_handoff_legacy_business_field_residue:5"]
     assert diagnostics["migration"]["tool_planner_legacy_residue_count"] == 0
     assert diagnostics["migration"]["reply_handoff_legacy_business_field_count"] == 5
+    assert diagnostics["release_review"]["blocker_groups"]["migration"]["blockers"] == [
+        "reply_handoff_legacy_business_field_residue:5"
+    ]
+
+
+def test_diagnostics_groups_reply_schema_gate_blockers_for_review() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+            "current_serial_observation": {
+                "shared_context_authority_audit_schema": "reply_chain_authority_audit_v1",
+                "shared_context_timeline_window_audit_schema": "reply_chain_timeline_window_audit_v1",
+                "shared_context_timeline_window_ready": True,
+                "shared_context_current_message_audit_schema": "reply_chain_current_message_audit_v1",
+                "shared_context_current_message_ready": True,
+                "shared_context_fact_snapshot_schema": "reply_chain_fact_snapshot_audit_v1",
+                "gate_commit_boundary_schema": "chat_gate_commit_boundary_v1",
+                "gate_shadow_output_only": True,
+                "gate_shadow_creates_sop_task": False,
+                "gate_shadow_updates_send_once": False,
+                "gate_shadow_sends_customer_messages": False,
+                "gate_shadow_writes_database": False,
+                "join_final_expression_boundary_schema": "reply_final_expression_boundary_v1",
+                "join_final_customer_message_owner": "reply",
+                "join_generates_customer_visible_text": False,
+                "join_decides_sales_psychology": False,
+                "direct_reply_allowed": False,
+                "direct_reply_guard_schema": "reply_chain_direct_reply_guard_audit_v1",
+                "direct_reply_guard_ready": False,
+                "reply_handoff_readiness_schema": "reply_final_brain_handoff_readiness_audit_v1",
+                "reply_handoff_ready_for_payload_switch_shadow": True,
+                "reply_handoff_legacy_business_field_count": 0,
+            },
+        },
+        runner_shadow=_completed_runner_shadow(),
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+        },
+        commit_shadow=_commit_shadow(),
+    )
+
+    reply_schema_group = diagnostics["release_review"]["blocker_groups"]["reply_payload_schema"]
+    assert reply_schema_group["ready"] is False
+    assert reply_schema_group["blockers"] == ["gate_not_proven:reply_target_input_schema_review"]
 
 
 def test_diagnostics_blocks_when_runner_input_contains_shadow_fields() -> None:

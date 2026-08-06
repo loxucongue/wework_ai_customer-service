@@ -72,17 +72,21 @@ refactor aligned with the project constitution.
 | rollback_evidence_review | Each stage must be independently revertible and must not be deployed from this branch. | Commit hash recorded for the stage, no deployment command run, and `codex/reply-chain-refactor` remains separate from `main`. |
 
 Before any behavior flag changes from shadow mode to active mode, the reviewer
-must check all thirteen gates above and attach the test output or report path in the
+must check all fifteen gates above and attach the test output or report path in the
 commit or review note.
 
 `reply_chain_release_review_checklist_v1` is diagnostic evidence only. It can
 show which gates have automated shadow evidence, but it must always require
 human review and offline simulation evidence before any behavior switch.
+The checklist must also group unresolved blockers by review owner, including
+contract, runner, comparison, commit, migration, Reply payload schema, and
+manual review. These groups are for human audit readability only and must not
+be treated as automatic approval to switch behavior.
 
 `reply_chain_behavior_switch_guard_v1` is the final admission guard after the
-thirteen review gates. It consumes the flag snapshot, postcommit shadow bundle
+fifteen review gates. It consumes the flag snapshot, postcommit shadow bundle
 audit, comparison diagnostics, offline simulation report, and human review
-approval. It is not itself one of the thirteen diagnostic gates, and it must not
+approval. It is not itself one of the fifteen diagnostic gates, and it must not
 enable runtime behavior by side effect. `workflow_tests/test_reply_chain_behavior_switch_guard.py`
 must pass before any proposed behavior switch can be reviewed.
 

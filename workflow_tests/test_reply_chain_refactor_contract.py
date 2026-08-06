@@ -135,7 +135,7 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "workflow_tests/test_reply_final_brain_handoff.py",
         "workflow_tests/test_parallel_reply_chain_shadow.py",
         "Offline simulation report covers SOP, precision QA, store, payment, paid registration, risk, and model-failure cases.",
-        "must check all thirteen gates",
+        "must check all fifteen gates",
         "diagnostic evidence only",
         "must not be deployed from this branch",
     ]:

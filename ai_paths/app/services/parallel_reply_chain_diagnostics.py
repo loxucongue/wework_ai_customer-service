@@ -70,6 +70,11 @@ def parallel_reply_chain_diagnostics(
                 comparison_shadow=comparison,
                 commit_shadow=commit,
                 phase=phase,
+                contract_blockers=contract_blockers,
+                runner_blockers=runner_blockers,
+                comparison_blockers=comparison_blockers,
+                commit_blockers=commit_blockers,
+                migration_blockers=migration_blockers,
             ),
             "next_safe_step": _next_safe_step(phase),
             "safety": {
@@ -136,6 +141,11 @@ def _release_review_gate_checklist(
     comparison_shadow: dict[str, Any],
     commit_shadow: dict[str, Any],
     phase: str,
+    contract_blockers: list[str],
+    runner_blockers: list[str],
+    comparison_blockers: list[str],
+    commit_blockers: list[str],
+    migration_blockers: list[str],
 ) -> dict[str, Any]:
     """Expose release-review evidence without approving a behavior switch."""
 
@@ -267,6 +277,14 @@ def _release_review_gate_checklist(
         "comparison_review_gate_can_enable": comparison_review.get("can_enable_behavior_switch"),
         "required_gate_count": len(gates),
         "missing_or_unproven_gates": missing,
+        "blocker_groups": _release_review_blocker_groups(
+            gates=gates,
+            contract_blockers=contract_blockers,
+            runner_blockers=runner_blockers,
+            comparison_blockers=comparison_blockers,
+            commit_blockers=commit_blockers,
+            migration_blockers=migration_blockers,
+        ),
         "gates": gates,
     }
 
@@ -278,6 +296,75 @@ def _gate(gate_id: str, evidence_type: str, required_evidence: str, *, passed: b
             "evidence_type": evidence_type,
             "required_evidence": required_evidence,
             "passed": passed,
+        }
+    )
+
+
+def _release_review_blocker_groups(
+    *,
+    gates: list[dict[str, Any]],
+    contract_blockers: list[str],
+    runner_blockers: list[str],
+    comparison_blockers: list[str],
+    commit_blockers: list[str],
+    migration_blockers: list[str],
+) -> dict[str, Any]:
+    """Group release blockers by review owner for human audits."""
+
+    gate_blockers = _gate_blockers(gates)
+    return {
+        "contract": _blocker_group(contract_blockers),
+        "runner": _blocker_group(runner_blockers),
+        "comparison": _blocker_group(comparison_blockers),
+        "commit": _blocker_group(commit_blockers),
+        "migration": _blocker_group(migration_blockers),
+        "reply_payload_schema": _blocker_group(
+            _selected_gate_blockers(
+                gate_blockers,
+                {
+                    "reply_handoff_readiness_review",
+                    "reply_target_input_schema_review",
+                    "reply_handoff_semantic_residue_review",
+                    "final_expression_owner_review",
+                    "direct_reply_guard_review",
+                },
+            )
+        ),
+        "manual_review": _blocker_group(
+            _selected_gate_blockers(
+                gate_blockers,
+                {
+                    "rule_matrix_delta_review",
+                    "payload_isolation_review",
+                    "business_wording_freeze_review",
+                    "model_semantics_ownership_review",
+                    "simulation_regression_review",
+                    "rollback_evidence_review",
+                },
+            )
+        ),
+    }
+
+
+def _gate_blockers(gates: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"gate_not_proven:{gate['gate_id']}"
+        for gate in gates
+        if isinstance(gate, dict) and gate.get("passed") is not True and isinstance(gate.get("gate_id"), str)
+    ]
+
+
+def _selected_gate_blockers(gate_blockers: list[str], gate_ids: set[str]) -> list[str]:
+    selected = {f"gate_not_proven:{gate_id}" for gate_id in gate_ids}
+    return [blocker for blocker in gate_blockers if blocker in selected]
+
+
+def _blocker_group(blockers: list[str]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "ready": not blockers,
+            "blocker_count": len(blockers),
+            "blockers": blockers,
         }
     )
 
