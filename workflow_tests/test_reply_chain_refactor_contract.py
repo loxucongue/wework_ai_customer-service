@@ -23,6 +23,7 @@ def test_refactor_plan_keeps_review_and_test_gates() -> None:
         "T7：离线全链路仿真",
         "T8：Shadow 对比",
         "不得提交到 `main`，不得部署，不得主动发送真实客户消息",
+        "Gate 必须提供非空静态 `direct_reply_candidate`，否则交 Reply 恢复表达",
     ]:
         assert marker in text
 

@@ -63,7 +63,9 @@ def _final_route(
 ) -> str:
     if gate_route == "no_reply" and not has_read_tools and not has_unknown_tools:
         return "no_reply"
-    if gate_route == "direct_text" and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
+    if gate_route == "direct_text" and not has_content and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
+        return "reply"
+    if gate_route == "direct_text" and has_content and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
         return "direct_reply"
     if gate_route == "content_and_tools" or (has_content and (has_read_tools or has_unknown_tools)):
         return "reply_with_content_and_tools"
@@ -92,6 +94,8 @@ def _join_reasons(
         reasons.append("unknown_tools_require_review")
     if final_route == "direct_reply":
         reasons.append("direct_reply_requires_gate_direct_text_and_no_dynamic_facts")
+    if gate_route == "direct_text" and not has_content:
+        reasons.append("direct_text_missing_static_candidate_requires_reply")
     return reasons
 
 
