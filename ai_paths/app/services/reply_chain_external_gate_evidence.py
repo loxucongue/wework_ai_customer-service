@@ -18,6 +18,11 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         blockers.append(
             f"simulation_attempt_count_below_scenario_count:{simulation.get('attempt_count')}<{simulation.get('scenario_count')}"
         )
+    if not _string_value(simulation.get("git_commit")):
+        blockers.append("simulation_missing_git_commit")
+    commit_set = _list_strings(simulation.get("git_commit_set"))
+    if commit_set and len(set(commit_set)) != 1:
+        blockers.append(f"simulation_multiple_git_commits:{','.join(commit_set)}")
     if simulation.get("hard_error_count") not in (0, "0"):
         blockers.append(f"simulation_hard_errors:{simulation.get('hard_error_count')}")
     try:
@@ -113,6 +118,8 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     if model_matrix.get("schema_version") != "reply_chain_refactor_model_matrix_v1":
         return ["missing_model_matrix_report"]
     blockers: list[str] = []
+    if not _string_value(model_matrix.get("git_commit")):
+        blockers.append("model_matrix_missing_git_commit")
     requested = set(_list_strings(model_matrix.get("profiles_requested")))
     required_models = {
         "claude": "claude-opus-4-7",
@@ -208,3 +215,7 @@ def _int_value(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _string_value(value: Any) -> str:
+    return str(value or "").strip() if isinstance(value, (str, int)) else ""

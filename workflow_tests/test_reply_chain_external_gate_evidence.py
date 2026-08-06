@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
         "scenario_count": 100,
         "attempt_count": 100,
         "hard_error_count": 0,
@@ -69,6 +71,7 @@ def _simulation_ready() -> dict:
 def _model_matrix_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
+        "git_commit": "abc123",
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
         "profiles": [
@@ -157,6 +160,26 @@ def test_external_gate_evidence_blocks_attempt_count_below_scenario_count() -> N
     blockers = simulation_report_blockers(simulation)
 
     assert "simulation_attempt_count_below_scenario_count:99<100" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_or_mixed_simulation_commit() -> None:
+    simulation = _simulation_ready()
+    simulation["git_commit"] = ""
+    simulation["git_commit_set"] = ["abc123", "def456"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_git_commit" in blockers
+    assert "simulation_multiple_git_commits:abc123,def456" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_model_matrix_commit() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["git_commit"] = ""
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_missing_git_commit" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:

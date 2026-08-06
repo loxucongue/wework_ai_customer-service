@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -179,6 +180,13 @@ def matrix_ranking(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def git_commit(repo_root: Path) -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo_root, text=True).strip()
+    except Exception:
+        return ""
+
+
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -293,6 +301,7 @@ async def _main() -> int:
     matrix_report = {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
+        "git_commit": git_commit(repo_root),
         "fixture": str(fixture),
         "relay_base_url": relay_base_url,
         "profiles_requested": [profile.name for profile in profiles],

@@ -344,11 +344,20 @@ def _aggregate(
     semantic_pass_rate_percent = _rate(len(semantic_passed), len(evaluable))
     safety = _simulation_safety(results)
     isolation_audit = _simulation_isolation_audit(results)
+    git_commits = sorted(
+        {
+            str(item.get("git_commit") or "").strip()
+            for item in results
+            if isinstance(item, dict) and str(item.get("git_commit") or "").strip()
+        }
+    )
     infrastructure_failures = sum(1 for item in results if item.get("infrastructure_errors"))
     coverage = _coverage_audit(scenarios)
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
+        "git_commit": git_commits[0] if len(git_commits) == 1 else "",
+        "git_commit_set": git_commits,
         "fixture": str(fixture),
         "scenario_count": len(scenarios),
         "attempt_count": len(results),

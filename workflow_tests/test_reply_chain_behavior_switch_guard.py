@@ -69,6 +69,8 @@ def _diagnostics_ready() -> dict:
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
         "scenario_count": 100,
         "attempt_count": 100,
         "hard_error_count": 0,
@@ -124,6 +126,7 @@ def _simulation_ready() -> dict:
 def _model_matrix_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
+        "git_commit": "abc123",
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
         "profiles": [
@@ -256,6 +259,26 @@ def test_behavior_switch_guard_blocks_unreviewed_rollback_plan() -> None:
     assert "rollback_plan_not_reviewed" in guard["blockers"]
     assert "rollback_plan_missing_steps" in guard["blockers"]
     assert "rollback_plan_missing_no_refactor_deploy" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_human_review_for_different_commit() -> None:
+    simulation = _simulation_ready()
+    model_matrix = _model_matrix_ready()
+    simulation["git_commit"] = "sim-old"
+    model_matrix["git_commit"] = "matrix-old"
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=simulation,
+        model_matrix_report=model_matrix,
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "human_review_commit_mismatch:simulation:sim-old" in guard["blockers"]
+    assert "human_review_commit_mismatch:model_matrix:matrix-old" in guard["blockers"]
 
 
 def test_behavior_switch_guard_blocks_shadow_bundle_without_commit_phase_evidence() -> None:

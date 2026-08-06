@@ -259,6 +259,8 @@ python ai_paths/scripts/run_full_chain_simulation.py `
 Required report:
 
 - `schema_version=offline_reply_chain_simulation_report_v1`
+- `git_commit` matches the reviewed behavior-switch commit
+- `git_commit_set` contains exactly that commit
 - hard errors: `0`
 - `summary.infrastructure_failures=0`
 - `summary.acceptance.infrastructure_failures_zero=true`
@@ -321,6 +323,7 @@ them into committed tests, fixtures, reports, Markdown, or `.env` files.
 Required matrix report:
 
 - `schema_version=reply_chain_refactor_model_matrix_v1`
+- `git_commit` matches the reviewed behavior-switch commit
 - `profiles_requested` includes `claude`, `gemini`, and `openai`
 - each profile is `completed`
 - no profile has `status=timed_out`

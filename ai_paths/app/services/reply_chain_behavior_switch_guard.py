@@ -56,7 +56,13 @@ def reply_chain_behavior_switch_guard(
     blockers.extend(_diagnostic_blockers(diag, proven_external_gates=proven_external_gates))
     blockers.extend(simulation_blockers)
     blockers.extend(model_matrix_blockers)
-    blockers.extend(_human_review_blockers(review))
+    blockers.extend(
+        _human_review_blockers(
+            review,
+            simulation_report=simulation,
+            model_matrix_report=model_matrix,
+        )
+    )
 
     return _drop_empty(
         {
@@ -204,7 +210,12 @@ def _only_proven_external_gate_blockers(group: dict[str, Any], proven_external_g
     return all(item in {f"gate_not_proven:{gate_id}" for gate_id in proven_external_gates} for item in original)
 
 
-def _human_review_blockers(review: dict[str, Any]) -> list[str]:
+def _human_review_blockers(
+    review: dict[str, Any],
+    *,
+    simulation_report: dict[str, Any],
+    model_matrix_report: dict[str, Any],
+) -> list[str]:
     if review.get("schema_version") != "reply_chain_human_review_approval_v1":
         return ["missing_human_review_approval"]
     blockers: list[str] = []
@@ -214,9 +225,33 @@ def _human_review_blockers(review: dict[str, Any]) -> list[str]:
         blockers.append(f"human_review_wrong_branch:{review.get('branch') or 'missing'}")
     if not isinstance(review.get("commit_sha"), str) or not review.get("commit_sha"):
         blockers.append("human_review_missing_commit_sha")
+    else:
+        blockers.extend(
+            _review_commit_match_blockers(
+                str(review.get("commit_sha") or "").strip(),
+                simulation_report=simulation_report,
+                model_matrix_report=model_matrix_report,
+            )
+        )
     if review.get("scope") != "parallel_gate_planner_behavior_switch":
         blockers.append(f"human_review_wrong_scope:{review.get('scope') or 'missing'}")
     blockers.extend(_rollback_plan_blockers(_dict(review.get("rollback_plan"))))
+    return blockers
+
+
+def _review_commit_match_blockers(
+    commit_sha: str,
+    *,
+    simulation_report: dict[str, Any],
+    model_matrix_report: dict[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
+    simulation_commit = str(simulation_report.get("git_commit") or "").strip()
+    model_matrix_commit = str(model_matrix_report.get("git_commit") or "").strip()
+    if simulation_commit and simulation_commit != commit_sha:
+        blockers.append(f"human_review_commit_mismatch:simulation:{simulation_commit}")
+    if model_matrix_commit and model_matrix_commit != commit_sha:
+        blockers.append(f"human_review_commit_mismatch:model_matrix:{model_matrix_commit}")
     return blockers
 
 

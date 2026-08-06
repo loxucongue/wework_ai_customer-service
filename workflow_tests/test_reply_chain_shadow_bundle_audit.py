@@ -92,6 +92,8 @@ def _ready_state() -> dict:
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
         "scenario_count": 100,
         "attempt_count": 100,
         "hard_error_count": 0,
@@ -147,6 +149,7 @@ def _simulation_ready() -> dict:
 def _model_matrix_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
+        "git_commit": "abc123",
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
         "profiles": [
