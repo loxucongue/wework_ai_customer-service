@@ -7,6 +7,7 @@ from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_pl
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.parallel_reply_chain_diagnostics import parallel_reply_chain_diagnostics
+from app.services.parallel_reply_chain_runner import replay_parallel_gate_planner_shadow_from_serial_outputs
 from app.services.parallel_reply_chain_shadow import parallel_reply_chain_shadow
 from app.services.read_only_tool_executor_shadow import read_only_tool_executor_shadow_from_plan
 from app.services.reply_chain_join_shadow import reply_chain_join_shadow
@@ -149,9 +150,16 @@ def create_planner_brain_node(
                 reply_chain_join_shadow=output["reply_chain_join_shadow"],
                 refactor_flags=state.get("reply_chain_refactor_flags") if isinstance(state.get("reply_chain_refactor_flags"), dict) else {},
             )
+            output["parallel_gate_planner_runner_shadow"] = await replay_parallel_gate_planner_shadow_from_serial_outputs(
+                initial_state=dict(state),
+                gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
+                tool_plan_preview=output["tool_plan_preview"],
+                refactor_flags=state.get("reply_chain_refactor_flags") if isinstance(state.get("reply_chain_refactor_flags"), dict) else {},
+                parallel_reply_chain_shadow=output["parallel_reply_chain_shadow"],
+            )
             output["parallel_reply_chain_diagnostics"] = parallel_reply_chain_diagnostics(
                 parallel_reply_chain_shadow=output["parallel_reply_chain_shadow"],
-                runner_shadow=state.get("parallel_gate_planner_runner_shadow") if isinstance(state.get("parallel_gate_planner_runner_shadow"), dict) else {},
+                runner_shadow=output["parallel_gate_planner_runner_shadow"],
             )
             span["output_snapshot"] = output
             return output

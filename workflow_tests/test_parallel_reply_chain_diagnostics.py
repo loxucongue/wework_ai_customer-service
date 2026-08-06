@@ -88,6 +88,10 @@ def test_diagnostics_are_not_consumed_by_current_model_payloads() -> None:
             "schema_version": "parallel_reply_chain_diagnostics_v1",
             "next_safe_step": "shadow-only-diagnostics-marker",
         },
+        "parallel_gate_planner_runner_shadow": {
+            "schema_version": "parallel_gate_planner_runner_shadow_v1",
+            "input_mode": "runner-shadow-only-marker",
+        },
         "request_context": {},
     }
 
@@ -97,4 +101,7 @@ def test_diagnostics_are_not_consumed_by_current_model_payloads() -> None:
 
     assert "parallel_reply_chain_diagnostics" not in planner_payload
     assert "parallel_reply_chain_diagnostics" not in reply_payload
+    assert "parallel_gate_planner_runner_shadow" not in planner_payload
+    assert "parallel_gate_planner_runner_shadow" not in reply_payload
     assert "shadow-only-diagnostics-marker" not in combined
+    assert "runner-shadow-only-marker" not in combined

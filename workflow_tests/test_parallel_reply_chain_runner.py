@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
-from app.services.parallel_reply_chain_runner import run_parallel_gate_planner_shadow
+from app.services.parallel_reply_chain_runner import (
+    replay_parallel_gate_planner_shadow_from_serial_outputs,
+    run_parallel_gate_planner_shadow,
+)
 
 
 def test_parallel_runner_shadow_runs_gate_and_planner_concurrently() -> None:
@@ -119,3 +122,58 @@ async def _parallel_runner_shadow_captures_branch_errors_without_raising() -> No
     assert result["branches"]["sop_chat_gate"]["status"] == "error"
     assert "RuntimeError: gate failed" in result["branches"]["sop_chat_gate"]["error"]
     assert result["branches"]["tool_planner"]["status"] == "completed"
+
+
+def test_serial_output_adapter_replays_existing_shadows_without_new_work() -> None:
+    asyncio.run(_serial_output_adapter_replays_existing_shadows_without_new_work())
+
+
+async def _serial_output_adapter_replays_existing_shadows_without_new_work() -> None:
+    gate_shadow = {"schema_version": "chat_gate_router_shadow_v1", "route_suggestion": "tools_only"}
+    tool_plan = {"schema_version": "tool_plan_preview_v2", "fact_requirement": "required"}
+    result = await replay_parallel_gate_planner_shadow_from_serial_outputs(
+        initial_state={"request_id": "req-serial"},
+        gate_router_shadow=gate_shadow,
+        tool_plan_preview=tool_plan,
+        refactor_flags={"safe_for_shadow_observation": True, "mode": "shadow_only"},
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+    )
+
+    assert result["mode"] == "completed_shadow"
+    assert result["input_mode"] == "serial_outputs_adapter"
+    assert result["source"] == "serial_outputs_replayed_through_shadow_runner"
+    assert result["branches"]["sop_chat_gate"]["output"]["source"] == "serial_gate_router_shadow"
+    assert result["branches"]["sop_chat_gate"]["output"]["gate_router_shadow"] == gate_shadow
+    assert result["branches"]["tool_planner"]["output"]["source"] == "serial_tool_plan_preview"
+    assert result["branches"]["tool_planner"]["output"]["tool_plan_preview"] == tool_plan
+    assert result["safety"]["no_new_model_calls"] is True
+    assert result["safety"]["no_tool_execution"] is True
+
+
+def test_serial_output_adapter_skips_when_parallel_contract_is_blocked() -> None:
+    asyncio.run(_serial_output_adapter_skips_when_parallel_contract_is_blocked())
+
+
+async def _serial_output_adapter_skips_when_parallel_contract_is_blocked() -> None:
+    result = await replay_parallel_gate_planner_shadow_from_serial_outputs(
+        initial_state={},
+        gate_router_shadow={},
+        tool_plan_preview={},
+        refactor_flags={"safe_for_shadow_observation": True},
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {
+                "ready_for_shadow_parallel_runner": False,
+                "blockers": ["missing_gate_router_shadow"],
+            },
+        },
+    )
+
+    assert result["mode"] == "skipped"
+    assert result["input_mode"] == "serial_outputs_adapter"
+    assert result["reason"] == "parallel_contract_not_ready"
+    assert result["activation_blockers"] == ["missing_gate_router_shadow"]
+    assert result["safety"]["no_new_model_calls"] is True
