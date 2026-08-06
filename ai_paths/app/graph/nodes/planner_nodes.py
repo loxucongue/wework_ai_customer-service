@@ -6,6 +6,7 @@ from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, 
 from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_planner_brain_v2, safety_fallback_plan
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
+from app.services.parallel_reply_chain_diagnostics import parallel_reply_chain_diagnostics
 from app.services.parallel_reply_chain_shadow import parallel_reply_chain_shadow
 from app.services.read_only_tool_executor_shadow import read_only_tool_executor_shadow_from_plan
 from app.services.reply_chain_join_shadow import reply_chain_join_shadow
@@ -147,6 +148,10 @@ def create_planner_brain_node(
                 read_only_tool_executor_shadow=output["read_only_tool_executor_shadow"],
                 reply_chain_join_shadow=output["reply_chain_join_shadow"],
                 refactor_flags=state.get("reply_chain_refactor_flags") if isinstance(state.get("reply_chain_refactor_flags"), dict) else {},
+            )
+            output["parallel_reply_chain_diagnostics"] = parallel_reply_chain_diagnostics(
+                parallel_reply_chain_shadow=output["parallel_reply_chain_shadow"],
+                runner_shadow=state.get("parallel_gate_planner_runner_shadow") if isinstance(state.get("parallel_gate_planner_runner_shadow"), dict) else {},
             )
             span["output_snapshot"] = output
             return output

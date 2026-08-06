@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+def parallel_reply_chain_diagnostics(
+    *,
+    parallel_reply_chain_shadow: dict[str, Any],
+    runner_shadow: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Summarize migration readiness without owning business semantics."""
+
+    runner = runner_shadow if isinstance(runner_shadow, dict) else {}
+    contract_blockers = _list_strings((parallel_reply_chain_shadow.get("activation") or {}).get("blockers"))
+    runner_mode = str(runner.get("mode") or "not_integrated")
+    runner_blockers = _runner_blockers(runner)
+    phase = _phase(
+        parallel_shadow_present=parallel_reply_chain_shadow.get("schema_version") == "parallel_reply_chain_shadow_v1",
+        contract_blockers=contract_blockers,
+        runner_mode=runner_mode,
+        runner_blockers=runner_blockers,
+    )
+    return _drop_empty(
+        {
+            "schema_version": "parallel_reply_chain_diagnostics_v1",
+            "phase": phase,
+            "contract": {
+                "present": parallel_reply_chain_shadow.get("schema_version") == "parallel_reply_chain_shadow_v1",
+                "ready_for_shadow_runner": bool((parallel_reply_chain_shadow.get("activation") or {}).get("ready_for_shadow_parallel_runner")),
+                "blockers": contract_blockers,
+                "final_expression_owner": (parallel_reply_chain_shadow.get("target_topology") or {}).get("final_expression_owner"),
+            },
+            "runner": {
+                "mode": runner_mode,
+                "blockers": runner_blockers,
+                "branch_status": _branch_status(runner),
+            },
+            "next_safe_step": _next_safe_step(phase),
+            "safety": {
+                "diagnostic_only": True,
+                "no_runtime_behavior_change": True,
+                "no_model_payload_consumption": True,
+                "no_customer_messages_sent": True,
+                "no_database_writes": True,
+            },
+        }
+    )
+
+
+def _phase(
+    *,
+    parallel_shadow_present: bool,
+    contract_blockers: list[str],
+    runner_mode: str,
+    runner_blockers: list[str],
+) -> str:
+    if not parallel_shadow_present:
+        return "missing_parallel_contract"
+    if contract_blockers:
+        return "contract_blocked"
+    if runner_mode == "not_integrated":
+        return "ready_for_runner_integration"
+    if runner_mode == "skipped" or runner_blockers:
+        return "runner_blocked"
+    if runner_mode == "completed_shadow":
+        return "ready_for_shadow_comparison"
+    return "unknown"
+
+
+def _next_safe_step(phase: str) -> str:
+    return {
+        "missing_parallel_contract": "build_parallel_reply_chain_shadow_contract",
+        "contract_blocked": "fix_shadow_contract_or_flag_blockers",
+        "ready_for_runner_integration": "wire_shadow_runner_without_runtime_behavior_change",
+        "runner_blocked": "fix_runner_inputs_or_refactor_flags",
+        "ready_for_shadow_comparison": "collect_old_vs_new_shadow_diffs_before_behavior_switch",
+    }.get(phase, "inspect_parallel_refactor_diagnostics")
+
+
+def _runner_blockers(runner: dict[str, Any]) -> list[str]:
+    blockers = _list_strings(runner.get("activation_blockers"))
+    branches = runner.get("branches") if isinstance(runner.get("branches"), dict) else {}
+    for branch_name, branch in branches.items():
+        if isinstance(branch, dict) and branch.get("status") == "error":
+            blockers.append(f"branch_error:{branch_name}")
+    return blockers
+
+
+def _branch_status(runner: dict[str, Any]) -> dict[str, str]:
+    branches = runner.get("branches") if isinstance(runner.get("branches"), dict) else {}
+    return {
+        str(name): str(branch.get("status") or "unknown")
+        for name, branch in branches.items()
+        if isinstance(branch, dict)
+    }
+
+
+def _list_strings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str) and item]
+
+
+def _drop_empty(value: Any) -> Any:
+    if isinstance(value, dict):
+        output = {key: _drop_empty(item) for key, item in value.items()}
+        return {key: item for key, item in output.items() if item not in ("", None, {}, [])}
+    if isinstance(value, list):
+        output = [_drop_empty(item) for item in value]
+        return [item for item in output if item not in ("", None, {}, [])]
+    return value
