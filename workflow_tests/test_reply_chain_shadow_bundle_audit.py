@@ -70,6 +70,21 @@ def _ready_state() -> dict:
                 "ready_for_deferred_write_refactor_review": True,
                 "blockers": [],
             },
+            "write_action_inventory": {
+                "schema_version": "reply_chain_write_action_inventory_v1",
+                "commit_phase_owner": "runtime_after_reply_validation",
+                "requires_reply_validation_before_write": True,
+                "all_runtime_writes_after_reply_validation": True,
+                "ready_for_commit_refactor_review": True,
+                "actions": [
+                    {
+                        "id": "conversation_assistant_message",
+                        "owner": "runtime_after_reply_validation",
+                        "execution_phase": "after_reply_validation",
+                    }
+                ],
+                "blockers": [],
+            },
         },
     }
 

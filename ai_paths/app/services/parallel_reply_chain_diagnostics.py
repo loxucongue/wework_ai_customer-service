@@ -447,6 +447,7 @@ def _commit_blockers(commit: dict[str, Any]) -> list[str]:
         blockers.append("commit_does_not_require_reply_validation")
     blockers.extend(_commit_precommit_audit_blockers(commit))
     blockers.extend(_commit_deferred_write_handoff_blockers(commit))
+    blockers.extend(_commit_write_action_inventory_blockers(commit))
     forbidden_owners = commit.get("must_not_be_owned_by")
     if isinstance(forbidden_owners, list):
         required_forbidden = {"sop_chat_gate", "tool_planner", "reply_chain_join"}
@@ -455,6 +456,35 @@ def _commit_blockers(commit: dict[str, Any]) -> list[str]:
     else:
         blockers.append("commit_missing_forbidden_owners")
     return blockers
+
+
+def _commit_write_action_inventory_blockers(commit: dict[str, Any]) -> list[str]:
+    inventory = commit.get("write_action_inventory")
+    if not isinstance(inventory, dict) or inventory.get("schema_version") != "reply_chain_write_action_inventory_v1":
+        return ["missing_reply_chain_write_action_inventory"]
+    if inventory.get("commit_phase_owner") != "runtime_after_reply_validation":
+        return ["write_inventory_owner_not_runtime_after_reply_validation"]
+    if inventory.get("requires_reply_validation_before_write") is not True:
+        return ["write_inventory_missing_reply_validation_requirement"]
+    if inventory.get("all_runtime_writes_after_reply_validation") is not True:
+        blockers = _list_strings(inventory.get("blockers"))
+        return [f"write_inventory:{item}" for item in blockers] or ["write_inventory:not_ready"]
+    if inventory.get("ready_for_commit_refactor_review") is not True:
+        blockers = _list_strings(inventory.get("blockers"))
+        return [f"write_inventory:{item}" for item in blockers] or ["write_inventory:not_ready"]
+    actions = inventory.get("actions")
+    if not isinstance(actions, list):
+        return ["write_inventory_actions_not_list"]
+    for action in actions:
+        if not isinstance(action, dict):
+            return ["write_inventory_action_not_dict"]
+        action_id = str(action.get("id") or "missing")
+        if action.get("owner") != "runtime_after_reply_validation":
+            return [f"write_inventory_action_owner_not_runtime_after_reply_validation:{action_id}"]
+        phase = str(action.get("execution_phase") or "")
+        if phase not in {"after_reply_validation", "deferred_after_reply_validation"}:
+            return [f"write_inventory_action_phase_not_after_reply_validation:{action_id}"]
+    return []
 
 
 def _commit_deferred_write_handoff_blockers(commit: dict[str, Any]) -> list[str]:

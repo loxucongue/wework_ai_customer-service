@@ -22,6 +22,26 @@ def test_commit_shadow_describes_non_isolated_reply_side_effects() -> None:
     assert shadow["precommit_validation_audit"]["has_customer_visible_reply"] is True
     assert shadow["precommit_validation_audit"]["conversation_write_allowed"] is True
     assert shadow["precommit_validation_audit"]["memory_write_allowed"] is True
+    inventory = shadow["write_action_inventory"]
+    assert inventory["schema_version"] == "reply_chain_write_action_inventory_v1"
+    assert inventory["commit_phase_owner"] == "runtime_after_reply_validation"
+    assert inventory["requires_reply_validation_before_write"] is True
+    assert inventory["reply_validation_evidence"]["has_customer_visible_reply"] is True
+    assert inventory["ready_for_commit_refactor_review"] is True
+    assert inventory["blockers"] == []
+    runtime_action_ids = {
+        action["id"]
+        for action in inventory["actions"]
+        if action["runtime_write"] is True
+    }
+    assert {
+        "conversation_assistant_message",
+        "case_image_memory_record",
+        "activity_intro_image_memory_record",
+        "visible_store_fact_memory_record",
+        "trace_log_write",
+        "run_record_save",
+    }.issubset(runtime_action_ids)
     assert shadow["planned_side_effects"]["conversation_assistant_message"] is True
     assert shadow["planned_side_effects"]["case_image_memory_record"] is True
     assert shadow["planned_side_effects"]["activity_intro_image_memory_record"] is True
@@ -54,6 +74,16 @@ def test_commit_shadow_blocks_customer_writes_for_isolated_reply() -> None:
     assert shadow["planned_side_effects"]["visible_store_fact_memory_record"] is False
     assert shadow["planned_side_effects"]["trace_log_write"] is True
     assert shadow["planned_side_effects"]["run_record_save"] is True
+    inventory = shadow["write_action_inventory"]
+    customer_writes = [
+        action
+        for action in inventory["actions"]
+        if action["category"] in {"customer_visible_history", "memory"} and action["runtime_write"] is True
+    ]
+    assert customer_writes == []
+    skipped = {action["id"]: action["skipped_reason"] for action in inventory["actions"]}
+    assert skipped["conversation_assistant_message"] == "test_isolated"
+    assert skipped["case_image_memory_record"] == "test_isolated"
 
 
 def test_commit_shadow_records_memory_persistence_blockers_without_blocking_commit() -> None:
@@ -142,6 +172,15 @@ def test_commit_shadow_hands_deferred_write_tools_to_post_reply_commit_phase() -
     assert audit["requires_explicit_commit_executor_before_activation"] is True
     assert audit["ready_for_deferred_write_refactor_review"] is True
     assert shadow["planned_side_effects"]["deferred_write_tool_execution"] is False
+    inventory = shadow["write_action_inventory"]
+    deferred_actions = [
+        action
+        for action in inventory["actions"]
+        if action["category"] == "deferred_tool_write"
+    ]
+    assert [action["repository"] for action in deferred_actions] == ["create_work_order", "add_customer_mobile"]
+    assert all(action["runtime_write"] is False for action in deferred_actions)
+    assert all(action["execution_phase"] == "deferred_after_reply_validation" for action in deferred_actions)
 
 
 def test_commit_shadow_flags_deferred_write_handoff_contract_violations() -> None:
@@ -162,3 +201,6 @@ def test_commit_shadow_flags_deferred_write_handoff_contract_violations() -> Non
     assert audit["ready_for_deferred_write_refactor_review"] is False
     assert "deferred_write_execution_not_deferred:create_work_order" in audit["blockers"]
     assert "deferred_write_missing_tool" in audit["blockers"]
+    inventory = shadow["write_action_inventory"]
+    assert inventory["ready_for_commit_refactor_review"] is False
+    assert "deferred_write_handoff:deferred_write_execution_not_deferred:create_work_order" in inventory["blockers"]

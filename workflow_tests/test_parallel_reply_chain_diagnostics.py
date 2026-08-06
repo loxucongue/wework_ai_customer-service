@@ -61,6 +61,21 @@ def _commit_shadow(**overrides: object) -> dict:
             "ready_for_deferred_write_refactor_review": True,
             "blockers": [],
         },
+        "write_action_inventory": {
+            "schema_version": "reply_chain_write_action_inventory_v1",
+            "commit_phase_owner": "runtime_after_reply_validation",
+            "requires_reply_validation_before_write": True,
+            "all_runtime_writes_after_reply_validation": True,
+            "ready_for_commit_refactor_review": True,
+            "actions": [
+                {
+                    "id": "conversation_assistant_message",
+                    "owner": "runtime_after_reply_validation",
+                    "execution_phase": "after_reply_validation",
+                }
+            ],
+            "blockers": [],
+        },
         "must_not_be_owned_by": ["sop_chat_gate", "tool_planner", "reply_chain_join"],
     }
     base.update(overrides)
@@ -312,6 +327,59 @@ def test_diagnostics_blocks_when_commit_precommit_audit_is_missing() -> None:
 
     assert diagnostics["phase"] == "commit_phase_blocked"
     assert "missing_reply_chain_precommit_validation_audit" in diagnostics["commit"]["blockers"]
+
+
+def test_diagnostics_blocks_when_commit_write_inventory_is_missing() -> None:
+    commit_shadow = _commit_shadow()
+    commit_shadow.pop("write_action_inventory")
+
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow=_completed_runner_shadow(),
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+        },
+        commit_shadow=commit_shadow,
+    )
+
+    assert diagnostics["phase"] == "commit_phase_blocked"
+    assert "missing_reply_chain_write_action_inventory" in diagnostics["commit"]["blockers"]
+
+
+def test_diagnostics_blocks_when_commit_write_inventory_is_not_ready() -> None:
+    commit_shadow = _commit_shadow()
+    commit_shadow["write_action_inventory"] = {
+        "schema_version": "reply_chain_write_action_inventory_v1",
+        "commit_phase_owner": "runtime_after_reply_validation",
+        "requires_reply_validation_before_write": True,
+        "all_runtime_writes_after_reply_validation": False,
+        "ready_for_commit_refactor_review": False,
+        "actions": [],
+        "blockers": ["write_allowed_without_ready_precommit:conversation_assistant_message"],
+    }
+
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow=_completed_runner_shadow(),
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+        },
+        commit_shadow=commit_shadow,
+    )
+
+    assert diagnostics["phase"] == "commit_phase_blocked"
+    assert (
+        "write_inventory:write_allowed_without_ready_precommit:conversation_assistant_message"
+        in diagnostics["commit"]["blockers"]
+    )
 
 
 def test_diagnostics_blocks_when_commit_precommit_audit_is_not_ready() -> None:
