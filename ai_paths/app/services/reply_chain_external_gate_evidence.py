@@ -71,10 +71,17 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
         return ["missing_model_matrix_report"]
     blockers: list[str] = []
     requested = set(_list_strings(model_matrix.get("profiles_requested")))
-    required = {"claude", "gemini", "openai"}
+    required_models = {
+        "claude": "claude-opus-4-7",
+        "gemini": "gemini-3.5-flash",
+        "openai": "gpt-5.4",
+    }
+    required = set(required_models)
     missing = sorted(required - requested)
     if missing:
         blockers.extend(f"model_matrix_missing_requested_profile:{item}" for item in missing)
+    if _int_value(model_matrix.get("executed_profile_count")) != len(required):
+        blockers.append(f"model_matrix_executed_profile_count_mismatch:{model_matrix.get('executed_profile_count')}")
     profiles = model_matrix.get("profiles") if isinstance(model_matrix.get("profiles"), list) else []
     completed_names = {
         str((_dict(item.get("model_profile")).get("name") or "")).strip()
@@ -95,6 +102,14 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     for item in profiles:
         if not isinstance(item, dict) or item.get("status") != "completed":
             continue
+        profile = _dict(item.get("model_profile"))
+        profile_name = str(profile.get("name") or "").strip()
+        expected_model = required_models.get(profile_name)
+        observed_model = str(profile.get("model") or "").strip()
+        if expected_model and observed_model != expected_model:
+            blockers.append(
+                f"model_matrix_profile_model_mismatch:{profile_name}:{observed_model or 'missing'}"
+            )
         summary = _dict(item.get("profile_summary"))
         if not _has_number(summary.get("semantic_pass_rate")):
             blockers.append(f"model_matrix_missing_semantic_pass_rate:{_profile_name(item)}")

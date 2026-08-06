@@ -108,6 +108,7 @@ def _model_matrix_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
         "profiles_requested": ["claude", "gemini", "openai"],
+        "executed_profile_count": 3,
         "profiles": [
             {
                 "status": "completed",

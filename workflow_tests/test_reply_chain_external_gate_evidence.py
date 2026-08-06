@@ -53,10 +53,11 @@ def _model_matrix_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
         "profiles_requested": ["claude", "gemini", "openai"],
+        "executed_profile_count": 3,
         "profiles": [
             {
                 "status": "completed",
-                "model_profile": {"name": "claude"},
+                "model_profile": {"name": "claude", "model": "claude-opus-4-7"},
                 "profile_summary": {
                     "semantic_pass_rate": 0.91,
                     "p50_ms": 6200,
@@ -67,7 +68,7 @@ def _model_matrix_ready() -> dict:
             },
             {
                 "status": "completed",
-                "model_profile": {"name": "gemini"},
+                "model_profile": {"name": "gemini", "model": "gemini-3.5-flash"},
                 "profile_summary": {
                     "semantic_pass_rate": 0.9,
                     "p50_ms": 3900,
@@ -78,7 +79,7 @@ def _model_matrix_ready() -> dict:
             },
             {
                 "status": "completed",
-                "model_profile": {"name": "openai"},
+                "model_profile": {"name": "openai", "model": "gpt-5.4"},
                 "profile_summary": {
                     "semantic_pass_rate": 0.94,
                     "p50_ms": 4800,
@@ -112,10 +113,12 @@ def test_external_gate_evidence_blocks_unsafe_or_incomplete_reports() -> None:
         for item in model_matrix["profiles"]
         if item["model_profile"]["name"] != "gemini"
     ]
+    model_matrix["executed_profile_count"] = 2
 
     assert "simulation_semantic_pass_rate_below_90:0.890" in simulation_report_blockers(simulation)
     assert "simulation_missing_no_customer_send_safety" in simulation_report_blockers(simulation)
     assert "model_matrix_profile_not_completed:gemini" in model_matrix_report_blockers(model_matrix)
+    assert "model_matrix_executed_profile_count_mismatch:2" in model_matrix_report_blockers(model_matrix)
 
 
 def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:
@@ -151,7 +154,7 @@ def test_external_gate_evidence_names_timed_out_model_profile() -> None:
     model_matrix = _model_matrix_ready()
     model_matrix["profiles"][1] = {
         "status": "timed_out",
-        "model_profile": {"name": "gemini"},
+        "model_profile": {"name": "gemini", "model": "gemini-3.5-flash"},
         "profile_summary": {
             "infrastructure_failures": 1,
             "timeout_seconds": 120,
@@ -163,6 +166,15 @@ def test_external_gate_evidence_names_timed_out_model_profile() -> None:
 
     assert "model_matrix_profile_not_completed:gemini" in blockers
     assert "model_matrix_profile_timed_out:gemini:120" in blockers
+
+
+def test_external_gate_evidence_blocks_wrong_model_for_profile() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"][2]["model_profile"]["model"] = "gpt-5.4-mini"
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_profile_model_mismatch:openai:gpt-5.4-mini" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_core_simulation_acceptance_fields() -> None:
