@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     model_reply_reserve_seconds: float = 30.0
     model_min_retry_remaining_seconds: float = 8.0
     model_vision_total_timeout_seconds: float = 15.0
+    parallel_gate_planner_enabled: bool = Field(default=False, alias="PARALLEL_GATE_PLANNER_ENABLED")
+    parallel_gate_planner_shadow: bool = Field(default=True, alias="PARALLEL_GATE_PLANNER_SHADOW")
+    sop_chat_gate_v2_enabled: bool = Field(default=False, alias="SOP_CHAT_GATE_V2_ENABLED")
+    tool_planner_v2_enabled: bool = Field(default=False, alias="TOOL_PLANNER_V2_ENABLED")
+    gate_direct_reply_enabled: bool = Field(default=False, alias="GATE_DIRECT_REPLY_ENABLED")
+    read_tool_early_execution_enabled: bool = Field(default=False, alias="READ_TOOL_EARLY_EXECUTION_ENABLED")
+    deferred_write_execution_enabled: bool = Field(default=False, alias="DEFERRED_WRITE_EXECUTION_ENABLED")
     model_request_retry_attempts: int = 2
     model_request_retry_delay_seconds: float = 0.5
     sop_event_model_retry_attempts: int = Field(default=3, alias="SOP_EVENT_MODEL_RETRY_ATTEMPTS")
