@@ -25,6 +25,17 @@ OPTIONAL_ACTIVE_FLAGS = (
     "deferred_write_execution_enabled",
 )
 
+REQUIRED_HUMAN_REVIEW_EVIDENCE = (
+    "shadow_bundle_audit",
+    "diagnostics",
+    "simulation_report",
+    "model_matrix_report",
+    "payload_isolation_report",
+    "business_wording_freeze_report",
+    "rollback_evidence_report",
+    "model_semantics_ownership_report",
+)
+
 
 def reply_chain_behavior_switch_guard(
     *,
@@ -134,7 +145,10 @@ def reply_chain_behavior_switch_guard(
                     "reply_chain_model_semantics_ownership_audit_v1 proving Tool Planner, Join, "
                     "and code do not own customer psychology, objections, sales rhythm, or final wording"
                 ),
-                "human_review": "explicit reviewer approval for this branch, commit, scope, and rollback plan",
+                "human_review": (
+                    "explicit reviewer approval for this branch, commit, scope, rollback plan, "
+                    "and reviewed evidence list"
+                ),
             },
             "safety": {
                 "guard_only": True,
@@ -367,7 +381,21 @@ def _human_review_blockers(
         )
     if review.get("scope") != "parallel_gate_planner_behavior_switch":
         blockers.append(f"human_review_wrong_scope:{review.get('scope') or 'missing'}")
+    blockers.extend(_reviewed_evidence_blockers(review))
     blockers.extend(_rollback_plan_blockers(_dict(review.get("rollback_plan"))))
+    return blockers
+
+
+def _reviewed_evidence_blockers(review: dict[str, Any]) -> list[str]:
+    reviewed = set(_list_strings(review.get("reviewed_evidence")))
+    if not reviewed:
+        return ["human_review_missing_reviewed_evidence"]
+    blockers: list[str] = []
+    for item in REQUIRED_HUMAN_REVIEW_EVIDENCE:
+        if item not in reviewed:
+            blockers.append(f"human_review_missing_reviewed_evidence:{item}")
+    extra = sorted(reviewed.difference(REQUIRED_HUMAN_REVIEW_EVIDENCE))
+    blockers.extend(f"human_review_unrecognized_reviewed_evidence:{item}" for item in extra)
     return blockers
 
 

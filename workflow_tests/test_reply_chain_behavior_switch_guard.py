@@ -541,6 +541,16 @@ def _human_review_approved() -> dict:
         "branch": "codex/reply-chain-refactor",
         "commit_sha": "abc123",
         "scope": "parallel_gate_planner_behavior_switch",
+        "reviewed_evidence": [
+            "shadow_bundle_audit",
+            "diagnostics",
+            "simulation_report",
+            "model_matrix_report",
+            "payload_isolation_report",
+            "business_wording_freeze_report",
+            "rollback_evidence_report",
+            "model_semantics_ownership_report",
+        ],
         "rollback_plan": {
             "schema_version": "reply_chain_behavior_switch_rollback_plan_v1",
             "reviewed": True,
@@ -600,6 +610,41 @@ def test_behavior_switch_guard_blocks_human_review_without_rollback_plan() -> No
 
     assert guard["can_enable_behavior_switch"] is False
     assert "missing_behavior_switch_rollback_plan" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_human_review_without_reviewed_evidence_list() -> None:
+    review = _human_review_approved()
+    del review["reviewed_evidence"]
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        **_complete_external_report_kwargs(),
+        human_review=review,
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "human_review_missing_reviewed_evidence" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_human_review_with_incomplete_or_unknown_reviewed_evidence() -> None:
+    review = _human_review_approved()
+    review["reviewed_evidence"] = ["simulation_report", "model_matrix_report", "unknown_report"]
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        **_complete_external_report_kwargs(),
+        human_review=review,
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "human_review_missing_reviewed_evidence:shadow_bundle_audit" in guard["blockers"]
+    assert "human_review_missing_reviewed_evidence:payload_isolation_report" in guard["blockers"]
+    assert "human_review_missing_reviewed_evidence:model_semantics_ownership_report" in guard["blockers"]
+    assert "human_review_unrecognized_reviewed_evidence:unknown_report" in guard["blockers"]
 
 
 def test_behavior_switch_guard_requires_all_external_audit_reports_for_review() -> None:

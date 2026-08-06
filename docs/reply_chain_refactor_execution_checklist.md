@@ -561,6 +561,29 @@ This audit does not prove business quality. It only proves this refactor stage
 is reviewable, revertible, and not mixed with deployment work. If deployment
 sensitive files changed, split them out or keep the behavior switch blocked.
 
+Human review approval must use `schema_version=reply_chain_human_review_approval_v1`
+and include:
+
+- `approved=true`
+- `branch=codex/reply-chain-refactor`
+- `commit_sha` matching every attached report
+- `scope=parallel_gate_planner_behavior_switch`
+- `reviewed_evidence` containing all of:
+  `shadow_bundle_audit`, `diagnostics`, `simulation_report`,
+  `model_matrix_report`, `payload_isolation_report`,
+  `business_wording_freeze_report`, `rollback_evidence_report`, and
+  `model_semantics_ownership_report`
+- `rollback_plan.schema_version=reply_chain_behavior_switch_rollback_plan_v1`
+- `rollback_plan.reviewed=true`
+- `rollback_plan.restore_flags_to_shadow_or_disabled=true`
+- `rollback_plan.no_deployment_from_refactor_branch=true`
+- non-empty `rollback_plan.rollback_steps`
+- non-empty `rollback_plan.owner`
+
+The behavior-switch guard must reject approvals that omit this reviewed
+evidence list or include unknown evidence labels. This prevents a bare
+`approved=true` from acting as sufficient review.
+
 ### T8 Core Regression Bundle
 
 Run before any human review of behavior switch:
