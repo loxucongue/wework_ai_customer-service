@@ -20,6 +20,7 @@ RUN_TERMINAL_KEYS = (
     "reply_source",
     "reply_control",
     "async_final_reply",
+    "reply_chain_commit_shadow",
     "planner_decision",
     "planner_stage",
     "planner_sub_rule_id",

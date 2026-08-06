@@ -203,6 +203,40 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.saved_states[-1]["reply_messages"], [])
         self.assertEqual(repository.saved_states[-1]["reply_source"], "platform_superseded")
         self.assertEqual(repository.saved_states[-1]["reply_control"]["sync_return"]["type"], "empty")
+        self.assertEqual(
+            repository.saved_states[-1]["reply_chain_commit_shadow"]["schema_version"],
+            "reply_chain_commit_shadow_v1",
+        )
+        self.assertFalse(
+            repository.saved_states[-1]["reply_chain_commit_shadow"]["planned_side_effects"]["conversation_assistant_message"]
+        )
+
+    async def test_persist_response_records_commit_shadow_before_save_run(self) -> None:
+        repository = _Repository()
+        runtime = ChatRuntime(
+            full_graph=_EmptyReplyGraph(),
+            trace_logger=_TraceLogger(),
+            repository=repository,
+        )
+        state = runtime._initial_state(_request("hello"), "request-id", {})
+        state["reply_messages"] = [{"type": "text", "order": 1, "content": {"text": "hello"}}]
+
+        response = runtime._persist_and_build_response(
+            request=_request("hello"),
+            request_id="request-id",
+            conversation_id="conversation-id",
+            final_state=state,
+            allow_empty_reply=False,
+        )
+
+        self.assertEqual(len(response.reply_messages), 1)
+        shadow = repository.saved_states[-1]["reply_chain_commit_shadow"]
+        self.assertEqual(shadow["schema_version"], "reply_chain_commit_shadow_v1")
+        self.assertEqual(shadow["commit_phase_owner"], "runtime_after_reply_validation")
+        self.assertTrue(shadow["planned_side_effects"]["conversation_assistant_message"])
+        self.assertTrue(shadow["planned_side_effects"]["trace_log_write"])
+        self.assertTrue(shadow["planned_side_effects"]["run_record_save"])
+        self.assertFalse(shadow["planned_side_effects"]["case_image_memory_record"])
 
     async def test_platform_auto_opening_returns_sop_before_planner(self) -> None:
         graph = _UnexpectedGraph()

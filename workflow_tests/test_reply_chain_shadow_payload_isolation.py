@@ -18,6 +18,7 @@ SHADOW_ONLY_FIELDS = (
     "reply_chain_join_shadow",
     "reply_final_brain_handoff_shadow",
     "parallel_reply_chain_shadow",
+    "reply_chain_commit_shadow",
     "reply_chain_refactor_flags",
     "parallel_gate_planner_runner_shadow",
     "parallel_reply_chain_diagnostics",

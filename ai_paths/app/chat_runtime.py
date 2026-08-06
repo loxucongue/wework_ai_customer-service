@@ -21,6 +21,7 @@ from app.services.chat_gate_router_shadow import chat_gate_router_shadow_from_re
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
+from app.services.reply_chain_commit_shadow import reply_chain_commit_shadow
 from app.services.reply_chain_refactor_flags import reply_chain_refactor_flag_snapshot
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService
@@ -968,32 +969,38 @@ class ChatRuntime:
             final_state["reply_messages"] = raw_reply_messages
             final_state["reply_source"] = "deterministic_empty_reply_fallback"
         reply_messages = [ReplyMessage(**message) for message in raw_reply_messages]
+        reply_message_dicts = [message.model_dump() for message in reply_messages]
+        final_state["reply_chain_commit_shadow"] = reply_chain_commit_shadow(
+            final_state=final_state,
+            reply_messages=reply_message_dicts,
+            allow_empty_reply=allow_empty_reply,
+        )
         if reply_messages and not bool(final_state.get("test_isolated")):
             safe_repository_call(
                 self._repository.add_assistant_message,
                 conversation_id=conversation_id,
                 request_id=request_id,
-                reply_messages=[message.model_dump() for message in reply_messages],
+                reply_messages=reply_message_dicts,
             )
             if _memory_persistence_allowed(final_state):
                 _record_sent_case_images(
                     self._memory_store,
                     final_state,
                     customer_id=str(final_state.get("sales_contact_key") or ""),
-                    reply_messages=[message.model_dump() for message in reply_messages],
+                    reply_messages=reply_message_dicts,
                 )
                 _record_activity_intro_image(
                     self._memory_store,
                     final_state,
                     customer_id=str(final_state.get("sales_contact_key") or ""),
-                    reply_messages=[message.model_dump() for message in reply_messages],
+                    reply_messages=reply_message_dicts,
                     send_mode="sync",
                 )
                 _record_visible_store_facts(
                     self._memory_store,
                     final_state,
                     customer_id=str(final_state.get("sales_contact_key") or ""),
-                    reply_messages=[message.model_dump() for message in reply_messages],
+                    reply_messages=reply_message_dicts,
                 )
         elif reply_messages:
             final_state["case_image_send_record"] = {
