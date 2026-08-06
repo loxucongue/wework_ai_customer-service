@@ -797,3 +797,116 @@ python -m pytest workflow_tests/test_parallel_reply_chain_runner.py workflow_tes
 4. 补齐 Gate/Tool Planner/Join/Reply handoff 的隔离测试。
 5. 运行核心重构回归。
 6. 只在 `codex/reply-chain-refactor` 提交。
+
+## 20. 开发执行方案
+
+本重构必须按“小批次、shadow 优先、测试先行、人工 review 后再进入下一阶段”的方式推进。任何阶段都不能直接改变生产客户可见回复，除非后续另开行为切换任务并经过离线仿真、人工审核和回滚方案确认。
+
+### 20.1 执行原则
+
+- 每次只解决一个结构问题，例如“上下文缺少时间线审计”或“Reply handoff 没有工具事实 blocker”，不能顺手修改业务话术。
+- 每次提交必须留在 `codex/reply-chain-refactor`，不得提交到 `main`。
+- 每次提交都必须说明是否改变客户可见行为。当前阶段默认答案应为“不改变，只增加 shadow 审计或测试”。
+- 业务规则只允许迁移归属，不允许静默删除。删除旧规则前必须在 `docs/rule_ownership_matrix.md` 标记 `merged`、`superseded` 或 `node_specific`。
+- 不能通过 Python 关键词新增普通销售语义判断；如果需要区分客户心理、顾虑或成交节奏，应调整模型输入、prompt 或 Reply handoff。
+- 所有写操作仍在最终回复校验后执行；并行阶段只允许只读工具和 shadow 输出。
+
+### 20.2 开发批次
+
+| 批次 | 目标 | 主要代码范围 | 客户可见行为 | Review 重点 | 退出条件 |
+| --- | --- | --- | --- | --- | --- |
+| B0 基线保护 | 固定当前串行链路和规则归属 | `docs/rule_ownership_matrix.md`、现有 shadow tests | 不变 | 规则是否有 owner；是否禁止部署 | 合同测试通过，分支干净 |
+| B1 Shared Context | 构建完整带时间聊天和权威事实账本 | `reply_context`、shadow context 服务 | 不变 | 当前消息、时间、结构事实是否完整；画像是否不再压过聊天 | 上下文契约测试通过 |
+| B2 Gate Shadow | Gate 只输出内容候选和路由建议 | `chat_gate_router_shadow`、Gate preview tests | 不变 | Gate 是否变成大脑；直回边界是否过宽 | Gate 直回 guard 全绿 |
+| B3 Tool Planner Shadow | Planner 收口为只读工具计划 | `tool_plan_preview`、只读工具 executor | 不变 | 是否输出客户话术；是否贪查；是否混入销售判断 | 工具白名单和依赖测试通过 |
+| B4 Join Shadow | 合并 Gate 候选和工具事实，但不做业务判断 | `reply_chain_join_shadow` | 不变 | Join 是否生成话术；是否用代码选择成交动作 | Join 合同测试通过 |
+| B5 Reply Handoff | Reply 获得完整聊天、候选内容、工具事实和 blocker | `reply_final_brain_handoff` | 不变 | Reply 是否重新成为最终业务大脑；旧 Planner 语义是否仍残留 | handoff readiness 全绿 |
+| B6 Parallel Runner | Gate 与 Tool Planner 并行 shadow 执行 | `parallel_reply_chain_runner`、comparison、diagnostics | 不变 | 分支输出契约、隔离、失败分类 | diagnostics 不批准自动切换 |
+| B7 离线仿真 | 用多轮虚拟客户验证效果 | simulation CLI 与 fixtures | 不变 | 是否贴近真实问题；是否隔离生产 | 硬错误 0，关键场景全过 |
+| B8 行为切换评审 | 讨论是否启用新链路 | 配置开关，另开任务 | 待审核 | 回滚、灰度、指标、人工样本 | 用户明确批准后才做 |
+
+### 20.3 代码 Review 安排
+
+每个批次完成后必须做两轮 review。
+
+第一轮是结构 review：
+
+- 节点职责是否单一：Gate 选候选，Tool Planner 查事实，Join 合并事实，Reply 最终表达。
+- 新增字段是否有 schema 版本、来源和用途。
+- Shadow 字段是否只进入 trace/report，不进入生产模型 prompt。
+- 并行分支是否没有写数据库、没有主动发送、没有创建订单。
+- 失败时是否可审计：节点名、错误类型、blocker、fallback source。
+
+第二轮是业务规则保护 review：
+
+- 对照 `docs/rule_ownership_matrix.md` 检查 active/hard_boundary 规则是否仍有 owner。
+- 抽查高风险规则：门店可见范围、活动报价后发卡、已付不发卡、健康风险、明确拒绝、同轮最多一张预约金卡、三个月订单保护。
+- 检查是否出现“为了提速缩短 prompt 导致规则消失”的改动。
+- 检查新增测试是否覆盖本批次影响面，而不是只测 happy path。
+- 如果客户可见样本变化，必须单独列出变化前后样例和原因。
+
+### 20.4 测试节点
+
+每个批次至少运行对应节点测试和基础静态测试。
+
+基础静态测试：
+
+```powershell
+git diff --check
+$env:PYTHONPATH='ai_paths'
+python -m py_compile <本批次改动的 Python 文件>
+```
+
+核心重构回归：
+
+```powershell
+$env:PYTHONPATH='ai_paths'
+python -m pytest `
+  workflow_tests/test_reply_chain_refactor_contract.py `
+  workflow_tests/test_reply_chain_refactor_settings.py `
+  workflow_tests/test_reply_chain_behavior_switch_guard.py `
+  workflow_tests/test_reply_chain_shadow_context.py `
+  workflow_tests/test_chat_gate_preview.py `
+  workflow_tests/test_chat_gate_router_shadow.py `
+  workflow_tests/test_tool_plan_preview.py `
+  workflow_tests/test_read_only_tool_executor_shadow.py `
+  workflow_tests/test_reply_chain_join_shadow.py `
+  workflow_tests/test_reply_final_brain_handoff.py `
+  workflow_tests/test_reply_chain_commit_shadow.py `
+  workflow_tests/test_reply_chain_shadow_bundle_audit.py `
+  workflow_tests/test_parallel_reply_chain_runner.py `
+  workflow_tests/test_parallel_reply_chain_shadow.py `
+  workflow_tests/test_parallel_reply_chain_comparison.py `
+  workflow_tests/test_parallel_reply_chain_diagnostics.py `
+  workflow_tests/test_reply_chain_shadow_payload_isolation.py `
+  workflow_tests/test_platform_reply_runtime.py `
+  workflow_tests/test_model_timeout_and_planner_payload.py -q
+```
+
+业务效果仿真测试在 B7 之后成为发布前门槛，至少覆盖：
+
+- 门店：省、市、区县、县级市、乡镇、村、地标、定位卡、多店、不可见门店。
+- 效果：问效果、问一次性、问反弹反黑、问案例图。
+- 成交：问价格、问怎么预约、问怎么付费、软拒绝、明确拒绝、重复发卡、已付后登记。
+- 风险：过敏、破损、投诉、退款。
+- SOP：正常主线、精准问答后接 SOP、沉默触达、聊天中不触达、重复包修复。
+
+### 20.5 不丢业务规则的门禁
+
+行为切换前必须同时满足：
+
+- `reply_chain_release_review_checklist_v1.can_enable_behavior_switch=false` 仍为默认值；不能由测试自动打开。
+- `rule_ownership_matrix` 中没有未归属的 active/hard_boundary 规则。
+- `reply_final_brain_handoff` 中旧 Planner 客户话术和销售判断残留已经被迁移或显式 blocker 阻断。
+- 离线仿真硬错误为 0，关键场景全过。
+- 报告中列出新旧链路客户可见回复差异，且人工确认没有偏离项目初衷。
+
+### 20.6 当前建议的下一处开发点
+
+下一步不应直接改 Reply 行为，而应补一个 shadow blocker：如果 `reply_final_brain_handoff` 里仍存在旧 Planner 的客户话术或销售语义残留，`parallel_reply_chain_diagnostics` 必须阻止进入“可人工审查行为切换”的状态。
+
+原因：
+
+- 这能防止 Planner 继续以隐藏字段影响 Reply，避免重构后只是把旧大脑换个入口传下去。
+- 这是审计和诊断改动，不改变线上回复。
+- 它直接服务于项目宪法：Planner/Tool Planner 不能继续拥有最终销售语义，Reply 才是复杂场景最终表达 owner。
