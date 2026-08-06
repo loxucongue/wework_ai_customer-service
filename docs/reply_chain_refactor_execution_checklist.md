@@ -67,6 +67,9 @@ Reviewer checks:
 - Shadow-only fields do not enter active model prompts.
 - Parallel branches receive copied inputs and do not consume each other's
   shadow outputs.
+- `tool_plan_preview.migration_audit` is present and proves zero legacy
+  customer-visible or sales-semantic residue before any behavior switch review;
+  bundle gates must not rely only on copied observation fields.
 - No production write operation can run before final Reply validation.
 - Failures are observable through node name, blocker, fallback source, and
   retry/failure metadata.

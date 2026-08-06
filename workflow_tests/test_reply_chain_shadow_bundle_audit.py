@@ -7,7 +7,15 @@ def _ready_state() -> dict:
     return {
         "reply_chain_shadow_context": {"schema_version": "reply_chain_shadow_v1"},
         "sop_gate_router_shadow": {"schema_version": "chat_gate_router_shadow_v1"},
-        "tool_plan_preview": {"schema_version": "tool_plan_preview_v2"},
+        "tool_plan_preview": {
+            "schema_version": "tool_plan_preview_v2",
+            "migration_audit": {
+                "schema_version": "tool_planner_migration_audit_v1",
+                "legacy_residue_count": 0,
+                "tool_planner_only_ready": True,
+                "review_required_before_migration": False,
+            },
+        },
         "read_only_tool_executor_shadow": {"schema_version": "read_only_tool_executor_shadow_v1"},
         "reply_chain_join_shadow": {"schema_version": "reply_chain_join_shadow_v1"},
         "reply_final_brain_handoff_shadow": {"schema_version": "reply_final_brain_handoff_shadow_v1"},
@@ -371,6 +379,39 @@ def test_bundle_audit_blocks_when_join_would_own_customer_text() -> None:
 
     assert audit["ready_for_refactor_review"] is False
     assert "review_gate_not_ready:join_keeps_reply_as_final_owner" in audit["blockers"]
+
+
+def test_bundle_audit_blocks_tool_plan_preview_with_legacy_residue_even_if_observation_ready() -> None:
+    state = _ready_state()
+    state["tool_plan_preview"]["migration_audit"] = {
+        "schema_version": "tool_planner_migration_audit_v1",
+        "legacy_residue_count": 2,
+        "legacy_residue_fields": ["reply_strategy", "payment_decision"],
+        "tool_planner_only_ready": False,
+        "review_required_before_migration": True,
+    }
+    state["parallel_reply_chain_shadow"]["current_serial_observation"][
+        "tool_planner_only_ready"
+    ] = True
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "tool_plan_preview_not_tool_planner_only" in audit["blockers"]
+    assert "tool_plan_preview_legacy_residue:2" in audit["blockers"]
+    assert "tool_plan_preview_requires_migration_review" in audit["blockers"]
+    assert "review_gate_not_ready:tool_planner_is_tool_only" in audit["blockers"]
+
+
+def test_bundle_audit_blocks_tool_plan_preview_without_migration_audit() -> None:
+    state = _ready_state()
+    state["tool_plan_preview"] = {"schema_version": "tool_plan_preview_v2"}
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "tool_plan_preview_missing_migration_audit" in audit["blockers"]
+    assert "review_gate_not_ready:tool_planner_is_tool_only" in audit["blockers"]
 
 
 def test_bundle_audit_blocks_when_direct_reply_is_allowed_without_guard() -> None:

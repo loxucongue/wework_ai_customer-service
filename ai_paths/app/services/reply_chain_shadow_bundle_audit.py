@@ -119,6 +119,7 @@ def _cross_component_blockers(
     parallel_shadow = _dict(state.get("parallel_reply_chain_shadow"))
     if _list_strings((parallel_shadow.get("activation") or {}).get("blockers")):
         blockers.append("parallel_contract_has_blockers")
+    blockers.extend(_tool_plan_migration_blockers(state))
     runner_shadow = _dict(state.get("parallel_gate_planner_runner_shadow"))
     if str(runner_shadow.get("mode") or "") != "completed_shadow":
         blockers.append(f"parallel_runner_not_completed:{runner_shadow.get('mode') or 'missing'}")
@@ -242,9 +243,26 @@ def _only_proven_external_gate_blockers(group: dict[str, Any], proven_external_g
     return all(item in {f"gate_not_proven:{gate_id}" for gate_id in proven_external_gates} for item in original)
 
 
+def _tool_plan_migration_blockers(state: dict[str, Any]) -> list[str]:
+    tool_plan = _dict(state.get("tool_plan_preview"))
+    audit = _dict(tool_plan.get("migration_audit"))
+    if audit.get("schema_version") != "tool_planner_migration_audit_v1":
+        return ["tool_plan_preview_missing_migration_audit"]
+    blockers: list[str] = []
+    if audit.get("tool_planner_only_ready") is not True:
+        blockers.append("tool_plan_preview_not_tool_planner_only")
+    residue_count = _int_value(audit.get("legacy_residue_count"))
+    if residue_count > 0:
+        blockers.append(f"tool_plan_preview_legacy_residue:{residue_count}")
+    if audit.get("review_required_before_migration") is True:
+        blockers.append("tool_plan_preview_requires_migration_review")
+    return blockers
+
+
 def _review_gates(state: dict[str, Any], *, require_commit_shadow: bool) -> dict[str, dict[str, Any]]:
     parallel_shadow = _dict(state.get("parallel_reply_chain_shadow"))
     observation = _dict(parallel_shadow.get("current_serial_observation"))
+    tool_plan_migration = _dict(_dict(state.get("tool_plan_preview")).get("migration_audit"))
     runner = _dict(state.get("parallel_gate_planner_runner_shadow"))
     comparison = _dict(state.get("parallel_reply_chain_comparison"))
     diagnostics = _dict(state.get("parallel_reply_chain_diagnostics"))
@@ -270,7 +288,13 @@ def _review_gates(state: dict[str, Any], *, require_commit_shadow: bool) -> dict
             "purpose": "sop_chat_gate_cannot_commit_or_send_in_shadow",
         },
         "tool_planner_is_tool_only": {
-            "passed": (observation.get("tool_planner_only_ready") is True),
+            "passed": (
+                observation.get("tool_planner_only_ready") is True
+                and tool_plan_migration.get("schema_version") == "tool_planner_migration_audit_v1"
+                and tool_plan_migration.get("tool_planner_only_ready") is True
+                and _int_value(tool_plan_migration.get("legacy_residue_count")) == 0
+                and tool_plan_migration.get("review_required_before_migration") is not True
+            ),
             "purpose": "tool_planner_does_not_own_customer_visible_sales_semantics",
         },
         "join_keeps_reply_as_final_owner": {
