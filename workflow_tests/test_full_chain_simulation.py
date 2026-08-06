@@ -22,6 +22,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class FullChainSimulationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        (REPO_ROOT / ".tmp_runtime").mkdir(exist_ok=True)
+
     def test_configured_sop_media_urls_are_unique_structured_assets(self) -> None:
         configured_urls = _configured_sop_media_urls()
 

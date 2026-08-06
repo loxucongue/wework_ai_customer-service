@@ -74,6 +74,9 @@ refactor aligned with the project constitution.
 Before any behavior flag changes from shadow mode to active mode, the reviewer
 must check all fifteen gates above and attach the test output or report path in the
 commit or review note.
+Use `docs/reply_chain_refactor_execution_checklist.md` as the per-commit
+execution checklist for these gates. That checklist is procedural evidence only;
+it does not add or replace any business rule.
 
 `reply_chain_release_review_checklist_v1` is diagnostic evidence only. It can
 show which gates have automated shadow evidence, but it must always require
