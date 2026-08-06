@@ -7,6 +7,7 @@ from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_pl
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
 from app.services.trace_logger import TraceLogger
+from app.services.tool_plan_preview import tool_plan_preview_from_planner_output
 
 
 def create_planner_brain_node(
@@ -130,6 +131,7 @@ def create_planner_brain_node(
                 ),
                 "trace": state.get("trace", []),
             }
+            output["tool_plan_preview"] = tool_plan_preview_from_planner_output(output)
             span["output_snapshot"] = output
             return output
 
