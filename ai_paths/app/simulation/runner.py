@@ -349,6 +349,7 @@ def _aggregate(
             },
         },
         "scenario_summary": scenario_summary,
+        "review_artifacts": _review_artifacts(results),
         "baseline_comparison": _compare_baseline(baseline, scenario_summary),
         "results": results,
     }
@@ -411,6 +412,36 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"{item.get('semantic_passes', 0)}/{item.get('attempts', 0)} | "
             f"{item.get('infrastructure_failures', 0)} |"
         )
+    artifacts = report.get("review_artifacts") if isinstance(report.get("review_artifacts"), dict) else {}
+    lines.extend(
+        [
+            "",
+            "## 审查证据",
+            "",
+            f"- 轨迹记录：{artifacts.get('result_count', 0)}",
+            f"- 请求记录：{artifacts.get('request_count', 0)}",
+            f"- SOP 事件记录：{artifacts.get('event_count', 0)}",
+            f"- 工具调用：{artifacts.get('tool_call_count', 0)}",
+            f"- 虚拟 outbox 消息批次：{artifacts.get('outbox_batch_count', 0)}",
+            f"- 模拟写入：{artifacts.get('simulated_write_count', 0)}",
+            "",
+            "| 场景 | attempt | requests | events | nodes | tools | sync replies | outbox | writes |",
+            "|---|---:|---|---|---|---|---:|---:|---:|",
+        ]
+    )
+    for item in artifacts.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"| {item.get('scenario_id', '')} | {item.get('attempt', '')} | "
+            f"{', '.join(item.get('request_ids') or [])} | "
+            f"{', '.join(item.get('event_ids') or [])} | "
+            f"{', '.join(item.get('node_trace_names') or [])} | "
+            f"{', '.join(item.get('tool_call_names') or [])} | "
+            f"{item.get('sync_reply_message_count', 0)} | "
+            f"{item.get('outbox_batch_count', 0)} | "
+            f"{item.get('simulated_write_count', 0)} |"
+        )
     lines.extend(["", "## 失败详情", ""])
     failures = [
         item
@@ -433,6 +464,84 @@ def render_markdown(report: dict[str, Any]) -> str:
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+def _review_artifacts(results: list[dict[str, Any]]) -> dict[str, Any]:
+    items = [_result_review_artifact(item) for item in results if isinstance(item, dict)]
+    return {
+        "schema_version": "offline_simulation_review_artifacts_v1",
+        "result_count": len(items),
+        "request_count": sum(len(item.get("request_ids") or []) for item in items),
+        "event_count": sum(len(item.get("event_ids") or []) for item in items),
+        "tool_call_count": sum(len(item.get("tool_call_names") or []) for item in items),
+        "outbox_batch_count": sum(int(item.get("outbox_batch_count") or 0) for item in items),
+        "simulated_write_count": sum(int(item.get("simulated_write_count") or 0) for item in items),
+        "results": items,
+    }
+
+
+def _result_review_artifact(result: dict[str, Any]) -> dict[str, Any]:
+    request_ids: list[str] = []
+    event_ids: list[str] = []
+    node_trace_names: list[str] = []
+    tool_call_names: list[str] = []
+    sync_reply_message_count = 0
+    outbox_batch_count = 0
+    simulated_write_count = 0
+    for step in result.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        request_id = str(step.get("request_id") or "").strip()
+        if request_id and request_id not in request_ids:
+            request_ids.append(request_id)
+        event_id = str(step.get("event_id") or "").strip()
+        if event_id and event_id not in event_ids:
+            event_ids.append(event_id)
+        sync = step.get("sync_reply_messages") if isinstance(step.get("sync_reply_messages"), list) else []
+        sync_reply_message_count += len(sync)
+        outbox = step.get("new_outbox") if isinstance(step.get("new_outbox"), list) else []
+        outbox_batch_count += len(outbox)
+        writes = step.get("new_simulated_writes") if isinstance(step.get("new_simulated_writes"), list) else []
+        simulated_write_count += len(writes)
+        run = step.get("run") if isinstance(step.get("run"), dict) else {}
+        for trace in run.get("node_traces") or []:
+            if not isinstance(trace, dict):
+                continue
+            name = str(trace.get("node_name") or trace.get("node") or trace.get("name") or "").strip()
+            if name and name not in node_trace_names:
+                node_trace_names.append(name)
+    for call in result.get("tool_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name") or call.get("tool") or "").strip()
+        if name and name not in tool_call_names:
+            tool_call_names.append(name)
+    return _drop_empty(
+        {
+            "scenario_id": result.get("scenario_id"),
+            "attempt": result.get("attempt"),
+            "run_dir": result.get("run_dir"),
+            "request_ids": request_ids,
+            "event_ids": event_ids,
+            "node_trace_names": node_trace_names,
+            "tool_call_names": tool_call_names,
+            "sync_reply_message_count": sync_reply_message_count,
+            "outbox_batch_count": outbox_batch_count,
+            "simulated_write_count": simulated_write_count,
+            "hard_pass": result.get("hard_pass"),
+            "infrastructure_errors": result.get("infrastructure_errors") or [],
+        }
+    )
+
+
+def _drop_empty(value: Any) -> Any:
+    if isinstance(value, dict):
+        output = {key: _drop_empty(item) for key, item in value.items()}
+        return {key: item for key, item in output.items() if item not in ("", None, {}, [])}
+    if isinstance(value, list):
+        output = [_drop_empty(item) for item in value]
+        return [item for item in output if item not in ("", None, {}, [])]
+    return value
 
 
 def _apply_variant(scenario: dict[str, Any], patch: dict[str, Any]) -> None:

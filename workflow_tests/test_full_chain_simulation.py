@@ -14,7 +14,7 @@ from app.simulation.adapters import (
     SimulationWorld,
 )
 from app.simulation.isolation import SimulationIsolationError, assert_simulation_identity, assert_simulation_isolated
-from app.simulation.runner import _aggregate, _configured_sop_media_urls, _semantic_scores, load_suite
+from app.simulation.runner import _aggregate, _configured_sop_media_urls, _semantic_scores, load_suite, render_markdown
 from app.simulation.runtime import _hard_check, _provider_incidents
 
 
@@ -78,6 +78,8 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(report["hard_error_count"], 1)
         self.assertEqual(report["semantic_pass_rate"], 0.5)
         self.assertEqual(report["failed_critical_scenarios"], [])
+        self.assertEqual(report["review_artifacts"]["schema_version"], "offline_simulation_review_artifacts_v1")
+        self.assertEqual(report["review_artifacts"]["result_count"], 2)
         self.assertFalse(report["summary"]["acceptance"]["hard_errors_zero"])
         self.assertFalse(report["summary"]["acceptance"]["semantic_at_least_90"])
         self.assertTrue(report["summary"]["acceptance"]["infrastructure_failures_zero"])
@@ -176,6 +178,55 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(report["summary"]["infrastructure_failures"], 1)
         self.assertFalse(report["summary"]["acceptance"]["infrastructure_failures_zero"])
         self.assertFalse(report["summary"]["acceptance"]["hard_errors_zero"])
+
+    def test_review_artifacts_summarize_traces_tools_and_outbox_for_human_review(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "artifact_case", "category": "sim", "critical": False}],
+            results=[
+                {
+                    "scenario_id": "artifact_case",
+                    "attempt": 1,
+                    "run_dir": "C:/tmp/sim/artifact_case",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                    "steps": [
+                        {
+                            "request_id": "sim_request_1",
+                            "sync_reply_messages": [{"type": "text", "content": "亲，可以的"}],
+                            "new_outbox": [{"reply_messages": [{"type": "image"}]}],
+                            "new_simulated_writes": [{"transport": "simulation_only"}],
+                            "run": {
+                                "node_traces": [
+                                    {"node_name": "sop_chat_gate"},
+                                    {"node_name": "planner"},
+                                    {"node_name": "reply"},
+                                ]
+                            },
+                        },
+                        {"event_id": "sim_event_1", "new_outbox": []},
+                    ],
+                    "tool_calls": [{"name": "customer_store_lookup"}],
+                }
+            ],
+            baseline={},
+        )
+
+        artifacts = report["review_artifacts"]
+        self.assertEqual(artifacts["request_count"], 1)
+        self.assertEqual(artifacts["event_count"], 1)
+        self.assertEqual(artifacts["tool_call_count"], 1)
+        self.assertEqual(artifacts["outbox_batch_count"], 1)
+        self.assertEqual(artifacts["simulated_write_count"], 1)
+        row = artifacts["results"][0]
+        self.assertEqual(row["request_ids"], ["sim_request_1"])
+        self.assertEqual(row["event_ids"], ["sim_event_1"])
+        self.assertEqual(row["node_trace_names"], ["sop_chat_gate", "planner", "reply"])
+        self.assertEqual(row["tool_call_names"], ["customer_store_lookup"])
+        markdown = render_markdown(report)
+        self.assertIn("## 审查证据", markdown)
+        self.assertIn("sim_request_1", markdown)
+        self.assertIn("customer_store_lookup", markdown)
 
     def test_identity_must_be_simulation_scoped(self) -> None:
         with self.assertRaises(SimulationIsolationError):

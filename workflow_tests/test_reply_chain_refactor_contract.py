@@ -157,6 +157,8 @@ def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None
         "safety.production_writes_allowed=false",
         "safety.virtual_outbox_only=true",
         "safety.production_write_count=0",
+        "review_artifacts.schema_version=offline_simulation_review_artifacts_v1",
+        "request/event IDs, node trace names, tool call names",
         "run_refactor_model_matrix.py",
         "--profiles claude,gemini,openai",
         "--require-keys",

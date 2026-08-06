@@ -96,6 +96,15 @@ python ai_paths/scripts/run_full_chain_simulation.py `
 
 语义评审按六项分别打分：当前问题、历史承接、主线推进、成交自然度、真人感和事实安全。供应商失败单独记录在 `provider_incidents` 或 `infrastructure_errors`，不计作业务语义失败。
 
+套件报告还会输出 `review_artifacts`，用于人工 Review：
+
+- 每条轨迹对应的 `request_id`、`event_id` 和运行目录。
+- 节点 trace 名称，用来确认 SOP Gate、Planner、Reply 等链路是否实际执行。
+- 工具调用名称，用来确认门店、案例、订单、语音等事实是否来自仿真适配器。
+- 同步回复数量、虚拟 outbox 批次数和模拟写入次数。
+
+这些字段只用于审查和发布门禁，不参与模型输入，也不改变生产回复。
+
 仿真报告只用于审核和发布门禁，不会自动修改 Prompt、部署或发送客户消息。
 
 ## 凌晨报告覆盖

@@ -269,6 +269,8 @@ Required report:
 - `safety.virtual_outbox_only=true`
 - `safety.production_write_count=0`
 - all sends captured only in virtual outbox
+- `review_artifacts.schema_version=offline_simulation_review_artifacts_v1`
+- `review_artifacts` includes request/event IDs, node trace names, tool call names, virtual outbox counts, and simulated write counts for human review
 
 Candidate model matrix:
 
