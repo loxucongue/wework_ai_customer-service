@@ -335,6 +335,7 @@ Required matrix report:
 
 - `schema_version=reply_chain_refactor_model_matrix_v1`
 - `git_commit` matches the reviewed behavior-switch commit
+- `git_commit_set` contains exactly that commit
 - `relay_base_url=https://linkai.shop/v1`
 - `profiles_requested` includes `claude`, `gemini`, and `openai`
 - each profile is `completed`

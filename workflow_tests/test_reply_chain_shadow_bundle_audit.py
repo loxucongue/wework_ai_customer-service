@@ -209,6 +209,7 @@ def _model_matrix_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
         "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
         "relay_base_url": "https://linkai.shop/v1",
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,

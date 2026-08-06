@@ -14,17 +14,22 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     scenario_count = _int_value(simulation.get("scenario_count"))
     attempt_count = _int_value(simulation.get("attempt_count"))
+    commit = _string_value(simulation.get("git_commit"))
     if scenario_count < MIN_REQUIRED_SIMULATION_SCENARIOS:
         blockers.append(f"simulation_scenario_count_below_100:{simulation.get('scenario_count')}")
     if attempt_count < scenario_count:
         blockers.append(
             f"simulation_attempt_count_below_scenario_count:{simulation.get('attempt_count')}<{simulation.get('scenario_count')}"
         )
-    if not _string_value(simulation.get("git_commit")):
+    if not commit:
         blockers.append("simulation_missing_git_commit")
     commit_set = _list_strings(simulation.get("git_commit_set"))
-    if commit_set and len(set(commit_set)) != 1:
+    if not commit_set:
+        blockers.append("simulation_missing_git_commit_set")
+    elif len(set(commit_set)) != 1:
         blockers.append(f"simulation_multiple_git_commits:{','.join(commit_set)}")
+    elif commit and commit_set[0] != commit:
+        blockers.append(f"simulation_git_commit_set_mismatch:{commit_set[0]}!={commit}")
     if simulation.get("hard_error_count") not in (0, "0"):
         blockers.append(f"simulation_hard_errors:{simulation.get('hard_error_count')}")
     try:
@@ -162,8 +167,16 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     if model_matrix.get("schema_version") != "reply_chain_refactor_model_matrix_v1":
         return ["missing_model_matrix_report"]
     blockers: list[str] = []
-    if not _string_value(model_matrix.get("git_commit")):
+    commit = _string_value(model_matrix.get("git_commit"))
+    if not commit:
         blockers.append("model_matrix_missing_git_commit")
+    commit_set = _list_strings(model_matrix.get("git_commit_set"))
+    if not commit_set:
+        blockers.append("model_matrix_missing_git_commit_set")
+    elif len(set(commit_set)) != 1:
+        blockers.append(f"model_matrix_multiple_git_commits:{','.join(commit_set)}")
+    elif commit and commit_set[0] != commit:
+        blockers.append(f"model_matrix_git_commit_set_mismatch:{commit_set[0]}!={commit}")
     relay_base_url = _string_value(model_matrix.get("relay_base_url")).rstrip("/")
     if relay_base_url != "https://linkai.shop/v1":
         blockers.append(f"model_matrix_unapproved_relay_base_url:{relay_base_url or 'missing'}")

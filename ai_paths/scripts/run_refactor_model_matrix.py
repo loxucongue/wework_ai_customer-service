@@ -210,6 +210,14 @@ def git_commit(repo_root: Path) -> str:
         return ""
 
 
+def git_commit_fields(repo_root: Path) -> dict[str, Any]:
+    commit = git_commit(repo_root)
+    return {
+        "git_commit": commit,
+        "git_commit_set": [commit],
+    }
+
+
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -313,7 +321,7 @@ async def _main() -> int:
     matrix_report = {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
-        "git_commit": git_commit(repo_root),
+        **git_commit_fields(repo_root),
         "fixture": str(fixture),
         "relay_base_url": relay_base_url,
         "profiles_requested": [profile.name for profile in profiles],

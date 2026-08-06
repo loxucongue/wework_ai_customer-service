@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.config import Settings
 from ai_paths.scripts.run_refactor_model_matrix import (
     DEFAULT_RELAY_BASE_URL,
     MODEL_PROFILES,
     build_profile_settings,
+    git_commit_fields,
     matrix_ranking,
     missing_key_profile_result,
     profile_result_summary,
@@ -71,6 +74,17 @@ def test_relay_api_base_url_accepts_linkai_root_url() -> None:
     assert relay_api_base_url("https://linkai.shop") == "https://linkai.shop/v1"
     assert relay_api_base_url("https://linkai.shop/") == "https://linkai.shop/v1"
     assert relay_api_base_url("https://linkai.shop/v1") == "https://linkai.shop/v1"
+
+
+def test_git_commit_fields_expose_single_commit_set(monkeypatch) -> None:
+    import ai_paths.scripts.run_refactor_model_matrix as matrix
+
+    monkeypatch.setattr(matrix, "git_commit", lambda repo_root: "abc123")
+
+    assert git_commit_fields(Path(".")) == {
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+    }
 
 
 def test_public_profile_config_never_contains_key_value() -> None:

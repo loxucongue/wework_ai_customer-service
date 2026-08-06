@@ -92,6 +92,7 @@ def _model_matrix_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
         "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
         "relay_base_url": "https://linkai.shop/v1",
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
@@ -279,13 +280,47 @@ def test_external_gate_evidence_blocks_missing_or_mixed_simulation_commit() -> N
     assert "simulation_multiple_git_commits:abc123,def456" in blockers
 
 
-def test_external_gate_evidence_blocks_missing_model_matrix_commit() -> None:
+def test_external_gate_evidence_blocks_missing_or_mismatched_simulation_commit_set() -> None:
+    simulation = _simulation_ready()
+    del simulation["git_commit_set"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_git_commit_set" in blockers
+
+    simulation = _simulation_ready()
+    simulation["git_commit_set"] = ["def456"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_git_commit_set_mismatch:def456!=abc123" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_or_mixed_model_matrix_commit() -> None:
     model_matrix = _model_matrix_ready()
     model_matrix["git_commit"] = ""
+    model_matrix["git_commit_set"] = ["abc123", "def456"]
 
     blockers = model_matrix_report_blockers(model_matrix)
 
     assert "model_matrix_missing_git_commit" in blockers
+    assert "model_matrix_multiple_git_commits:abc123,def456" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_or_mismatched_model_matrix_commit_set() -> None:
+    model_matrix = _model_matrix_ready()
+    del model_matrix["git_commit_set"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_missing_git_commit_set" in blockers
+
+    model_matrix = _model_matrix_ready()
+    model_matrix["git_commit_set"] = ["def456"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_git_commit_set_mismatch:def456!=abc123" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:
