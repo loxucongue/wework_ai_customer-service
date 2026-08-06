@@ -56,6 +56,25 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
         self.assertIn("early_tool_executor_has_blocked_calls", shadow["activation"]["blockers"])
 
+    def test_refactor_flag_blockers_prevent_shadow_runner_activation(self) -> None:
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context={"schema_version": "reply_chain_shadow_v1"},
+            gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            refactor_flags={
+                "schema_version": "reply_chain_refactor_flags_v1",
+                "mode": "parallel_runner_requested",
+                "safe_for_shadow_observation": False,
+                "activation_blockers": ["sop_chat_gate_v2_required"],
+            },
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("flag:sop_chat_gate_v2_required", shadow["activation"]["blockers"])
+        self.assertEqual(shadow["configuration"]["mode"], "parallel_runner_requested")
+
     def test_missing_shadow_inputs_are_explicit_blockers(self) -> None:
         shadow = parallel_reply_chain_shadow(
             reply_chain_shadow_context={},

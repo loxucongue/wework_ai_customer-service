@@ -21,6 +21,7 @@ from app.services.chat_gate_router_shadow import chat_gate_router_shadow_from_re
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
+from app.services.reply_chain_refactor_flags import reply_chain_refactor_flag_snapshot
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService
 from app.services.storage import AppRepository
@@ -921,6 +922,7 @@ class ChatRuntime:
             "test_isolated": test_isolated,
             "memory_persist_allowed": bool(request_context.get("memory_persist_allowed")),
             "runtime_budget": build_runtime_budget(self._settings),
+            "reply_chain_refactor_flags": reply_chain_refactor_flag_snapshot(self._settings),
             "trace": [],
             "errors": [],
         }

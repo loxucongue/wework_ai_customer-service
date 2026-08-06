@@ -146,6 +146,7 @@ def create_planner_brain_node(
                 tool_plan_preview=output["tool_plan_preview"],
                 read_only_tool_executor_shadow=output["read_only_tool_executor_shadow"],
                 reply_chain_join_shadow=output["reply_chain_join_shadow"],
+                refactor_flags=state.get("reply_chain_refactor_flags") if isinstance(state.get("reply_chain_refactor_flags"), dict) else {},
             )
             span["output_snapshot"] = output
             return output

@@ -10,6 +10,7 @@ def parallel_reply_chain_shadow(
     tool_plan_preview: dict[str, Any],
     read_only_tool_executor_shadow: dict[str, Any],
     reply_chain_join_shadow: dict[str, Any],
+    refactor_flags: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe the target parallel reply chain without changing runtime behavior."""
 
@@ -57,6 +58,7 @@ def parallel_reply_chain_shadow(
                 "read_executor_mode": read_only_tool_executor_shadow.get("mode"),
                 "join_final_route": reply_chain_join_shadow.get("final_route"),
                 "direct_reply_allowed": reply_chain_join_shadow.get("direct_reply_allowed"),
+                "refactor_mode": (refactor_flags or {}).get("mode"),
             },
             "safety": {
                 "no_runtime_behavior_change": True,
@@ -65,9 +67,10 @@ def parallel_reply_chain_shadow(
                 "no_customer_messages_sent": True,
                 "no_database_writes": True,
             },
+            "configuration": refactor_flags or {},
             "activation": {
-                "ready_for_shadow_parallel_runner": not activation_blockers,
-                "blockers": activation_blockers,
+                "ready_for_shadow_parallel_runner": not activation_blockers and _flags_allow_shadow_runner(refactor_flags),
+                "blockers": [*activation_blockers, *_flag_blockers(refactor_flags)],
             },
             "source": "shadow_contract_only",
         }
@@ -96,6 +99,23 @@ def _activation_blockers(
     if read_only_tool_executor_shadow.get("blocked"):
         blockers.append("early_tool_executor_has_blocked_calls")
     return blockers
+
+
+def _flags_allow_shadow_runner(refactor_flags: dict[str, Any] | None) -> bool:
+    if not isinstance(refactor_flags, dict) or not refactor_flags:
+        return True
+    return bool(refactor_flags.get("safe_for_shadow_observation"))
+
+
+def _flag_blockers(refactor_flags: dict[str, Any] | None) -> list[str]:
+    if not isinstance(refactor_flags, dict) or not refactor_flags:
+        return []
+    if refactor_flags.get("safe_for_shadow_observation"):
+        return []
+    blockers = refactor_flags.get("activation_blockers")
+    if isinstance(blockers, list) and blockers:
+        return [f"flag:{item}" for item in blockers if isinstance(item, str) and item]
+    return ["flag:shadow_observation_not_safe"]
 
 
 def _drop_empty(value: Any) -> Any:

@@ -113,6 +113,7 @@ class AgentState(TypedDict, total=False):
     read_only_tool_executor_shadow: dict[str, Any]
     reply_chain_join_shadow: dict[str, Any]
     parallel_reply_chain_shadow: dict[str, Any]
+    reply_chain_refactor_flags: dict[str, Any]
     reply_strategy: dict[str, Any]
     handoff: dict[str, Any]
     memory_update_hint: dict[str, Any]
