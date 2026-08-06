@@ -109,22 +109,22 @@ def test_load_refactor_env_reads_only_approved_ignored_keys(tmp_path, monkeypatc
     (tmp_path / ".env").write_text(
         "\n".join(
             [
-                "REFACTOR_MODEL_CLAUDE_API_KEY=sk-test-claude",
-                "REFACTOR_MODEL_GEMINI_API_KEY='sk-test-gemini'",
-                'REFACTOR_MODEL_OPENAI_API_KEY="sk-test-openai"',
+                "REFACTOR_MODEL_CLAUDE_API_KEY=dummy_claude_key",
+                "REFACTOR_MODEL_GEMINI_API_KEY='dummy_gemini_key'",
+                'REFACTOR_MODEL_OPENAI_API_KEY="dummy_openai_key"',
                 "REFACTOR_MODEL_RELAY_BASE_URL=https://linkai.shop",
-                "UNRELATED_SECRET=sk-should-not-be-loaded",
+                "UNRELATED_SECRET=dummy_unrelated_secret",
             ]
         ),
         encoding="utf-8",
     )
-    monkeypatch.setenv("REFACTOR_MODEL_OPENAI_API_KEY", "sk-env-openai")
+    monkeypatch.setenv("REFACTOR_MODEL_OPENAI_API_KEY", "dummy_env_openai_key")
 
     values = load_refactor_env(tmp_path)
 
-    assert values["REFACTOR_MODEL_CLAUDE_API_KEY"] == "sk-test-claude"
-    assert values["REFACTOR_MODEL_GEMINI_API_KEY"] == "sk-test-gemini"
-    assert values["REFACTOR_MODEL_OPENAI_API_KEY"] == "sk-env-openai"
+    assert values["REFACTOR_MODEL_CLAUDE_API_KEY"] == "dummy_claude_key"
+    assert values["REFACTOR_MODEL_GEMINI_API_KEY"] == "dummy_gemini_key"
+    assert values["REFACTOR_MODEL_OPENAI_API_KEY"] == "dummy_env_openai_key"
     assert values["REFACTOR_MODEL_RELAY_BASE_URL"] == "https://linkai.shop"
     assert "UNRELATED_SECRET" not in values
 
@@ -155,7 +155,7 @@ def test_refactor_model_matrix_env_example_is_safe_and_not_loaded() -> None:
 
 
 def test_refactor_env_value_strips_values_without_logging_keys() -> None:
-    values = {"REFACTOR_MODEL_OPENAI_API_KEY": "  sk-test-openai  "}
+    values = {"REFACTOR_MODEL_OPENAI_API_KEY": "  dummy_openai_key  "}
 
     api_key = refactor_env_value(values, "REFACTOR_MODEL_OPENAI_API_KEY")
     public = public_profile_config(
@@ -164,7 +164,7 @@ def test_refactor_env_value_strips_values_without_logging_keys() -> None:
         api_key_present=bool(api_key),
     )
 
-    assert api_key == "sk-test-openai"
+    assert api_key == "dummy_openai_key"
     assert public["api_key_present"] is True
     assert public["api_key_value_logged"] is False
     assert api_key not in str(public)

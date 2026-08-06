@@ -395,7 +395,7 @@ After running the matrix, scan changed files and reports for secrets before
 committing:
 
 ```powershell
-rg -n "sk-[A-Za-z0-9]|REFACTOR_MODEL_.*_API_KEY=.*[^>]" docs workflow_tests ai_paths .tmp_runtime
+rg -n -P 'sk-[A-Za-z0-9]{20,}|REFACTOR_MODEL_.*_API_KEY=(?!<local-only-|[''"]?dummy_).+' docs workflow_tests ai_paths .tmp_runtime
 ```
 
 Business wording freeze audit:

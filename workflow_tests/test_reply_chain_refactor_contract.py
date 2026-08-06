@@ -230,7 +230,7 @@ def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None
         "postcommit bundle and final behavior-switch guard aligned",
         "a valid matrix report",
         "authoritative evidence",
-        "rg -n \"sk-[A-Za-z0-9]",
+        "rg -n -P 'sk-[A-Za-z0-9]{20,}",
     ]:
         assert marker in text
 
