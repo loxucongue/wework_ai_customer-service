@@ -19,6 +19,10 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             tool_plan_preview={
                 "schema_version": "tool_plan_preview_v2",
                 "fact_requirement": "none",
+                "migration_audit": {
+                    "legacy_residue_count": 2,
+                    "tool_planner_only_ready": False,
+                },
             },
             read_only_tool_executor_shadow={
                 "schema_version": "read_only_tool_executor_shadow_v1",
@@ -35,6 +39,8 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertEqual(shadow["mode"], "shadow_no_parallel_execution")
         self.assertEqual(shadow["target_topology"]["parallel_branches"], ["sop_chat_gate", "tool_planner"])
         self.assertEqual(shadow["target_topology"]["final_expression_owner"], "reply")
+        self.assertEqual(shadow["current_serial_observation"]["tool_planner_legacy_residue_count"], 2)
+        self.assertFalse(shadow["current_serial_observation"]["tool_planner_only_ready"])
         self.assertIn("final_closing_move", shadow["ownership_contract"]["sop_chat_gate"]["must_not_own"])
         self.assertIn("customer_visible_text", shadow["ownership_contract"]["tool_planner"]["must_not_own"])
         self.assertIn("single_mainline_action", shadow["ownership_contract"]["reply"]["owns"])

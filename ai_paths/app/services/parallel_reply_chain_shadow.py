@@ -55,6 +55,8 @@ def parallel_reply_chain_shadow(
                 "shared_context_schema": reply_chain_shadow_context.get("schema_version"),
                 "gate_route": gate_router_shadow.get("route_suggestion"),
                 "planner_fact_requirement": tool_plan_preview.get("fact_requirement"),
+                "tool_planner_legacy_residue_count": (tool_plan_preview.get("migration_audit") or {}).get("legacy_residue_count"),
+                "tool_planner_only_ready": (tool_plan_preview.get("migration_audit") or {}).get("tool_planner_only_ready"),
                 "read_executor_mode": read_only_tool_executor_shadow.get("mode"),
                 "join_final_route": reply_chain_join_shadow.get("final_route"),
                 "direct_reply_allowed": reply_chain_join_shadow.get("direct_reply_allowed"),

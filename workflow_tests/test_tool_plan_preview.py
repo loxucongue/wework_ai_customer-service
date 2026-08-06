@@ -69,6 +69,39 @@ class ToolPlanPreviewTests(unittest.TestCase):
         self.assertEqual(preview["fact_requirement"], "required")
         self.assertEqual(preview["unknown_tools"][0]["name"], "new_tool")
 
+    def test_migration_audit_flags_legacy_planner_business_residue(self) -> None:
+        preview = tool_plan_preview_from_planner_output(
+            {
+                "planner_reply_messages": [{"type": "text", "content": {"text": "customer visible"}}],
+                "payment_decision": {"action": "send_now"},
+                "reply_strategy": {"tone": "warm"},
+                "planner_tool_calls": [{"name": "customer_store_lookup", "query": "Wuhan"}],
+            }
+        )
+        audit = preview["migration_audit"]
+
+        self.assertEqual(audit["schema_version"], "tool_planner_migration_audit_v1")
+        self.assertEqual(audit["customer_visible_fields_present"], ["planner_reply_messages"])
+        self.assertIn("payment_decision", audit["business_semantic_fields_present"])
+        self.assertIn("reply_strategy", audit["business_semantic_fields_present"])
+        self.assertEqual(audit["tool_planner_fields_present"], ["planner_tool_calls"])
+        self.assertFalse(audit["tool_planner_only_ready"])
+        self.assertTrue(audit["review_required_before_migration"])
+
+    def test_migration_audit_allows_pure_tool_planner_fields(self) -> None:
+        preview = tool_plan_preview_from_planner_output(
+            {
+                "planner_tool_calls": [{"name": "customer_store_lookup", "query": "Wuhan"}],
+                "tool_policy_violations": [],
+            }
+        )
+        audit = preview["migration_audit"]
+
+        self.assertEqual(audit["legacy_residue_count"], 0)
+        self.assertTrue(audit["tool_planner_only_ready"])
+        self.assertFalse(audit["review_required_before_migration"])
+        self.assertNotIn("business_semantic_fields_present", audit)
+
     def test_tool_plan_preview_is_not_consumed_by_current_model_payloads(self) -> None:
         state = {
             "normalized_content": "门店在哪里",
