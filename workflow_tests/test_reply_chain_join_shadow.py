@@ -177,6 +177,37 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
         self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
         self.assertFalse(shadow["final_expression_boundary"]["direct_reply_exception"])
 
+    def test_direct_text_with_deferred_write_must_go_to_reply_with_content(self) -> None:
+        shadow = reply_chain_join_shadow(
+            gate_router_shadow={
+                "route_suggestion": "direct_text",
+                "selected_content": {"message_count": 1},
+                "direct_reply_candidate_audit": {
+                    "schema_version": "chat_gate_direct_reply_candidate_audit_v1",
+                    "safe_for_direct_reply_static_candidate": True,
+                },
+            },
+            tool_plan_preview={
+                "fact_requirement": "none",
+                "deferred_write_proposals": [
+                    {
+                        "tool": "create_work_order",
+                        "execution": "deferred_write_only",
+                        "arguments": {"store_id": "241"},
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(shadow["final_route"], "reply_with_content")
+        self.assertFalse(shadow["direct_reply_allowed"])
+        self.assertFalse(shadow["direct_reply_guard_audit"]["ready_for_direct_reply"])
+        self.assertFalse(shadow["direct_reply_guard_audit"]["deferred_writes_absent"])
+        self.assertIn("deferred_writes_present", shadow["direct_reply_guard_audit"]["blockers"])
+        self.assertIn("deferred_writes_require_post_reply_commit_phase", shadow["join_reasons"])
+        self.assertEqual(shadow["deferred_write_count"], 1)
+        self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
+
     def test_direct_text_without_static_candidate_must_go_to_reply(self) -> None:
         shadow = reply_chain_join_shadow(
             gate_router_shadow={"route_suggestion": "direct_text"},

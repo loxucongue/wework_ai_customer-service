@@ -76,6 +76,7 @@ Reviewer checks:
 - Direct reply remains a narrow structural exception:
   - exactly one static candidate message exists;
   - no read tools are required;
+  - no deferred write proposal is present;
   - no dynamic facts are missing;
   - no payment, store, risk, registration, refund, or complex history judgment
     is involved.

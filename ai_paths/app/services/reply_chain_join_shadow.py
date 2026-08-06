@@ -14,6 +14,7 @@ def reply_chain_join_shadow(
     fact_requirement = str(tool_plan_preview.get("fact_requirement") or "none").strip()
     has_read_tools = bool(tool_plan_preview.get("read_tool_calls"))
     has_unknown_tools = bool(tool_plan_preview.get("unknown_tools"))
+    has_deferred_writes = bool(tool_plan_preview.get("deferred_write_proposals"))
     has_content = bool((gate_router_shadow.get("selected_content") or {}).get("message_count") or gate_router_shadow.get("direct_reply_candidate"))
     static_candidate_safe = _static_candidate_safe(gate_router_shadow)
     direct_reply_guard = _direct_reply_guard_audit(
@@ -21,6 +22,7 @@ def reply_chain_join_shadow(
         fact_requirement=fact_requirement,
         has_read_tools=has_read_tools,
         has_unknown_tools=has_unknown_tools,
+        has_deferred_writes=has_deferred_writes,
         has_content=has_content,
         static_candidate_safe=static_candidate_safe,
     )
@@ -30,6 +32,7 @@ def reply_chain_join_shadow(
         fact_requirement=fact_requirement,
         has_read_tools=has_read_tools,
         has_unknown_tools=has_unknown_tools,
+        has_deferred_writes=has_deferred_writes,
         has_content=has_content,
         static_candidate_safe=static_candidate_safe,
     )
@@ -56,6 +59,7 @@ def reply_chain_join_shadow(
                 fact_requirement=fact_requirement,
                 has_read_tools=has_read_tools,
                 has_unknown_tools=has_unknown_tools,
+                has_deferred_writes=has_deferred_writes,
                 has_content=has_content,
                 final_route=final_route,
             ),
@@ -70,16 +74,40 @@ def _final_route(
     fact_requirement: str,
     has_read_tools: bool,
     has_unknown_tools: bool,
+    has_deferred_writes: bool,
     has_content: bool,
     static_candidate_safe: bool,
 ) -> str:
     if gate_route == "no_reply" and not has_read_tools and not has_unknown_tools:
         return "no_reply"
-    if gate_route == "direct_text" and not has_content and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
+    if (
+        gate_route == "direct_text"
+        and not has_content
+        and fact_requirement == "none"
+        and not has_read_tools
+        and not has_unknown_tools
+        and not has_deferred_writes
+    ):
         return "reply"
-    if gate_route == "direct_text" and has_content and not static_candidate_safe and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
+    if (
+        gate_route == "direct_text"
+        and has_content
+        and not static_candidate_safe
+        and fact_requirement == "none"
+        and not has_read_tools
+        and not has_unknown_tools
+        and not has_deferred_writes
+    ):
         return "reply_with_content"
-    if gate_route == "direct_text" and has_content and static_candidate_safe and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
+    if (
+        gate_route == "direct_text"
+        and has_content
+        and static_candidate_safe
+        and fact_requirement == "none"
+        and not has_read_tools
+        and not has_unknown_tools
+        and not has_deferred_writes
+    ):
         return "direct_reply"
     if gate_route == "content_and_tools" or (has_content and (has_read_tools or has_unknown_tools)):
         return "reply_with_content_and_tools"
@@ -96,6 +124,7 @@ def _join_reasons(
     fact_requirement: str,
     has_read_tools: bool,
     has_unknown_tools: bool,
+    has_deferred_writes: bool,
     has_content: bool,
     final_route: str,
 ) -> list[str]:
@@ -106,6 +135,8 @@ def _join_reasons(
         reasons.append("read_tools_required")
     if has_unknown_tools:
         reasons.append("unknown_tools_require_review")
+    if has_deferred_writes:
+        reasons.append("deferred_writes_require_post_reply_commit_phase")
     if final_route == "direct_reply":
         reasons.append("direct_reply_requires_gate_direct_text_and_no_dynamic_facts")
     if gate_route == "direct_text" and not has_content:
@@ -119,6 +150,7 @@ def _direct_reply_guard_audit(
     fact_requirement: str,
     has_read_tools: bool,
     has_unknown_tools: bool,
+    has_deferred_writes: bool,
     has_content: bool,
     static_candidate_safe: bool,
 ) -> dict[str, Any]:
@@ -132,6 +164,8 @@ def _direct_reply_guard_audit(
         blockers.append("read_tools_present")
     if requested and has_unknown_tools:
         blockers.append("unknown_tools_present")
+    if requested and has_deferred_writes:
+        blockers.append("deferred_writes_present")
     if requested and has_content and not static_candidate_safe:
         blockers.append("static_candidate_not_safe_for_direct_reply")
     return {
@@ -141,6 +175,7 @@ def _direct_reply_guard_audit(
         "tool_fact_requirement_none": fact_requirement == "none",
         "read_tools_absent": not has_read_tools,
         "unknown_tools_absent": not has_unknown_tools,
+        "deferred_writes_absent": not has_deferred_writes,
         "static_candidate_safe_for_direct_reply": static_candidate_safe,
         "ready_for_direct_reply": requested and not blockers,
         "blockers": blockers,
