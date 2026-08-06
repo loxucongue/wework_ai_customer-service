@@ -147,12 +147,18 @@ def _model_matrix_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
         "git_commit": "abc123",
+        "relay_base_url": "https://linkai.shop/v1",
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
         "profiles": [
             {
                 "status": "completed",
-                "model_profile": {"name": "claude", "model": "claude-opus-4-7"},
+                "model_profile": {
+                    "name": "claude",
+                    "model": "claude-opus-4-7",
+                    "protocol": "openai-compatible relay",
+                    "api_key_value_logged": False,
+                },
                 "profile_summary": {
                     "semantic_pass_rate": 0.91,
                     "p50_ms": 6200,
@@ -166,7 +172,12 @@ def _model_matrix_ready() -> dict:
             },
             {
                 "status": "completed",
-                "model_profile": {"name": "gemini", "model": "gemini-3.5-flash"},
+                "model_profile": {
+                    "name": "gemini",
+                    "model": "gemini-3.5-flash",
+                    "protocol": "openai-compatible relay",
+                    "api_key_value_logged": False,
+                },
                 "profile_summary": {
                     "semantic_pass_rate": 0.9,
                     "p50_ms": 3900,
@@ -180,7 +191,12 @@ def _model_matrix_ready() -> dict:
             },
             {
                 "status": "completed",
-                "model_profile": {"name": "openai", "model": "gpt-5.4"},
+                "model_profile": {
+                    "name": "openai",
+                    "model": "gpt-5.4",
+                    "protocol": "openai-compatible relay",
+                    "api_key_value_logged": False,
+                },
                 "profile_summary": {
                     "semantic_pass_rate": 0.94,
                     "p50_ms": 4800,

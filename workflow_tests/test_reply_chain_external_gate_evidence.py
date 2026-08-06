@@ -92,12 +92,18 @@ def _model_matrix_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_model_matrix_v1",
         "git_commit": "abc123",
+        "relay_base_url": "https://linkai.shop/v1",
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
         "profiles": [
             {
                 "status": "completed",
-                "model_profile": {"name": "claude", "model": "claude-opus-4-7"},
+                "model_profile": {
+                    "name": "claude",
+                    "model": "claude-opus-4-7",
+                    "protocol": "openai-compatible relay",
+                    "api_key_value_logged": False,
+                },
                 "profile_summary": {
                     "semantic_pass_rate": 0.91,
                     "p50_ms": 6200,
@@ -111,7 +117,12 @@ def _model_matrix_ready() -> dict:
             },
             {
                 "status": "completed",
-                "model_profile": {"name": "gemini", "model": "gemini-3.5-flash"},
+                "model_profile": {
+                    "name": "gemini",
+                    "model": "gemini-3.5-flash",
+                    "protocol": "openai-compatible relay",
+                    "api_key_value_logged": False,
+                },
                 "profile_summary": {
                     "semantic_pass_rate": 0.9,
                     "p50_ms": 3900,
@@ -125,7 +136,12 @@ def _model_matrix_ready() -> dict:
             },
             {
                 "status": "completed",
-                "model_profile": {"name": "openai", "model": "gpt-5.4"},
+                "model_profile": {
+                    "name": "openai",
+                    "model": "gpt-5.4",
+                    "protocol": "openai-compatible relay",
+                    "api_key_value_logged": False,
+                },
                 "profile_summary": {
                     "semantic_pass_rate": 0.94,
                     "p50_ms": 4800,
@@ -472,6 +488,19 @@ def test_external_gate_evidence_blocks_model_matrix_incomplete_ranking() -> None
 
     assert "model_matrix_ranking_missing_completed_profile:gemini" in blockers
     assert "model_matrix_ranking_missing_effect_issue_count:openai" in blockers
+
+
+def test_external_gate_evidence_blocks_unapproved_model_matrix_relay_or_key_logging() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["relay_base_url"] = "https://other-relay.example/v1"
+    model_matrix["profiles"][0]["model_profile"]["protocol"] = "anthropic"
+    del model_matrix["profiles"][1]["model_profile"]["api_key_value_logged"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_unapproved_relay_base_url:https://other-relay.example/v1" in blockers
+    assert "model_matrix_profile_protocol_mismatch:claude" in blockers
+    assert "model_matrix_profile_key_redaction_missing:gemini" in blockers
 
 
 def test_bundle_audit_does_not_import_final_behavior_switch_guard_private_helpers() -> None:

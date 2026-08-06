@@ -335,8 +335,10 @@ Required matrix report:
 
 - `schema_version=reply_chain_refactor_model_matrix_v1`
 - `git_commit` matches the reviewed behavior-switch commit
+- `relay_base_url=https://linkai.shop/v1`
 - `profiles_requested` includes `claude`, `gemini`, and `openai`
 - each profile is `completed`
+- each completed profile has `model_profile.protocol=openai-compatible relay` and `model_profile.api_key_value_logged=false`
 - no profile has `status=timed_out`
 - each completed profile has `profile_summary.semantic_pass_rate`, `p50_ms`, and `p90_ms`
 - each completed profile has `profile_summary.effect_issue_count`, `effect_low_score_count`, and `effect_hard_or_infra_count`

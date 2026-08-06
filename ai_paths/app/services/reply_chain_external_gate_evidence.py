@@ -164,6 +164,9 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     blockers: list[str] = []
     if not _string_value(model_matrix.get("git_commit")):
         blockers.append("model_matrix_missing_git_commit")
+    relay_base_url = _string_value(model_matrix.get("relay_base_url")).rstrip("/")
+    if relay_base_url != "https://linkai.shop/v1":
+        blockers.append(f"model_matrix_unapproved_relay_base_url:{relay_base_url or 'missing'}")
     requested = set(_list_strings(model_matrix.get("profiles_requested")))
     required_models = {
         "claude": "claude-opus-4-7",
@@ -218,6 +221,10 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
         profile_name = str(profile.get("name") or "").strip()
         expected_model = required_models.get(profile_name)
         observed_model = str(profile.get("model") or "").strip()
+        if str(profile.get("protocol") or "").strip() != "openai-compatible relay":
+            blockers.append(f"model_matrix_profile_protocol_mismatch:{profile_name or _profile_name(item)}")
+        if profile.get("api_key_value_logged") is not False:
+            blockers.append(f"model_matrix_profile_key_redaction_missing:{profile_name or _profile_name(item)}")
         if expected_model and observed_model != expected_model:
             blockers.append(
                 f"model_matrix_profile_model_mismatch:{profile_name}:{observed_model or 'missing'}"
