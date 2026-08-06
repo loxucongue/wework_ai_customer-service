@@ -459,6 +459,17 @@ def test_external_gate_evidence_blocks_insufficient_repeated_attempts() -> None:
     assert "simulation_review_artifacts_result_count_below_attempt_count:299<300" in blockers
 
 
+def test_external_gate_evidence_blocks_scenario_level_hard_or_infra_failures() -> None:
+    simulation = _simulation_ready()
+    simulation["scenario_summary"]["sim_case_0"]["hard_passes"] = 2
+    simulation["scenario_summary"]["sim_case_1"]["infrastructure_failures"] = 1
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_scenario_hard_passes_below_attempts:sim_case_0:2<3" in blockers
+    assert "simulation_scenario_infrastructure_failures:sim_case_1:1" in blockers
+
+
 def test_external_gate_evidence_blocks_missing_scenario_summary() -> None:
     simulation = _simulation_ready()
     del simulation["scenario_summary"]

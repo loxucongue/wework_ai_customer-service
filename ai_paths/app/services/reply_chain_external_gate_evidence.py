@@ -306,6 +306,12 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         attempts = _int_value(item.get("attempts"))
         if attempts < required_attempts:
             blockers.append(f"simulation_scenario_attempts_below_required:{scenario_id}:{attempts}<{required_attempts}")
+        hard_passes = _int_value(item.get("hard_passes"))
+        if hard_passes < attempts:
+            blockers.append(f"simulation_scenario_hard_passes_below_attempts:{scenario_id}:{hard_passes}<{attempts}")
+        infrastructure_failures = _int_value(item.get("infrastructure_failures"))
+        if infrastructure_failures != 0:
+            blockers.append(f"simulation_scenario_infrastructure_failures:{scenario_id}:{infrastructure_failures}")
     acceptance = _dict(summary.get("acceptance"))
     for field, blocker in (
         ("hard_errors_zero", "simulation_hard_error_acceptance_missing_or_false"),

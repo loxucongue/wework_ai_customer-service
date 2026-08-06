@@ -278,6 +278,8 @@ Required report:
 - `scenario_summary` includes every scenario
 - every non-critical scenario has at least `3` attempts
 - every critical scenario has at least `5` attempts
+- every scenario has `hard_passes == attempts`
+- every scenario has `infrastructure_failures == 0`
 - `review_artifacts.result_count >= attempt_count`
 - hard errors: `0`
 - `summary.infrastructure_failures=0`
