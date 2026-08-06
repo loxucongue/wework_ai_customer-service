@@ -15,6 +15,8 @@ from app.simulation.runner import render_markdown, run_suite
 
 
 DEFAULT_RELAY_BASE_URL = "https://linkai.shop"
+DEFAULT_MATRIX_ATTEMPTS = 3
+DEFAULT_MATRIX_CRITICAL_ATTEMPTS = 5
 REFACTOR_ENV_KEYS = {
     "REFACTOR_MODEL_CLAUDE_API_KEY",
     "REFACTOR_MODEL_GEMINI_API_KEY",
@@ -342,8 +344,8 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--profiles", default="")
     parser.add_argument("--relay-base-url", default="")
-    parser.add_argument("--attempts", type=int, default=1)
-    parser.add_argument("--critical-attempts", type=int, default=1)
+    parser.add_argument("--attempts", type=int, default=DEFAULT_MATRIX_ATTEMPTS)
+    parser.add_argument("--critical-attempts", type=int, default=DEFAULT_MATRIX_CRITICAL_ATTEMPTS)
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--max-cases", type=int, default=0)
     parser.add_argument("--scenario-id", default="", help="Optional single simulation scenario id to run.")

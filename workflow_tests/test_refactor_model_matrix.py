@@ -5,6 +5,8 @@ from pathlib import Path
 
 from app.config import Settings
 from ai_paths.scripts.run_refactor_model_matrix import (
+    DEFAULT_MATRIX_ATTEMPTS,
+    DEFAULT_MATRIX_CRITICAL_ATTEMPTS,
     DEFAULT_RELAY_BASE_URL,
     MODEL_PROFILES,
     build_profile_settings,
@@ -301,6 +303,11 @@ def test_matrix_run_options_exposes_review_and_attempt_gate_inputs() -> None:
         "skip_review": False,
         "profile_timeout_seconds": 120,
     }
+
+
+def test_refactor_model_matrix_defaults_match_release_gate_attempts() -> None:
+    assert DEFAULT_MATRIX_ATTEMPTS == 3
+    assert DEFAULT_MATRIX_CRITICAL_ATTEMPTS == 5
 
 
 def test_profile_artifacts_summary_exposes_per_model_report_evidence(tmp_path) -> None:
