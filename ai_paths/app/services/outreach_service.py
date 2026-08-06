@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -22,6 +23,7 @@ from app.services.outreach_assets import (
     resolve_configured_asset,
 )
 from app.services.outreach_prompts import (
+    FIRST_DAY_OPENED_SILENCE_PLAN_PROMPT,
     OUTREACH_MESSAGE_SYSTEM_PROMPT,
     OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT,
     OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT,
@@ -54,6 +56,9 @@ OUTREACH_MAX_STEP_GAP_MINUTES = 72 * 60
 OUTREACH_MAX_PLAN_MINUTES = 7 * 24 * 60
 OUTREACH_DAILY_TASK_LIMIT = 2
 OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
+FIRST_DAY_WINDOW_MINUTES = 24 * 60
+FIRST_DAY_SILENCE_TRIGGER_TYPE = "first_day_opened_silence"
+FIRST_DAY_SOP_PLAN_ID = "first_day_opened_silence"
 OUTREACH_DURABLE_EVENT_TYPES = {
     "voice_transcript_received",
     "image_facts_received",
@@ -241,6 +246,15 @@ def _is_second_beijing_day(contact_started_at: str, *, now: datetime | None = No
     return current.date() > started.astimezone(OUTREACH_BEIJING_TIMEZONE).date()
 
 
+def _is_within_first_day(contact_started_at: str, *, now: datetime | None = None) -> bool:
+    started = _parse_iso(_string(contact_started_at))
+    if not started:
+        return False
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    age_minutes = (current - started.astimezone(timezone.utc)).total_seconds() / 60
+    return 0 <= age_minutes <= FIRST_DAY_WINDOW_MINUTES
+
+
 def _add_minutes(value: str, minutes: int) -> str:
     start = _parse_iso(value) or datetime.now(timezone.utc)
     return (start + timedelta(minutes=max(0, int(minutes)))).isoformat()
@@ -306,6 +320,51 @@ def _normalize_outreach_schedule(
             }
         )
         previous = target
+    return normalized
+
+
+def _next_first_day_free_window(value: datetime) -> datetime:
+    local = value.astimezone(OUTREACH_BEIJING_TIMEZONE)
+    windows = ((11, 30, 12, 30), (17, 0, 18, 0), (20, 0, 21, 0))
+    for start_hour, start_minute, end_hour, end_minute in windows:
+        start = local.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+        end = local.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+        if local <= end:
+            return max(local, start).astimezone(timezone.utc)
+    tomorrow = (local + timedelta(days=1)).replace(hour=11, minute=30, second=0, microsecond=0)
+    return tomorrow.astimezone(timezone.utc)
+
+
+def _normalize_first_day_outreach_schedule(
+    start_at: str,
+    steps: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    start = (_parse_iso(start_at) or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    normalized = [
+        {
+            "scheduled_at": start.isoformat(),
+            "requested_delay_minutes": _int((steps[0] if steps else {}).get("delay_minutes"), 0),
+            "normalized_delay_minutes": 0,
+        }
+    ]
+    second = steps[1] if len(steps) > 1 else {}
+    requested_delay = max(0, _int(second.get("delay_minutes"), 0))
+    requested_gap = requested_delay
+    urgency = _string(second.get("urgency_level"))
+    high_intent = urgency == "immediate" or 10 <= requested_gap <= 15
+    if high_intent:
+        normalized_delay = min(15, max(10, requested_gap or 10))
+        target = start + timedelta(minutes=normalized_delay)
+    else:
+        target = _next_first_day_free_window(start + timedelta(minutes=max(1, requested_gap)))
+        normalized_delay = max(0, int((target - start).total_seconds() // 60))
+    normalized.append(
+        {
+            "scheduled_at": target.isoformat(),
+            "requested_delay_minutes": requested_delay,
+            "normalized_delay_minutes": normalized_delay,
+        }
+    )
     return normalized
 
 
@@ -486,6 +545,43 @@ def _message_party(message: dict[str, Any]) -> str:
     return "unknown"
 
 
+def _is_wecom_auto_opening_message(content: str) -> bool:
+    normalized = re.sub(r"[\s，,。.!！?？:：；;、\"'“”‘’（）()【】\[\]《》<>-]+", "", str(content or ""))
+    return normalized in {
+        "我已经添加了你现在我们可以开始聊天了",
+        "我已经添加了你现在可以开始聊天了",
+    }
+
+
+def _real_customer_message_count(messages: list[Any]) -> int:
+    count = 0
+    for message in messages:
+        if not isinstance(message, dict) or _message_party(message) != "customer":
+            continue
+        if _is_wecom_auto_opening_message(_message_text(message)):
+            continue
+        count += 1
+    return count
+
+
+def _latest_real_customer_message_time(messages: list[Any]) -> str:
+    candidates = []
+    for message in messages:
+        if not isinstance(message, dict) or _message_party(message) != "customer":
+            continue
+        if _is_wecom_auto_opening_message(_message_text(message)):
+            continue
+        value = _message_time_iso(
+            message.get("msgtime")
+            or message.get("timestamp")
+            or message.get("created_at")
+            or message.get("send_time")
+        )
+        if value:
+            candidates.append(value)
+    return max(candidates) if candidates else ""
+
+
 def _task_content_sources(
     raw_sources: Any,
     *,
@@ -602,6 +698,40 @@ def _task_resolved_asset(task: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict) and isinstance(item.get("resolved_asset"), dict):
             return dict(item["resolved_asset"])
     return {}
+
+
+def _sop_objection_material_catalog(service: Any | None) -> list[dict[str, Any]]:
+    if service is None:
+        return []
+    try:
+        payload = service.load()
+    except Exception:
+        return []
+    materials = payload.get("materials") if isinstance(payload, dict) else []
+    if not isinstance(materials, list):
+        return []
+    output: list[dict[str, Any]] = []
+    for item in materials[:100]:
+        if not isinstance(item, dict):
+            continue
+        output.append(
+            {
+                "material_id": _string(item.get("material_id"))[:120],
+                "name": _string(item.get("name"))[:160],
+                "category": _string(item.get("category"))[:120],
+                "tags": [_string(value)[:80] for value in item.get("tags", [])[:20]],
+                "applicable_scenes": [
+                    _string(value)[:120]
+                    for value in item.get("applicable_scenes", [])[:20]
+                ],
+                "response_approach": _string(item.get("response_approach"))[:1000],
+                "example_contents": [
+                    _string(value)[:1000]
+                    for value in item.get("example_contents", [])[:10]
+                ],
+            }
+        )
+    return output
 
 
 def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
@@ -729,6 +859,31 @@ def _outreach_plan_context_error(
     return ""
 
 
+def _first_day_outreach_plan_error(response: dict[str, Any]) -> str:
+    base_error = _outreach_plan_structure_error(response)
+    if base_error:
+        if base_error == "adjacent step delay must be between 360 and 4320 minutes":
+            pass
+        else:
+            return base_error
+    steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
+    if not bool(response.get("should_create_plan", True)):
+        return ""
+    if len(steps) != 2:
+        return "first-day opened silence plan must contain exactly 2 steps"
+    if _int(steps[0].get("delay_minutes"), -1) != 0:
+        return "first-day first step must be immediate with delay_minutes=0"
+    second_delay = _int(steps[1].get("delay_minutes"), -1)
+    if second_delay < 1:
+        return "first-day second step must be scheduled after the immediate touch"
+    return ""
+
+
+def _is_first_day_opened_silence_trigger(trigger_context: dict[str, Any] | None) -> bool:
+    trigger = trigger_context if isinstance(trigger_context, dict) else {}
+    return _string(trigger.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
+
+
 class OutreachService:
     def __init__(
         self,
@@ -739,6 +894,7 @@ class OutreachService:
         customer_context_service: CustomerContextService | None = None,
         outreach_asset_library_service: OutreachAssetLibraryService | None = None,
         coze_client: CozeClient | None = None,
+        sop_objection_material_service: Any | None = None,
         before_send_retry_seconds: int = 60,
     ) -> None:
         self.repository = repository
@@ -747,6 +903,7 @@ class OutreachService:
         self.customer_context_service = customer_context_service
         self.outreach_asset_library_service = outreach_asset_library_service
         self.coze_client = coze_client
+        self.sop_objection_material_service = sop_objection_material_service
         self.before_send_retry_seconds = max(1, int(before_send_retry_seconds))
         self._plan_locks: dict[str, asyncio.Lock] = {}
         self._monitor_status: dict[str, Any] = {
@@ -1066,6 +1223,7 @@ class OutreachService:
             0,
         )
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
+        first_day_trigger = _is_first_day_opened_silence_trigger(trigger_context)
         asset_catalog = self._outreach_asset_catalog()
         recent_media = recent_outreach_media(recent_messages, hours=72)
         activity_quote_fact = build_outreach_activity_quote_fact(recent_messages, memory)
@@ -1113,9 +1271,16 @@ class OutreachService:
             ],
             "recent_media_delivery": recent_media,
             "recent_sop_delivery": recent_sop_delivery,
+            "first_day_sop_packs": recent_sop_delivery,
+            "sop_objection_materials": _sop_objection_material_catalog(self.sop_objection_material_service),
         }
         model_messages = [
             {"role": "system", "content": OUTREACH_PLAN_SYSTEM_PROMPT},
+            *(
+                [{"role": "system", "content": FIRST_DAY_OPENED_SILENCE_PLAN_PROMPT}]
+                if first_day_trigger
+                else []
+            ),
             {"role": "user", "content": dumps(source_snapshot)},
         ]
         response = await self.model_client.chat_json(
@@ -1124,11 +1289,15 @@ class OutreachService:
             temperature=0.0,
         )
         response = _normalize_outreach_plan_response(response)
-        structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
-            response,
-            activity_quote_fact=activity_quote_fact,
-            reply_wait_minutes=reply_wait_minutes,
-            customer_silence_minutes=customer_silence_minutes,
+        structure_error = (
+            _first_day_outreach_plan_error(response)
+            if first_day_trigger
+            else _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+                response,
+                activity_quote_fact=activity_quote_fact,
+                reply_wait_minutes=reply_wait_minutes,
+                customer_silence_minutes=customer_silence_minutes,
+            )
         )
         if structure_error:
             response = await self.model_client.chat_json(
@@ -1165,11 +1334,15 @@ class OutreachService:
             temperature=0.0,
         )
         response = _normalize_outreach_plan_response(response)
-        structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
-            response,
-            activity_quote_fact=activity_quote_fact,
-            reply_wait_minutes=reply_wait_minutes,
-            customer_silence_minutes=customer_silence_minutes,
+        structure_error = (
+            _first_day_outreach_plan_error(response)
+            if first_day_trigger
+            else _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+                response,
+                activity_quote_fact=activity_quote_fact,
+                reply_wait_minutes=reply_wait_minutes,
+                customer_silence_minutes=customer_silence_minutes,
+            )
         )
         for _repair_attempt in range(3):
             if not structure_error:
@@ -1196,11 +1369,15 @@ class OutreachService:
                 temperature=0.0,
             )
             response = _normalize_outreach_plan_response(response)
-            structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
-                response,
-                activity_quote_fact=activity_quote_fact,
-                reply_wait_minutes=reply_wait_minutes,
-                customer_silence_minutes=customer_silence_minutes,
+            structure_error = (
+                _first_day_outreach_plan_error(response)
+                if first_day_trigger
+                else _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+                    response,
+                    activity_quote_fact=activity_quote_fact,
+                    reply_wait_minutes=reply_wait_minutes,
+                    customer_silence_minutes=customer_silence_minutes,
+                )
             )
         if not bool(response.get("should_create_plan", True)):
             self.repository.add_outreach_event(
@@ -1221,15 +1398,19 @@ class OutreachService:
                 },
             )
             return {"created": False, "ai_result": response}
-        structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
-            response,
-            activity_quote_fact=activity_quote_fact,
-            reply_wait_minutes=reply_wait_minutes,
-            customer_silence_minutes=customer_silence_minutes,
+        structure_error = (
+            _first_day_outreach_plan_error(response)
+            if first_day_trigger
+            else _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+                response,
+                activity_quote_fact=activity_quote_fact,
+                reply_wait_minutes=reply_wait_minutes,
+                customer_silence_minutes=customer_silence_minutes,
+            )
         )
         if structure_error:
             raise RuntimeError(f"outreach_plan_model_invalid_structure: {structure_error}")
-        raw_steps = [step for step in response.get("steps") or [] if isinstance(step, dict)][:3]
+        raw_steps = [step for step in response.get("steps") or [] if isinstance(step, dict)][:2 if first_day_trigger else 3]
 
         resolved_assets = await asyncio.gather(
             *[
@@ -1253,7 +1434,11 @@ class OutreachService:
         now = utc_now_iso()
         tasks = []
         payment_collection_added = False
-        normalized_schedule = _normalize_outreach_schedule(now, raw_steps)
+        normalized_schedule = (
+            _normalize_first_day_outreach_schedule(now, raw_steps)
+            if first_day_trigger
+            else _normalize_outreach_schedule(now, raw_steps)
+        )
         for index, step in enumerate(raw_steps, start=1):
             schedule = normalized_schedule[index - 1]
             content_mode = _string(step.get("content_mode"))
@@ -1779,6 +1964,284 @@ class OutreachService:
             return "manual_takeover_active"
         return ""
 
+    async def evaluate_first_day_opened_silence_customers(
+        self,
+        *,
+        limit: int = 5,
+        silent_minutes: int = 3,
+        auto_activate: bool = True,
+    ) -> dict[str, Any]:
+        started_at = utc_now_iso()
+        stats: dict[str, Any] = {
+            "mode": "first_day_opened_silence",
+            "last_scan_started_at": started_at,
+            "last_scan_finished_at": "",
+            "candidate_count": 0,
+            "evaluated_count": 0,
+            "created_count": 0,
+            "rejected_count": 0,
+            "skipped_count": 0,
+            "error_count": 0,
+            "skip_reasons": {},
+            "last_error": "",
+            "results": [],
+        }
+        scan_limit = max(50, min(500, max(1, int(limit)) * 20))
+        candidates = self.list_candidates(limit=scan_limit, silent_minutes_min=0)
+        stats["candidate_count"] = len(candidates)
+        eligible_seen = 0
+        for candidate in candidates:
+            if eligible_seen >= max(1, int(limit)):
+                break
+            rough_reason = self._rough_first_day_silence_candidate_reason(
+                candidate,
+                silent_minutes=max(1, int(silent_minutes)),
+            )
+            if rough_reason:
+                result = {
+                    "status": "skipped",
+                    "customer_id": _string(candidate.get("customer_id")),
+                    "reason": rough_reason,
+                }
+            else:
+                eligible_seen += 1
+                try:
+                    result = await self._evaluate_first_day_silence_candidate(
+                        candidate,
+                        silent_minutes=max(1, int(silent_minutes)),
+                        auto_activate=auto_activate,
+                    )
+                except Exception as exc:
+                    result = {
+                        "status": "error",
+                        "customer_id": _string(candidate.get("customer_id")),
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+            stats["results"].append(result)
+            status = _string(result.get("status"))
+            if status == "evaluated":
+                stats["evaluated_count"] += 1
+                if result.get("created"):
+                    stats["created_count"] += 1
+                else:
+                    stats["rejected_count"] += 1
+            elif status == "error":
+                stats["error_count"] += 1
+                stats["last_error"] = _string(result.get("error"))
+            else:
+                stats["skipped_count"] += 1
+                reason = _string(result.get("reason")) or "unknown"
+                skip_reasons = stats["skip_reasons"]
+                skip_reasons[reason] = int(skip_reasons.get(reason) or 0) + 1
+        stats["last_scan_finished_at"] = utc_now_iso()
+        self._monitor_status = {key: value for key, value in stats.items() if key != "results"}
+        return stats
+
+    @staticmethod
+    def _rough_first_day_silence_candidate_reason(candidate: dict[str, Any], *, silent_minutes: int) -> str:
+        if not _is_within_first_day(_string(candidate.get("sales_contact_started_at"))):
+            return "not_first_day"
+        if not _string(candidate.get("last_customer_message_at")):
+            return "customer_never_spoke"
+        if not bool(candidate.get("awaiting_customer_reply")):
+            return "not_waiting_for_customer_reply"
+        if _int(candidate.get("reply_wait_minutes"), 0) < silent_minutes:
+            return "reply_wait_below_threshold"
+        manual_takeover = _parse_iso(_string(candidate.get("last_manual_takeover_at")))
+        remembered_customer = _parse_iso(_string(candidate.get("last_customer_message_at")))
+        if manual_takeover and remembered_customer and manual_takeover >= remembered_customer:
+            return "manual_takeover_active"
+        return ""
+
+    async def _evaluate_first_day_silence_candidate(
+        self,
+        candidate: dict[str, Any],
+        *,
+        silent_minutes: int,
+        auto_activate: bool,
+    ) -> dict[str, Any]:
+        identity = {
+            "customer_id": _string(candidate.get("customer_id")),
+            "corp_id": _string(candidate.get("corp_id")),
+            "user_id": _string(candidate.get("user_id")),
+            "wechat": _string(candidate.get("wechat")),
+            "external_userid": _string(candidate.get("external_userid")),
+        }
+        customer_id = identity["customer_id"]
+        first_added_at = _string(candidate.get("sales_contact_started_at"))
+        if not all((customer_id, identity["corp_id"], identity["wechat"], identity["external_userid"])):
+            return {"status": "skipped", "customer_id": customer_id, "reason": "incomplete_sales_contact_identity"}
+        if not _is_within_first_day(first_added_at):
+            return {"status": "skipped", "customer_id": customer_id, "reason": "not_first_day"}
+        lock = self._plan_lock(identity)
+        async with lock:
+            active = self.repository.get_active_outreach_plan_for_customer(
+                customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+            )
+            if active:
+                return {"status": "skipped", "customer_id": customer_id, "reason": "nonterminal_plan_exists"}
+            try:
+                refreshed = await self.refresh_customer_conversation(
+                    customer_id=customer_id,
+                    corp_id=identity["corp_id"],
+                    user_id=identity["user_id"],
+                    wechat=identity["wechat"],
+                    external_userid=identity["external_userid"],
+                    limit=50,
+                )
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "customer_id": customer_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            customer_relation = (
+                refreshed.get("customer_relation")
+                if isinstance(refreshed.get("customer_relation"), dict)
+                else {}
+            )
+            if not customer_relation.get("available"):
+                self._relation_plan_skip(
+                    customer_id=customer_id,
+                    corp_id=identity["corp_id"],
+                    wechat=identity["wechat"],
+                    external_userid=identity["external_userid"],
+                    reason="customer_relation_unavailable",
+                    relation=customer_relation,
+                    trigger_context={"source": "silence_monitor", "trigger_type": FIRST_DAY_SILENCE_TRIGGER_TYPE},
+                )
+                return {"status": "skipped", "customer_id": customer_id, "reason": "customer_relation_unavailable"}
+            if customer_relation_is_deleted(customer_relation):
+                self._relation_plan_skip(
+                    customer_id=customer_id,
+                    corp_id=identity["corp_id"],
+                    wechat=identity["wechat"],
+                    external_userid=identity["external_userid"],
+                    reason="customer_deleted",
+                    relation=customer_relation,
+                    trigger_context={"source": "silence_monitor", "trigger_type": FIRST_DAY_SILENCE_TRIGGER_TYPE},
+                )
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "customer_deleted",
+                    "customer_relation": customer_relation,
+                }
+            messages = refreshed.get("messages") or []
+            real_customer_count = _real_customer_message_count(messages)
+            latest_customer_text = _latest_real_customer_message_time(messages)
+            latest_staff_text = self._latest_message_time(messages, sender="staff")
+            latest_customer = _parse_iso(latest_customer_text)
+            latest_staff = _parse_iso(latest_staff_text)
+            if real_customer_count <= 0 or not latest_customer:
+                return {"status": "skipped", "customer_id": customer_id, "reason": "customer_never_spoke"}
+            if not latest_staff or latest_staff <= latest_customer:
+                return {"status": "skipped", "customer_id": customer_id, "reason": "not_waiting_for_customer_reply"}
+            wait_minutes = max(
+                0,
+                int((datetime.now(timezone.utc) - latest_staff.astimezone(timezone.utc)).total_seconds() // 60),
+            )
+            if wait_minutes < silent_minutes:
+                return {"status": "skipped", "customer_id": customer_id, "reason": "reply_wait_below_threshold"}
+            conversation_fingerprint = _conversation_fingerprint(
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+                customer_id=customer_id,
+                latest_customer_message_at=latest_customer_text,
+                latest_staff_message_at=latest_staff_text,
+            )
+            if self.repository.has_outreach_evaluation_fingerprint(
+                customer_id=customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+                conversation_fingerprint=conversation_fingerprint,
+            ):
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "conversation_fingerprint_already_evaluated",
+                }
+            local_context = self.repository.recent_customer_context(
+                customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+            )
+            customer_context = await self._load_monitor_customer_context(
+                identity=identity,
+                memory=local_context.get("memory") or {},
+            )
+            order_gate = personalized_order_eligibility(customer_context)
+            if not order_gate.get("available"):
+                return {"status": "skipped", "customer_id": customer_id, "reason": "order_context_unavailable"}
+            if not order_gate.get("eligible"):
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": _string(order_gate.get("reason")) or "order_not_eligible",
+                }
+            source_context = {
+                "memory": local_context.get("memory") or {},
+                "recent_messages": messages[-50:],
+                "customer_relation": customer_relation,
+                "conversation_activity": {
+                    "real_customer_message_count": real_customer_count,
+                    "latest_customer_message_at": latest_customer_text,
+                    "latest_staff_message_at": latest_staff_text,
+                    "reply_wait_minutes": wait_minutes,
+                    "customer_silence_minutes": max(
+                        0,
+                        int((datetime.now(timezone.utc) - latest_customer.astimezone(timezone.utc)).total_seconds() // 60),
+                    ),
+                    "awaiting_customer_reply": True,
+                },
+                "customer_context": customer_context,
+            }
+            result = await self.generate_plan(
+                **identity,
+                current_stage="first_day_opened_silence",
+                business_goal="首日已开口客户在意向最高窗口沉默后，先轻触达承接最近聊天，再按状态推进效果、报价、预约金或异议处理",
+                sop_plan_id=FIRST_DAY_SOP_PLAN_ID,
+                source_context=source_context,
+                trigger_context={
+                    "source": "silence_monitor",
+                    "trigger_type": FIRST_DAY_SILENCE_TRIGGER_TYPE,
+                    "activation_policy": "auto_approved",
+                    "conversation_fingerprint": conversation_fingerprint,
+                    "first_added_at": first_added_at,
+                    "latest_customer_message_at": latest_customer_text,
+                    "latest_staff_message_at": latest_staff_text,
+                    "reply_wait_minutes": wait_minutes,
+                    "monitor_silent_minutes": silent_minutes,
+                },
+            )
+            if not result.get("created"):
+                return {
+                    "status": "evaluated",
+                    "customer_id": customer_id,
+                    "created": False,
+                    "reason": "model_rejected_plan",
+                    "ai_result": result.get("ai_result") or {},
+                }
+            plan_id = _string((result.get("plan") or {}).get("id") or result.get("id"))
+            if not plan_id:
+                raise RuntimeError("first_day_silence_plan_missing_id")
+            if auto_activate:
+                activated = self._auto_approve_plan(plan_id)
+                result = {**result, **activated, "auto_approved": True}
+            return {
+                "status": "evaluated",
+                "customer_id": customer_id,
+                "created": True,
+                "plan_id": plan_id,
+                "result": result,
+            }
+
     async def _evaluate_silent_candidate(
         self,
         candidate: dict[str, Any],
@@ -2065,7 +2528,7 @@ class OutreachService:
             task_id="",
             customer_id=customer_id,
             event_type="plan_auto_approved",
-            event_summary="Personalized day-2 outreach plan auto-approved and queued",
+            event_summary="Personalized outreach plan auto-approved and queued",
         )
         return self.repository.update_outreach_plan_status(plan_id, "active")
 
@@ -2101,6 +2564,30 @@ class OutreachService:
         )
         results = []
         for task in tasks:
+            results.append(await self.execute_task(task["id"]))
+        return {"count": len(results), "results": results}
+
+    async def execute_due_first_day_tasks(self, *, limit: int = 20) -> dict[str, Any]:
+        tasks = self.repository.list_due_outreach_tasks(
+            limit=limit,
+            auto_approved_only=True,
+        )
+        results = []
+        for task in tasks:
+            plan_detail = self.repository.get_outreach_plan(str(task.get("plan_id") or ""))
+            plan = plan_detail.get("plan") if isinstance(plan_detail.get("plan"), dict) else {}
+            source_snapshot = (
+                plan.get("source_snapshot")
+                if isinstance(plan.get("source_snapshot"), dict)
+                else {}
+            )
+            trigger_context = (
+                source_snapshot.get("trigger_context")
+                if isinstance(source_snapshot.get("trigger_context"), dict)
+                else {}
+            )
+            if _string(trigger_context.get("trigger_type")) != FIRST_DAY_SILENCE_TRIGGER_TYPE:
+                continue
             results.append(await self.execute_task(task["id"]))
         return {"count": len(results), "results": results}
 

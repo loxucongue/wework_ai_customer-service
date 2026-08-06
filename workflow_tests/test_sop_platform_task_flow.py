@@ -313,6 +313,62 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(system.send_calls), 1)
         self.assertEqual(len(model.calls), 1)
 
+    async def test_first_day_unopened_first_add_task_is_consumed_without_send(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "add_wecom"
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "我已经添加了你，现在我们可以开始聊天了。",
+                "msgtime": int(time.time() * 1000),
+            }
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(
+            payload["decision"]["reason"],
+            "first_add_unopened_platform_sop_consumed_no_send",
+        )
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+
+    async def test_first_day_real_customer_opening_does_not_use_unopened_intercept(self) -> None:
+        model = _Model(
+            [
+                {
+                    "decision": "send",
+                    "reason": "real customer opened",
+                    "reply_messages": [_text("自然承接")],
+                }
+            ]
+        )
+        service, _repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=True)
+        task["triggerEvent"] = "add_wecom"
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "你好，在吗",
+                "msgtime": int(time.time() * 1000),
+            }
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(len(system.send_calls), 1)
+        self.assertEqual(len(model.calls), 1)
+
     async def test_quiet_hours_blocks_inactive_first_add(self) -> None:
         model = _Model([])
         settings = _settings(quiet_hours_enabled=True)

@@ -551,6 +551,36 @@ OUTREACH_MESSAGE_SYSTEM_PROMPT = """
 """.strip()
 
 
+FIRST_DAY_OPENED_SILENCE_PLAN_PROMPT = """
+# First-Day Opened Silence Override
+This section is authoritative only when `trigger_context.trigger_type` is
+`first_day_opened_silence`.
+
+The goal is not long-term reactivation. The customer added WeChat today, has
+already sent at least one real customer message, and then went silent after the
+latest effective staff/AI reply. Use the hot first-day intent window to keep the
+conversation alive naturally.
+
+Rules:
+- Create exactly 2 steps.
+- Step 1 delay_minutes must be 0. It is an immediate light touch, short WeChat
+  wording, and must directly inherit the most recent conversation. Do not hard
+  sell or force the next SOP stage in step 1.
+- Step 2 decides the next progress action from the customer's current state:
+  effect proof, activity/quote, payment collection, or objection material.
+- If the customer is high intent, step 2 delay_minutes must be 10 to 15.
+- If the customer is medium or low intent, step 2 should be placed in a normal
+  free-time window: 11:30-12:30, 17:00-18:00, or 20:00-21:00 Beijing time.
+- You may use only existing message templates and code-supported message
+  types. Text is written by you; images, videos, store cards, and payment cards
+  are selected or assembled by code from real facts and assets.
+- Read `first_day_sop_packs` and `sop_objection_materials` as candidate
+  business material. Do not copy them mechanically; adapt to the latest chat.
+- Do not create a plan if the only customer message is a WeCom automatic friend
+  opening. A natural customer "你好/在吗" is a real opening.
+""".strip()
+
+
 S10_OUTREACH_CONTEXT = json.dumps(
     outreach_business_facts_for_model(),
     ensure_ascii=False,

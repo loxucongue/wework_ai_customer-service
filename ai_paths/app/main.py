@@ -70,6 +70,7 @@ outreach_service = OutreachService(
     customer_context_service=customer_context_service,
     outreach_asset_library_service=outreach_asset_library_service,
     coze_client=coze_client,
+    sop_objection_material_service=sop_objection_material_service,
     before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
 )
 sop_execution_service = SopExecutionService(
@@ -143,6 +144,7 @@ logger = logging.getLogger(__name__)
 sop_platform_pull_worker: asyncio.Task[None] | None = None
 storage_retention_worker: asyncio.Task[None] | None = None
 store_snapshot_refresh_worker: asyncio.Task[None] | None = None
+outreach_plan_monitor_worker: asyncio.Task[None] | None = None
 
 
 async def _run_sop_platform_pull_worker() -> None:
@@ -184,9 +186,39 @@ async def _run_store_snapshot_refresh_worker() -> None:
         await asyncio.sleep(max(300, int(settings.store_snapshot_refresh_interval_seconds)))
 
 
+async def _run_outreach_plan_monitor_worker() -> None:
+    while True:
+        try:
+            if settings.outreach_first_day_silence_enabled:
+                await outreach_service.evaluate_first_day_opened_silence_customers(
+                    limit=settings.outreach_plan_monitor_batch_size,
+                    silent_minutes=settings.outreach_first_day_silence_minutes,
+                    auto_activate=settings.outreach_plan_monitor_auto_activate,
+                )
+                await outreach_service.execute_due_first_day_tasks(
+                    limit=settings.outreach_auto_send_batch_size,
+                )
+            if settings.outreach_plan_monitor_enabled:
+                await outreach_service.evaluate_silent_customers(
+                    limit=settings.outreach_plan_monitor_batch_size,
+                    silent_minutes=settings.outreach_plan_monitor_silent_minutes,
+                    auto_activate=settings.outreach_plan_monitor_auto_activate,
+                )
+            if settings.outreach_auto_send_enabled:
+                await outreach_service.execute_due_tasks(
+                    limit=settings.outreach_auto_send_batch_size,
+                    auto_approved_only=True,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Outreach plan monitor iteration failed")
+        await asyncio.sleep(max(5.0, float(settings.outreach_plan_monitor_poll_seconds)))
+
+
 @app.on_event("startup")
 async def startup() -> None:
-    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
     storage_store.initialize()
     if settings.sop_platform_pull_enabled and (
         sop_platform_pull_worker is None or sop_platform_pull_worker.done()
@@ -198,11 +230,16 @@ async def startup() -> None:
         store_snapshot_refresh_worker is None or store_snapshot_refresh_worker.done()
     ):
         store_snapshot_refresh_worker = asyncio.create_task(_run_store_snapshot_refresh_worker())
+    if (
+        settings.outreach_first_day_silence_enabled
+        or settings.outreach_plan_monitor_enabled
+    ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
+        outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
     if sop_platform_pull_worker is not None:
         sop_platform_pull_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -218,6 +255,11 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await store_snapshot_refresh_worker
         store_snapshot_refresh_worker = None
+    if outreach_plan_monitor_worker is not None:
+        outreach_plan_monitor_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await outreach_plan_monitor_worker
+        outreach_plan_monitor_worker = None
     await platform_voice_batch_coordinator.aclose()
     await model_client.aclose()
     await coze_client.aclose()
@@ -649,9 +691,12 @@ async def admin_outreach_dashboard() -> dict[str, Any]:
             "before_send_retry_seconds": settings.outreach_before_send_retry_seconds,
         },
         "plan_monitor": {
-            "enabled": False,
+            "enabled": settings.outreach_plan_monitor_enabled or settings.outreach_first_day_silence_enabled,
+            "day2_plus_enabled": settings.outreach_plan_monitor_enabled,
+            "first_day_enabled": settings.outreach_first_day_silence_enabled,
             "poll_seconds": settings.outreach_plan_monitor_poll_seconds,
             "silent_minutes": settings.outreach_plan_monitor_silent_minutes,
+            "first_day_silent_minutes": settings.outreach_first_day_silence_minutes,
             "batch_size": settings.outreach_plan_monitor_batch_size,
             "auto_activate": settings.outreach_plan_monitor_auto_activate,
             **outreach_service.monitor_status(),

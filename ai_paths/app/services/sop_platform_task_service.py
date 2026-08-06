@@ -802,6 +802,51 @@ class SopPlatformTaskService:
                 "platform_response": completed,
             }
 
+        day1_unopened_intercept = await self._first_day_unopened_intercept(
+            platform_task,
+            identity=identity,
+        )
+        if day1_unopened_intercept.get("decision"):
+            decision = day1_unopened_intercept["decision"]
+            context = {
+                "source": "first_day_unopened_platform_sop_intercept",
+                **{
+                    key: value
+                    for key, value in day1_unopened_intercept.items()
+                    if key != "decision"
+                },
+            }
+            if self.settings.sop_platform_shadow_mode:
+                self.repository.update_sop_send_task(
+                    str(local_task.get("id") or ""),
+                    status="shadow_no_send",
+                    send_payload={"decision": decision, "context": context},
+                )
+                self.repository.update_sop_event_status(event_id, status="shadow_no_send")
+                self._counters[str(decision.get("reason") or "first_day_unopened_intercept")] += 1
+                return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
+            started = time.perf_counter()
+            claimed = await self.platform_client.consume(task_id=task_id, status=20)
+            self._observe("claim", time.perf_counter() - started)
+            _require_platform_status(claimed, 20)
+            self.repository.update_sop_send_task(
+                str(local_task.get("id") or ""),
+                status="completed_without_send",
+                send_payload={"decision": decision, "context": context},
+            )
+            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self.repository.update_sop_event_status(event_id, status="platform_completed")
+            self._counters[str(decision.get("reason") or "first_day_unopened_intercept")] += 1
+            return {
+                "processed": True,
+                "status": "completed_without_send",
+                "task_id": task_id,
+                "decision": decision,
+                "platform_response": completed,
+            }
+
         preflight_reason = _task_preflight_no_send_reason(
             platform_task,
             identity=identity,
@@ -1073,6 +1118,57 @@ class SopPlatformTaskService:
             **summary,
             "blocked": False,
             "reason": "quiet_hours_recent_first_add_allowed",
+        }
+
+    async def _first_day_unopened_intercept(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        identity: dict[str, str],
+    ) -> dict[str, Any]:
+        if _task_type(platform_task) != "add_wecom":
+            return {}
+        missing = [key for key in ("corp_id", "customer_id", "external_userid", "user_id", "wechat") if not identity[key]]
+        if missing:
+            return {}
+        first_add_epoch = _first_add_epoch(platform_task)
+        if not first_add_epoch:
+            return {}
+        now_epoch = time.time()
+        age_seconds = now_epoch - first_add_epoch
+        if age_seconds < -300 or age_seconds > 24 * 60 * 60:
+            return {}
+        try:
+            conversation = await self.system_client.conversation(**identity, limit=80)
+        except Exception as exc:
+            return {
+                "intercept_checked": True,
+                "intercept_skipped_reason": "conversation_unavailable",
+                "error": f"{type(exc).__name__}: {exc}",
+                "first_add_age_seconds": round(age_seconds, 3),
+            }
+        data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
+        relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
+        if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
+            return {}
+        messages = data.get("messages") if isinstance(data.get("messages"), list) else []
+        activity = _real_customer_opening_activity(messages[-80:])
+        if activity["real_customer_message_count"] > 0:
+            return {
+                "intercept_checked": True,
+                "intercept_skipped_reason": "customer_already_opened",
+                "first_add_age_seconds": round(age_seconds, 3),
+                "activity": activity,
+            }
+        return {
+            "decision": {
+                "decision": "no_send",
+                "reason": "first_add_unopened_platform_sop_consumed_no_send",
+                "reason_code": "first_add_unopened",
+                "reply_messages": [],
+            },
+            "first_add_age_seconds": round(age_seconds, 3),
+            "activity": activity,
         }
 
     async def _load_context(self, platform_task: dict[str, Any], *, identity: dict[str, str]) -> dict[str, Any]:
@@ -1584,6 +1680,41 @@ def _quiet_hours_activity(messages: list[Any], *, before_epoch: float) -> dict[s
     }
 
 
+def _real_customer_opening_activity(messages: list[Any]) -> dict[str, Any]:
+    real_customer_times: list[float] = []
+    auto_opening_times: list[float] = []
+    unknown_time_count = 0
+    for item in messages:
+        if not isinstance(item, dict) or _raw_message_role(item) != "customer":
+            continue
+        message_epoch = _raw_message_epoch(item)
+        if not message_epoch:
+            unknown_time_count += 1
+            continue
+        content = _timeline_message_content(item.get("content"))
+        if is_platform_auto_opening_message(content):
+            auto_opening_times.append(message_epoch)
+        else:
+            real_customer_times.append(message_epoch)
+    latest_customer = max(real_customer_times, default=0.0)
+    latest_auto_opening = max(auto_opening_times, default=0.0)
+    return {
+        "real_customer_message_count": len(real_customer_times),
+        "auto_opening_message_count": len(auto_opening_times),
+        "unknown_customer_time_count": unknown_time_count,
+        "latest_real_customer_message_at": (
+            datetime.fromtimestamp(latest_customer, tz=timezone.utc).isoformat()
+            if latest_customer
+            else ""
+        ),
+        "latest_auto_opening_at": (
+            datetime.fromtimestamp(latest_auto_opening, tz=timezone.utc).isoformat()
+            if latest_auto_opening
+            else ""
+        ),
+    }
+
+
 def _raw_message_role(item: dict[str, Any]) -> str:
     value = str(
         item.get("direction")
@@ -1603,6 +1734,36 @@ def _raw_message_epoch(item: dict[str, Any]) -> float:
     for key in ("msgtime", "timestamp", "created_at", "sent_at", "message_time", "time"):
         if item.get(key) not in (None, ""):
             return _parse_epoch(item.get(key))
+    return 0.0
+
+
+def _first_add_epoch(task: dict[str, Any]) -> float:
+    direct_keys = (
+        "firstAddedAt",
+        "first_added_at",
+        "firstAddAt",
+        "first_add_at",
+        "addWechatTime",
+        "add_wechat_time",
+        "friendAddedAt",
+        "friend_added_at",
+        "created_at",
+        "upstream_created_at",
+        "scheduledAt",
+        "scheduled_at",
+    )
+    for key in direct_keys:
+        epoch = _parse_epoch(task.get(key))
+        if epoch:
+            return epoch
+    for container_key in ("customer", "sop", "scene", "metadata", "extra"):
+        container = task.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        for key in direct_keys:
+            epoch = _parse_epoch(container.get(key))
+            if epoch:
+                return epoch
     return 0.0
 
 

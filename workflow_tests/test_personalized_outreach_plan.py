@@ -10,6 +10,7 @@ from app.services.outreach_service import (
     OutreachService,
     _compose_outreach_messages,
     _conversation_activity_from_context,
+    _normalize_first_day_outreach_schedule,
     _normalize_outreach_plan_response,
     _normalize_outreach_schedule,
     _outreach_plan_context_error,
@@ -235,6 +236,29 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(schedule[0]["scheduled_at"], "2026-07-29T00:30:00+00:00")
         self.assertGreaterEqual(schedule[1]["normalized_delay_minutes"], 60 + 360)
 
+    def test_first_day_schedule_keeps_immediate_and_high_intent_short_gap(self) -> None:
+        schedule = _normalize_first_day_outreach_schedule(
+            "2026-08-06T02:00:00+00:00",
+            [
+                {"delay_minutes": 0},
+                {"delay_minutes": 10, "urgency_level": "immediate"},
+            ],
+        )
+
+        self.assertEqual(schedule[0]["normalized_delay_minutes"], 0)
+        self.assertEqual(schedule[1]["normalized_delay_minutes"], 10)
+
+    def test_first_day_schedule_moves_medium_low_to_free_window(self) -> None:
+        schedule = _normalize_first_day_outreach_schedule(
+            "2026-08-06T02:00:00+00:00",
+            [
+                {"delay_minutes": 0},
+                {"delay_minutes": 1, "urgency_level": "same_day"},
+            ],
+        )
+
+        self.assertEqual(schedule[1]["scheduled_at"], "2026-08-06T03:30:00+00:00")
+
     def test_activity_quote_fact_uses_visible_quote_or_structured_sop_progress(self) -> None:
         message_fact = build_outreach_activity_quote_fact(
             [
@@ -337,6 +361,92 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "silence_monitor",
         )
         self.assertEqual(len(model.calls), 2)
+
+    async def test_first_day_opened_silence_monitor_creates_two_step_auto_plan(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        customer_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        repository.candidates = [
+            {
+                **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+            }
+        ]
+        response = _ModelClient().response
+        response["steps"][0]["delay_minutes"] = 0
+        response["steps"][1]["delay_minutes"] = 10
+        response["steps"][1]["urgency_level"] = "immediate"
+        model = _ModelClient(response=response)
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "你好，在吗", "created_at": customer_at},
+                {"direction": "staff", "content": "在的亲", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_first_day_opened_silence_customers(
+            limit=5,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+
+        self.assertEqual(result["evaluated_count"], 1)
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(len(repository.created_plan["tasks"]), 2)
+        self.assertEqual(repository.created_plan["sop_plan_id"], "first_day_opened_silence")
+        trigger = repository.created_plan["source_snapshot"]["trigger_context"]
+        self.assertEqual(trigger["trigger_type"], "first_day_opened_silence")
+        self.assertEqual(
+            repository.created_plan["tasks"][0]["content_sources"][2]["outreach_task_metadata"][
+                "normalized_delay_minutes"
+            ],
+            0,
+        )
+        self.assertEqual(
+            repository.created_plan["tasks"][1]["content_sources"][2]["outreach_task_metadata"][
+                "normalized_delay_minutes"
+            ],
+            10,
+        )
+        self.assertEqual(repository.updated_statuses, [("plan-created", "active")])
+
+    async def test_first_day_monitor_excludes_wecom_auto_opening(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        auto_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        repository.candidates = [
+            {
+                **_monitor_candidate(customer_at=auto_at, staff_at=staff_at),
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+            }
+        ]
+        model = _ModelClient()
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {
+                    "direction": "customer",
+                    "content": "我已经添加了你，现在我们可以开始聊天了。",
+                    "created_at": auto_at,
+                },
+                {"direction": "staff", "content": "在的亲", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_first_day_opened_silence_customers(limit=5, silent_minutes=3)
+
+        self.assertEqual(result["created_count"], 0)
+        self.assertEqual(result["results"][0]["reason"], "customer_never_spoke")
+        self.assertEqual(model.calls, [])
 
     async def test_silence_monitor_model_rejection_is_idempotent_for_same_conversation(self) -> None:
         now = datetime.now(timezone.utc)
