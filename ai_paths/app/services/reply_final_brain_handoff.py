@@ -463,6 +463,9 @@ def _target_reply_input_schema_audit(target_schema: dict[str, Any]) -> dict[str,
         blockers.append("invalid_target_reply_input_schema")
     for group in active_group_entries:
         group_id = str(group.get("group_id") or "")
+        consumption_rule = str(group.get("consumption_rule") or "")
+        if consumption_rule in {"shadow_comparison_only", "review_evidence_only"}:
+            blockers.append(f"shadow_consumption_rule_marked_active:{group_id}:{consumption_rule}")
         lowered = group_id.lower()
         if "legacy" in lowered or "planner" in lowered:
             blockers.append(f"legacy_or_planner_group_marked_active:{group_id}")
@@ -470,6 +473,13 @@ def _target_reply_input_schema_audit(target_schema: dict[str, Any]) -> dict[str,
         lowered_source = source.lower()
         if source.startswith("input_groups.") or "legacy" in lowered_source or "planner_" in lowered_source:
             blockers.append(f"legacy_or_planner_source_marked_active:{group_id}:{source}")
+    for group in shadow_only_groups:
+        if not isinstance(group, dict):
+            continue
+        group_id = str(group.get("group_id") or "")
+        consumption_rule = str(group.get("consumption_rule") or "")
+        if consumption_rule in {"authoritative_input", "authoritative_fact_reference", "active_input"}:
+            blockers.append(f"active_consumption_rule_marked_shadow_only:{group_id}:{consumption_rule}")
     required_shadow_groups = {
         "legacy_planner_customer_message_candidates",
         "legacy_planner_turn_outcome_signals",
