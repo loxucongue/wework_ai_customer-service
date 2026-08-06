@@ -220,6 +220,28 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         state = runtime._initial_state(_request("hello"), "request-id", {})
         state["reply_messages"] = [{"type": "text", "order": 1, "content": {"text": "hello"}}]
+        state["parallel_reply_chain_shadow"] = {
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+            "current_serial_observation": {"tool_planner_legacy_residue_count": 0},
+        }
+        state["parallel_gate_planner_runner_shadow"] = {
+            "schema_version": "parallel_gate_planner_runner_shadow_v1",
+            "mode": "completed_shadow",
+            "input_isolation_audit": {
+                "schema_version": "parallel_branch_input_isolation_audit_v1",
+                "initial_state_unchanged_after_branches": True,
+                "shadow_only_fields_present_in_initial_state": [],
+            },
+            "branches": {
+                "sop_chat_gate": {"status": "completed"},
+                "tool_planner": {"status": "completed"},
+            },
+        }
+        state["parallel_reply_chain_comparison"] = {
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+        }
 
         response = runtime._persist_and_build_response(
             request=_request("hello"),
@@ -237,6 +259,11 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(shadow["planned_side_effects"]["trace_log_write"])
         self.assertTrue(shadow["planned_side_effects"]["run_record_save"])
         self.assertFalse(shadow["planned_side_effects"]["case_image_memory_record"])
+        diagnostics = repository.saved_states[-1]["parallel_reply_chain_diagnostics"]
+        self.assertEqual(diagnostics["schema_version"], "parallel_reply_chain_diagnostics_v1")
+        self.assertEqual(diagnostics["phase"], "ready_for_human_review")
+        self.assertTrue(diagnostics["commit"]["present"])
+        self.assertEqual(diagnostics["commit"]["commit_phase_owner"], "runtime_after_reply_validation")
 
     async def test_platform_auto_opening_returns_sop_before_planner(self) -> None:
         graph = _UnexpectedGraph()

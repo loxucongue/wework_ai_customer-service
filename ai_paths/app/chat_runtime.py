@@ -21,6 +21,7 @@ from app.services.chat_gate_router_shadow import chat_gate_router_shadow_from_re
 from app.services.memory_store import CustomerMemoryStore
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
+from app.services.parallel_reply_chain_diagnostics import parallel_reply_chain_diagnostics
 from app.services.reply_chain_commit_shadow import reply_chain_commit_shadow
 from app.services.reply_chain_refactor_flags import reply_chain_refactor_flag_snapshot
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
@@ -975,6 +976,7 @@ class ChatRuntime:
             reply_messages=reply_message_dicts,
             allow_empty_reply=allow_empty_reply,
         )
+        _refresh_parallel_diagnostics_with_commit_shadow(final_state)
         if reply_messages and not bool(final_state.get("test_isolated")):
             safe_repository_call(
                 self._repository.add_assistant_message,
@@ -1071,6 +1073,18 @@ class ChatRuntime:
             final_state=state,
             token_usage=collect_model_usage(state.get("trace", []))["summary"],
         )
+
+
+def _refresh_parallel_diagnostics_with_commit_shadow(state: AgentState) -> None:
+    parallel_shadow = state.get("parallel_reply_chain_shadow")
+    if not isinstance(parallel_shadow, dict) or parallel_shadow.get("schema_version") != "parallel_reply_chain_shadow_v1":
+        return
+    state["parallel_reply_chain_diagnostics"] = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow=parallel_shadow,
+        runner_shadow=state.get("parallel_gate_planner_runner_shadow") if isinstance(state.get("parallel_gate_planner_runner_shadow"), dict) else {},
+        comparison_shadow=state.get("parallel_reply_chain_comparison") if isinstance(state.get("parallel_reply_chain_comparison"), dict) else {},
+        commit_shadow=state.get("reply_chain_commit_shadow") if isinstance(state.get("reply_chain_commit_shadow"), dict) else {},
+    )
 
 
 def _image_urls_from_request(request: ChatRequest, request_context: dict[str, Any]) -> list[str]:

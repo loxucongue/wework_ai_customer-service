@@ -8,16 +8,19 @@ def parallel_reply_chain_diagnostics(
     parallel_reply_chain_shadow: dict[str, Any],
     runner_shadow: dict[str, Any] | None = None,
     comparison_shadow: dict[str, Any] | None = None,
+    commit_shadow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Summarize migration readiness without owning business semantics."""
 
     runner = runner_shadow if isinstance(runner_shadow, dict) else {}
     comparison = comparison_shadow if isinstance(comparison_shadow, dict) else {}
+    commit = commit_shadow if isinstance(commit_shadow, dict) else {}
     contract_blockers = _list_strings((parallel_reply_chain_shadow.get("activation") or {}).get("blockers"))
     runner_mode = str(runner.get("mode") or "not_integrated")
     runner_blockers = _runner_blockers(runner)
     comparison_status = str(comparison.get("status") or "not_collected")
     comparison_blockers = _comparison_blockers(comparison)
+    commit_blockers = _commit_blockers(commit)
     migration_blockers = _migration_blockers(parallel_reply_chain_shadow)
     phase = _phase(
         parallel_shadow_present=parallel_reply_chain_shadow.get("schema_version") == "parallel_reply_chain_shadow_v1",
@@ -26,6 +29,7 @@ def parallel_reply_chain_diagnostics(
         runner_blockers=runner_blockers,
         comparison_status=comparison_status,
         comparison_blockers=comparison_blockers,
+        commit_blockers=commit_blockers,
         migration_blockers=migration_blockers,
     )
     return _drop_empty(
@@ -47,6 +51,12 @@ def parallel_reply_chain_diagnostics(
                 "status": comparison_status,
                 "blockers": comparison_blockers,
                 "diff_count": len(comparison.get("diffs") or []) if isinstance(comparison.get("diffs"), list) else 0,
+            },
+            "commit": {
+                "present": commit.get("schema_version") == "reply_chain_commit_shadow_v1",
+                "blockers": commit_blockers,
+                "commit_phase_owner": commit.get("commit_phase_owner"),
+                "requires_reply_validation_before_commit": commit.get("requires_reply_validation_before_commit"),
             },
             "migration": {
                 "blockers": migration_blockers,
@@ -73,6 +83,7 @@ def _phase(
     runner_blockers: list[str],
     comparison_status: str,
     comparison_blockers: list[str],
+    commit_blockers: list[str],
     migration_blockers: list[str],
 ) -> str:
     if not parallel_shadow_present:
@@ -88,6 +99,8 @@ def _phase(
             return "ready_for_shadow_comparison"
         if comparison_blockers:
             return "comparison_blocked"
+        if commit_blockers:
+            return "commit_phase_blocked"
         if migration_blockers:
             return "tool_planner_migration_blocked"
         return "ready_for_human_review"
@@ -102,6 +115,7 @@ def _next_safe_step(phase: str) -> str:
         "runner_blocked": "fix_runner_inputs_or_refactor_flags",
         "ready_for_shadow_comparison": "collect_old_vs_new_shadow_diffs_before_behavior_switch",
         "comparison_blocked": "fix_shadow_comparison_diffs_before_behavior_switch",
+        "commit_phase_blocked": "fix_or_record_reply_chain_commit_shadow_before_behavior_switch",
         "tool_planner_migration_blocked": "move_legacy_planner_semantics_to_reply_before_behavior_switch",
         "ready_for_human_review": "run_review_gates_and_offline_simulation_before_behavior_switch",
     }.get(phase, "inspect_parallel_refactor_diagnostics")
@@ -152,6 +166,26 @@ def _comparison_blockers(comparison: dict[str, Any]) -> list[str]:
     if status == "not_comparable":
         return ["comparison_not_comparable"]
     return [f"comparison_status:{status or 'unknown'}"]
+
+
+def _commit_blockers(commit: dict[str, Any]) -> list[str]:
+    if not commit:
+        return []
+    if commit.get("schema_version") != "reply_chain_commit_shadow_v1":
+        return ["invalid_reply_chain_commit_shadow"]
+    blockers: list[str] = []
+    if commit.get("commit_phase_owner") != "runtime_after_reply_validation":
+        blockers.append("commit_owner_not_runtime_after_reply_validation")
+    if commit.get("requires_reply_validation_before_commit") is not True:
+        blockers.append("commit_does_not_require_reply_validation")
+    forbidden_owners = commit.get("must_not_be_owned_by")
+    if isinstance(forbidden_owners, list):
+        required_forbidden = {"sop_chat_gate", "tool_planner", "reply_chain_join"}
+        missing = sorted(required_forbidden.difference({str(item) for item in forbidden_owners}))
+        blockers.extend([f"commit_forbidden_owner_missing:{item}" for item in missing])
+    else:
+        blockers.append("commit_missing_forbidden_owners")
+    return blockers
 
 
 def _migration_blockers(parallel_reply_chain_shadow: dict[str, Any]) -> list[str]:

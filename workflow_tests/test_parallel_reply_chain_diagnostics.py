@@ -23,6 +23,17 @@ def _completed_runner_shadow(*, input_shadow_fields: list[str] | None = None) ->
     }
 
 
+def _commit_shadow(**overrides: object) -> dict:
+    base = {
+        "schema_version": "reply_chain_commit_shadow_v1",
+        "commit_phase_owner": "runtime_after_reply_validation",
+        "requires_reply_validation_before_commit": True,
+        "must_not_be_owned_by": ["sop_chat_gate", "tool_planner", "reply_chain_join"],
+    }
+    base.update(overrides)
+    return base
+
+
 def test_diagnostics_reports_runner_integration_as_next_step_when_contract_ready() -> None:
     diagnostics = parallel_reply_chain_diagnostics(
         parallel_reply_chain_shadow={
@@ -126,11 +137,34 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
             "status": "matched_shadow_replay",
             "review_gate": {"can_enable_behavior_switch": False},
         },
+        commit_shadow=_commit_shadow(),
     )
 
     assert diagnostics["phase"] == "ready_for_human_review"
     assert diagnostics["next_safe_step"] == "run_review_gates_and_offline_simulation_before_behavior_switch"
     assert diagnostics["comparison"]["status"] == "matched_shadow_replay"
+    assert diagnostics["commit"]["present"] is True
+    assert diagnostics["commit"]["commit_phase_owner"] == "runtime_after_reply_validation"
+    assert diagnostics["commit"]["requires_reply_validation_before_commit"] is True
+
+
+def test_diagnostics_blocks_when_commit_shadow_has_wrong_owner() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow=_completed_runner_shadow(),
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+        },
+        commit_shadow=_commit_shadow(commit_phase_owner="sop_chat_gate"),
+    )
+
+    assert diagnostics["phase"] == "commit_phase_blocked"
+    assert diagnostics["next_safe_step"] == "fix_or_record_reply_chain_commit_shadow_before_behavior_switch"
+    assert diagnostics["commit"]["blockers"] == ["commit_owner_not_runtime_after_reply_validation"]
 
 
 def test_diagnostics_blocks_when_tool_planner_still_has_legacy_semantics() -> None:
