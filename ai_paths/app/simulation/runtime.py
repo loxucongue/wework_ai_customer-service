@@ -630,7 +630,7 @@ def _hard_check(
             errors.append(f"scenario.missing_payment_amount:{int(expected_amount)}")
 
     visible_text = "\n".join(_message_text(message) for message in visible_messages)
-    if "我在，继续帮您处理" in visible_text or visible_text.strip() == "亲，刚才这条我没接完整，麻烦您再发一下。":
+    if _is_neutral_wait_text(visible_text):
         errors.append("scenario.neutral_fallback_used")
     if _contains_customer_visible_route_value(visible_text):
         errors.append("scenario.customer_visible_distance_value")
@@ -648,6 +648,21 @@ def _message_text(message: dict[str, Any]) -> str:
     if isinstance(content, dict):
         return str(content.get("text") or content.get("content") or "")
     return str(content or "")
+
+
+def _is_neutral_wait_text(text: str) -> bool:
+    compact = re.sub(r"\s+", "", str(text or ""))
+    if not compact:
+        return False
+    neutral_exact = {
+        "您稍等一下",
+        "稍等一下",
+        "稍等一下哈",
+        "亲，刚才这条我没接完整，麻烦您再发一下。",
+    }
+    if compact in neutral_exact:
+        return True
+    return "我在，继续帮您处理" in compact
 
 
 def _contains_customer_visible_route_value(text: str) -> bool:
@@ -719,7 +734,7 @@ def _unrecovered_infrastructure_errors(steps: list[dict[str, Any]]) -> list[str]
             errors.append(f"step[{step.get('index')}].runner_error")
             continue
         provider_evidence = "\n".join(_error_evidence(step)).lower()
-        if _contains_unrecovered_provider_failure(provider_evidence):
+        if _contains_unrecovered_provider_failure(provider_evidence) and not _has_recovered_business_reply(step):
             errors.append(f"step[{step.get('index')}].provider_failure")
         if step.get("kind") == "customer_message":
             has_sync = bool(step.get("sync_reply_messages"))
@@ -727,6 +742,25 @@ def _unrecovered_infrastructure_errors(steps: list[dict[str, Any]]) -> list[str]
             if not has_sync and not has_outbox:
                 errors.append(f"step[{step.get('index')}].no_recovered_reply")
     return sorted(set(errors))
+
+
+def _has_recovered_business_reply(step: dict[str, Any]) -> bool:
+    messages: list[dict[str, Any]] = []
+    sync = step.get("sync_reply_messages")
+    if isinstance(sync, list):
+        messages.extend(item for item in sync if isinstance(item, dict))
+    for item in step.get("new_outbox") or []:
+        if isinstance(item, dict) and isinstance(item.get("reply_messages"), list):
+            messages.extend(message for message in item["reply_messages"] if isinstance(message, dict))
+    if not messages:
+        return False
+    for message in messages:
+        message_type = str(message.get("type") or "").strip()
+        if message_type and message_type != "text":
+            return True
+        if not _is_neutral_wait_text(_message_text(message)):
+            return True
+    return False
 
 
 def _contains_unrecovered_provider_failure(text: str) -> bool:

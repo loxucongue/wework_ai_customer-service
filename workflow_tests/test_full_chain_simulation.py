@@ -651,6 +651,43 @@ class FullChainSimulationTests(unittest.TestCase):
 
         self.assertEqual(_unrecovered_infrastructure_errors(steps), ["step[1].provider_failure"])
 
+    def test_unrecovered_infrastructure_errors_ignore_recovered_business_reply(self) -> None:
+        steps = [
+            {
+                "index": 1,
+                "kind": "customer_message",
+                "sync_reply_messages": [
+                    {
+                        "type": "text",
+                        "content": "湖北省这边可以帮您匹配门店，您是在湖北哪个城市、哪个区呢？",
+                    }
+                ],
+                "response_meta": {
+                    "sop_gate": {
+                        "model_usage": {
+                            "json_response_format_strict_error": (
+                                "RuntimeError: All JSON model candidates failed: "
+                                "gpt-5.4: RuntimeError: Model HTTP 400"
+                            )
+                        }
+                    }
+                },
+            }
+        ]
+
+        self.assertEqual(_unrecovered_infrastructure_errors(steps), [])
+
+    def test_hard_check_flags_utf8_neutral_wait_fallback(self) -> None:
+        errors = _hard_check(
+            scenario={"expected": {"must_reply": True}},
+            step_results=[{"sync_reply_messages": [{"type": "text", "content": "您稍等一下"}]}],
+            outbox=[],
+            stores=[],
+            external_writes=[],
+        )
+
+        self.assertIn("scenario.neutral_fallback_used", errors)
+
     def test_outbox_captures_without_external_transport(self) -> None:
         identity = {
             "customer_id": "sim_customer",
