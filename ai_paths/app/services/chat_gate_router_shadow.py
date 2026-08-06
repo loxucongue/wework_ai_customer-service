@@ -51,6 +51,7 @@ def chat_gate_router_shadow_from_result(result: dict[str, Any]) -> dict[str, Any
             },
             "route_suggestion": route_suggestion,
             "direct_reply_candidate": reply_messages if route_suggestion == "direct_text" else [],
+            "commit_boundary": _commit_boundary(route_suggestion=route_suggestion),
             "handoff_notes": [
                 "shadow_from_current_sop_gate_result",
                 "no_runtime_behavior_change",
@@ -99,6 +100,19 @@ def _simple_scene_id(active_task: dict[str, Any], sop_pack_id: str, priority_que
         return ""
     task_type = str(active_task.get("type") or "").strip()
     return task_type if task_type and task_type not in {"sop_delivery", "precision_answer"} else ""
+
+
+def _commit_boundary(*, route_suggestion: str) -> dict[str, Any]:
+    return {
+        "schema_version": "chat_gate_commit_boundary_v1",
+        "shadow_output_only": True,
+        "this_shadow_creates_sop_task": False,
+        "this_shadow_updates_send_once": False,
+        "this_shadow_sends_customer_messages": False,
+        "this_shadow_writes_database": False,
+        "target_commit_owner": "reply_chain_commit_phase_after_reply_validation",
+        "target_direct_route_requires_commit_phase": route_suggestion == "direct_text",
+    }
 
 
 def _drop_empty(value: Any) -> Any:

@@ -44,6 +44,7 @@ def chat_gate_preview_from_result(result: dict[str, Any]) -> dict[str, Any]:
                 ],
             },
             "commit_policy": commit_policy,
+            "commit_boundary": _commit_boundary(route=route, commit_policy=commit_policy),
             "reason": str(result.get("reason") or ""),
             "source": "current_sop_gate_result_shadow",
         }
@@ -66,3 +67,17 @@ def _drop_empty(value: Any) -> Any:
         output = [_drop_empty(item) for item in value]
         return [item for item in output if item not in ("", None, {}, [])]
     return value
+
+
+def _commit_boundary(*, route: str, commit_policy: str) -> dict[str, Any]:
+    return {
+        "schema_version": "chat_gate_commit_boundary_v1",
+        "shadow_output_only": True,
+        "this_shadow_creates_sop_task": False,
+        "this_shadow_updates_send_once": False,
+        "this_shadow_sends_customer_messages": False,
+        "this_shadow_writes_database": False,
+        "legacy_runtime_commit_policy": commit_policy or "none",
+        "target_commit_owner": "reply_chain_commit_phase_after_reply_validation",
+        "target_direct_route_requires_commit_phase": route in {"direct_content", "content_and_ai_graph"},
+    }

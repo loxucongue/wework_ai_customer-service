@@ -39,14 +39,29 @@ def _reply_final_brain_handoff_shadow(
     }
 
 
+def _gate_router_shadow(**overrides: object) -> dict:
+    base = {
+        "schema_version": "chat_gate_router_shadow_v1",
+        "route_suggestion": "content_only_reply",
+        "commit_boundary": {
+            "schema_version": "chat_gate_commit_boundary_v1",
+            "shadow_output_only": True,
+            "this_shadow_creates_sop_task": False,
+            "this_shadow_updates_send_once": False,
+            "this_shadow_sends_customer_messages": False,
+            "this_shadow_writes_database": False,
+            "target_commit_owner": "reply_chain_commit_phase_after_reply_validation",
+        },
+    }
+    base.update(overrides)
+    return base
+
+
 class ParallelReplyChainShadowTests(unittest.TestCase):
     def test_parallel_contract_keeps_gate_planner_and_reply_ownership_separate(self) -> None:
         shadow = parallel_reply_chain_shadow(
             reply_chain_shadow_context=_reply_chain_shadow_context(),
-            gate_router_shadow={
-                "schema_version": "chat_gate_router_shadow_v1",
-                "route_suggestion": "content_only_reply",
-            },
+            gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={
                 "schema_version": "tool_plan_preview_v2",
                 "fact_requirement": "none",
@@ -87,6 +102,19 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             "reply_chain_fact_snapshot_audit_v1",
         )
         self.assertEqual(shadow["current_serial_observation"]["tool_planner_legacy_residue_count"], 2)
+        self.assertEqual(
+            shadow["current_serial_observation"]["gate_commit_boundary_schema"],
+            "chat_gate_commit_boundary_v1",
+        )
+        self.assertTrue(shadow["current_serial_observation"]["gate_shadow_output_only"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["gate_target_commit_owner"],
+            "reply_chain_commit_phase_after_reply_validation",
+        )
+        self.assertFalse(shadow["current_serial_observation"]["gate_shadow_creates_sop_task"])
+        self.assertFalse(shadow["current_serial_observation"]["gate_shadow_updates_send_once"])
+        self.assertFalse(shadow["current_serial_observation"]["gate_shadow_sends_customer_messages"])
+        self.assertFalse(shadow["current_serial_observation"]["gate_shadow_writes_database"])
         self.assertFalse(shadow["current_serial_observation"]["tool_planner_only_ready"])
         self.assertEqual(
             shadow["current_serial_observation"]["reply_handoff_schema"],
@@ -102,7 +130,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
     def test_blocked_read_executor_prevents_parallel_runner_activation(self) -> None:
         shadow = parallel_reply_chain_shadow(
             reply_chain_shadow_context=_reply_chain_shadow_context(),
-            gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+            gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={
                 "schema_version": "read_only_tool_executor_shadow_v1",
@@ -119,7 +147,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
     def test_refactor_flag_blockers_prevent_shadow_runner_activation(self) -> None:
         shadow = parallel_reply_chain_shadow(
             reply_chain_shadow_context=_reply_chain_shadow_context(),
-            gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+            gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
             reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
@@ -150,13 +178,14 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertIn("missing_shared_reply_chain_shadow_context", shadow["activation"]["blockers"])
         self.assertIn("missing_reply_chain_authority_audit", shadow["activation"]["blockers"])
         self.assertIn("missing_gate_router_shadow", shadow["activation"]["blockers"])
+        self.assertIn("missing_gate_commit_boundary_audit", shadow["activation"]["blockers"])
         self.assertIn("missing_tool_plan_preview", shadow["activation"]["blockers"])
         self.assertIn("missing_reply_final_brain_handoff_shadow", shadow["activation"]["blockers"])
 
     def test_missing_reply_handoff_blocks_parallel_runner_activation(self) -> None:
         shadow = parallel_reply_chain_shadow(
             reply_chain_shadow_context=_reply_chain_shadow_context(),
-            gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+            gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
             reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
@@ -169,7 +198,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
     def test_missing_authority_audit_blocks_parallel_runner_activation(self) -> None:
         shadow = parallel_reply_chain_shadow(
             reply_chain_shadow_context={"schema_version": "reply_chain_shadow_v1"},
-            gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+            gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
             reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
@@ -182,7 +211,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
     def test_incomplete_timestamps_block_parallel_runner_activation(self) -> None:
         shadow = parallel_reply_chain_shadow(
             reply_chain_shadow_context=_reply_chain_shadow_context(all_messages_have_sent_at=False),
-            gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+            gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
             reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
@@ -197,7 +226,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         context["authority_audit"]["fact_snapshot"]["sections_with_error"] = ["visible_store_scope"]
         shadow = parallel_reply_chain_shadow(
             reply_chain_shadow_context=context,
-            gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+            gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
             reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
@@ -209,6 +238,40 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertEqual(
             shadow["current_serial_observation"]["shared_context_fact_sections_with_error"],
             ["visible_store_scope"],
+        )
+
+    def test_missing_gate_commit_boundary_blocks_parallel_runner_activation(self) -> None:
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=_reply_chain_shadow_context(),
+            gate_router_shadow={
+                "schema_version": "chat_gate_router_shadow_v1",
+                "route_suggestion": "content_only_reply",
+            },
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("missing_gate_commit_boundary_audit", shadow["activation"]["blockers"])
+
+    def test_gate_commit_side_effects_block_parallel_runner_activation(self) -> None:
+        gate_shadow = _gate_router_shadow()
+        gate_shadow["commit_boundary"]["this_shadow_updates_send_once"] = True
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=_reply_chain_shadow_context(),
+            gate_router_shadow=gate_shadow,
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn(
+            "gate_shadow_commit_side_effect:this_shadow_updates_send_once",
+            shadow["activation"]["blockers"],
         )
 
     def test_parallel_shadow_is_not_consumed_by_current_model_payloads(self) -> None:

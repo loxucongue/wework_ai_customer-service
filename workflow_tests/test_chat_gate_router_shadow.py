@@ -24,6 +24,17 @@ class ChatGateRouterShadowTests(unittest.TestCase):
         self.assertEqual(shadow["route_suggestion"], "direct_text")
         self.assertEqual(shadow["selected_content"]["sop_pack_ids"], ["s10_activity_intro"])
         self.assertEqual(shadow["selected_content"]["usage"], "direct")
+        self.assertEqual(shadow["commit_boundary"]["schema_version"], "chat_gate_commit_boundary_v1")
+        self.assertTrue(shadow["commit_boundary"]["shadow_output_only"])
+        self.assertFalse(shadow["commit_boundary"]["this_shadow_creates_sop_task"])
+        self.assertFalse(shadow["commit_boundary"]["this_shadow_updates_send_once"])
+        self.assertFalse(shadow["commit_boundary"]["this_shadow_sends_customer_messages"])
+        self.assertFalse(shadow["commit_boundary"]["this_shadow_writes_database"])
+        self.assertEqual(
+            shadow["commit_boundary"]["target_commit_owner"],
+            "reply_chain_commit_phase_after_reply_validation",
+        )
+        self.assertTrue(shadow["commit_boundary"]["target_direct_route_requires_commit_phase"])
         self.assertEqual(shadow["dynamic_fact_expectation"]["requirement"], "none")
         self.assertEqual(len(shadow["direct_reply_candidate"]), 1)
 

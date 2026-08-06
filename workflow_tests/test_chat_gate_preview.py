@@ -19,6 +19,16 @@ class ChatGatePreviewTests(unittest.TestCase):
 
         self.assertEqual(preview["route"], "direct_content")
         self.assertEqual(preview["commit_policy"], "already_committed_by_chat_gate")
+        self.assertEqual(preview["commit_boundary"]["schema_version"], "chat_gate_commit_boundary_v1")
+        self.assertTrue(preview["commit_boundary"]["shadow_output_only"])
+        self.assertFalse(preview["commit_boundary"]["this_shadow_creates_sop_task"])
+        self.assertFalse(preview["commit_boundary"]["this_shadow_updates_send_once"])
+        self.assertFalse(preview["commit_boundary"]["this_shadow_sends_customer_messages"])
+        self.assertFalse(preview["commit_boundary"]["this_shadow_writes_database"])
+        self.assertEqual(
+            preview["commit_boundary"]["target_commit_owner"],
+            "reply_chain_commit_phase_after_reply_validation",
+        )
         self.assertEqual(preview["content_candidate"]["message_types"], ["text"])
 
     def test_ai_then_sop_defers_commit_until_ai_reply_is_usable(self) -> None:
@@ -37,6 +47,7 @@ class ChatGatePreviewTests(unittest.TestCase):
 
         self.assertEqual(preview["route"], "content_and_ai_graph")
         self.assertEqual(preview["commit_policy"], "defer_sop_commit_until_ai_reply_is_usable")
+        self.assertTrue(preview["commit_boundary"]["target_direct_route_requires_commit_phase"])
         self.assertTrue(preview["has_content_candidate"])
         self.assertEqual(preview["content_candidate"]["message_count"], 2)
 

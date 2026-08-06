@@ -30,6 +30,9 @@ def parallel_reply_chain_shadow(
     fact_snapshot_audit = context_authority_audit.get("fact_snapshot")
     if not isinstance(fact_snapshot_audit, dict):
         fact_snapshot_audit = {}
+    gate_commit_boundary = gate_router_shadow.get("commit_boundary")
+    if not isinstance(gate_commit_boundary, dict):
+        gate_commit_boundary = {}
     return _drop_empty(
         {
             "schema_version": "parallel_reply_chain_shadow_v1",
@@ -70,6 +73,13 @@ def parallel_reply_chain_shadow(
                 "shared_context_fact_snapshot_schema": fact_snapshot_audit.get("schema_version"),
                 "shared_context_fact_sections_with_error": fact_snapshot_audit.get("sections_with_error"),
                 "gate_route": gate_router_shadow.get("route_suggestion"),
+                "gate_commit_boundary_schema": gate_commit_boundary.get("schema_version"),
+                "gate_shadow_output_only": gate_commit_boundary.get("shadow_output_only"),
+                "gate_target_commit_owner": gate_commit_boundary.get("target_commit_owner"),
+                "gate_shadow_creates_sop_task": gate_commit_boundary.get("this_shadow_creates_sop_task"),
+                "gate_shadow_updates_send_once": gate_commit_boundary.get("this_shadow_updates_send_once"),
+                "gate_shadow_sends_customer_messages": gate_commit_boundary.get("this_shadow_sends_customer_messages"),
+                "gate_shadow_writes_database": gate_commit_boundary.get("this_shadow_writes_database"),
                 "planner_fact_requirement": tool_plan_preview.get("fact_requirement"),
                 "tool_planner_legacy_residue_count": (tool_plan_preview.get("migration_audit") or {}).get("legacy_residue_count"),
                 "tool_planner_only_ready": (tool_plan_preview.get("migration_audit") or {}).get("tool_planner_only_ready"),
@@ -113,6 +123,7 @@ def _activation_blockers(
     blockers.extend(_context_authority_blockers(reply_chain_shadow_context))
     if gate_router_shadow.get("schema_version") != "chat_gate_router_shadow_v1":
         blockers.append("missing_gate_router_shadow")
+    blockers.extend(_gate_commit_boundary_blockers(gate_router_shadow))
     if tool_plan_preview.get("schema_version") != "tool_plan_preview_v2":
         blockers.append("missing_tool_plan_preview")
     if read_only_tool_executor_shadow.get("schema_version") != "read_only_tool_executor_shadow_v1":
@@ -123,6 +134,26 @@ def _activation_blockers(
         blockers.append("missing_reply_final_brain_handoff_shadow")
     if read_only_tool_executor_shadow.get("blocked"):
         blockers.append("early_tool_executor_has_blocked_calls")
+    return blockers
+
+
+def _gate_commit_boundary_blockers(gate_router_shadow: dict[str, Any]) -> list[str]:
+    boundary = gate_router_shadow.get("commit_boundary")
+    if not isinstance(boundary, dict) or boundary.get("schema_version") != "chat_gate_commit_boundary_v1":
+        return ["missing_gate_commit_boundary_audit"]
+    blockers: list[str] = []
+    if boundary.get("shadow_output_only") is not True:
+        blockers.append("gate_shadow_not_marked_output_only")
+    for field in (
+        "this_shadow_creates_sop_task",
+        "this_shadow_updates_send_once",
+        "this_shadow_sends_customer_messages",
+        "this_shadow_writes_database",
+    ):
+        if boundary.get(field) is not False:
+            blockers.append(f"gate_shadow_commit_side_effect:{field}")
+    if boundary.get("target_commit_owner") != "reply_chain_commit_phase_after_reply_validation":
+        blockers.append("gate_target_commit_owner_not_reply_chain_commit_phase")
     return blockers
 
 
