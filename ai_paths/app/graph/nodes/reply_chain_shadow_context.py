@@ -188,9 +188,10 @@ def _source_message_window(state: dict[str, Any], *, conversation_result: Any) -
 
 def _current_message_audit(state: dict[str, Any], timeline: list[dict[str, Any]]) -> dict[str, Any]:
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
-    request_content = _string(state.get("normalized_content") or state.get("content"))
+    request_content = _request_message_content(state, request_context=request_context)
     request_msgid = _string(request_context.get("msgid"))
-    current_required = bool(request_content)
+    request_msgtype = _string(request_context.get("msgtype"))
+    current_required = bool(request_content or request_msgid or request_msgtype)
     match_index = -1
     match: dict[str, Any] = {}
     for index, message in enumerate(timeline):
@@ -219,7 +220,7 @@ def _current_message_audit(state: dict[str, Any], timeline: list[dict[str, Any]]
             "schema_version": "reply_chain_current_message_audit_v1",
             "current_message_required": current_required,
             "request_msgid": request_msgid,
-            "request_msgtype": _string(request_context.get("msgtype")),
+            "request_msgtype": request_msgtype,
             "request_content_present": bool(request_content),
             "request_msgtime": _message_time_from_context(request_context),
             "current_message_in_timeline": current_in_timeline,
@@ -352,20 +353,43 @@ def _history_item_to_shadow_message(item: Any, *, index: int) -> dict[str, Any]:
 
 
 def _current_message(state: dict[str, Any], *, request_context: dict[str, Any], index: int) -> dict[str, Any]:
-    content = _string(state.get("normalized_content") or state.get("content"))
-    if not content:
+    content = _request_message_content(state, request_context=request_context)
+    msgtype = _string(request_context.get("msgtype") or "text") or "text"
+    if not content and not (_string(request_context.get("msgid")) or msgtype):
         return {}
+    if not content:
+        content = f"[non-text current message: {msgtype}]"
     return _drop_empty(
         {
             "message_ref": _string(request_context.get("msgid")) or f"current_{index:03d}",
             "sender": "customer",
-            "message_type": _string(request_context.get("msgtype") or "text") or "text",
+            "message_type": msgtype,
             "content": content[:MAX_SHADOW_CONTENT_CHARS],
             "sent_at": _message_time_from_context(request_context),
             "time_status": _time_status(_message_time_from_context(request_context)),
             "source": "current_request",
         }
     )
+
+
+def _request_message_content(state: dict[str, Any], *, request_context: dict[str, Any]) -> str:
+    content = _string(state.get("normalized_content") or state.get("content"))
+    if content:
+        return content
+    raw_payload = request_context.get("raw_workflow_payload")
+    if isinstance(raw_payload, dict):
+        parameters = raw_payload.get("parameters")
+        content_obj = parameters.get("content") if isinstance(parameters, dict) else {}
+        if isinstance(content_obj, dict):
+            for key in ("content", "text", "location_title", "location_address", "url"):
+                value = _string(content_obj.get(key))
+                if value:
+                    return value
+    for key in ("content", "text", "location_title", "location_address", "url"):
+        value = _string(request_context.get(key))
+        if value:
+            return value
+    return ""
 
 
 def _already_contains_current(messages: list[dict[str, Any]], current: dict[str, Any]) -> bool:

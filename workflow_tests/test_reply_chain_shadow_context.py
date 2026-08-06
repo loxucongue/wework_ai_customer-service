@@ -112,6 +112,68 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertIn("history_001", context["conversation"]["policy"]["missing_time_message_refs"])
         self.assertEqual(messages[0]["time_status"], "missing")
 
+    def test_non_text_current_request_without_text_is_still_authoritative_message(self) -> None:
+        context = build_reply_chain_shadow_context(
+            {
+                "content": "",
+                "normalized_content": "",
+                "request_context": {
+                    "msgid": "img_current",
+                    "msgtype": "image",
+                    "msgtime": "1785225414095",
+                },
+            },
+            identity={},
+            customer_result={},
+            store_knowledge={},
+            conversation_result={},
+            memory={},
+        )
+
+        messages = context["conversation"]["messages"]
+        self.assertEqual(messages[-1]["message_ref"], "img_current")
+        self.assertEqual(messages[-1]["message_type"], "image")
+        self.assertEqual(messages[-1]["content"], "[non-text current message: image]")
+        audit = context["authority_audit"]["current_message_audit"]
+        self.assertTrue(audit["current_message_required"])
+        self.assertTrue(audit["current_message_in_timeline"])
+        self.assertTrue(audit["current_message_is_last"])
+        self.assertTrue(audit["ready_for_authoritative_model_input"])
+
+    def test_location_current_request_uses_raw_workflow_payload_content(self) -> None:
+        context = build_reply_chain_shadow_context(
+            {
+                "content": "",
+                "normalized_content": "",
+                "request_context": {
+                    "msgid": "loc_current",
+                    "msgtype": "location",
+                    "msgtime": "1785225414095",
+                    "raw_workflow_payload": {
+                        "parameters": {
+                            "content": {
+                                "msgtype": "location",
+                                "content": "",
+                                "location_title": "萤火虫大厦",
+                                "location_address": "福建省厦门市湖里区岐山北二路1000号",
+                            }
+                        }
+                    },
+                },
+            },
+            identity={},
+            customer_result={},
+            store_knowledge={},
+            conversation_result={},
+            memory={},
+        )
+
+        messages = context["conversation"]["messages"]
+        self.assertEqual(messages[-1]["message_ref"], "loc_current")
+        self.assertEqual(messages[-1]["message_type"], "location")
+        self.assertEqual(messages[-1]["content"], "萤火虫大厦")
+        self.assertTrue(context["authority_audit"]["current_message_audit"]["request_content_present"])
+
     def test_timeline_window_audit_allows_only_documented_truncation_above_limit(self) -> None:
         turns = [
             {
