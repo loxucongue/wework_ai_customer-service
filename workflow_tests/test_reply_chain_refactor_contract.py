@@ -90,6 +90,9 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "Structural Refactor Review Gate",
         "rule_matrix_delta_review",
         "payload_isolation_review",
+        "authority_snapshot_review",
+        "reply_chain_authority_audit_v1",
+        "reply_chain_fact_snapshot_audit_v1",
         "business_wording_freeze_review",
         "model_semantics_ownership_review",
         "simulation_regression_review",
@@ -97,6 +100,8 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "REPLY_FINAL_BRAIN_V2_ENABLED",
         "comparison diagnostics show no shadow replay diffs",
         "workflow_tests/test_reply_chain_shadow_payload_isolation.py",
+        "workflow_tests/test_reply_chain_shadow_context.py",
+        "workflow_tests/test_parallel_reply_chain_shadow.py",
         "Offline simulation report covers SOP, precision QA, store, payment, paid registration, risk, and model-failure cases.",
         "must not be deployed from this branch",
     ]:
