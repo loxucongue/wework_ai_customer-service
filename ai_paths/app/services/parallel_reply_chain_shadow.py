@@ -122,6 +122,7 @@ def parallel_reply_chain_shadow(
                 "join_decides_sales_psychology": final_expression_boundary.get("join_decides_sales_psychology"),
                 "reply_handoff_schema": (reply_final_brain_handoff_shadow or {}).get("schema_version"),
                 "reply_legacy_business_field_count": reply_handoff_migration.get("legacy_business_field_count"),
+                "reply_handoff_legacy_business_field_count": reply_handoff_migration.get("legacy_business_field_count"),
                 "reply_handoff_requires_schema": reply_handoff_migration.get("requires_reply_schema_before_activation"),
                 "reply_handoff_readiness_schema": reply_handoff_readiness.get("schema_version"),
                 "reply_handoff_ready_for_payload_switch_shadow": reply_handoff_readiness.get("ready_for_reply_payload_switch_shadow"),

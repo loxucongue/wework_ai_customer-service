@@ -181,7 +181,7 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
     assert diagnostics["commit"]["requires_reply_validation_before_commit"] is True
     assert diagnostics["release_review"]["schema_version"] == "reply_chain_release_review_checklist_v1"
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
-    assert diagnostics["release_review"]["required_gate_count"] == 13
+    assert diagnostics["release_review"]["required_gate_count"] == 14
     assert "simulation_regression_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
 
 
@@ -212,6 +212,7 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
                 "direct_reply_guard_ready": False,
                 "reply_handoff_readiness_schema": "reply_final_brain_handoff_readiness_audit_v1",
                 "reply_handoff_ready_for_payload_switch_shadow": True,
+                "reply_handoff_legacy_business_field_count": 0,
             },
         },
         runner_shadow=_completed_runner_shadow(),
@@ -230,6 +231,7 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
     assert gates["final_expression_owner_review"]["passed"] is True
     assert gates["direct_reply_guard_review"]["passed"] is True
     assert gates["reply_handoff_readiness_review"]["passed"] is True
+    assert gates["reply_handoff_semantic_residue_review"]["passed"] is True
     assert gates["commit_phase_shadow_review"]["passed"] is True
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
     assert "business_wording_freeze_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
@@ -337,11 +339,36 @@ def test_diagnostics_blocks_when_tool_planner_still_has_legacy_semantics() -> No
         },
     )
 
-    assert diagnostics["phase"] == "tool_planner_migration_blocked"
+    assert diagnostics["phase"] == "legacy_semantics_migration_blocked"
     assert diagnostics["next_safe_step"] == "move_legacy_planner_semantics_to_reply_before_behavior_switch"
     assert diagnostics["migration"]["blockers"] == ["tool_planner_legacy_semantic_residue:3"]
     assert diagnostics["migration"]["tool_planner_legacy_residue_count"] == 3
     assert diagnostics["migration"]["tool_planner_only_ready"] is False
+
+
+def test_diagnostics_blocks_when_reply_handoff_still_has_legacy_planner_semantics() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+            "current_serial_observation": {
+                "tool_planner_legacy_residue_count": 0,
+                "tool_planner_only_ready": True,
+                "reply_handoff_legacy_business_field_count": 5,
+            },
+        },
+        runner_shadow=_completed_runner_shadow(),
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+        },
+    )
+
+    assert diagnostics["phase"] == "legacy_semantics_migration_blocked"
+    assert diagnostics["next_safe_step"] == "move_legacy_planner_semantics_to_reply_before_behavior_switch"
+    assert diagnostics["migration"]["blockers"] == ["reply_handoff_legacy_business_field_residue:5"]
+    assert diagnostics["migration"]["tool_planner_legacy_residue_count"] == 0
+    assert diagnostics["migration"]["reply_handoff_legacy_business_field_count"] == 5
 
 
 def test_diagnostics_blocks_when_runner_input_contains_shadow_fields() -> None:

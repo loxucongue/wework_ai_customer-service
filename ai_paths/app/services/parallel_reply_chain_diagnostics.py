@@ -62,6 +62,7 @@ def parallel_reply_chain_diagnostics(
                 "blockers": migration_blockers,
                 "tool_planner_legacy_residue_count": _tool_planner_legacy_residue_count(parallel_reply_chain_shadow),
                 "tool_planner_only_ready": (parallel_reply_chain_shadow.get("current_serial_observation") or {}).get("tool_planner_only_ready"),
+                "reply_handoff_legacy_business_field_count": _reply_handoff_legacy_business_field_count(parallel_reply_chain_shadow),
             },
             "release_review": _release_review_gate_checklist(
                 parallel_reply_chain_shadow=parallel_reply_chain_shadow,
@@ -109,7 +110,7 @@ def _phase(
         if commit_blockers:
             return "commit_phase_blocked"
         if migration_blockers:
-            return "tool_planner_migration_blocked"
+            return "legacy_semantics_migration_blocked"
         return "ready_for_human_review"
     return "unknown"
 
@@ -123,7 +124,7 @@ def _next_safe_step(phase: str) -> str:
         "ready_for_shadow_comparison": "collect_old_vs_new_shadow_diffs_before_behavior_switch",
         "comparison_blocked": "fix_shadow_comparison_diffs_before_behavior_switch",
         "commit_phase_blocked": "fix_or_record_reply_chain_commit_shadow_before_behavior_switch",
-        "tool_planner_migration_blocked": "move_legacy_planner_semantics_to_reply_before_behavior_switch",
+        "legacy_semantics_migration_blocked": "move_legacy_planner_semantics_to_reply_before_behavior_switch",
         "ready_for_human_review": "run_review_gates_and_offline_simulation_before_behavior_switch",
     }.get(phase, "inspect_parallel_refactor_diagnostics")
 
@@ -218,6 +219,13 @@ def _release_review_gate_checklist(
                 observation.get("reply_handoff_readiness_schema") == "reply_final_brain_handoff_readiness_audit_v1"
                 and observation.get("reply_handoff_ready_for_payload_switch_shadow") is True
             ),
+        ),
+        _gate(
+            "reply_handoff_semantic_residue_review",
+            "automated_shadow_evidence",
+            "reply_handoff_has_no_legacy_planner_business_fields",
+            passed=_reply_handoff_legacy_business_field_count(parallel_reply_chain_shadow) == 0
+            and _reply_handoff_legacy_business_field_observed(parallel_reply_chain_shadow),
         ),
         _gate(
             "commit_phase_shadow_review",
@@ -373,10 +381,14 @@ def _commit_precommit_audit_blockers(commit: dict[str, Any]) -> list[str]:
 
 
 def _migration_blockers(parallel_reply_chain_shadow: dict[str, Any]) -> list[str]:
-    residue_count = _tool_planner_legacy_residue_count(parallel_reply_chain_shadow)
-    if residue_count <= 0:
-        return []
-    return [f"tool_planner_legacy_semantic_residue:{residue_count}"]
+    blockers: list[str] = []
+    tool_residue_count = _tool_planner_legacy_residue_count(parallel_reply_chain_shadow)
+    if tool_residue_count > 0:
+        blockers.append(f"tool_planner_legacy_semantic_residue:{tool_residue_count}")
+    reply_residue_count = _reply_handoff_legacy_business_field_count(parallel_reply_chain_shadow)
+    if reply_residue_count > 0:
+        blockers.append(f"reply_handoff_legacy_business_field_residue:{reply_residue_count}")
+    return blockers
 
 
 def _tool_planner_legacy_residue_count(parallel_reply_chain_shadow: dict[str, Any]) -> int:
@@ -387,6 +399,29 @@ def _tool_planner_legacy_residue_count(parallel_reply_chain_shadow: dict[str, An
         return int(observation.get("tool_planner_legacy_residue_count") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _reply_handoff_legacy_business_field_count(parallel_reply_chain_shadow: dict[str, Any]) -> int:
+    observation = parallel_reply_chain_shadow.get("current_serial_observation")
+    if not isinstance(observation, dict):
+        return 0
+    value = observation.get("reply_handoff_legacy_business_field_count")
+    if value is None:
+        value = observation.get("reply_legacy_business_field_count")
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _reply_handoff_legacy_business_field_observed(parallel_reply_chain_shadow: dict[str, Any]) -> bool:
+    observation = parallel_reply_chain_shadow.get("current_serial_observation")
+    if not isinstance(observation, dict):
+        return False
+    return (
+        "reply_handoff_legacy_business_field_count" in observation
+        or "reply_legacy_business_field_count" in observation
+    )
 
 
 def _list_strings(value: Any) -> list[str]:

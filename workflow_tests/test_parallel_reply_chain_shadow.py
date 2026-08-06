@@ -193,6 +193,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertFalse(shadow["current_serial_observation"]["join_generates_customer_visible_text"])
         self.assertFalse(shadow["current_serial_observation"]["join_decides_sales_psychology"])
         self.assertEqual(shadow["current_serial_observation"]["reply_legacy_business_field_count"], 6)
+        self.assertEqual(shadow["current_serial_observation"]["reply_handoff_legacy_business_field_count"], 6)
         self.assertTrue(shadow["current_serial_observation"]["reply_handoff_requires_schema"])
         self.assertEqual(
             shadow["current_serial_observation"]["reply_handoff_readiness_schema"],
