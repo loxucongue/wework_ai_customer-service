@@ -414,6 +414,70 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertIn("做一次就能干净吗", markdown)
         self.assertIn("这个要看您斑点情况", markdown)
 
+
+    def test_render_markdown_keeps_human_review_headings_readable(self) -> None:
+        markdown = render_markdown(
+            {
+                "scenario_count": 1,
+                "attempt_count": 1,
+                "summary": {
+                    "hard_pass_rate": "100.0%",
+                    "semantic_pass_rate": "100.0%",
+                    "infrastructure_failures": 0,
+                    "p50_ms": 10,
+                    "p90_ms": 10,
+                },
+                "coverage": {
+                    "missing_required_categories": [],
+                    "missing_critical_required_categories": [],
+                    "category_counts": {"\u95e8\u5e97V2": 1},
+                    "critical_category_counts": {"\u95e8\u5e97V2": 1},
+                },
+                "scenario_summary": {
+                    "store_case": {
+                        "category": "\u95e8\u5e97V2",
+                        "critical": True,
+                        "attempts": 1,
+                        "hard_passes": 1,
+                        "semantic_passes": 1,
+                        "infrastructure_failures": 0,
+                    }
+                },
+                "effect_review": {
+                    "issue_count": 0,
+                    "low_score_count": 0,
+                    "hard_or_infra_count": 0,
+                    "items": [],
+                },
+                "review_artifacts": {
+                    "result_count": 1,
+                    "request_count": 1,
+                    "event_count": 0,
+                    "tool_call_count": 1,
+                    "outbox_batch_count": 1,
+                    "simulated_write_count": 0,
+                    "results": [],
+                },
+                "results": [],
+            }
+        )
+
+        for marker in [
+            "# \u79bb\u7ebf\u5168\u94fe\u8def\u4eff\u771f\u62a5\u544a",
+            "## \u573a\u666f\u8986\u76d6",
+            "## \u573a\u666f\u7ed3\u679c",
+            "## \u6548\u679c\u5ba1\u67e5\u6837\u672c",
+            "## \u5ba1\u67e5\u8bc1\u636e",
+            "## \u5931\u8d25\u8be6\u60c5",
+            "\u5fc5\u6d4b\u5206\u7c7b\uff1a\u5b8c\u6574",
+            "\u5173\u952e\u573a\u666f\u5206\u7c7b\uff1a\u5b8c\u6574",
+            "| \u573a\u666f | \u5206\u7c7b | \u5173\u952e | \u786c\u901a\u8fc7 | \u8bed\u4e49\u901a\u8fc7 | \u57fa\u7840\u8bbe\u65bd\u5931\u8d25 |",
+        ]:
+            self.assertIn(marker, markdown)
+
+        for mojibake in ["\u7ec2\u837b\u568e", "\u934f\u70d8\u6ad9", "\u701a\u00a7\u714f", "\u93c3\u72b1", "\u6b7f"]:
+            self.assertNotIn(mojibake, markdown)
+
     def test_identity_must_be_simulation_scoped(self) -> None:
         with self.assertRaises(SimulationIsolationError):
             assert_simulation_identity(
