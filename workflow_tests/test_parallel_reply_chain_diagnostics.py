@@ -133,6 +133,37 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
     assert diagnostics["comparison"]["status"] == "matched_shadow_replay"
 
 
+def test_diagnostics_blocks_when_tool_planner_still_has_legacy_semantics() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+            "current_serial_observation": {
+                "tool_planner_legacy_residue_count": 3,
+                "tool_planner_only_ready": False,
+            },
+        },
+        runner_shadow={
+            "schema_version": "parallel_gate_planner_runner_shadow_v1",
+            "mode": "completed_shadow",
+            "branches": {
+                "sop_chat_gate": {"status": "completed"},
+                "tool_planner": {"status": "completed"},
+            },
+        },
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+        },
+    )
+
+    assert diagnostics["phase"] == "tool_planner_migration_blocked"
+    assert diagnostics["next_safe_step"] == "move_legacy_planner_semantics_to_reply_before_behavior_switch"
+    assert diagnostics["migration"]["blockers"] == ["tool_planner_legacy_semantic_residue:3"]
+    assert diagnostics["migration"]["tool_planner_legacy_residue_count"] == 3
+    assert diagnostics["migration"]["tool_planner_only_ready"] is False
+
+
 def test_diagnostics_are_not_consumed_by_current_model_payloads() -> None:
     state = {
         "normalized_content": "怎么预约",

@@ -18,6 +18,7 @@ def parallel_reply_chain_diagnostics(
     runner_blockers = _runner_blockers(runner)
     comparison_status = str(comparison.get("status") or "not_collected")
     comparison_blockers = _comparison_blockers(comparison)
+    migration_blockers = _migration_blockers(parallel_reply_chain_shadow)
     phase = _phase(
         parallel_shadow_present=parallel_reply_chain_shadow.get("schema_version") == "parallel_reply_chain_shadow_v1",
         contract_blockers=contract_blockers,
@@ -25,6 +26,7 @@ def parallel_reply_chain_diagnostics(
         runner_blockers=runner_blockers,
         comparison_status=comparison_status,
         comparison_blockers=comparison_blockers,
+        migration_blockers=migration_blockers,
     )
     return _drop_empty(
         {
@@ -46,6 +48,11 @@ def parallel_reply_chain_diagnostics(
                 "blockers": comparison_blockers,
                 "diff_count": len(comparison.get("diffs") or []) if isinstance(comparison.get("diffs"), list) else 0,
             },
+            "migration": {
+                "blockers": migration_blockers,
+                "tool_planner_legacy_residue_count": _tool_planner_legacy_residue_count(parallel_reply_chain_shadow),
+                "tool_planner_only_ready": (parallel_reply_chain_shadow.get("current_serial_observation") or {}).get("tool_planner_only_ready"),
+            },
             "next_safe_step": _next_safe_step(phase),
             "safety": {
                 "diagnostic_only": True,
@@ -66,6 +73,7 @@ def _phase(
     runner_blockers: list[str],
     comparison_status: str,
     comparison_blockers: list[str],
+    migration_blockers: list[str],
 ) -> str:
     if not parallel_shadow_present:
         return "missing_parallel_contract"
@@ -80,6 +88,8 @@ def _phase(
             return "ready_for_shadow_comparison"
         if comparison_blockers:
             return "comparison_blocked"
+        if migration_blockers:
+            return "tool_planner_migration_blocked"
         return "ready_for_human_review"
     return "unknown"
 
@@ -92,6 +102,7 @@ def _next_safe_step(phase: str) -> str:
         "runner_blocked": "fix_runner_inputs_or_refactor_flags",
         "ready_for_shadow_comparison": "collect_old_vs_new_shadow_diffs_before_behavior_switch",
         "comparison_blocked": "fix_shadow_comparison_diffs_before_behavior_switch",
+        "tool_planner_migration_blocked": "move_legacy_planner_semantics_to_reply_before_behavior_switch",
         "ready_for_human_review": "run_review_gates_and_offline_simulation_before_behavior_switch",
     }.get(phase, "inspect_parallel_refactor_diagnostics")
 
@@ -125,6 +136,23 @@ def _comparison_blockers(comparison: dict[str, Any]) -> list[str]:
     if status == "not_comparable":
         return ["comparison_not_comparable"]
     return [f"comparison_status:{status or 'unknown'}"]
+
+
+def _migration_blockers(parallel_reply_chain_shadow: dict[str, Any]) -> list[str]:
+    residue_count = _tool_planner_legacy_residue_count(parallel_reply_chain_shadow)
+    if residue_count <= 0:
+        return []
+    return [f"tool_planner_legacy_semantic_residue:{residue_count}"]
+
+
+def _tool_planner_legacy_residue_count(parallel_reply_chain_shadow: dict[str, Any]) -> int:
+    observation = parallel_reply_chain_shadow.get("current_serial_observation")
+    if not isinstance(observation, dict):
+        return 0
+    try:
+        return int(observation.get("tool_planner_legacy_residue_count") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _list_strings(value: Any) -> list[str]:
