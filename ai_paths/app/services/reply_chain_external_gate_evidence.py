@@ -84,6 +84,13 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     missing_completed = sorted(required - completed_names)
     if missing_completed:
         blockers.extend(f"model_matrix_profile_not_completed:{item}" for item in missing_completed)
+    for item in profiles:
+        if not isinstance(item, dict) or item.get("status") != "timed_out":
+            continue
+        summary = _dict(item.get("profile_summary"))
+        timeout = summary.get("timeout_seconds")
+        suffix = f":{timeout}" if timeout not in (None, "") else ""
+        blockers.append(f"model_matrix_profile_timed_out:{_profile_name(item)}{suffix}")
     accepted = False
     for item in profiles:
         if not isinstance(item, dict) or item.get("status") != "completed":

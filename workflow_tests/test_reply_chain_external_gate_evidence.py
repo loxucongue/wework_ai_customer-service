@@ -147,6 +147,24 @@ def test_external_gate_evidence_blocks_missing_or_failed_simulation_infrastructu
     assert "simulation_infrastructure_acceptance_missing_or_false" in blockers
 
 
+def test_external_gate_evidence_names_timed_out_model_profile() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"][1] = {
+        "status": "timed_out",
+        "model_profile": {"name": "gemini"},
+        "profile_summary": {
+            "infrastructure_failures": 1,
+            "timeout_seconds": 120,
+            "accepted_by_release_thresholds": False,
+        },
+    }
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_profile_not_completed:gemini" in blockers
+    assert "model_matrix_profile_timed_out:gemini:120" in blockers
+
+
 def test_external_gate_evidence_blocks_missing_core_simulation_acceptance_fields() -> None:
     simulation = _simulation_ready()
     simulation["summary"]["acceptance"] = {
