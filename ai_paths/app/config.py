@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     parallel_gate_planner_shadow: bool = Field(default=True, alias="PARALLEL_GATE_PLANNER_SHADOW")
     sop_chat_gate_v2_enabled: bool = Field(default=False, alias="SOP_CHAT_GATE_V2_ENABLED")
     tool_planner_v2_enabled: bool = Field(default=False, alias="TOOL_PLANNER_V2_ENABLED")
+    reply_final_brain_v2_enabled: bool = Field(default=False, alias="REPLY_FINAL_BRAIN_V2_ENABLED")
     gate_direct_reply_enabled: bool = Field(default=False, alias="GATE_DIRECT_REPLY_ENABLED")
     read_tool_early_execution_enabled: bool = Field(default=False, alias="READ_TOOL_EARLY_EXECUTION_ENABLED")
     deferred_write_execution_enabled: bool = Field(default=False, alias="DEFERRED_WRITE_EXECUTION_ENABLED")

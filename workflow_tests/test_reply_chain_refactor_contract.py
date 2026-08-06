@@ -94,6 +94,8 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "model_semantics_ownership_review",
         "simulation_regression_review",
         "rollback_evidence_review",
+        "REPLY_FINAL_BRAIN_V2_ENABLED",
+        "comparison diagnostics show no shadow replay diffs",
         "workflow_tests/test_reply_chain_shadow_payload_isolation.py",
         "Offline simulation report covers SOP, precision QA, store, payment, paid registration, risk, and model-failure cases.",
         "must not be deployed from this branch",

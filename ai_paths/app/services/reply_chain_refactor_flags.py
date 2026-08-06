@@ -8,6 +8,7 @@ FLAG_NAMES = (
     "parallel_gate_planner_shadow",
     "sop_chat_gate_v2_enabled",
     "tool_planner_v2_enabled",
+    "reply_final_brain_v2_enabled",
     "gate_direct_reply_enabled",
     "read_tool_early_execution_enabled",
     "deferred_write_execution_enabled",
@@ -39,6 +40,8 @@ def _flag_blockers(flags: dict[str, bool]) -> list[str]:
         blockers.append("sop_chat_gate_v2_required")
     if flags["parallel_gate_planner_enabled"] and not flags["tool_planner_v2_enabled"]:
         blockers.append("tool_planner_v2_required")
+    if flags["parallel_gate_planner_enabled"] and not flags["reply_final_brain_v2_enabled"]:
+        blockers.append("reply_final_brain_v2_required")
     if flags["gate_direct_reply_enabled"] and not flags["parallel_gate_planner_enabled"]:
         blockers.append("gate_direct_reply_requires_parallel_runner")
     if flags["read_tool_early_execution_enabled"] and not flags["parallel_gate_planner_enabled"]:

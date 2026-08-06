@@ -65,3 +65,8 @@ refactor aligned with the project constitution.
 Before any behavior flag changes from shadow mode to active mode, the reviewer
 must check all six gates above and attach the test output or report path in the
 commit or review note.
+
+Parallel behavior cannot be enabled until `SOP_CHAT_GATE_V2_ENABLED`,
+`TOOL_PLANNER_V2_ENABLED`, and `REPLY_FINAL_BRAIN_V2_ENABLED` are all true and
+the comparison diagnostics show no shadow replay diffs. This prevents Gate or
+Tool Planner from becoming the final business brain by accident.

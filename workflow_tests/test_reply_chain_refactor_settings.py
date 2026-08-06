@@ -15,6 +15,7 @@ def test_reply_chain_refactor_flags_default_to_safe_shadow_mode() -> None:
     assert settings.parallel_gate_planner_shadow is True
     assert settings.sop_chat_gate_v2_enabled is False
     assert settings.tool_planner_v2_enabled is False
+    assert settings.reply_final_brain_v2_enabled is False
     assert settings.gate_direct_reply_enabled is False
     assert settings.read_tool_early_execution_enabled is False
     assert settings.deferred_write_execution_enabled is False
@@ -27,6 +28,7 @@ def test_reply_chain_refactor_flags_can_be_overridden_explicitly() -> None:
         PARALLEL_GATE_PLANNER_SHADOW=False,
         SOP_CHAT_GATE_V2_ENABLED=True,
         TOOL_PLANNER_V2_ENABLED=True,
+        REPLY_FINAL_BRAIN_V2_ENABLED=True,
         GATE_DIRECT_REPLY_ENABLED=True,
         READ_TOOL_EARLY_EXECUTION_ENABLED=True,
         DEFERRED_WRITE_EXECUTION_ENABLED=True,
@@ -36,6 +38,7 @@ def test_reply_chain_refactor_flags_can_be_overridden_explicitly() -> None:
     assert settings.parallel_gate_planner_shadow is False
     assert settings.sop_chat_gate_v2_enabled is True
     assert settings.tool_planner_v2_enabled is True
+    assert settings.reply_final_brain_v2_enabled is True
     assert settings.gate_direct_reply_enabled is True
     assert settings.read_tool_early_execution_enabled is True
     assert settings.deferred_write_execution_enabled is True
@@ -59,6 +62,7 @@ def test_reply_chain_refactor_flag_snapshot_requires_v2_before_parallel_runner()
             PARALLEL_GATE_PLANNER_ENABLED=True,
             SOP_CHAT_GATE_V2_ENABLED=False,
             TOOL_PLANNER_V2_ENABLED=False,
+            REPLY_FINAL_BRAIN_V2_ENABLED=False,
         )
     )
 
@@ -66,7 +70,24 @@ def test_reply_chain_refactor_flag_snapshot_requires_v2_before_parallel_runner()
     assert snapshot["safe_for_current_runtime"] is False
     assert "sop_chat_gate_v2_required" in snapshot["activation_blockers"]
     assert "tool_planner_v2_required" in snapshot["activation_blockers"]
+    assert "reply_final_brain_v2_required" in snapshot["activation_blockers"]
     assert snapshot["can_enable_parallel_runner"] is False
+
+
+def test_reply_chain_refactor_flag_snapshot_requires_reply_final_brain_before_parallel_runner() -> None:
+    snapshot = reply_chain_refactor_flag_snapshot(
+        Settings(
+            _env_file=None,
+            PARALLEL_GATE_PLANNER_ENABLED=True,
+            SOP_CHAT_GATE_V2_ENABLED=True,
+            TOOL_PLANNER_V2_ENABLED=True,
+            REPLY_FINAL_BRAIN_V2_ENABLED=False,
+        )
+    )
+
+    assert snapshot["mode"] == "parallel_runner_requested"
+    assert snapshot["can_enable_parallel_runner"] is False
+    assert snapshot["activation_blockers"] == ["reply_final_brain_v2_required"]
 
 
 def test_reply_chain_refactor_flags_are_not_consumed_by_current_model_payloads() -> None:
