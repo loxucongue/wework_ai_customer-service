@@ -10,6 +10,7 @@ from ai_paths.scripts.run_refactor_model_matrix import (
     public_profile_config,
     relay_api_base_url,
     selected_profiles,
+    timed_out_profile_result,
 )
 
 
@@ -133,6 +134,22 @@ def test_profile_result_summary_rejects_infrastructure_failures() -> None:
 
     assert summary["infrastructure_failures"] == 1
     assert summary["accepted_by_release_thresholds"] is False
+
+
+def test_timed_out_profile_result_is_not_release_accepted_and_does_not_log_key() -> None:
+    result = timed_out_profile_result(
+        MODEL_PROFILES["openai"],
+        relay_base_url="https://linkai.shop/v1",
+        timeout_seconds=120,
+    )
+
+    assert result["status"] == "timed_out"
+    assert result["model_profile"]["api_key_env"] == "REFACTOR_MODEL_OPENAI_API_KEY"
+    assert result["model_profile"]["api_key_value_logged"] is False
+    assert result["profile_summary"]["infrastructure_failures"] == 1
+    assert result["profile_summary"]["timeout_seconds"] == 120
+    assert result["profile_summary"]["accepted_by_release_thresholds"] is False
+    assert "sk-" not in str(result)
 
 
 def test_matrix_ranking_orders_by_accuracy_then_errors_then_speed() -> None:

@@ -108,6 +108,30 @@ def public_profile_config(profile: ModelProfile, *, relay_base_url: str, api_key
     }
 
 
+def timed_out_profile_result(
+    profile: ModelProfile,
+    *,
+    relay_base_url: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    return {
+        "model_profile": public_profile_config(profile, relay_base_url=relay_base_url, api_key_present=True),
+        "status": "timed_out",
+        "profile_summary": {
+            "hard_error_count": None,
+            "semantic_pass_rate": None,
+            "failed_critical_scenarios": [],
+            "hard_pass_rate": None,
+            "evaluable_attempts": 0,
+            "infrastructure_failures": 1,
+            "p50_ms": None,
+            "p90_ms": None,
+            "timeout_seconds": timeout_seconds,
+            "accepted_by_release_thresholds": False,
+        },
+    }
+
+
 def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), dict) else {}
@@ -176,6 +200,12 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--max-cases", type=int, default=0)
     parser.add_argument("--skip-review", action="store_true")
     parser.add_argument("--require-keys", action="store_true")
+    parser.add_argument(
+        "--profile-timeout-seconds",
+        type=int,
+        default=int(os.getenv("REFACTOR_MODEL_MATRIX_PROFILE_TIMEOUT_SECONDS", "0") or 0),
+        help="Optional wall-clock timeout per model profile. 0 disables the timeout.",
+    )
     return parser.parse_args()
 
 
@@ -223,7 +253,7 @@ async def _main() -> int:
             api_key=api_key,
         )
         executed += 1
-        report = await run_suite(
+        suite_call = run_suite(
             repo_root=repo_root,
             fixture=fixture,
             output_dir=profile_dir,
@@ -234,6 +264,21 @@ async def _main() -> int:
             skip_review=args.skip_review,
             base_settings=settings,
         )
+        try:
+            if args.profile_timeout_seconds and args.profile_timeout_seconds > 0:
+                report = await asyncio.wait_for(suite_call, timeout=args.profile_timeout_seconds)
+            else:
+                report = await suite_call
+        except asyncio.TimeoutError:
+            timed_out = timed_out_profile_result(
+                profile,
+                relay_base_url=relay_base_url,
+                timeout_seconds=args.profile_timeout_seconds,
+            )
+            matrix_results.append(timed_out)
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            (profile_dir / "result.json").write_text(json.dumps(timed_out, ensure_ascii=False, indent=2), encoding="utf-8")
+            continue
         report["model_profile"] = public_config
         (profile_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         (profile_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
