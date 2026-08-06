@@ -78,6 +78,15 @@ def _ready_state() -> dict:
             "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
             "current_serial_observation": {
                 "shared_context_authority_audit_schema": "reply_chain_authority_audit_v1",
+                "shared_context_soft_profile_excluded": True,
+                "shared_context_non_authority_profile_fields": [
+                    "next_sales_strategy",
+                    "decision_stage",
+                    "main_concern",
+                    "main_objection",
+                    "customer_type",
+                    "intent_level",
+                ],
                 "shared_context_timeline_window_ready": True,
                 "shared_context_current_message_ready": True,
                 "shared_context_fact_snapshot_schema": "reply_chain_fact_snapshot_audit_v1",
@@ -173,6 +182,15 @@ def _release_review_with_external_gate_blockers(*gate_ids: str) -> dict:
                 "passed": True,
                 "evidence_observed": {
                     "shared_context_timeline_retained_window_schema": "reply_chain_retained_timeline_window_v1",
+                    "shared_context_soft_profile_excluded": True,
+                    "shared_context_non_authority_profile_fields": [
+                        "next_sales_strategy",
+                        "decision_stage",
+                        "main_concern",
+                        "main_objection",
+                        "customer_type",
+                        "intent_level",
+                    ],
                 },
             }
         ],
@@ -926,6 +944,22 @@ def test_bundle_audit_blocks_all_clear_release_review_without_retained_timeline_
 
     assert audit["ready_for_refactor_review"] is False
     assert "release_review_missing_retained_timeline_evidence" in audit["blockers"]
+
+
+def test_bundle_audit_blocks_all_clear_release_review_without_soft_profile_inventory() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = _release_review_with_external_gate_blockers()
+    state["parallel_reply_chain_diagnostics"]["release_review"]["blocker_groups"]["manual_review"][
+        "ready"
+    ] = True
+    state["parallel_reply_chain_diagnostics"]["release_review"]["gates"][0]["evidence_observed"].pop(
+        "shared_context_non_authority_profile_fields"
+    )
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "release_review_missing_non_authority_profile_inventory" in audit["blockers"]
 
 
 def test_bundle_audit_blocks_when_join_would_own_customer_text() -> None:

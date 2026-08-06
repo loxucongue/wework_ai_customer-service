@@ -91,6 +91,7 @@ def _authority_audit(
             "schema_version": "reply_chain_authority_audit_v1",
             "complete_chat_is_primary_authority": True,
             "soft_profile_excluded_from_authority": True,
+            "non_authority_profile_fields": list(NON_AUTHORITY_PROFILE_FIELDS),
             "timeline_window_audit": _timeline_window_audit(
                 state,
                 conversation_result=conversation_result,

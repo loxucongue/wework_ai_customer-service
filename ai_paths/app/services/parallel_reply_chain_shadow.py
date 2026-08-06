@@ -91,6 +91,8 @@ def parallel_reply_chain_shadow(
                 "shared_context_all_messages_have_sent_at": context_authority_audit.get("all_messages_have_sent_at"),
                 "shared_context_complete_chat_is_primary": context_authority_audit.get("complete_chat_is_primary_authority"),
                 "shared_context_soft_profile_excluded": context_authority_audit.get("soft_profile_excluded_from_authority"),
+                "shared_context_non_authority_profile_fields": context_authority_audit.get("non_authority_profile_fields"),
+                "shared_context_soft_profile_fields_seen": context_authority_audit.get("soft_profile_fields_seen"),
                 "shared_context_current_message_audit_schema": current_message_audit.get("schema_version"),
                 "shared_context_current_message_in_timeline": current_message_audit.get("current_message_in_timeline"),
                 "shared_context_current_message_is_last": current_message_audit.get("current_message_is_last"),
@@ -266,6 +268,9 @@ def _context_authority_blockers(reply_chain_shadow_context: dict[str, Any]) -> l
         blockers.append("complete_chat_not_marked_primary_authority")
     if audit.get("soft_profile_excluded_from_authority") is not True:
         blockers.append("soft_profile_not_excluded_from_authority")
+    non_authority_fields = audit.get("non_authority_profile_fields")
+    if not isinstance(non_authority_fields, list) or "next_sales_strategy" not in non_authority_fields:
+        blockers.append("missing_non_authority_profile_field_inventory")
     if audit.get("all_messages_have_sent_at") is not True:
         blockers.append("incomplete_timestamped_conversation")
     timeline_window_audit = audit.get("timeline_window_audit")

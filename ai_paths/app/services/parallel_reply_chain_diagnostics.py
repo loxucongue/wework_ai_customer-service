@@ -181,9 +181,16 @@ def _release_review_gate_checklist(
                 and observation.get("shared_context_current_message_audit_schema") == "reply_chain_current_message_audit_v1"
                 and observation.get("shared_context_fact_snapshot_schema") == "reply_chain_fact_snapshot_audit_v1"
                 and observation.get("shared_context_current_message_ready") is True
+                and observation.get("shared_context_soft_profile_excluded") is True
+                and _has_non_authority_profile_inventory(observation)
             ),
             evidence_observed={
                 "shared_context_authority_audit_schema": observation.get("shared_context_authority_audit_schema"),
+                "shared_context_soft_profile_excluded": observation.get("shared_context_soft_profile_excluded"),
+                "shared_context_non_authority_profile_fields": observation.get(
+                    "shared_context_non_authority_profile_fields"
+                ),
+                "shared_context_soft_profile_fields_seen": observation.get("shared_context_soft_profile_fields_seen"),
                 "shared_context_timeline_window_audit_schema": observation.get(
                     "shared_context_timeline_window_audit_schema"
                 ),
@@ -338,6 +345,14 @@ def _gate(
             "evidence_observed": evidence_observed,
         }
     )
+
+
+def _has_non_authority_profile_inventory(observation: dict[str, Any]) -> bool:
+    fields = observation.get("shared_context_non_authority_profile_fields")
+    if not isinstance(fields, list):
+        return False
+    required = {"next_sales_strategy", "intent_level", "customer_type"}
+    return required.issubset({str(item) for item in fields})
 
 
 def _release_review_blocker_groups(

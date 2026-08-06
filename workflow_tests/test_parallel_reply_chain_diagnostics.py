@@ -257,6 +257,15 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
             "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
             "current_serial_observation": {
                 "shared_context_authority_audit_schema": "reply_chain_authority_audit_v1",
+                "shared_context_soft_profile_excluded": True,
+                "shared_context_non_authority_profile_fields": [
+                    "next_sales_strategy",
+                    "decision_stage",
+                    "main_concern",
+                    "main_objection",
+                    "customer_type",
+                    "intent_level",
+                ],
                 "shared_context_timeline_window_audit_schema": "reply_chain_timeline_window_audit_v1",
                 "shared_context_timeline_window_ready": True,
                 "shared_context_timeline_retained_window_schema": "reply_chain_retained_timeline_window_v1",
@@ -298,6 +307,12 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
     assert gates["authority_snapshot_review"]["evidence_observed"][
         "shared_context_timeline_retained_window_schema"
     ] == "reply_chain_retained_timeline_window_v1"
+    assert gates["authority_snapshot_review"]["evidence_observed"][
+        "shared_context_soft_profile_excluded"
+    ] is True
+    assert "next_sales_strategy" in gates["authority_snapshot_review"]["evidence_observed"][
+        "shared_context_non_authority_profile_fields"
+    ]
     assert gates["gate_commit_boundary_review"]["passed"] is True
     assert gates["branch_input_isolation_review"]["passed"] is True
     assert gates["final_expression_owner_review"]["passed"] is True
@@ -366,6 +381,36 @@ def test_diagnostics_authority_gate_requires_retained_timeline_window_schema() -
                 "reply_target_input_schema_version": "reply_final_brain_target_input_schema_v1",
                 "reply_target_input_schema_ready": True,
                 "reply_handoff_legacy_business_field_count": 0,
+            },
+        },
+        runner_shadow=_completed_runner_shadow(),
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+            "review_gate": {"can_enable_behavior_switch": False},
+        },
+        commit_shadow=_commit_shadow(),
+    )
+
+    gates = {gate["gate_id"]: gate for gate in diagnostics["release_review"]["gates"]}
+    assert gates["authority_snapshot_review"]["passed"] is False
+    assert "authority_snapshot_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
+
+
+def test_diagnostics_authority_gate_requires_non_authority_profile_inventory() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+            "current_serial_observation": {
+                "shared_context_authority_audit_schema": "reply_chain_authority_audit_v1",
+                "shared_context_soft_profile_excluded": True,
+                "shared_context_timeline_window_audit_schema": "reply_chain_timeline_window_audit_v1",
+                "shared_context_timeline_window_ready": True,
+                "shared_context_timeline_retained_window_schema": "reply_chain_retained_timeline_window_v1",
+                "shared_context_current_message_audit_schema": "reply_chain_current_message_audit_v1",
+                "shared_context_current_message_ready": True,
+                "shared_context_fact_snapshot_schema": "reply_chain_fact_snapshot_audit_v1",
             },
         },
         runner_shadow=_completed_runner_shadow(),

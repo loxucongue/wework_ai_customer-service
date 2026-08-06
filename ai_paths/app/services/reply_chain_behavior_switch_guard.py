@@ -245,7 +245,19 @@ def _release_review_final_authority_evidence_blockers(release_review: dict[str, 
     observed = _dict(authority_gate.get("evidence_observed"))
     if observed.get("shared_context_timeline_retained_window_schema") != "reply_chain_retained_timeline_window_v1":
         blockers.append("release_review_missing_retained_timeline_evidence")
+    if observed.get("shared_context_soft_profile_excluded") is not True:
+        blockers.append("release_review_missing_soft_profile_exclusion_evidence")
+    if not _has_non_authority_profile_inventory(observed):
+        blockers.append("release_review_missing_non_authority_profile_inventory")
     return blockers
+
+
+def _has_non_authority_profile_inventory(observed: dict[str, Any]) -> bool:
+    fields = observed.get("shared_context_non_authority_profile_fields")
+    if not isinstance(fields, list):
+        return False
+    required = {"next_sales_strategy", "intent_level", "customer_type"}
+    return required.issubset({str(item) for item in fields})
 
 
 def _release_review_group_blockers(

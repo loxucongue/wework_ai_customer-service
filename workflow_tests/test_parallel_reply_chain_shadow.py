@@ -20,6 +20,14 @@ def _reply_chain_shadow_context(
             "schema_version": "reply_chain_authority_audit_v1",
             "complete_chat_is_primary_authority": True,
             "soft_profile_excluded_from_authority": True,
+            "non_authority_profile_fields": [
+                "next_sales_strategy",
+                "decision_stage",
+                "main_concern",
+                "main_objection",
+                "customer_type",
+                "intent_level",
+            ],
             "timeline_message_count": 3,
             "all_messages_have_sent_at": all_messages_have_sent_at,
             "timeline_window_audit": {
@@ -156,6 +164,10 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertTrue(shadow["current_serial_observation"]["shared_context_all_messages_have_sent_at"])
         self.assertTrue(shadow["current_serial_observation"]["shared_context_complete_chat_is_primary"])
         self.assertTrue(shadow["current_serial_observation"]["shared_context_soft_profile_excluded"])
+        self.assertIn(
+            "next_sales_strategy",
+            shadow["current_serial_observation"]["shared_context_non_authority_profile_fields"],
+        )
         self.assertEqual(
             shadow["current_serial_observation"]["shared_context_current_message_audit_schema"],
             "reply_chain_current_message_audit_v1",
