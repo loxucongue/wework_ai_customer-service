@@ -272,6 +272,14 @@ def test_supported_spot_scope_and_sales_answer_policy_are_explicit() -> None:
     assert "很多户外工作的顾客做了反馈都不错的" in REPLY_SYSTEM_PROMPT
 
 
+def test_teaching_and_cooperation_kb_boundaries_are_prompted() -> None:
+    assert "`kb_search(教学类)`" in PLANNER_SYSTEM_PROMPT
+    assert "`kb_search(合作类)`" in PLANNER_SYSTEM_PROMPT
+    assert "没有本轮 `knowledge_facts` 时不得承诺" in PLANNER_SYSTEM_PROMPT
+    assert "tool_facts.knowledge_facts" in REPLY_SYSTEM_PROMPT
+    assert "不得说“有教学、有安排学习、可以培训、可以合作、能加盟、给您对接合作”" in REPLY_SYSTEM_PROMPT
+
+
 def test_runtime_business_fact_views_preserve_all_current_rule_semantics() -> None:
     authoritative = load_business_rules()
     planner_facts = json.loads(planner_business_rules_prompt_section())

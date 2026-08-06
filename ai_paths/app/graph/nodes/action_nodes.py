@@ -17,6 +17,7 @@ from app.graph.planner.runtime_plan import (
     planner_required_tools,
     planner_secondary_tasks,
 )
+from app.graph.planner.planner_contract import ALLOWED_KBS
 from app.graph.state import AgentState
 from app.policies.constants import KNOWN_STORE_FACTS
 from app.services.coze_client import CozeClient
@@ -940,12 +941,12 @@ def _queue_planned_tool_tasks(
         return
     if name == "kb_search":
         kb_name = str(tool.get("kb_name") or "").strip()
-        if kb_name and kb_name != "case_studies":
+        if kb_name and kb_name not in ALLOWED_KBS:
             tool_results[kb_name] = {
                 "kb_name": kb_name,
                 "items": [],
                 "error": "planner_tool_rejected",
-                "rejected_reason": "Only kb_search(case_studies) is selectable. sales_talk_qa is currently disabled.",
+                "rejected_reason": "Planner requested a knowledge base that is not enabled in the tool contract.",
             }
             tool_calls.append(
                 {

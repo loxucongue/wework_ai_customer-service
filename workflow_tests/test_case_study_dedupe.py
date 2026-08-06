@@ -137,6 +137,36 @@ class CaseStudyDedupeTests(unittest.TestCase):
         self.assertEqual(plan["planner_tool_calls"], [])
         self.assertIn("unsupported_kb:sales_talk_qa", {item["missing"] for item in plan["tool_policy_violations"]})
 
+    def test_planner_allows_teaching_and_cooperation_kbs(self) -> None:
+        plan = build_planner_plan_v2(
+            {"normalized_content": "教学合作资料"},
+            {
+                "decision": "need_tools",
+                "stage": "S1",
+                "sub_rule_id": "S1_TRUST",
+                "tool_calls": [
+                    {
+                        "name": "kb_search",
+                        "kb_name": "教学类",
+                        "query": "教学流程资料",
+                    },
+                    {
+                        "name": "kb_search",
+                        "kb_name": "合作类",
+                        "query": "合作活动资料",
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(
+            [item["kb_name"] for item in plan["planner_tool_calls"]],
+            ["教学类", "合作类"],
+        )
+        self.assertFalse(
+            any(str(item.get("missing") or "").startswith("unsupported_kb") for item in plan["tool_policy_violations"])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
