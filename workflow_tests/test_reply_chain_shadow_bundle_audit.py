@@ -683,6 +683,64 @@ def test_bundle_audit_accepts_valid_external_reports_for_external_review_gates()
     ]
 
 
+def test_bundle_audit_blocks_external_report_from_different_commit() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": ["model_matrix_review"],
+        "blocker_groups": {
+            "manual_review": {
+                "ready": False,
+                "blocker_count": 1,
+                "blockers": ["gate_not_proven:model_matrix_review"],
+            }
+        },
+    }
+    model_matrix = _model_matrix_ready()
+    model_matrix["git_commit"] = "def456"
+    model_matrix["git_commit_set"] = ["def456"]
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
+        model_matrix_report=model_matrix,
+    )
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "model_matrix_review" not in audit["external_gate_evidence"].get("proven_gates", [])
+    assert "model_matrix_report:model_matrix_git_commit_mismatch:def456!=abc123" in audit["blockers"]
+    assert "release_review_gate_unproven:model_matrix_review" in audit["blockers"]
+
+
+def test_bundle_audit_blocks_external_gate_proof_when_bundle_has_mixed_commits() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["git_commit"] = "def456"
+    state["parallel_reply_chain_diagnostics"]["git_commit_set"] = ["def456"]
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": ["simulation_regression_review"],
+        "blocker_groups": {
+            "manual_review": {
+                "ready": False,
+                "blocker_count": 1,
+                "blockers": ["gate_not_proven:simulation_regression_review"],
+            }
+        },
+    }
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
+        simulation_report=_simulation_ready(),
+    )
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "simulation_regression_review" not in audit["external_gate_evidence"].get("proven_gates", [])
+    assert "simulation_report:simulation_bundle_git_commit_set_not_single:abc123,def456" in audit["blockers"]
+
+
 def test_bundle_audit_blocks_invalid_external_reports() -> None:
     state = _ready_state()
     state["parallel_reply_chain_diagnostics"]["release_review"] = {

@@ -43,14 +43,6 @@ def reply_chain_shadow_bundle_audit(
 ) -> dict[str, Any]:
     """Summarize shadow migration evidence without changing reply behavior."""
 
-    external_gate_evidence = _external_gate_evidence(
-        simulation_report=simulation_report,
-        model_matrix_report=model_matrix_report,
-        payload_isolation_report=payload_isolation_report,
-        business_wording_freeze_report=business_wording_freeze_report,
-        rollback_evidence_report=rollback_evidence_report,
-        model_semantics_ownership_report=model_semantics_ownership_report,
-    )
     component_schemas = dict(CORE_COMPONENT_SCHEMAS)
     if require_commit_shadow:
         component_schemas.update(POSTCOMMIT_COMPONENT_SCHEMAS)
@@ -59,6 +51,15 @@ def reply_chain_shadow_bundle_audit(
         for field, required_schema in component_schemas.items()
     }
     git_commits = _git_commit_set(state, component_schemas)
+    external_gate_evidence = _external_gate_evidence(
+        simulation_report=simulation_report,
+        model_matrix_report=model_matrix_report,
+        payload_isolation_report=payload_isolation_report,
+        business_wording_freeze_report=business_wording_freeze_report,
+        rollback_evidence_report=rollback_evidence_report,
+        model_semantics_ownership_report=model_semantics_ownership_report,
+        expected_git_commits=git_commits,
+    )
     blockers = _component_blockers(components)
     blockers.extend(external_gate_evidence["blockers"])
     blockers.extend(
@@ -232,12 +233,14 @@ def _external_gate_evidence(
     business_wording_freeze_report: dict[str, Any] | None,
     rollback_evidence_report: dict[str, Any] | None,
     model_semantics_ownership_report: dict[str, Any] | None,
+    expected_git_commits: list[str],
 ) -> dict[str, Any]:
     proven_gates: list[str] = []
     blockers: list[str] = []
     if simulation_report is not None:
         simulation = _dict(simulation_report)
         simulation_blockers = simulation_report_blockers(simulation)
+        simulation_blockers.extend(_external_report_commit_blockers("simulation", simulation, expected_git_commits))
         if simulation_blockers:
             blockers.extend(f"simulation_report:{item}" for item in simulation_blockers)
         else:
@@ -245,6 +248,9 @@ def _external_gate_evidence(
     if model_matrix_report is not None:
         model_matrix = _dict(model_matrix_report)
         model_matrix_blockers = model_matrix_report_blockers(model_matrix)
+        model_matrix_blockers.extend(
+            _external_report_commit_blockers("model_matrix", model_matrix, expected_git_commits)
+        )
         if model_matrix_blockers:
             blockers.extend(f"model_matrix_report:{item}" for item in model_matrix_blockers)
         else:
@@ -252,6 +258,7 @@ def _external_gate_evidence(
     if payload_isolation_report is not None:
         payload = _dict(payload_isolation_report)
         payload_blockers = payload_isolation_report_blockers(payload)
+        payload_blockers.extend(_external_report_commit_blockers("payload_isolation", payload, expected_git_commits))
         if payload_blockers:
             blockers.extend(f"payload_isolation_report:{item}" for item in payload_blockers)
         else:
@@ -259,6 +266,7 @@ def _external_gate_evidence(
     if business_wording_freeze_report is not None:
         freeze = _dict(business_wording_freeze_report)
         freeze_blockers = business_wording_freeze_report_blockers(freeze)
+        freeze_blockers.extend(_external_report_commit_blockers("business_wording_freeze", freeze, expected_git_commits))
         if freeze_blockers:
             blockers.extend(f"business_wording_freeze_report:{item}" for item in freeze_blockers)
         else:
@@ -266,6 +274,7 @@ def _external_gate_evidence(
     if rollback_evidence_report is not None:
         rollback = _dict(rollback_evidence_report)
         rollback_blockers = rollback_evidence_report_blockers(rollback)
+        rollback_blockers.extend(_external_report_commit_blockers("rollback_evidence", rollback, expected_git_commits))
         if rollback_blockers:
             blockers.extend(f"rollback_evidence_report:{item}" for item in rollback_blockers)
         else:
@@ -273,6 +282,9 @@ def _external_gate_evidence(
     if model_semantics_ownership_report is not None:
         ownership = _dict(model_semantics_ownership_report)
         ownership_blockers = model_semantics_ownership_report_blockers(ownership)
+        ownership_blockers.extend(
+            _external_report_commit_blockers("model_semantics_ownership", ownership, expected_git_commits)
+        )
         if ownership_blockers:
             blockers.extend(f"model_semantics_ownership_report:{item}" for item in ownership_blockers)
         else:
@@ -281,6 +293,21 @@ def _external_gate_evidence(
         "proven_gates": proven_gates,
         "blockers": blockers,
     }
+
+
+def _external_report_commit_blockers(
+    label: str,
+    report: dict[str, Any],
+    expected_git_commits: list[str],
+) -> list[str]:
+    if len(expected_git_commits) != 1:
+        suffix = ",".join(expected_git_commits) if expected_git_commits else "missing"
+        return [f"{label}_bundle_git_commit_set_not_single:{suffix}"]
+    expected = expected_git_commits[0]
+    report_commit = str(report.get("git_commit") or "").strip()
+    if report_commit and report_commit != expected:
+        return [f"{label}_git_commit_mismatch:{report_commit}!={expected}"]
+    return []
 
 
 def _only_proven_external_gate_blockers(group: dict[str, Any], proven_external_gates: set[str]) -> bool:
