@@ -17,7 +17,13 @@ def _simulation_ready() -> dict:
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
-        "summary": {"acceptance": {"scenario_coverage_complete": True}},
+        "summary": {
+            "infrastructure_failures": 0,
+            "acceptance": {
+                "infrastructure_failures_zero": True,
+                "scenario_coverage_complete": True,
+            },
+        },
         "coverage": {
             "schema_version": "offline_simulation_coverage_audit_v1",
             "missing_required_categories": [],
@@ -114,6 +120,21 @@ def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:
     assert "simulation_scenario_coverage_incomplete" in blockers
 
 
+def test_external_gate_evidence_blocks_missing_or_failed_simulation_infrastructure_acceptance() -> None:
+    simulation = _simulation_ready()
+    simulation["summary"] = {
+        "infrastructure_failures": 1,
+        "acceptance": {
+            "scenario_coverage_complete": True,
+        },
+    }
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_infrastructure_failures:1" in blockers
+    assert "simulation_infrastructure_acceptance_missing_or_false" in blockers
+
+
 def test_external_gate_evidence_blocks_accepted_model_with_infrastructure_failures() -> None:
     model_matrix = _model_matrix_ready()
     model_matrix["profiles"][0]["profile_summary"]["infrastructure_failures"] = 2
@@ -121,6 +142,15 @@ def test_external_gate_evidence_blocks_accepted_model_with_infrastructure_failur
     blockers = model_matrix_report_blockers(model_matrix)
 
     assert "model_matrix_accepted_profile_has_infrastructure_failures:claude:2" in blockers
+
+
+def test_external_gate_evidence_blocks_accepted_model_missing_infrastructure_failures() -> None:
+    model_matrix = _model_matrix_ready()
+    del model_matrix["profiles"][0]["profile_summary"]["infrastructure_failures"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_accepted_profile_missing_infrastructure_failures:claude" in blockers
 
 
 def test_bundle_audit_does_not_import_final_behavior_switch_guard_private_helpers() -> None:

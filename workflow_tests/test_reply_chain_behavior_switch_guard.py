@@ -58,7 +58,13 @@ def _simulation_ready() -> dict:
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
-        "summary": {"acceptance": {"scenario_coverage_complete": True}},
+        "summary": {
+            "infrastructure_failures": 0,
+            "acceptance": {
+                "infrastructure_failures_zero": True,
+                "scenario_coverage_complete": True,
+            },
+        },
         "coverage": {
             "schema_version": "offline_simulation_coverage_audit_v1",
             "missing_required_categories": [],

@@ -24,8 +24,13 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     missing_categories = _list_strings(coverage.get("missing_required_categories"))
     if missing_categories:
         blockers.extend(f"simulation_missing_required_category:{item}" for item in missing_categories)
-    acceptance = _dict(_dict(simulation.get("summary")).get("acceptance"))
-    if acceptance and acceptance.get("scenario_coverage_complete") is not True:
+    summary = _dict(simulation.get("summary"))
+    if _int_value(summary.get("infrastructure_failures")) != 0:
+        blockers.append(f"simulation_infrastructure_failures:{summary.get('infrastructure_failures')}")
+    acceptance = _dict(summary.get("acceptance"))
+    if acceptance.get("infrastructure_failures_zero") is not True:
+        blockers.append("simulation_infrastructure_acceptance_missing_or_false")
+    if acceptance.get("scenario_coverage_complete") is not True:
         blockers.append("simulation_scenario_coverage_incomplete")
     safety = _dict(simulation.get("safety"))
     if safety.get("production_customer_messages_sent") is not False:
@@ -68,12 +73,15 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
             blockers.append(f"model_matrix_missing_p50:{_profile_name(item)}")
         if not _has_number(summary.get("p90_ms")):
             blockers.append(f"model_matrix_missing_p90:{_profile_name(item)}")
-        if summary.get("accepted_by_release_thresholds") is True and _int_value(summary.get("infrastructure_failures")) != 0:
-            blockers.append(
-                f"model_matrix_accepted_profile_has_infrastructure_failures:{_profile_name(item)}:"
-                f"{summary.get('infrastructure_failures')}"
-            )
-        accepted = accepted or summary.get("accepted_by_release_thresholds") is True
+        if summary.get("accepted_by_release_thresholds") is True:
+            accepted = True
+            if "infrastructure_failures" not in summary:
+                blockers.append(f"model_matrix_accepted_profile_missing_infrastructure_failures:{_profile_name(item)}")
+            elif _int_value(summary.get("infrastructure_failures")) != 0:
+                blockers.append(
+                    f"model_matrix_accepted_profile_has_infrastructure_failures:{_profile_name(item)}:"
+                    f"{summary.get('infrastructure_failures')}"
+                )
     if not accepted:
         blockers.append("model_matrix_no_candidate_meets_release_thresholds")
     safety = _dict(model_matrix.get("safety"))
