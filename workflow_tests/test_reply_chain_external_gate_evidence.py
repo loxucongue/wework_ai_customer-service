@@ -666,6 +666,26 @@ def test_external_gate_evidence_blocks_wrong_model_for_profile() -> None:
     assert "model_matrix_profile_model_mismatch:openai:gpt-5.4-mini" in blockers
 
 
+def test_external_gate_evidence_blocks_tiny_model_matrix_profile_artifacts() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"][2]["profile_artifacts"] = _profile_artifacts("openai", attempt_count=3)
+    model_matrix["profiles"][2]["profile_artifacts"]["scenario_count"] = 3
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_profile_artifact_scenario_count_below_100:openai:3" in blockers
+
+
+def test_external_gate_evidence_blocks_model_matrix_attempts_below_profile_scenarios() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"][2]["profile_artifacts"] = _profile_artifacts("openai", attempt_count=99)
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_profile_artifact_attempt_count_below_scenario_count:openai:99<100" in blockers
+    assert "model_matrix_profile_effect_review_below_attempt_count:openai:99<99" not in blockers
+
+
 def test_external_gate_evidence_blocks_missing_core_simulation_acceptance_fields() -> None:
     simulation = _simulation_ready()
     simulation["summary"]["acceptance"] = {

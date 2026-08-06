@@ -573,10 +573,18 @@ def _model_matrix_profile_artifact_blockers(item: dict[str, Any]) -> list[str]:
     attempt_count = _int_value(artifacts.get("attempt_count"))
     effect_count = _int_value(artifacts.get("effect_review_result_count"))
     review_artifact_count = _int_value(artifacts.get("review_artifacts_result_count"))
-    if scenario_count <= 0:
-        blockers.append(f"model_matrix_profile_artifact_missing_scenario_count:{profile_name}")
+    if scenario_count < MIN_REQUIRED_SIMULATION_SCENARIOS:
+        blockers.append(
+            "model_matrix_profile_artifact_scenario_count_below_100:"
+            f"{profile_name}:{scenario_count}"
+        )
     if attempt_count <= 0:
         blockers.append(f"model_matrix_profile_artifact_missing_attempt_count:{profile_name}")
+    elif attempt_count < scenario_count:
+        blockers.append(
+            "model_matrix_profile_artifact_attempt_count_below_scenario_count:"
+            f"{profile_name}:{attempt_count}<{scenario_count}"
+        )
     if effect_count < attempt_count:
         blockers.append(
             "model_matrix_profile_effect_review_below_attempt_count:"
