@@ -23,6 +23,7 @@ from app.services.outreach_send_client import OutreachSendClient
 from app.services.platform_reply_coordinator import PlatformReplyCoordinator, PlatformReplyRecord
 from app.services.parallel_reply_chain_diagnostics import parallel_reply_chain_diagnostics
 from app.services.reply_chain_commit_shadow import reply_chain_commit_shadow
+from app.services.reply_chain_shadow_bundle_audit import reply_chain_shadow_bundle_audit
 from app.services.reply_chain_refactor_flags import reply_chain_refactor_flag_snapshot
 from app.services.runtime_budget import build_runtime_budget, graph_deadline_monotonic, runtime_budget_snapshot
 from app.services.sop_execution_service import SopExecutionService
@@ -1084,6 +1085,10 @@ def _refresh_parallel_diagnostics_with_commit_shadow(state: AgentState) -> None:
         runner_shadow=state.get("parallel_gate_planner_runner_shadow") if isinstance(state.get("parallel_gate_planner_runner_shadow"), dict) else {},
         comparison_shadow=state.get("parallel_reply_chain_comparison") if isinstance(state.get("parallel_reply_chain_comparison"), dict) else {},
         commit_shadow=state.get("reply_chain_commit_shadow") if isinstance(state.get("reply_chain_commit_shadow"), dict) else {},
+    )
+    state["reply_chain_shadow_bundle_audit"] = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
     )
 
 

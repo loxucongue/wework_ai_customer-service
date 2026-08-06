@@ -95,9 +95,19 @@ flowchart TD
 - `planner_graph`：输入归一、背景上下文、Planner。
 - `finalize_graph`：工具执行、Reply。
 - `full_graph`：完整串行图。
-- shadow 服务：`chat_gate_router_shadow`、`tool_plan_preview`、`read_only_tool_executor_shadow`、`reply_chain_join_shadow`、`parallel_reply_chain_shadow`、`parallel_reply_chain_diagnostics`。
+- shadow 服务：`chat_gate_router_shadow`、`tool_plan_preview`、`read_only_tool_executor_shadow`、`reply_chain_join_shadow`、`reply_final_brain_handoff_shadow`、`parallel_reply_chain_shadow`、`parallel_gate_planner_runner_shadow`、`parallel_reply_chain_comparison`、`reply_chain_commit_shadow`、`parallel_reply_chain_diagnostics`、`reply_chain_shadow_bundle_audit`。
 
 本轮重构必须先通过 shadow 和诊断推进，不直接切换生产行为。
+
+### 5.1 Shadow Bundle Audit
+
+为避免 Review 时只看见单个诊断字段而漏掉某一环证据，当前分支增加 `reply_chain_shadow_bundle_audit_v1`：
+
+- Planner 末尾生成 `precommit` 版本，检查共享上下文、Gate shadow、Tool Planner preview、只读工具执行预览、Join、Reply handoff、runner、comparison 和 diagnostics 是否齐全。
+- Runtime 在 Reply 校验后生成 `reply_chain_commit_shadow`，并刷新 `postcommit` 版本，额外检查写入阶段是否仍由 `runtime_after_reply_validation` 持有。
+- 该字段是审计输出，不进入 Planner、Reply、SOP Gate 的模型 payload。
+- 该字段不批准行为切换；即使 `ready_for_refactor_review=true`，仍必须完成手工 Review、离线仿真、回归测试和显式启用开关。
+- 它的目的只是把“这次重构有没有丢掉业务规则输入、谁拥有最终表达、谁能写状态”这些证据集中到一处，降低人工漏审风险。
 
 ## 6. 统一上下文原则
 

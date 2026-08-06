@@ -119,6 +119,7 @@ class AgentState(TypedDict, total=False):
     parallel_gate_planner_runner_shadow: dict[str, Any]
     parallel_reply_chain_diagnostics: dict[str, Any]
     parallel_reply_chain_comparison: dict[str, Any]
+    reply_chain_shadow_bundle_audit: dict[str, Any]
     reply_strategy: dict[str, Any]
     handoff: dict[str, Any]
     memory_update_hint: dict[str, Any]
