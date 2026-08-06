@@ -70,6 +70,67 @@ def assert_simulation_isolated(
                 raise SimulationIsolationError(f"{key} must start with sim_: {value!r}")
 
 
+def simulation_isolation_audit(
+    *,
+    settings: Settings,
+    run_dir: Path,
+    adapters: list[Any],
+    identity: dict[str, Any],
+) -> dict[str, Any]:
+    root = run_dir.resolve()
+    guarded_paths = {
+        "database": Path(settings.db_path),
+        "memory": Path(settings.memory_dir),
+        "logs": Path(settings.log_dir),
+        "store_snapshot": Path(settings.store_snapshot_path),
+    }
+    paths_within_run_dir = all(_is_within(value.resolve(), root) for value in guarded_paths.values())
+    forbidden_secrets = (
+        settings.platform_agent_token,
+        settings.outreach_send_agent_token,
+        settings.outreach_system_token,
+        settings.coze_oauth_client_id,
+        settings.doubao_asr_api_key,
+        settings.doubao_asr_app_key,
+        settings.doubao_asr_access_key,
+        settings.doubao_asr_secret_key,
+    )
+    connector_urls = (
+        settings.platform_agent_base_url,
+        settings.outreach_send_base_url,
+        settings.outreach_system_base_url,
+    )
+    return {
+        "schema_version": "offline_simulation_isolation_audit_v1",
+        "passed": (
+            ".tmp_runtime" in root.parts
+            and "simulation" in root.parts
+            and paths_within_run_dir
+            and not any(str(value or "").strip() for value in forbidden_secrets)
+            and all(
+                not str(value or "").strip() or str(value).strip().lower().startswith("simulation://")
+                for value in connector_urls
+            )
+            and all(bool(getattr(adapter, "simulation_adapter", False)) for adapter in adapters)
+            and all(str(identity.get(key) or "").startswith("sim_") for key in ("customer_id", "external_userid", "corp_id", "wechat"))
+        ),
+        "run_dir_under_tmp_simulation": ".tmp_runtime" in root.parts and "simulation" in root.parts,
+        "paths_within_run_dir": paths_within_run_dir,
+        "real_connector_credentials_present": any(str(value or "").strip() for value in forbidden_secrets),
+        "connector_urls_simulation_only": all(
+            not str(value or "").strip() or str(value).strip().lower().startswith("simulation://")
+            for value in connector_urls
+        ),
+        "adapters_simulation_only": all(bool(getattr(adapter, "simulation_adapter", False)) for adapter in adapters),
+        "adapter_types": [type(adapter).__name__ for adapter in adapters],
+        "identity_simulation_scoped": all(
+            str(identity.get(key) or "").startswith("sim_")
+            for key in ("customer_id", "external_userid", "corp_id", "wechat")
+        ),
+        "guarded_path_labels": sorted(guarded_paths),
+    }
+
+
 def assert_simulation_identity(identity: dict[str, Any]) -> None:
     for key in ("customer_id", "external_userid", "corp_id", "wechat"):
         value = str(identity.get(key) or "").strip()

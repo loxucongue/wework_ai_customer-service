@@ -27,6 +27,7 @@ def _simulation_ready() -> dict:
                 "critical_all_pass": True,
                 "infrastructure_failures_zero": True,
                 "scenario_coverage_complete": True,
+                "isolation_audit_passed": True,
             },
         },
         "coverage": {
@@ -48,6 +49,19 @@ def _simulation_ready() -> dict:
             "production_writes_allowed": False,
             "virtual_outbox_only": True,
             "production_write_count": 0,
+        },
+        "isolation_audit": {
+            "schema_version": "offline_simulation_isolation_summary_v1",
+            "result_count": 100,
+            "missing_result_count": 0,
+            "failed_result_count": 0,
+            "passed": True,
+            "run_dirs_under_tmp_simulation": True,
+            "paths_within_run_dir": True,
+            "connector_urls_simulation_only": True,
+            "adapters_simulation_only": True,
+            "identity_simulation_scoped": True,
+            "real_connector_credentials_present": False,
         },
     }
 
@@ -222,6 +236,34 @@ def test_external_gate_evidence_blocks_missing_simulation_review_artifacts() -> 
     blockers = simulation_report_blockers(simulation)
 
     assert "simulation_missing_review_artifacts" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_simulation_isolation_audit() -> None:
+    simulation = _simulation_ready()
+    del simulation["isolation_audit"]
+    simulation["summary"]["acceptance"]["isolation_audit_passed"] = False
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_isolation_audit" in blockers
+    assert "simulation_isolation_acceptance_missing_or_false" in blockers
+
+
+def test_external_gate_evidence_blocks_failed_simulation_isolation_audit() -> None:
+    simulation = _simulation_ready()
+    simulation["isolation_audit"]["passed"] = False
+    simulation["isolation_audit"]["connector_urls_simulation_only"] = False
+    simulation["isolation_audit"]["real_connector_credentials_present"] = True
+    simulation["isolation_audit"]["failed_result_count"] = 1
+    simulation["isolation_audit"]["result_count"] = 99
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_isolation_not_passed" in blockers
+    assert "simulation_isolation_connector_url_not_simulation" in blockers
+    assert "simulation_isolation_real_credentials_present" in blockers
+    assert "simulation_isolation_failed_results:1" in blockers
+    assert "simulation_isolation_result_count_below_scenario_count:99<100" in blockers
 
 
 def test_external_gate_evidence_blocks_incomplete_simulation_review_artifacts() -> None:

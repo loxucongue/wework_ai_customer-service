@@ -21,6 +21,21 @@ from app.simulation.runtime import _hard_check, _provider_incidents
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _isolation_audit(passed: bool = True) -> dict:
+    return {
+        "schema_version": "offline_simulation_isolation_audit_v1",
+        "passed": passed,
+        "run_dir_under_tmp_simulation": passed,
+        "paths_within_run_dir": passed,
+        "real_connector_credentials_present": False,
+        "connector_urls_simulation_only": passed,
+        "adapters_simulation_only": passed,
+        "adapter_types": ["SimulationOutreachClient"],
+        "identity_simulation_scoped": passed,
+        "guarded_path_labels": ["database", "logs", "memory", "store_snapshot"],
+    }
+
+
 class FullChainSimulationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -142,6 +157,7 @@ class FullChainSimulationTests(unittest.TestCase):
                     "semantic_review": {"available": True, "pass": True},
                     "outbox": [{"transport": "simulation_outbox"}],
                     "simulated_platform_writes": [{"transport": "simulation_only"}],
+                    "isolation_audit": _isolation_audit(),
                 }
             ],
             baseline={},
@@ -153,6 +169,36 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(report["safety"]["production_write_count"], 0)
         self.assertEqual(report["safety"]["virtual_outbox_message_count"], 1)
         self.assertEqual(report["safety"]["simulated_write_count"], 1)
+        self.assertTrue(report["isolation_audit"]["passed"])
+        self.assertEqual(report["isolation_audit"]["result_count"], 1)
+        self.assertEqual(report["isolation_audit"]["missing_result_count"], 0)
+        self.assertEqual(report["isolation_audit"]["failed_result_count"], 0)
+
+    def test_aggregate_marks_missing_or_failed_isolation_audit(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "safe", "category": "sim"}, {"id": "unsafe", "category": "sim"}],
+            results=[
+                {
+                    "scenario_id": "safe",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                    "isolation_audit": _isolation_audit(False),
+                },
+                {
+                    "scenario_id": "unsafe",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                },
+            ],
+            baseline={},
+        )
+
+        self.assertFalse(report["isolation_audit"]["passed"])
+        self.assertEqual(report["isolation_audit"]["result_count"], 1)
+        self.assertEqual(report["isolation_audit"]["missing_result_count"], 1)
+        self.assertEqual(report["isolation_audit"]["failed_result_count"], 1)
+        self.assertFalse(report["summary"]["acceptance"]["isolation_audit_passed"])
 
     def test_aggregate_marks_non_simulation_transport_as_unsafe(self) -> None:
         report = _aggregate(

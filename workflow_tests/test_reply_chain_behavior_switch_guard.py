@@ -82,6 +82,7 @@ def _simulation_ready() -> dict:
                 "critical_all_pass": True,
                 "infrastructure_failures_zero": True,
                 "scenario_coverage_complete": True,
+                "isolation_audit_passed": True,
             },
         },
         "coverage": {
@@ -103,6 +104,19 @@ def _simulation_ready() -> dict:
             "production_writes_allowed": False,
             "virtual_outbox_only": True,
             "production_write_count": 0,
+        },
+        "isolation_audit": {
+            "schema_version": "offline_simulation_isolation_summary_v1",
+            "result_count": 100,
+            "missing_result_count": 0,
+            "failed_result_count": 0,
+            "passed": True,
+            "run_dirs_under_tmp_simulation": True,
+            "paths_within_run_dir": True,
+            "connector_urls_simulation_only": True,
+            "adapters_simulation_only": True,
+            "identity_simulation_scoped": True,
+            "real_connector_credentials_present": False,
         },
     }
 

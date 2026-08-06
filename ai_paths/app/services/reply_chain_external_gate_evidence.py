@@ -50,6 +50,33 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         blockers.append("simulation_infrastructure_acceptance_missing_or_false")
     if acceptance.get("scenario_coverage_complete") is not True:
         blockers.append("simulation_scenario_coverage_incomplete")
+    if acceptance.get("isolation_audit_passed") is not True:
+        blockers.append("simulation_isolation_acceptance_missing_or_false")
+    isolation = _dict(simulation.get("isolation_audit"))
+    if isolation.get("schema_version") != "offline_simulation_isolation_summary_v1":
+        blockers.append("simulation_missing_isolation_audit")
+    else:
+        if _int_value(isolation.get("result_count")) < scenario_count:
+            blockers.append(
+                "simulation_isolation_result_count_below_scenario_count:"
+                f"{isolation.get('result_count')}<{simulation.get('scenario_count')}"
+            )
+        if _int_value(isolation.get("missing_result_count")) != 0:
+            blockers.append(f"simulation_isolation_missing_results:{isolation.get('missing_result_count')}")
+        if _int_value(isolation.get("failed_result_count")) != 0:
+            blockers.append(f"simulation_isolation_failed_results:{isolation.get('failed_result_count')}")
+        for field, blocker in (
+            ("passed", "simulation_isolation_not_passed"),
+            ("run_dirs_under_tmp_simulation", "simulation_isolation_run_dir_not_isolated"),
+            ("paths_within_run_dir", "simulation_isolation_paths_escape_run_dir"),
+            ("connector_urls_simulation_only", "simulation_isolation_connector_url_not_simulation"),
+            ("adapters_simulation_only", "simulation_isolation_non_simulation_adapter"),
+            ("identity_simulation_scoped", "simulation_isolation_identity_not_scoped"),
+        ):
+            if isolation.get(field) is not True:
+                blockers.append(blocker)
+        if isolation.get("real_connector_credentials_present") is not False:
+            blockers.append("simulation_isolation_real_credentials_present")
     review_artifacts = _dict(simulation.get("review_artifacts"))
     if review_artifacts.get("schema_version") != "offline_simulation_review_artifacts_v1":
         blockers.append("simulation_missing_review_artifacts")

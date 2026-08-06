@@ -343,6 +343,7 @@ def _aggregate(
     semantic_pass_rate = _ratio(len(semantic_passed), len(evaluable))
     semantic_pass_rate_percent = _rate(len(semantic_passed), len(evaluable))
     safety = _simulation_safety(results)
+    isolation_audit = _simulation_isolation_audit(results)
     infrastructure_failures = sum(1 for item in results if item.get("infrastructure_errors"))
     coverage = _coverage_audit(scenarios)
     return {
@@ -355,6 +356,7 @@ def _aggregate(
         "semantic_pass_rate": semantic_pass_rate,
         "failed_critical_scenarios": failed_critical_scenarios,
         "safety": safety,
+        "isolation_audit": isolation_audit,
         "summary": {
             "hard_pass_rate": _rate(len(hard_passed), len(results)),
             "semantic_pass_rate": semantic_pass_rate_percent,
@@ -368,6 +370,7 @@ def _aggregate(
                 "critical_all_pass": not failed_critical_scenarios,
                 "infrastructure_failures_zero": infrastructure_failures == 0,
                 "scenario_coverage_complete": not coverage["missing_required_categories"],
+                "isolation_audit_passed": isolation_audit["passed"],
             },
         },
         "coverage": coverage,
@@ -428,6 +431,31 @@ def _simulation_safety(results: list[dict[str, Any]]) -> dict[str, Any]:
         "production_write_count": len(non_simulation_writes),
         "virtual_outbox_message_count": len(outbox_items),
         "simulated_write_count": len(write_items),
+    }
+
+
+def _simulation_isolation_audit(results: list[dict[str, Any]]) -> dict[str, Any]:
+    audits = [
+        item.get("isolation_audit")
+        for item in results
+        if isinstance(item, dict) and isinstance(item.get("isolation_audit"), dict)
+    ]
+    failed = [item for item in audits if item.get("passed") is not True]
+    missing_count = max(0, len(results) - len(audits))
+    return {
+        "schema_version": "offline_simulation_isolation_summary_v1",
+        "result_count": len(audits),
+        "missing_result_count": missing_count,
+        "failed_result_count": len(failed),
+        "passed": bool(results) and missing_count == 0 and not failed,
+        "run_dirs_under_tmp_simulation": all(item.get("run_dir_under_tmp_simulation") is True for item in audits),
+        "paths_within_run_dir": all(item.get("paths_within_run_dir") is True for item in audits),
+        "connector_urls_simulation_only": all(item.get("connector_urls_simulation_only") is True for item in audits),
+        "adapters_simulation_only": all(item.get("adapters_simulation_only") is True for item in audits),
+        "identity_simulation_scoped": all(item.get("identity_simulation_scoped") is True for item in audits),
+        "real_connector_credentials_present": any(
+            item.get("real_connector_credentials_present") is True for item in audits
+        ),
     }
 
 

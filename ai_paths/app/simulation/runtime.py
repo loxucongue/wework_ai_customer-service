@@ -39,13 +39,18 @@ from app.simulation.adapters import (
     SimulationVoiceTranscriptionClient,
     SimulationWorld,
 )
-from app.simulation.isolation import assert_simulation_identity, assert_simulation_isolated
+from app.simulation.isolation import (
+    assert_simulation_identity,
+    assert_simulation_isolated,
+    simulation_isolation_audit,
+)
 
 
 @dataclass
 class SimulationBundle:
     settings: Settings
     world: SimulationWorld
+    isolation_audit: dict[str, Any]
     repository: AppRepository
     memory_store: CustomerMemoryStore
     model_client: ModelClient
@@ -165,18 +170,25 @@ class SimulationRuntime:
             distance_workflow_id=settings.distance_workflow_id,
         )
         voice_transcription = SimulationVoiceTranscriptionClient(world)
+        adapters = [
+            outreach,
+            customer_context,
+            store_knowledge,
+            store_service,
+            platform,
+            coze,
+            voice_transcription,
+        ]
         assert_simulation_isolated(
             settings=settings,
             run_dir=run_dir,
-            adapters=[
-                outreach,
-                customer_context,
-                store_knowledge,
-                store_service,
-                platform,
-                coze,
-                voice_transcription,
-            ],
+            adapters=adapters,
+            identity=identity,
+        )
+        isolation_audit = simulation_isolation_audit(
+            settings=settings,
+            run_dir=run_dir,
+            adapters=adapters,
             identity=identity,
         )
 
@@ -240,6 +252,7 @@ class SimulationRuntime:
         return SimulationBundle(
             settings=settings,
             world=world,
+            isolation_audit=isolation_audit,
             repository=repository,
             memory_store=memory_store,
             model_client=model_client,
@@ -438,6 +451,7 @@ class SimulationRuntime:
             "outbox": deepcopy(bundle.world.outbox),
             "simulated_platform_writes": deepcopy(bundle.world.external_writes),
             "tool_calls": deepcopy(bundle.world.tool_calls),
+            "isolation_audit": deepcopy(bundle.isolation_audit),
             "hard_errors": hard_errors,
             "hard_pass": not hard_errors,
             "provider_incidents": _provider_incidents(step_results),
