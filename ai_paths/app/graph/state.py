@@ -64,6 +64,7 @@ class AgentState(TypedDict, total=False):
     sop_progress_evidence: dict[str, Any]
     background_substeps: list[dict[str, Any]]
     background_fact_views: dict[str, Any]
+    reply_chain_shadow_context: dict[str, Any]
     store_context_status: str
     store_context_elapsed_ms: int
     store_context_skipped_steps: list[str]

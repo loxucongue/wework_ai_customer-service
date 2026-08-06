@@ -13,6 +13,7 @@ from app.graph.nodes.common import (
 from app.graph.nodes.conversation_history_fetch import ConversationFetcher, fetch_platform_conversation_history
 from app.graph.nodes.image_info import build_vision_prompt, fallback_image_info, validated_image_info
 from app.graph.nodes.location_card import append_location_card_to_content
+from app.graph.nodes.reply_chain_shadow_context import build_reply_chain_shadow_context
 from app.graph.state import AgentState
 from app.services.coze_client import CozeClient
 from app.services.customer_context import CustomerContextService
@@ -450,6 +451,14 @@ def create_background_context_layer(
                     customer_result=customer_result,
                     store_knowledge=customer_store_knowledge,
                     conversation_result=conversation_result,
+                ),
+                "reply_chain_shadow_context": build_reply_chain_shadow_context(
+                    state,
+                    identity=identity,
+                    customer_result=customer_result,
+                    store_knowledge=customer_store_knowledge,
+                    conversation_result=conversation_result,
+                    memory=memory,
                 ),
                 "trace": state.get("trace", []),
             }
