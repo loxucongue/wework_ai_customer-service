@@ -2,49 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-
-READ_ONLY_TOOL_NAMES = {
-    "appointment_record_query",
-    "available_time",
-    "customer_store_lookup",
-    "distance_calculate",
-    "kb_search",
-    "professional_assist",
-}
-
-READ_ONLY_TOOL_CONTRACTS = {
-    "appointment_record_query": {
-        "required_fact_fields": ["appointment_records"],
-        "stop_conditions": ["appointment record cache is available"],
-    },
-    "available_time": {
-        "required_fact_fields": ["store_id", "date", "available_time_slots"],
-        "stop_conditions": ["available slots or empty slot fact returned"],
-    },
-    "customer_store_lookup": {
-        "required_fact_fields": ["resolved_location", "visible_store_candidates"],
-        "stop_conditions": ["visible store candidates or an explicit empty/ambiguous fact returned"],
-    },
-    "distance_calculate": {
-        "required_fact_fields": ["origin", "ranked_store_candidates"],
-        "stop_conditions": ["candidate stores are ranked or distance fact is unavailable"],
-    },
-    "kb_search": {
-        "required_fact_fields": ["knowledge_facts"],
-        "stop_conditions": ["matching knowledge facts or empty result returned"],
-    },
-    "professional_assist": {
-        "required_fact_fields": ["assist_reason"],
-        "stop_conditions": ["professional assist handoff fact is recorded"],
-    },
-}
-
-DEFERRED_WRITE_TOOL_NAMES = {
-    "add_customer_mobile",
-    "check_customer",
-    "create_order_plan",
-    "create_work_order",
-}
+from app.services.tool_registry import read_only_tool_contract, tool_execution_class
 
 
 def tool_plan_preview_from_planner_output(output: dict[str, Any]) -> dict[str, Any]:
@@ -56,14 +14,12 @@ def tool_plan_preview_from_planner_output(output: dict[str, Any]) -> dict[str, A
     normalized_tools = [_normalize_tool(tool, index=index) for index, tool in enumerate(tools, start=1) if isinstance(tool, dict)]
     normalized_tools = [tool for tool in normalized_tools if tool.get("name")]
 
-    read_tools = [_read_tool_schema(tool) for tool in normalized_tools if tool.get("name") in READ_ONLY_TOOL_NAMES]
-    write_tools = [_write_tool_schema(tool) for tool in normalized_tools if tool.get("name") in DEFERRED_WRITE_TOOL_NAMES]
+    read_tools = [_read_tool_schema(tool) for tool in normalized_tools if tool_execution_class(str(tool.get("name") or "")) == "read_only"]
+    write_tools = [_write_tool_schema(tool) for tool in normalized_tools if tool_execution_class(str(tool.get("name") or "")) == "deferred_write"]
     unknown_tools = [
         tool
         for tool in normalized_tools
-        if tool.get("name") not in READ_ONLY_TOOL_NAMES
-        and tool.get("name") not in DEFERRED_WRITE_TOOL_NAMES
-        and tool.get("name") != "no_tool"
+        if tool_execution_class(str(tool.get("name") or "")) == "unknown"
     ]
 
     if read_tools:
@@ -110,7 +66,7 @@ def _normalize_tool(tool: dict[str, Any], *, index: int) -> dict[str, Any]:
 
 def _read_tool_schema(tool: dict[str, Any]) -> dict[str, Any]:
     name = str(tool.get("name") or "")
-    contract = READ_ONLY_TOOL_CONTRACTS.get(name, {})
+    contract = read_only_tool_contract(name)
     return _drop_empty(
         {
             "call_id": tool.get("call_id"),
