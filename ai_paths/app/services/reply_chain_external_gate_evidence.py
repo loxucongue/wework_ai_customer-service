@@ -260,6 +260,12 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     summary = _dict(simulation.get("summary"))
     if _int_value(summary.get("infrastructure_failures")) != 0:
         blockers.append(f"simulation_infrastructure_failures:{summary.get('infrastructure_failures')}")
+    evaluable_attempts = _int_value(summary.get("evaluable_attempts"))
+    if evaluable_attempts < attempt_count:
+        blockers.append(
+            "simulation_evaluable_attempts_below_attempt_count:"
+            f"{summary.get('evaluable_attempts')}<{simulation.get('attempt_count')}"
+        )
     scenario_summary = _dict(simulation.get("scenario_summary"))
     if not scenario_summary:
         blockers.append("simulation_missing_scenario_summary")
@@ -283,6 +289,7 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     acceptance = _dict(summary.get("acceptance"))
     for field, blocker in (
         ("hard_errors_zero", "simulation_hard_error_acceptance_missing_or_false"),
+        ("semantic_review_complete", "simulation_semantic_review_incomplete"),
         ("semantic_at_least_90", "simulation_semantic_acceptance_missing_or_false"),
         ("critical_all_pass", "simulation_critical_acceptance_missing_or_false"),
     ):

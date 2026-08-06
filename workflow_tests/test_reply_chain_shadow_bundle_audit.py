@@ -260,6 +260,22 @@ def test_bundle_audit_blocks_invalid_model_semantics_ownership_report() -> None:
     )
 
 
+def test_bundle_audit_blocks_simulation_report_without_complete_semantic_review() -> None:
+    report = _simulation_ready()
+    report["summary"]["evaluable_attempts"] = 0
+    report["summary"]["acceptance"]["semantic_review_complete"] = False
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=_ready_state(),
+        require_commit_shadow=True,
+        simulation_report=report,
+    )
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "simulation_report:simulation_evaluable_attempts_below_attempt_count:0<300" in audit["blockers"]
+    assert "simulation_report:simulation_semantic_review_incomplete" in audit["blockers"]
+
+
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
@@ -282,9 +298,11 @@ def _simulation_ready() -> dict:
             for index in range(100)
         },
         "summary": {
+            "evaluable_attempts": 300,
             "infrastructure_failures": 0,
             "acceptance": {
                 "hard_errors_zero": True,
+                "semantic_review_complete": True,
                 "semantic_at_least_90": True,
                 "critical_all_pass": True,
                 "infrastructure_failures_zero": True,

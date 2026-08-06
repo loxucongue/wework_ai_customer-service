@@ -375,6 +375,7 @@ def _aggregate(
             "p90_ms": _percentile(durations, 0.9),
             "acceptance": {
                 "hard_errors_zero": hard_error_count == 0,
+                "semantic_review_complete": len(evaluable) == len(results),
                 "semantic_at_least_90": semantic_pass_rate >= 0.9,
                 "critical_all_pass": not failed_critical_scenarios,
                 "infrastructure_failures_zero": infrastructure_failures == 0,

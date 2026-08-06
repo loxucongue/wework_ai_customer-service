@@ -294,6 +294,24 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertFalse(report["summary"]["acceptance"]["infrastructure_failures_zero"])
         self.assertFalse(report["summary"]["acceptance"]["hard_errors_zero"])
 
+    def test_aggregate_requires_semantic_review_for_every_attempt(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "skip_review_case", "category": "sim", "critical": False}],
+            results=[
+                {
+                    "scenario_id": "skip_review_case",
+                    "hard_pass": True,
+                    "duration_ms": 10,
+                }
+            ],
+            baseline={},
+        )
+
+        self.assertEqual(report["summary"]["evaluable_attempts"], 0)
+        self.assertFalse(report["summary"]["acceptance"]["semantic_review_complete"])
+        self.assertFalse(report["summary"]["acceptance"]["semantic_at_least_90"])
+
     def test_review_artifacts_summarize_traces_tools_and_outbox_for_human_review(self) -> None:
         report = _aggregate(
             fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
