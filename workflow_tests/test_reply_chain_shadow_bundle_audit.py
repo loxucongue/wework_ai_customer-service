@@ -436,6 +436,8 @@ def _model_matrix_ready() -> dict:
                 },
                 "profile_summary": {
                     "semantic_pass_rate": 0.91,
+                    "hard_error_count": 0,
+                    "failed_critical_scenarios": [],
                     "p50_ms": 6200,
                     "p90_ms": 11000,
                     "infrastructure_failures": 0,
@@ -456,6 +458,8 @@ def _model_matrix_ready() -> dict:
                 },
                 "profile_summary": {
                     "semantic_pass_rate": 0.9,
+                    "hard_error_count": 0,
+                    "failed_critical_scenarios": [],
                     "p50_ms": 3900,
                     "p90_ms": 7600,
                     "infrastructure_failures": 0,
@@ -476,6 +480,8 @@ def _model_matrix_ready() -> dict:
                 },
                 "profile_summary": {
                     "semantic_pass_rate": 0.94,
+                    "hard_error_count": 0,
+                    "failed_critical_scenarios": [],
                     "p50_ms": 4800,
                     "p90_ms": 8200,
                     "infrastructure_failures": 0,

@@ -176,6 +176,8 @@ def _model_matrix_ready() -> dict:
                 },
                 "profile_summary": {
                     "semantic_pass_rate": 0.91,
+                    "hard_error_count": 0,
+                    "failed_critical_scenarios": [],
                     "p50_ms": 6200,
                     "p90_ms": 11000,
                     "infrastructure_failures": 0,
@@ -196,6 +198,8 @@ def _model_matrix_ready() -> dict:
                 },
                 "profile_summary": {
                     "semantic_pass_rate": 0.9,
+                    "hard_error_count": 0,
+                    "failed_critical_scenarios": [],
                     "p50_ms": 3900,
                     "p90_ms": 7600,
                     "infrastructure_failures": 0,
@@ -216,6 +220,8 @@ def _model_matrix_ready() -> dict:
                 },
                 "profile_summary": {
                     "semantic_pass_rate": 0.94,
+                    "hard_error_count": 0,
+                    "failed_critical_scenarios": [],
                     "p50_ms": 4800,
                     "p90_ms": 8200,
                     "infrastructure_failures": 0,
@@ -997,6 +1003,40 @@ def test_external_gate_evidence_blocks_accepted_model_missing_infrastructure_fai
     blockers = model_matrix_report_blockers(model_matrix)
 
     assert "model_matrix_accepted_profile_missing_infrastructure_failures:claude" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_model_matrix_hard_error_counts() -> None:
+    model_matrix = _model_matrix_ready()
+    del model_matrix["profiles"][1]["profile_summary"]["hard_error_count"]
+    del model_matrix["profiles"][1]["profile_summary"]["failed_critical_scenarios"]
+    del model_matrix["ranking"][1]["hard_error_count"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_missing_hard_error_count:gemini" in blockers
+    assert "model_matrix_missing_failed_critical_scenarios:gemini" in blockers
+    assert "model_matrix_ranking_missing_hard_error_count:claude" in blockers
+
+
+def test_external_gate_evidence_blocks_accepted_model_with_hard_or_critical_failures() -> None:
+    model_matrix = _model_matrix_ready()
+    summary = model_matrix["profiles"][0]["profile_summary"]
+    summary["hard_error_count"] = 1
+    summary["failed_critical_scenarios"] = ["store_scope_visible_only"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_accepted_profile_has_hard_errors:claude:1" in blockers
+    assert "model_matrix_accepted_profile_failed_critical:claude:store_scope_visible_only" in blockers
+
+
+def test_external_gate_evidence_blocks_accepted_model_below_semantic_threshold() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"][1]["profile_summary"]["semantic_pass_rate"] = 0.89
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_accepted_profile_semantic_below_90:gemini:0.890" in blockers
 
 
 def test_external_gate_evidence_blocks_model_matrix_missing_effect_review_counts() -> None:

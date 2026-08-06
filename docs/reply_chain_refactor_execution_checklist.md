@@ -366,9 +366,12 @@ Required matrix report:
 - each profile is `completed`
 - each completed profile has `model_profile.protocol=openai-compatible relay` and `model_profile.api_key_value_logged=false`
 - no profile has `status=timed_out`
-- each completed profile has `profile_summary.semantic_pass_rate`, `p50_ms`, and `p90_ms`
+- each completed profile has `profile_summary.semantic_pass_rate`, `hard_error_count`, `failed_critical_scenarios`, `p50_ms`, and `p90_ms`
 - each completed profile has `profile_summary.effect_issue_count`, `effect_low_score_count`, and `effect_hard_or_infra_count`
-- `ranking` includes every completed profile and exposes semantic pass rate, P90, and effect review counts for human model selection
+- `ranking` includes every completed profile and exposes semantic pass rate, hard error count, P90, and effect review counts for human model selection
+- any accepted profile has `profile_summary.hard_error_count=0`
+- any accepted profile has `profile_summary.failed_critical_scenarios=[]`
+- any accepted profile has `profile_summary.semantic_pass_rate >= 0.90`
 - any accepted profile has `profile_summary.infrastructure_failures=0`
 - at least one profile has `profile_summary.accepted_by_release_thresholds=true`
 - `safety.api_keys_written_to_report=false`

@@ -535,6 +535,7 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
         ranking_name = str(item.get("name") or "unknown").strip() or "unknown"
         for field in (
             "semantic_pass_rate",
+            "hard_error_count",
             "p90_ms",
             "effect_issue_count",
             "effect_low_score_count",
@@ -568,10 +569,15 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
         summary = _dict(item.get("profile_summary"))
         if not _has_number(summary.get("semantic_pass_rate")):
             blockers.append(f"model_matrix_missing_semantic_pass_rate:{_profile_name(item)}")
+        if not _has_number(summary.get("hard_error_count")):
+            blockers.append(f"model_matrix_missing_hard_error_count:{_profile_name(item)}")
         if not _has_number(summary.get("p50_ms")):
             blockers.append(f"model_matrix_missing_p50:{_profile_name(item)}")
         if not _has_number(summary.get("p90_ms")):
             blockers.append(f"model_matrix_missing_p90:{_profile_name(item)}")
+        failed_critical = summary.get("failed_critical_scenarios")
+        if not isinstance(failed_critical, list):
+            blockers.append(f"model_matrix_missing_failed_critical_scenarios:{_profile_name(item)}")
         if not _has_number(summary.get("effect_issue_count")):
             blockers.append(f"model_matrix_missing_effect_issue_count:{_profile_name(item)}")
         if not _has_number(summary.get("effect_low_score_count")):
@@ -581,6 +587,25 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
         blockers.extend(_model_matrix_profile_artifact_blockers(item))
         if summary.get("accepted_by_release_thresholds") is True:
             accepted = True
+            if _int_value(summary.get("hard_error_count")) != 0:
+                blockers.append(
+                    f"model_matrix_accepted_profile_has_hard_errors:{_profile_name(item)}:"
+                    f"{summary.get('hard_error_count')}"
+                )
+            accepted_failed_critical = _list_strings(summary.get("failed_critical_scenarios"))
+            if accepted_failed_critical:
+                blockers.extend(
+                    f"model_matrix_accepted_profile_failed_critical:{_profile_name(item)}:{scenario}"
+                    for scenario in accepted_failed_critical
+                )
+            try:
+                profile_semantic = float(summary.get("semantic_pass_rate") or 0.0)
+            except (TypeError, ValueError):
+                profile_semantic = 0.0
+            if profile_semantic < 0.9:
+                blockers.append(
+                    f"model_matrix_accepted_profile_semantic_below_90:{_profile_name(item)}:{profile_semantic:.3f}"
+                )
             if "infrastructure_failures" not in summary:
                 blockers.append(f"model_matrix_accepted_profile_missing_infrastructure_failures:{_profile_name(item)}")
             elif _int_value(summary.get("infrastructure_failures")) != 0:
