@@ -100,6 +100,40 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
         self.assertEqual(repository.skipped_remaining[0]["reason"], "customer_replied_after_plan_creation")
 
+    async def test_first_day_second_task_is_cancelled_when_customer_replied_between_steps(self) -> None:
+        repository = _ExecutionRepository(order_status="no_order", trigger_type="first_day_opened_silence")
+        system = _SystemClient(
+            messages=[
+                {
+                    "direction": "customer",
+                    "content": "我刚才回复了",
+                    "created_at": "2026-07-28T09:00:00+08:00",
+                }
+            ]
+        )
+        service = OutreachService(
+            repository=repository,
+            model_client=object(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-2")
+
+        self.assertEqual(result, {"ok": True, "status": "skipped", "reason": "customer_replied"})
+        self.assertEqual(system.sent, [])
+        self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
+        self.assertEqual(
+            repository.skipped_remaining,
+            [
+                {
+                    "plan_id": "plan-1",
+                    "reason": "customer_replied_after_plan_creation",
+                    "exclude_task_id": "task-2",
+                }
+            ],
+        )
+
     async def test_unavailable_order_check_reschedules_instead_of_sending(self) -> None:
         repository = _ExecutionRepository(order_status="no_order")
         system = _SystemClient()
@@ -702,9 +736,10 @@ class _MessageModelClient:
 
 
 class _ExecutionRepository:
-    def __init__(self, order_status: str, *, remaining_tasks: bool = False) -> None:
+    def __init__(self, order_status: str, *, remaining_tasks: bool = False, trigger_type: str = "") -> None:
         self.order_status = order_status
         self.remaining_tasks = remaining_tasks
+        self.trigger_type = trigger_type
         self.task_statuses: list[tuple[str, str]] = []
         self.plan_statuses: list[tuple[str, str]] = []
         self.events: list[dict[str, Any]] = []
@@ -743,6 +778,7 @@ class _ExecutionRepository:
                     "trigger_context": {
                         "source": "sop_platform_task",
                         "activation_policy": "auto_approved",
+                        "trigger_type": self.trigger_type,
                     },
                 },
             }

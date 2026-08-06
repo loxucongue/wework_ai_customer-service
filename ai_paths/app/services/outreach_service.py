@@ -349,15 +349,8 @@ def _normalize_first_day_outreach_schedule(
     ]
     second = steps[1] if len(steps) > 1 else {}
     requested_delay = max(0, _int(second.get("delay_minutes"), 0))
-    requested_gap = requested_delay
-    urgency = _string(second.get("urgency_level"))
-    high_intent = urgency == "immediate" or 10 <= requested_gap <= 15
-    if high_intent:
-        normalized_delay = min(15, max(10, requested_gap or 10))
-        target = start + timedelta(minutes=normalized_delay)
-    else:
-        target = _next_first_day_free_window(start + timedelta(minutes=max(1, requested_gap)))
-        normalized_delay = max(0, int((target - start).total_seconds() // 60))
+    normalized_delay = min(20, max(15, requested_delay or 15))
+    target = start + timedelta(minutes=normalized_delay)
     normalized.append(
         {
             "scheduled_at": target.isoformat(),

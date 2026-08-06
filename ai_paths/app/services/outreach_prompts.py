@@ -563,14 +563,15 @@ conversation alive naturally.
 
 Rules:
 - Create exactly 2 steps.
-- Step 1 delay_minutes must be 0. It is an immediate light touch, short WeChat
-  wording, and must directly inherit the most recent conversation. Do not hard
-  sell or force the next SOP stage in step 1.
-- Step 2 decides the next progress action from the customer's current state:
-  effect proof, activity/quote, payment collection, or objection material.
-- If the customer is high intent, step 2 delay_minutes must be 10 to 15.
-- If the customer is medium or low intent, step 2 should be placed in a normal
-  free-time window: 11:30-12:30, 17:00-18:00, or 20:00-21:00 Beijing time.
+- Step 1 delay_minutes must be 0. The first sentence is a light transition that
+  inherits the latest chat; immediately after it, continue with the next
+  business scene that should be advanced now. The main scene choices are store
+  matching/address, effect proof, activity introduction/quote, and deposit
+  closing. Do not output a pure "still there?" probe with no progress content.
+- Step 2 is the next scene after step 1 if the customer still does not reply.
+  It should advance one stage forward, not repeat the same scene or the same
+  sentence in different words.
+- Step 2 delay_minutes should normally be 15 to 20 after step 1.
 - You may use only existing message templates and code-supported message
   types. Text is written by you; images, videos, store cards, and payment cards
   are selected or assembled by code from real facts and assets.

@@ -17,9 +17,19 @@ from app.services.outreach_service import (
     _outreach_plan_structure_error,
     build_outreach_activity_quote_fact,
 )
+from app.services.outreach_prompts import FIRST_DAY_OPENED_SILENCE_PLAN_PROMPT
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    def test_first_day_prompt_requires_transition_plus_progress_scenes(self) -> None:
+        prompt = " ".join(FIRST_DAY_OPENED_SILENCE_PLAN_PROMPT.split())
+        self.assertIn("first sentence is a light transition", prompt)
+        self.assertIn("store matching/address", prompt)
+        self.assertIn("effect proof", prompt)
+        self.assertIn("activity introduction/quote", prompt)
+        self.assertIn("deposit closing", prompt)
+        self.assertIn("15 to 20", prompt)
+
     def test_plan_normalizer_wraps_text_content_in_reply_message_object(self) -> None:
         response = _ModelClient().response
         response["steps"][0]["reply_messages"] = [
@@ -236,7 +246,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(schedule[0]["scheduled_at"], "2026-07-29T00:30:00+00:00")
         self.assertGreaterEqual(schedule[1]["normalized_delay_minutes"], 60 + 360)
 
-    def test_first_day_schedule_keeps_immediate_and_high_intent_short_gap(self) -> None:
+    def test_first_day_schedule_keeps_immediate_and_second_touch_15_to_20_minutes(self) -> None:
         schedule = _normalize_first_day_outreach_schedule(
             "2026-08-06T02:00:00+00:00",
             [
@@ -246,18 +256,18 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(schedule[0]["normalized_delay_minutes"], 0)
-        self.assertEqual(schedule[1]["normalized_delay_minutes"], 10)
+        self.assertEqual(schedule[1]["normalized_delay_minutes"], 15)
 
-    def test_first_day_schedule_moves_medium_low_to_free_window(self) -> None:
+    def test_first_day_schedule_caps_second_touch_at_20_minutes(self) -> None:
         schedule = _normalize_first_day_outreach_schedule(
             "2026-08-06T02:00:00+00:00",
             [
                 {"delay_minutes": 0},
-                {"delay_minutes": 1, "urgency_level": "same_day"},
+                {"delay_minutes": 120, "urgency_level": "same_day"},
             ],
         )
 
-        self.assertEqual(schedule[1]["scheduled_at"], "2026-08-06T03:30:00+00:00")
+        self.assertEqual(schedule[1]["normalized_delay_minutes"], 20)
 
     def test_activity_quote_fact_uses_visible_quote_or_structured_sop_progress(self) -> None:
         message_fact = build_outreach_activity_quote_fact(
@@ -377,7 +387,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         ]
         response = _ModelClient().response
         response["steps"][0]["delay_minutes"] = 0
-        response["steps"][1]["delay_minutes"] = 10
+        response["steps"][1]["delay_minutes"] = 15
         response["steps"][1]["urgency_level"] = "immediate"
         model = _ModelClient(response=response)
         service = _MonitorOutreachService(
@@ -411,7 +421,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             repository.created_plan["tasks"][1]["content_sources"][2]["outreach_task_metadata"][
                 "normalized_delay_minutes"
             ],
-            10,
+            15,
         )
         self.assertEqual(repository.updated_statuses, [("plan-created", "active")])
 
