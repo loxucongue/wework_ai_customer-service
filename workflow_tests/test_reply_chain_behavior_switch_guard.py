@@ -58,6 +58,11 @@ def _simulation_ready() -> dict:
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
+        "summary": {"acceptance": {"scenario_coverage_complete": True}},
+        "coverage": {
+            "schema_version": "offline_simulation_coverage_audit_v1",
+            "missing_required_categories": [],
+        },
         "safety": {
             "production_customer_messages_sent": False,
             "production_writes_allowed": False,
@@ -340,6 +345,26 @@ def test_behavior_switch_guard_blocks_simulation_without_isolation_safety() -> N
     assert "simulation_missing_no_production_write_safety" in guard["blockers"]
     assert "simulation_missing_virtual_outbox_safety" in guard["blockers"]
     assert "simulation_production_writes:2" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_simulation_without_required_category_coverage() -> None:
+    simulation = _simulation_ready()
+    simulation["summary"]["acceptance"]["scenario_coverage_complete"] = False
+    simulation["coverage"]["missing_required_categories"] = ["精准问答", "预约金"]
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=simulation,
+        model_matrix_report=_model_matrix_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "simulation_missing_required_category:精准问答" in guard["blockers"]
+    assert "simulation_missing_required_category:预约金" in guard["blockers"]
+    assert "simulation_scenario_coverage_incomplete" in guard["blockers"]
 
 
 def test_behavior_switch_guard_is_not_consumed_by_current_model_payloads() -> None:

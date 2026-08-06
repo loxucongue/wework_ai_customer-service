@@ -17,6 +17,11 @@ def _simulation_ready() -> dict:
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
+        "summary": {"acceptance": {"scenario_coverage_complete": True}},
+        "coverage": {
+            "schema_version": "offline_simulation_coverage_audit_v1",
+            "missing_required_categories": [],
+        },
         "safety": {
             "production_customer_messages_sent": False,
             "production_writes_allowed": False,
@@ -90,6 +95,20 @@ def test_external_gate_evidence_blocks_unsafe_or_incomplete_reports() -> None:
     assert "simulation_semantic_pass_rate_below_90:0.890" in simulation_report_blockers(simulation)
     assert "simulation_missing_no_customer_send_safety" in simulation_report_blockers(simulation)
     assert "model_matrix_profile_not_completed:gemini" in model_matrix_report_blockers(model_matrix)
+
+
+def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:
+    simulation = _simulation_ready()
+    simulation["coverage"] = {
+        "schema_version": "offline_simulation_coverage_audit_v1",
+        "missing_required_categories": ["健康风险"],
+    }
+    simulation["summary"]["acceptance"]["scenario_coverage_complete"] = False
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_required_category:健康风险" in blockers
+    assert "simulation_scenario_coverage_incomplete" in blockers
 
 
 def test_bundle_audit_does_not_import_final_behavior_switch_guard_private_helpers() -> None:

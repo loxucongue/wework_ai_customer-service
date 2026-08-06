@@ -18,6 +18,15 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     failed_critical = _list_strings(simulation.get("failed_critical_scenarios"))
     if failed_critical:
         blockers.extend(f"simulation_critical_failed:{item}" for item in failed_critical)
+    coverage = _dict(simulation.get("coverage"))
+    if coverage.get("schema_version") != "offline_simulation_coverage_audit_v1":
+        blockers.append("simulation_missing_coverage_audit")
+    missing_categories = _list_strings(coverage.get("missing_required_categories"))
+    if missing_categories:
+        blockers.extend(f"simulation_missing_required_category:{item}" for item in missing_categories)
+    acceptance = _dict(_dict(simulation.get("summary")).get("acceptance"))
+    if acceptance and acceptance.get("scenario_coverage_complete") is not True:
+        blockers.append("simulation_scenario_coverage_incomplete")
     safety = _dict(simulation.get("safety"))
     if safety.get("production_customer_messages_sent") is not False:
         blockers.append("simulation_missing_no_customer_send_safety")
