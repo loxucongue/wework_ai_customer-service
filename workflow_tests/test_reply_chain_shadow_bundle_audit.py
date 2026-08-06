@@ -110,6 +110,30 @@ def test_bundle_audit_reports_postcommit_shadow_bundle_ready() -> None:
     assert audit["review_gates"]["commit_phase_ready"]["passed"] is True
 
 
+def test_bundle_audit_blocks_unresolved_release_review_groups() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "missing_or_unproven_gates": [],
+        "blocker_groups": {
+            "reply_payload_schema": {
+                "ready": False,
+                "blocker_count": 1,
+                "blockers": ["gate_not_proven:reply_target_input_schema_review"],
+            }
+        },
+    }
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "release_review_blocker_group_unresolved:reply_payload_schema" in audit["blockers"]
+    assert (
+        "release_review_blocker_group:reply_payload_schema:gate_not_proven:reply_target_input_schema_review"
+        in audit["blockers"]
+    )
+
+
 def test_bundle_audit_blocks_when_join_would_own_customer_text() -> None:
     state = _ready_state()
     state["parallel_reply_chain_shadow"]["current_serial_observation"][
