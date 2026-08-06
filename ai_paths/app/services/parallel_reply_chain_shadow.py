@@ -24,6 +24,9 @@ def parallel_reply_chain_shadow(
         reply_final_brain_handoff_shadow=reply_final_brain_handoff_shadow or {},
     )
     reply_handoff_migration = (reply_final_brain_handoff_shadow or {}).get("migration_audit") or {}
+    context_authority_audit = reply_chain_shadow_context.get("authority_audit")
+    if not isinstance(context_authority_audit, dict):
+        context_authority_audit = {}
     return _drop_empty(
         {
             "schema_version": "parallel_reply_chain_shadow_v1",
@@ -56,6 +59,11 @@ def parallel_reply_chain_shadow(
             },
             "current_serial_observation": {
                 "shared_context_schema": reply_chain_shadow_context.get("schema_version"),
+                "shared_context_authority_audit_schema": context_authority_audit.get("schema_version"),
+                "shared_context_message_count": context_authority_audit.get("timeline_message_count"),
+                "shared_context_all_messages_have_sent_at": context_authority_audit.get("all_messages_have_sent_at"),
+                "shared_context_complete_chat_is_primary": context_authority_audit.get("complete_chat_is_primary_authority"),
+                "shared_context_soft_profile_excluded": context_authority_audit.get("soft_profile_excluded_from_authority"),
                 "gate_route": gate_router_shadow.get("route_suggestion"),
                 "planner_fact_requirement": tool_plan_preview.get("fact_requirement"),
                 "tool_planner_legacy_residue_count": (tool_plan_preview.get("migration_audit") or {}).get("legacy_residue_count"),
@@ -97,6 +105,7 @@ def _activation_blockers(
     blockers: list[str] = []
     if reply_chain_shadow_context.get("schema_version") != "reply_chain_shadow_v1":
         blockers.append("missing_shared_reply_chain_shadow_context")
+    blockers.extend(_context_authority_blockers(reply_chain_shadow_context))
     if gate_router_shadow.get("schema_version") != "chat_gate_router_shadow_v1":
         blockers.append("missing_gate_router_shadow")
     if tool_plan_preview.get("schema_version") != "tool_plan_preview_v2":
@@ -109,6 +118,20 @@ def _activation_blockers(
         blockers.append("missing_reply_final_brain_handoff_shadow")
     if read_only_tool_executor_shadow.get("blocked"):
         blockers.append("early_tool_executor_has_blocked_calls")
+    return blockers
+
+
+def _context_authority_blockers(reply_chain_shadow_context: dict[str, Any]) -> list[str]:
+    audit = reply_chain_shadow_context.get("authority_audit")
+    if not isinstance(audit, dict) or audit.get("schema_version") != "reply_chain_authority_audit_v1":
+        return ["missing_reply_chain_authority_audit"]
+    blockers: list[str] = []
+    if audit.get("complete_chat_is_primary_authority") is not True:
+        blockers.append("complete_chat_not_marked_primary_authority")
+    if audit.get("soft_profile_excluded_from_authority") is not True:
+        blockers.append("soft_profile_not_excluded_from_authority")
+    if audit.get("all_messages_have_sent_at") is not True:
+        blockers.append("incomplete_timestamped_conversation")
     return blockers
 
 
