@@ -56,9 +56,19 @@ def _ready_state() -> dict:
         "reply_chain_commit_shadow": {
             "schema_version": "reply_chain_commit_shadow_v1",
             "commit_phase_owner": "runtime_after_reply_validation",
+            "requires_reply_validation_before_commit": True,
             "precommit_validation_audit": {
                 "schema_version": "reply_chain_precommit_validation_audit_v1",
                 "ready_for_commit_shadow": True,
+            },
+            "deferred_write_handoff_audit": {
+                "schema_version": "reply_chain_deferred_write_handoff_audit_v1",
+                "commit_phase_owner": "runtime_after_reply_validation",
+                "early_execution_forbidden": True,
+                "current_runtime_executes_deferred_writes": False,
+                "requires_reply_validation_before_write": True,
+                "ready_for_deferred_write_refactor_review": True,
+                "blockers": [],
             },
         },
     }

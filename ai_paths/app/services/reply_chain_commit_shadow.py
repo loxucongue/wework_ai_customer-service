@@ -21,6 +21,7 @@ def reply_chain_commit_shadow(
         test_isolated=test_isolated,
         memory_allowed=memory_allowed,
     )
+    deferred_write_audit = _deferred_write_handoff_audit(final_state)
     return {
         "schema_version": "reply_chain_commit_shadow_v1",
         "mode": "observed_current_runtime_commit_plan",
@@ -31,11 +32,13 @@ def reply_chain_commit_shadow(
         "commit_phase_owner": "runtime_after_reply_validation",
         "requires_reply_validation_before_commit": True,
         "precommit_validation_audit": precommit_audit,
+        "deferred_write_handoff_audit": deferred_write_audit,
         "planned_side_effects": {
             "conversation_assistant_message": has_reply and not test_isolated,
             "case_image_memory_record": has_reply and not test_isolated and memory_allowed,
             "activity_intro_image_memory_record": has_reply and not test_isolated and memory_allowed,
             "visible_store_fact_memory_record": has_reply and not test_isolated and memory_allowed,
+            "deferred_write_tool_execution": False,
             "trace_log_write": True,
             "run_record_save": True,
         },
@@ -71,6 +74,47 @@ def _precommit_validation_audit(
         "ready_for_commit_shadow": not blockers,
         "blockers": blockers,
         "source": "reply_chain_commit_shadow_precommit_audit",
+    }
+
+
+def _deferred_write_handoff_audit(final_state: dict[str, Any]) -> dict[str, Any]:
+    tool_plan = final_state.get("tool_plan_preview")
+    if not isinstance(tool_plan, dict):
+        tool_plan = {}
+    proposals = [
+        proposal
+        for proposal in tool_plan.get("deferred_write_proposals") or []
+        if isinstance(proposal, dict)
+    ]
+    normalized = [_deferred_write_proposal(proposal) for proposal in proposals]
+    blockers: list[str] = []
+    for proposal in normalized:
+        if proposal.get("execution") != "deferred_write_only":
+            blockers.append(f"deferred_write_execution_not_deferred:{proposal.get('tool') or 'missing'}")
+        if not proposal.get("tool"):
+            blockers.append("deferred_write_missing_tool")
+    return {
+        "schema_version": "reply_chain_deferred_write_handoff_audit_v1",
+        "proposed_write_count": len(normalized),
+        "proposed_write_tools": normalized,
+        "commit_phase_owner": "runtime_after_reply_validation",
+        "early_execution_forbidden": True,
+        "current_runtime_executes_deferred_writes": False,
+        "requires_reply_validation_before_write": True,
+        "requires_explicit_commit_executor_before_activation": bool(normalized),
+        "ready_for_deferred_write_refactor_review": not blockers,
+        "blockers": blockers,
+    }
+
+
+def _deferred_write_proposal(proposal: dict[str, Any]) -> dict[str, Any]:
+    tool_name = str(proposal.get("tool") or proposal.get("name") or "").strip()
+    return {
+        "call_id": str(proposal.get("call_id") or "").strip(),
+        "tool": tool_name,
+        "execution": str(proposal.get("execution") or "").strip(),
+        "purpose": str(proposal.get("purpose") or "").strip(),
+        "depends_on": proposal.get("depends_on") if isinstance(proposal.get("depends_on"), list) else [],
     }
 
 

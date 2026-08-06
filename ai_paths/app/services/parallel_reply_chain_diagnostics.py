@@ -333,6 +333,7 @@ def _commit_blockers(commit: dict[str, Any]) -> list[str]:
     if commit.get("requires_reply_validation_before_commit") is not True:
         blockers.append("commit_does_not_require_reply_validation")
     blockers.extend(_commit_precommit_audit_blockers(commit))
+    blockers.extend(_commit_deferred_write_handoff_blockers(commit))
     forbidden_owners = commit.get("must_not_be_owned_by")
     if isinstance(forbidden_owners, list):
         required_forbidden = {"sop_chat_gate", "tool_planner", "reply_chain_join"}
@@ -341,6 +342,24 @@ def _commit_blockers(commit: dict[str, Any]) -> list[str]:
     else:
         blockers.append("commit_missing_forbidden_owners")
     return blockers
+
+
+def _commit_deferred_write_handoff_blockers(commit: dict[str, Any]) -> list[str]:
+    audit = commit.get("deferred_write_handoff_audit")
+    if not isinstance(audit, dict) or audit.get("schema_version") != "reply_chain_deferred_write_handoff_audit_v1":
+        return ["missing_reply_chain_deferred_write_handoff_audit"]
+    if audit.get("commit_phase_owner") != "runtime_after_reply_validation":
+        return ["deferred_write_owner_not_runtime_after_reply_validation"]
+    if audit.get("early_execution_forbidden") is not True:
+        return ["deferred_write_early_execution_not_forbidden"]
+    if audit.get("current_runtime_executes_deferred_writes") is not False:
+        return ["deferred_write_current_runtime_executes_writes"]
+    if audit.get("requires_reply_validation_before_write") is not True:
+        return ["deferred_write_missing_reply_validation_requirement"]
+    if audit.get("ready_for_deferred_write_refactor_review") is True:
+        return []
+    blockers = _list_strings(audit.get("blockers"))
+    return [f"deferred_write_handoff:{item}" for item in blockers] or ["deferred_write_handoff:not_ready"]
 
 
 def _commit_precommit_audit_blockers(commit: dict[str, Any]) -> list[str]:

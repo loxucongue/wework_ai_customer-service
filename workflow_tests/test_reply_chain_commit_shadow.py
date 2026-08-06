@@ -26,6 +26,7 @@ def test_commit_shadow_describes_non_isolated_reply_side_effects() -> None:
     assert shadow["planned_side_effects"]["case_image_memory_record"] is True
     assert shadow["planned_side_effects"]["activity_intro_image_memory_record"] is True
     assert shadow["planned_side_effects"]["visible_store_fact_memory_record"] is True
+    assert shadow["planned_side_effects"]["deferred_write_tool_execution"] is False
     assert shadow["planned_side_effects"]["trace_log_write"] is True
     assert shadow["planned_side_effects"]["run_record_save"] is True
     assert "sop_chat_gate" in shadow["must_not_be_owned_by"]
@@ -102,3 +103,62 @@ def test_commit_shadow_allows_empty_reply_when_runtime_control_permits_it() -> N
     assert audit["empty_reply_permitted"] is True
     assert audit["reply_source"] == "platform_superseded"
     assert audit["sync_return_type"] == "empty"
+
+
+def test_commit_shadow_hands_deferred_write_tools_to_post_reply_commit_phase() -> None:
+    shadow = reply_chain_commit_shadow(
+        final_state={
+            "test_isolated": False,
+            "request_context": {"memory_persist_allowed": False},
+            "tool_plan_preview": {
+                "schema_version": "tool_plan_preview_v2",
+                "deferred_write_proposals": [
+                    {
+                        "call_id": "create_work_1",
+                        "tool": "create_work_order",
+                        "execution": "deferred_write_only",
+                        "purpose": "create order after payment registration",
+                    },
+                    {
+                        "call_id": "mobile_1",
+                        "tool": "add_customer_mobile",
+                        "execution": "deferred_write_only",
+                    },
+                ],
+            },
+        },
+        reply_messages=[{"type": "text", "content": {"text": "ok"}}],
+        allow_empty_reply=False,
+    )
+
+    audit = shadow["deferred_write_handoff_audit"]
+    assert audit["schema_version"] == "reply_chain_deferred_write_handoff_audit_v1"
+    assert audit["commit_phase_owner"] == "runtime_after_reply_validation"
+    assert audit["proposed_write_count"] == 2
+    assert [tool["tool"] for tool in audit["proposed_write_tools"]] == ["create_work_order", "add_customer_mobile"]
+    assert audit["early_execution_forbidden"] is True
+    assert audit["current_runtime_executes_deferred_writes"] is False
+    assert audit["requires_reply_validation_before_write"] is True
+    assert audit["requires_explicit_commit_executor_before_activation"] is True
+    assert audit["ready_for_deferred_write_refactor_review"] is True
+    assert shadow["planned_side_effects"]["deferred_write_tool_execution"] is False
+
+
+def test_commit_shadow_flags_deferred_write_handoff_contract_violations() -> None:
+    shadow = reply_chain_commit_shadow(
+        final_state={
+            "tool_plan_preview": {
+                "deferred_write_proposals": [
+                    {"tool": "create_work_order", "execution": "execute_now"},
+                    {"execution": "deferred_write_only"},
+                ]
+            }
+        },
+        reply_messages=[{"type": "text", "content": {"text": "ok"}}],
+        allow_empty_reply=False,
+    )
+
+    audit = shadow["deferred_write_handoff_audit"]
+    assert audit["ready_for_deferred_write_refactor_review"] is False
+    assert "deferred_write_execution_not_deferred:create_work_order" in audit["blockers"]
+    assert "deferred_write_missing_tool" in audit["blockers"]

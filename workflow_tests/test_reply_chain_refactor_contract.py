@@ -122,6 +122,7 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "reply_chain_release_review_checklist_v1",
         "reply_chain_behavior_switch_guard_v1",
         "commit_phase_shadow_review",
+        "reply_chain_deferred_write_handoff_audit_v1",
         "business_wording_freeze_review",
         "model_semantics_ownership_review",
         "simulation_regression_review",

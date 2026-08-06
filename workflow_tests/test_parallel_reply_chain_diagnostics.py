@@ -52,6 +52,15 @@ def _commit_shadow(**overrides: object) -> dict:
             "ready_for_commit_shadow": True,
             "blockers": [],
         },
+        "deferred_write_handoff_audit": {
+            "schema_version": "reply_chain_deferred_write_handoff_audit_v1",
+            "commit_phase_owner": "runtime_after_reply_validation",
+            "early_execution_forbidden": True,
+            "current_runtime_executes_deferred_writes": False,
+            "requires_reply_validation_before_write": True,
+            "ready_for_deferred_write_refactor_review": True,
+            "blockers": [],
+        },
         "must_not_be_owned_by": ["sop_chat_gate", "tool_planner", "reply_chain_join"],
     }
     base.update(overrides)
@@ -243,6 +252,27 @@ def test_diagnostics_blocks_when_commit_shadow_has_wrong_owner() -> None:
     assert diagnostics["phase"] == "commit_phase_blocked"
     assert diagnostics["next_safe_step"] == "fix_or_record_reply_chain_commit_shadow_before_behavior_switch"
     assert diagnostics["commit"]["blockers"] == ["commit_owner_not_runtime_after_reply_validation"]
+
+
+def test_diagnostics_blocks_when_deferred_write_handoff_is_missing() -> None:
+    commit = _commit_shadow()
+    commit.pop("deferred_write_handoff_audit")
+
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow=_completed_runner_shadow(),
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+        },
+        commit_shadow=commit,
+    )
+
+    assert diagnostics["phase"] == "commit_phase_blocked"
+    assert diagnostics["commit"]["blockers"] == ["missing_reply_chain_deferred_write_handoff_audit"]
 
 
 def test_diagnostics_blocks_when_commit_precommit_audit_is_missing() -> None:
