@@ -15,6 +15,14 @@ from app.simulation.runner import render_markdown, run_suite
 
 
 DEFAULT_RELAY_BASE_URL = "https://linkai.shop"
+REFACTOR_ENV_KEYS = {
+    "REFACTOR_MODEL_CLAUDE_API_KEY",
+    "REFACTOR_MODEL_GEMINI_API_KEY",
+    "REFACTOR_MODEL_OPENAI_API_KEY",
+    "REFACTOR_MODEL_MATRIX_PROFILES",
+    "REFACTOR_MODEL_MATRIX_PROFILE_TIMEOUT_SECONDS",
+    "REFACTOR_MODEL_RELAY_BASE_URL",
+}
 
 
 @dataclass(frozen=True)
@@ -218,11 +226,53 @@ def git_commit_fields(repo_root: Path) -> dict[str, Any]:
     }
 
 
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if key.lower().startswith("export "):
+        key = key[7:].strip()
+    if key not in REFACTOR_ENV_KEYS:
+        return None
+    value = value.strip()
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        value = value[1:-1]
+    return key, value
+
+
+def load_refactor_env(repo_root: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for env_path in (repo_root / ".env", repo_root / "ai_paths" / ".env"):
+        if not env_path.exists():
+            continue
+        try:
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+        except UnicodeDecodeError:
+            lines = env_path.read_text(encoding="utf-8-sig").splitlines()
+        for line in lines:
+            parsed = _parse_env_line(line)
+            if parsed is None:
+                continue
+            key, value = parsed
+            values.setdefault(key, value)
+    for key in REFACTOR_ENV_KEYS:
+        override = os.getenv(key, "").strip()
+        if override:
+            values[key] = override
+    return values
+
+
+def refactor_env_value(values: dict[str, str], key: str, default: str = "") -> str:
+    return str(values.get(key) or default).strip()
+
+
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run offline full-chain simulation across refactor candidate models. "
-            "API keys are read only from environment variables and are never written to reports."
+            "API keys are read only from environment variables or ignored local .env files and are never written to reports."
         )
     )
     parser.add_argument(
@@ -231,8 +281,8 @@ def _args() -> argparse.Namespace:
         default=Path("workflow_tests/fixtures/full_chain_simulation_v1.json"),
     )
     parser.add_argument("--output-dir", type=Path)
-    parser.add_argument("--profiles", default=os.getenv("REFACTOR_MODEL_MATRIX_PROFILES", "claude,gemini,openai"))
-    parser.add_argument("--relay-base-url", default=os.getenv("REFACTOR_MODEL_RELAY_BASE_URL", DEFAULT_RELAY_BASE_URL))
+    parser.add_argument("--profiles", default="")
+    parser.add_argument("--relay-base-url", default="")
     parser.add_argument("--attempts", type=int, default=1)
     parser.add_argument("--critical-attempts", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=2)
@@ -242,7 +292,7 @@ def _args() -> argparse.Namespace:
     parser.add_argument(
         "--profile-timeout-seconds",
         type=int,
-        default=int(os.getenv("REFACTOR_MODEL_MATRIX_PROFILE_TIMEOUT_SECONDS", "0") or 0),
+        default=0,
         help="Optional wall-clock timeout per model profile. 0 disables the timeout.",
     )
     return parser.parse_args()
@@ -251,20 +301,28 @@ def _args() -> argparse.Namespace:
 async def _main() -> int:
     args = _args()
     repo_root = Path(__file__).resolve().parents[2]
+    env_values = load_refactor_env(repo_root)
     fixture = (repo_root / args.fixture).resolve() if not args.fixture.is_absolute() else args.fixture
     output_dir = args.output_dir or (
         repo_root / ".tmp_runtime" / "simulation" / datetime.now().strftime("model-matrix-%Y%m%d-%H%M%S")
     )
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    relay_base_url = relay_api_base_url(str(args.relay_base_url or DEFAULT_RELAY_BASE_URL))
+    relay_base_url = relay_api_base_url(
+        str(args.relay_base_url or refactor_env_value(env_values, "REFACTOR_MODEL_RELAY_BASE_URL", DEFAULT_RELAY_BASE_URL))
+    )
+    profile_timeout_seconds = args.profile_timeout_seconds or int(
+        refactor_env_value(env_values, "REFACTOR_MODEL_MATRIX_PROFILE_TIMEOUT_SECONDS", "0") or 0
+    )
     base_settings = Settings()
-    profiles = selected_profiles(args.profiles)
+    profiles = selected_profiles(
+        args.profiles or refactor_env_value(env_values, "REFACTOR_MODEL_MATRIX_PROFILES", "claude,gemini,openai")
+    )
     matrix_results: list[dict[str, Any]] = []
     executed = 0
 
     for profile in profiles:
-        api_key = os.getenv(profile.api_key_env, "").strip()
+        api_key = refactor_env_value(env_values, profile.api_key_env)
         public_config = public_profile_config(profile, relay_base_url=relay_base_url, api_key_present=bool(api_key))
         profile_dir = output_dir / profile.name
         if not api_key:
@@ -293,15 +351,15 @@ async def _main() -> int:
             base_settings=settings,
         )
         try:
-            if args.profile_timeout_seconds and args.profile_timeout_seconds > 0:
-                report = await asyncio.wait_for(suite_call, timeout=args.profile_timeout_seconds)
+            if profile_timeout_seconds and profile_timeout_seconds > 0:
+                report = await asyncio.wait_for(suite_call, timeout=profile_timeout_seconds)
             else:
                 report = await suite_call
         except asyncio.TimeoutError:
             timed_out = timed_out_profile_result(
                 profile,
                 relay_base_url=relay_base_url,
-                timeout_seconds=args.profile_timeout_seconds,
+                timeout_seconds=profile_timeout_seconds,
             )
             matrix_results.append(timed_out)
             profile_dir.mkdir(parents=True, exist_ok=True)

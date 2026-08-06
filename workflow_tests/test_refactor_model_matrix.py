@@ -8,10 +8,12 @@ from ai_paths.scripts.run_refactor_model_matrix import (
     MODEL_PROFILES,
     build_profile_settings,
     git_commit_fields,
+    load_refactor_env,
     matrix_ranking,
     missing_key_profile_result,
     profile_result_summary,
     public_profile_config,
+    refactor_env_value,
     relay_api_base_url,
     selected_profiles,
     timed_out_profile_result,
@@ -96,6 +98,46 @@ def test_public_profile_config_never_contains_key_value() -> None:
     assert public["api_key_present"] is True
     assert public["api_key_value_logged"] is False
     assert "dummy" not in str(public)
+
+
+def test_load_refactor_env_reads_only_approved_ignored_keys(tmp_path, monkeypatch) -> None:
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "REFACTOR_MODEL_CLAUDE_API_KEY=sk-test-claude",
+                "REFACTOR_MODEL_GEMINI_API_KEY='sk-test-gemini'",
+                'REFACTOR_MODEL_OPENAI_API_KEY="sk-test-openai"',
+                "REFACTOR_MODEL_RELAY_BASE_URL=https://linkai.shop",
+                "UNRELATED_SECRET=sk-should-not-be-loaded",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("REFACTOR_MODEL_OPENAI_API_KEY", "sk-env-openai")
+
+    values = load_refactor_env(tmp_path)
+
+    assert values["REFACTOR_MODEL_CLAUDE_API_KEY"] == "sk-test-claude"
+    assert values["REFACTOR_MODEL_GEMINI_API_KEY"] == "sk-test-gemini"
+    assert values["REFACTOR_MODEL_OPENAI_API_KEY"] == "sk-env-openai"
+    assert values["REFACTOR_MODEL_RELAY_BASE_URL"] == "https://linkai.shop"
+    assert "UNRELATED_SECRET" not in values
+
+
+def test_refactor_env_value_strips_values_without_logging_keys() -> None:
+    values = {"REFACTOR_MODEL_OPENAI_API_KEY": "  sk-test-openai  "}
+
+    api_key = refactor_env_value(values, "REFACTOR_MODEL_OPENAI_API_KEY")
+    public = public_profile_config(
+        MODEL_PROFILES["openai"],
+        relay_base_url=DEFAULT_RELAY_BASE_URL,
+        api_key_present=bool(api_key),
+    )
+
+    assert api_key == "sk-test-openai"
+    assert public["api_key_present"] is True
+    assert public["api_key_value_logged"] is False
+    assert api_key not in str(public)
 
 
 def test_profile_result_summary_exposes_accuracy_and_speed_for_review() -> None:
