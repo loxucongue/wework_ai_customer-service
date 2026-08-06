@@ -103,6 +103,9 @@ def _model_matrix_ready() -> dict:
                     "p50_ms": 6200,
                     "p90_ms": 11000,
                     "infrastructure_failures": 0,
+                    "effect_issue_count": 0,
+                    "effect_low_score_count": 0,
+                    "effect_hard_or_infra_count": 0,
                     "accepted_by_release_thresholds": True,
                 },
             },
@@ -114,6 +117,9 @@ def _model_matrix_ready() -> dict:
                     "p50_ms": 3900,
                     "p90_ms": 7600,
                     "infrastructure_failures": 0,
+                    "effect_issue_count": 1,
+                    "effect_low_score_count": 1,
+                    "effect_hard_or_infra_count": 0,
                     "accepted_by_release_thresholds": True,
                 },
             },
@@ -125,6 +131,9 @@ def _model_matrix_ready() -> dict:
                     "p50_ms": 4800,
                     "p90_ms": 8200,
                     "infrastructure_failures": 0,
+                    "effect_issue_count": 0,
+                    "effect_low_score_count": 0,
+                    "effect_hard_or_infra_count": 0,
                     "accepted_by_release_thresholds": True,
                 },
             },
@@ -401,6 +410,19 @@ def test_external_gate_evidence_blocks_accepted_model_missing_infrastructure_fai
     blockers = model_matrix_report_blockers(model_matrix)
 
     assert "model_matrix_accepted_profile_missing_infrastructure_failures:claude" in blockers
+
+
+def test_external_gate_evidence_blocks_model_matrix_missing_effect_review_counts() -> None:
+    model_matrix = _model_matrix_ready()
+    del model_matrix["profiles"][1]["profile_summary"]["effect_issue_count"]
+    del model_matrix["profiles"][1]["profile_summary"]["effect_low_score_count"]
+    del model_matrix["profiles"][1]["profile_summary"]["effect_hard_or_infra_count"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_missing_effect_issue_count:gemini" in blockers
+    assert "model_matrix_missing_effect_low_score_count:gemini" in blockers
+    assert "model_matrix_missing_effect_hard_or_infra_count:gemini" in blockers
 
 
 def test_bundle_audit_does_not_import_final_behavior_switch_guard_private_helpers() -> None:

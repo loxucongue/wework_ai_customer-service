@@ -102,6 +102,11 @@ def test_profile_result_summary_exposes_accuracy_and_speed_for_review() -> None:
                     "critical_all_pass": True,
                 },
             },
+            "effect_review": {
+                "issue_count": 2,
+                "low_score_count": 1,
+                "hard_or_infra_count": 1,
+            },
         }
     )
 
@@ -109,6 +114,9 @@ def test_profile_result_summary_exposes_accuracy_and_speed_for_review() -> None:
     assert summary["semantic_pass_rate"] == 0.94
     assert summary["p50_ms"] == 4200
     assert summary["p90_ms"] == 7800
+    assert summary["effect_issue_count"] == 2
+    assert summary["effect_low_score_count"] == 1
+    assert summary["effect_hard_or_infra_count"] == 1
     assert summary["accepted_by_release_thresholds"] is True
 
 
@@ -179,7 +187,14 @@ def test_matrix_ranking_orders_by_accuracy_then_errors_then_speed() -> None:
             {
                 "status": "completed",
                 "model_profile": {"name": "better", "model": "better-model"},
-                "profile_summary": {"semantic_pass_rate": 0.95, "hard_error_count": 0, "p90_ms": 12000},
+                "profile_summary": {
+                    "semantic_pass_rate": 0.95,
+                    "hard_error_count": 0,
+                    "p90_ms": 12000,
+                    "effect_issue_count": 1,
+                    "effect_low_score_count": 1,
+                    "effect_hard_or_infra_count": 0,
+                },
             },
             {
                 "status": "completed",
@@ -204,3 +219,6 @@ def test_matrix_ranking_orders_by_accuracy_then_errors_then_speed() -> None:
     )
 
     assert [item["name"] for item in ranked] == ["better", "fast", "slow", "unstable"]
+    assert ranked[0]["effect_issue_count"] == 1
+    assert ranked[0]["effect_low_score_count"] == 1
+    assert ranked[0]["effect_hard_or_infra_count"] == 0

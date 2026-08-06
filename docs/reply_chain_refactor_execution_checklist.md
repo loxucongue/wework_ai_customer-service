@@ -339,6 +339,7 @@ Required matrix report:
 - each profile is `completed`
 - no profile has `status=timed_out`
 - each completed profile has `profile_summary.semantic_pass_rate`, `p50_ms`, and `p90_ms`
+- each completed profile has `profile_summary.effect_issue_count`, `effect_low_score_count`, and `effect_hard_or_infra_count`
 - any accepted profile has `profile_summary.infrastructure_failures=0`
 - at least one profile has `profile_summary.accepted_by_release_thresholds=true`
 - `safety.api_keys_written_to_report=false`

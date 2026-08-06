@@ -152,6 +152,7 @@ def timed_out_profile_result(
 def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), dict) else {}
+    effect_review = report.get("effect_review") if isinstance(report.get("effect_review"), dict) else {}
     infrastructure_failures = int(summary.get("infrastructure_failures") or 0)
     return {
         "hard_error_count": report.get("hard_error_count"),
@@ -162,6 +163,9 @@ def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
         "infrastructure_failures": infrastructure_failures,
         "p50_ms": summary.get("p50_ms"),
         "p90_ms": summary.get("p90_ms"),
+        "effect_issue_count": effect_review.get("issue_count"),
+        "effect_low_score_count": effect_review.get("low_score_count"),
+        "effect_hard_or_infra_count": effect_review.get("hard_or_infra_count"),
         "accepted_by_release_thresholds": (
             acceptance.get("hard_errors_zero") is True
             and acceptance.get("semantic_at_least_90") is True
@@ -191,6 +195,9 @@ def matrix_ranking(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "infrastructure_failures": (item.get("profile_summary") or {}).get("infrastructure_failures"),
             "p50_ms": (item.get("profile_summary") or {}).get("p50_ms"),
             "p90_ms": (item.get("profile_summary") or {}).get("p90_ms"),
+            "effect_issue_count": (item.get("profile_summary") or {}).get("effect_issue_count"),
+            "effect_low_score_count": (item.get("profile_summary") or {}).get("effect_low_score_count"),
+            "effect_hard_or_infra_count": (item.get("profile_summary") or {}).get("effect_hard_or_infra_count"),
         }
         for item in sorted(completed, key=score)
     ]
