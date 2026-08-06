@@ -261,7 +261,10 @@ Required report:
 - hard errors: `0`
 - failed critical scenarios: `[]`
 - semantic pass rate: at least `0.90`
-- production writes: `0`
+- `safety.production_customer_messages_sent=false`
+- `safety.production_writes_allowed=false`
+- `safety.virtual_outbox_only=true`
+- `safety.production_write_count=0`
 - all sends captured only in virtual outbox
 
 Candidate model matrix:

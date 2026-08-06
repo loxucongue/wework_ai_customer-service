@@ -149,6 +149,11 @@ def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None
     text = CHECKLIST_PATH.read_text(encoding="utf-8")
 
     for marker in [
+        "schema_version=offline_reply_chain_simulation_report_v1",
+        "safety.production_customer_messages_sent=false",
+        "safety.production_writes_allowed=false",
+        "safety.virtual_outbox_only=true",
+        "safety.production_write_count=0",
         "run_refactor_model_matrix.py",
         "--profiles claude,gemini,openai",
         "--require-keys",

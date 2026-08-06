@@ -190,6 +190,15 @@ def _simulation_blockers(simulation: dict[str, Any]) -> list[str]:
     failed_critical = _list_strings(simulation.get("failed_critical_scenarios"))
     if failed_critical:
         blockers.extend(f"simulation_critical_failed:{item}" for item in failed_critical)
+    safety = _dict(simulation.get("safety"))
+    if safety.get("production_customer_messages_sent") is not False:
+        blockers.append("simulation_missing_no_customer_send_safety")
+    if safety.get("production_writes_allowed") is not False:
+        blockers.append("simulation_missing_no_production_write_safety")
+    if safety.get("virtual_outbox_only") is not True:
+        blockers.append("simulation_missing_virtual_outbox_safety")
+    if _int_value(safety.get("production_write_count")) != 0:
+        blockers.append(f"simulation_production_writes:{safety.get('production_write_count')}")
     return blockers
 
 

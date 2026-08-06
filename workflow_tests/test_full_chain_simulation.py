@@ -80,6 +80,61 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(report["failed_critical_scenarios"], [])
         self.assertFalse(report["summary"]["acceptance"]["hard_errors_zero"])
         self.assertFalse(report["summary"]["acceptance"]["semantic_at_least_90"])
+        self.assertEqual(
+            report["safety"],
+            {
+                "production_customer_messages_sent": False,
+                "production_writes_allowed": False,
+                "virtual_outbox_only": True,
+                "production_write_count": 0,
+                "virtual_outbox_message_count": 0,
+                "simulated_write_count": 0,
+            },
+        )
+
+    def test_aggregate_reports_simulation_isolation_safety(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "safe", "category": "sim"}],
+            results=[
+                {
+                    "scenario_id": "safe",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                    "outbox": [{"transport": "simulation_outbox"}],
+                    "simulated_platform_writes": [{"transport": "simulation_only"}],
+                }
+            ],
+            baseline={},
+        )
+
+        self.assertFalse(report["safety"]["production_customer_messages_sent"])
+        self.assertFalse(report["safety"]["production_writes_allowed"])
+        self.assertTrue(report["safety"]["virtual_outbox_only"])
+        self.assertEqual(report["safety"]["production_write_count"], 0)
+        self.assertEqual(report["safety"]["virtual_outbox_message_count"], 1)
+        self.assertEqual(report["safety"]["simulated_write_count"], 1)
+
+    def test_aggregate_marks_non_simulation_transport_as_unsafe(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "unsafe", "category": "sim"}],
+            results=[
+                {
+                    "scenario_id": "unsafe",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                    "outbox": [{"transport": "real_platform"}],
+                    "simulated_platform_writes": [{"transport": "real_write"}],
+                }
+            ],
+            baseline={},
+        )
+
+        self.assertTrue(report["safety"]["production_customer_messages_sent"])
+        self.assertTrue(report["safety"]["production_writes_allowed"])
+        self.assertFalse(report["safety"]["virtual_outbox_only"])
+        self.assertEqual(report["safety"]["production_write_count"], 1)
 
     def test_aggregate_marks_critical_semantic_failure_for_release_gate(self) -> None:
         report = _aggregate(

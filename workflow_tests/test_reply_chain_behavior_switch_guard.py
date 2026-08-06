@@ -58,6 +58,12 @@ def _simulation_ready() -> dict:
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
+        "safety": {
+            "production_customer_messages_sent": False,
+            "production_writes_allowed": False,
+            "virtual_outbox_only": True,
+            "production_write_count": 0,
+        },
     }
 
 
@@ -309,6 +315,31 @@ def test_behavior_switch_guard_blocks_invalid_model_matrix_report() -> None:
 
     assert guard["can_enable_behavior_switch"] is False
     assert "model_matrix_profile_not_completed:gemini" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_simulation_without_isolation_safety() -> None:
+    simulation = _simulation_ready()
+    simulation["safety"] = {
+        "production_customer_messages_sent": True,
+        "production_writes_allowed": True,
+        "virtual_outbox_only": False,
+        "production_write_count": 2,
+    }
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=simulation,
+        model_matrix_report=_model_matrix_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "simulation_missing_no_customer_send_safety" in guard["blockers"]
+    assert "simulation_missing_no_production_write_safety" in guard["blockers"]
+    assert "simulation_missing_virtual_outbox_safety" in guard["blockers"]
+    assert "simulation_production_writes:2" in guard["blockers"]
 
 
 def test_behavior_switch_guard_is_not_consumed_by_current_model_payloads() -> None:

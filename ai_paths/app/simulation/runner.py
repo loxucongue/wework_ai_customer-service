@@ -322,6 +322,7 @@ def _aggregate(
     ]
     semantic_pass_rate = _ratio(len(semantic_passed), len(evaluable))
     semantic_pass_rate_percent = _rate(len(semantic_passed), len(evaluable))
+    safety = _simulation_safety(results)
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
@@ -331,6 +332,7 @@ def _aggregate(
         "hard_error_count": hard_error_count,
         "semantic_pass_rate": semantic_pass_rate,
         "failed_critical_scenarios": failed_critical_scenarios,
+        "safety": safety,
         "summary": {
             "hard_pass_rate": _rate(len(hard_passed), len(results)),
             "semantic_pass_rate": semantic_pass_rate_percent,
@@ -347,6 +349,39 @@ def _aggregate(
         "scenario_summary": scenario_summary,
         "baseline_comparison": _compare_baseline(baseline, scenario_summary),
         "results": results,
+    }
+
+
+def _simulation_safety(results: list[dict[str, Any]]) -> dict[str, Any]:
+    outbox_items = [
+        item
+        for result in results
+        for item in result.get("outbox") or []
+        if isinstance(item, dict)
+    ]
+    write_items = [
+        item
+        for result in results
+        for item in result.get("simulated_platform_writes") or []
+        if isinstance(item, dict)
+    ]
+    non_virtual_outbox = [
+        item
+        for item in outbox_items
+        if str(item.get("transport") or "") != "simulation_outbox"
+    ]
+    non_simulation_writes = [
+        item
+        for item in write_items
+        if str(item.get("transport") or "") != "simulation_only"
+    ]
+    return {
+        "production_customer_messages_sent": bool(non_virtual_outbox),
+        "production_writes_allowed": bool(non_simulation_writes),
+        "virtual_outbox_only": not non_virtual_outbox,
+        "production_write_count": len(non_simulation_writes),
+        "virtual_outbox_message_count": len(outbox_items),
+        "simulated_write_count": len(write_items),
     }
 
 
