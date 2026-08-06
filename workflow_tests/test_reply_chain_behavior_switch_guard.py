@@ -69,6 +69,15 @@ def _simulation_ready() -> dict:
             "schema_version": "offline_simulation_coverage_audit_v1",
             "missing_required_categories": [],
         },
+        "review_artifacts": {
+            "schema_version": "offline_simulation_review_artifacts_v1",
+            "request_count": 10,
+            "event_count": 3,
+            "tool_call_count": 5,
+            "outbox_batch_count": 4,
+            "simulated_write_count": 2,
+            "results": [{"scenario_id": "sim_case", "request_ids": ["sim_request_1"]}],
+        },
         "safety": {
             "production_customer_messages_sent": False,
             "production_writes_allowed": False,

@@ -32,6 +32,21 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         blockers.append("simulation_infrastructure_acceptance_missing_or_false")
     if acceptance.get("scenario_coverage_complete") is not True:
         blockers.append("simulation_scenario_coverage_incomplete")
+    review_artifacts = _dict(simulation.get("review_artifacts"))
+    if review_artifacts.get("schema_version") != "offline_simulation_review_artifacts_v1":
+        blockers.append("simulation_missing_review_artifacts")
+    else:
+        for field in (
+            "request_count",
+            "event_count",
+            "tool_call_count",
+            "outbox_batch_count",
+            "simulated_write_count",
+        ):
+            if field not in review_artifacts:
+                blockers.append(f"simulation_review_artifacts_missing_field:{field}")
+        if not isinstance(review_artifacts.get("results"), list):
+            blockers.append("simulation_review_artifacts_missing_results")
     safety = _dict(simulation.get("safety"))
     if safety.get("production_customer_messages_sent") is not False:
         blockers.append("simulation_missing_no_customer_send_safety")

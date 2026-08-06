@@ -28,6 +28,15 @@ def _simulation_ready() -> dict:
             "schema_version": "offline_simulation_coverage_audit_v1",
             "missing_required_categories": [],
         },
+        "review_artifacts": {
+            "schema_version": "offline_simulation_review_artifacts_v1",
+            "request_count": 10,
+            "event_count": 3,
+            "tool_call_count": 5,
+            "outbox_batch_count": 4,
+            "simulated_write_count": 2,
+            "results": [{"scenario_id": "sim_case", "request_ids": ["sim_request_1"]}],
+        },
         "safety": {
             "production_customer_messages_sent": False,
             "production_writes_allowed": False,
@@ -133,6 +142,26 @@ def test_external_gate_evidence_blocks_missing_or_failed_simulation_infrastructu
 
     assert "simulation_infrastructure_failures:1" in blockers
     assert "simulation_infrastructure_acceptance_missing_or_false" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_simulation_review_artifacts() -> None:
+    simulation = _simulation_ready()
+    del simulation["review_artifacts"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_review_artifacts" in blockers
+
+
+def test_external_gate_evidence_blocks_incomplete_simulation_review_artifacts() -> None:
+    simulation = _simulation_ready()
+    del simulation["review_artifacts"]["tool_call_count"]
+    simulation["review_artifacts"]["results"] = "not-a-list"
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_review_artifacts_missing_field:tool_call_count" in blockers
+    assert "simulation_review_artifacts_missing_results" in blockers
 
 
 def test_external_gate_evidence_blocks_accepted_model_with_infrastructure_failures() -> None:
