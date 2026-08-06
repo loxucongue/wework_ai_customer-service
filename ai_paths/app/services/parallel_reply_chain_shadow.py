@@ -33,6 +33,9 @@ def parallel_reply_chain_shadow(
     gate_commit_boundary = gate_router_shadow.get("commit_boundary")
     if not isinstance(gate_commit_boundary, dict):
         gate_commit_boundary = {}
+    final_expression_boundary = reply_chain_join_shadow.get("final_expression_boundary")
+    if not isinstance(final_expression_boundary, dict):
+        final_expression_boundary = {}
     return _drop_empty(
         {
             "schema_version": "parallel_reply_chain_shadow_v1",
@@ -86,6 +89,11 @@ def parallel_reply_chain_shadow(
                 "read_executor_mode": read_only_tool_executor_shadow.get("mode"),
                 "join_final_route": reply_chain_join_shadow.get("final_route"),
                 "direct_reply_allowed": reply_chain_join_shadow.get("direct_reply_allowed"),
+                "join_final_expression_boundary_schema": final_expression_boundary.get("schema_version"),
+                "join_final_customer_message_owner": final_expression_boundary.get("final_customer_message_owner"),
+                "join_reply_required_for_complex_turn": final_expression_boundary.get("reply_required_for_complex_turn"),
+                "join_generates_customer_visible_text": final_expression_boundary.get("join_generates_customer_visible_text"),
+                "join_decides_sales_psychology": final_expression_boundary.get("join_decides_sales_psychology"),
                 "reply_handoff_schema": (reply_final_brain_handoff_shadow or {}).get("schema_version"),
                 "reply_legacy_business_field_count": reply_handoff_migration.get("legacy_business_field_count"),
                 "reply_handoff_requires_schema": reply_handoff_migration.get("requires_reply_schema_before_activation"),
@@ -130,10 +138,27 @@ def _activation_blockers(
         blockers.append("missing_read_only_tool_executor_shadow")
     if reply_chain_join_shadow.get("schema_version") != "reply_chain_join_shadow_v1":
         blockers.append("missing_reply_chain_join_shadow")
+    blockers.extend(_join_final_expression_blockers(reply_chain_join_shadow))
     if reply_final_brain_handoff_shadow.get("schema_version") != "reply_final_brain_handoff_shadow_v1":
         blockers.append("missing_reply_final_brain_handoff_shadow")
     if read_only_tool_executor_shadow.get("blocked"):
         blockers.append("early_tool_executor_has_blocked_calls")
+    return blockers
+
+
+def _join_final_expression_blockers(reply_chain_join_shadow: dict[str, Any]) -> list[str]:
+    boundary = reply_chain_join_shadow.get("final_expression_boundary")
+    if not isinstance(boundary, dict) or boundary.get("schema_version") != "reply_final_expression_boundary_v1":
+        return ["missing_join_final_expression_boundary"]
+    blockers: list[str] = []
+    final_route = str(reply_chain_join_shadow.get("final_route") or "").strip()
+    owner = str(boundary.get("final_customer_message_owner") or "").strip()
+    if final_route in {"reply", "reply_with_content", "reply_with_tools", "reply_with_content_and_tools"} and owner != "reply":
+        blockers.append("join_complex_turn_owner_not_reply")
+    if boundary.get("join_generates_customer_visible_text") is not False:
+        blockers.append("join_generates_customer_visible_text")
+    if boundary.get("join_decides_sales_psychology") is not False:
+        blockers.append("join_decides_sales_psychology")
     return blockers
 
 

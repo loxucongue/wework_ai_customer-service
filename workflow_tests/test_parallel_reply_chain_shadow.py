@@ -57,6 +57,23 @@ def _gate_router_shadow(**overrides: object) -> dict:
     return base
 
 
+def _join_shadow(**overrides: object) -> dict:
+    base = {
+        "schema_version": "reply_chain_join_shadow_v1",
+        "final_route": "reply_with_content",
+        "direct_reply_allowed": False,
+        "final_expression_boundary": {
+            "schema_version": "reply_final_expression_boundary_v1",
+            "reply_required_for_complex_turn": True,
+            "final_customer_message_owner": "reply",
+            "join_generates_customer_visible_text": False,
+            "join_decides_sales_psychology": False,
+        },
+    }
+    base.update(overrides)
+    return base
+
+
 class ParallelReplyChainShadowTests(unittest.TestCase):
     def test_parallel_contract_keeps_gate_planner_and_reply_ownership_separate(self) -> None:
         shadow = parallel_reply_chain_shadow(
@@ -74,11 +91,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
                 "schema_version": "read_only_tool_executor_shadow_v1",
                 "mode": "dry_run_no_external_calls",
             },
-            reply_chain_join_shadow={
-                "schema_version": "reply_chain_join_shadow_v1",
-                "final_route": "reply_with_content",
-                "direct_reply_allowed": False,
-            },
+            reply_chain_join_shadow=_join_shadow(),
             reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(
                 legacy_business_field_count=6,
                 requires_reply_schema_before_activation=True,
@@ -120,6 +133,14 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             shadow["current_serial_observation"]["reply_handoff_schema"],
             "reply_final_brain_handoff_shadow_v1",
         )
+        self.assertEqual(
+            shadow["current_serial_observation"]["join_final_expression_boundary_schema"],
+            "reply_final_expression_boundary_v1",
+        )
+        self.assertEqual(shadow["current_serial_observation"]["join_final_customer_message_owner"], "reply")
+        self.assertTrue(shadow["current_serial_observation"]["join_reply_required_for_complex_turn"])
+        self.assertFalse(shadow["current_serial_observation"]["join_generates_customer_visible_text"])
+        self.assertFalse(shadow["current_serial_observation"]["join_decides_sales_psychology"])
         self.assertEqual(shadow["current_serial_observation"]["reply_legacy_business_field_count"], 6)
         self.assertTrue(shadow["current_serial_observation"]["reply_handoff_requires_schema"])
         self.assertIn("final_closing_move", shadow["ownership_contract"]["sop_chat_gate"]["must_not_own"])
@@ -137,7 +158,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
                 "mode": "dry_run_no_external_calls",
                 "blocked": [{"tool": "create_order_plan"}],
             },
-            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
             reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
         )
 
@@ -150,7 +171,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
-            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
             reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
             refactor_flags={
                 "schema_version": "reply_chain_refactor_flags_v1",
@@ -180,6 +201,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertIn("missing_gate_router_shadow", shadow["activation"]["blockers"])
         self.assertIn("missing_gate_commit_boundary_audit", shadow["activation"]["blockers"])
         self.assertIn("missing_tool_plan_preview", shadow["activation"]["blockers"])
+        self.assertIn("missing_join_final_expression_boundary", shadow["activation"]["blockers"])
         self.assertIn("missing_reply_final_brain_handoff_shadow", shadow["activation"]["blockers"])
 
     def test_missing_reply_handoff_blocks_parallel_runner_activation(self) -> None:
@@ -188,7 +210,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
-            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
             reply_final_brain_handoff_shadow={},
         )
 
@@ -201,7 +223,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
-            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
             reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
         )
 
@@ -214,7 +236,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
-            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
             reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
         )
 
@@ -229,7 +251,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             gate_router_shadow=_gate_router_shadow(),
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
-            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
             reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
         )
 
@@ -249,7 +271,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             },
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
-            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
             reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
         )
 
@@ -264,7 +286,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             gate_router_shadow=gate_shadow,
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
-            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
             reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
         )
 
@@ -273,6 +295,34 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             "gate_shadow_commit_side_effect:this_shadow_updates_send_once",
             shadow["activation"]["blockers"],
         )
+
+    def test_missing_join_final_expression_boundary_blocks_parallel_runner_activation(self) -> None:
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=_reply_chain_shadow_context(),
+            gate_router_shadow=_gate_router_shadow(),
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("missing_join_final_expression_boundary", shadow["activation"]["blockers"])
+
+    def test_complex_join_route_must_keep_reply_as_final_owner(self) -> None:
+        join_shadow = _join_shadow()
+        join_shadow["final_expression_boundary"]["final_customer_message_owner"] = "validated_static_gate_candidate"
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=_reply_chain_shadow_context(),
+            gate_router_shadow=_gate_router_shadow(),
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow=join_shadow,
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("join_complex_turn_owner_not_reply", shadow["activation"]["blockers"])
 
     def test_parallel_shadow_is_not_consumed_by_current_model_payloads(self) -> None:
         state = {

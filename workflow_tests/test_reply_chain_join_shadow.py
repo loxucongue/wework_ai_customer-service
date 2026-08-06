@@ -20,6 +20,23 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
 
         self.assertEqual(shadow["final_route"], "direct_reply")
         self.assertTrue(shadow["direct_reply_allowed"])
+        self.assertEqual(
+            shadow["final_expression_boundary"]["schema_version"],
+            "reply_final_expression_boundary_v1",
+        )
+        self.assertFalse(shadow["final_expression_boundary"]["reply_required_for_complex_turn"])
+        self.assertEqual(
+            shadow["final_expression_boundary"]["final_customer_message_owner"],
+            "validated_static_gate_candidate",
+        )
+        self.assertTrue(shadow["final_expression_boundary"]["direct_reply_exception"])
+        self.assertEqual(
+            shadow["final_expression_boundary"]["direct_reply_scope"],
+            "static_candidate_only_no_dynamic_facts",
+        )
+        self.assertTrue(shadow["final_expression_boundary"]["direct_reply_requires_commit_validation"])
+        self.assertFalse(shadow["final_expression_boundary"]["join_generates_customer_visible_text"])
+        self.assertFalse(shadow["final_expression_boundary"]["join_decides_sales_psychology"])
         self.assertIn("direct_reply_requires_gate_direct_text_and_no_dynamic_facts", shadow["join_reasons"])
 
     def test_direct_text_with_read_tools_must_go_to_reply_with_content_and_tools(self) -> None:
@@ -36,6 +53,9 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
 
         self.assertEqual(shadow["final_route"], "reply_with_content_and_tools")
         self.assertFalse(shadow["direct_reply_allowed"])
+        self.assertTrue(shadow["final_expression_boundary"]["reply_required_for_complex_turn"])
+        self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
+        self.assertFalse(shadow["final_expression_boundary"]["direct_reply_exception"])
 
     def test_content_tools_and_no_reply_routes_are_distinct(self) -> None:
         content = reply_chain_join_shadow(
@@ -57,6 +77,9 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
         self.assertEqual(content["final_route"], "reply_with_content")
         self.assertEqual(tools["final_route"], "reply_with_tools")
         self.assertEqual(no_reply["final_route"], "no_reply")
+        self.assertEqual(content["final_expression_boundary"]["final_customer_message_owner"], "reply")
+        self.assertEqual(tools["final_expression_boundary"]["final_customer_message_owner"], "reply")
+        self.assertEqual(no_reply["final_expression_boundary"]["final_customer_message_owner"], "none")
 
     def test_unknown_tools_force_reply_review_not_direct_reply(self) -> None:
         shadow = reply_chain_join_shadow(

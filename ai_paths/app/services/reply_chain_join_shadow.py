@@ -32,6 +32,10 @@ def reply_chain_join_shadow(
             "fact_requirement": fact_requirement,
             "final_route": final_route,
             "direct_reply_allowed": direct_reply_allowed,
+            "final_expression_boundary": _final_expression_boundary(
+                final_route=final_route,
+                direct_reply_allowed=direct_reply_allowed,
+            ),
             "content_available": has_content,
             "read_tool_count": len(tool_plan_preview.get("read_tool_calls") or []),
             "deferred_write_count": len(tool_plan_preview.get("deferred_write_proposals") or []),
@@ -89,6 +93,24 @@ def _join_reasons(
     if final_route == "direct_reply":
         reasons.append("direct_reply_requires_gate_direct_text_and_no_dynamic_facts")
     return reasons
+
+
+def _final_expression_boundary(*, final_route: str, direct_reply_allowed: bool) -> dict[str, Any]:
+    reply_required = final_route not in {"direct_reply", "no_reply"}
+    return {
+        "schema_version": "reply_final_expression_boundary_v1",
+        "reply_required_for_complex_turn": reply_required,
+        "final_customer_message_owner": (
+            "reply"
+            if reply_required
+            else ("validated_static_gate_candidate" if direct_reply_allowed else "none")
+        ),
+        "direct_reply_exception": direct_reply_allowed,
+        "direct_reply_scope": "static_candidate_only_no_dynamic_facts" if direct_reply_allowed else "none",
+        "direct_reply_requires_commit_validation": direct_reply_allowed,
+        "join_generates_customer_visible_text": False,
+        "join_decides_sales_psychology": False,
+    }
 
 
 def _drop_empty(value: Any) -> Any:
