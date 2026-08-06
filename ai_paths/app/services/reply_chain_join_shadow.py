@@ -15,12 +15,14 @@ def reply_chain_join_shadow(
     has_read_tools = bool(tool_plan_preview.get("read_tool_calls"))
     has_unknown_tools = bool(tool_plan_preview.get("unknown_tools"))
     has_content = bool((gate_router_shadow.get("selected_content") or {}).get("message_count") or gate_router_shadow.get("direct_reply_candidate"))
+    static_candidate_safe = _static_candidate_safe(gate_router_shadow)
     direct_reply_guard = _direct_reply_guard_audit(
         gate_route=gate_route,
         fact_requirement=fact_requirement,
         has_read_tools=has_read_tools,
         has_unknown_tools=has_unknown_tools,
         has_content=has_content,
+        static_candidate_safe=static_candidate_safe,
     )
 
     final_route = _final_route(
@@ -29,6 +31,7 @@ def reply_chain_join_shadow(
         has_read_tools=has_read_tools,
         has_unknown_tools=has_unknown_tools,
         has_content=has_content,
+        static_candidate_safe=static_candidate_safe,
     )
 
     direct_reply_allowed = final_route == "direct_reply"
@@ -68,12 +71,15 @@ def _final_route(
     has_read_tools: bool,
     has_unknown_tools: bool,
     has_content: bool,
+    static_candidate_safe: bool,
 ) -> str:
     if gate_route == "no_reply" and not has_read_tools and not has_unknown_tools:
         return "no_reply"
     if gate_route == "direct_text" and not has_content and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
         return "reply"
-    if gate_route == "direct_text" and has_content and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
+    if gate_route == "direct_text" and has_content and not static_candidate_safe and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
+        return "reply_with_content"
+    if gate_route == "direct_text" and has_content and static_candidate_safe and fact_requirement == "none" and not has_read_tools and not has_unknown_tools:
         return "direct_reply"
     if gate_route == "content_and_tools" or (has_content and (has_read_tools or has_unknown_tools)):
         return "reply_with_content_and_tools"
@@ -114,6 +120,7 @@ def _direct_reply_guard_audit(
     has_read_tools: bool,
     has_unknown_tools: bool,
     has_content: bool,
+    static_candidate_safe: bool,
 ) -> dict[str, Any]:
     requested = gate_route == "direct_text"
     blockers: list[str] = []
@@ -125,6 +132,8 @@ def _direct_reply_guard_audit(
         blockers.append("read_tools_present")
     if requested and has_unknown_tools:
         blockers.append("unknown_tools_present")
+    if requested and has_content and not static_candidate_safe:
+        blockers.append("static_candidate_contains_dynamic_structure")
     return {
         "schema_version": "reply_chain_direct_reply_guard_audit_v1",
         "direct_reply_requested": requested,
@@ -132,6 +141,7 @@ def _direct_reply_guard_audit(
         "tool_fact_requirement_none": fact_requirement == "none",
         "read_tools_absent": not has_read_tools,
         "unknown_tools_absent": not has_unknown_tools,
+        "static_candidate_safe_for_direct_reply": static_candidate_safe,
         "ready_for_direct_reply": requested and not blockers,
         "blockers": blockers,
         "source": "deterministic_join_direct_reply_guard",
@@ -154,6 +164,13 @@ def _final_expression_boundary(*, final_route: str, direct_reply_allowed: bool) 
         "join_generates_customer_visible_text": False,
         "join_decides_sales_psychology": False,
     }
+
+
+def _static_candidate_safe(gate_router_shadow: dict[str, Any]) -> bool:
+    audit = gate_router_shadow.get("direct_reply_candidate_audit")
+    if not isinstance(audit, dict):
+        return True
+    return audit.get("safe_for_direct_reply_static_candidate") is True
 
 
 def _drop_empty(value: Any) -> Any:

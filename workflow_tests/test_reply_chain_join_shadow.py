@@ -14,6 +14,10 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
             gate_router_shadow={
                 "route_suggestion": "direct_text",
                 "selected_content": {"message_count": 1},
+                "direct_reply_candidate_audit": {
+                    "schema_version": "chat_gate_direct_reply_candidate_audit_v1",
+                    "safe_for_direct_reply_static_candidate": True,
+                },
             },
             tool_plan_preview={"fact_requirement": "none"},
         )
@@ -44,6 +48,30 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
         self.assertFalse(shadow["final_expression_boundary"]["join_generates_customer_visible_text"])
         self.assertFalse(shadow["final_expression_boundary"]["join_decides_sales_psychology"])
         self.assertIn("direct_reply_requires_gate_direct_text_and_no_dynamic_facts", shadow["join_reasons"])
+
+    def test_direct_text_with_dynamic_structure_candidate_must_go_to_reply_with_content(self) -> None:
+        shadow = reply_chain_join_shadow(
+            gate_router_shadow={
+                "route_suggestion": "direct_text",
+                "selected_content": {"message_count": 2},
+                "direct_reply_candidate_audit": {
+                    "schema_version": "chat_gate_direct_reply_candidate_audit_v1",
+                    "safe_for_direct_reply_static_candidate": False,
+                    "blockers": ["dynamic_structure_message_type:payment_collection"],
+                },
+            },
+            tool_plan_preview={"fact_requirement": "none"},
+        )
+
+        self.assertEqual(shadow["final_route"], "reply_with_content")
+        self.assertFalse(shadow["direct_reply_allowed"])
+        self.assertFalse(shadow["direct_reply_guard_audit"]["static_candidate_safe_for_direct_reply"])
+        self.assertIn(
+            "static_candidate_contains_dynamic_structure",
+            shadow["direct_reply_guard_audit"]["blockers"],
+        )
+        self.assertTrue(shadow["final_expression_boundary"]["reply_required_for_complex_turn"])
+        self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
 
     def test_direct_text_with_read_tools_must_go_to_reply_with_content_and_tools(self) -> None:
         shadow = reply_chain_join_shadow(

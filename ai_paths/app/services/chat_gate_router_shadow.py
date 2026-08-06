@@ -3,6 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 
+STATIC_DIRECT_MESSAGE_TYPES = {"text", "image", "video"}
+
+
 def chat_gate_router_shadow_from_result(result: dict[str, Any]) -> dict[str, Any]:
     """Map the legacy SOP Chat Gate result into the target router schema.
 
@@ -24,6 +27,7 @@ def chat_gate_router_shadow_from_result(result: dict[str, Any]) -> dict[str, Any
         required_tool=required_tool,
         mode=str(result.get("mode") or result.get("route") or "").strip(),
     )
+    direct_candidate_audit = _direct_reply_candidate_audit(reply_messages)
 
     return _drop_empty(
         {
@@ -51,6 +55,7 @@ def chat_gate_router_shadow_from_result(result: dict[str, Any]) -> dict[str, Any
             },
             "route_suggestion": route_suggestion,
             "direct_reply_candidate": reply_messages if route_suggestion == "direct_text" else [],
+            "direct_reply_candidate_audit": direct_candidate_audit,
             "commit_boundary": _commit_boundary(route_suggestion=route_suggestion),
             "handoff_notes": [
                 "shadow_from_current_sop_gate_result",
@@ -112,6 +117,27 @@ def _commit_boundary(*, route_suggestion: str) -> dict[str, Any]:
         "this_shadow_writes_database": False,
         "target_commit_owner": "reply_chain_commit_phase_after_reply_validation",
         "target_direct_route_requires_commit_phase": route_suggestion == "direct_text",
+    }
+
+
+def _direct_reply_candidate_audit(reply_messages: list[Any]) -> dict[str, Any]:
+    message_types = [
+        str(message.get("type") or "").strip()
+        for message in reply_messages
+        if isinstance(message, dict) and str(message.get("type") or "").strip()
+    ]
+    dynamic_types = [message_type for message_type in message_types if message_type not in STATIC_DIRECT_MESSAGE_TYPES]
+    blockers: list[str] = []
+    if reply_messages and not message_types:
+        blockers.append("candidate_message_type_missing")
+    blockers.extend(f"dynamic_structure_message_type:{message_type}" for message_type in dynamic_types)
+    return {
+        "schema_version": "chat_gate_direct_reply_candidate_audit_v1",
+        "message_count": len(reply_messages),
+        "message_types": message_types,
+        "static_message_types_allowed": sorted(STATIC_DIRECT_MESSAGE_TYPES),
+        "safe_for_direct_reply_static_candidate": bool(reply_messages) and not blockers,
+        "blockers": blockers,
     }
 
 

@@ -25,6 +25,11 @@ class ChatGateRouterShadowTests(unittest.TestCase):
         self.assertEqual(shadow["selected_content"]["sop_pack_ids"], ["s10_activity_intro"])
         self.assertEqual(shadow["selected_content"]["usage"], "direct")
         self.assertEqual(shadow["commit_boundary"]["schema_version"], "chat_gate_commit_boundary_v1")
+        self.assertEqual(
+            shadow["direct_reply_candidate_audit"]["schema_version"],
+            "chat_gate_direct_reply_candidate_audit_v1",
+        )
+        self.assertTrue(shadow["direct_reply_candidate_audit"]["safe_for_direct_reply_static_candidate"])
         self.assertTrue(shadow["commit_boundary"]["shadow_output_only"])
         self.assertFalse(shadow["commit_boundary"]["this_shadow_creates_sop_task"])
         self.assertFalse(shadow["commit_boundary"]["this_shadow_updates_send_once"])
@@ -55,6 +60,24 @@ class ChatGateRouterShadowTests(unittest.TestCase):
         self.assertEqual(shadow["selected_content"]["precision_qa_ids"], ["one_session_effect"])
         self.assertEqual(shadow["selected_content"]["sop_pack_ids"], ["s10_need_and_case"])
         self.assertNotIn("direct_reply_candidate", shadow)
+
+    def test_payment_collection_candidate_is_not_safe_for_gate_direct_reply(self) -> None:
+        shadow = chat_gate_router_shadow_from_result(
+            {
+                "mode": "sop_only",
+                "send_sop": True,
+                "need_ai_reply": False,
+                "reply_messages": [
+                    {"type": "text", "content": {"text": "您点卡片付预约金就行"}},
+                    {"type": "payment_collection", "content": {"amount": 10}},
+                ],
+            }
+        )
+
+        audit = shadow["direct_reply_candidate_audit"]
+        self.assertEqual(shadow["route_suggestion"], "direct_text")
+        self.assertFalse(audit["safe_for_direct_reply_static_candidate"])
+        self.assertIn("dynamic_structure_message_type:payment_collection", audit["blockers"])
 
     def test_required_tool_maps_to_tools_or_content_and_tools(self) -> None:
         tool_only = chat_gate_router_shadow_from_result(
