@@ -17,10 +17,21 @@ def _simulation_ready() -> dict:
         "git_commit": "abc123",
         "git_commit_set": ["abc123"],
         "scenario_count": 100,
-        "attempt_count": 100,
+        "attempt_count": 300,
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
+        "scenario_summary": {
+            f"sim_case_{index}": {
+                "category": "sim",
+                "critical": False,
+                "attempts": 3,
+                "hard_passes": 3,
+                "semantic_passes": 3,
+                "infrastructure_failures": 0,
+            }
+            for index in range(100)
+        },
         "summary": {
             "infrastructure_failures": 0,
             "acceptance": {
@@ -38,7 +49,7 @@ def _simulation_ready() -> dict:
         },
         "review_artifacts": {
             "schema_version": "offline_simulation_review_artifacts_v1",
-            "result_count": 100,
+            "result_count": 300,
             "request_count": 10,
             "event_count": 3,
             "tool_call_count": 5,
@@ -54,7 +65,7 @@ def _simulation_ready() -> dict:
         },
         "isolation_audit": {
             "schema_version": "offline_simulation_isolation_summary_v1",
-            "result_count": 100,
+            "result_count": 300,
             "missing_result_count": 0,
             "failed_result_count": 0,
             "passed": True,
@@ -160,6 +171,29 @@ def test_external_gate_evidence_blocks_attempt_count_below_scenario_count() -> N
     blockers = simulation_report_blockers(simulation)
 
     assert "simulation_attempt_count_below_scenario_count:99<100" in blockers
+
+
+def test_external_gate_evidence_blocks_insufficient_repeated_attempts() -> None:
+    simulation = _simulation_ready()
+    simulation["scenario_summary"]["sim_case_0"]["attempts"] = 1
+    simulation["scenario_summary"]["sim_case_1"]["critical"] = True
+    simulation["scenario_summary"]["sim_case_1"]["attempts"] = 3
+    simulation["review_artifacts"]["result_count"] = 299
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_scenario_attempts_below_required:sim_case_0:1<3" in blockers
+    assert "simulation_scenario_attempts_below_required:sim_case_1:3<5" in blockers
+    assert "simulation_review_artifacts_result_count_below_attempt_count:299<300" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_scenario_summary() -> None:
+    simulation = _simulation_ready()
+    del simulation["scenario_summary"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_scenario_summary" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_or_mixed_simulation_commit() -> None:

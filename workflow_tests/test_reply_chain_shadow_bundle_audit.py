@@ -95,10 +95,21 @@ def _simulation_ready() -> dict:
         "git_commit": "abc123",
         "git_commit_set": ["abc123"],
         "scenario_count": 100,
-        "attempt_count": 100,
+        "attempt_count": 300,
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
+        "scenario_summary": {
+            f"sim_case_{index}": {
+                "category": "sim",
+                "critical": False,
+                "attempts": 3,
+                "hard_passes": 3,
+                "semantic_passes": 3,
+                "infrastructure_failures": 0,
+            }
+            for index in range(100)
+        },
         "summary": {
             "infrastructure_failures": 0,
             "acceptance": {
@@ -116,7 +127,7 @@ def _simulation_ready() -> dict:
         },
         "review_artifacts": {
             "schema_version": "offline_simulation_review_artifacts_v1",
-            "result_count": 100,
+            "result_count": 300,
             "request_count": 10,
             "event_count": 3,
             "tool_call_count": 5,
@@ -132,7 +143,7 @@ def _simulation_ready() -> dict:
         },
         "isolation_audit": {
             "schema_version": "offline_simulation_isolation_summary_v1",
-            "result_count": 100,
+            "result_count": 300,
             "missing_result_count": 0,
             "failed_result_count": 0,
             "passed": True,

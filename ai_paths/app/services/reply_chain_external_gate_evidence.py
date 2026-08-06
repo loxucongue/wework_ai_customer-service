@@ -4,6 +4,8 @@ from typing import Any
 
 
 MIN_REQUIRED_SIMULATION_SCENARIOS = 100
+MIN_REQUIRED_SIMULATION_ATTEMPTS = 3
+MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS = 5
 
 
 def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
@@ -43,6 +45,26 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     summary = _dict(simulation.get("summary"))
     if _int_value(summary.get("infrastructure_failures")) != 0:
         blockers.append(f"simulation_infrastructure_failures:{summary.get('infrastructure_failures')}")
+    scenario_summary = _dict(simulation.get("scenario_summary"))
+    if not scenario_summary:
+        blockers.append("simulation_missing_scenario_summary")
+    elif len(scenario_summary) < scenario_count:
+        blockers.append(
+            "simulation_scenario_summary_count_below_scenario_count:"
+            f"{len(scenario_summary)}<{simulation.get('scenario_count')}"
+        )
+    for scenario_id, item in scenario_summary.items():
+        if not isinstance(item, dict):
+            blockers.append(f"simulation_scenario_summary_invalid:{scenario_id}")
+            continue
+        required_attempts = (
+            MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS
+            if item.get("critical") is True
+            else MIN_REQUIRED_SIMULATION_ATTEMPTS
+        )
+        attempts = _int_value(item.get("attempts"))
+        if attempts < required_attempts:
+            blockers.append(f"simulation_scenario_attempts_below_required:{scenario_id}:{attempts}<{required_attempts}")
     acceptance = _dict(summary.get("acceptance"))
     for field, blocker in (
         ("hard_errors_zero", "simulation_hard_error_acceptance_missing_or_false"),
@@ -90,6 +112,11 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
             blockers.append(
                 "simulation_review_artifacts_result_count_below_scenario_count:"
                 f"{review_artifacts.get('result_count')}<{simulation.get('scenario_count')}"
+            )
+        if _int_value(review_artifacts.get("result_count")) < attempt_count:
+            blockers.append(
+                "simulation_review_artifacts_result_count_below_attempt_count:"
+                f"{review_artifacts.get('result_count')}<{simulation.get('attempt_count')}"
             )
         for field in (
             "request_count",

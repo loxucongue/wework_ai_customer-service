@@ -261,6 +261,10 @@ Required report:
 - `schema_version=offline_reply_chain_simulation_report_v1`
 - `git_commit` matches the reviewed behavior-switch commit
 - `git_commit_set` contains exactly that commit
+- `scenario_summary` includes every scenario
+- every non-critical scenario has at least `3` attempts
+- every critical scenario has at least `5` attempts
+- `review_artifacts.result_count >= attempt_count`
 - hard errors: `0`
 - `summary.infrastructure_failures=0`
 - `summary.acceptance.infrastructure_failures_zero=true`
