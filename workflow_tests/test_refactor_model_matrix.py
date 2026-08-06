@@ -11,6 +11,7 @@ from ai_paths.scripts.run_refactor_model_matrix import (
     load_refactor_env,
     matrix_ranking,
     missing_key_profile_result,
+    profile_artifacts_summary,
     profile_result_summary,
     public_profile_config,
     refactor_env_value,
@@ -195,6 +196,36 @@ def test_profile_result_summary_exposes_accuracy_and_speed_for_review() -> None:
     assert summary["effect_low_score_count"] == 1
     assert summary["effect_hard_or_infra_count"] == 1
     assert summary["accepted_by_release_thresholds"] is True
+
+
+def test_profile_artifacts_summary_exposes_per_model_report_evidence(tmp_path) -> None:
+    result_json_path = tmp_path / "result.json"
+    report_md_path = tmp_path / "report.md"
+    result_json_path.write_text("{}", encoding="utf-8")
+    report_md_path.write_text("# report", encoding="utf-8")
+
+    artifacts = profile_artifacts_summary(
+        {
+            "scenario_count": 100,
+            "attempt_count": 300,
+            "effect_review": {"result_count": 300},
+            "review_artifacts": {"result_count": 300},
+        },
+        result_json_path=result_json_path,
+        report_md_path=report_md_path,
+    )
+
+    assert artifacts == {
+        "schema_version": "reply_chain_refactor_model_profile_artifacts_v1",
+        "result_json_path": str(result_json_path),
+        "report_md_path": str(report_md_path),
+        "result_json_written": True,
+        "report_md_written": True,
+        "scenario_count": 100,
+        "attempt_count": 300,
+        "effect_review_result_count": 300,
+        "review_artifacts_result_count": 300,
+    }
 
 
 def test_profile_result_summary_rejects_infrastructure_failures() -> None:

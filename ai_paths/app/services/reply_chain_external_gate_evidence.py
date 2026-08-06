@@ -532,6 +532,7 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
             blockers.append(f"model_matrix_missing_effect_low_score_count:{_profile_name(item)}")
         if not _has_number(summary.get("effect_hard_or_infra_count")):
             blockers.append(f"model_matrix_missing_effect_hard_or_infra_count:{_profile_name(item)}")
+        blockers.extend(_model_matrix_profile_artifact_blockers(item))
         if summary.get("accepted_by_release_thresholds") is True:
             accepted = True
             if "infrastructure_failures" not in summary:
@@ -550,6 +551,42 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
         blockers.append("model_matrix_missing_no_send_safety")
     if safety.get("production_writes_allowed") is not False:
         blockers.append("model_matrix_missing_no_write_safety")
+    return blockers
+
+
+def _model_matrix_profile_artifact_blockers(item: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    profile_name = _profile_name(item)
+    artifacts = _dict(item.get("profile_artifacts"))
+    if artifacts.get("schema_version") != "reply_chain_refactor_model_profile_artifacts_v1":
+        return [f"model_matrix_profile_missing_artifacts:{profile_name}"]
+    for field in ("result_json_path", "report_md_path"):
+        if not _string_value(artifacts.get(field)):
+            blockers.append(f"model_matrix_profile_artifact_missing_{field}:{profile_name}")
+    for field, blocker in (
+        ("result_json_written", "model_matrix_profile_result_json_not_written"),
+        ("report_md_written", "model_matrix_profile_report_md_not_written"),
+    ):
+        if artifacts.get(field) is not True:
+            blockers.append(f"{blocker}:{profile_name}")
+    scenario_count = _int_value(artifacts.get("scenario_count"))
+    attempt_count = _int_value(artifacts.get("attempt_count"))
+    effect_count = _int_value(artifacts.get("effect_review_result_count"))
+    review_artifact_count = _int_value(artifacts.get("review_artifacts_result_count"))
+    if scenario_count <= 0:
+        blockers.append(f"model_matrix_profile_artifact_missing_scenario_count:{profile_name}")
+    if attempt_count <= 0:
+        blockers.append(f"model_matrix_profile_artifact_missing_attempt_count:{profile_name}")
+    if effect_count < attempt_count:
+        blockers.append(
+            "model_matrix_profile_effect_review_below_attempt_count:"
+            f"{profile_name}:{effect_count}<{attempt_count}"
+        )
+    if review_artifact_count < attempt_count:
+        blockers.append(
+            "model_matrix_profile_review_artifacts_below_attempt_count:"
+            f"{profile_name}:{review_artifact_count}<{attempt_count}"
+        )
     return blockers
 
 

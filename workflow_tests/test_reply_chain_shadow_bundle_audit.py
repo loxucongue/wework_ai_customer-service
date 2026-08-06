@@ -20,6 +20,20 @@ def _review_artifact_results(count: int = 300) -> list[dict]:
     ]
 
 
+def _profile_artifacts(profile: str, *, attempt_count: int = 300) -> dict:
+    return {
+        "schema_version": "reply_chain_refactor_model_profile_artifacts_v1",
+        "result_json_path": f".tmp_runtime/simulation/model-matrix/{profile}/result.json",
+        "report_md_path": f".tmp_runtime/simulation/model-matrix/{profile}/report.md",
+        "result_json_written": True,
+        "report_md_written": True,
+        "scenario_count": 100,
+        "attempt_count": attempt_count,
+        "effect_review_result_count": attempt_count,
+        "review_artifacts_result_count": attempt_count,
+    }
+
+
 def _ready_state() -> dict:
     return {
         "git_commit": "abc123",
@@ -399,6 +413,7 @@ def _model_matrix_ready() -> dict:
                     "effect_hard_or_infra_count": 0,
                     "accepted_by_release_thresholds": True,
                 },
+                "profile_artifacts": _profile_artifacts("claude"),
             },
             {
                 "status": "completed",
@@ -418,6 +433,7 @@ def _model_matrix_ready() -> dict:
                     "effect_hard_or_infra_count": 0,
                     "accepted_by_release_thresholds": True,
                 },
+                "profile_artifacts": _profile_artifacts("gemini"),
             },
             {
                 "status": "completed",
@@ -437,6 +453,7 @@ def _model_matrix_ready() -> dict:
                     "effect_hard_or_infra_count": 0,
                     "accepted_by_release_thresholds": True,
                 },
+                "profile_artifacts": _profile_artifacts("openai"),
             },
         ],
         "ranking": [

@@ -183,6 +183,27 @@ def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def profile_artifacts_summary(
+    report: dict[str, Any],
+    *,
+    result_json_path: Path,
+    report_md_path: Path,
+) -> dict[str, Any]:
+    effect_review = report.get("effect_review") if isinstance(report.get("effect_review"), dict) else {}
+    review_artifacts = report.get("review_artifacts") if isinstance(report.get("review_artifacts"), dict) else {}
+    return {
+        "schema_version": "reply_chain_refactor_model_profile_artifacts_v1",
+        "result_json_path": str(result_json_path),
+        "report_md_path": str(report_md_path),
+        "result_json_written": result_json_path.exists(),
+        "report_md_written": report_md_path.exists(),
+        "scenario_count": report.get("scenario_count"),
+        "attempt_count": report.get("attempt_count"),
+        "effect_review_result_count": effect_review.get("result_count"),
+        "review_artifacts_result_count": review_artifacts.get("result_count"),
+    }
+
+
 def matrix_ranking(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     completed = [item for item in profiles if item.get("status") == "completed"]
 
@@ -366,13 +387,20 @@ async def _main() -> int:
             (profile_dir / "result.json").write_text(json.dumps(timed_out, ensure_ascii=False, indent=2), encoding="utf-8")
             continue
         report["model_profile"] = public_config
-        (profile_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        (profile_dir / "report.md").write_text(render_markdown(report), encoding="utf-8")
+        result_json_path = profile_dir / "result.json"
+        report_md_path = profile_dir / "report.md"
+        result_json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_md_path.write_text(render_markdown(report), encoding="utf-8")
         matrix_results.append(
             {
                 "model_profile": public_config,
                 "status": "completed",
                 "profile_summary": profile_result_summary(report),
+                "profile_artifacts": profile_artifacts_summary(
+                    report,
+                    result_json_path=result_json_path,
+                    report_md_path=report_md_path,
+                ),
             }
         )
 

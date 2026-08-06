@@ -32,6 +32,20 @@ def _review_artifact_results(count: int = 300) -> list[dict]:
     ]
 
 
+def _profile_artifacts(profile: str, *, attempt_count: int = 300) -> dict:
+    return {
+        "schema_version": "reply_chain_refactor_model_profile_artifacts_v1",
+        "result_json_path": f".tmp_runtime/simulation/model-matrix/{profile}/result.json",
+        "report_md_path": f".tmp_runtime/simulation/model-matrix/{profile}/report.md",
+        "result_json_written": True,
+        "report_md_written": True,
+        "scenario_count": 100,
+        "attempt_count": attempt_count,
+        "effect_review_result_count": attempt_count,
+        "review_artifacts_result_count": attempt_count,
+    }
+
+
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
@@ -138,6 +152,7 @@ def _model_matrix_ready() -> dict:
                     "effect_hard_or_infra_count": 0,
                     "accepted_by_release_thresholds": True,
                 },
+                "profile_artifacts": _profile_artifacts("claude"),
             },
             {
                 "status": "completed",
@@ -157,6 +172,7 @@ def _model_matrix_ready() -> dict:
                     "effect_hard_or_infra_count": 0,
                     "accepted_by_release_thresholds": True,
                 },
+                "profile_artifacts": _profile_artifacts("gemini"),
             },
             {
                 "status": "completed",
@@ -176,6 +192,7 @@ def _model_matrix_ready() -> dict:
                     "effect_hard_or_infra_count": 0,
                     "accepted_by_release_thresholds": True,
                 },
+                "profile_artifacts": _profile_artifacts("openai"),
             },
         ],
         "ranking": [
@@ -836,6 +853,29 @@ def test_external_gate_evidence_blocks_model_matrix_missing_effect_review_counts
     assert "model_matrix_missing_effect_issue_count:gemini" in blockers
     assert "model_matrix_missing_effect_low_score_count:gemini" in blockers
     assert "model_matrix_missing_effect_hard_or_infra_count:gemini" in blockers
+
+
+def test_external_gate_evidence_blocks_model_matrix_missing_profile_artifacts() -> None:
+    model_matrix = _model_matrix_ready()
+    del model_matrix["profiles"][0]["profile_artifacts"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_profile_missing_artifacts:claude" in blockers
+
+
+def test_external_gate_evidence_blocks_model_matrix_incomplete_profile_artifacts() -> None:
+    model_matrix = _model_matrix_ready()
+    artifacts = model_matrix["profiles"][2]["profile_artifacts"]
+    artifacts["result_json_written"] = False
+    artifacts["effect_review_result_count"] = 299
+    artifacts["review_artifacts_result_count"] = 298
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_profile_result_json_not_written:openai" in blockers
+    assert "model_matrix_profile_effect_review_below_attempt_count:openai:299<300" in blockers
+    assert "model_matrix_profile_review_artifacts_below_attempt_count:openai:298<300" in blockers
 
 
 def test_external_gate_evidence_blocks_model_matrix_incomplete_ranking() -> None:
