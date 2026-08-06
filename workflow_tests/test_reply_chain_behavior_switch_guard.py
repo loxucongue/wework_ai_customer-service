@@ -69,6 +69,8 @@ def _diagnostics_ready() -> dict:
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
+        "scenario_count": 100,
+        "attempt_count": 100,
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
@@ -88,6 +90,7 @@ def _simulation_ready() -> dict:
         },
         "review_artifacts": {
             "schema_version": "offline_simulation_review_artifacts_v1",
+            "result_count": 100,
             "request_count": 10,
             "event_count": 3,
             "tool_call_count": 5,

@@ -3,10 +3,21 @@ from __future__ import annotations
 from typing import Any
 
 
+MIN_REQUIRED_SIMULATION_SCENARIOS = 100
+
+
 def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     if simulation.get("schema_version") != "offline_reply_chain_simulation_report_v1":
         return ["missing_offline_simulation_report"]
     blockers: list[str] = []
+    scenario_count = _int_value(simulation.get("scenario_count"))
+    attempt_count = _int_value(simulation.get("attempt_count"))
+    if scenario_count < MIN_REQUIRED_SIMULATION_SCENARIOS:
+        blockers.append(f"simulation_scenario_count_below_100:{simulation.get('scenario_count')}")
+    if attempt_count < scenario_count:
+        blockers.append(
+            f"simulation_attempt_count_below_scenario_count:{simulation.get('attempt_count')}<{simulation.get('scenario_count')}"
+        )
     if simulation.get("hard_error_count") not in (0, "0"):
         blockers.append(f"simulation_hard_errors:{simulation.get('hard_error_count')}")
     try:
@@ -43,6 +54,11 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     if review_artifacts.get("schema_version") != "offline_simulation_review_artifacts_v1":
         blockers.append("simulation_missing_review_artifacts")
     else:
+        if _int_value(review_artifacts.get("result_count")) < scenario_count:
+            blockers.append(
+                "simulation_review_artifacts_result_count_below_scenario_count:"
+                f"{review_artifacts.get('result_count')}<{simulation.get('scenario_count')}"
+            )
         for field in (
             "request_count",
             "event_count",

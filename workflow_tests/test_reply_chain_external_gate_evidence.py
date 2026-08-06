@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
+        "scenario_count": 100,
+        "attempt_count": 100,
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
@@ -33,6 +35,7 @@ def _simulation_ready() -> dict:
         },
         "review_artifacts": {
             "schema_version": "offline_simulation_review_artifacts_v1",
+            "result_count": 100,
             "request_count": 10,
             "event_count": 3,
             "tool_call_count": 5,
@@ -119,6 +122,27 @@ def test_external_gate_evidence_blocks_unsafe_or_incomplete_reports() -> None:
     assert "simulation_missing_no_customer_send_safety" in simulation_report_blockers(simulation)
     assert "model_matrix_profile_not_completed:gemini" in model_matrix_report_blockers(model_matrix)
     assert "model_matrix_executed_profile_count_mismatch:2" in model_matrix_report_blockers(model_matrix)
+
+
+def test_external_gate_evidence_blocks_too_small_simulation_report() -> None:
+    simulation = _simulation_ready()
+    simulation["scenario_count"] = 17
+    simulation["attempt_count"] = 17
+    simulation["review_artifacts"]["result_count"] = 16
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_scenario_count_below_100:17" in blockers
+    assert "simulation_review_artifacts_result_count_below_scenario_count:16<17" in blockers
+
+
+def test_external_gate_evidence_blocks_attempt_count_below_scenario_count() -> None:
+    simulation = _simulation_ready()
+    simulation["attempt_count"] = 99
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_attempt_count_below_scenario_count:99<100" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:
