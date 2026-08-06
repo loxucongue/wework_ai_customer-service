@@ -56,6 +56,33 @@ def test_superseded_order_precondition_stays_superseded() -> None:
     assert row["target owner"] == "None"
 
 
+def test_rule_matrix_covers_recent_high_risk_business_areas() -> None:
+    rows = {row["rule_id"]: row for row in _matrix_rows()}
+    required = {
+        "gate_not_business_brain",
+        "offer_activity_facts",
+        "project_scope_boundary",
+        "effect_case_image_evidence",
+        "store_visible_scope_only",
+        "store_candidate_count_rule",
+        "payment_no_order_precondition",
+        "payment_after_paid_registration",
+        "unknown_message_transfer_paid",
+        "health_risk_priority",
+        "explicit_reject_no_payment",
+        "human_wechat_style",
+        "sop_mainline_progression",
+        "precision_answer_then_mainline",
+    }
+
+    missing = sorted(required.difference(rows))
+    assert not missing, f"missing rule ownership rows: {missing}"
+
+    for rule_id in required:
+        assert rows[rule_id]["migration status"] == "active", rule_id
+        assert rows[rule_id]["target owner"], rule_id
+
+
 def _matrix_rows() -> list[dict[str, str]]:
     lines = MATRIX_PATH.read_text(encoding="utf-8").splitlines()
     table_lines = [line for line in lines if line.startswith("| ") and " | " in line]
