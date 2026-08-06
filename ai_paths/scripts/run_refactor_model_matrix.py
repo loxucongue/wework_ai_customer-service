@@ -109,6 +109,22 @@ def public_profile_config(profile: ModelProfile, *, relay_base_url: str, api_key
     }
 
 
+def missing_key_profile_result(profile: ModelProfile, *, relay_base_url: str) -> dict[str, Any]:
+    return {
+        "model_profile": public_profile_config(profile, relay_base_url=relay_base_url, api_key_present=False),
+        "status": "skipped_missing_api_key_env",
+        "profile_summary": {
+            "hard_error_count": None,
+            "semantic_pass_rate": None,
+            "failed_critical_scenarios": [],
+            "p50_ms": None,
+            "p90_ms": None,
+            "infrastructure_failures": 0,
+            "accepted_by_release_thresholds": False,
+        },
+    }
+
+
 def timed_out_profile_result(
     profile: ModelProfile,
     *,
@@ -237,18 +253,7 @@ async def _main() -> int:
         public_config = public_profile_config(profile, relay_base_url=relay_base_url, api_key_present=bool(api_key))
         profile_dir = output_dir / profile.name
         if not api_key:
-            skipped = {
-                "model_profile": public_config,
-                "status": "skipped_missing_api_key_env",
-                "profile_summary": {
-                    "hard_error_count": None,
-                    "semantic_pass_rate": None,
-                    "failed_critical_scenarios": [],
-                    "p50_ms": None,
-                    "p90_ms": None,
-                    "accepted_by_release_thresholds": False,
-                },
-            }
+            skipped = missing_key_profile_result(profile, relay_base_url=relay_base_url)
             matrix_results.append(skipped)
             profile_dir.mkdir(parents=True, exist_ok=True)
             (profile_dir / "result.json").write_text(json.dumps(skipped, ensure_ascii=False, indent=2), encoding="utf-8")

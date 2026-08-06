@@ -6,6 +6,7 @@ from ai_paths.scripts.run_refactor_model_matrix import (
     MODEL_PROFILES,
     build_profile_settings,
     matrix_ranking,
+    missing_key_profile_result,
     profile_result_summary,
     public_profile_config,
     relay_api_base_url,
@@ -149,6 +150,21 @@ def test_timed_out_profile_result_is_not_release_accepted_and_does_not_log_key()
     assert result["profile_summary"]["infrastructure_failures"] == 1
     assert result["profile_summary"]["timeout_seconds"] == 120
     assert result["profile_summary"]["accepted_by_release_thresholds"] is False
+    assert "sk-" not in str(result)
+
+
+def test_missing_key_profile_summary_is_not_counted_as_infrastructure_failure() -> None:
+    result = missing_key_profile_result(
+        MODEL_PROFILES["gemini"],
+        relay_base_url="https://linkai.shop/v1",
+    )
+
+    summary = result["profile_summary"]
+    assert result["status"] == "skipped_missing_api_key_env"
+    assert result["model_profile"]["api_key_present"] is False
+    assert result["model_profile"]["api_key_value_logged"] is False
+    assert summary["infrastructure_failures"] == 0
+    assert summary["accepted_by_release_thresholds"] is False
     assert "sk-" not in str(result)
 
 
