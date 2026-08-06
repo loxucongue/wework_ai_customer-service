@@ -305,6 +305,7 @@ Required matrix report:
 - `profiles_requested` includes `claude`, `gemini`, and `openai`
 - each profile is `completed`
 - each completed profile has `profile_summary.semantic_pass_rate`, `p50_ms`, and `p90_ms`
+- any accepted profile has `profile_summary.infrastructure_failures=0`
 - at least one profile has `profile_summary.accepted_by_release_thresholds=true`
 - `safety.api_keys_written_to_report=false`
 - `safety.production_customer_messages_sent=false`

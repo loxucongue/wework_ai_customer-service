@@ -110,6 +110,31 @@ def test_profile_result_summary_exposes_accuracy_and_speed_for_review() -> None:
     assert summary["accepted_by_release_thresholds"] is True
 
 
+def test_profile_result_summary_rejects_infrastructure_failures() -> None:
+    summary = profile_result_summary(
+        {
+            "hard_error_count": 0,
+            "semantic_pass_rate": 1.0,
+            "failed_critical_scenarios": [],
+            "summary": {
+                "hard_pass_rate": "100.0%",
+                "evaluable_attempts": 10,
+                "infrastructure_failures": 1,
+                "p50_ms": 2200,
+                "p90_ms": 3100,
+                "acceptance": {
+                    "hard_errors_zero": True,
+                    "semantic_at_least_90": True,
+                    "critical_all_pass": True,
+                },
+            },
+        }
+    )
+
+    assert summary["infrastructure_failures"] == 1
+    assert summary["accepted_by_release_thresholds"] is False
+
+
 def test_matrix_ranking_orders_by_accuracy_then_errors_then_speed() -> None:
     ranked = matrix_ranking(
         [
@@ -129,10 +154,20 @@ def test_matrix_ranking_orders_by_accuracy_then_errors_then_speed() -> None:
                 "profile_summary": {"semantic_pass_rate": 0.9, "hard_error_count": 0, "p90_ms": 3000},
             },
             {
+                "status": "completed",
+                "model_profile": {"name": "unstable", "model": "unstable-model"},
+                "profile_summary": {
+                    "semantic_pass_rate": 0.9,
+                    "hard_error_count": 0,
+                    "infrastructure_failures": 2,
+                    "p90_ms": 1000,
+                },
+            },
+            {
                 "status": "skipped_missing_api_key_env",
                 "model_profile": {"name": "skipped", "model": "skipped-model"},
             },
         ]
     )
 
-    assert [item["name"] for item in ranked] == ["better", "fast", "slow"]
+    assert [item["name"] for item in ranked] == ["better", "fast", "slow", "unstable"]

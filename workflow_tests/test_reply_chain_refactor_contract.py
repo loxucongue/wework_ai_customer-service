@@ -166,6 +166,7 @@ def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None
         "profile_summary.semantic_pass_rate",
         "p50_ms",
         "p90_ms",
+        "profile_summary.infrastructure_failures=0",
         "profile_summary.accepted_by_release_thresholds=true",
         "safety.api_keys_written_to_report=false",
         "safety.production_customer_messages_sent=false",

@@ -111,19 +111,21 @@ def public_profile_config(profile: ModelProfile, *, relay_base_url: str, api_key
 def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), dict) else {}
+    infrastructure_failures = int(summary.get("infrastructure_failures") or 0)
     return {
         "hard_error_count": report.get("hard_error_count"),
         "semantic_pass_rate": report.get("semantic_pass_rate"),
         "failed_critical_scenarios": report.get("failed_critical_scenarios") or [],
         "hard_pass_rate": summary.get("hard_pass_rate"),
         "evaluable_attempts": summary.get("evaluable_attempts"),
-        "infrastructure_failures": summary.get("infrastructure_failures"),
+        "infrastructure_failures": infrastructure_failures,
         "p50_ms": summary.get("p50_ms"),
         "p90_ms": summary.get("p90_ms"),
         "accepted_by_release_thresholds": (
             acceptance.get("hard_errors_zero") is True
             and acceptance.get("semantic_at_least_90") is True
             and acceptance.get("critical_all_pass") is True
+            and infrastructure_failures == 0
         ),
     }
 
@@ -131,12 +133,13 @@ def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
 def matrix_ranking(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     completed = [item for item in profiles if item.get("status") == "completed"]
 
-    def score(item: dict[str, Any]) -> tuple[float, int, float]:
+    def score(item: dict[str, Any]) -> tuple[float, int, int, float]:
         summary = item.get("profile_summary") if isinstance(item.get("profile_summary"), dict) else {}
         semantic = float(summary.get("semantic_pass_rate") or 0.0)
         hard_errors = int(summary.get("hard_error_count") or 0)
+        infrastructure_failures = int(summary.get("infrastructure_failures") or 0)
         p90 = float(summary.get("p90_ms") or 999999)
-        return (-semantic, hard_errors, p90)
+        return (-semantic, hard_errors, infrastructure_failures, p90)
 
     return [
         {
@@ -144,6 +147,7 @@ def matrix_ranking(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "model": (item.get("model_profile") or {}).get("model"),
             "semantic_pass_rate": (item.get("profile_summary") or {}).get("semantic_pass_rate"),
             "hard_error_count": (item.get("profile_summary") or {}).get("hard_error_count"),
+            "infrastructure_failures": (item.get("profile_summary") or {}).get("infrastructure_failures"),
             "p50_ms": (item.get("profile_summary") or {}).get("p50_ms"),
             "p90_ms": (item.get("profile_summary") or {}).get("p90_ms"),
         }
