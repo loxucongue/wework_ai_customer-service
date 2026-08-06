@@ -272,6 +272,17 @@ Required report:
 - `safety.virtual_outbox_only=true`
 - `safety.production_write_count=0`
 - all sends captured only in virtual outbox
+- `isolation_audit.schema_version=offline_simulation_isolation_summary_v1`
+- `isolation_audit.passed=true`
+- `isolation_audit.result_count >= scenario_count`
+- `isolation_audit.missing_result_count=0`
+- `isolation_audit.failed_result_count=0`
+- `isolation_audit.run_dirs_under_tmp_simulation=true`
+- `isolation_audit.paths_within_run_dir=true`
+- `isolation_audit.connector_urls_simulation_only=true`
+- `isolation_audit.adapters_simulation_only=true`
+- `isolation_audit.identity_simulation_scoped=true`
+- `isolation_audit.real_connector_credentials_present=false`
 - `review_artifacts.schema_version=offline_simulation_review_artifacts_v1`
 - `review_artifacts` includes request/event IDs, node trace names, tool call names, virtual outbox counts, and simulated write counts for human review
 
