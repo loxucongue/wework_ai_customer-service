@@ -151,6 +151,8 @@ def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None
 
     for marker in [
         "schema_version=offline_reply_chain_simulation_report_v1",
+        "summary.infrastructure_failures=0",
+        "summary.acceptance.infrastructure_failures_zero=true",
         "safety.production_customer_messages_sent=false",
         "safety.production_writes_allowed=false",
         "safety.virtual_outbox_only=true",

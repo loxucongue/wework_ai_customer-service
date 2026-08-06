@@ -260,6 +260,8 @@ Required report:
 
 - `schema_version=offline_reply_chain_simulation_report_v1`
 - hard errors: `0`
+- `summary.infrastructure_failures=0`
+- `summary.acceptance.infrastructure_failures_zero=true`
 - failed critical scenarios: `[]`
 - semantic pass rate: at least `0.90`
 - `safety.production_customer_messages_sent=false`

@@ -323,6 +323,7 @@ def _aggregate(
     semantic_pass_rate = _ratio(len(semantic_passed), len(evaluable))
     semantic_pass_rate_percent = _rate(len(semantic_passed), len(evaluable))
     safety = _simulation_safety(results)
+    infrastructure_failures = sum(1 for item in results if item.get("infrastructure_errors"))
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
@@ -337,13 +338,14 @@ def _aggregate(
             "hard_pass_rate": _rate(len(hard_passed), len(results)),
             "semantic_pass_rate": semantic_pass_rate_percent,
             "evaluable_attempts": len(evaluable),
-            "infrastructure_failures": sum(1 for item in results if item.get("infrastructure_errors")),
+            "infrastructure_failures": infrastructure_failures,
             "p50_ms": _percentile(durations, 0.5),
             "p90_ms": _percentile(durations, 0.9),
             "acceptance": {
                 "hard_errors_zero": hard_error_count == 0,
                 "semantic_at_least_90": semantic_pass_rate >= 0.9,
                 "critical_all_pass": not failed_critical_scenarios,
+                "infrastructure_failures_zero": infrastructure_failures == 0,
             },
         },
         "scenario_summary": scenario_summary,

@@ -80,6 +80,7 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(report["failed_critical_scenarios"], [])
         self.assertFalse(report["summary"]["acceptance"]["hard_errors_zero"])
         self.assertFalse(report["summary"]["acceptance"]["semantic_at_least_90"])
+        self.assertTrue(report["summary"]["acceptance"]["infrastructure_failures_zero"])
         self.assertEqual(
             report["safety"],
             {
@@ -154,6 +155,27 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(report["semantic_pass_rate"], 0.0)
         self.assertEqual(report["failed_critical_scenarios"], ["critical_fail"])
         self.assertFalse(report["summary"]["acceptance"]["critical_all_pass"])
+        self.assertTrue(report["summary"]["acceptance"]["infrastructure_failures_zero"])
+
+    def test_aggregate_exposes_infrastructure_failure_acceptance_gate(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "provider_timeout", "category": "model_failure", "critical": True}],
+            results=[
+                {
+                    "scenario_id": "provider_timeout",
+                    "hard_pass": False,
+                    "hard_errors": [],
+                    "infrastructure_errors": ["TimeoutError: model timeout"],
+                    "duration_ms": 30000,
+                }
+            ],
+            baseline={},
+        )
+
+        self.assertEqual(report["summary"]["infrastructure_failures"], 1)
+        self.assertFalse(report["summary"]["acceptance"]["infrastructure_failures_zero"])
+        self.assertFalse(report["summary"]["acceptance"]["hard_errors_zero"])
 
     def test_identity_must_be_simulation_scoped(self) -> None:
         with self.assertRaises(SimulationIsolationError):
