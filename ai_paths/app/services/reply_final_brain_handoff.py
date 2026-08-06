@@ -113,6 +113,9 @@ def _handoff_readiness_audit(
     fact_snapshot = authority_audit.get("fact_snapshot")
     if not isinstance(fact_snapshot, dict):
         fact_snapshot = {}
+    timeline_window_audit = authority_audit.get("timeline_window_audit")
+    if not isinstance(timeline_window_audit, dict):
+        timeline_window_audit = {}
     current_message_audit = authority_audit.get("current_message_audit")
     if not isinstance(current_message_audit, dict):
         current_message_audit = {}
@@ -143,6 +146,14 @@ def _handoff_readiness_audit(
         blockers.append("complete_chat_not_primary_authority")
     if authority_audit.get("all_messages_have_sent_at") is not True:
         blockers.append("incomplete_message_timestamps")
+    if timeline_window_audit.get("schema_version") != "reply_chain_timeline_window_audit_v1":
+        blockers.append("missing_timeline_window_audit")
+    elif timeline_window_audit.get("ready_for_authoritative_model_input") is not True:
+        timeline_blockers = timeline_window_audit.get("blockers")
+        if isinstance(timeline_blockers, list) and timeline_blockers:
+            blockers.extend([f"timeline_window:{item}" for item in timeline_blockers if isinstance(item, str) and item])
+        else:
+            blockers.append("timeline_window_not_ready_for_authoritative_model_input")
     if current_message_audit.get("schema_version") != "reply_chain_current_message_audit_v1":
         blockers.append("missing_current_message_audit")
     elif current_message_audit.get("ready_for_authoritative_model_input") is not True:
@@ -196,6 +207,10 @@ def _handoff_readiness_audit(
             "observed_inputs": {
                 "reply_chain_context_schema": reply_chain_shadow_context.get("schema_version"),
                 "authority_audit_schema": authority_audit.get("schema_version"),
+                "timeline_window_audit_schema": timeline_window_audit.get("schema_version"),
+                "timeline_window_ready": timeline_window_audit.get("ready_for_authoritative_model_input"),
+                "timeline_source_window_complete": timeline_window_audit.get("source_window_complete"),
+                "timeline_truncated": timeline_window_audit.get("truncated"),
                 "all_messages_have_sent_at": authority_audit.get("all_messages_have_sent_at"),
                 "complete_chat_is_primary_authority": authority_audit.get("complete_chat_is_primary_authority"),
                 "current_message_audit_schema": current_message_audit.get("schema_version"),

@@ -47,6 +47,12 @@ def test_reply_final_brain_handoff_groups_legacy_planner_semantics() -> None:
                 "schema_version": "reply_chain_authority_audit_v1",
                 "complete_chat_is_primary_authority": True,
                 "all_messages_have_sent_at": True,
+                "timeline_window_audit": {
+                    "schema_version": "reply_chain_timeline_window_audit_v1",
+                    "ready_for_authoritative_model_input": True,
+                    "source_window_complete": True,
+                    "truncated": False,
+                },
                 "current_message_audit": {
                     "schema_version": "reply_chain_current_message_audit_v1",
                     "current_message_in_timeline": True,
@@ -73,6 +79,8 @@ def test_reply_final_brain_handoff_groups_legacy_planner_semantics() -> None:
     assert handoff["migration_audit"]["requires_reply_schema_before_activation"] is True
     assert handoff["handoff_readiness_audit"]["schema_version"] == "reply_final_brain_handoff_readiness_audit_v1"
     assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is True
+    assert handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_window_audit_schema"] == "reply_chain_timeline_window_audit_v1"
+    assert handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_window_ready"] is True
     assert "customer_visible_text" in handoff["ownership_contract"]["tool_planner_must_not_own"]
 
 
@@ -113,6 +121,12 @@ def test_reply_final_brain_handoff_blocks_when_join_can_generate_customer_text()
                 "schema_version": "reply_chain_authority_audit_v1",
                 "complete_chat_is_primary_authority": True,
                 "all_messages_have_sent_at": True,
+                "timeline_window_audit": {
+                    "schema_version": "reply_chain_timeline_window_audit_v1",
+                    "ready_for_authoritative_model_input": True,
+                    "source_window_complete": True,
+                    "truncated": False,
+                },
                 "current_message_audit": {
                     "schema_version": "reply_chain_current_message_audit_v1",
                     "current_message_in_timeline": True,
@@ -148,6 +162,12 @@ def test_reply_final_brain_handoff_blocks_when_current_message_not_authoritative
                 "schema_version": "reply_chain_authority_audit_v1",
                 "complete_chat_is_primary_authority": True,
                 "all_messages_have_sent_at": True,
+                "timeline_window_audit": {
+                    "schema_version": "reply_chain_timeline_window_audit_v1",
+                    "ready_for_authoritative_model_input": True,
+                    "source_window_complete": True,
+                    "truncated": False,
+                },
                 "current_message_audit": {
                     "schema_version": "reply_chain_current_message_audit_v1",
                     "current_message_in_timeline": True,
@@ -163,6 +183,47 @@ def test_reply_final_brain_handoff_blocks_when_current_message_not_authoritative
 
     assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is False
     assert "current_message:current_message_not_last_in_timeline" in handoff["handoff_readiness_audit"]["blockers"]
+
+
+def test_reply_final_brain_handoff_blocks_when_timeline_window_not_ready() -> None:
+    handoff = reply_final_brain_handoff_shadow_from_planner_output(
+        {
+            "tool_plan_preview": {"schema_version": "tool_plan_preview_v2"},
+            "reply_chain_join_shadow": {
+                "schema_version": "reply_chain_join_shadow_v1",
+                "final_expression_boundary": {
+                    "schema_version": "reply_final_expression_boundary_v1",
+                    "join_generates_customer_visible_text": False,
+                    "join_decides_sales_psychology": False,
+                },
+            },
+        },
+        reply_chain_shadow_context={
+            "schema_version": "reply_chain_shadow_v1",
+            "authority_audit": {
+                "schema_version": "reply_chain_authority_audit_v1",
+                "complete_chat_is_primary_authority": True,
+                "all_messages_have_sent_at": True,
+                "timeline_window_audit": {
+                    "schema_version": "reply_chain_timeline_window_audit_v1",
+                    "ready_for_authoritative_model_input": False,
+                    "source_window_complete": False,
+                    "blockers": ["source_window_incomplete_under_limit"],
+                },
+                "current_message_audit": {
+                    "schema_version": "reply_chain_current_message_audit_v1",
+                    "ready_for_authoritative_model_input": True,
+                },
+                "fact_snapshot": {"schema_version": "reply_chain_fact_snapshot_audit_v1"},
+            },
+        },
+        gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+    )
+
+    audit = handoff["handoff_readiness_audit"]
+    assert audit["ready_for_reply_payload_switch_shadow"] is False
+    assert "timeline_window:source_window_incomplete_under_limit" in audit["blockers"]
+    assert audit["observed_inputs"]["timeline_window_ready"] is False
 
 
 def test_reply_final_brain_handoff_blocks_when_read_tools_have_no_executor_facts() -> None:
@@ -188,6 +249,12 @@ def test_reply_final_brain_handoff_blocks_when_read_tools_have_no_executor_facts
                 "schema_version": "reply_chain_authority_audit_v1",
                 "complete_chat_is_primary_authority": True,
                 "all_messages_have_sent_at": True,
+                "timeline_window_audit": {
+                    "schema_version": "reply_chain_timeline_window_audit_v1",
+                    "ready_for_authoritative_model_input": True,
+                    "source_window_complete": True,
+                    "truncated": False,
+                },
                 "current_message_audit": {
                     "schema_version": "reply_chain_current_message_audit_v1",
                     "ready_for_authoritative_model_input": True,
@@ -239,6 +306,12 @@ def test_reply_final_brain_handoff_blocks_when_read_tool_dependencies_are_not_re
                 "schema_version": "reply_chain_authority_audit_v1",
                 "complete_chat_is_primary_authority": True,
                 "all_messages_have_sent_at": True,
+                "timeline_window_audit": {
+                    "schema_version": "reply_chain_timeline_window_audit_v1",
+                    "ready_for_authoritative_model_input": True,
+                    "source_window_complete": True,
+                    "truncated": False,
+                },
                 "current_message_audit": {
                     "schema_version": "reply_chain_current_message_audit_v1",
                     "ready_for_authoritative_model_input": True,
@@ -278,6 +351,12 @@ def test_reply_final_brain_handoff_blocks_when_required_facts_have_no_read_tools
                 "schema_version": "reply_chain_authority_audit_v1",
                 "complete_chat_is_primary_authority": True,
                 "all_messages_have_sent_at": True,
+                "timeline_window_audit": {
+                    "schema_version": "reply_chain_timeline_window_audit_v1",
+                    "ready_for_authoritative_model_input": True,
+                    "source_window_complete": True,
+                    "truncated": False,
+                },
                 "current_message_audit": {
                     "schema_version": "reply_chain_current_message_audit_v1",
                     "ready_for_authoritative_model_input": True,
