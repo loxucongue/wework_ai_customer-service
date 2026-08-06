@@ -14,7 +14,7 @@ from app.simulation.adapters import (
     SimulationWorld,
 )
 from app.simulation.isolation import SimulationIsolationError, assert_simulation_identity, assert_simulation_isolated
-from app.simulation.runner import _configured_sop_media_urls, _semantic_scores, load_suite
+from app.simulation.runner import _aggregate, _configured_sop_media_urls, _semantic_scores, load_suite
 from app.simulation.runtime import _hard_check, _provider_incidents
 
 
@@ -48,6 +48,57 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(len({item["id"] for item in scenarios}), len(scenarios))
         self.assertTrue(all(item.get("timeline") for item in scenarios))
         self.assertGreaterEqual(sum(len(item["timeline"]) >= 2 for item in scenarios), 100)
+
+    def test_aggregate_emits_behavior_switch_gate_fields(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[
+                {"id": "critical_ok", "category": "sim", "critical": True},
+                {"id": "regular_fail", "category": "sim", "critical": False},
+            ],
+            results=[
+                {
+                    "scenario_id": "critical_ok",
+                    "hard_pass": True,
+                    "duration_ms": 10,
+                    "semantic_review": {"available": True, "pass": True},
+                },
+                {
+                    "scenario_id": "regular_fail",
+                    "hard_pass": False,
+                    "hard_errors": ["scenario.missing_reply"],
+                    "duration_ms": 20,
+                    "semantic_review": {"available": True, "pass": False},
+                },
+            ],
+            baseline={},
+        )
+
+        self.assertEqual(report["schema_version"], "offline_reply_chain_simulation_report_v1")
+        self.assertEqual(report["hard_error_count"], 1)
+        self.assertEqual(report["semantic_pass_rate"], 0.5)
+        self.assertEqual(report["failed_critical_scenarios"], [])
+        self.assertFalse(report["summary"]["acceptance"]["hard_errors_zero"])
+        self.assertFalse(report["summary"]["acceptance"]["semantic_at_least_90"])
+
+    def test_aggregate_marks_critical_semantic_failure_for_release_gate(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "critical_fail", "category": "sim", "critical": True}],
+            results=[
+                {
+                    "scenario_id": "critical_fail",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": False},
+                }
+            ],
+            baseline={},
+        )
+
+        self.assertEqual(report["hard_error_count"], 0)
+        self.assertEqual(report["semantic_pass_rate"], 0.0)
+        self.assertEqual(report["failed_critical_scenarios"], ["critical_fail"])
+        self.assertFalse(report["summary"]["acceptance"]["critical_all_pass"])
 
     def test_identity_must_be_simulation_scoped(self) -> None:
         with self.assertRaises(SimulationIsolationError):

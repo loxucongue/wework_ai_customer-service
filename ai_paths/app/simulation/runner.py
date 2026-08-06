@@ -66,6 +66,7 @@ async def run_suite(
     reviewer_model: str = "",
     skip_review: bool = False,
     baseline_path: Path | None = None,
+    base_settings: Settings | None = None,
 ) -> dict[str, Any]:
     scenarios = load_suite(fixture)
     if scenario_id:
@@ -81,7 +82,7 @@ async def run_suite(
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    settings = Settings()
+    settings = base_settings or Settings()
     runtime = SimulationRuntime(repo_root=repo_root, run_root=output_dir / "runs", base_settings=settings)
     reviewer = None if skip_review else ModelClient(
         settings.model_copy(
@@ -286,6 +287,11 @@ def _aggregate(
     ]
     hard_passed = [item for item in results if item.get("hard_pass")]
     semantic_passed = [item for item in evaluable if item["semantic_review"].get("pass")]
+    hard_error_count = sum(
+        1
+        for item in results
+        if not item.get("hard_pass") or bool(item.get("infrastructure_errors"))
+    )
     durations = [int(item.get("duration_ms") or 0) for item in results if item.get("duration_ms")]
     scenario_summary: dict[str, Any] = {}
     for scenario in scenarios:
@@ -303,26 +309,39 @@ def _aggregate(
             ),
             "infrastructure_failures": sum(1 for item in attempts if item.get("infrastructure_errors")),
         }
+    failed_critical_scenarios = [
+        scenario_id
+        for scenario_id, value in scenario_summary.items()
+        if value["critical"]
+        and (
+            value["attempts"] <= 0
+            or value["hard_passes"] != value["attempts"]
+            or value["semantic_passes"] != value["attempts"]
+            or value["infrastructure_failures"] > 0
+        )
+    ]
+    semantic_pass_rate = _ratio(len(semantic_passed), len(evaluable))
+    semantic_pass_rate_percent = _rate(len(semantic_passed), len(evaluable))
     return {
+        "schema_version": "offline_reply_chain_simulation_report_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
         "fixture": str(fixture),
         "scenario_count": len(scenarios),
         "attempt_count": len(results),
+        "hard_error_count": hard_error_count,
+        "semantic_pass_rate": semantic_pass_rate,
+        "failed_critical_scenarios": failed_critical_scenarios,
         "summary": {
             "hard_pass_rate": _rate(len(hard_passed), len(results)),
-            "semantic_pass_rate": _rate(len(semantic_passed), len(evaluable)),
+            "semantic_pass_rate": semantic_pass_rate_percent,
             "evaluable_attempts": len(evaluable),
             "infrastructure_failures": sum(1 for item in results if item.get("infrastructure_errors")),
             "p50_ms": _percentile(durations, 0.5),
             "p90_ms": _percentile(durations, 0.9),
             "acceptance": {
-                "hard_errors_zero": len(hard_passed) == len(results),
-                "semantic_at_least_90": _rate(len(semantic_passed), len(evaluable), numeric=True) >= 90 if evaluable else False,
-                "critical_all_pass": all(
-                    value["hard_passes"] == value["attempts"] and value["semantic_passes"] == value["attempts"]
-                    for value in scenario_summary.values()
-                    if value["critical"]
-                ),
+                "hard_errors_zero": hard_error_count == 0,
+                "semantic_at_least_90": semantic_pass_rate >= 0.9,
+                "critical_all_pass": not failed_critical_scenarios,
             },
         },
         "scenario_summary": scenario_summary,
@@ -447,6 +466,10 @@ def _score(value: Any) -> int:
 def _rate(numerator: int, denominator: int, *, numeric: bool = False) -> str | float:
     value = round((numerator / denominator * 100), 1) if denominator else 0.0
     return value if numeric else f"{value}%"
+
+
+def _ratio(numerator: int, denominator: int) -> float:
+    return round(numerator / denominator, 4) if denominator else 0.0
 
 
 def _percentile(values: list[int], fraction: float) -> int:

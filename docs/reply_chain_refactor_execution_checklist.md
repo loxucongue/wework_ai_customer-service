@@ -264,6 +264,30 @@ Required report:
 - production writes: `0`
 - all sends captured only in virtual outbox
 
+Candidate model matrix:
+
+```powershell
+$env:PYTHONPATH='ai_paths'
+$env:REFACTOR_MODEL_RELAY_BASE_URL='https://linkai.shop'
+$env:REFACTOR_MODEL_CLAUDE_API_KEY='<local-only secret>'
+$env:REFACTOR_MODEL_GEMINI_API_KEY='<local-only secret>'
+$env:REFACTOR_MODEL_OPENAI_API_KEY='<local-only secret>'
+python ai_paths/scripts/run_refactor_model_matrix.py `
+  --profiles claude,gemini,openai `
+  --attempts 3 `
+  --critical-attempts 5 `
+  --concurrency 2
+```
+
+The matrix currently compares:
+
+- `claude-opus-4-7`
+- `gemini-3.5-flash`
+- `gpt-5.4`
+
+The keys must only live in local or server environment variables. Do not write
+them into committed tests, fixtures, reports, Markdown, or `.env` files.
+
 ### T8 Core Regression Bundle
 
 Run before any human review of behavior switch:
@@ -318,4 +342,3 @@ approval.
 - Reply handoff tests ensure the final business brain receives complete chat,
   Gate candidates, tool facts, and explicit blockers.
 - Offline simulation catches multi-turn regressions that single-node tests miss.
-
