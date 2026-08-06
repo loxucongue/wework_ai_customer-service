@@ -30,6 +30,23 @@ def test_refactor_plan_keeps_review_and_test_gates() -> None:
         assert marker in text
 
 
+def test_refactor_plan_is_readable_utf8_without_common_encoding_damage() -> None:
+    text = PLAN_PATH.read_text(encoding="utf-8")
+    damaged_markers = [
+        "�",
+        "????",
+        "銆",
+        "鍙",
+        "涓嶅",
+        "绾垮",
+        "鐩",
+        "鏂囨",
+    ]
+
+    for marker in damaged_markers:
+        assert marker not in text, f"refactor plan contains possible encoding damage: {marker}"
+
+
 def test_refactor_plan_keeps_gate_and_planner_from_becoming_brains() -> None:
     text = PLAN_PATH.read_text(encoding="utf-8")
 
