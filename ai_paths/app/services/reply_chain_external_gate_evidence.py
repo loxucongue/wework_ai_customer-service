@@ -68,6 +68,11 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
             blockers.append(f"model_matrix_missing_p50:{_profile_name(item)}")
         if not _has_number(summary.get("p90_ms")):
             blockers.append(f"model_matrix_missing_p90:{_profile_name(item)}")
+        if summary.get("accepted_by_release_thresholds") is True and _int_value(summary.get("infrastructure_failures")) != 0:
+            blockers.append(
+                f"model_matrix_accepted_profile_has_infrastructure_failures:{_profile_name(item)}:"
+                f"{summary.get('infrastructure_failures')}"
+            )
         accepted = accepted or summary.get("accepted_by_release_thresholds") is True
     if not accepted:
         blockers.append("model_matrix_no_candidate_meets_release_thresholds")

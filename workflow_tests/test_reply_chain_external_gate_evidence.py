@@ -43,6 +43,7 @@ def _model_matrix_ready() -> dict:
                     "semantic_pass_rate": 0.91,
                     "p50_ms": 6200,
                     "p90_ms": 11000,
+                    "infrastructure_failures": 0,
                     "accepted_by_release_thresholds": True,
                 },
             },
@@ -53,6 +54,7 @@ def _model_matrix_ready() -> dict:
                     "semantic_pass_rate": 0.9,
                     "p50_ms": 3900,
                     "p90_ms": 7600,
+                    "infrastructure_failures": 0,
                     "accepted_by_release_thresholds": True,
                 },
             },
@@ -63,6 +65,7 @@ def _model_matrix_ready() -> dict:
                     "semantic_pass_rate": 0.94,
                     "p50_ms": 4800,
                     "p90_ms": 8200,
+                    "infrastructure_failures": 0,
                     "accepted_by_release_thresholds": True,
                 },
             },
@@ -109,6 +112,15 @@ def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:
 
     assert "simulation_missing_required_category:健康风险" in blockers
     assert "simulation_scenario_coverage_incomplete" in blockers
+
+
+def test_external_gate_evidence_blocks_accepted_model_with_infrastructure_failures() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"][0]["profile_summary"]["infrastructure_failures"] = 2
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_accepted_profile_has_infrastructure_failures:claude:2" in blockers
 
 
 def test_bundle_audit_does_not_import_final_behavior_switch_guard_private_helpers() -> None:
