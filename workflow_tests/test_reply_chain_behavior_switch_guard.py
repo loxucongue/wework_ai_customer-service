@@ -393,7 +393,29 @@ def test_behavior_switch_guard_blocks_human_review_without_shadow_commit_evidenc
 
     assert guard["can_enable_behavior_switch"] is False
     assert "human_review_missing_commit_evidence:shadow_bundle" in guard["blockers"]
+    assert "human_review_missing_commit_set_evidence:shadow_bundle" in guard["blockers"]
     assert "human_review_missing_commit_evidence:diagnostics" in guard["blockers"]
+    assert "human_review_missing_commit_set_evidence:diagnostics" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_human_review_with_multi_commit_shadow_evidence() -> None:
+    shadow = _shadow_bundle_ready()
+    diagnostics = _diagnostics_ready()
+    shadow["git_commit_set"] = ["abc123", "def456"]
+    diagnostics["git_commit_set"] = ["abc123", "ghi789"]
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=shadow,
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "human_review_commit_set_mismatch:shadow_bundle:abc123,def456" in guard["blockers"]
+    assert "human_review_commit_set_mismatch:diagnostics:abc123,ghi789" in guard["blockers"]
 
 
 def test_behavior_switch_guard_blocks_shadow_bundle_without_commit_phase_evidence() -> None:

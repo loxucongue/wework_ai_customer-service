@@ -254,22 +254,29 @@ def _review_commit_match_blockers(
     model_matrix_report: dict[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
-    shadow_commit = str(shadow_bundle_audit.get("git_commit") or "").strip()
-    diagnostics_commit = str(diagnostics.get("git_commit") or "").strip()
     simulation_commit = str(simulation_report.get("git_commit") or "").strip()
     model_matrix_commit = str(model_matrix_report.get("git_commit") or "").strip()
-    if not shadow_commit:
-        blockers.append("human_review_missing_commit_evidence:shadow_bundle")
-    elif shadow_commit != commit_sha:
-        blockers.append(f"human_review_commit_mismatch:shadow_bundle:{shadow_commit}")
-    if not diagnostics_commit:
-        blockers.append("human_review_missing_commit_evidence:diagnostics")
-    elif diagnostics_commit != commit_sha:
-        blockers.append(f"human_review_commit_mismatch:diagnostics:{diagnostics_commit}")
+    blockers.extend(_commit_evidence_blockers("shadow_bundle", shadow_bundle_audit, commit_sha))
+    blockers.extend(_commit_evidence_blockers("diagnostics", diagnostics, commit_sha))
     if simulation_commit and simulation_commit != commit_sha:
         blockers.append(f"human_review_commit_mismatch:simulation:{simulation_commit}")
     if model_matrix_commit and model_matrix_commit != commit_sha:
         blockers.append(f"human_review_commit_mismatch:model_matrix:{model_matrix_commit}")
+    return blockers
+
+
+def _commit_evidence_blockers(label: str, evidence: dict[str, Any], commit_sha: str) -> list[str]:
+    blockers: list[str] = []
+    commit = str(evidence.get("git_commit") or "").strip()
+    commit_set = _list_strings(evidence.get("git_commit_set"))
+    if not commit:
+        blockers.append(f"human_review_missing_commit_evidence:{label}")
+    elif commit != commit_sha:
+        blockers.append(f"human_review_commit_mismatch:{label}:{commit}")
+    if not commit_set:
+        blockers.append(f"human_review_missing_commit_set_evidence:{label}")
+    elif commit_set != [commit_sha]:
+        blockers.append(f"human_review_commit_set_mismatch:{label}:{','.join(commit_set)}")
     return blockers
 
 
