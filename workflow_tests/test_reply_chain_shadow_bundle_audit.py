@@ -205,6 +205,49 @@ def test_bundle_audit_accepts_rollback_evidence_external_gate() -> None:
     assert "rollback_evidence_review" in audit["external_gate_evidence"]["proven_gates"]
 
 
+def test_bundle_audit_accepts_model_semantics_ownership_external_gate() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": ["model_semantics_ownership_review"],
+        "blocker_groups": {
+            "manual_review": {
+                "ready": False,
+                "blocker_count": 1,
+                "blockers": ["gate_not_proven:model_semantics_ownership_review"],
+            }
+        },
+    }
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
+        model_semantics_ownership_report=_model_semantics_ownership_ready(),
+    )
+
+    assert audit["ready_for_refactor_review"] is True
+    assert "model_semantics_ownership_review" in audit["external_gate_evidence"]["proven_gates"]
+
+
+def test_bundle_audit_blocks_invalid_model_semantics_ownership_report() -> None:
+    report = _model_semantics_ownership_ready()
+    report["semantic_ownership_passed"] = False
+    report["join_generates_customer_visible_text"] = True
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=_ready_state(),
+        require_commit_shadow=True,
+        model_semantics_ownership_report=report,
+    )
+
+    assert audit["ready_for_refactor_review"] is False
+    assert (
+        "model_semantics_ownership_report:model_semantics_ownership_join_generates_text"
+        in audit["blockers"]
+    )
+
+
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
@@ -480,6 +523,43 @@ def _rollback_evidence_ready() -> dict:
             "does_not_write_database": True,
             "does_not_call_models": True,
             "does_not_deploy": True,
+        },
+    }
+
+
+def _model_semantics_ownership_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_model_semantics_ownership_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "head_ref": "HEAD",
+        "ownership_contract_checked": True,
+        "tool_planner_must_not_own": ["customer_visible_text", "sales_psychology", "closing_move"],
+        "reply_owns": ["final_customer_visible_messages", "complex_turn_outcome", "single_mainline_action"],
+        "code_must_not_own": ["normal_sales_intent", "objection_psychology", "sales_rhythm"],
+        "tool_planner_legacy_residue_count": 0,
+        "tool_planner_only_ready": True,
+        "join_final_expression_boundary_schema": "reply_final_expression_boundary_v1",
+        "join_final_customer_message_owner": "reply",
+        "join_generates_customer_visible_text": False,
+        "join_decides_sales_psychology": False,
+        "direct_reply_scope": "static_candidate_only_no_dynamic_facts",
+        "direct_reply_final_customer_message_owner": "validated_static_gate_candidate",
+        "direct_reply_requires_commit_validation": True,
+        "reply_handoff_schema": "reply_final_brain_handoff_shadow_v1",
+        "reply_handoff_ready": True,
+        "legacy_business_field_mapping_schema": "reply_legacy_field_mapping_audit_v1",
+        "unmapped_legacy_business_fields": [],
+        "parallel_shadow_schema": "parallel_reply_chain_shadow_v1",
+        "semantic_ownership_passed": True,
+        "blockers": [],
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+            "does_not_call_external_tools": True,
         },
     }
 

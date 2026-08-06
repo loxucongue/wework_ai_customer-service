@@ -358,11 +358,12 @@ incomplete, skipped because of absent keys, or contains any safety marker other
 than the values above, the guard must block.
 
 When reviewing postcommit shadow evidence, recompute
-`reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=..., payload_isolation_report=..., business_wording_freeze_report=..., rollback_evidence_report=...)`
+`reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=..., payload_isolation_report=..., business_wording_freeze_report=..., rollback_evidence_report=..., model_semantics_ownership_report=...)`
 with the same offline simulation, model matrix, payload isolation, business
-wording freeze, and rollback evidence reports. This keeps the postcommit bundle and final
-behavior-switch guard aligned: unresolved diagnostic gates remain blockers,
-while externally proven gates are cleared only by valid reports.
+wording freeze, rollback evidence, and model semantics ownership reports. This
+keeps the postcommit bundle and final behavior-switch guard aligned: unresolved
+diagnostic gates remain blockers, while externally proven gates are cleared only
+by valid reports.
 In short, the postcommit bundle and final behavior-switch guard aligned state is required before review.
 The older two-report review call form
 `reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=...)`
@@ -440,6 +441,49 @@ Required payload isolation report:
 This audit proves shadow diagnostics stay out of active model inputs. It does
 not prove reply quality, customer psychology, or business-rule correctness.
 
+Model semantics ownership audit:
+
+```powershell
+$env:PYTHONPATH='ai_paths'
+python ai_paths/scripts/audit_model_semantics_ownership.py `
+  --head-ref HEAD `
+  --report .tmp_runtime/model_semantics_ownership_audit.json
+```
+
+Required model semantics ownership report:
+
+- `schema_version=reply_chain_model_semantics_ownership_audit_v1`
+- `git_commit` matches the reviewed behavior-switch commit
+- `git_commit_set` contains exactly that commit
+- `ownership_contract_checked=true`
+- `tool_planner_must_not_own` includes `customer_visible_text`, `sales_psychology`, and `closing_move`
+- `reply_owns` includes `final_customer_visible_messages`, `complex_turn_outcome`, and `single_mainline_action`
+- `code_must_not_own` includes `normal_sales_intent`, `objection_psychology`, and `sales_rhythm`
+- `tool_planner_legacy_residue_count=0`
+- `tool_planner_only_ready=true`
+- `join_final_expression_boundary_schema=reply_final_expression_boundary_v1`
+- `join_final_customer_message_owner=reply`
+- `join_generates_customer_visible_text=false`
+- `join_decides_sales_psychology=false`
+- `direct_reply_scope=static_candidate_only_no_dynamic_facts`
+- `direct_reply_final_customer_message_owner=validated_static_gate_candidate`
+- `direct_reply_requires_commit_validation=true`
+- `reply_handoff_schema=reply_final_brain_handoff_shadow_v1`
+- `reply_handoff_ready=true`
+- `legacy_business_field_mapping_schema=reply_legacy_field_mapping_audit_v1`
+- `unmapped_legacy_business_fields=[]`
+- `semantic_ownership_passed=true`
+- `safety.audit_only=true`
+- `safety.does_not_change_runtime_behavior=true`
+- `safety.does_not_send_customer_messages=true`
+- `safety.does_not_write_database=true`
+- `safety.does_not_call_models=true`
+- `safety.does_not_call_external_tools=true`
+
+This audit proves structural ownership boundaries only. It does not prove the
+model understood the customer or that the final reply effect is good; those
+remain covered by offline full-chain simulation and the model matrix.
+
 Rollback/no-deploy evidence audit:
 
 ```powershell
@@ -497,6 +541,7 @@ python -m pytest `
   workflow_tests/test_reply_chain_commit_shadow.py `
   workflow_tests/test_reply_chain_shadow_bundle_audit.py `
   workflow_tests/test_reply_chain_external_gate_evidence.py `
+  workflow_tests/test_model_semantics_ownership_audit.py `
   workflow_tests/test_parallel_reply_chain_runner.py `
   workflow_tests/test_parallel_reply_chain_shadow.py `
   workflow_tests/test_parallel_reply_chain_comparison.py `
@@ -521,6 +566,8 @@ Behavior switching remains blocked unless all evidence is present:
 - model matrix report passing, with `git_commit` matching the reviewed commit;
 - payload isolation report passing, with `git_commit` matching the reviewed
   commit;
+- model semantics ownership report passing, with `git_commit` matching the
+  reviewed commit;
 - rollback evidence report passing, with `git_commit` matching the reviewed
   commit;
 - explicit human approval for branch, commit, and behavior-switch scope;

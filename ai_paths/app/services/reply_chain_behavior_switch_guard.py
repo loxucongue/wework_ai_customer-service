@@ -5,6 +5,7 @@ from typing import Any
 from app.services.reply_chain_external_gate_evidence import (
     business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
+    model_semantics_ownership_report_blockers,
     payload_isolation_report_blockers,
     rollback_evidence_report_blockers,
     simulation_report_blockers,
@@ -35,6 +36,7 @@ def reply_chain_behavior_switch_guard(
     payload_isolation_report: dict[str, Any] | None = None,
     business_wording_freeze_report: dict[str, Any] | None = None,
     rollback_evidence_report: dict[str, Any] | None = None,
+    model_semantics_ownership_report: dict[str, Any] | None = None,
     human_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate behavior-switch approval without changing runtime behavior."""
@@ -47,6 +49,7 @@ def reply_chain_behavior_switch_guard(
     payload_isolation = _dict(payload_isolation_report)
     business_wording_freeze = _dict(business_wording_freeze_report)
     rollback_evidence = _dict(rollback_evidence_report)
+    model_semantics_ownership = _dict(model_semantics_ownership_report)
     review = _dict(human_review)
     switch_requested = _behavior_switch_requested(flags)
     simulation_blockers = simulation_report_blockers(simulation)
@@ -66,6 +69,11 @@ def reply_chain_behavior_switch_guard(
         if rollback_evidence_report is not None
         else []
     )
+    model_semantics_ownership_blockers = (
+        model_semantics_ownership_report_blockers(model_semantics_ownership)
+        if model_semantics_ownership_report is not None
+        else []
+    )
     proven_external_gates: set[str] = set()
     if not simulation_blockers:
         proven_external_gates.add("simulation_regression_review")
@@ -77,6 +85,8 @@ def reply_chain_behavior_switch_guard(
         proven_external_gates.add("business_wording_freeze_review")
     if rollback_evidence_report is not None and not rollback_evidence_blockers:
         proven_external_gates.add("rollback_evidence_review")
+    if model_semantics_ownership_report is not None and not model_semantics_ownership_blockers:
+        proven_external_gates.add("model_semantics_ownership_review")
 
     blockers: list[str] = []
     if not switch_requested:
@@ -89,6 +99,7 @@ def reply_chain_behavior_switch_guard(
     blockers.extend(payload_isolation_blockers)
     blockers.extend(business_wording_freeze_blockers)
     blockers.extend(rollback_evidence_blockers)
+    blockers.extend(model_semantics_ownership_blockers)
     blockers.extend(
         _human_review_blockers(
             review,
@@ -99,6 +110,7 @@ def reply_chain_behavior_switch_guard(
             payload_isolation_report=payload_isolation,
             business_wording_freeze_report=business_wording_freeze,
             rollback_evidence_report=rollback_evidence,
+            model_semantics_ownership_report=model_semantics_ownership,
         )
     )
 
@@ -129,6 +141,10 @@ def reply_chain_behavior_switch_guard(
                 "rollback_evidence_report": (
                     "reply_chain_refactor_rollback_evidence_v1 proving this stage is on the refactor "
                     "branch, has no deployment-sensitive path changes, and has rollback steps"
+                ),
+                "model_semantics_ownership_report": (
+                    "reply_chain_model_semantics_ownership_audit_v1 proving Tool Planner, Join, "
+                    "and code do not own customer psychology, objections, sales rhythm, or final wording"
                 ),
                 "human_review": "explicit reviewer approval for this branch, commit, scope, and rollback plan",
             },
@@ -270,6 +286,7 @@ def _human_review_blockers(
     payload_isolation_report: dict[str, Any],
     business_wording_freeze_report: dict[str, Any],
     rollback_evidence_report: dict[str, Any],
+    model_semantics_ownership_report: dict[str, Any],
 ) -> list[str]:
     if review.get("schema_version") != "reply_chain_human_review_approval_v1":
         return ["missing_human_review_approval"]
@@ -291,6 +308,7 @@ def _human_review_blockers(
                 payload_isolation_report=payload_isolation_report,
                 business_wording_freeze_report=business_wording_freeze_report,
                 rollback_evidence_report=rollback_evidence_report,
+                model_semantics_ownership_report=model_semantics_ownership_report,
             )
         )
     if review.get("scope") != "parallel_gate_planner_behavior_switch":
@@ -309,6 +327,7 @@ def _review_commit_match_blockers(
     payload_isolation_report: dict[str, Any],
     business_wording_freeze_report: dict[str, Any],
     rollback_evidence_report: dict[str, Any],
+    model_semantics_ownership_report: dict[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
     simulation_commit = str(simulation_report.get("git_commit") or "").strip()
@@ -316,6 +335,7 @@ def _review_commit_match_blockers(
     payload_isolation_commit = str(payload_isolation_report.get("git_commit") or "").strip()
     business_wording_freeze_commit = str(business_wording_freeze_report.get("git_commit") or "").strip()
     rollback_evidence_commit = str(rollback_evidence_report.get("git_commit") or "").strip()
+    model_semantics_ownership_commit = str(model_semantics_ownership_report.get("git_commit") or "").strip()
     blockers.extend(_commit_evidence_blockers("shadow_bundle", shadow_bundle_audit, commit_sha))
     blockers.extend(_commit_evidence_blockers("diagnostics", diagnostics, commit_sha))
     if simulation_commit and simulation_commit != commit_sha:
@@ -328,6 +348,8 @@ def _review_commit_match_blockers(
         blockers.append(f"human_review_commit_mismatch:business_wording_freeze:{business_wording_freeze_commit}")
     if rollback_evidence_commit and rollback_evidence_commit != commit_sha:
         blockers.append(f"human_review_commit_mismatch:rollback_evidence:{rollback_evidence_commit}")
+    if model_semantics_ownership_commit and model_semantics_ownership_commit != commit_sha:
+        blockers.append(f"human_review_commit_mismatch:model_semantics_ownership:{model_semantics_ownership_commit}")
     return blockers
 
 

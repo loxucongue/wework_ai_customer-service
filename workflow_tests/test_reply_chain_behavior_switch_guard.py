@@ -349,6 +349,43 @@ def _rollback_evidence_ready() -> dict:
     }
 
 
+def _model_semantics_ownership_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_model_semantics_ownership_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "head_ref": "HEAD",
+        "ownership_contract_checked": True,
+        "tool_planner_must_not_own": ["customer_visible_text", "sales_psychology", "closing_move"],
+        "reply_owns": ["final_customer_visible_messages", "complex_turn_outcome", "single_mainline_action"],
+        "code_must_not_own": ["normal_sales_intent", "objection_psychology", "sales_rhythm"],
+        "tool_planner_legacy_residue_count": 0,
+        "tool_planner_only_ready": True,
+        "join_final_expression_boundary_schema": "reply_final_expression_boundary_v1",
+        "join_final_customer_message_owner": "reply",
+        "join_generates_customer_visible_text": False,
+        "join_decides_sales_psychology": False,
+        "direct_reply_scope": "static_candidate_only_no_dynamic_facts",
+        "direct_reply_final_customer_message_owner": "validated_static_gate_candidate",
+        "direct_reply_requires_commit_validation": True,
+        "reply_handoff_schema": "reply_final_brain_handoff_shadow_v1",
+        "reply_handoff_ready": True,
+        "legacy_business_field_mapping_schema": "reply_legacy_field_mapping_audit_v1",
+        "unmapped_legacy_business_fields": [],
+        "parallel_shadow_schema": "parallel_reply_chain_shadow_v1",
+        "semantic_ownership_passed": True,
+        "blockers": [],
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+            "does_not_call_external_tools": True,
+        },
+    }
+
+
 def _human_review_approved() -> dict:
     return {
         "schema_version": "reply_chain_human_review_approval_v1",
@@ -641,6 +678,53 @@ def test_behavior_switch_guard_blocks_invalid_payload_isolation_report() -> None
     assert guard["can_enable_behavior_switch"] is False
     assert "payload_isolation_leaked_field:reply:reply_chain_shadow_context" in guard["blockers"]
     assert "payload_isolation_not_passed" in guard["blockers"]
+
+
+def test_behavior_switch_guard_filters_model_semantics_ownership_report_gate() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["missing_or_unproven_gates"] = ["model_semantics_ownership_review"]
+    diagnostics["release_review"]["blocker_groups"] = {
+        "manual_review": {
+            "ready": False,
+            "blocker_count": 1,
+            "blockers": ["gate_not_proven:model_semantics_ownership_review"],
+        }
+    }
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        model_semantics_ownership_report=_model_semantics_ownership_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is True
+    assert "blockers" not in guard
+
+
+def test_behavior_switch_guard_blocks_invalid_model_semantics_ownership_report() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["missing_or_unproven_gates"] = ["model_semantics_ownership_review"]
+    report = _model_semantics_ownership_ready()
+    report["join_decides_sales_psychology"] = True
+    report["semantic_ownership_passed"] = False
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        model_semantics_ownership_report=report,
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "model_semantics_ownership_join_decides_sales_psychology" in guard["blockers"]
+    assert "model_semantics_ownership_not_passed" in guard["blockers"]
 
 
 def test_behavior_switch_guard_filters_rollback_evidence_report_gate() -> None:

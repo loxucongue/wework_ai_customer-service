@@ -5,6 +5,7 @@ from typing import Any
 from app.services.reply_chain_external_gate_evidence import (
     business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
+    model_semantics_ownership_report_blockers,
     payload_isolation_report_blockers,
     rollback_evidence_report_blockers,
     simulation_report_blockers,
@@ -38,6 +39,7 @@ def reply_chain_shadow_bundle_audit(
     payload_isolation_report: dict[str, Any] | None = None,
     business_wording_freeze_report: dict[str, Any] | None = None,
     rollback_evidence_report: dict[str, Any] | None = None,
+    model_semantics_ownership_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Summarize shadow migration evidence without changing reply behavior."""
 
@@ -47,6 +49,7 @@ def reply_chain_shadow_bundle_audit(
         payload_isolation_report=payload_isolation_report,
         business_wording_freeze_report=business_wording_freeze_report,
         rollback_evidence_report=rollback_evidence_report,
+        model_semantics_ownership_report=model_semantics_ownership_report,
     )
     component_schemas = dict(CORE_COMPONENT_SCHEMAS)
     if require_commit_shadow:
@@ -228,6 +231,7 @@ def _external_gate_evidence(
     payload_isolation_report: dict[str, Any] | None,
     business_wording_freeze_report: dict[str, Any] | None,
     rollback_evidence_report: dict[str, Any] | None,
+    model_semantics_ownership_report: dict[str, Any] | None,
 ) -> dict[str, Any]:
     proven_gates: list[str] = []
     blockers: list[str] = []
@@ -266,6 +270,13 @@ def _external_gate_evidence(
             blockers.extend(f"rollback_evidence_report:{item}" for item in rollback_blockers)
         else:
             proven_gates.append("rollback_evidence_review")
+    if model_semantics_ownership_report is not None:
+        ownership = _dict(model_semantics_ownership_report)
+        ownership_blockers = model_semantics_ownership_report_blockers(ownership)
+        if ownership_blockers:
+            blockers.extend(f"model_semantics_ownership_report:{item}" for item in ownership_blockers)
+        else:
+            proven_gates.append("model_semantics_ownership_review")
     return {
         "proven_gates": proven_gates,
         "blockers": blockers,

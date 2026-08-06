@@ -142,6 +142,79 @@ def rollback_evidence_report_blockers(report: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def model_semantics_ownership_report_blockers(report: dict[str, Any]) -> list[str]:
+    if report.get("schema_version") != "reply_chain_model_semantics_ownership_audit_v1":
+        return ["missing_model_semantics_ownership_audit"]
+    blockers: list[str] = []
+    commit = _string_value(report.get("git_commit"))
+    if not commit:
+        blockers.append("model_semantics_ownership_missing_git_commit")
+    commit_set = _list_strings(report.get("git_commit_set"))
+    if not commit_set:
+        blockers.append("model_semantics_ownership_missing_git_commit_set")
+    elif len(set(commit_set)) != 1:
+        blockers.append(f"model_semantics_ownership_multiple_git_commits:{','.join(commit_set)}")
+    elif commit and commit_set[0] != commit:
+        blockers.append(f"model_semantics_ownership_git_commit_set_mismatch:{commit_set[0]}!={commit}")
+    if report.get("ownership_contract_checked") is not True:
+        blockers.append("model_semantics_ownership_contract_not_checked")
+    tool_must_not = set(_list_strings(report.get("tool_planner_must_not_own")))
+    for item in ("customer_visible_text", "sales_psychology", "closing_move"):
+        if item not in tool_must_not:
+            blockers.append(f"model_semantics_ownership_tool_planner_missing_must_not_own:{item}")
+    reply_owns = set(_list_strings(report.get("reply_owns")))
+    for item in ("final_customer_visible_messages", "complex_turn_outcome", "single_mainline_action"):
+        if item not in reply_owns:
+            blockers.append(f"model_semantics_ownership_reply_missing_owns:{item}")
+    code_must_not = set(_list_strings(report.get("code_must_not_own")))
+    for item in ("normal_sales_intent", "objection_psychology", "sales_rhythm"):
+        if item not in code_must_not:
+            blockers.append(f"model_semantics_ownership_code_missing_must_not_own:{item}")
+    if _int_value(report.get("tool_planner_legacy_residue_count")) != 0:
+        blockers.append(f"model_semantics_ownership_tool_planner_residue:{report.get('tool_planner_legacy_residue_count')}")
+    if report.get("tool_planner_only_ready") is not True:
+        blockers.append("model_semantics_ownership_tool_planner_not_ready")
+    if report.get("join_final_expression_boundary_schema") != "reply_final_expression_boundary_v1":
+        blockers.append("model_semantics_ownership_missing_final_expression_boundary")
+    if report.get("join_final_customer_message_owner") != "reply":
+        blockers.append(f"model_semantics_ownership_join_owner_not_reply:{report.get('join_final_customer_message_owner') or 'missing'}")
+    if report.get("join_generates_customer_visible_text") is not False:
+        blockers.append("model_semantics_ownership_join_generates_text")
+    if report.get("join_decides_sales_psychology") is not False:
+        blockers.append("model_semantics_ownership_join_decides_sales_psychology")
+    if report.get("direct_reply_scope") != "static_candidate_only_no_dynamic_facts":
+        blockers.append(f"model_semantics_ownership_direct_reply_scope_invalid:{report.get('direct_reply_scope') or 'missing'}")
+    if report.get("direct_reply_final_customer_message_owner") != "validated_static_gate_candidate":
+        blockers.append("model_semantics_ownership_direct_reply_not_static_candidate")
+    if report.get("direct_reply_requires_commit_validation") is not True:
+        blockers.append("model_semantics_ownership_direct_reply_missing_commit_validation")
+    if report.get("reply_handoff_schema") != "reply_final_brain_handoff_shadow_v1":
+        blockers.append("model_semantics_ownership_missing_reply_handoff")
+    if report.get("reply_handoff_ready") is not True:
+        blockers.append("model_semantics_ownership_reply_handoff_not_ready")
+    if report.get("legacy_business_field_mapping_schema") != "reply_legacy_field_mapping_audit_v1":
+        blockers.append("model_semantics_ownership_missing_legacy_mapping")
+    unmapped = _list_strings(report.get("unmapped_legacy_business_fields"))
+    blockers.extend(f"model_semantics_ownership_unmapped_legacy_field:{item}" for item in unmapped)
+    if report.get("parallel_shadow_schema") != "parallel_reply_chain_shadow_v1":
+        blockers.append("model_semantics_ownership_missing_parallel_shadow")
+    blockers.extend(f"model_semantics_ownership_report_blocker:{item}" for item in _list_strings(report.get("blockers")))
+    if report.get("semantic_ownership_passed") is not True:
+        blockers.append("model_semantics_ownership_not_passed")
+    safety = _dict(report.get("safety"))
+    for field, blocker in (
+        ("audit_only", "model_semantics_ownership_missing_audit_only_safety"),
+        ("does_not_change_runtime_behavior", "model_semantics_ownership_missing_no_runtime_change_safety"),
+        ("does_not_send_customer_messages", "model_semantics_ownership_missing_no_send_safety"),
+        ("does_not_write_database", "model_semantics_ownership_missing_no_write_safety"),
+        ("does_not_call_models", "model_semantics_ownership_missing_no_model_call_safety"),
+        ("does_not_call_external_tools", "model_semantics_ownership_missing_no_external_tool_safety"),
+    ):
+        if safety.get(field) is not True:
+            blockers.append(blocker)
+    return blockers
+
+
 def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     if simulation.get("schema_version") != "offline_reply_chain_simulation_report_v1":
         return ["missing_offline_simulation_report"]

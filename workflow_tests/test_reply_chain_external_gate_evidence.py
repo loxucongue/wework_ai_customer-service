@@ -5,6 +5,7 @@ from pathlib import Path
 from app.services.reply_chain_external_gate_evidence import (
     business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
+    model_semantics_ownership_report_blockers,
     payload_isolation_report_blockers,
     rollback_evidence_report_blockers,
     simulation_report_blockers,
@@ -293,9 +294,47 @@ def _rollback_evidence_ready() -> dict:
     }
 
 
+def _model_semantics_ownership_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_model_semantics_ownership_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "head_ref": "HEAD",
+        "ownership_contract_checked": True,
+        "tool_planner_must_not_own": ["customer_visible_text", "sales_psychology", "closing_move"],
+        "reply_owns": ["final_customer_visible_messages", "complex_turn_outcome", "single_mainline_action"],
+        "code_must_not_own": ["normal_sales_intent", "objection_psychology", "sales_rhythm"],
+        "tool_planner_legacy_residue_count": 0,
+        "tool_planner_only_ready": True,
+        "join_final_expression_boundary_schema": "reply_final_expression_boundary_v1",
+        "join_final_customer_message_owner": "reply",
+        "join_generates_customer_visible_text": False,
+        "join_decides_sales_psychology": False,
+        "direct_reply_scope": "static_candidate_only_no_dynamic_facts",
+        "direct_reply_final_customer_message_owner": "validated_static_gate_candidate",
+        "direct_reply_requires_commit_validation": True,
+        "reply_handoff_schema": "reply_final_brain_handoff_shadow_v1",
+        "reply_handoff_ready": True,
+        "legacy_business_field_mapping_schema": "reply_legacy_field_mapping_audit_v1",
+        "unmapped_legacy_business_fields": [],
+        "parallel_shadow_schema": "parallel_reply_chain_shadow_v1",
+        "semantic_ownership_passed": True,
+        "blockers": [],
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+            "does_not_call_external_tools": True,
+        },
+    }
+
+
 def test_external_gate_evidence_accepts_complete_reports() -> None:
     assert simulation_report_blockers(_simulation_ready()) == []
     assert model_matrix_report_blockers(_model_matrix_ready()) == []
+    assert model_semantics_ownership_report_blockers(_model_semantics_ownership_ready()) == []
 
 
 def test_external_gate_evidence_blocks_unsafe_or_incomplete_reports() -> None:
@@ -421,6 +460,27 @@ def test_external_gate_evidence_accepts_business_wording_freeze_report() -> None
 
 def test_external_gate_evidence_accepts_payload_isolation_report() -> None:
     assert payload_isolation_report_blockers(_payload_isolation_ready()) == []
+
+
+def test_external_gate_evidence_accepts_model_semantics_ownership_report() -> None:
+    assert model_semantics_ownership_report_blockers(_model_semantics_ownership_ready()) == []
+
+
+def test_external_gate_evidence_blocks_model_semantics_ownership_residue() -> None:
+    report = _model_semantics_ownership_ready()
+    report["tool_planner_legacy_residue_count"] = 1
+    report["join_decides_sales_psychology"] = True
+    report["semantic_ownership_passed"] = False
+    report["blockers"] = ["tool_planner_legacy_residue:1"]
+    report["safety"]["does_not_call_models"] = False
+
+    blockers = model_semantics_ownership_report_blockers(report)
+
+    assert "model_semantics_ownership_tool_planner_residue:1" in blockers
+    assert "model_semantics_ownership_join_decides_sales_psychology" in blockers
+    assert "model_semantics_ownership_report_blocker:tool_planner_legacy_residue:1" in blockers
+    assert "model_semantics_ownership_not_passed" in blockers
+    assert "model_semantics_ownership_missing_no_model_call_safety" in blockers
 
 
 def test_external_gate_evidence_blocks_payload_isolation_leaks() -> None:
