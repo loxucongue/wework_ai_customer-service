@@ -18,6 +18,7 @@ from app.simulation.runner import (
     REQUIRED_SIMULATION_CATEGORIES,
     _aggregate,
     _configured_sop_media_urls,
+    _record_semantic_review_failure,
     _semantic_scores,
     load_suite,
     render_markdown,
@@ -62,6 +63,17 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(_semantic_scores(nested), nested["scores"])
         self.assertEqual(_semantic_scores(top_level)["current_question"], 5)
         self.assertEqual(_semantic_scores(top_level)["history_continuity"], 4)
+
+    def test_semantic_review_failure_is_infrastructure_failure(self) -> None:
+        result = {"infrastructure_errors": []}
+
+        _record_semantic_review_failure(result, RuntimeError("review model 401"))
+
+        self.assertEqual(
+            result["semantic_review"],
+            {"available": False, "error": "RuntimeError: review model 401"},
+        )
+        self.assertEqual(result["infrastructure_errors"], ["semantic_review:RuntimeError: review model 401"])
 
     def test_v1_fixture_expands_to_at_least_one_hundred_scenarios(self) -> None:
         scenarios = load_suite(REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json")

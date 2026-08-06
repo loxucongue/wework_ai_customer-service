@@ -139,10 +139,7 @@ async def run_suite(
                 try:
                     result["semantic_review"] = await _review_result(reviewer, scenario, result)
                 except Exception as exc:  # noqa: BLE001
-                    result["semantic_review"] = {
-                        "available": False,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
+                    _record_semantic_review_failure(result, exc)
             _write_result_checkpoint(checkpoint_dir, result)
             return result
 
@@ -168,6 +165,15 @@ def _write_result_checkpoint(checkpoint_dir: Path, result: dict[str, Any]) -> No
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(target)
+
+
+def _record_semantic_review_failure(result: dict[str, Any], exc: Exception) -> None:
+    review_error = f"{type(exc).__name__}: {exc}"
+    result["semantic_review"] = {
+        "available": False,
+        "error": review_error,
+    }
+    result.setdefault("infrastructure_errors", []).append(f"semantic_review:{review_error}")
 
 
 async def _review_result(
