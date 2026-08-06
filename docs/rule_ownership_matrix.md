@@ -94,6 +94,10 @@ and human review approval. It is not itself one of the sixteen diagnostic
 gates, and it must not enable runtime behavior by side effect.
 `workflow_tests/test_reply_chain_behavior_switch_guard.py` must pass before
 any proposed behavior switch can be reviewed.
+`workflow_tests/test_reply_chain_external_gate_evidence.py` must pass to prove
+that offline simulation and model-matrix reports are validated through one
+shared evidence contract before either the postcommit bundle audit or final
+guard consumes them.
 When diagnostics include grouped release blockers, the guard may expose those
 groups for reviewer readability, but the groups remain evidence only and do not
 enable behavior by themselves. If a group still reports blockers, the guard

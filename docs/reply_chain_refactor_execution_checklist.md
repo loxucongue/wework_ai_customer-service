@@ -226,6 +226,7 @@ python -m pytest `
   workflow_tests/test_parallel_reply_chain_comparison.py `
   workflow_tests/test_parallel_reply_chain_diagnostics.py `
   workflow_tests/test_reply_chain_shadow_bundle_audit.py `
+  workflow_tests/test_reply_chain_external_gate_evidence.py `
   workflow_tests/test_reply_chain_behavior_switch_guard.py -q
 ```
 
@@ -343,6 +344,7 @@ python -m pytest `
   workflow_tests/test_reply_final_brain_handoff.py `
   workflow_tests/test_reply_chain_commit_shadow.py `
   workflow_tests/test_reply_chain_shadow_bundle_audit.py `
+  workflow_tests/test_reply_chain_external_gate_evidence.py `
   workflow_tests/test_parallel_reply_chain_runner.py `
   workflow_tests/test_parallel_reply_chain_shadow.py `
   workflow_tests/test_parallel_reply_chain_comparison.py `

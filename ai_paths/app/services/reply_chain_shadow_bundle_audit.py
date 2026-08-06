@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.reply_chain_behavior_switch_guard import _model_matrix_blockers, _simulation_blockers
+from app.services.reply_chain_external_gate_evidence import (
+    model_matrix_report_blockers,
+    simulation_report_blockers,
+)
 
 
 CORE_COMPONENT_SCHEMAS = {
@@ -202,14 +205,14 @@ def _external_gate_evidence(
     blockers: list[str] = []
     if simulation_report is not None:
         simulation = _dict(simulation_report)
-        simulation_blockers = _simulation_blockers(simulation)
+        simulation_blockers = simulation_report_blockers(simulation)
         if simulation_blockers:
             blockers.extend(f"simulation_report:{item}" for item in simulation_blockers)
         else:
             proven_gates.append("simulation_regression_review")
     if model_matrix_report is not None:
         model_matrix = _dict(model_matrix_report)
-        model_matrix_blockers = _model_matrix_blockers(model_matrix)
+        model_matrix_blockers = model_matrix_report_blockers(model_matrix)
         if model_matrix_blockers:
             blockers.extend(f"model_matrix_report:{item}" for item in model_matrix_blockers)
         else:

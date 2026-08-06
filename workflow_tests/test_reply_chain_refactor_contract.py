@@ -133,6 +133,7 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "comparison diagnostics show no shadow replay diffs",
         "workflow_tests/test_reply_chain_shadow_payload_isolation.py",
         "workflow_tests/test_reply_chain_behavior_switch_guard.py",
+        "workflow_tests/test_reply_chain_external_gate_evidence.py",
         "workflow_tests/test_reply_chain_shadow_context.py",
         "workflow_tests/test_reply_final_brain_handoff.py",
         "workflow_tests/test_parallel_reply_chain_shadow.py",
