@@ -259,6 +259,7 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
                 "shared_context_authority_audit_schema": "reply_chain_authority_audit_v1",
                 "shared_context_timeline_window_audit_schema": "reply_chain_timeline_window_audit_v1",
                 "shared_context_timeline_window_ready": True,
+                "shared_context_timeline_retained_window_schema": "reply_chain_retained_timeline_window_v1",
                 "shared_context_current_message_audit_schema": "reply_chain_current_message_audit_v1",
                 "shared_context_current_message_ready": True,
                 "shared_context_fact_snapshot_schema": "reply_chain_fact_snapshot_audit_v1",
@@ -329,6 +330,53 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
     assert "model_semantics_ownership_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
     assert diagnostics["release_review"]["blocker_groups"]["reply_payload_schema"]["ready"] is True
     assert diagnostics["release_review"]["blocker_groups"]["manual_review"]["ready"] is False
+
+
+def test_diagnostics_authority_gate_requires_retained_timeline_window_schema() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+            "current_serial_observation": {
+                "shared_context_authority_audit_schema": "reply_chain_authority_audit_v1",
+                "shared_context_timeline_window_audit_schema": "reply_chain_timeline_window_audit_v1",
+                "shared_context_timeline_window_ready": True,
+                "shared_context_current_message_audit_schema": "reply_chain_current_message_audit_v1",
+                "shared_context_current_message_ready": True,
+                "shared_context_fact_snapshot_schema": "reply_chain_fact_snapshot_audit_v1",
+                "gate_commit_boundary_schema": "chat_gate_commit_boundary_v1",
+                "gate_shadow_output_only": True,
+                "gate_shadow_creates_sop_task": False,
+                "gate_shadow_updates_send_once": False,
+                "gate_shadow_sends_customer_messages": False,
+                "gate_shadow_writes_database": False,
+                "join_final_expression_boundary_schema": "reply_final_expression_boundary_v1",
+                "join_final_customer_message_owner": "reply",
+                "join_generates_customer_visible_text": False,
+                "join_decides_sales_psychology": False,
+                "direct_reply_allowed": False,
+                "direct_reply_guard_schema": "reply_chain_direct_reply_guard_audit_v1",
+                "direct_reply_guard_ready": False,
+                "reply_handoff_readiness_schema": "reply_final_brain_handoff_readiness_audit_v1",
+                "reply_handoff_ready_for_payload_switch_shadow": True,
+                "reply_target_input_schema_audit_schema": "reply_final_brain_target_input_schema_audit_v1",
+                "reply_target_input_schema_version": "reply_final_brain_target_input_schema_v1",
+                "reply_target_input_schema_ready": True,
+                "reply_handoff_legacy_business_field_count": 0,
+            },
+        },
+        runner_shadow=_completed_runner_shadow(),
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+            "review_gate": {"can_enable_behavior_switch": False},
+        },
+        commit_shadow=_commit_shadow(),
+    )
+
+    gates = {gate["gate_id"]: gate for gate in diagnostics["release_review"]["gates"]}
+    assert gates["authority_snapshot_review"]["passed"] is False
+    assert "authority_snapshot_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
 
 
 def test_diagnostics_blocks_when_commit_shadow_has_wrong_owner() -> None:
@@ -530,6 +578,7 @@ def test_diagnostics_groups_reply_schema_gate_blockers_for_review() -> None:
                 "shared_context_authority_audit_schema": "reply_chain_authority_audit_v1",
                 "shared_context_timeline_window_audit_schema": "reply_chain_timeline_window_audit_v1",
                 "shared_context_timeline_window_ready": True,
+                "shared_context_timeline_retained_window_schema": "reply_chain_retained_timeline_window_v1",
                 "shared_context_current_message_audit_schema": "reply_chain_current_message_audit_v1",
                 "shared_context_current_message_ready": True,
                 "shared_context_fact_snapshot_schema": "reply_chain_fact_snapshot_audit_v1",

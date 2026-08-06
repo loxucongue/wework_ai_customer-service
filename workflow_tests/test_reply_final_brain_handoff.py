@@ -52,6 +52,12 @@ def test_reply_final_brain_handoff_groups_legacy_planner_semantics() -> None:
                     "ready_for_authoritative_model_input": True,
                     "source_window_complete": True,
                     "truncated": False,
+                    "retained_window": {
+                        "schema_version": "reply_chain_retained_timeline_window_v1",
+                        "oldest_message_ref": "m1",
+                        "newest_message_ref": "m_current",
+                        "current_request_message_refs": ["m_current"],
+                    },
                 },
                 "current_message_audit": {
                     "schema_version": "reply_chain_current_message_audit_v1",
@@ -107,6 +113,13 @@ def test_reply_final_brain_handoff_groups_legacy_planner_semantics() -> None:
     assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is True
     assert handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_window_audit_schema"] == "reply_chain_timeline_window_audit_v1"
     assert handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_window_ready"] is True
+    assert (
+        handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_retained_window_schema"]
+        == "reply_chain_retained_timeline_window_v1"
+    )
+    assert handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_retained_oldest_message_ref"] == "m1"
+    assert handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_retained_newest_message_ref"] == "m_current"
+    assert handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_retained_current_request_message_refs"] == ["m_current"]
     assert handoff["handoff_readiness_audit"]["observed_inputs"]["target_reply_input_schema_version"] == "reply_final_brain_target_input_schema_v1"
     assert handoff["handoff_readiness_audit"]["observed_inputs"]["target_reply_input_schema_ready"] is True
     assert "customer_visible_text" in handoff["ownership_contract"]["tool_planner_must_not_own"]

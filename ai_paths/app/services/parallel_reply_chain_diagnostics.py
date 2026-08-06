@@ -177,6 +177,7 @@ def _release_review_gate_checklist(
                 observation.get("shared_context_authority_audit_schema") == "reply_chain_authority_audit_v1"
                 and observation.get("shared_context_timeline_window_audit_schema") == "reply_chain_timeline_window_audit_v1"
                 and observation.get("shared_context_timeline_window_ready") is True
+                and observation.get("shared_context_timeline_retained_window_schema") == "reply_chain_retained_timeline_window_v1"
                 and observation.get("shared_context_current_message_audit_schema") == "reply_chain_current_message_audit_v1"
                 and observation.get("shared_context_fact_snapshot_schema") == "reply_chain_fact_snapshot_audit_v1"
                 and observation.get("shared_context_current_message_ready") is True

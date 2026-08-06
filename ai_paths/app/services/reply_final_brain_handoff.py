@@ -283,6 +283,9 @@ def _handoff_readiness_audit(
     timeline_window_audit = authority_audit.get("timeline_window_audit")
     if not isinstance(timeline_window_audit, dict):
         timeline_window_audit = {}
+    retained_window_audit = timeline_window_audit.get("retained_window")
+    if not isinstance(retained_window_audit, dict):
+        retained_window_audit = {}
     current_message_audit = authority_audit.get("current_message_audit")
     if not isinstance(current_message_audit, dict):
         current_message_audit = {}
@@ -386,6 +389,10 @@ def _handoff_readiness_audit(
                 "timeline_window_ready": timeline_window_audit.get("ready_for_authoritative_model_input"),
                 "timeline_source_window_complete": timeline_window_audit.get("source_window_complete"),
                 "timeline_truncated": timeline_window_audit.get("truncated"),
+                "timeline_retained_window_schema": retained_window_audit.get("schema_version"),
+                "timeline_retained_oldest_message_ref": retained_window_audit.get("oldest_message_ref"),
+                "timeline_retained_newest_message_ref": retained_window_audit.get("newest_message_ref"),
+                "timeline_retained_current_request_message_refs": retained_window_audit.get("current_request_message_refs"),
                 "all_messages_have_sent_at": authority_audit.get("all_messages_have_sent_at"),
                 "complete_chat_is_primary_authority": authority_audit.get("complete_chat_is_primary_authority"),
                 "current_message_audit_schema": current_message_audit.get("schema_version"),

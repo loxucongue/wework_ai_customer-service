@@ -27,6 +27,12 @@ def _reply_chain_shadow_context(
                 "ready_for_authoritative_model_input": True,
                 "truncated": False,
                 "dropped_message_count": 0,
+                "retained_window": {
+                    "schema_version": "reply_chain_retained_timeline_window_v1",
+                    "oldest_message_ref": "m1",
+                    "newest_message_ref": "current",
+                    "current_request_message_refs": ["current"],
+                },
                 "blockers": [],
             },
             "current_message_audit": {
@@ -164,6 +170,16 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertTrue(shadow["current_serial_observation"]["shared_context_timeline_window_ready"])
         self.assertFalse(shadow["current_serial_observation"]["shared_context_timeline_window_truncated"])
         self.assertEqual(shadow["current_serial_observation"]["shared_context_timeline_window_dropped_count"], 0)
+        self.assertEqual(
+            shadow["current_serial_observation"]["shared_context_timeline_retained_window_schema"],
+            "reply_chain_retained_timeline_window_v1",
+        )
+        self.assertEqual(shadow["current_serial_observation"]["shared_context_timeline_retained_oldest_message_ref"], "m1")
+        self.assertEqual(shadow["current_serial_observation"]["shared_context_timeline_retained_newest_message_ref"], "current")
+        self.assertEqual(
+            shadow["current_serial_observation"]["shared_context_timeline_retained_current_request_message_refs"],
+            ["current"],
+        )
         self.assertEqual(
             shadow["current_serial_observation"]["shared_context_fact_snapshot_schema"],
             "reply_chain_fact_snapshot_audit_v1",

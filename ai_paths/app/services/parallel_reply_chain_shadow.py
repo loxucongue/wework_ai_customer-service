@@ -36,6 +36,9 @@ def parallel_reply_chain_shadow(
     timeline_window_audit = context_authority_audit.get("timeline_window_audit")
     if not isinstance(timeline_window_audit, dict):
         timeline_window_audit = {}
+    retained_window_audit = timeline_window_audit.get("retained_window")
+    if not isinstance(retained_window_audit, dict):
+        retained_window_audit = {}
     gate_commit_boundary = gate_router_shadow.get("commit_boundary")
     if not isinstance(gate_commit_boundary, dict):
         gate_commit_boundary = {}
@@ -97,6 +100,10 @@ def parallel_reply_chain_shadow(
                 "shared_context_timeline_window_ready": timeline_window_audit.get("ready_for_authoritative_model_input"),
                 "shared_context_timeline_window_truncated": timeline_window_audit.get("truncated"),
                 "shared_context_timeline_window_dropped_count": timeline_window_audit.get("dropped_message_count"),
+                "shared_context_timeline_retained_window_schema": retained_window_audit.get("schema_version"),
+                "shared_context_timeline_retained_oldest_message_ref": retained_window_audit.get("oldest_message_ref"),
+                "shared_context_timeline_retained_newest_message_ref": retained_window_audit.get("newest_message_ref"),
+                "shared_context_timeline_retained_current_request_message_refs": retained_window_audit.get("current_request_message_refs"),
                 "shared_context_timeline_window_blockers": timeline_window_audit.get("blockers"),
                 "shared_context_fact_snapshot_schema": fact_snapshot_audit.get("schema_version"),
                 "shared_context_fact_sections_with_error": fact_snapshot_audit.get("sections_with_error"),
