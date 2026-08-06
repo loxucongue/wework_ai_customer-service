@@ -88,6 +88,12 @@ def _join_shadow(**overrides: object) -> dict:
         "schema_version": "reply_chain_join_shadow_v1",
         "final_route": "reply_with_content",
         "direct_reply_allowed": False,
+        "direct_reply_guard_audit": {
+            "schema_version": "reply_chain_direct_reply_guard_audit_v1",
+            "direct_reply_requested": False,
+            "ready_for_direct_reply": False,
+            "blockers": [],
+        },
         "final_expression_boundary": {
             "schema_version": "reply_final_expression_boundary_v1",
             "reply_required_for_complex_turn": True,
@@ -177,6 +183,11 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             shadow["current_serial_observation"]["join_final_expression_boundary_schema"],
             "reply_final_expression_boundary_v1",
         )
+        self.assertEqual(
+            shadow["current_serial_observation"]["direct_reply_guard_schema"],
+            "reply_chain_direct_reply_guard_audit_v1",
+        )
+        self.assertFalse(shadow["current_serial_observation"]["direct_reply_guard_requested"])
         self.assertEqual(shadow["current_serial_observation"]["join_final_customer_message_owner"], "reply")
         self.assertTrue(shadow["current_serial_observation"]["join_reply_required_for_complex_turn"])
         self.assertFalse(shadow["current_serial_observation"]["join_generates_customer_visible_text"])
@@ -443,6 +454,21 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
 
         self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
         self.assertIn("missing_join_final_expression_boundary", shadow["activation"]["blockers"])
+
+    def test_missing_direct_reply_guard_blocks_parallel_runner_activation(self) -> None:
+        join_shadow = _join_shadow()
+        join_shadow.pop("direct_reply_guard_audit")
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=_reply_chain_shadow_context(),
+            gate_router_shadow=_gate_router_shadow(),
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow=join_shadow,
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("missing_direct_reply_guard_audit", shadow["activation"]["blockers"])
 
     def test_complex_join_route_must_keep_reply_as_final_owner(self) -> None:
         join_shadow = _join_shadow()

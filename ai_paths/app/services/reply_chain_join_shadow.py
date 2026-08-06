@@ -15,6 +15,13 @@ def reply_chain_join_shadow(
     has_read_tools = bool(tool_plan_preview.get("read_tool_calls"))
     has_unknown_tools = bool(tool_plan_preview.get("unknown_tools"))
     has_content = bool((gate_router_shadow.get("selected_content") or {}).get("message_count") or gate_router_shadow.get("direct_reply_candidate"))
+    direct_reply_guard = _direct_reply_guard_audit(
+        gate_route=gate_route,
+        fact_requirement=fact_requirement,
+        has_read_tools=has_read_tools,
+        has_unknown_tools=has_unknown_tools,
+        has_content=has_content,
+    )
 
     final_route = _final_route(
         gate_route=gate_route,
@@ -32,6 +39,7 @@ def reply_chain_join_shadow(
             "fact_requirement": fact_requirement,
             "final_route": final_route,
             "direct_reply_allowed": direct_reply_allowed,
+            "direct_reply_guard_audit": direct_reply_guard,
             "final_expression_boundary": _final_expression_boundary(
                 final_route=final_route,
                 direct_reply_allowed=direct_reply_allowed,
@@ -97,6 +105,37 @@ def _join_reasons(
     if gate_route == "direct_text" and not has_content:
         reasons.append("direct_text_missing_static_candidate_requires_reply")
     return reasons
+
+
+def _direct_reply_guard_audit(
+    *,
+    gate_route: str,
+    fact_requirement: str,
+    has_read_tools: bool,
+    has_unknown_tools: bool,
+    has_content: bool,
+) -> dict[str, Any]:
+    requested = gate_route == "direct_text"
+    blockers: list[str] = []
+    if requested and not has_content:
+        blockers.append("missing_static_gate_candidate")
+    if requested and fact_requirement != "none":
+        blockers.append(f"dynamic_fact_requirement:{fact_requirement or 'unknown'}")
+    if requested and has_read_tools:
+        blockers.append("read_tools_present")
+    if requested and has_unknown_tools:
+        blockers.append("unknown_tools_present")
+    return {
+        "schema_version": "reply_chain_direct_reply_guard_audit_v1",
+        "direct_reply_requested": requested,
+        "static_candidate_present": has_content,
+        "tool_fact_requirement_none": fact_requirement == "none",
+        "read_tools_absent": not has_read_tools,
+        "unknown_tools_absent": not has_unknown_tools,
+        "ready_for_direct_reply": requested and not blockers,
+        "blockers": blockers,
+        "source": "deterministic_join_direct_reply_guard",
+    }
 
 
 def _final_expression_boundary(*, final_route: str, direct_reply_allowed: bool) -> dict[str, Any]:

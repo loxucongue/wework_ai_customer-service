@@ -336,6 +336,7 @@ Join 是确定性合并层，不是第三个模型大脑。
 - 判断是否具备 Gate 安全直回条件。
 - 为 Reply 准备清晰 handoff。
 - 记录冲突和阻断原因。
+- 输出 `direct_reply_guard_audit`，显式证明 Gate 直回例外只在静态候选存在、无动态事实、无只读工具和无未知工具时成立。
 
 ### 10.2 不负责
 
@@ -343,6 +344,18 @@ Join 是确定性合并层，不是第三个模型大脑。
 - 选择销售心理、逼单理由或主线动作。
 - 修改 SOP 文案。
 - 用代码判断普通客户意图。
+
+### 10.3 Gate 直回 Guard
+
+Gate 直回是极窄例外，不是让 Gate 变成大脑。Join 必须记录 `reply_chain_direct_reply_guard_audit_v1`：
+
+- `direct_reply_requested=true`：Gate 建议 `direct_text`。
+- `static_candidate_present=true`：Gate 确实有静态候选消息。
+- `tool_fact_requirement_none=true`：Tool Planner 未声明动态事实需求。
+- `read_tools_absent=true` 且 `unknown_tools_absent=true`。
+- 全部满足后才允许 `final_route=direct_reply`。
+
+即使允许直回，最终仍必须经过统一硬校验和 commit phase；Join 不生成客户可见文本，也不拥有销售心理判断。
 
 ## 11. Reply
 

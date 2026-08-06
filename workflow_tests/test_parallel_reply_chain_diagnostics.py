@@ -172,7 +172,7 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
     assert diagnostics["commit"]["requires_reply_validation_before_commit"] is True
     assert diagnostics["release_review"]["schema_version"] == "reply_chain_release_review_checklist_v1"
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
-    assert diagnostics["release_review"]["required_gate_count"] == 12
+    assert diagnostics["release_review"]["required_gate_count"] == 13
     assert "simulation_regression_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
 
 
@@ -198,6 +198,9 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
                 "join_final_customer_message_owner": "reply",
                 "join_generates_customer_visible_text": False,
                 "join_decides_sales_psychology": False,
+                "direct_reply_allowed": False,
+                "direct_reply_guard_schema": "reply_chain_direct_reply_guard_audit_v1",
+                "direct_reply_guard_ready": False,
                 "reply_handoff_readiness_schema": "reply_final_brain_handoff_readiness_audit_v1",
                 "reply_handoff_ready_for_payload_switch_shadow": True,
             },
@@ -216,6 +219,7 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
     assert gates["gate_commit_boundary_review"]["passed"] is True
     assert gates["branch_input_isolation_review"]["passed"] is True
     assert gates["final_expression_owner_review"]["passed"] is True
+    assert gates["direct_reply_guard_review"]["passed"] is True
     assert gates["reply_handoff_readiness_review"]["passed"] is True
     assert gates["commit_phase_shadow_review"]["passed"] is True
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False

@@ -21,6 +21,12 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
         self.assertEqual(shadow["final_route"], "direct_reply")
         self.assertTrue(shadow["direct_reply_allowed"])
         self.assertEqual(
+            shadow["direct_reply_guard_audit"]["schema_version"],
+            "reply_chain_direct_reply_guard_audit_v1",
+        )
+        self.assertTrue(shadow["direct_reply_guard_audit"]["direct_reply_requested"])
+        self.assertTrue(shadow["direct_reply_guard_audit"]["ready_for_direct_reply"])
+        self.assertEqual(
             shadow["final_expression_boundary"]["schema_version"],
             "reply_final_expression_boundary_v1",
         )
@@ -53,6 +59,9 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
 
         self.assertEqual(shadow["final_route"], "reply_with_content_and_tools")
         self.assertFalse(shadow["direct_reply_allowed"])
+        self.assertFalse(shadow["direct_reply_guard_audit"]["ready_for_direct_reply"])
+        self.assertIn("dynamic_fact_requirement:required", shadow["direct_reply_guard_audit"]["blockers"])
+        self.assertIn("read_tools_present", shadow["direct_reply_guard_audit"]["blockers"])
         self.assertTrue(shadow["final_expression_boundary"]["reply_required_for_complex_turn"])
         self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
         self.assertFalse(shadow["final_expression_boundary"]["direct_reply_exception"])
@@ -65,6 +74,8 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
 
         self.assertEqual(shadow["final_route"], "reply")
         self.assertFalse(shadow["direct_reply_allowed"])
+        self.assertFalse(shadow["direct_reply_guard_audit"]["ready_for_direct_reply"])
+        self.assertIn("missing_static_gate_candidate", shadow["direct_reply_guard_audit"]["blockers"])
         self.assertTrue(shadow["final_expression_boundary"]["reply_required_for_complex_turn"])
         self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
         self.assertIn("direct_text_missing_static_candidate_requires_reply", shadow["join_reasons"])

@@ -25,6 +25,10 @@ def _ready_state() -> dict:
                 "gate_shadow_sends_customer_messages": False,
                 "gate_shadow_writes_database": False,
                 "tool_planner_only_ready": True,
+                "direct_reply_allowed": False,
+                "direct_reply_guard_schema": "reply_chain_direct_reply_guard_audit_v1",
+                "direct_reply_guard_requested": False,
+                "direct_reply_guard_ready": False,
                 "join_final_expression_boundary_schema": "reply_final_expression_boundary_v1",
                 "join_final_customer_message_owner": "reply",
                 "join_generates_customer_visible_text": False,
@@ -106,3 +110,16 @@ def test_bundle_audit_blocks_when_join_would_own_customer_text() -> None:
 
     assert audit["ready_for_refactor_review"] is False
     assert "review_gate_not_ready:join_keeps_reply_as_final_owner" in audit["blockers"]
+
+
+def test_bundle_audit_blocks_when_direct_reply_is_allowed_without_guard() -> None:
+    state = _ready_state()
+    observation = state["parallel_reply_chain_shadow"]["current_serial_observation"]
+    observation["direct_reply_allowed"] = True
+    observation["direct_reply_guard_ready"] = False
+    observation["direct_reply_guard_blockers"] = ["read_tools_present"]
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "review_gate_not_ready:direct_reply_guard_review" in audit["blockers"]

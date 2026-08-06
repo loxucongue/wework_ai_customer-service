@@ -42,6 +42,9 @@ def parallel_reply_chain_shadow(
     final_expression_boundary = reply_chain_join_shadow.get("final_expression_boundary")
     if not isinstance(final_expression_boundary, dict):
         final_expression_boundary = {}
+    direct_reply_guard = reply_chain_join_shadow.get("direct_reply_guard_audit")
+    if not isinstance(direct_reply_guard, dict):
+        direct_reply_guard = {}
     reply_handoff_readiness = (reply_final_brain_handoff_shadow or {}).get("handoff_readiness_audit")
     if not isinstance(reply_handoff_readiness, dict):
         reply_handoff_readiness = {}
@@ -108,6 +111,10 @@ def parallel_reply_chain_shadow(
                 "read_executor_mode": read_only_tool_executor_shadow.get("mode"),
                 "join_final_route": reply_chain_join_shadow.get("final_route"),
                 "direct_reply_allowed": reply_chain_join_shadow.get("direct_reply_allowed"),
+                "direct_reply_guard_schema": direct_reply_guard.get("schema_version"),
+                "direct_reply_guard_requested": direct_reply_guard.get("direct_reply_requested"),
+                "direct_reply_guard_ready": direct_reply_guard.get("ready_for_direct_reply"),
+                "direct_reply_guard_blockers": direct_reply_guard.get("blockers"),
                 "join_final_expression_boundary_schema": final_expression_boundary.get("schema_version"),
                 "join_final_customer_message_owner": final_expression_boundary.get("final_customer_message_owner"),
                 "join_reply_required_for_complex_turn": final_expression_boundary.get("reply_required_for_complex_turn"),
@@ -161,6 +168,7 @@ def _activation_blockers(
     if reply_chain_join_shadow.get("schema_version") != "reply_chain_join_shadow_v1":
         blockers.append("missing_reply_chain_join_shadow")
     blockers.extend(_join_final_expression_blockers(reply_chain_join_shadow))
+    blockers.extend(_direct_reply_guard_blockers(reply_chain_join_shadow))
     if reply_final_brain_handoff_shadow.get("schema_version") != "reply_final_brain_handoff_shadow_v1":
         blockers.append("missing_reply_final_brain_handoff_shadow")
     blockers.extend(_reply_handoff_readiness_blockers(reply_final_brain_handoff_shadow))
@@ -197,6 +205,19 @@ def _join_final_expression_blockers(reply_chain_join_shadow: dict[str, Any]) -> 
     if boundary.get("join_decides_sales_psychology") is not False:
         blockers.append("join_decides_sales_psychology")
     return blockers
+
+
+def _direct_reply_guard_blockers(reply_chain_join_shadow: dict[str, Any]) -> list[str]:
+    audit = reply_chain_join_shadow.get("direct_reply_guard_audit")
+    if not isinstance(audit, dict) or audit.get("schema_version") != "reply_chain_direct_reply_guard_audit_v1":
+        return ["missing_direct_reply_guard_audit"]
+    direct_allowed = reply_chain_join_shadow.get("direct_reply_allowed") is True
+    if direct_allowed and audit.get("ready_for_direct_reply") is not True:
+        blockers = audit.get("blockers")
+        if isinstance(blockers, list) and blockers:
+            return [f"direct_reply_guard:{item}" for item in blockers if isinstance(item, str) and item]
+        return ["direct_reply_guard_not_ready"]
+    return []
 
 
 def _gate_commit_boundary_blockers(gate_router_shadow: dict[str, Any]) -> list[str]:

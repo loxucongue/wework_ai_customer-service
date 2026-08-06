@@ -199,6 +199,18 @@ def _release_review_gate_checklist(
             ),
         ),
         _gate(
+            "direct_reply_guard_review",
+            "automated_shadow_evidence",
+            "direct_reply_exception_has_explicit_guard",
+            passed=(
+                observation.get("direct_reply_allowed") is not True
+                or (
+                    observation.get("direct_reply_guard_schema") == "reply_chain_direct_reply_guard_audit_v1"
+                    and observation.get("direct_reply_guard_ready") is True
+                )
+            ),
+        ),
+        _gate(
             "reply_handoff_readiness_review",
             "automated_shadow_evidence",
             "reply_handoff_readiness_audit_ready",

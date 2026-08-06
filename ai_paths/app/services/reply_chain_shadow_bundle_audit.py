@@ -155,6 +155,16 @@ def _review_gates(state: dict[str, Any], *, require_commit_shadow: bool) -> dict
             ),
             "purpose": "join_does_not_become_business_brain",
         },
+        "direct_reply_guard_review": {
+            "passed": (
+                observation.get("direct_reply_allowed") is not True
+                or (
+                    observation.get("direct_reply_guard_schema") == "reply_chain_direct_reply_guard_audit_v1"
+                    and observation.get("direct_reply_guard_ready") is True
+                )
+            ),
+            "purpose": "gate_direct_reply_exception_is_explicitly_guarded",
+        },
         "reply_handoff_ready": {
             "passed": (observation.get("reply_handoff_ready_for_payload_switch_shadow") is True),
             "purpose": "reply_can_receive_gate_and_tool_facts_without_losing_context",
