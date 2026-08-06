@@ -386,6 +386,7 @@ async def _run_reply_model_pipeline(
 def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state: AgentState) -> None:
     repairable_details = {
         "nearby_store_claim_without_location_fact",
+        "precision_reply_missing_mainline_action",
     }
     for warning in collect_reply_soft_warnings(messages, state):
         detail = str(warning.get("detail") or "")

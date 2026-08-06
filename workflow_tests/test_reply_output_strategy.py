@@ -6851,7 +6851,7 @@ def test_precision_reply_passive_mainline_closure_is_soft_warning() -> None:
     assert any(item.get("detail") == "precision_reply_passive_mainline_closure" for item in warnings)
 
 
-def test_precision_reply_missing_mainline_action_is_soft_warning() -> None:
+def test_precision_reply_missing_mainline_action_triggers_repair() -> None:
     messages = [
         {
             "type": "text",
@@ -6867,7 +6867,8 @@ def test_precision_reply_missing_mainline_action_is_soft_warning() -> None:
     warnings = collect_reply_soft_warnings(messages, state)
 
     assert any(item.get("detail") == "precision_reply_missing_mainline_action" for item in warnings)
-    _raise_repairable_reply_quality_issues(messages, state)
+    with pytest.raises(ValueError, match="precision_reply_missing_mainline_action"):
+        _raise_repairable_reply_quality_issues(messages, state)
 
 
 def test_precision_reply_passive_closure_does_not_fail_reply_runtime() -> None:

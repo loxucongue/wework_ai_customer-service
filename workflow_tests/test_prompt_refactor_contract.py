@@ -415,6 +415,23 @@ def test_reply_actual_messages_keep_precision_rules_and_stage_business_rules() -
         assert marker in joined
 
 
+def test_planner_and_reply_prompts_close_need_inquiry_after_first_answer() -> None:
+    joined = "\n".join([PLANNER_SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT])
+
+    for marker in [
+        "S1 需求问诊只允许一个轻问题",
+        "默认就是“斑点大概多久了”",
+        "不是在线问诊或采集完整病史",
+        "自然进入效果案例 SOP 场景",
+        "好的/谢谢",
+        "稳定还是越来越明显",
+        "近轮已经发过案例图",
+        "优先接活动/预约金",
+        "后天形成",
+    ]:
+        assert marker in joined
+
+
 def test_planner_timeout_recovery_keeps_current_scene_and_flat_tool_contracts() -> None:
     messages = planner_v2_timeout_retry_messages_for_model(
         {"normalized_content": "洪湖市有门店吗", "conversation_history": []},
