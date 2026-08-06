@@ -412,27 +412,27 @@ def _review_commit_match_blockers(
     model_semantics_ownership_report: dict[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
-    simulation_commit = str(simulation_report.get("git_commit") or "").strip()
-    model_matrix_commit = str(model_matrix_report.get("git_commit") or "").strip()
-    payload_isolation_commit = str(payload_isolation_report.get("git_commit") or "").strip()
-    business_wording_freeze_commit = str(business_wording_freeze_report.get("git_commit") or "").strip()
-    rollback_evidence_commit = str(rollback_evidence_report.get("git_commit") or "").strip()
-    model_semantics_ownership_commit = str(model_semantics_ownership_report.get("git_commit") or "").strip()
     blockers.extend(_commit_evidence_blockers("shadow_bundle", shadow_bundle_audit, commit_sha))
     blockers.extend(_commit_evidence_blockers("diagnostics", diagnostics, commit_sha))
-    if simulation_commit and simulation_commit != commit_sha:
-        blockers.append(f"human_review_commit_mismatch:simulation:{simulation_commit}")
-    if model_matrix_commit and model_matrix_commit != commit_sha:
-        blockers.append(f"human_review_commit_mismatch:model_matrix:{model_matrix_commit}")
-    if payload_isolation_commit and payload_isolation_commit != commit_sha:
-        blockers.append(f"human_review_commit_mismatch:payload_isolation:{payload_isolation_commit}")
-    if business_wording_freeze_commit and business_wording_freeze_commit != commit_sha:
-        blockers.append(f"human_review_commit_mismatch:business_wording_freeze:{business_wording_freeze_commit}")
-    if rollback_evidence_commit and rollback_evidence_commit != commit_sha:
-        blockers.append(f"human_review_commit_mismatch:rollback_evidence:{rollback_evidence_commit}")
-    if model_semantics_ownership_commit and model_semantics_ownership_commit != commit_sha:
-        blockers.append(f"human_review_commit_mismatch:model_semantics_ownership:{model_semantics_ownership_commit}")
+    blockers.extend(_optional_commit_evidence_blockers("simulation", simulation_report, commit_sha))
+    blockers.extend(_optional_commit_evidence_blockers("model_matrix", model_matrix_report, commit_sha))
+    blockers.extend(_optional_commit_evidence_blockers("payload_isolation", payload_isolation_report, commit_sha))
+    blockers.extend(_optional_commit_evidence_blockers("business_wording_freeze", business_wording_freeze_report, commit_sha))
+    blockers.extend(_optional_commit_evidence_blockers("rollback_evidence", rollback_evidence_report, commit_sha))
+    blockers.extend(
+        _optional_commit_evidence_blockers(
+            "model_semantics_ownership",
+            model_semantics_ownership_report,
+            commit_sha,
+        )
+    )
     return blockers
+
+
+def _optional_commit_evidence_blockers(label: str, evidence: dict[str, Any], commit_sha: str) -> list[str]:
+    if not evidence:
+        return []
+    return _commit_evidence_blockers(label, evidence, commit_sha)
 
 
 def _commit_evidence_blockers(label: str, evidence: dict[str, Any], commit_sha: str) -> list[str]:

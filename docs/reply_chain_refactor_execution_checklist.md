@@ -412,10 +412,11 @@ for final behavior-switch review because it does not prove wording freeze or
 rollback/no-deploy evidence.
 
 The postcommit shadow bundle audit and parallel diagnostics must both expose
-the reviewed `git_commit`. The final behavior-switch guard blocks if the human
-review commit differs from the shadow bundle, diagnostics, offline simulation,
-or model matrix evidence, or if the shadow bundle/diagnostics commit evidence is
-missing.
+the reviewed `git_commit` and a single-item `git_commit_set`.
+
+Every external report attached to the final behavior-switch guard must also expose both `git_commit` and `git_commit_set=[reviewed_commit]`.
+This applies to offline simulation, model matrix, payload isolation, business wording freeze, rollback evidence, and model semantics ownership.
+The final behavior-switch guard blocks if the human review commit differs from any attached evidence, if any attached evidence has multiple commits, or if required commit evidence is missing.
 
 After running the matrix, scan changed files and reports for secrets before
 committing:

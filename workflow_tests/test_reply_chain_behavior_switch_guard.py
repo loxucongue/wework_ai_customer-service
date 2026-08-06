@@ -755,6 +755,81 @@ def test_behavior_switch_guard_blocks_human_review_with_multi_commit_shadow_evid
     assert "human_review_commit_set_mismatch:diagnostics:abc123,ghi789" in guard["blockers"]
 
 
+def test_behavior_switch_guard_blocks_human_review_without_external_commit_set_evidence() -> None:
+    simulation = _simulation_ready()
+    model_matrix = _model_matrix_ready()
+    payload_isolation = _payload_isolation_ready()
+    business_wording_freeze = _business_wording_freeze_ready()
+    rollback_evidence = _rollback_evidence_ready()
+    model_semantics_ownership = _model_semantics_ownership_ready()
+    for report in [
+        simulation,
+        model_matrix,
+        payload_isolation,
+        business_wording_freeze,
+        rollback_evidence,
+        model_semantics_ownership,
+    ]:
+        report.pop("git_commit_set")
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=simulation,
+        model_matrix_report=model_matrix,
+        payload_isolation_report=payload_isolation,
+        business_wording_freeze_report=business_wording_freeze,
+        rollback_evidence_report=rollback_evidence,
+        model_semantics_ownership_report=model_semantics_ownership,
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "human_review_missing_commit_set_evidence:simulation" in guard["blockers"]
+    assert "human_review_missing_commit_set_evidence:model_matrix" in guard["blockers"]
+    assert "human_review_missing_commit_set_evidence:payload_isolation" in guard["blockers"]
+    assert "human_review_missing_commit_set_evidence:business_wording_freeze" in guard["blockers"]
+    assert "human_review_missing_commit_set_evidence:rollback_evidence" in guard["blockers"]
+    assert "human_review_missing_commit_set_evidence:model_semantics_ownership" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_human_review_with_multi_commit_external_evidence() -> None:
+    simulation = _simulation_ready()
+    model_matrix = _model_matrix_ready()
+    payload_isolation = _payload_isolation_ready()
+    business_wording_freeze = _business_wording_freeze_ready()
+    rollback_evidence = _rollback_evidence_ready()
+    model_semantics_ownership = _model_semantics_ownership_ready()
+    simulation["git_commit_set"] = ["abc123", "sim-old"]
+    model_matrix["git_commit_set"] = ["matrix-old"]
+    payload_isolation["git_commit_set"] = ["abc123", "payload-old"]
+    business_wording_freeze["git_commit_set"] = ["freeze-old"]
+    rollback_evidence["git_commit_set"] = ["abc123", "rollback-old"]
+    model_semantics_ownership["git_commit_set"] = ["ownership-old"]
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=simulation,
+        model_matrix_report=model_matrix,
+        payload_isolation_report=payload_isolation,
+        business_wording_freeze_report=business_wording_freeze,
+        rollback_evidence_report=rollback_evidence,
+        model_semantics_ownership_report=model_semantics_ownership,
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "human_review_commit_set_mismatch:simulation:abc123,sim-old" in guard["blockers"]
+    assert "human_review_commit_set_mismatch:model_matrix:matrix-old" in guard["blockers"]
+    assert "human_review_commit_set_mismatch:payload_isolation:abc123,payload-old" in guard["blockers"]
+    assert "human_review_commit_set_mismatch:business_wording_freeze:freeze-old" in guard["blockers"]
+    assert "human_review_commit_set_mismatch:rollback_evidence:abc123,rollback-old" in guard["blockers"]
+    assert "human_review_commit_set_mismatch:model_semantics_ownership:ownership-old" in guard["blockers"]
+
+
 def test_behavior_switch_guard_blocks_shadow_bundle_without_commit_phase_evidence() -> None:
     shadow = _shadow_bundle_ready()
     shadow["components"] = {}
