@@ -448,6 +448,7 @@ Review 重点：
 - Tool Planner 不输出客户话术。
 - Tool Planner 不判断客户心理。
 - 工具计划最小化，不贪查。
+- 工具 `arguments` 只包含真实工具参数，不混入 `tool`、`name`、`call_id`、`depends_on`、`purpose` 等编排元数据。
 
 测试：
 

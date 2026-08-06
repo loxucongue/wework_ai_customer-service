@@ -120,9 +120,13 @@ def _has_value(value: Any) -> bool:
 
 
 def _normalize_tool(tool: dict[str, Any], *, index: int) -> dict[str, Any]:
-    name = str(tool.get("name") or "").strip()
+    name = str(tool.get("name") or tool.get("tool") or "").strip()
     purpose = str(tool.get("purpose") or tool.get("reason") or "").strip()
-    arguments = {key: value for key, value in tool.items() if key not in {"name", "purpose", "reason"}}
+    arguments = {
+        key: value
+        for key, value in tool.items()
+        if key not in {"name", "tool", "call_id", "purpose", "reason", "depends_on"}
+    }
     return _drop_empty(
         {
             "call_id": str(tool.get("call_id") or f"{name or 'tool'}_{index}"),

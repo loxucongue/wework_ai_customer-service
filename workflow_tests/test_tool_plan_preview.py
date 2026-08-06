@@ -32,6 +32,28 @@ class ToolPlanPreviewTests(unittest.TestCase):
         self.assertFalse(preview["customer_question_if_incomplete"]["required"])
         self.assertNotIn("deferred_write_proposals", preview)
 
+    def test_tool_plan_arguments_exclude_orchestration_metadata(self) -> None:
+        preview = tool_plan_preview_from_planner_output(
+            {
+                "planner_tool_calls": [
+                    {
+                        "tool": "customer_store_lookup",
+                        "call_id": "lookup_1",
+                        "query": "洪湖市",
+                        "purpose": "lookup visible stores",
+                        "depends_on": ["normalize_location"],
+                    }
+                ]
+            }
+        )
+
+        call = preview["read_tool_calls"][0]
+        self.assertEqual(call["name"], "customer_store_lookup")
+        self.assertEqual(call["tool"], "customer_store_lookup")
+        self.assertEqual(call["call_id"], "lookup_1")
+        self.assertEqual(call["depends_on"], ["normalize_location"])
+        self.assertEqual(call["arguments"], {"query": "洪湖市"})
+
     def test_no_tool_has_no_fact_requirement(self) -> None:
         preview = tool_plan_preview_from_planner_output(
             {"required_tools": [{"name": "no_tool", "purpose": "direct reply"}]}
