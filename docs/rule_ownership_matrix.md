@@ -77,6 +77,13 @@ commit or review note.
 show which gates have automated shadow evidence, but it must always require
 human review and offline simulation evidence before any behavior switch.
 
+`reply_chain_behavior_switch_guard_v1` is the final admission guard after the
+thirteen review gates. It consumes the flag snapshot, postcommit shadow bundle
+audit, comparison diagnostics, offline simulation report, and human review
+approval. It is not itself one of the thirteen diagnostic gates, and it must not
+enable runtime behavior by side effect. `workflow_tests/test_reply_chain_behavior_switch_guard.py`
+must pass before any proposed behavior switch can be reviewed.
+
 Parallel behavior cannot be enabled until `SOP_CHAT_GATE_V2_ENABLED`,
 `TOOL_PLANNER_V2_ENABLED`, and `REPLY_FINAL_BRAIN_V2_ENABLED` are all true and
 the comparison diagnostics show no shadow replay diffs. This prevents Gate or

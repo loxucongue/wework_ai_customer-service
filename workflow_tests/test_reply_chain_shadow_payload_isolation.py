@@ -24,6 +24,7 @@ SHADOW_ONLY_FIELDS = (
     "parallel_reply_chain_diagnostics",
     "parallel_reply_chain_comparison",
     "reply_chain_shadow_bundle_audit",
+    "reply_chain_behavior_switch_guard",
 )
 
 
