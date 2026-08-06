@@ -79,6 +79,25 @@ class ChatGateRouterShadowTests(unittest.TestCase):
         self.assertFalse(audit["safe_for_direct_reply_static_candidate"])
         self.assertIn("dynamic_structure_message_type:payment_collection", audit["blockers"])
 
+    def test_multiple_static_messages_are_not_safe_for_gate_direct_reply(self) -> None:
+        shadow = chat_gate_router_shadow_from_result(
+            {
+                "mode": "sop_only",
+                "send_sop": True,
+                "need_ai_reply": False,
+                "reply_messages": [
+                    {"type": "text", "content": {"text": "activity"}},
+                    {"type": "image", "content": {"url": "https://example.invalid/activity.jpg"}},
+                ],
+            }
+        )
+
+        audit = shadow["direct_reply_candidate_audit"]
+        self.assertEqual(shadow["route_suggestion"], "direct_text")
+        self.assertFalse(audit["safe_for_direct_reply_static_candidate"])
+        self.assertEqual(audit["max_direct_reply_candidate_messages"], 1)
+        self.assertIn("candidate_message_count_exceeds_direct_reply_limit:2>1", audit["blockers"])
+
     def test_empty_static_candidate_is_not_safe_for_gate_direct_reply(self) -> None:
         shadow = chat_gate_router_shadow_from_result(
             {

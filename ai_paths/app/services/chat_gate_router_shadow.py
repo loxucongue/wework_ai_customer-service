@@ -4,6 +4,7 @@ from typing import Any
 
 
 STATIC_DIRECT_MESSAGE_TYPES = {"text", "image", "video"}
+MAX_DIRECT_REPLY_CANDIDATE_MESSAGES = 1
 
 
 def chat_gate_router_shadow_from_result(result: dict[str, Any]) -> dict[str, Any]:
@@ -130,6 +131,11 @@ def _direct_reply_candidate_audit(reply_messages: list[Any]) -> dict[str, Any]:
     blockers: list[str] = []
     if reply_messages and not message_types:
         blockers.append("candidate_message_type_missing")
+    if len(reply_messages) > MAX_DIRECT_REPLY_CANDIDATE_MESSAGES:
+        blockers.append(
+            "candidate_message_count_exceeds_direct_reply_limit:"
+            f"{len(reply_messages)}>{MAX_DIRECT_REPLY_CANDIDATE_MESSAGES}"
+        )
     blockers.extend(f"dynamic_structure_message_type:{message_type}" for message_type in dynamic_types)
     for index, message in enumerate(reply_messages):
         if not isinstance(message, dict):
@@ -140,6 +146,7 @@ def _direct_reply_candidate_audit(reply_messages: list[Any]) -> dict[str, Any]:
     return {
         "schema_version": "chat_gate_direct_reply_candidate_audit_v1",
         "message_count": len(reply_messages),
+        "max_direct_reply_candidate_messages": MAX_DIRECT_REPLY_CANDIDATE_MESSAGES,
         "message_types": message_types,
         "static_message_types_allowed": sorted(STATIC_DIRECT_MESSAGE_TYPES),
         "safe_for_direct_reply_static_candidate": bool(reply_messages) and not blockers,

@@ -74,7 +74,7 @@ Reviewer checks:
 - Failures are observable through node name, blocker, fallback source, and
   retry/failure metadata.
 - Direct reply remains a narrow structural exception:
-  - static candidate exists;
+  - exactly one static candidate message exists;
   - no read tools are required;
   - no dynamic facts are missing;
   - no payment, store, risk, registration, refund, or complex history judgment
