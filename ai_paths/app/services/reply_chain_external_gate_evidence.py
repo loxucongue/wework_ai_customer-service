@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
 MIN_REQUIRED_SIMULATION_SCENARIOS = 100
 MIN_REQUIRED_SIMULATION_ATTEMPTS = 3
 MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS = 5
+SECRET_LIKE_PATTERN = re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9][A-Za-z0-9_-]{10,}")
 
 
 def payload_isolation_report_blockers(report: dict[str, Any]) -> list[str]:
@@ -470,6 +472,8 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     if model_matrix.get("schema_version") != "reply_chain_refactor_model_matrix_v1":
         return ["missing_model_matrix_report"]
     blockers: list[str] = []
+    if _contains_secret_like_value(model_matrix):
+        blockers.append("model_matrix_contains_secret_like_value")
     commit = _string_value(model_matrix.get("git_commit"))
     if not commit:
         blockers.append("model_matrix_missing_git_commit")
@@ -683,6 +687,16 @@ def _has_number(value: Any) -> bool:
 
 def _dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _contains_secret_like_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(SECRET_LIKE_PATTERN.search(value))
+    if isinstance(value, dict):
+        return any(_contains_secret_like_value(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_secret_like_value(item) for item in value)
+    return False
 
 
 def _list_strings(value: Any) -> list[str]:

@@ -1099,6 +1099,29 @@ def test_external_gate_evidence_blocks_unapproved_model_matrix_relay_or_key_logg
     assert "model_matrix_profile_key_redaction_missing:gemini" in blockers
 
 
+def test_external_gate_evidence_blocks_secret_like_model_matrix_values() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"][0]["debug_payload"] = {
+        "api_key": "s" + "k-test-secret-value-should-never-enter-release-reports",
+        "safe_task_id": "platform-task-after-cycle",
+    }
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_contains_secret_like_value" in blockers
+
+
+def test_external_gate_evidence_does_not_treat_task_ids_as_secret_values() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"][0]["debug_payload"] = {
+        "safe_task_id": "platform-task-after-cycle",
+    }
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_contains_secret_like_value" not in blockers
+
+
 def test_bundle_audit_does_not_import_final_behavior_switch_guard_private_helpers() -> None:
     source = (ROOT / "ai_paths/app/services/reply_chain_shadow_bundle_audit.py").read_text(encoding="utf-8")
 
