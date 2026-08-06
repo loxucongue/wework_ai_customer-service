@@ -6,6 +6,7 @@ from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, 
 from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_planner_brain_v2, safety_fallback_plan
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
+from app.services.parallel_reply_chain_shadow import parallel_reply_chain_shadow
 from app.services.read_only_tool_executor_shadow import read_only_tool_executor_shadow_from_plan
 from app.services.reply_chain_join_shadow import reply_chain_join_shadow
 from app.services.trace_logger import TraceLogger
@@ -138,6 +139,13 @@ def create_planner_brain_node(
             output["reply_chain_join_shadow"] = reply_chain_join_shadow(
                 gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
                 tool_plan_preview=output["tool_plan_preview"],
+            )
+            output["parallel_reply_chain_shadow"] = parallel_reply_chain_shadow(
+                reply_chain_shadow_context=state.get("reply_chain_shadow_context") if isinstance(state.get("reply_chain_shadow_context"), dict) else {},
+                gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
+                tool_plan_preview=output["tool_plan_preview"],
+                read_only_tool_executor_shadow=output["read_only_tool_executor_shadow"],
+                reply_chain_join_shadow=output["reply_chain_join_shadow"],
             )
             span["output_snapshot"] = output
             return output
