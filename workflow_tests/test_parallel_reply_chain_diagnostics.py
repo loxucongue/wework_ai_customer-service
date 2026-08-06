@@ -181,8 +181,9 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
     assert diagnostics["commit"]["requires_reply_validation_before_commit"] is True
     assert diagnostics["release_review"]["schema_version"] == "reply_chain_release_review_checklist_v1"
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
-    assert diagnostics["release_review"]["required_gate_count"] == 15
+    assert diagnostics["release_review"]["required_gate_count"] == 16
     assert "simulation_regression_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
+    assert "model_matrix_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
     groups = diagnostics["release_review"]["blocker_groups"]
     assert groups["contract"]["ready"] is True
     assert groups["runner"]["ready"] is True
@@ -191,6 +192,7 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
     assert groups["migration"]["ready"] is True
     assert groups["manual_review"]["ready"] is False
     assert "gate_not_proven:simulation_regression_review" in groups["manual_review"]["blockers"]
+    assert "gate_not_proven:model_matrix_review" in groups["manual_review"]["blockers"]
 
 
 def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:

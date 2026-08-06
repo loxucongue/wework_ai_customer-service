@@ -263,6 +263,11 @@ def _release_review_gate_checklist(
             "attach_offline_simulation_report_before_behavior_switch",
         ),
         _gate(
+            "model_matrix_review",
+            "external_report_required",
+            "attach_refactor_model_matrix_report_before_behavior_switch",
+        ),
+        _gate(
             "rollback_evidence_review",
             "manual_required",
             "confirm_commit_is_on_refactor_branch_and_not_deployed",
@@ -339,6 +344,7 @@ def _release_review_blocker_groups(
                     "business_wording_freeze_review",
                     "model_semantics_ownership_review",
                     "simulation_regression_review",
+                    "model_matrix_review",
                     "rollback_evidence_review",
                 },
             )

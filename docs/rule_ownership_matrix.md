@@ -69,10 +69,11 @@ refactor aligned with the project constitution.
 | business_wording_freeze_review | Structural commits must not silently change customer-visible business facts or sales wording. | Diff review confirms no unrelated edits to `business_rules.json`, SOP pack text, or precision QA text; intentional wording changes use a separate business-review commit. |
 | model_semantics_ownership_review | Code, Join, and Tool Planner must not take ownership of customer psychology, objections, or sales rhythm. | Reviewer confirms ordinary sales semantics remain in model prompts/Reply decisions, with code limited to facts, tools, schema, safety, and fallback. |
 | simulation_regression_review | Behavior flags cannot be enabled until old and new chains are compared on representative conversations. | Offline simulation report covers SOP, precision QA, store, payment, paid registration, risk, and model-failure cases. |
+| model_matrix_review | The refactored chain's model choice must be backed by measured accuracy and latency across approved candidate models. | `reply_chain_refactor_model_matrix_v1` report compares `claude-opus-4-7`, `gemini-3.5-flash`, and `gpt-5.4` through the relay using local-only environment keys; report includes semantic pass rate, hard errors, P50, P90, and ranking without storing API key values. |
 | rollback_evidence_review | Each stage must be independently revertible and must not be deployed from this branch. | Commit hash recorded for the stage, no deployment command run, and `codex/reply-chain-refactor` remains separate from `main`. |
 
 Before any behavior flag changes from shadow mode to active mode, the reviewer
-must check all fifteen gates above and attach the test output or report path in the
+must check all sixteen gates above and attach the test output or report path in the
 commit or review note.
 Use `docs/reply_chain_refactor_execution_checklist.md` as the per-commit
 execution checklist for these gates. That checklist is procedural evidence only;
@@ -87,11 +88,12 @@ manual review. These groups are for human audit readability only and must not
 be treated as automatic approval to switch behavior.
 
 `reply_chain_behavior_switch_guard_v1` is the final admission guard after the
-fifteen review gates. It consumes the flag snapshot, postcommit shadow bundle
-audit, comparison diagnostics, offline simulation report, and human review
-approval. It is not itself one of the fifteen diagnostic gates, and it must not
-enable runtime behavior by side effect. `workflow_tests/test_reply_chain_behavior_switch_guard.py`
-must pass before any proposed behavior switch can be reviewed.
+sixteen review gates. It consumes the flag snapshot, postcommit shadow bundle
+audit, comparison diagnostics, offline simulation report, model matrix report,
+and human review approval. It is not itself one of the sixteen diagnostic
+gates, and it must not enable runtime behavior by side effect.
+`workflow_tests/test_reply_chain_behavior_switch_guard.py` must pass before
+any proposed behavior switch can be reviewed.
 When diagnostics include grouped release blockers, the guard may expose those
 groups for reviewer readability, but the groups remain evidence only and do not
 enable behavior by themselves. If a group still reports blockers, the guard
