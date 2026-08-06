@@ -10,6 +10,7 @@ def parallel_reply_chain_shadow(
     tool_plan_preview: dict[str, Any],
     read_only_tool_executor_shadow: dict[str, Any],
     reply_chain_join_shadow: dict[str, Any],
+    reply_final_brain_handoff_shadow: dict[str, Any] | None = None,
     refactor_flags: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Describe the target parallel reply chain without changing runtime behavior."""
@@ -20,7 +21,9 @@ def parallel_reply_chain_shadow(
         tool_plan_preview=tool_plan_preview,
         read_only_tool_executor_shadow=read_only_tool_executor_shadow,
         reply_chain_join_shadow=reply_chain_join_shadow,
+        reply_final_brain_handoff_shadow=reply_final_brain_handoff_shadow or {},
     )
+    reply_handoff_migration = (reply_final_brain_handoff_shadow or {}).get("migration_audit") or {}
     return _drop_empty(
         {
             "schema_version": "parallel_reply_chain_shadow_v1",
@@ -60,6 +63,9 @@ def parallel_reply_chain_shadow(
                 "read_executor_mode": read_only_tool_executor_shadow.get("mode"),
                 "join_final_route": reply_chain_join_shadow.get("final_route"),
                 "direct_reply_allowed": reply_chain_join_shadow.get("direct_reply_allowed"),
+                "reply_handoff_schema": (reply_final_brain_handoff_shadow or {}).get("schema_version"),
+                "reply_legacy_business_field_count": reply_handoff_migration.get("legacy_business_field_count"),
+                "reply_handoff_requires_schema": reply_handoff_migration.get("requires_reply_schema_before_activation"),
                 "refactor_mode": (refactor_flags or {}).get("mode"),
             },
             "safety": {
@@ -86,6 +92,7 @@ def _activation_blockers(
     tool_plan_preview: dict[str, Any],
     read_only_tool_executor_shadow: dict[str, Any],
     reply_chain_join_shadow: dict[str, Any],
+    reply_final_brain_handoff_shadow: dict[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
     if reply_chain_shadow_context.get("schema_version") != "reply_chain_shadow_v1":
@@ -98,6 +105,8 @@ def _activation_blockers(
         blockers.append("missing_read_only_tool_executor_shadow")
     if reply_chain_join_shadow.get("schema_version") != "reply_chain_join_shadow_v1":
         blockers.append("missing_reply_chain_join_shadow")
+    if reply_final_brain_handoff_shadow.get("schema_version") != "reply_final_brain_handoff_shadow_v1":
+        blockers.append("missing_reply_final_brain_handoff_shadow")
     if read_only_tool_executor_shadow.get("blocked"):
         blockers.append("early_tool_executor_has_blocked_calls")
     return blockers

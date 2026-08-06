@@ -8,6 +8,20 @@ from app.graph.planner.brain_v2 import _planner_payload_for_model
 from app.services.parallel_reply_chain_shadow import parallel_reply_chain_shadow
 
 
+def _reply_final_brain_handoff_shadow(
+    *,
+    legacy_business_field_count: int = 4,
+    requires_reply_schema_before_activation: bool = True,
+) -> dict:
+    return {
+        "schema_version": "reply_final_brain_handoff_shadow_v1",
+        "migration_audit": {
+            "legacy_business_field_count": legacy_business_field_count,
+            "requires_reply_schema_before_activation": requires_reply_schema_before_activation,
+        },
+    }
+
+
 class ParallelReplyChainShadowTests(unittest.TestCase):
     def test_parallel_contract_keeps_gate_planner_and_reply_ownership_separate(self) -> None:
         shadow = parallel_reply_chain_shadow(
@@ -33,6 +47,10 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
                 "final_route": "reply_with_content",
                 "direct_reply_allowed": False,
             },
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(
+                legacy_business_field_count=6,
+                requires_reply_schema_before_activation=True,
+            ),
         )
 
         self.assertEqual(shadow["schema_version"], "parallel_reply_chain_shadow_v1")
@@ -41,6 +59,12 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertEqual(shadow["target_topology"]["final_expression_owner"], "reply")
         self.assertEqual(shadow["current_serial_observation"]["tool_planner_legacy_residue_count"], 2)
         self.assertFalse(shadow["current_serial_observation"]["tool_planner_only_ready"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["reply_handoff_schema"],
+            "reply_final_brain_handoff_shadow_v1",
+        )
+        self.assertEqual(shadow["current_serial_observation"]["reply_legacy_business_field_count"], 6)
+        self.assertTrue(shadow["current_serial_observation"]["reply_handoff_requires_schema"])
         self.assertIn("final_closing_move", shadow["ownership_contract"]["sop_chat_gate"]["must_not_own"])
         self.assertIn("customer_visible_text", shadow["ownership_contract"]["tool_planner"]["must_not_own"])
         self.assertIn("single_mainline_action", shadow["ownership_contract"]["reply"]["owns"])
@@ -57,6 +81,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
                 "blocked": [{"tool": "create_order_plan"}],
             },
             reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
         )
 
         self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
@@ -69,6 +94,7 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
             read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
             reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
             refactor_flags={
                 "schema_version": "reply_chain_refactor_flags_v1",
                 "mode": "parallel_runner_requested",
@@ -88,12 +114,27 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
             tool_plan_preview={},
             read_only_tool_executor_shadow={},
             reply_chain_join_shadow={},
+            reply_final_brain_handoff_shadow={},
         )
 
         self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
         self.assertIn("missing_shared_reply_chain_shadow_context", shadow["activation"]["blockers"])
         self.assertIn("missing_gate_router_shadow", shadow["activation"]["blockers"])
         self.assertIn("missing_tool_plan_preview", shadow["activation"]["blockers"])
+        self.assertIn("missing_reply_final_brain_handoff_shadow", shadow["activation"]["blockers"])
+
+    def test_missing_reply_handoff_blocks_parallel_runner_activation(self) -> None:
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context={"schema_version": "reply_chain_shadow_v1"},
+            gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_final_brain_handoff_shadow={},
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("missing_reply_final_brain_handoff_shadow", shadow["activation"]["blockers"])
 
     def test_parallel_shadow_is_not_consumed_by_current_model_payloads(self) -> None:
         state = {
