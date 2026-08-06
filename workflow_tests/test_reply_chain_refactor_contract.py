@@ -93,6 +93,12 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "authority_snapshot_review",
         "reply_chain_authority_audit_v1",
         "reply_chain_fact_snapshot_audit_v1",
+        "gate_commit_boundary_review",
+        "branch_input_isolation_review",
+        "final_expression_owner_review",
+        "reply_handoff_readiness_review",
+        "reply_final_brain_handoff_readiness_audit_v1",
+        "commit_phase_shadow_review",
         "business_wording_freeze_review",
         "model_semantics_ownership_review",
         "simulation_regression_review",
@@ -101,8 +107,10 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "comparison diagnostics show no shadow replay diffs",
         "workflow_tests/test_reply_chain_shadow_payload_isolation.py",
         "workflow_tests/test_reply_chain_shadow_context.py",
+        "workflow_tests/test_reply_final_brain_handoff.py",
         "workflow_tests/test_parallel_reply_chain_shadow.py",
         "Offline simulation report covers SOP, precision QA, store, payment, paid registration, risk, and model-failure cases.",
+        "must check all twelve gates",
         "must not be deployed from this branch",
     ]:
         assert marker in text
