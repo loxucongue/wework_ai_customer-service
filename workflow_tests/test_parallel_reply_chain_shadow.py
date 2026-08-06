@@ -17,6 +17,10 @@ def _reply_chain_shadow_context(*, all_messages_have_sent_at: bool = True) -> di
             "soft_profile_excluded_from_authority": True,
             "timeline_message_count": 3,
             "all_messages_have_sent_at": all_messages_have_sent_at,
+            "fact_snapshot": {
+                "schema_version": "reply_chain_fact_snapshot_audit_v1",
+                "sections_with_error": [],
+            },
         },
     }
 
@@ -78,6 +82,10 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertTrue(shadow["current_serial_observation"]["shared_context_all_messages_have_sent_at"])
         self.assertTrue(shadow["current_serial_observation"]["shared_context_complete_chat_is_primary"])
         self.assertTrue(shadow["current_serial_observation"]["shared_context_soft_profile_excluded"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["shared_context_fact_snapshot_schema"],
+            "reply_chain_fact_snapshot_audit_v1",
+        )
         self.assertEqual(shadow["current_serial_observation"]["tool_planner_legacy_residue_count"], 2)
         self.assertFalse(shadow["current_serial_observation"]["tool_planner_only_ready"])
         self.assertEqual(
@@ -183,6 +191,25 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
 
         self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
         self.assertIn("incomplete_timestamped_conversation", shadow["activation"]["blockers"])
+
+    def test_authoritative_fact_snapshot_errors_block_parallel_runner_activation(self) -> None:
+        context = _reply_chain_shadow_context()
+        context["authority_audit"]["fact_snapshot"]["sections_with_error"] = ["visible_store_scope"]
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=context,
+            gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow={"schema_version": "reply_chain_join_shadow_v1"},
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("authoritative_fact_snapshot_errors:1", shadow["activation"]["blockers"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["shared_context_fact_sections_with_error"],
+            ["visible_store_scope"],
+        )
 
     def test_parallel_shadow_is_not_consumed_by_current_model_payloads(self) -> None:
         state = {

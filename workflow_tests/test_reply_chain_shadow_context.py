@@ -63,6 +63,14 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertTrue(context["authoritative_facts"]["registration"]["phone_present"] is False)
         self.assertEqual(context["authority_audit"]["schema_version"], "reply_chain_authority_audit_v1")
         self.assertTrue(context["authority_audit"]["complete_chat_is_primary_authority"])
+        self.assertEqual(
+            context["authority_audit"]["fact_snapshot"]["schema_version"],
+            "reply_chain_fact_snapshot_audit_v1",
+        )
+        self.assertTrue(
+            context["authority_audit"]["fact_snapshot"]["section_status"]["visible_store_scope"]["present"]
+        )
+        self.assertTrue(context["authority_audit"]["fact_snapshot"]["section_status"]["orders"]["present"])
         self.assertIn("customer_profile.next_sales_strategy", context["excluded_as_authority"])
 
     def test_falls_back_to_request_history_without_timestamps(self) -> None:
@@ -122,6 +130,27 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertEqual(facts["structured_messages"]["case_image_delivery"]["last_image_count"], 1)
         self.assertEqual(facts["risk_holds"]["risk_hold"], "health_check_required")
         self.assertEqual(facts["risk_holds"]["source"], "current_message")
+
+    def test_fact_snapshot_audit_records_source_errors_without_business_inference(self) -> None:
+        context = build_reply_chain_shadow_context(
+            {
+                "content": "门店在哪里",
+                "request_context": {"msgid": "current", "msgtype": "text", "msgtime": "1785225414095"},
+            },
+            identity={"error": "missing identity"},
+            customer_result={"orders_error": "timeout"},
+            store_knowledge={"error": "store scope timeout"},
+            conversation_result={"conversation_fetch": {"status": "failed", "error": "fetch timeout"}},
+            memory={},
+        )
+
+        snapshot = context["authority_audit"]["fact_snapshot"]
+        self.assertIn("orders", snapshot["sections_with_error"])
+        self.assertIn("visible_store_scope", snapshot["sections_with_error"])
+        self.assertIn("identity", snapshot["sections_with_error"])
+        self.assertTrue(snapshot["section_status"]["orders"]["has_error"])
+        self.assertTrue(snapshot["section_status"]["visible_store_scope"]["has_error"])
+        self.assertTrue(snapshot["section_status"]["identity"]["has_error"])
 
     def test_authority_audit_records_soft_profile_fields_without_promoting_them(self) -> None:
         context = build_reply_chain_shadow_context(

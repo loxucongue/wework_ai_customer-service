@@ -35,6 +35,14 @@ def build_reply_chain_shadow_context(
     """Build a read-only future refactor input view without changing model behavior."""
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     timeline = _conversation_timeline(state, conversation_result=conversation_result, request_context=request_context)
+    authoritative_facts = _authoritative_facts(
+        state,
+        identity=identity,
+        customer_result=customer_result,
+        store_knowledge=store_knowledge,
+        conversation_result=conversation_result,
+        memory=memory,
+    )
     return _drop_empty(
         {
             "schema_version": "reply_chain_shadow_v1",
@@ -45,15 +53,8 @@ def build_reply_chain_shadow_context(
                 "policy": _conversation_policy(timeline),
                 "messages": timeline,
             },
-            "authoritative_facts": _authoritative_facts(
-                state,
-                identity=identity,
-                customer_result=customer_result,
-                store_knowledge=store_knowledge,
-                conversation_result=conversation_result,
-                memory=memory,
-            ),
-            "authority_audit": _authority_audit(state, memory=memory, timeline=timeline),
+            "authoritative_facts": authoritative_facts,
+            "authority_audit": _authority_audit(state, memory=memory, timeline=timeline, facts=authoritative_facts),
             "excluded_as_authority": [
                 "customer_profile.next_sales_strategy",
                 "customer_profile.decision_stage",
@@ -64,12 +65,19 @@ def build_reply_chain_shadow_context(
     )
 
 
-def _authority_audit(state: dict[str, Any], *, memory: Any, timeline: list[dict[str, Any]]) -> dict[str, Any]:
+def _authority_audit(
+    state: dict[str, Any],
+    *,
+    memory: Any,
+    timeline: list[dict[str, Any]],
+    facts: dict[str, Any],
+) -> dict[str, Any]:
     memory_dict = memory if isinstance(memory, dict) else {}
     profile = memory_dict.get("customer_profile")
     if not isinstance(profile, dict):
         profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
     seen_soft_fields = [field for field in NON_AUTHORITY_PROFILE_FIELDS if field in profile and _string(profile.get(field))]
+    fact_section_status = _fact_section_status(facts)
     return _drop_empty(
         {
             "schema_version": "reply_chain_authority_audit_v1",
@@ -78,6 +86,20 @@ def _authority_audit(state: dict[str, Any], *, memory: Any, timeline: list[dict[
             "soft_profile_fields_seen": seen_soft_fields[:MAX_FACT_ITEMS],
             "timeline_message_count": len(timeline),
             "all_messages_have_sent_at": all(_string(item.get("sent_at")) for item in timeline),
+            "fact_snapshot": {
+                "schema_version": "reply_chain_fact_snapshot_audit_v1",
+                "section_status": fact_section_status,
+                "sections_with_error": [
+                    section
+                    for section, status in fact_section_status.items()
+                    if isinstance(status, dict) and status.get("has_error")
+                ],
+                "empty_or_absent_sections": [
+                    section
+                    for section, status in fact_section_status.items()
+                    if isinstance(status, dict) and not status.get("present")
+                ],
+            },
             "required_fact_sections": [
                 "payment",
                 "orders",
@@ -87,6 +109,42 @@ def _authority_audit(state: dict[str, Any], *, memory: Any, timeline: list[dict[
                 "structured_messages",
                 "risk_holds",
             ],
+        }
+    )
+
+
+def _fact_section_status(facts: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    sections = (
+        "payment",
+        "orders",
+        "registration",
+        "visible_store_scope",
+        "sop_deliveries",
+        "structured_messages",
+        "risk_holds",
+        "conversation_fetch",
+        "identity",
+    )
+    return {
+        section: _fact_status(facts.get(section))
+        for section in sections
+    }
+
+
+def _fact_status(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value:
+        return {"present": False}
+    error_fields = [
+        key
+        for key, item in value.items()
+        if "error" in str(key).lower() and _string(item)
+    ]
+    return _drop_empty(
+        {
+            "present": True,
+            "source": value.get("source"),
+            "has_error": bool(error_fields),
+            "error_fields": error_fields[:MAX_FACT_ITEMS],
         }
     )
 

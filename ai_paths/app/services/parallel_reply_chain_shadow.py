@@ -27,6 +27,9 @@ def parallel_reply_chain_shadow(
     context_authority_audit = reply_chain_shadow_context.get("authority_audit")
     if not isinstance(context_authority_audit, dict):
         context_authority_audit = {}
+    fact_snapshot_audit = context_authority_audit.get("fact_snapshot")
+    if not isinstance(fact_snapshot_audit, dict):
+        fact_snapshot_audit = {}
     return _drop_empty(
         {
             "schema_version": "parallel_reply_chain_shadow_v1",
@@ -64,6 +67,8 @@ def parallel_reply_chain_shadow(
                 "shared_context_all_messages_have_sent_at": context_authority_audit.get("all_messages_have_sent_at"),
                 "shared_context_complete_chat_is_primary": context_authority_audit.get("complete_chat_is_primary_authority"),
                 "shared_context_soft_profile_excluded": context_authority_audit.get("soft_profile_excluded_from_authority"),
+                "shared_context_fact_snapshot_schema": fact_snapshot_audit.get("schema_version"),
+                "shared_context_fact_sections_with_error": fact_snapshot_audit.get("sections_with_error"),
                 "gate_route": gate_router_shadow.get("route_suggestion"),
                 "planner_fact_requirement": tool_plan_preview.get("fact_requirement"),
                 "tool_planner_legacy_residue_count": (tool_plan_preview.get("migration_audit") or {}).get("legacy_residue_count"),
@@ -132,6 +137,13 @@ def _context_authority_blockers(reply_chain_shadow_context: dict[str, Any]) -> l
         blockers.append("soft_profile_not_excluded_from_authority")
     if audit.get("all_messages_have_sent_at") is not True:
         blockers.append("incomplete_timestamped_conversation")
+    fact_snapshot = audit.get("fact_snapshot")
+    if not isinstance(fact_snapshot, dict) or fact_snapshot.get("schema_version") != "reply_chain_fact_snapshot_audit_v1":
+        blockers.append("missing_reply_chain_fact_snapshot_audit")
+    else:
+        sections_with_error = fact_snapshot.get("sections_with_error")
+        if isinstance(sections_with_error, list) and sections_with_error:
+            blockers.append(f"authoritative_fact_snapshot_errors:{len(sections_with_error)}")
     return blockers
 
 
