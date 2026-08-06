@@ -110,6 +110,7 @@ class AgentState(TypedDict, total=False):
     required_tools: list[dict[str, Any]]
     tool_policy_violations: list[dict[str, Any]]
     tool_plan_preview: dict[str, Any]
+    reply_chain_join_shadow: dict[str, Any]
     reply_strategy: dict[str, Any]
     handoff: dict[str, Any]
     memory_update_hint: dict[str, Any]

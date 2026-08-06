@@ -6,6 +6,7 @@ from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, 
 from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_planner_brain_v2, safety_fallback_plan
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
+from app.services.reply_chain_join_shadow import reply_chain_join_shadow
 from app.services.trace_logger import TraceLogger
 from app.services.tool_plan_preview import tool_plan_preview_from_planner_output
 
@@ -132,6 +133,10 @@ def create_planner_brain_node(
                 "trace": state.get("trace", []),
             }
             output["tool_plan_preview"] = tool_plan_preview_from_planner_output(output)
+            output["reply_chain_join_shadow"] = reply_chain_join_shadow(
+                gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
+                tool_plan_preview=output["tool_plan_preview"],
+            )
             span["output_snapshot"] = output
             return output
 
