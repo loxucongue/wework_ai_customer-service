@@ -74,6 +74,65 @@ def _ready_state() -> dict:
     }
 
 
+def _simulation_ready() -> dict:
+    return {
+        "schema_version": "offline_reply_chain_simulation_report_v1",
+        "hard_error_count": 0,
+        "semantic_pass_rate": 0.93,
+        "failed_critical_scenarios": [],
+        "safety": {
+            "production_customer_messages_sent": False,
+            "production_writes_allowed": False,
+            "virtual_outbox_only": True,
+            "production_write_count": 0,
+        },
+    }
+
+
+def _model_matrix_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_refactor_model_matrix_v1",
+        "profiles_requested": ["claude", "gemini", "openai"],
+        "profiles": [
+            {
+                "status": "completed",
+                "model_profile": {"name": "claude"},
+                "profile_summary": {
+                    "semantic_pass_rate": 0.91,
+                    "p50_ms": 6200,
+                    "p90_ms": 11000,
+                    "accepted_by_release_thresholds": True,
+                },
+            },
+            {
+                "status": "completed",
+                "model_profile": {"name": "gemini"},
+                "profile_summary": {
+                    "semantic_pass_rate": 0.9,
+                    "p50_ms": 3900,
+                    "p90_ms": 7600,
+                    "accepted_by_release_thresholds": True,
+                },
+            },
+            {
+                "status": "completed",
+                "model_profile": {"name": "openai"},
+                "profile_summary": {
+                    "semantic_pass_rate": 0.94,
+                    "p50_ms": 4800,
+                    "p90_ms": 8200,
+                    "accepted_by_release_thresholds": True,
+                },
+            },
+        ],
+        "safety": {
+            "api_keys_written_to_report": False,
+            "production_customer_messages_sent": False,
+            "production_writes_allowed": False,
+        },
+    }
+
+
 def test_bundle_audit_reports_precommit_shadow_bundle_ready() -> None:
     state = _ready_state()
     state["parallel_reply_chain_diagnostics"] = {
@@ -133,6 +192,74 @@ def test_bundle_audit_blocks_unresolved_release_review_groups() -> None:
         "release_review_blocker_group:reply_payload_schema:gate_not_proven:reply_target_input_schema_review"
         in audit["blockers"]
     )
+
+
+def test_bundle_audit_blocks_flat_unproven_release_review_gates() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": ["business_wording_freeze_review"],
+        "blocker_groups": {},
+    }
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "release_review_gate_unproven:business_wording_freeze_review" in audit["blockers"]
+
+
+def test_bundle_audit_accepts_valid_external_reports_for_external_review_gates() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": ["simulation_regression_review", "model_matrix_review"],
+        "blocker_groups": {
+            "manual_review": {
+                "ready": False,
+                "blocker_count": 2,
+                "blockers": [
+                    "gate_not_proven:simulation_regression_review",
+                    "gate_not_proven:model_matrix_review",
+                ],
+            }
+        },
+    }
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+    )
+
+    assert audit["ready_for_refactor_review"] is True
+    assert audit["external_gate_evidence"]["proven_gates"] == [
+        "simulation_regression_review",
+        "model_matrix_review",
+    ]
+
+
+def test_bundle_audit_blocks_invalid_external_reports() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": ["simulation_regression_review"],
+        "blocker_groups": {},
+    }
+    simulation = _simulation_ready()
+    simulation["safety"]["production_writes_allowed"] = True
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
+        simulation_report=simulation,
+    )
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "simulation_report:simulation_missing_no_production_write_safety" in audit["blockers"]
 
 
 def test_bundle_audit_blocks_release_review_that_claims_switch_approval() -> None:

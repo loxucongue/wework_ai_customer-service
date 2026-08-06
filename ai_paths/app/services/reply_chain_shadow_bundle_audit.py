@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.reply_chain_behavior_switch_guard import _model_matrix_blockers, _simulation_blockers
+
 
 CORE_COMPONENT_SCHEMAS = {
     "reply_chain_shadow_context": "reply_chain_shadow_v1",
@@ -25,9 +27,15 @@ def reply_chain_shadow_bundle_audit(
     *,
     state: dict[str, Any],
     require_commit_shadow: bool,
+    simulation_report: dict[str, Any] | None = None,
+    model_matrix_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Summarize shadow migration evidence without changing reply behavior."""
 
+    external_gate_evidence = _external_gate_evidence(
+        simulation_report=simulation_report,
+        model_matrix_report=model_matrix_report,
+    )
     component_schemas = dict(CORE_COMPONENT_SCHEMAS)
     if require_commit_shadow:
         component_schemas.update(POSTCOMMIT_COMPONENT_SCHEMAS)
@@ -36,7 +44,14 @@ def reply_chain_shadow_bundle_audit(
         for field, required_schema in component_schemas.items()
     }
     blockers = _component_blockers(components)
-    blockers.extend(_cross_component_blockers(state, require_commit_shadow=require_commit_shadow))
+    blockers.extend(external_gate_evidence["blockers"])
+    blockers.extend(
+        _cross_component_blockers(
+            state,
+            require_commit_shadow=require_commit_shadow,
+            proven_external_gates=set(external_gate_evidence["proven_gates"]),
+        )
+    )
     gates = _review_gates(state, require_commit_shadow=require_commit_shadow)
     blockers.extend(
         f"review_gate_not_ready:{gate_id}"
@@ -51,6 +66,7 @@ def reply_chain_shadow_bundle_audit(
             "blockers": blockers,
             "components": components,
             "review_gates": gates,
+            "external_gate_evidence": external_gate_evidence,
             "safety": {
                 "audit_only": True,
                 "no_runtime_behavior_change": True,
@@ -89,7 +105,13 @@ def _component_blockers(components: dict[str, dict[str, Any]]) -> list[str]:
     return blockers
 
 
-def _cross_component_blockers(state: dict[str, Any], *, require_commit_shadow: bool) -> list[str]:
+def _cross_component_blockers(
+    state: dict[str, Any],
+    *,
+    require_commit_shadow: bool,
+    proven_external_gates: set[str] | None = None,
+) -> list[str]:
+    proven_external_gates = proven_external_gates or set()
     blockers: list[str] = []
     parallel_shadow = _dict(state.get("parallel_reply_chain_shadow"))
     if _list_strings((parallel_shadow.get("activation") or {}).get("blockers")):
@@ -112,22 +134,43 @@ def _cross_component_blockers(state: dict[str, Any], *, require_commit_shadow: b
         audit = _dict(commit.get("precommit_validation_audit"))
         if audit.get("ready_for_commit_shadow") is not True:
             blockers.append("commit_precommit_audit_not_ready")
-    blockers.extend(_diagnostic_release_review_blockers(diagnostics))
+    blockers.extend(_diagnostic_release_review_blockers(diagnostics, proven_external_gates=proven_external_gates))
     return blockers
 
 
-def _diagnostic_release_review_blockers(diagnostics: dict[str, Any]) -> list[str]:
+def _diagnostic_release_review_blockers(
+    diagnostics: dict[str, Any],
+    *,
+    proven_external_gates: set[str] | None = None,
+) -> list[str]:
+    proven_external_gates = proven_external_gates or set()
     release_review = _dict(diagnostics.get("release_review"))
     if release_review.get("schema_version") != "reply_chain_release_review_checklist_v1":
         return []
     blockers: list[str] = []
     if release_review.get("can_enable_behavior_switch") is not False:
         blockers.append("release_review_missing_non_approval_marker")
-    blockers.extend(_diagnostic_release_review_group_blockers(release_review))
+    unproven = [
+        item
+        for item in _list_strings(release_review.get("missing_or_unproven_gates"))
+        if item not in proven_external_gates
+    ]
+    blockers.extend(f"release_review_gate_unproven:{item}" for item in unproven)
+    blockers.extend(
+        _diagnostic_release_review_group_blockers(
+            release_review,
+            proven_external_gates=proven_external_gates,
+        )
+    )
     return blockers
 
 
-def _diagnostic_release_review_group_blockers(release_review: dict[str, Any]) -> list[str]:
+def _diagnostic_release_review_group_blockers(
+    release_review: dict[str, Any],
+    *,
+    proven_external_gates: set[str] | None = None,
+) -> list[str]:
+    proven_external_gates = proven_external_gates or set()
     blocker_groups = release_review.get("blocker_groups")
     if not isinstance(blocker_groups, dict):
         return []
@@ -136,12 +179,52 @@ def _diagnostic_release_review_group_blockers(release_review: dict[str, Any]) ->
         if not isinstance(group, dict):
             blockers.append(f"release_review_blocker_group_invalid:{group_name}")
             continue
-        group_blockers = _list_strings(group.get("blockers"))
-        blocker_count = _int_value(group.get("blocker_count"))
+        group_blockers = [
+            item
+            for item in _list_strings(group.get("blockers"))
+            if item not in {f"gate_not_proven:{gate_id}" for gate_id in proven_external_gates}
+        ]
+        blocker_count = len(group_blockers)
         if group.get("ready") is False or group_blockers or blocker_count > 0:
+            if group.get("ready") is False and not group_blockers and _only_proven_external_gate_blockers(group, proven_external_gates):
+                continue
             blockers.append(f"release_review_blocker_group_unresolved:{group_name}")
             blockers.extend(f"release_review_blocker_group:{group_name}:{item}" for item in group_blockers)
     return blockers
+
+
+def _external_gate_evidence(
+    *,
+    simulation_report: dict[str, Any] | None,
+    model_matrix_report: dict[str, Any] | None,
+) -> dict[str, Any]:
+    proven_gates: list[str] = []
+    blockers: list[str] = []
+    if simulation_report is not None:
+        simulation = _dict(simulation_report)
+        simulation_blockers = _simulation_blockers(simulation)
+        if simulation_blockers:
+            blockers.extend(f"simulation_report:{item}" for item in simulation_blockers)
+        else:
+            proven_gates.append("simulation_regression_review")
+    if model_matrix_report is not None:
+        model_matrix = _dict(model_matrix_report)
+        model_matrix_blockers = _model_matrix_blockers(model_matrix)
+        if model_matrix_blockers:
+            blockers.extend(f"model_matrix_report:{item}" for item in model_matrix_blockers)
+        else:
+            proven_gates.append("model_matrix_review")
+    return {
+        "proven_gates": proven_gates,
+        "blockers": blockers,
+    }
+
+
+def _only_proven_external_gate_blockers(group: dict[str, Any], proven_external_gates: set[str]) -> bool:
+    original = _list_strings(group.get("blockers"))
+    if not original:
+        return False
+    return all(item in {f"gate_not_proven:{gate_id}" for gate_id in proven_external_gates} for item in original)
 
 
 def _review_gates(state: dict[str, Any], *, require_commit_shadow: bool) -> dict[str, dict[str, Any]]:

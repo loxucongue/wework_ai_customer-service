@@ -310,6 +310,13 @@ is the authoritative evidence that proves that gate. If the report is missing,
 incomplete, skipped because of absent keys, or contains any safety marker other
 than the values above, the guard must block.
 
+When reviewing postcommit shadow evidence, recompute
+`reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=...)`
+with the same offline simulation and model matrix reports. This keeps the
+postcommit bundle and final behavior-switch guard aligned: unresolved
+diagnostic gates remain blockers, while externally proven simulation and model
+matrix gates are cleared only by valid reports.
+
 After running the matrix, scan changed files and reports for secrets before
 committing:
 

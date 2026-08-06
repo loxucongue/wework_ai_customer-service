@@ -170,6 +170,8 @@ def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None
         "safety.production_customer_messages_sent=false",
         "safety.production_writes_allowed=false",
         "reply_chain_behavior_switch_guard(model_matrix_report=...)",
+        "reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=...)",
+        "postcommit bundle and final behavior-switch guard aligned",
         "a valid matrix report",
         "authoritative evidence",
         "rg -n \"sk-[A-Za-z0-9]",
