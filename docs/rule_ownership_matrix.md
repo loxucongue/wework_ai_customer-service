@@ -89,6 +89,9 @@ audit, comparison diagnostics, offline simulation report, and human review
 approval. It is not itself one of the fifteen diagnostic gates, and it must not
 enable runtime behavior by side effect. `workflow_tests/test_reply_chain_behavior_switch_guard.py`
 must pass before any proposed behavior switch can be reviewed.
+When diagnostics include grouped release blockers, the guard may expose those
+groups for reviewer readability, but the groups remain evidence only and do not
+enable behavior by themselves.
 
 Parallel behavior cannot be enabled until `SOP_CHAT_GATE_V2_ENABLED`,
 `TOOL_PLANNER_V2_ENABLED`, and `REPLY_FINAL_BRAIN_V2_ENABLED` are all true and

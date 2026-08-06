@@ -41,6 +41,12 @@ def _diagnostics_ready() -> dict:
         "release_review": {
             "schema_version": "reply_chain_release_review_checklist_v1",
             "missing_or_unproven_gates": [],
+            "blocker_groups": {
+                "manual_review": {
+                    "ready": True,
+                    "blocker_count": 0,
+                }
+            },
         },
     }
 
@@ -109,6 +115,38 @@ def test_behavior_switch_guard_blocks_unproven_release_review_gates() -> None:
     assert guard["can_enable_behavior_switch"] is False
     assert "release_review_gate_unproven:simulation_regression_review" in guard["blockers"]
     assert "release_review_gate_unproven:business_wording_freeze_review" in guard["blockers"]
+    assert guard["diagnostic_blocker_groups"]["manual_review"]["ready"] is True
+
+
+def test_behavior_switch_guard_exposes_release_review_blocker_groups_for_review() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["missing_or_unproven_gates"] = ["reply_target_input_schema_review"]
+    diagnostics["release_review"]["blocker_groups"] = {
+        "reply_payload_schema": {
+            "ready": False,
+            "blocker_count": 1,
+            "blockers": ["gate_not_proven:reply_target_input_schema_review"],
+        },
+        "manual_review": {
+            "ready": True,
+            "blocker_count": 0,
+        },
+    }
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "release_review_gate_unproven:reply_target_input_schema_review" in guard["blockers"]
+    assert guard["diagnostic_blocker_groups"]["reply_payload_schema"]["ready"] is False
+    assert guard["diagnostic_blocker_groups"]["reply_payload_schema"]["blockers"] == [
+        "gate_not_proven:reply_target_input_schema_review"
+    ]
 
 
 def test_behavior_switch_guard_allows_only_with_complete_evidence() -> None:
@@ -123,6 +161,7 @@ def test_behavior_switch_guard_allows_only_with_complete_evidence() -> None:
     assert guard["behavior_switch_requested"] is True
     assert guard["can_enable_behavior_switch"] is True
     assert "blockers" not in guard
+    assert guard["diagnostic_blocker_groups"]["manual_review"]["ready"] is True
     assert guard["required_evidence"]["simulation_report"].startswith("offline full-chain")
 
 

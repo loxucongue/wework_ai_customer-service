@@ -49,6 +49,7 @@ def reply_chain_behavior_switch_guard(
             "behavior_switch_requested": switch_requested,
             "can_enable_behavior_switch": not blockers,
             "blockers": blockers,
+            "diagnostic_blocker_groups": _diagnostic_blocker_groups(diag),
             "required_evidence": {
                 "flags": list(CORE_ACTIVE_FLAGS),
                 "shadow_bundle_audit": "reply_chain_shadow_bundle_audit_v1 ready_for_refactor_review=true",
@@ -115,6 +116,16 @@ def _diagnostic_blockers(diagnostics: dict[str, Any]) -> list[str]:
         if unproven:
             blockers.extend(f"release_review_gate_unproven:{item}" for item in unproven)
     return blockers
+
+
+def _diagnostic_blocker_groups(diagnostics: dict[str, Any]) -> dict[str, Any]:
+    if diagnostics.get("schema_version") != "parallel_reply_chain_diagnostics_v1":
+        return {}
+    release_review = _dict(diagnostics.get("release_review"))
+    if release_review.get("schema_version") != "reply_chain_release_review_checklist_v1":
+        return {}
+    blocker_groups = release_review.get("blocker_groups")
+    return blocker_groups if isinstance(blocker_groups, dict) else {}
 
 
 def _simulation_blockers(simulation: dict[str, Any]) -> list[str]:
