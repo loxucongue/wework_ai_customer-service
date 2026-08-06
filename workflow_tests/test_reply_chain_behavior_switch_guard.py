@@ -903,6 +903,9 @@ def test_behavior_switch_guard_filters_externally_proven_simulation_and_model_ma
 
     assert guard["can_enable_behavior_switch"] is True
     assert "blockers" not in guard
+    assert guard["diagnostic_blocker_groups"]["manual_review"]["ready"] is False
+    assert guard["effective_diagnostic_blocker_groups"]["manual_review"]["ready"] is True
+    assert guard["effective_diagnostic_blocker_groups"]["manual_review"]["blocker_count"] == 0
 
 
 def test_behavior_switch_guard_exposes_release_review_blocker_groups_for_review() -> None:
@@ -995,6 +998,7 @@ def test_behavior_switch_guard_allows_only_with_complete_evidence() -> None:
     assert guard["can_enable_behavior_switch"] is True
     assert "blockers" not in guard
     assert guard["diagnostic_blocker_groups"]["manual_review"]["ready"] is True
+    assert guard["effective_diagnostic_blocker_groups"]["manual_review"]["ready"] is True
     assert guard["required_evidence"]["simulation_report"].startswith("offline full-chain")
     assert guard["required_evidence"]["model_matrix_report"].startswith("three-model")
 

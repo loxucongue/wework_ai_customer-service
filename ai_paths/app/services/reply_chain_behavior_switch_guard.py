@@ -105,6 +105,10 @@ def reply_chain_behavior_switch_guard(
             "can_enable_behavior_switch": not blockers,
             "blockers": blockers,
             "diagnostic_blocker_groups": _diagnostic_blocker_groups(diag),
+            "effective_diagnostic_blocker_groups": _diagnostic_blocker_groups(
+                diag,
+                proven_external_gates=proven_external_gates,
+            ),
             "required_evidence": {
                 "flags": list(CORE_ACTIVE_FLAGS),
                 "shadow_bundle_audit": "reply_chain_shadow_bundle_audit_v1 ready_for_refactor_review=true",
@@ -243,14 +247,39 @@ def _release_review_group_blockers(
     return blockers
 
 
-def _diagnostic_blocker_groups(diagnostics: dict[str, Any]) -> dict[str, Any]:
+def _diagnostic_blocker_groups(
+    diagnostics: dict[str, Any],
+    *,
+    proven_external_gates: set[str] | None = None,
+) -> dict[str, Any]:
+    proven_external_gates = proven_external_gates or set()
     if diagnostics.get("schema_version") != "parallel_reply_chain_diagnostics_v1":
         return {}
     release_review = _dict(diagnostics.get("release_review"))
     if release_review.get("schema_version") != "reply_chain_release_review_checklist_v1":
         return {}
     blocker_groups = release_review.get("blocker_groups")
-    return blocker_groups if isinstance(blocker_groups, dict) else {}
+    if not isinstance(blocker_groups, dict):
+        return {}
+    if not proven_external_gates:
+        return blocker_groups
+    return {
+        str(group_name): _effective_blocker_group(_dict(group), proven_external_gates)
+        for group_name, group in blocker_groups.items()
+        if isinstance(group, dict)
+    }
+
+
+def _effective_blocker_group(group: dict[str, Any], proven_external_gates: set[str]) -> dict[str, Any]:
+    proven_gate_blockers = {f"gate_not_proven:{gate_id}" for gate_id in proven_external_gates}
+    blockers = [item for item in _list_strings(group.get("blockers")) if item not in proven_gate_blockers]
+    result: dict[str, Any] = {
+        "ready": not blockers,
+        "blocker_count": len(blockers),
+    }
+    if blockers:
+        result["blockers"] = blockers
+    return result
 
 
 def _only_proven_external_gate_blockers(group: dict[str, Any], proven_external_gates: set[str]) -> bool:
