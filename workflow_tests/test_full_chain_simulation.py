@@ -48,6 +48,42 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(len({item["id"] for item in scenarios}), len(scenarios))
         self.assertTrue(all(item.get("timeline") for item in scenarios))
         self.assertGreaterEqual(sum(len(item["timeline"]) >= 2 for item in scenarios), 100)
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=scenarios,
+            results=[
+                {
+                    "scenario_id": item["id"],
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                }
+                for item in scenarios
+            ],
+            baseline={},
+        )
+        self.assertEqual(report["coverage"]["schema_version"], "offline_simulation_coverage_audit_v1")
+        self.assertEqual(report["coverage"]["missing_required_categories"], [])
+        self.assertTrue(report["summary"]["acceptance"]["scenario_coverage_complete"])
+
+    def test_aggregate_blocks_acceptance_when_required_simulation_category_is_missing(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "only_store", "category": "门店V2", "critical": True}],
+            results=[
+                {
+                    "scenario_id": "only_store",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                }
+            ],
+            baseline={},
+        )
+
+        self.assertIn("精准问答", report["coverage"]["missing_required_categories"])
+        self.assertFalse(report["summary"]["acceptance"]["scenario_coverage_complete"])
+        markdown = render_markdown(report)
+        self.assertIn("## 场景覆盖", markdown)
+        self.assertIn("缺失必测分类", markdown)
 
     def test_aggregate_emits_behavior_switch_gate_fields(self) -> None:
         report = _aggregate(

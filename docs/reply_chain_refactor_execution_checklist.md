@@ -262,6 +262,9 @@ Required report:
 - hard errors: `0`
 - `summary.infrastructure_failures=0`
 - `summary.acceptance.infrastructure_failures_zero=true`
+- `coverage.schema_version=offline_simulation_coverage_audit_v1`
+- `coverage.missing_required_categories=[]`
+- `summary.acceptance.scenario_coverage_complete=true`
 - failed critical scenarios: `[]`
 - semantic pass rate: at least `0.90`
 - `safety.production_customer_messages_sent=false`

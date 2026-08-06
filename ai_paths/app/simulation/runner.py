@@ -24,6 +24,26 @@ SEMANTIC_SCORE_KEYS = (
     "fact_safety",
 )
 
+REQUIRED_SIMULATION_CATEGORIES = (
+    "门店V2",
+    "SOP主线",
+    "效果案例",
+    "精准问答",
+    "项目范围",
+    "健康风险",
+    "门店匹配",
+    "门店工具",
+    "门店异议",
+    "SOP Gate",
+    "预约金",
+    "已付登记",
+    "客户异议",
+    "明确拒绝",
+    "SOP Event",
+    "消息归一",
+    "模型恢复",
+)
+
 
 def load_suite(path: Path) -> list[dict[str, Any]]:
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -324,6 +344,7 @@ def _aggregate(
     semantic_pass_rate_percent = _rate(len(semantic_passed), len(evaluable))
     safety = _simulation_safety(results)
     infrastructure_failures = sum(1 for item in results if item.get("infrastructure_errors"))
+    coverage = _coverage_audit(scenarios)
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
@@ -346,12 +367,34 @@ def _aggregate(
                 "semantic_at_least_90": semantic_pass_rate >= 0.9,
                 "critical_all_pass": not failed_critical_scenarios,
                 "infrastructure_failures_zero": infrastructure_failures == 0,
+                "scenario_coverage_complete": not coverage["missing_required_categories"],
             },
         },
+        "coverage": coverage,
         "scenario_summary": scenario_summary,
         "review_artifacts": _review_artifacts(results),
         "baseline_comparison": _compare_baseline(baseline, scenario_summary),
         "results": results,
+    }
+
+
+def _coverage_audit(scenarios: list[dict[str, Any]]) -> dict[str, Any]:
+    category_counts: dict[str, int] = {}
+    critical_category_counts: dict[str, int] = {}
+    for scenario in scenarios:
+        category = str(scenario.get("category") or "").strip()
+        if not category:
+            category = "<missing>"
+        category_counts[category] = category_counts.get(category, 0) + 1
+        if bool(scenario.get("critical")):
+            critical_category_counts[category] = critical_category_counts.get(category, 0) + 1
+    missing = [category for category in REQUIRED_SIMULATION_CATEGORIES if category_counts.get(category, 0) <= 0]
+    return {
+        "schema_version": "offline_simulation_coverage_audit_v1",
+        "required_categories": list(REQUIRED_SIMULATION_CATEGORIES),
+        "missing_required_categories": missing,
+        "category_counts": dict(sorted(category_counts.items())),
+        "critical_category_counts": dict(sorted(critical_category_counts.items())),
     }
 
 
@@ -400,11 +443,31 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- 基础设施失败：{summary.get('infrastructure_failures', 0)}",
         f"- P50 / P90：{summary.get('p50_ms', 0)}ms / {summary.get('p90_ms', 0)}ms",
         "",
-        "## 场景结果",
+        "## 场景覆盖",
         "",
-        "| 场景 | 分类 | 关键 | 硬通过 | 语义通过 | 基础设施失败 |",
-        "|---|---|---:|---:|---:|---:|",
     ]
+    coverage = report.get("coverage") if isinstance(report.get("coverage"), dict) else {}
+    missing_categories = coverage.get("missing_required_categories") or []
+    if missing_categories:
+        lines.append(f"- 缺失必测分类：{', '.join(str(item) for item in missing_categories)}")
+    else:
+        lines.append("- 必测分类：完整")
+    lines.extend(["", "| 分类 | 场景数 | 关键场景数 |", "|---|---:|---:|"])
+    category_counts = coverage.get("category_counts") if isinstance(coverage.get("category_counts"), dict) else {}
+    critical_counts = (
+        coverage.get("critical_category_counts") if isinstance(coverage.get("critical_category_counts"), dict) else {}
+    )
+    for category, count in category_counts.items():
+        lines.append(f"| {category} | {count} | {critical_counts.get(category, 0)} |")
+    lines.extend(
+        [
+            "",
+            "## 场景结果",
+            "",
+            "| 场景 | 分类 | 关键 | 硬通过 | 语义通过 | 基础设施失败 |",
+            "|---|---|---:|---:|---:|---:|",
+        ]
+    )
     for scenario_id, item in (report.get("scenario_summary") or {}).items():
         lines.append(
             f"| {scenario_id} | {item.get('category', '')} | {'是' if item.get('critical') else '否'} | "
