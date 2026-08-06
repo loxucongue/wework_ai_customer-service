@@ -115,6 +115,24 @@ def _diagnostic_blockers(diagnostics: dict[str, Any]) -> list[str]:
         unproven = _list_strings(release_review.get("missing_or_unproven_gates"))
         if unproven:
             blockers.extend(f"release_review_gate_unproven:{item}" for item in unproven)
+        blockers.extend(_release_review_group_blockers(release_review))
+    return blockers
+
+
+def _release_review_group_blockers(release_review: dict[str, Any]) -> list[str]:
+    blocker_groups = release_review.get("blocker_groups")
+    if not isinstance(blocker_groups, dict):
+        return []
+    blockers: list[str] = []
+    for group_name, group in blocker_groups.items():
+        if not isinstance(group, dict):
+            blockers.append(f"release_review_blocker_group_invalid:{group_name}")
+            continue
+        group_blockers = _list_strings(group.get("blockers"))
+        blocker_count = _int_value(group.get("blocker_count"))
+        if group.get("ready") is False or group_blockers or blocker_count > 0:
+            blockers.append(f"release_review_blocker_group_unresolved:{group_name}")
+            blockers.extend(f"release_review_blocker_group:{group_name}:{item}" for item in group_blockers)
     return blockers
 
 
@@ -169,6 +187,13 @@ def _list_strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def _int_value(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _drop_empty(value: Any) -> Any:

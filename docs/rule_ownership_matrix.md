@@ -91,7 +91,9 @@ enable runtime behavior by side effect. `workflow_tests/test_reply_chain_behavio
 must pass before any proposed behavior switch can be reviewed.
 When diagnostics include grouped release blockers, the guard may expose those
 groups for reviewer readability, but the groups remain evidence only and do not
-enable behavior by themselves.
+enable behavior by themselves. If a group still reports blockers, the guard
+must treat that as unresolved review evidence and block behavior switching even
+when the flat gate list is accidentally empty.
 
 Parallel behavior cannot be enabled until `SOP_CHAT_GATE_V2_ENABLED`,
 `TOOL_PLANNER_V2_ENABLED`, and `REPLY_FINAL_BRAIN_V2_ENABLED` are all true and

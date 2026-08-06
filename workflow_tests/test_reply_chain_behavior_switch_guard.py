@@ -149,6 +149,33 @@ def test_behavior_switch_guard_exposes_release_review_blocker_groups_for_review(
     ]
 
 
+def test_behavior_switch_guard_blocks_unresolved_release_review_groups_even_without_flat_gates() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["missing_or_unproven_gates"] = []
+    diagnostics["release_review"]["blocker_groups"] = {
+        "reply_payload_schema": {
+            "ready": False,
+            "blocker_count": 1,
+            "blockers": ["gate_not_proven:reply_target_input_schema_review"],
+        }
+    }
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "release_review_blocker_group_unresolved:reply_payload_schema" in guard["blockers"]
+    assert (
+        "release_review_blocker_group:reply_payload_schema:gate_not_proven:reply_target_input_schema_review"
+        in guard["blockers"]
+    )
+
+
 def test_behavior_switch_guard_allows_only_with_complete_evidence() -> None:
     guard = reply_chain_behavior_switch_guard(
         flag_snapshot=_active_flag_snapshot(),
