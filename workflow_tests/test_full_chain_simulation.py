@@ -23,7 +23,7 @@ from app.simulation.runner import (
     load_suite,
     render_markdown,
 )
-from app.simulation.runtime import _hard_check, _provider_incidents
+from app.simulation.runtime import _hard_check, _provider_incidents, _unrecovered_infrastructure_errors
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -629,6 +629,27 @@ class FullChainSimulationTests(unittest.TestCase):
             _provider_incidents(steps),
             ["step[2].provider_retry_or_network_incident"],
         )
+
+    def test_unrecovered_infrastructure_errors_include_provider_failure_evidence(self) -> None:
+        steps = [
+            {
+                "index": 1,
+                "kind": "customer_message",
+                "sync_reply_messages": [{"type": "text", "content": "您稍等一下"}],
+                "response_meta": {
+                    "tool_calls": [
+                        {
+                            "error": (
+                                "RuntimeError: All JSON model candidates failed: "
+                                "gemini-3.5-flash: RuntimeError: Model HTTP 503"
+                            )
+                        }
+                    ]
+                },
+            }
+        ]
+
+        self.assertEqual(_unrecovered_infrastructure_errors(steps), ["step[1].provider_failure"])
 
     def test_outbox_captures_without_external_transport(self) -> None:
         identity = {

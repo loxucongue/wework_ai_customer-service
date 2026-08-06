@@ -718,12 +718,35 @@ def _unrecovered_infrastructure_errors(steps: list[dict[str, Any]]) -> list[str]
         if step.get("runner_error"):
             errors.append(f"step[{step.get('index')}].runner_error")
             continue
+        provider_evidence = "\n".join(_error_evidence(step)).lower()
+        if _contains_unrecovered_provider_failure(provider_evidence):
+            errors.append(f"step[{step.get('index')}].provider_failure")
         if step.get("kind") == "customer_message":
             has_sync = bool(step.get("sync_reply_messages"))
             has_outbox = bool(step.get("new_outbox"))
             if not has_sync and not has_outbox:
                 errors.append(f"step[{step.get('index')}].no_recovered_reply")
     return sorted(set(errors))
+
+
+def _contains_unrecovered_provider_failure(text: str) -> bool:
+    if not text:
+        return False
+    markers = (
+        "all json model candidates failed",
+        "model http 429",
+        "model http 500",
+        "model http 502",
+        "model http 503",
+        "model http 504",
+        "readtimeout",
+        "connecterror",
+        "jsondecodeerror",
+        "malformed json",
+        "contain the word 'json'",
+        "timeout_retry_failed",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _sales_contact_key(identity: dict[str, Any]) -> str:
