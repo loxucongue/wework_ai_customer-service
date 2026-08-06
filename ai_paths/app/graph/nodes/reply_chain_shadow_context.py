@@ -78,11 +78,13 @@ def _authority_audit(
         profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
     seen_soft_fields = [field for field in NON_AUTHORITY_PROFILE_FIELDS if field in profile and _string(profile.get(field))]
     fact_section_status = _fact_section_status(facts)
+    current_message_audit = _current_message_audit(state, timeline)
     return _drop_empty(
         {
             "schema_version": "reply_chain_authority_audit_v1",
             "complete_chat_is_primary_authority": True,
             "soft_profile_excluded_from_authority": True,
+            "current_message_audit": current_message_audit,
             "soft_profile_fields_seen": seen_soft_fields[:MAX_FACT_ITEMS],
             "timeline_message_count": len(timeline),
             "all_messages_have_sent_at": all(_string(item.get("sent_at")) for item in timeline),
@@ -109,6 +111,53 @@ def _authority_audit(
                 "structured_messages",
                 "risk_holds",
             ],
+        }
+    )
+
+
+def _current_message_audit(state: dict[str, Any], timeline: list[dict[str, Any]]) -> dict[str, Any]:
+    request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
+    request_content = _string(state.get("normalized_content") or state.get("content"))
+    request_msgid = _string(request_context.get("msgid"))
+    current_required = bool(request_content)
+    match_index = -1
+    match: dict[str, Any] = {}
+    for index, message in enumerate(timeline):
+        message_ref = _string(message.get("message_ref"))
+        message_content = _string(message.get("content"))
+        sender = _string(message.get("sender"))
+        if request_msgid and message_ref == request_msgid:
+            match_index = index
+            match = message
+            break
+        if not request_msgid and request_content and message_content == request_content and sender == "customer":
+            match_index = index
+            match = message
+    current_in_timeline = match_index >= 0
+    current_is_last = current_in_timeline and match_index == len(timeline) - 1
+    blockers: list[str] = []
+    if current_required and not current_in_timeline:
+        blockers.append("current_message_missing_from_timeline")
+    if current_required and current_in_timeline and not current_is_last:
+        blockers.append("current_message_not_last_in_timeline")
+    if current_required and not _string(match.get("sent_at")):
+        blockers.append("current_message_missing_sent_at")
+
+    return _drop_empty(
+        {
+            "schema_version": "reply_chain_current_message_audit_v1",
+            "current_message_required": current_required,
+            "request_msgid": request_msgid,
+            "request_msgtype": _string(request_context.get("msgtype")),
+            "request_content_present": bool(request_content),
+            "request_msgtime": _message_time_from_context(request_context),
+            "current_message_in_timeline": current_in_timeline,
+            "current_message_is_last": current_is_last,
+            "current_message_ref": _string(match.get("message_ref")),
+            "current_message_source": _string(match.get("source")),
+            "current_message_time_status": _string(match.get("time_status")),
+            "ready_for_authoritative_model_input": not blockers,
+            "blockers": blockers,
         }
     )
 

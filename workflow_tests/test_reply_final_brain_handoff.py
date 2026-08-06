@@ -38,6 +38,12 @@ def test_reply_final_brain_handoff_groups_legacy_planner_semantics() -> None:
                 "schema_version": "reply_chain_authority_audit_v1",
                 "complete_chat_is_primary_authority": True,
                 "all_messages_have_sent_at": True,
+                "current_message_audit": {
+                    "schema_version": "reply_chain_current_message_audit_v1",
+                    "current_message_in_timeline": True,
+                    "current_message_is_last": True,
+                    "ready_for_authoritative_model_input": True,
+                },
                 "fact_snapshot": {"schema_version": "reply_chain_fact_snapshot_audit_v1"},
             },
         },
@@ -96,6 +102,12 @@ def test_reply_final_brain_handoff_blocks_when_join_can_generate_customer_text()
                 "schema_version": "reply_chain_authority_audit_v1",
                 "complete_chat_is_primary_authority": True,
                 "all_messages_have_sent_at": True,
+                "current_message_audit": {
+                    "schema_version": "reply_chain_current_message_audit_v1",
+                    "current_message_in_timeline": True,
+                    "current_message_is_last": True,
+                    "ready_for_authoritative_model_input": True,
+                },
                 "fact_snapshot": {"schema_version": "reply_chain_fact_snapshot_audit_v1"},
             },
         },
@@ -104,6 +116,42 @@ def test_reply_final_brain_handoff_blocks_when_join_can_generate_customer_text()
 
     assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is False
     assert "join_may_generate_customer_visible_text" in handoff["handoff_readiness_audit"]["blockers"]
+
+
+def test_reply_final_brain_handoff_blocks_when_current_message_not_authoritative() -> None:
+    handoff = reply_final_brain_handoff_shadow_from_planner_output(
+        {
+            "tool_plan_preview": {"schema_version": "tool_plan_preview_v2"},
+            "reply_chain_join_shadow": {
+                "schema_version": "reply_chain_join_shadow_v1",
+                "final_expression_boundary": {
+                    "schema_version": "reply_final_expression_boundary_v1",
+                    "join_generates_customer_visible_text": False,
+                    "join_decides_sales_psychology": False,
+                },
+            },
+        },
+        reply_chain_shadow_context={
+            "schema_version": "reply_chain_shadow_v1",
+            "authority_audit": {
+                "schema_version": "reply_chain_authority_audit_v1",
+                "complete_chat_is_primary_authority": True,
+                "all_messages_have_sent_at": True,
+                "current_message_audit": {
+                    "schema_version": "reply_chain_current_message_audit_v1",
+                    "current_message_in_timeline": True,
+                    "current_message_is_last": False,
+                    "ready_for_authoritative_model_input": False,
+                    "blockers": ["current_message_not_last_in_timeline"],
+                },
+                "fact_snapshot": {"schema_version": "reply_chain_fact_snapshot_audit_v1"},
+            },
+        },
+        gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+    )
+
+    assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is False
+    assert "current_message:current_message_not_last_in_timeline" in handoff["handoff_readiness_audit"]["blockers"]
 
 
 def test_reply_final_brain_handoff_is_not_consumed_by_current_model_payloads() -> None:

@@ -30,6 +30,9 @@ def parallel_reply_chain_shadow(
     fact_snapshot_audit = context_authority_audit.get("fact_snapshot")
     if not isinstance(fact_snapshot_audit, dict):
         fact_snapshot_audit = {}
+    current_message_audit = context_authority_audit.get("current_message_audit")
+    if not isinstance(current_message_audit, dict):
+        current_message_audit = {}
     gate_commit_boundary = gate_router_shadow.get("commit_boundary")
     if not isinstance(gate_commit_boundary, dict):
         gate_commit_boundary = {}
@@ -76,6 +79,11 @@ def parallel_reply_chain_shadow(
                 "shared_context_all_messages_have_sent_at": context_authority_audit.get("all_messages_have_sent_at"),
                 "shared_context_complete_chat_is_primary": context_authority_audit.get("complete_chat_is_primary_authority"),
                 "shared_context_soft_profile_excluded": context_authority_audit.get("soft_profile_excluded_from_authority"),
+                "shared_context_current_message_audit_schema": current_message_audit.get("schema_version"),
+                "shared_context_current_message_in_timeline": current_message_audit.get("current_message_in_timeline"),
+                "shared_context_current_message_is_last": current_message_audit.get("current_message_is_last"),
+                "shared_context_current_message_ready": current_message_audit.get("ready_for_authoritative_model_input"),
+                "shared_context_current_message_blockers": current_message_audit.get("blockers"),
                 "shared_context_fact_snapshot_schema": fact_snapshot_audit.get("schema_version"),
                 "shared_context_fact_sections_with_error": fact_snapshot_audit.get("sections_with_error"),
                 "gate_route": gate_router_shadow.get("route_suggestion"),
@@ -214,6 +222,15 @@ def _context_authority_blockers(reply_chain_shadow_context: dict[str, Any]) -> l
         blockers.append("soft_profile_not_excluded_from_authority")
     if audit.get("all_messages_have_sent_at") is not True:
         blockers.append("incomplete_timestamped_conversation")
+    current_message_audit = audit.get("current_message_audit")
+    if not isinstance(current_message_audit, dict) or current_message_audit.get("schema_version") != "reply_chain_current_message_audit_v1":
+        blockers.append("missing_reply_chain_current_message_audit")
+    elif current_message_audit.get("ready_for_authoritative_model_input") is not True:
+        current_blockers = current_message_audit.get("blockers")
+        if isinstance(current_blockers, list) and current_blockers:
+            blockers.extend([f"current_message:{item}" for item in current_blockers if isinstance(item, str) and item])
+        else:
+            blockers.append("current_message_not_ready_for_authoritative_model_input")
     fact_snapshot = audit.get("fact_snapshot")
     if not isinstance(fact_snapshot, dict) or fact_snapshot.get("schema_version") != "reply_chain_fact_snapshot_audit_v1":
         blockers.append("missing_reply_chain_fact_snapshot_audit")

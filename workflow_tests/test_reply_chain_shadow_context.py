@@ -64,6 +64,13 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertEqual(context["authority_audit"]["schema_version"], "reply_chain_authority_audit_v1")
         self.assertTrue(context["authority_audit"]["complete_chat_is_primary_authority"])
         self.assertEqual(
+            context["authority_audit"]["current_message_audit"]["schema_version"],
+            "reply_chain_current_message_audit_v1",
+        )
+        self.assertTrue(context["authority_audit"]["current_message_audit"]["current_message_in_timeline"])
+        self.assertTrue(context["authority_audit"]["current_message_audit"]["current_message_is_last"])
+        self.assertTrue(context["authority_audit"]["current_message_audit"]["ready_for_authoritative_model_input"])
+        self.assertEqual(
             context["authority_audit"]["fact_snapshot"]["schema_version"],
             "reply_chain_fact_snapshot_audit_v1",
         )
@@ -93,9 +100,46 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertEqual(messages[1]["sender"], "assistant")
         self.assertEqual(messages[-1]["message_ref"], "m3")
         self.assertEqual(messages[-1]["content"], "发我")
+        self.assertTrue(context["authority_audit"]["current_message_audit"]["current_message_in_timeline"])
+        self.assertTrue(context["authority_audit"]["current_message_audit"]["current_message_is_last"])
         self.assertFalse(context["conversation"]["policy"]["all_messages_have_sent_at"])
         self.assertIn("history_001", context["conversation"]["policy"]["missing_time_message_refs"])
         self.assertEqual(messages[0]["time_status"], "missing")
+
+    def test_authority_audit_blocks_when_current_message_is_not_latest_timeline_item(self) -> None:
+        context = build_reply_chain_shadow_context(
+            {
+                "content": "怎么付费",
+                "normalized_content": "怎么付费",
+                "request_context": {"msgid": "current", "msgtype": "text", "msgtime": "1785225414095"},
+            },
+            identity={},
+            customer_result={},
+            store_knowledge={},
+            conversation_result={
+                "conversation_turns": [
+                    {
+                        "message_ref": "current",
+                        "role": "customer",
+                        "content": "怎么付费",
+                        "occurred_at": "2026-08-01T10:00:00+08:00",
+                    },
+                    {
+                        "message_ref": "later_staff",
+                        "role": "assistant",
+                        "content": "历史里后面还有一条",
+                        "occurred_at": "2026-08-01T10:01:00+08:00",
+                    },
+                ]
+            },
+            memory={},
+        )
+
+        audit = context["authority_audit"]["current_message_audit"]
+        self.assertTrue(audit["current_message_in_timeline"])
+        self.assertFalse(audit["current_message_is_last"])
+        self.assertFalse(audit["ready_for_authoritative_model_input"])
+        self.assertIn("current_message_not_last_in_timeline", audit["blockers"])
 
     def test_authoritative_facts_include_structured_delivery_and_risk_hold(self) -> None:
         context = build_reply_chain_shadow_context(

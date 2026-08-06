@@ -8,7 +8,12 @@ from app.graph.planner.brain_v2 import _planner_payload_for_model
 from app.services.parallel_reply_chain_shadow import parallel_reply_chain_shadow
 
 
-def _reply_chain_shadow_context(*, all_messages_have_sent_at: bool = True) -> dict:
+def _reply_chain_shadow_context(
+    *,
+    all_messages_have_sent_at: bool = True,
+    current_message_ready: bool = True,
+    current_message_blockers: list[str] | None = None,
+) -> dict:
     return {
         "schema_version": "reply_chain_shadow_v1",
         "authority_audit": {
@@ -17,6 +22,13 @@ def _reply_chain_shadow_context(*, all_messages_have_sent_at: bool = True) -> di
             "soft_profile_excluded_from_authority": True,
             "timeline_message_count": 3,
             "all_messages_have_sent_at": all_messages_have_sent_at,
+            "current_message_audit": {
+                "schema_version": "reply_chain_current_message_audit_v1",
+                "current_message_in_timeline": current_message_ready,
+                "current_message_is_last": current_message_ready,
+                "ready_for_authoritative_model_input": current_message_ready,
+                "blockers": current_message_blockers or [],
+            },
             "fact_snapshot": {
                 "schema_version": "reply_chain_fact_snapshot_audit_v1",
                 "sections_with_error": [],
@@ -117,6 +129,13 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertTrue(shadow["current_serial_observation"]["shared_context_all_messages_have_sent_at"])
         self.assertTrue(shadow["current_serial_observation"]["shared_context_complete_chat_is_primary"])
         self.assertTrue(shadow["current_serial_observation"]["shared_context_soft_profile_excluded"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["shared_context_current_message_audit_schema"],
+            "reply_chain_current_message_audit_v1",
+        )
+        self.assertTrue(shadow["current_serial_observation"]["shared_context_current_message_in_timeline"])
+        self.assertTrue(shadow["current_serial_observation"]["shared_context_current_message_is_last"])
+        self.assertTrue(shadow["current_serial_observation"]["shared_context_current_message_ready"])
         self.assertEqual(
             shadow["current_serial_observation"]["shared_context_fact_snapshot_schema"],
             "reply_chain_fact_snapshot_audit_v1",
@@ -289,6 +308,26 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
 
         self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
         self.assertIn("incomplete_timestamped_conversation", shadow["activation"]["blockers"])
+
+    def test_current_message_not_ready_blocks_parallel_runner_activation(self) -> None:
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=_reply_chain_shadow_context(
+                current_message_ready=False,
+                current_message_blockers=["current_message_not_last_in_timeline"],
+            ),
+            gate_router_shadow=_gate_router_shadow(),
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("current_message:current_message_not_last_in_timeline", shadow["activation"]["blockers"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["shared_context_current_message_blockers"],
+            ["current_message_not_last_in_timeline"],
+        )
 
     def test_authoritative_fact_snapshot_errors_block_parallel_runner_activation(self) -> None:
         context = _reply_chain_shadow_context()
