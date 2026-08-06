@@ -447,10 +447,11 @@ def _target_reply_input_schema_audit(target_schema: dict[str, Any]) -> dict[str,
         active_groups = []
     if not isinstance(shadow_only_groups, list):
         shadow_only_groups = []
+    active_group_entries = [group for group in active_groups if isinstance(group, dict)]
     active_group_ids = [
         str(group.get("group_id") or "")
-        for group in active_groups
-        if isinstance(group, dict) and group.get("group_id")
+        for group in active_group_entries
+        if group.get("group_id")
     ]
     shadow_only_group_ids = [
         str(group.get("group_id") or "")
@@ -460,10 +461,15 @@ def _target_reply_input_schema_audit(target_schema: dict[str, Any]) -> dict[str,
     blockers: list[str] = []
     if target_schema.get("schema_version") != "reply_final_brain_target_input_schema_v1":
         blockers.append("invalid_target_reply_input_schema")
-    for group_id in active_group_ids:
+    for group in active_group_entries:
+        group_id = str(group.get("group_id") or "")
         lowered = group_id.lower()
         if "legacy" in lowered or "planner" in lowered:
             blockers.append(f"legacy_or_planner_group_marked_active:{group_id}")
+        source = str(group.get("source") or "")
+        lowered_source = source.lower()
+        if source.startswith("input_groups.") or "legacy" in lowered_source or "planner_" in lowered_source:
+            blockers.append(f"legacy_or_planner_source_marked_active:{group_id}:{source}")
     required_shadow_groups = {
         "legacy_planner_customer_message_candidates",
         "legacy_planner_turn_outcome_signals",
