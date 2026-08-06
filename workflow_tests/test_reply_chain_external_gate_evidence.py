@@ -15,6 +15,23 @@ from app.services.reply_chain_external_gate_evidence import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _review_artifact_results(count: int = 300) -> list[dict]:
+    return [
+        {
+            "scenario_id": f"sim_case_{index % 100}",
+            "attempt": (index % 3) + 1,
+            "request_ids": [f"sim_request_{index}"],
+            "event_ids": [],
+            "node_trace_names": ["sop_chat_gate", "planner", "reply"],
+            "tool_call_names": ["customer_store_lookup"],
+            "sync_reply_message_count": 1,
+            "outbox_batch_count": 1,
+            "simulated_write_count": 0,
+        }
+        for index in range(count)
+    ]
+
+
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
@@ -70,19 +87,7 @@ def _simulation_ready() -> dict:
             "tool_call_count": 5,
             "outbox_batch_count": 4,
             "simulated_write_count": 2,
-            "results": [
-                {
-                    "scenario_id": "sim_case",
-                    "attempt": 1,
-                    "request_ids": ["sim_request_1"],
-                    "event_ids": [],
-                    "node_trace_names": ["sop_chat_gate", "planner", "reply"],
-                    "tool_call_names": ["customer_store_lookup"],
-                    "sync_reply_message_count": 1,
-                    "outbox_batch_count": 1,
-                    "simulated_write_count": 0,
-                }
-            ],
+            "results": _review_artifact_results(),
         },
         "safety": {
             "production_customer_messages_sent": False,
@@ -769,6 +774,15 @@ def test_external_gate_evidence_blocks_incomplete_simulation_review_artifact_row
     assert "simulation_review_artifacts_result_missing_field:sim_case:tool_call_names" in blockers
     assert "simulation_review_artifacts_result_field_not_number:sim_case:sync_reply_message_count" in blockers
     assert "simulation_review_artifacts_invalid_result:1" in blockers
+
+
+def test_external_gate_evidence_blocks_review_artifact_results_below_attempt_count() -> None:
+    simulation = _simulation_ready()
+    simulation["review_artifacts"]["results"] = _review_artifact_results(299)
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_review_artifacts_results_length_below_attempt_count:299<300" in blockers
 
 
 def test_external_gate_evidence_blocks_incomplete_effect_review_items() -> None:

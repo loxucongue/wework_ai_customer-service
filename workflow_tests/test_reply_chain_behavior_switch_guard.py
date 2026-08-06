@@ -9,6 +9,23 @@ from app.services.reply_chain_behavior_switch_guard import reply_chain_behavior_
 from app.services.reply_chain_refactor_flags import reply_chain_refactor_flag_snapshot
 
 
+def _review_artifact_results(count: int = 300) -> list[dict]:
+    return [
+        {
+            "scenario_id": f"sim_case_{index % 100}",
+            "attempt": (index % 3) + 1,
+            "request_ids": [f"sim_request_{index}"],
+            "event_ids": [],
+            "node_trace_names": ["sop_chat_gate", "planner", "reply"],
+            "tool_call_names": ["customer_store_lookup"],
+            "sync_reply_message_count": 1,
+            "outbox_batch_count": 1,
+            "simulated_write_count": 0,
+        }
+        for index in range(count)
+    ]
+
+
 def _active_flag_snapshot() -> dict:
     return reply_chain_refactor_flag_snapshot(
         Settings(
@@ -125,19 +142,7 @@ def _simulation_ready() -> dict:
             "tool_call_count": 5,
             "outbox_batch_count": 4,
             "simulated_write_count": 2,
-            "results": [
-                {
-                    "scenario_id": "sim_case",
-                    "attempt": 1,
-                    "request_ids": ["sim_request_1"],
-                    "event_ids": [],
-                    "node_trace_names": ["sop_chat_gate", "planner", "reply"],
-                    "tool_call_names": ["customer_store_lookup"],
-                    "sync_reply_message_count": 1,
-                    "outbox_batch_count": 1,
-                    "simulated_write_count": 0,
-                }
-            ],
+            "results": _review_artifact_results(),
         },
         "safety": {
             "production_customer_messages_sent": False,

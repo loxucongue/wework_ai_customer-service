@@ -371,6 +371,11 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         if not isinstance(review_artifacts.get("results"), list):
             blockers.append("simulation_review_artifacts_missing_results")
         else:
+            if len(review_artifacts["results"]) < attempt_count:
+                blockers.append(
+                    "simulation_review_artifacts_results_length_below_attempt_count:"
+                    f"{len(review_artifacts['results'])}<{simulation.get('attempt_count')}"
+                )
             blockers.extend(_review_artifact_result_blockers(review_artifacts["results"]))
     safety = _dict(simulation.get("safety"))
     if safety.get("production_customer_messages_sent") is not False:
