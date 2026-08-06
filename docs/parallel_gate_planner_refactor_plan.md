@@ -703,6 +703,7 @@ python -m pytest workflow_tests/test_parallel_reply_chain_runner.py workflow_tes
 
 - 并行分支输入隔离。
 - shadow 对比可审计。
+- comparison 必须消费 runner 的 `parallel_branch_output_contract_audit_v1`；契约缺失或不通过时只能标记为 `not_comparable`。
 - 诊断不能自动批准行为开关。
 
 ### 16.8 T7：离线全链路仿真

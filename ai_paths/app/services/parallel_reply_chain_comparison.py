@@ -19,9 +19,16 @@ def parallel_reply_chain_comparison(
 
     runner_mode = str(runner_shadow.get("mode") or "missing")
     branch_errors = _branch_errors(runner_shadow)
+    output_contract_blockers = _runner_output_contract_blockers(runner_shadow)
     runner_gate = _runner_gate_shadow(runner_shadow)
     runner_tool_plan = _runner_tool_plan(runner_shadow)
-    comparable = runner_mode == "completed_shadow" and not branch_errors and bool(runner_gate) and bool(runner_tool_plan)
+    comparable = (
+        runner_mode == "completed_shadow"
+        and not branch_errors
+        and not output_contract_blockers
+        and bool(runner_gate)
+        and bool(runner_tool_plan)
+    )
     diffs = _diffs(
         gate_router_shadow=gate_router_shadow,
         tool_plan_preview=tool_plan_preview,
@@ -49,6 +56,7 @@ def parallel_reply_chain_comparison(
                 "fact_requirement": _fact_requirement(runner_tool_plan),
                 "read_tool_signatures": _read_tool_signatures(runner_tool_plan),
                 "branch_errors": branch_errors,
+                "output_contract_blockers": output_contract_blockers,
             },
             "review_gate": {
                 "requires_human_review_before_behavior_switch": True,
@@ -119,6 +127,20 @@ def _branch_errors(runner_shadow: dict[str, Any]) -> list[str]:
         if branch.get("status") == "error":
             errors.append(f"{name}:{branch.get('error') or 'error'}")
     return errors
+
+
+def _runner_output_contract_blockers(runner_shadow: dict[str, Any]) -> list[str]:
+    if str(runner_shadow.get("mode") or "") != "completed_shadow":
+        return []
+    audit = runner_shadow.get("branch_output_contract_audit")
+    if not isinstance(audit, dict) or audit.get("schema_version") != "parallel_branch_output_contract_audit_v1":
+        return ["missing_runner_branch_output_contract_audit"]
+    if audit.get("ready") is True:
+        return []
+    blockers = audit.get("blockers")
+    if isinstance(blockers, list) and blockers:
+        return [str(item) for item in blockers if str(item)]
+    return ["runner_branch_output_contract_not_ready"]
 
 
 def _route(value: dict[str, Any]) -> str:

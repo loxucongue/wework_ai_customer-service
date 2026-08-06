@@ -3,6 +3,14 @@ from __future__ import annotations
 from app.services.parallel_reply_chain_comparison import parallel_reply_chain_comparison
 
 
+def _branch_output_contract_audit(*, ready: bool = True, blockers: list[str] | None = None) -> dict:
+    return {
+        "schema_version": "parallel_branch_output_contract_audit_v1",
+        "ready": ready,
+        "blockers": blockers or [],
+    }
+
+
 def test_comparison_matches_serial_replay_without_approving_behavior_switch() -> None:
     gate = {"schema_version": "chat_gate_router_shadow_v1", "route_suggestion": "tools_only"}
     tool_plan = {
@@ -17,6 +25,7 @@ def test_comparison_matches_serial_replay_without_approving_behavior_switch() ->
         runner_shadow={
             "schema_version": "parallel_gate_planner_runner_shadow_v1",
             "mode": "completed_shadow",
+            "branch_output_contract_audit": _branch_output_contract_audit(),
             "branches": {
                 "sop_chat_gate": {
                     "status": "completed",
@@ -49,6 +58,7 @@ def test_comparison_reports_route_and_tool_plan_diffs() -> None:
         join_shadow={"final_route": "reply_with_content"},
         runner_shadow={
             "mode": "completed_shadow",
+            "branch_output_contract_audit": _branch_output_contract_audit(),
             "branches": {
                 "sop_chat_gate": {
                     "status": "completed",
@@ -82,6 +92,7 @@ def test_comparison_blocks_when_runner_branch_failed() -> None:
         join_shadow={},
         runner_shadow={
             "mode": "completed_shadow",
+            "branch_output_contract_audit": _branch_output_contract_audit(),
             "branches": {
                 "sop_chat_gate": {"status": "completed", "output": {}},
                 "tool_planner": {"status": "error", "error": "TimeoutError: slow"},
@@ -92,3 +103,57 @@ def test_comparison_blocks_when_runner_branch_failed() -> None:
     assert comparison["status"] == "not_comparable"
     assert comparison["comparable"] is False
     assert comparison["parallel_replay"]["branch_errors"] == ["tool_planner:TimeoutError: slow"]
+
+
+def test_comparison_is_not_comparable_when_runner_output_contract_is_missing() -> None:
+    gate = {"schema_version": "chat_gate_router_shadow_v1", "route_suggestion": "tools_only"}
+    tool_plan = {"schema_version": "tool_plan_preview_v2", "fact_requirement": "required"}
+
+    comparison = parallel_reply_chain_comparison(
+        gate_router_shadow=gate,
+        tool_plan_preview=tool_plan,
+        join_shadow={},
+        runner_shadow={
+            "schema_version": "parallel_gate_planner_runner_shadow_v1",
+            "mode": "completed_shadow",
+            "branches": {
+                "sop_chat_gate": {"status": "completed", "output": {"gate_router_shadow": gate}},
+                "tool_planner": {"status": "completed", "output": {"tool_plan_preview": tool_plan}},
+            },
+        },
+    )
+
+    assert comparison["status"] == "not_comparable"
+    assert comparison["comparable"] is False
+    assert comparison["parallel_replay"]["output_contract_blockers"] == [
+        "missing_runner_branch_output_contract_audit"
+    ]
+
+
+def test_comparison_is_not_comparable_when_runner_output_contract_is_blocked() -> None:
+    gate = {"schema_version": "chat_gate_router_shadow_v1", "route_suggestion": "tools_only"}
+    tool_plan = {"schema_version": "tool_plan_preview_v2", "fact_requirement": "required"}
+
+    comparison = parallel_reply_chain_comparison(
+        gate_router_shadow=gate,
+        tool_plan_preview=tool_plan,
+        join_shadow={},
+        runner_shadow={
+            "schema_version": "parallel_gate_planner_runner_shadow_v1",
+            "mode": "completed_shadow",
+            "branch_output_contract_audit": _branch_output_contract_audit(
+                ready=False,
+                blockers=["branch_missing_required_output:tool_planner.tool_plan_preview"],
+            ),
+            "branches": {
+                "sop_chat_gate": {"status": "completed", "output": {"gate_router_shadow": gate}},
+                "tool_planner": {"status": "completed", "output": {"tool_plan_preview": tool_plan}},
+            },
+        },
+    )
+
+    assert comparison["status"] == "not_comparable"
+    assert comparison["comparable"] is False
+    assert comparison["parallel_replay"]["output_contract_blockers"] == [
+        "branch_missing_required_output:tool_planner.tool_plan_preview"
+    ]
