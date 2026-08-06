@@ -74,7 +74,7 @@ def reply_chain_behavior_switch_guard(
                     "and required pass rate"
                 ),
                 "model_matrix_report": "three-model relay matrix with accuracy and latency summary",
-                "human_review": "explicit reviewer approval for this branch and commit",
+                "human_review": "explicit reviewer approval for this branch, commit, scope, and rollback plan",
             },
             "safety": {
                 "guard_only": True,
@@ -216,6 +216,24 @@ def _human_review_blockers(review: dict[str, Any]) -> list[str]:
         blockers.append("human_review_missing_commit_sha")
     if review.get("scope") != "parallel_gate_planner_behavior_switch":
         blockers.append(f"human_review_wrong_scope:{review.get('scope') or 'missing'}")
+    blockers.extend(_rollback_plan_blockers(_dict(review.get("rollback_plan"))))
+    return blockers
+
+
+def _rollback_plan_blockers(plan: dict[str, Any]) -> list[str]:
+    if plan.get("schema_version") != "reply_chain_behavior_switch_rollback_plan_v1":
+        return ["missing_behavior_switch_rollback_plan"]
+    blockers: list[str] = []
+    if plan.get("reviewed") is not True:
+        blockers.append("rollback_plan_not_reviewed")
+    if plan.get("restore_flags_to_shadow_or_disabled") is not True:
+        blockers.append("rollback_plan_missing_flag_restore")
+    if plan.get("no_deployment_from_refactor_branch") is not True:
+        blockers.append("rollback_plan_missing_no_refactor_deploy")
+    if not _list_strings(plan.get("rollback_steps")):
+        blockers.append("rollback_plan_missing_steps")
+    if not isinstance(plan.get("owner"), str) or not plan.get("owner").strip():
+        blockers.append("rollback_plan_missing_owner")
     return blockers
 
 

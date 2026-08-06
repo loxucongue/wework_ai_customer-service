@@ -390,8 +390,9 @@ Behavior switching remains blocked unless all evidence is present:
 - postcommit shadow bundle audit ready;
 - diagnostics ready for human review;
 - offline simulation report passing;
-- explicit human approval for branch and commit;
-- rollback plan and no deployment from this branch.
+- explicit human approval for branch, commit, and behavior-switch scope;
+- reviewed rollback plan with flag-restore steps and no deployment from this
+  branch.
 
 The review evidence may say "ready for human review". It must not say "safe to
 enable production" unless the final behavior-switch guard says so after human

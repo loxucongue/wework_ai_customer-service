@@ -176,6 +176,19 @@ def _human_review_approved() -> dict:
         "branch": "codex/reply-chain-refactor",
         "commit_sha": "abc123",
         "scope": "parallel_gate_planner_behavior_switch",
+        "rollback_plan": {
+            "schema_version": "reply_chain_behavior_switch_rollback_plan_v1",
+            "reviewed": True,
+            "restore_flags_to_shadow_or_disabled": True,
+            "no_deployment_from_refactor_branch": True,
+            "rollback_steps": [
+                "disable PARALLEL_GATE_PLANNER_ENABLED",
+                "disable SOP_CHAT_GATE_V2_ENABLED",
+                "disable TOOL_PLANNER_V2_ENABLED",
+                "disable REPLY_FINAL_BRAIN_V2_ENABLED",
+            ],
+            "owner": "reviewer",
+        },
     }
 
 
@@ -205,6 +218,44 @@ def test_behavior_switch_guard_blocks_without_simulation_and_human_review() -> N
     assert "missing_offline_simulation_report" in guard["blockers"]
     assert "missing_model_matrix_report" in guard["blockers"]
     assert "missing_human_review_approval" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_human_review_without_rollback_plan() -> None:
+    review = _human_review_approved()
+    del review["rollback_plan"]
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        human_review=review,
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "missing_behavior_switch_rollback_plan" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_unreviewed_rollback_plan() -> None:
+    review = _human_review_approved()
+    review["rollback_plan"]["reviewed"] = False
+    review["rollback_plan"]["rollback_steps"] = []
+    review["rollback_plan"]["no_deployment_from_refactor_branch"] = False
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        human_review=review,
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "rollback_plan_not_reviewed" in guard["blockers"]
+    assert "rollback_plan_missing_steps" in guard["blockers"]
+    assert "rollback_plan_missing_no_refactor_deploy" in guard["blockers"]
 
 
 def test_behavior_switch_guard_blocks_shadow_bundle_without_commit_phase_evidence() -> None:
