@@ -169,7 +169,7 @@ def _final_expression_boundary(*, final_route: str, direct_reply_allowed: bool) 
 def _static_candidate_safe(gate_router_shadow: dict[str, Any]) -> bool:
     audit = gate_router_shadow.get("direct_reply_candidate_audit")
     if not isinstance(audit, dict):
-        return True
+        return False
     return audit.get("safe_for_direct_reply_static_candidate") is True
 
 

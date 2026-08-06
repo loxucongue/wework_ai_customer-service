@@ -96,6 +96,24 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
         )
         self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
 
+    def test_direct_text_without_candidate_audit_must_go_to_reply_with_content(self) -> None:
+        shadow = reply_chain_join_shadow(
+            gate_router_shadow={
+                "route_suggestion": "direct_text",
+                "selected_content": {"message_count": 1},
+            },
+            tool_plan_preview={"fact_requirement": "none"},
+        )
+
+        self.assertEqual(shadow["final_route"], "reply_with_content")
+        self.assertFalse(shadow["direct_reply_allowed"])
+        self.assertFalse(shadow["direct_reply_guard_audit"]["static_candidate_safe_for_direct_reply"])
+        self.assertIn(
+            "static_candidate_not_safe_for_direct_reply",
+            shadow["direct_reply_guard_audit"]["blockers"],
+        )
+        self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
+
     def test_direct_text_with_read_tools_must_go_to_reply_with_content_and_tools(self) -> None:
         shadow = reply_chain_join_shadow(
             gate_router_shadow={
