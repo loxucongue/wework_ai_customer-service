@@ -133,6 +133,14 @@ def _simulation_ready() -> dict:
             "schema_version": "offline_simulation_coverage_audit_v1",
             "missing_required_categories": [],
         },
+        "effect_review": {
+            "schema_version": "offline_simulation_effect_review_v1",
+            "result_count": 300,
+            "issue_count": 0,
+            "low_score_count": 0,
+            "hard_or_infra_count": 0,
+            "items": [],
+        },
         "review_artifacts": {
             "schema_version": "offline_simulation_review_artifacts_v1",
             "result_count": 300,

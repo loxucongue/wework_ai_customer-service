@@ -79,6 +79,20 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         blockers.append("simulation_scenario_coverage_incomplete")
     if acceptance.get("isolation_audit_passed") is not True:
         blockers.append("simulation_isolation_acceptance_missing_or_false")
+    effect_review = _dict(simulation.get("effect_review"))
+    if effect_review.get("schema_version") != "offline_simulation_effect_review_v1":
+        blockers.append("simulation_missing_effect_review")
+    else:
+        if _int_value(effect_review.get("result_count")) < attempt_count:
+            blockers.append(
+                "simulation_effect_review_result_count_below_attempt_count:"
+                f"{effect_review.get('result_count')}<{simulation.get('attempt_count')}"
+            )
+        if hard_error_count := _int_value(simulation.get("hard_error_count")):
+            if _int_value(effect_review.get("hard_or_infra_count")) <= 0:
+                blockers.append(f"simulation_effect_review_missing_hard_error_samples:{hard_error_count}")
+        if pass_rate < 0.9 and _int_value(effect_review.get("low_score_count")) <= 0:
+            blockers.append("simulation_effect_review_missing_low_score_samples")
     isolation = _dict(simulation.get("isolation_audit"))
     if isolation.get("schema_version") != "offline_simulation_isolation_summary_v1":
         blockers.append("simulation_missing_isolation_audit")

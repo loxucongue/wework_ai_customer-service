@@ -384,6 +384,7 @@ def _aggregate(
         },
         "coverage": coverage,
         "scenario_summary": scenario_summary,
+        "effect_review": _effect_review(results),
         "review_artifacts": _review_artifacts(results),
         "baseline_comparison": _compare_baseline(baseline, scenario_summary),
         "results": results,
@@ -512,6 +513,36 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"{item.get('semantic_passes', 0)}/{item.get('attempts', 0)} | "
             f"{item.get('infrastructure_failures', 0)} |"
         )
+    effect = report.get("effect_review") if isinstance(report.get("effect_review"), dict) else {}
+    lines.extend(
+        [
+            "",
+            "## 效果审查样本",
+            "",
+            f"- 问题样本数：{effect.get('issue_count', 0)}",
+            f"- 低分样本数：{effect.get('low_score_count', 0)}",
+            f"- 硬错误或基础设施样本数：{effect.get('hard_or_infra_count', 0)}",
+            "",
+        ]
+    )
+    items = effect.get("items") if isinstance(effect.get("items"), list) else []
+    if items:
+        lines.extend(
+            [
+                "| 场景 | attempt | 类型 | 客户输入 | AI回复摘录 | 评审理由 |",
+                "|---|---:|---|---|---|---|",
+            ]
+        )
+        for item in items:
+            lines.append(
+                f"| {item.get('scenario_id', '')} | {item.get('attempt', '')} | "
+                f"{', '.join(item.get('issue_types') or [])} | "
+                f"{_md_cell(item.get('customer_input_excerpt', ''))} | "
+                f"{_md_cell(item.get('assistant_reply_excerpt', ''))} | "
+                f"{_md_cell(item.get('review_reasons', ''))} |"
+            )
+    else:
+        lines.append("无。")
     artifacts = report.get("review_artifacts") if isinstance(report.get("review_artifacts"), dict) else {}
     lines.extend(
         [
@@ -564,6 +595,75 @@ def render_markdown(report: dict[str, Any]) -> str:
             ]
         )
     return "\n".join(lines) + "\n"
+
+
+def _effect_review(results: list[dict[str, Any]]) -> dict[str, Any]:
+    items = [_effect_review_item(item) for item in results if isinstance(item, dict)]
+    issue_items = [item for item in items if item.get("issue_types")]
+    low_score_items = [item for item in issue_items if "semantic_low_score" in item.get("issue_types", [])]
+    hard_or_infra_items = [
+        item
+        for item in issue_items
+        if "hard_error" in item.get("issue_types", []) or "infrastructure_error" in item.get("issue_types", [])
+    ]
+    return {
+        "schema_version": "offline_simulation_effect_review_v1",
+        "result_count": len(items),
+        "issue_count": len(issue_items),
+        "low_score_count": len(low_score_items),
+        "hard_or_infra_count": len(hard_or_infra_items),
+        "items": issue_items[:50],
+    }
+
+
+def _effect_review_item(result: dict[str, Any]) -> dict[str, Any]:
+    semantic = result.get("semantic_review") if isinstance(result.get("semantic_review"), dict) else {}
+    scores = semantic.get("scores") if isinstance(semantic.get("scores"), dict) else {}
+    normalized_scores = {key: _score(scores.get(key)) for key in SEMANTIC_SCORE_KEYS if key in scores}
+    min_score = min(normalized_scores.values()) if normalized_scores else None
+    issue_types: list[str] = []
+    if not result.get("hard_pass"):
+        issue_types.append("hard_error")
+    if result.get("infrastructure_errors"):
+        issue_types.append("infrastructure_error")
+    if semantic.get("available") and semantic.get("pass") is False:
+        issue_types.append("semantic_low_score")
+    if semantic.get("critical_errors"):
+        issue_types.append("semantic_critical_error")
+    visible = _visible_transcript(result)
+    customer_inputs = [
+        str(item.get("input") or "").strip()
+        for item in visible
+        if isinstance(item, dict) and str(item.get("input") or "").strip()
+    ]
+    sync_messages: list[Any] = []
+    outbox_messages: list[Any] = []
+    for item in visible:
+        if not isinstance(item, dict):
+            continue
+        sync_messages.extend(item.get("sync_reply_messages") or [])
+        for batch in item.get("outbox") or []:
+            if isinstance(batch, dict):
+                outbox_messages.extend(batch.get("reply_messages") or [])
+    return _drop_empty(
+        {
+            "scenario_id": result.get("scenario_id"),
+            "attempt": result.get("attempt"),
+            "category": result.get("category"),
+            "critical": bool(result.get("critical")),
+            "issue_types": issue_types,
+            "scores": normalized_scores,
+            "min_score": min_score,
+            "critical_errors": semantic.get("critical_errors") or [],
+            "review_reasons": semantic.get("reasons") or "",
+            "customer_input_excerpt": _join_excerpt(customer_inputs),
+            "assistant_reply_excerpt": _join_excerpt(
+                [_message_excerpt(message) for message in [*sync_messages, *outbox_messages]]
+            ),
+            "hard_errors": result.get("hard_errors") or [],
+            "infrastructure_errors": result.get("infrastructure_errors") or [],
+        }
+    )
 
 
 def _review_artifacts(results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -632,6 +732,29 @@ def _result_review_artifact(result: dict[str, Any]) -> dict[str, Any]:
             "infrastructure_errors": result.get("infrastructure_errors") or [],
         }
     )
+
+
+def _message_excerpt(message: Any) -> str:
+    if not isinstance(message, dict):
+        return str(message)
+    message_type = str(message.get("type") or "").strip() or "message"
+    content = message.get("content")
+    if isinstance(content, dict):
+        text = str(content.get("text") or content.get("content") or content.get("url") or content).strip()
+    else:
+        text = str(content or "").strip()
+    return f"{message_type}: {text}"
+
+
+def _join_excerpt(parts: list[str], *, limit: int = 240) -> str:
+    text = " / ".join(part for part in parts if part)
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 3]}..."
+
+
+def _md_cell(value: Any) -> str:
+    return str(value or "").replace("|", "\\|").replace("\n", "<br>")
 
 
 def _drop_empty(value: Any) -> Any:

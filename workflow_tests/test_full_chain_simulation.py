@@ -310,6 +310,59 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertIn("sim_request_1", markdown)
         self.assertIn("customer_store_lookup", markdown)
 
+    def test_effect_review_exposes_customer_input_reply_and_review_reason(self) -> None:
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "low_effect", "category": "精准问答", "critical": False}],
+            results=[
+                {
+                    "scenario_id": "low_effect",
+                    "category": "精准问答",
+                    "attempt": 1,
+                    "hard_pass": True,
+                    "semantic_review": {
+                        "available": True,
+                        "pass": False,
+                        "scores": {
+                            "current_question": 3,
+                            "history_continuity": 4,
+                            "mainline_progression": 2,
+                            "conversion_naturalness": 4,
+                            "human_tone": 4,
+                            "fact_safety": 5,
+                        },
+                        "reasons": "只答疑，没有回到主线。",
+                    },
+                    "steps": [
+                        {
+                            "request_id": "sim_request_effect",
+                            "kind": "customer_message",
+                            "input": {"content": "做一次就能干净吗"},
+                            "sync_reply_messages": [
+                                {"type": "text", "content": "这个要看您斑点情况。"}
+                            ],
+                        }
+                    ],
+                }
+            ],
+            baseline={},
+        )
+
+        effect = report["effect_review"]
+        self.assertEqual(effect["schema_version"], "offline_simulation_effect_review_v1")
+        self.assertEqual(effect["issue_count"], 1)
+        self.assertEqual(effect["low_score_count"], 1)
+        row = effect["items"][0]
+        self.assertEqual(row["scenario_id"], "low_effect")
+        self.assertIn("semantic_low_score", row["issue_types"])
+        self.assertIn("做一次就能干净吗", row["customer_input_excerpt"])
+        self.assertIn("这个要看您斑点情况", row["assistant_reply_excerpt"])
+        self.assertIn("只答疑", row["review_reasons"])
+        markdown = render_markdown(report)
+        self.assertIn("## 效果审查样本", markdown)
+        self.assertIn("做一次就能干净吗", markdown)
+        self.assertIn("这个要看您斑点情况", markdown)
+
     def test_identity_must_be_simulation_scoped(self) -> None:
         with self.assertRaises(SimulationIsolationError):
             assert_simulation_identity(

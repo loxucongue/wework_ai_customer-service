@@ -294,6 +294,9 @@ Required report:
 - `isolation_audit.real_connector_credentials_present=false`
 - `review_artifacts.schema_version=offline_simulation_review_artifacts_v1`
 - `review_artifacts` includes request/event IDs, node trace names, tool call names, virtual outbox counts, and simulated write counts for human review
+- `effect_review.schema_version=offline_simulation_effect_review_v1`
+- `effect_review.result_count >= attempt_count`
+- `effect_review.items` contains customer input excerpts, AI reply excerpts, scores, and reviewer reasons for every low-score, hard-error, or infrastructure-error sample selected for manual review
 
 Candidate model matrix:
 

@@ -47,6 +47,14 @@ def _simulation_ready() -> dict:
             "schema_version": "offline_simulation_coverage_audit_v1",
             "missing_required_categories": [],
         },
+        "effect_review": {
+            "schema_version": "offline_simulation_effect_review_v1",
+            "result_count": 300,
+            "issue_count": 0,
+            "low_score_count": 0,
+            "hard_or_infra_count": 0,
+            "items": [],
+        },
         "review_artifacts": {
             "schema_version": "offline_simulation_review_artifacts_v1",
             "result_count": 300,
@@ -293,6 +301,37 @@ def test_external_gate_evidence_blocks_missing_simulation_review_artifacts() -> 
     blockers = simulation_report_blockers(simulation)
 
     assert "simulation_missing_review_artifacts" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_simulation_effect_review() -> None:
+    simulation = _simulation_ready()
+    del simulation["effect_review"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_effect_review" in blockers
+
+
+def test_external_gate_evidence_blocks_incomplete_simulation_effect_review() -> None:
+    simulation = _simulation_ready()
+    simulation["effect_review"]["result_count"] = 299
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_effect_review_result_count_below_attempt_count:299<300" in blockers
+
+
+def test_external_gate_evidence_requires_effect_review_samples_for_failures() -> None:
+    simulation = _simulation_ready()
+    simulation["hard_error_count"] = 1
+    simulation["semantic_pass_rate"] = 0.89
+    simulation["effect_review"]["hard_or_infra_count"] = 0
+    simulation["effect_review"]["low_score_count"] = 0
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_effect_review_missing_hard_error_samples:1" in blockers
+    assert "simulation_effect_review_missing_low_score_samples" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_simulation_isolation_audit() -> None:
