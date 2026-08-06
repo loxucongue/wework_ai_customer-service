@@ -13,6 +13,14 @@ BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 MAX_FULL_TIMELINE_MESSAGES = 100
 MAX_SHADOW_CONTENT_CHARS = 700
 MAX_FACT_ITEMS = 20
+NON_AUTHORITY_PROFILE_FIELDS = (
+    "next_sales_strategy",
+    "decision_stage",
+    "main_concern",
+    "main_objection",
+    "customer_type",
+    "intent_level",
+)
 
 
 def build_reply_chain_shadow_context(
@@ -45,11 +53,39 @@ def build_reply_chain_shadow_context(
                 conversation_result=conversation_result,
                 memory=memory,
             ),
+            "authority_audit": _authority_audit(state, memory=memory, timeline=timeline),
             "excluded_as_authority": [
                 "customer_profile.next_sales_strategy",
                 "customer_profile.decision_stage",
                 "customer_profile.main_concern_as_current_intent",
                 "stale_history_event_psychology",
+            ],
+        }
+    )
+
+
+def _authority_audit(state: dict[str, Any], *, memory: Any, timeline: list[dict[str, Any]]) -> dict[str, Any]:
+    memory_dict = memory if isinstance(memory, dict) else {}
+    profile = memory_dict.get("customer_profile")
+    if not isinstance(profile, dict):
+        profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
+    seen_soft_fields = [field for field in NON_AUTHORITY_PROFILE_FIELDS if field in profile and _string(profile.get(field))]
+    return _drop_empty(
+        {
+            "schema_version": "reply_chain_authority_audit_v1",
+            "complete_chat_is_primary_authority": True,
+            "soft_profile_excluded_from_authority": True,
+            "soft_profile_fields_seen": seen_soft_fields[:MAX_FACT_ITEMS],
+            "timeline_message_count": len(timeline),
+            "all_messages_have_sent_at": all(_string(item.get("sent_at")) for item in timeline),
+            "required_fact_sections": [
+                "payment",
+                "orders",
+                "registration",
+                "visible_store_scope",
+                "sop_deliveries",
+                "structured_messages",
+                "risk_holds",
             ],
         }
     )

@@ -61,6 +61,8 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertEqual(context["authoritative_facts"]["sop_delivery"]["history_event_count"], 1)
         self.assertEqual(context["authoritative_facts"]["sop_deliveries"]["recent_event_types"], ["x"])
         self.assertTrue(context["authoritative_facts"]["registration"]["phone_present"] is False)
+        self.assertEqual(context["authority_audit"]["schema_version"], "reply_chain_authority_audit_v1")
+        self.assertTrue(context["authority_audit"]["complete_chat_is_primary_authority"])
         self.assertIn("customer_profile.next_sales_strategy", context["excluded_as_authority"])
 
     def test_falls_back_to_request_history_without_timestamps(self) -> None:
@@ -120,6 +122,43 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertEqual(facts["structured_messages"]["case_image_delivery"]["last_image_count"], 1)
         self.assertEqual(facts["risk_holds"]["risk_hold"], "health_check_required")
         self.assertEqual(facts["risk_holds"]["source"], "current_message")
+
+    def test_authority_audit_records_soft_profile_fields_without_promoting_them(self) -> None:
+        context = build_reply_chain_shadow_context(
+            {
+                "content": "下午不确定",
+                "request_context": {"msgid": "current", "msgtype": "text", "msgtime": "1785225414095"},
+            },
+            identity={},
+            customer_result={},
+            store_knowledge={},
+            conversation_result={
+                "conversation_turns": [
+                    {
+                        "message_ref": "m1",
+                        "role": "customer",
+                        "content": "我时间说不准",
+                        "occurred_at": "2026-08-01T10:00:00+08:00",
+                    }
+                ]
+            },
+            memory={
+                "customer_profile": {
+                    "next_sales_strategy": "继续追问具体几点",
+                    "decision_stage": "预约推进",
+                    "main_concern": "时间不确定",
+                }
+            },
+        )
+
+        audit = context["authority_audit"]
+        self.assertTrue(audit["complete_chat_is_primary_authority"])
+        self.assertTrue(audit["soft_profile_excluded_from_authority"])
+        self.assertEqual(
+            audit["soft_profile_fields_seen"],
+            ["next_sales_strategy", "decision_stage", "main_concern"],
+        )
+        self.assertIn("customer_profile.next_sales_strategy", context["excluded_as_authority"])
 
     def test_shadow_context_is_not_consumed_by_current_model_payloads(self) -> None:
         state = {
