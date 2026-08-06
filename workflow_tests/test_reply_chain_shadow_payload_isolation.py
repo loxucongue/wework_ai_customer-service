@@ -20,6 +20,7 @@ SHADOW_ONLY_FIELDS = (
     "reply_chain_refactor_flags",
     "parallel_gate_planner_runner_shadow",
     "parallel_reply_chain_diagnostics",
+    "parallel_reply_chain_comparison",
 )
 
 

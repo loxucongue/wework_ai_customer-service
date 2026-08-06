@@ -6,6 +6,7 @@ from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, 
 from app.graph.planner.brain_v2 import planner_unavailable_fallback_plan, run_planner_brain_v2, safety_fallback_plan
 from app.graph.state import AgentState
 from app.services.model_client import ModelClient
+from app.services.parallel_reply_chain_comparison import parallel_reply_chain_comparison
 from app.services.parallel_reply_chain_diagnostics import parallel_reply_chain_diagnostics
 from app.services.parallel_reply_chain_runner import replay_parallel_gate_planner_shadow_from_serial_outputs
 from app.services.parallel_reply_chain_shadow import parallel_reply_chain_shadow
@@ -159,6 +160,12 @@ def create_planner_brain_node(
             )
             output["parallel_reply_chain_diagnostics"] = parallel_reply_chain_diagnostics(
                 parallel_reply_chain_shadow=output["parallel_reply_chain_shadow"],
+                runner_shadow=output["parallel_gate_planner_runner_shadow"],
+            )
+            output["parallel_reply_chain_comparison"] = parallel_reply_chain_comparison(
+                gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
+                tool_plan_preview=output["tool_plan_preview"],
+                join_shadow=output["reply_chain_join_shadow"],
                 runner_shadow=output["parallel_gate_planner_runner_shadow"],
             )
             span["output_snapshot"] = output
