@@ -302,6 +302,11 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
     assert gates["reply_target_input_schema_review"]["passed"] is True
     assert gates["reply_handoff_semantic_residue_review"]["passed"] is True
     assert gates["commit_phase_shadow_review"]["passed"] is True
+    assert gates["business_wording_freeze_review"]["evidence_type"] == "external_report_required"
+    assert (
+        gates["business_wording_freeze_review"]["required_evidence"]
+        == "attach_reply_chain_business_wording_freeze_audit_before_behavior_switch"
+    )
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
     assert "business_wording_freeze_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
     assert diagnostics["release_review"]["blocker_groups"]["reply_payload_schema"]["ready"] is True

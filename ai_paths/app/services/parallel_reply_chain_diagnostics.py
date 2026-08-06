@@ -258,7 +258,11 @@ def _release_review_gate_checklist(
             "commit_shadow_owner_is_runtime_after_reply_validation",
             passed=not _commit_blockers(commit_shadow) if commit_shadow else False,
         ),
-        _gate("business_wording_freeze_review", "manual_required", "confirm_no_business_wording_or_rules_changed"),
+        _gate(
+            "business_wording_freeze_review",
+            "external_report_required",
+            "attach_reply_chain_business_wording_freeze_audit_before_behavior_switch",
+        ),
         _gate("model_semantics_ownership_review", "manual_required", "confirm_gate_tool_join_do_not_own_sales_psychology"),
         _gate(
             "simulation_regression_review",
