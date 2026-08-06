@@ -475,6 +475,22 @@ class FullChainSimulationTests(unittest.TestCase):
             {
                 "scenario_count": 1,
                 "attempt_count": 1,
+                "evaluation_scope": {
+                    "schema_version": "offline_simulation_scope_v1",
+                    "scenario_id": "",
+                    "category": "",
+                    "max_cases": 0,
+                    "targeted_smoke": False,
+                    "full_release_gate_candidate": True,
+                },
+                "run_options": {
+                    "schema_version": "offline_simulation_run_options_v1",
+                    "attempts": 3,
+                    "critical_attempts": 5,
+                    "concurrency": 2,
+                    "skip_review": False,
+                    "reviewer_model": "gpt-5.4",
+                },
                 "summary": {
                     "hard_pass_rate": "100.0%",
                     "semantic_pass_rate": "100.0%",
@@ -519,6 +535,12 @@ class FullChainSimulationTests(unittest.TestCase):
 
         for marker in [
             "# \u79bb\u7ebf\u5168\u94fe\u8def\u4eff\u771f\u62a5\u544a",
+            "## \u8fd0\u884c\u8303\u56f4\u4e0e\u9009\u9879",
+            "\u53d1\u5e03\u95e8\u7981\u5019\u9009\uff1a\u662f",
+            "\u5b9a\u5411 smoke\uff1a\u5426",
+            "\u666e\u901a\u573a\u666f attempts\uff1a3",
+            "\u5173\u952e\u573a\u666f attempts\uff1a5",
+            "\u8df3\u8fc7\u8bed\u4e49\u8bc4\u5ba1\uff1a\u5426",
             "## \u573a\u666f\u8986\u76d6",
             "## \u573a\u666f\u7ed3\u679c",
             "## \u6548\u679c\u5ba1\u67e5\u6837\u672c",

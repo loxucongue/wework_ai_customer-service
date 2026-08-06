@@ -536,6 +536,8 @@ def _simulation_isolation_audit(results: list[dict[str, Any]]) -> dict[str, Any]
 
 def render_markdown(report: dict[str, Any]) -> str:
     summary = report.get("summary") or {}
+    scope = report.get("evaluation_scope") if isinstance(report.get("evaluation_scope"), dict) else {}
+    options = report.get("run_options") if isinstance(report.get("run_options"), dict) else {}
     lines = [
         "# 离线全链路仿真报告",
         "",
@@ -545,6 +547,19 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- 可评估语义通过率：{summary.get('semantic_pass_rate', '0%')}",
         f"- 基础设施失败：{summary.get('infrastructure_failures', 0)}",
         f"- P50 / P90：{summary.get('p50_ms', 0)}ms / {summary.get('p90_ms', 0)}ms",
+        "",
+        "## 运行范围与选项",
+        "",
+        f"- 发布门禁候选：{'是' if scope.get('full_release_gate_candidate') is True else '否'}",
+        f"- 定向 smoke：{'是' if scope.get('targeted_smoke') else '否'}",
+        f"- 场景过滤：{scope.get('scenario_id') or '无'}",
+        f"- 分类过滤：{scope.get('category') or '无'}",
+        f"- 最大场景限制：{scope.get('max_cases', 0)}",
+        f"- 普通场景 attempts：{options.get('attempts', 0)}",
+        f"- 关键场景 attempts：{options.get('critical_attempts', 0)}",
+        f"- 并发：{options.get('concurrency', 0)}",
+        f"- 跳过语义评审：{'是' if options.get('skip_review') else '否'}",
+        f"- 评审模型：{options.get('reviewer_model') or '默认'}",
         "",
         "## 场景覆盖",
         "",
