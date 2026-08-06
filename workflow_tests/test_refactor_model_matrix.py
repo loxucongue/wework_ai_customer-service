@@ -124,6 +124,27 @@ def test_load_refactor_env_reads_only_approved_ignored_keys(tmp_path, monkeypatc
     assert "UNRELATED_SECRET" not in values
 
 
+def test_refactor_model_matrix_env_example_is_safe_and_not_loaded() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    example_path = repo_root / "workflow_tests" / "fixtures" / "refactor_model_matrix_env.example"
+
+    text = example_path.read_text(encoding="utf-8")
+    values = load_refactor_env(example_path.parent)
+
+    for marker in [
+        "REFACTOR_MODEL_RELAY_BASE_URL=https://linkai.shop",
+        "REFACTOR_MODEL_CLAUDE_API_KEY=<local-only-claude-key>",
+        "REFACTOR_MODEL_GEMINI_API_KEY=<local-only-gemini-key>",
+        "REFACTOR_MODEL_OPENAI_API_KEY=<local-only-openai-key>",
+        "REFACTOR_MODEL_MATRIX_PROFILES=claude,gemini,openai",
+        "REFACTOR_MODEL_MATRIX_PROFILE_TIMEOUT_SECONDS=120",
+    ]:
+        assert marker in text
+
+    assert "sk-" not in text
+    assert values == {}
+
+
 def test_refactor_env_value_strips_values_without_logging_keys() -> None:
     values = {"REFACTOR_MODEL_OPENAI_API_KEY": "  sk-test-openai  "}
 

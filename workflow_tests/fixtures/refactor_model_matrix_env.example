@@ -1,0 +1,10 @@
+# Local-only example for the reply-chain refactor model matrix.
+# Copy these names into an ignored .env or export them in the shell before running
+# ai_paths/scripts/run_refactor_model_matrix.py. Never commit real key values.
+
+REFACTOR_MODEL_RELAY_BASE_URL=https://linkai.shop
+REFACTOR_MODEL_CLAUDE_API_KEY=<local-only-claude-key>
+REFACTOR_MODEL_GEMINI_API_KEY=<local-only-gemini-key>
+REFACTOR_MODEL_OPENAI_API_KEY=<local-only-openai-key>
+REFACTOR_MODEL_MATRIX_PROFILES=claude,gemini,openai
+REFACTOR_MODEL_MATRIX_PROFILE_TIMEOUT_SECONDS=120
