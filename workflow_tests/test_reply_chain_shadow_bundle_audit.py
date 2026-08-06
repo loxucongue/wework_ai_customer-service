@@ -106,6 +106,7 @@ def test_bundle_audit_reports_git_commit_when_evidence_matches() -> None:
         require_commit_shadow=True,
         simulation_report=_simulation_ready(),
         model_matrix_report=_model_matrix_ready(),
+        business_wording_freeze_report=_business_wording_freeze_ready(),
     )
 
     assert audit["git_commit"] == "abc123"
@@ -122,10 +123,36 @@ def test_bundle_audit_reports_git_commit_set_when_evidence_differs() -> None:
         require_commit_shadow=True,
         simulation_report=_simulation_ready(),
         model_matrix_report=_model_matrix_ready(),
+        business_wording_freeze_report=_business_wording_freeze_ready(),
     )
 
     assert "git_commit" not in audit
     assert audit["git_commit_set"] == ["abc123", "def456"]
+
+
+def test_bundle_audit_accepts_business_wording_freeze_external_gate() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": ["business_wording_freeze_review"],
+        "blocker_groups": {
+            "manual_review": {
+                "ready": False,
+                "blocker_count": 1,
+                "blockers": ["gate_not_proven:business_wording_freeze_review"],
+            }
+        },
+    }
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
+        business_wording_freeze_report=_business_wording_freeze_ready(),
+    )
+
+    assert audit["ready_for_refactor_review"] is True
+    assert "business_wording_freeze_review" in audit["external_gate_evidence"]["proven_gates"]
 
 
 def _simulation_ready() -> dict:
@@ -314,6 +341,31 @@ def _model_matrix_ready() -> dict:
             "api_keys_written_to_report": False,
             "production_customer_messages_sent": False,
             "production_writes_allowed": False,
+        },
+    }
+
+
+def _business_wording_freeze_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_business_wording_freeze_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "base_ref": "main",
+        "head_ref": "HEAD",
+        "protected_paths": [
+            "ai_paths/app/policies/business_rules.json",
+            "config/sop_reply_packs.json",
+        ],
+        "changed_paths": ["ai_paths/app/services/chat_gate_router_shadow.py"],
+        "changed_protected_paths": [],
+        "customer_visible_business_assets_unchanged": True,
+        "review_required": False,
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
         },
     }
 

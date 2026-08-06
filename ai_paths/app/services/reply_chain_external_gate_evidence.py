@@ -8,6 +8,38 @@ MIN_REQUIRED_SIMULATION_ATTEMPTS = 3
 MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS = 5
 
 
+def business_wording_freeze_report_blockers(report: dict[str, Any]) -> list[str]:
+    if report.get("schema_version") != "reply_chain_business_wording_freeze_audit_v1":
+        return ["missing_business_wording_freeze_audit"]
+    blockers: list[str] = []
+    commit = _string_value(report.get("git_commit"))
+    if not commit:
+        blockers.append("business_wording_freeze_missing_git_commit")
+    commit_set = _list_strings(report.get("git_commit_set"))
+    if not commit_set:
+        blockers.append("business_wording_freeze_missing_git_commit_set")
+    elif len(set(commit_set)) != 1:
+        blockers.append(f"business_wording_freeze_multiple_git_commits:{','.join(commit_set)}")
+    elif commit and commit_set[0] != commit:
+        blockers.append(f"business_wording_freeze_git_commit_set_mismatch:{commit_set[0]}!={commit}")
+    changed = _list_strings(report.get("changed_protected_paths"))
+    if changed:
+        blockers.extend(f"business_wording_freeze_protected_path_changed:{item}" for item in changed)
+    if report.get("customer_visible_business_assets_unchanged") is not True:
+        blockers.append("business_wording_freeze_assets_not_unchanged")
+    safety = _dict(report.get("safety"))
+    for field, blocker in (
+        ("audit_only", "business_wording_freeze_missing_audit_only_safety"),
+        ("does_not_change_runtime_behavior", "business_wording_freeze_missing_no_runtime_change_safety"),
+        ("does_not_send_customer_messages", "business_wording_freeze_missing_no_send_safety"),
+        ("does_not_write_database", "business_wording_freeze_missing_no_write_safety"),
+        ("does_not_call_models", "business_wording_freeze_missing_no_model_call_safety"),
+    ):
+        if safety.get(field) is not True:
+            blockers.append(blocker)
+    return blockers
+
+
 def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     if simulation.get("schema_version") != "offline_reply_chain_simulation_report_v1":
         return ["missing_offline_simulation_report"]

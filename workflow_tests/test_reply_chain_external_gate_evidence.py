@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.services.reply_chain_external_gate_evidence import (
+    business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
     simulation_report_blockers,
 )
@@ -201,6 +202,31 @@ def _model_matrix_ready() -> dict:
     }
 
 
+def _business_wording_freeze_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_business_wording_freeze_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "base_ref": "main",
+        "head_ref": "HEAD",
+        "protected_paths": [
+            "ai_paths/app/policies/business_rules.json",
+            "config/sop_reply_packs.json",
+        ],
+        "changed_paths": ["ai_paths/app/services/chat_gate_router_shadow.py"],
+        "changed_protected_paths": [],
+        "customer_visible_business_assets_unchanged": True,
+        "review_required": False,
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+        },
+    }
+
+
 def test_external_gate_evidence_accepts_complete_reports() -> None:
     assert simulation_report_blockers(_simulation_ready()) == []
     assert model_matrix_report_blockers(_model_matrix_ready()) == []
@@ -321,6 +347,39 @@ def test_external_gate_evidence_blocks_missing_or_mismatched_model_matrix_commit
     blockers = model_matrix_report_blockers(model_matrix)
 
     assert "model_matrix_git_commit_set_mismatch:def456!=abc123" in blockers
+
+
+def test_external_gate_evidence_accepts_business_wording_freeze_report() -> None:
+    assert business_wording_freeze_report_blockers(_business_wording_freeze_ready()) == []
+
+
+def test_external_gate_evidence_blocks_business_wording_freeze_protected_changes() -> None:
+    report = _business_wording_freeze_ready()
+    report["changed_protected_paths"] = [
+        "ai_paths/app/policies/business_rules.json",
+        "config/sop_reply_packs.json",
+    ]
+    report["customer_visible_business_assets_unchanged"] = False
+
+    blockers = business_wording_freeze_report_blockers(report)
+
+    assert (
+        "business_wording_freeze_protected_path_changed:ai_paths/app/policies/business_rules.json"
+        in blockers
+    )
+    assert "business_wording_freeze_protected_path_changed:config/sop_reply_packs.json" in blockers
+    assert "business_wording_freeze_assets_not_unchanged" in blockers
+
+
+def test_external_gate_evidence_blocks_business_wording_freeze_missing_safety() -> None:
+    report = _business_wording_freeze_ready()
+    report["safety"]["does_not_call_models"] = False
+    del report["git_commit_set"]
+
+    blockers = business_wording_freeze_report_blockers(report)
+
+    assert "business_wording_freeze_missing_git_commit_set" in blockers
+    assert "business_wording_freeze_missing_no_model_call_safety" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:

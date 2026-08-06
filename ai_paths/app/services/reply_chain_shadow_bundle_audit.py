@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.reply_chain_external_gate_evidence import (
+    business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
     simulation_report_blockers,
 )
@@ -32,12 +33,14 @@ def reply_chain_shadow_bundle_audit(
     require_commit_shadow: bool,
     simulation_report: dict[str, Any] | None = None,
     model_matrix_report: dict[str, Any] | None = None,
+    business_wording_freeze_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Summarize shadow migration evidence without changing reply behavior."""
 
     external_gate_evidence = _external_gate_evidence(
         simulation_report=simulation_report,
         model_matrix_report=model_matrix_report,
+        business_wording_freeze_report=business_wording_freeze_report,
     )
     component_schemas = dict(CORE_COMPONENT_SCHEMAS)
     if require_commit_shadow:
@@ -216,6 +219,7 @@ def _external_gate_evidence(
     *,
     simulation_report: dict[str, Any] | None,
     model_matrix_report: dict[str, Any] | None,
+    business_wording_freeze_report: dict[str, Any] | None,
 ) -> dict[str, Any]:
     proven_gates: list[str] = []
     blockers: list[str] = []
@@ -233,6 +237,13 @@ def _external_gate_evidence(
             blockers.extend(f"model_matrix_report:{item}" for item in model_matrix_blockers)
         else:
             proven_gates.append("model_matrix_review")
+    if business_wording_freeze_report is not None:
+        freeze = _dict(business_wording_freeze_report)
+        freeze_blockers = business_wording_freeze_report_blockers(freeze)
+        if freeze_blockers:
+            blockers.extend(f"business_wording_freeze_report:{item}" for item in freeze_blockers)
+        else:
+            proven_gates.append("business_wording_freeze_review")
     return {
         "proven_gates": proven_gates,
         "blockers": blockers,

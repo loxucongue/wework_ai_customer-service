@@ -377,6 +377,35 @@ committing:
 rg -n "sk-[A-Za-z0-9]|REFACTOR_MODEL_.*_API_KEY=.*[^>]" docs workflow_tests ai_paths .tmp_runtime
 ```
 
+Business wording freeze audit:
+
+```powershell
+$env:PYTHONPATH='ai_paths'
+python ai_paths/scripts/audit_business_wording_freeze.py `
+  --base-ref main `
+  --head-ref HEAD `
+  --report .tmp_runtime/business_wording_freeze_audit.json
+```
+
+Required freeze report:
+
+- `schema_version=reply_chain_business_wording_freeze_audit_v1`
+- `git_commit` matches the reviewed behavior-switch commit
+- `git_commit_set` contains exactly that commit
+- `include_worktree=true` for pre-commit local audits, or `--committed-only` only after the reviewed commit is final and the worktree is clean
+- `changed_protected_paths=[]`
+- `customer_visible_business_assets_unchanged=true`
+- `review_required=false`
+- `safety.audit_only=true`
+- `safety.does_not_change_runtime_behavior=true`
+- `safety.does_not_send_customer_messages=true`
+- `safety.does_not_write_database=true`
+- `safety.does_not_call_models=true`
+
+This audit is a structural freeze check only. If it reports protected path
+changes, do not hide that by editing the report. Split business wording changes
+into a separately reviewed business commit, or keep the behavior switch blocked.
+
 ### T8 Core Regression Bundle
 
 Run before any human review of behavior switch:

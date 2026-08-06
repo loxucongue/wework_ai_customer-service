@@ -260,6 +260,31 @@ def _model_matrix_ready() -> dict:
     }
 
 
+def _business_wording_freeze_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_business_wording_freeze_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "base_ref": "main",
+        "head_ref": "HEAD",
+        "protected_paths": [
+            "ai_paths/app/policies/business_rules.json",
+            "config/sop_reply_packs.json",
+        ],
+        "changed_paths": ["ai_paths/app/services/chat_gate_router_shadow.py"],
+        "changed_protected_paths": [],
+        "customer_visible_business_assets_unchanged": True,
+        "review_required": False,
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+        },
+    }
+
+
 def _human_review_approved() -> dict:
     return {
         "schema_version": "reply_chain_human_review_approval_v1",
@@ -458,6 +483,53 @@ def test_behavior_switch_guard_blocks_unproven_release_review_gates() -> None:
     assert "release_review_gate_unproven:simulation_regression_review" not in guard["blockers"]
     assert "release_review_gate_unproven:business_wording_freeze_review" in guard["blockers"]
     assert guard["diagnostic_blocker_groups"]["manual_review"]["ready"] is True
+
+
+def test_behavior_switch_guard_filters_business_wording_freeze_report_gate() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["missing_or_unproven_gates"] = ["business_wording_freeze_review"]
+    diagnostics["release_review"]["blocker_groups"] = {
+        "manual_review": {
+            "ready": False,
+            "blocker_count": 1,
+            "blockers": ["gate_not_proven:business_wording_freeze_review"],
+        }
+    }
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        business_wording_freeze_report=_business_wording_freeze_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is True
+    assert "blockers" not in guard
+
+
+def test_behavior_switch_guard_blocks_invalid_business_wording_freeze_report() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["missing_or_unproven_gates"] = ["business_wording_freeze_review"]
+    report = _business_wording_freeze_ready()
+    report["changed_protected_paths"] = ["config/sop_reply_packs.json"]
+    report["customer_visible_business_assets_unchanged"] = False
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        business_wording_freeze_report=report,
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "business_wording_freeze_protected_path_changed:config/sop_reply_packs.json" in guard["blockers"]
+    assert "business_wording_freeze_assets_not_unchanged" in guard["blockers"]
 
 
 def test_behavior_switch_guard_filters_externally_proven_simulation_and_model_matrix_gates() -> None:
