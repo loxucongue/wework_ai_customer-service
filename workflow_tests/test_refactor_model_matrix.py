@@ -5,6 +5,8 @@ from ai_paths.scripts.run_refactor_model_matrix import (
     DEFAULT_RELAY_BASE_URL,
     MODEL_PROFILES,
     build_profile_settings,
+    matrix_ranking,
+    profile_result_summary,
     public_profile_config,
     selected_profiles,
 )
@@ -70,3 +72,59 @@ def test_public_profile_config_never_contains_key_value() -> None:
     assert public["api_key_present"] is True
     assert public["api_key_value_logged"] is False
     assert "dummy" not in str(public)
+
+
+def test_profile_result_summary_exposes_accuracy_and_speed_for_review() -> None:
+    summary = profile_result_summary(
+        {
+            "hard_error_count": 0,
+            "semantic_pass_rate": 0.94,
+            "failed_critical_scenarios": [],
+            "summary": {
+                "hard_pass_rate": "100.0%",
+                "evaluable_attempts": 15,
+                "infrastructure_failures": 0,
+                "p50_ms": 4200,
+                "p90_ms": 7800,
+                "acceptance": {
+                    "hard_errors_zero": True,
+                    "semantic_at_least_90": True,
+                    "critical_all_pass": True,
+                },
+            },
+        }
+    )
+
+    assert summary["hard_error_count"] == 0
+    assert summary["semantic_pass_rate"] == 0.94
+    assert summary["p50_ms"] == 4200
+    assert summary["p90_ms"] == 7800
+    assert summary["accepted_by_release_thresholds"] is True
+
+
+def test_matrix_ranking_orders_by_accuracy_then_errors_then_speed() -> None:
+    ranked = matrix_ranking(
+        [
+            {
+                "status": "completed",
+                "model_profile": {"name": "slow", "model": "slow-model"},
+                "profile_summary": {"semantic_pass_rate": 0.9, "hard_error_count": 0, "p90_ms": 9000},
+            },
+            {
+                "status": "completed",
+                "model_profile": {"name": "better", "model": "better-model"},
+                "profile_summary": {"semantic_pass_rate": 0.95, "hard_error_count": 0, "p90_ms": 12000},
+            },
+            {
+                "status": "completed",
+                "model_profile": {"name": "fast", "model": "fast-model"},
+                "profile_summary": {"semantic_pass_rate": 0.9, "hard_error_count": 0, "p90_ms": 3000},
+            },
+            {
+                "status": "skipped_missing_api_key_env",
+                "model_profile": {"name": "skipped", "model": "skipped-model"},
+            },
+        ]
+    )
+
+    assert [item["name"] for item in ranked] == ["better", "fast", "slow"]

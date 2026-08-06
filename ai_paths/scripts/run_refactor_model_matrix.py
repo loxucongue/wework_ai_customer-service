@@ -99,6 +99,49 @@ def public_profile_config(profile: ModelProfile, *, relay_base_url: str, api_key
     }
 
 
+def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), dict) else {}
+    return {
+        "hard_error_count": report.get("hard_error_count"),
+        "semantic_pass_rate": report.get("semantic_pass_rate"),
+        "failed_critical_scenarios": report.get("failed_critical_scenarios") or [],
+        "hard_pass_rate": summary.get("hard_pass_rate"),
+        "evaluable_attempts": summary.get("evaluable_attempts"),
+        "infrastructure_failures": summary.get("infrastructure_failures"),
+        "p50_ms": summary.get("p50_ms"),
+        "p90_ms": summary.get("p90_ms"),
+        "accepted_by_release_thresholds": (
+            acceptance.get("hard_errors_zero") is True
+            and acceptance.get("semantic_at_least_90") is True
+            and acceptance.get("critical_all_pass") is True
+        ),
+    }
+
+
+def matrix_ranking(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    completed = [item for item in profiles if item.get("status") == "completed"]
+
+    def score(item: dict[str, Any]) -> tuple[float, int, float]:
+        summary = item.get("profile_summary") if isinstance(item.get("profile_summary"), dict) else {}
+        semantic = float(summary.get("semantic_pass_rate") or 0.0)
+        hard_errors = int(summary.get("hard_error_count") or 0)
+        p90 = float(summary.get("p90_ms") or 999999)
+        return (-semantic, hard_errors, p90)
+
+    return [
+        {
+            "name": (item.get("model_profile") or {}).get("name"),
+            "model": (item.get("model_profile") or {}).get("model"),
+            "semantic_pass_rate": (item.get("profile_summary") or {}).get("semantic_pass_rate"),
+            "hard_error_count": (item.get("profile_summary") or {}).get("hard_error_count"),
+            "p50_ms": (item.get("profile_summary") or {}).get("p50_ms"),
+            "p90_ms": (item.get("profile_summary") or {}).get("p90_ms"),
+        }
+        for item in sorted(completed, key=score)
+    ]
+
+
 def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -146,9 +189,14 @@ async def _main() -> int:
             skipped = {
                 "model_profile": public_config,
                 "status": "skipped_missing_api_key_env",
-                "hard_error_count": None,
-                "semantic_pass_rate": None,
-                "failed_critical_scenarios": [],
+                "profile_summary": {
+                    "hard_error_count": None,
+                    "semantic_pass_rate": None,
+                    "failed_critical_scenarios": [],
+                    "p50_ms": None,
+                    "p90_ms": None,
+                    "accepted_by_release_thresholds": False,
+                },
             }
             matrix_results.append(skipped)
             profile_dir.mkdir(parents=True, exist_ok=True)
@@ -180,10 +228,7 @@ async def _main() -> int:
             {
                 "model_profile": public_config,
                 "status": "completed",
-                "hard_error_count": report.get("hard_error_count"),
-                "semantic_pass_rate": report.get("semantic_pass_rate"),
-                "failed_critical_scenarios": report.get("failed_critical_scenarios") or [],
-                "summary": report.get("summary") or {},
+                "profile_summary": profile_result_summary(report),
             }
         )
 
@@ -194,6 +239,7 @@ async def _main() -> int:
         "relay_base_url": relay_base_url,
         "profiles_requested": [profile.name for profile in profiles],
         "executed_profile_count": executed,
+        "ranking": matrix_ranking(matrix_results),
         "profiles": matrix_results,
         "safety": {
             "api_keys_written_to_report": False,
