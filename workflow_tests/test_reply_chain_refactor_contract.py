@@ -13,15 +13,30 @@ def test_refactor_plan_keeps_review_and_test_gates() -> None:
 
     for marker in [
         "Gate 不是新的 Planner",
+        "Gate 不是最终表达大脑",
         "Tool Planner 不输出客户话术",
         "Reply 是复杂场景最终业务大脑",
-        "17.4 每阶段两轮 Review",
-        "19.1 T0：合同与隔离测试",
-        "19.5 T4：Join 确定性测试",
-        "19.7 T6：并行组合测试",
-        "19.8 T7：离线全链路仿真",
-        "19.9 T8：Shadow 对比",
-        "不自动部署或向真实客户发送消息",
+        "每阶段两轮 Review",
+        "T0：合同与隔离测试",
+        "T4：Join 确定性测试",
+        "T6：并行组合测试",
+        "T7：离线全链路仿真",
+        "T8：Shadow 对比",
+        "不得提交到 `main`，不得部署，不得主动发送真实客户消息",
+    ]:
+        assert marker in text
+
+
+def test_refactor_plan_keeps_gate_and_planner_from_becoming_brains() -> None:
+    text = PLAN_PATH.read_text(encoding="utf-8")
+
+    for marker in [
+        "Gate 是内容匹配和第一层路由节点，不是复杂场景的最终业务大脑",
+        "最终判断客户意向度、心理状态和成交阶段",
+        "Tool Planner 只规划只读工具事实，不能输出客户话术，不能判断客户心理",
+        "Join 是确定性合并层，不是第三个模型大脑",
+        "Reply 负责最终客户可见回复、复杂历史理解、客户当前意向、单一主线动作和语气",
+        "复杂软拒绝、时间反复不确定、客户信任异议等场景即使不需要工具，也应进入 Reply",
     ]:
         assert marker in text
 
