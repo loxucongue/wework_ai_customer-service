@@ -14,6 +14,7 @@ def payload_isolation_report_blockers(report: dict[str, Any]) -> list[str]:
     if report.get("schema_version") != "reply_chain_payload_isolation_audit_v1":
         return ["missing_payload_isolation_audit"]
     blockers: list[str] = []
+    blockers.extend(_secret_like_value_blockers("payload_isolation", report))
     commit = _string_value(report.get("git_commit"))
     if not commit:
         blockers.append("payload_isolation_missing_git_commit")
@@ -61,6 +62,7 @@ def business_wording_freeze_report_blockers(report: dict[str, Any]) -> list[str]
     if report.get("schema_version") != "reply_chain_business_wording_freeze_audit_v1":
         return ["missing_business_wording_freeze_audit"]
     blockers: list[str] = []
+    blockers.extend(_secret_like_value_blockers("business_wording_freeze", report))
     commit = _string_value(report.get("git_commit"))
     if not commit:
         blockers.append("business_wording_freeze_missing_git_commit")
@@ -93,6 +95,7 @@ def rollback_evidence_report_blockers(report: dict[str, Any]) -> list[str]:
     if report.get("schema_version") != "reply_chain_refactor_rollback_evidence_v1":
         return ["missing_refactor_rollback_evidence"]
     blockers: list[str] = []
+    blockers.extend(_secret_like_value_blockers("rollback_evidence", report))
     commit = _string_value(report.get("git_commit"))
     if not commit:
         blockers.append("rollback_evidence_missing_git_commit")
@@ -148,6 +151,7 @@ def model_semantics_ownership_report_blockers(report: dict[str, Any]) -> list[st
     if report.get("schema_version") != "reply_chain_model_semantics_ownership_audit_v1":
         return ["missing_model_semantics_ownership_audit"]
     blockers: list[str] = []
+    blockers.extend(_secret_like_value_blockers("model_semantics_ownership", report))
     commit = _string_value(report.get("git_commit"))
     if not commit:
         blockers.append("model_semantics_ownership_missing_git_commit")
@@ -221,6 +225,7 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     if simulation.get("schema_version") != "offline_reply_chain_simulation_report_v1":
         return ["missing_offline_simulation_report"]
     blockers: list[str] = []
+    blockers.extend(_secret_like_value_blockers("simulation", simulation))
     scenario_count = _int_value(simulation.get("scenario_count"))
     attempt_count = _int_value(simulation.get("attempt_count"))
     commit = _string_value(simulation.get("git_commit"))
@@ -472,8 +477,7 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     if model_matrix.get("schema_version") != "reply_chain_refactor_model_matrix_v1":
         return ["missing_model_matrix_report"]
     blockers: list[str] = []
-    if _contains_secret_like_value(model_matrix):
-        blockers.append("model_matrix_contains_secret_like_value")
+    blockers.extend(_secret_like_value_blockers("model_matrix", model_matrix))
     commit = _string_value(model_matrix.get("git_commit"))
     if not commit:
         blockers.append("model_matrix_missing_git_commit")
@@ -697,6 +701,12 @@ def _contains_secret_like_value(value: Any) -> bool:
     if isinstance(value, list):
         return any(_contains_secret_like_value(item) for item in value)
     return False
+
+
+def _secret_like_value_blockers(label: str, value: Any) -> list[str]:
+    if _contains_secret_like_value(value):
+        return [f"{label}_contains_secret_like_value"]
+    return []
 
 
 def _list_strings(value: Any) -> list[str]:

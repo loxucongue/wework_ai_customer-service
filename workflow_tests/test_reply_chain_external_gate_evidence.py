@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 from app.services.reply_chain_external_gate_evidence import (
@@ -13,6 +14,10 @@ from app.services.reply_chain_external_gate_evidence import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _secret_like_value() -> str:
+    return "s" + "k-test-secret-value-should-never-enter-release-reports"
 
 
 def _review_artifact_results(count: int = 300) -> list[dict]:
@@ -1102,13 +1107,31 @@ def test_external_gate_evidence_blocks_unapproved_model_matrix_relay_or_key_logg
 def test_external_gate_evidence_blocks_secret_like_model_matrix_values() -> None:
     model_matrix = _model_matrix_ready()
     model_matrix["profiles"][0]["debug_payload"] = {
-        "api_key": "s" + "k-test-secret-value-should-never-enter-release-reports",
+        "api_key": _secret_like_value(),
         "safe_task_id": "platform-task-after-cycle",
     }
 
     blockers = model_matrix_report_blockers(model_matrix)
 
     assert "model_matrix_contains_secret_like_value" in blockers
+
+
+def test_external_gate_evidence_blocks_secret_like_values_in_all_release_reports() -> None:
+    reports = [
+        ("simulation", deepcopy(_simulation_ready()), simulation_report_blockers),
+        ("payload_isolation", deepcopy(_payload_isolation_ready()), payload_isolation_report_blockers),
+        ("business_wording_freeze", deepcopy(_business_wording_freeze_ready()), business_wording_freeze_report_blockers),
+        ("rollback_evidence", deepcopy(_rollback_evidence_ready()), rollback_evidence_report_blockers),
+        ("model_semantics_ownership", deepcopy(_model_semantics_ownership_ready()), model_semantics_ownership_report_blockers),
+    ]
+
+    for label, report, blocker_fn in reports:
+        report["debug_payload"] = {
+            "api_key": _secret_like_value(),
+            "safe_task_id": "platform-task-after-cycle",
+        }
+
+        assert f"{label}_contains_secret_like_value" in blocker_fn(report)
 
 
 def test_external_gate_evidence_does_not_treat_task_ids_as_secret_values() -> None:
