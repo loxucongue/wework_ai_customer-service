@@ -257,6 +257,11 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(graph.states[0]["sop_gate_decision"]["priority_question_id"], "one_session_effect")
         self.assertEqual(set(graph.states[0]["sop_gate_decision"]["sop_message_types"]), {"text", "image"})
         self.assertEqual(graph.states[0]["sop_gate_decision"]["sop_image_count"], 1)
+        self.assertEqual(graph.states[0]["sop_gate_preview"]["route"], "content_and_ai_graph")
+        self.assertEqual(
+            graph.states[0]["sop_gate_preview"]["commit_policy"],
+            "defer_sop_commit_until_ai_reply_is_usable",
+        )
 
     async def test_precision_ai_failure_withholds_sop_and_returns_nonempty_fallback(self) -> None:
         repository = _Repository()
