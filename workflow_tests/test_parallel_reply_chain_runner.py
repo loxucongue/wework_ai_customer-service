@@ -24,8 +24,7 @@ async def _parallel_runner_shadow_runs_gate_and_planner_concurrently() -> None:
             "gate_router_shadow": {
                 "schema_version": "chat_gate_router_shadow_v1",
                 "route_suggestion": "content_only_reply",
-            },
-            "request_id": state["request_id"],
+            }
         }
 
     async def planner_branch(state: dict) -> dict:
@@ -36,8 +35,7 @@ async def _parallel_runner_shadow_runs_gate_and_planner_concurrently() -> None:
             "tool_plan_preview": {
                 "schema_version": "tool_plan_preview_v2",
                 "fact_requirement": "none",
-            },
-            "request_id": state["request_id"],
+            }
         }
 
     result = await run_parallel_gate_planner_shadow(
@@ -51,10 +49,12 @@ async def _parallel_runner_shadow_runs_gate_and_planner_concurrently() -> None:
     assert result["mode"] == "completed_shadow"
     assert result["branches"]["sop_chat_gate"]["status"] == "completed"
     assert result["branches"]["tool_planner"]["status"] == "completed"
-    assert result["branches"]["sop_chat_gate"]["output"]["request_id"] == "req-1"
-    assert result["branches"]["tool_planner"]["output"]["request_id"] == "req-1"
     assert result["branch_output_contract_audit"]["schema_version"] == "parallel_branch_output_contract_audit_v1"
     assert result["branch_output_contract_audit"]["ready"] is True
+    assert result["branch_output_contract_audit"]["required_outputs"]["sop_chat_gate"]["allowed_fields"] == [
+        "gate_router_shadow",
+        "source",
+    ]
     assert result["input_isolation_audit"]["schema_version"] == "parallel_branch_input_isolation_audit_v1"
     assert result["input_isolation_audit"]["branch_states_are_distinct_objects"] is True
     assert result["input_isolation_audit"]["initial_state_unchanged_after_branches"] is True
@@ -194,6 +194,36 @@ async def _parallel_runner_shadow_audits_branch_output_contract() -> None:
     assert audit["ready"] is False
     assert "branch_output_schema_mismatch:sop_chat_gate.gate_router_shadow:wrong_gate_schema" in audit["blockers"]
     assert "branch_missing_required_output:tool_planner.tool_plan_preview" in audit["blockers"]
+
+
+def test_parallel_runner_shadow_rejects_unexpected_branch_outputs() -> None:
+    asyncio.run(_parallel_runner_shadow_rejects_unexpected_branch_outputs())
+
+
+async def _parallel_runner_shadow_rejects_unexpected_branch_outputs() -> None:
+    async def gate_branch(_state: dict) -> dict:
+        return {
+            "gate_router_shadow": {"schema_version": "chat_gate_router_shadow_v1"},
+            "reply_messages": [{"type": "text", "content": "should not be here"}],
+        }
+
+    async def planner_branch(_state: dict) -> dict:
+        return {
+            "tool_plan_preview": {"schema_version": "tool_plan_preview_v2"},
+            "write_actions": [{"tool": "create_work_order"}],
+        }
+
+    result = await run_parallel_gate_planner_shadow(
+        initial_state={},
+        gate_branch=gate_branch,
+        planner_branch=planner_branch,
+        refactor_flags={"safe_for_shadow_observation": True},
+    )
+
+    audit = result["branch_output_contract_audit"]
+    assert audit["ready"] is False
+    assert "branch_unexpected_output_field:sop_chat_gate.reply_messages" in audit["blockers"]
+    assert "branch_unexpected_output_field:tool_planner.write_actions" in audit["blockers"]
 
 
 def test_serial_output_adapter_replays_existing_shadows_without_new_work() -> None:

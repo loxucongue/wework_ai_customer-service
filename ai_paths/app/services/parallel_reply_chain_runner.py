@@ -30,6 +30,11 @@ REQUIRED_BRANCH_OUTPUT_SCHEMAS = {
     "tool_planner": ("tool_plan_preview", "tool_plan_preview_v2"),
 }
 
+ALLOWED_BRANCH_OUTPUT_FIELDS = {
+    "sop_chat_gate": {"gate_router_shadow", "source"},
+    "tool_planner": {"tool_plan_preview", "source"},
+}
+
 
 async def run_parallel_gate_planner_shadow(
     *,
@@ -195,21 +200,28 @@ def _branch_output_contract_audit(branches: dict[str, dict[str, Any]]) -> dict[s
         field = output.get(field_name) if isinstance(output, dict) else None
         observed_schema = field.get("schema_version") if isinstance(field, dict) else None
         status = branch.get("status") if isinstance(branch, dict) else None
-        valid = status == "completed" and observed_schema == schema_version
-        if not valid:
-            if status != "completed":
-                blockers.append(f"branch_not_completed:{branch_name}")
-            elif not isinstance(output, dict):
-                blockers.append(f"branch_output_not_dict:{branch_name}")
-            elif not isinstance(field, dict):
-                blockers.append(f"branch_missing_required_output:{branch_name}.{field_name}")
-            else:
-                blockers.append(f"branch_output_schema_mismatch:{branch_name}.{field_name}:{observed_schema or 'missing'}")
+        schema_valid = status == "completed" and observed_schema == schema_version
+        unexpected_fields: list[str] = []
+        if status != "completed":
+            blockers.append(f"branch_not_completed:{branch_name}")
+        elif not isinstance(output, dict):
+            blockers.append(f"branch_output_not_dict:{branch_name}")
+        elif not isinstance(field, dict):
+            blockers.append(f"branch_missing_required_output:{branch_name}.{field_name}")
+        elif observed_schema != schema_version:
+            blockers.append(f"branch_output_schema_mismatch:{branch_name}.{field_name}:{observed_schema or 'missing'}")
+        if isinstance(output, dict):
+            allowed_fields = ALLOWED_BRANCH_OUTPUT_FIELDS.get(branch_name, {field_name})
+            for extra_field in sorted(set(output).difference(allowed_fields)):
+                unexpected_fields.append(extra_field)
+                blockers.append(f"branch_unexpected_output_field:{branch_name}.{extra_field}")
         required_outputs[branch_name] = {
             "required_field": field_name,
             "required_schema_version": schema_version,
             "observed_schema_version": observed_schema,
-            "valid": valid,
+            "allowed_fields": sorted(ALLOWED_BRANCH_OUTPUT_FIELDS.get(branch_name, {field_name})),
+            "unexpected_fields": unexpected_fields,
+            "valid": schema_valid and not unexpected_fields,
         }
     return {
         "schema_version": "parallel_branch_output_contract_audit_v1",
