@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import asyncio
+
+from app.services.parallel_reply_chain_runner import run_parallel_gate_planner_shadow
+
+
+def test_parallel_runner_shadow_runs_gate_and_planner_concurrently() -> None:
+    asyncio.run(_parallel_runner_shadow_runs_gate_and_planner_concurrently())
+
+
+async def _parallel_runner_shadow_runs_gate_and_planner_concurrently() -> None:
+    gate_started = asyncio.Event()
+    planner_started = asyncio.Event()
+
+    async def gate_branch(state: dict) -> dict:
+        gate_started.set()
+        await planner_started.wait()
+        await asyncio.sleep(0.01)
+        return {"route_suggestion": "content_only_reply", "request_id": state["request_id"]}
+
+    async def planner_branch(state: dict) -> dict:
+        planner_started.set()
+        await gate_started.wait()
+        await asyncio.sleep(0.01)
+        return {"fact_requirement": "none", "request_id": state["request_id"]}
+
+    result = await run_parallel_gate_planner_shadow(
+        initial_state={"request_id": "req-1"},
+        gate_branch=gate_branch,
+        planner_branch=planner_branch,
+        refactor_flags={"safe_for_shadow_observation": True, "mode": "shadow_only"},
+    )
+
+    assert result["schema_version"] == "parallel_gate_planner_runner_shadow_v1"
+    assert result["mode"] == "completed_shadow"
+    assert result["branches"]["sop_chat_gate"]["status"] == "completed"
+    assert result["branches"]["tool_planner"]["status"] == "completed"
+    assert result["branches"]["sop_chat_gate"]["output"]["request_id"] == "req-1"
+    assert result["branches"]["tool_planner"]["output"]["request_id"] == "req-1"
+    assert result["safety"]["no_runtime_behavior_change"] is True
+
+
+def test_parallel_runner_shadow_isolates_branch_state() -> None:
+    asyncio.run(_parallel_runner_shadow_isolates_branch_state())
+
+
+async def _parallel_runner_shadow_isolates_branch_state() -> None:
+    async def gate_branch(state: dict) -> dict:
+        state["nested"]["gate"] = True
+        return {"nested": state["nested"]}
+
+    async def planner_branch(state: dict) -> dict:
+        state["nested"]["planner"] = True
+        return {"nested": state["nested"]}
+
+    initial_state = {"nested": {"original": True}}
+    result = await run_parallel_gate_planner_shadow(
+        initial_state=initial_state,
+        gate_branch=gate_branch,
+        planner_branch=planner_branch,
+        refactor_flags={"safe_for_shadow_observation": True},
+    )
+
+    assert initial_state == {"nested": {"original": True}}
+    assert result["branches"]["sop_chat_gate"]["output"]["nested"] == {"original": True, "gate": True}
+    assert result["branches"]["tool_planner"]["output"]["nested"] == {"original": True, "planner": True}
+    assert result["safety"]["branch_state_isolated"] is True
+
+
+def test_parallel_runner_shadow_skips_when_flags_do_not_allow_shadow() -> None:
+    asyncio.run(_parallel_runner_shadow_skips_when_flags_do_not_allow_shadow())
+
+
+async def _parallel_runner_shadow_skips_when_flags_do_not_allow_shadow() -> None:
+    called = False
+
+    async def branch(_state: dict) -> dict:
+        nonlocal called
+        called = True
+        return {}
+
+    result = await run_parallel_gate_planner_shadow(
+        initial_state={},
+        gate_branch=branch,
+        planner_branch=branch,
+        refactor_flags={
+            "safe_for_shadow_observation": False,
+            "mode": "parallel_runner_requested",
+            "activation_blockers": ["sop_chat_gate_v2_required"],
+        },
+    )
+
+    assert called is False
+    assert result["mode"] == "skipped"
+    assert result["reason"] == "shadow_observation_not_allowed"
+    assert result["activation_blockers"] == ["sop_chat_gate_v2_required"]
+
+
+def test_parallel_runner_shadow_captures_branch_errors_without_raising() -> None:
+    asyncio.run(_parallel_runner_shadow_captures_branch_errors_without_raising())
+
+
+async def _parallel_runner_shadow_captures_branch_errors_without_raising() -> None:
+    async def gate_branch(_state: dict) -> dict:
+        raise RuntimeError("gate failed")
+
+    async def planner_branch(_state: dict) -> dict:
+        return {"fact_requirement": "none"}
+
+    result = await run_parallel_gate_planner_shadow(
+        initial_state={},
+        gate_branch=gate_branch,
+        planner_branch=planner_branch,
+        refactor_flags={"safe_for_shadow_observation": True},
+    )
+
+    assert result["mode"] == "completed_shadow"
+    assert result["branches"]["sop_chat_gate"]["status"] == "error"
+    assert "RuntimeError: gate failed" in result["branches"]["sop_chat_gate"]["error"]
+    assert result["branches"]["tool_planner"]["status"] == "completed"
