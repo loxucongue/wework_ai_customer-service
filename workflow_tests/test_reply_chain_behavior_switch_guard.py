@@ -28,6 +28,20 @@ def _shadow_bundle_ready() -> dict:
         "phase": "postcommit",
         "ready_for_refactor_review": True,
         "blockers": [],
+        "components": {
+            "reply_chain_commit_shadow": {
+                "required_schema_version": "reply_chain_commit_shadow_v1",
+                "observed_schema_version": "reply_chain_commit_shadow_v1",
+                "present": True,
+                "valid": True,
+            }
+        },
+        "review_gates": {
+            "commit_phase_ready": {
+                "passed": True,
+                "purpose": "writes_remain_after_reply_validation",
+            }
+        },
         "safety": {
             "does_not_approve_behavior_switch": True,
         },
@@ -173,6 +187,25 @@ def test_behavior_switch_guard_blocks_without_simulation_and_human_review() -> N
     assert "missing_offline_simulation_report" in guard["blockers"]
     assert "missing_model_matrix_report" in guard["blockers"]
     assert "missing_human_review_approval" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_shadow_bundle_without_commit_phase_evidence() -> None:
+    shadow = _shadow_bundle_ready()
+    shadow["components"] = {}
+    shadow["review_gates"] = {}
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=shadow,
+        diagnostics=_diagnostics_ready(),
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "shadow_bundle_commit_component_not_valid" in guard["blockers"]
+    assert "shadow_bundle_commit_phase_gate_not_passed" in guard["blockers"]
 
 
 def test_behavior_switch_guard_blocks_unproven_release_review_gates() -> None:

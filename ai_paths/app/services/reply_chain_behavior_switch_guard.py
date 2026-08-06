@@ -117,7 +117,21 @@ def _shadow_bundle_blockers(shadow: dict[str, Any]) -> list[str]:
     safety = _dict(shadow.get("safety"))
     if safety.get("does_not_approve_behavior_switch") is not True:
         blockers.append("shadow_bundle_missing_non_approval_safety_marker")
+    blockers.extend(_shadow_bundle_commit_phase_evidence_blockers(shadow))
     blockers.extend(f"shadow_bundle:{item}" for item in _list_strings(shadow.get("blockers")))
+    return blockers
+
+
+def _shadow_bundle_commit_phase_evidence_blockers(shadow: dict[str, Any]) -> list[str]:
+    components = _dict(shadow.get("components"))
+    commit_component = _dict(components.get("reply_chain_commit_shadow"))
+    review_gates = _dict(shadow.get("review_gates"))
+    commit_gate = _dict(review_gates.get("commit_phase_ready"))
+    blockers: list[str] = []
+    if commit_component.get("valid") is not True:
+        blockers.append("shadow_bundle_commit_component_not_valid")
+    if commit_gate.get("passed") is not True:
+        blockers.append("shadow_bundle_commit_phase_gate_not_passed")
     return blockers
 
 

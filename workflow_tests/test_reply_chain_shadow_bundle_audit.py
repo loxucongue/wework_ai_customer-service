@@ -210,6 +210,17 @@ def test_bundle_audit_reports_postcommit_shadow_bundle_ready() -> None:
     assert audit["review_gates"]["commit_phase_ready"]["passed"] is True
 
 
+def test_bundle_audit_blocks_postcommit_without_write_action_inventory() -> None:
+    state = _ready_state()
+    state["reply_chain_commit_shadow"].pop("write_action_inventory")
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "missing_reply_chain_write_action_inventory" in audit["blockers"]
+    assert "review_gate_not_ready:commit_phase_ready" in audit["blockers"]
+
+
 def test_bundle_audit_blocks_unresolved_release_review_groups() -> None:
     state = _ready_state()
     state["parallel_reply_chain_diagnostics"]["release_review"] = {

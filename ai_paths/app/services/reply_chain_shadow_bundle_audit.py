@@ -137,6 +137,18 @@ def _cross_component_blockers(
         audit = _dict(commit.get("precommit_validation_audit"))
         if audit.get("ready_for_commit_shadow") is not True:
             blockers.append("commit_precommit_audit_not_ready")
+        write_inventory = _dict(commit.get("write_action_inventory"))
+        if write_inventory.get("schema_version") != "reply_chain_write_action_inventory_v1":
+            blockers.append("missing_reply_chain_write_action_inventory")
+        else:
+            if write_inventory.get("commit_phase_owner") != "runtime_after_reply_validation":
+                blockers.append("write_inventory_owner_not_runtime_after_reply_validation")
+            if write_inventory.get("requires_reply_validation_before_write") is not True:
+                blockers.append("write_inventory_missing_reply_validation_requirement")
+            if write_inventory.get("all_runtime_writes_after_reply_validation") is not True:
+                blockers.append("write_inventory_not_after_reply_validation")
+            if write_inventory.get("ready_for_commit_refactor_review") is not True:
+                blockers.append("write_inventory_not_ready_for_commit_refactor_review")
     blockers.extend(_diagnostic_release_review_blockers(diagnostics, proven_external_gates=proven_external_gates))
     return blockers
 
@@ -303,6 +315,11 @@ def _review_gates(state: dict[str, Any], *, require_commit_shadow: bool) -> dict
                 or (
                     commit.get("commit_phase_owner") == "runtime_after_reply_validation"
                     and _dict(commit.get("precommit_validation_audit")).get("ready_for_commit_shadow") is True
+                    and _dict(commit.get("write_action_inventory")).get("schema_version")
+                    == "reply_chain_write_action_inventory_v1"
+                    and _dict(commit.get("write_action_inventory")).get("ready_for_commit_refactor_review") is True
+                    and _dict(commit.get("write_action_inventory")).get("all_runtime_writes_after_reply_validation")
+                    is True
                 )
             ),
             "purpose": "writes_remain_after_reply_validation",
