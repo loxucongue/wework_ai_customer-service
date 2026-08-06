@@ -54,6 +54,15 @@ def selected_profiles(value: str) -> list[ModelProfile]:
     return [MODEL_PROFILES[name] for name in names]
 
 
+def relay_api_base_url(value: str) -> str:
+    base_url = str(value or DEFAULT_RELAY_BASE_URL).strip().rstrip("/")
+    if not base_url:
+        base_url = DEFAULT_RELAY_BASE_URL
+    if base_url == "https://linkai.shop":
+        return f"{base_url}/v1"
+    return base_url
+
+
 def build_profile_settings(
     base: Settings,
     *,
@@ -175,7 +184,7 @@ async def _main() -> int:
     )
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    relay_base_url = str(args.relay_base_url or DEFAULT_RELAY_BASE_URL).strip().rstrip("/")
+    relay_base_url = relay_api_base_url(str(args.relay_base_url or DEFAULT_RELAY_BASE_URL))
     base_settings = Settings()
     profiles = selected_profiles(args.profiles)
     matrix_results: list[dict[str, Any]] = []

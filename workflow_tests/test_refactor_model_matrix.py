@@ -8,6 +8,7 @@ from ai_paths.scripts.run_refactor_model_matrix import (
     matrix_ranking,
     profile_result_summary,
     public_profile_config,
+    relay_api_base_url,
     selected_profiles,
 )
 
@@ -31,16 +32,17 @@ def test_selected_profiles_reject_unknown_profile() -> None:
 
 
 def test_build_profile_settings_uses_openai_compatible_relay_without_fallbacks() -> None:
+    relay_base_url = relay_api_base_url(DEFAULT_RELAY_BASE_URL)
     settings = build_profile_settings(
         Settings(_env_file=None),
         profile=MODEL_PROFILES["gemini"],
-        relay_base_url=DEFAULT_RELAY_BASE_URL,
+        relay_base_url=relay_base_url,
         api_key="dummy-gemini-key",
     )
 
     assert settings.model_provider == "relay"
     assert settings.model_relay_protocol == "openai"
-    assert settings.model_relay_base_url == DEFAULT_RELAY_BASE_URL
+    assert settings.model_relay_base_url == "https://linkai.shop/v1"
     assert settings.model_planner == "gemini-3.5-flash"
     assert settings.model_reply == "gemini-3.5-flash"
     assert settings.model_planner_fallbacks == ""
@@ -61,6 +63,12 @@ def test_build_profile_settings_keeps_claude_key_in_claude_slot() -> None:
     assert settings.model_planner == "claude-opus-4-7"
     assert settings.model_relay_api_key == ""
     assert settings.claude_relay_api_key == "dummy-claude-key"
+
+
+def test_relay_api_base_url_accepts_linkai_root_url() -> None:
+    assert relay_api_base_url("https://linkai.shop") == "https://linkai.shop/v1"
+    assert relay_api_base_url("https://linkai.shop/") == "https://linkai.shop/v1"
+    assert relay_api_base_url("https://linkai.shop/v1") == "https://linkai.shop/v1"
 
 
 def test_public_profile_config_never_contains_key_value() -> None:

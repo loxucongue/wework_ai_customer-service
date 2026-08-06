@@ -290,6 +290,12 @@ The matrix currently compares:
 - `gemini-3.5-flash`
 - `gpt-5.4`
 
+The LinkAI root URL is accepted for operator convenience, but the runner
+normalizes it to the OpenAI-compatible API base `https://linkai.shop/v1`
+before calling `/chat/completions`. A root URL must never be used directly as
+the API base, because it returns the LinkAI web UI HTML with HTTP 200 and would
+make JSON calls fail as `JSONDecodeError`.
+
 The keys must only live in local or server environment variables. Do not write
 them into committed tests, fixtures, reports, Markdown, or `.env` files.
 
