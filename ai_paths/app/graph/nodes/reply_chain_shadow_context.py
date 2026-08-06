@@ -4,10 +4,15 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
+from app.graph.nodes.store_scope_summary import store_scope_ids
+from app.services.risk_hold import health_risk_hold
+
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 MAX_FULL_TIMELINE_MESSAGES = 100
 MAX_SHADOW_CONTENT_CHARS = 700
+MAX_FACT_ITEMS = 20
 
 
 def build_reply_chain_shadow_context(
@@ -96,6 +101,7 @@ def _turn_to_shadow_message(item: Any, *, index: int) -> dict[str, Any]:
             "message_type": message_type,
             "content": content[:MAX_SHADOW_CONTENT_CHARS],
             "sent_at": sent_at,
+            "time_status": _time_status(sent_at),
             "source": "conversation_turns",
         }
     )
@@ -125,6 +131,7 @@ def _history_item_to_shadow_message(item: Any, *, index: int) -> dict[str, Any]:
             "sender": sender,
             "message_type": "text",
             "content": content[:MAX_SHADOW_CONTENT_CHARS],
+            "time_status": "missing",
             "source": "conversation_history",
         }
     )
@@ -141,6 +148,7 @@ def _current_message(state: dict[str, Any], *, request_context: dict[str, Any], 
             "message_type": _string(request_context.get("msgtype") or "text") or "text",
             "content": content[:MAX_SHADOW_CONTENT_CHARS],
             "sent_at": _message_time_from_context(request_context),
+            "time_status": _time_status(_message_time_from_context(request_context)),
             "source": "current_request",
         }
     )
@@ -172,25 +180,38 @@ def _authoritative_facts(
         customer_dict.get("customer_context") if isinstance(customer_dict.get("customer_context"), dict) else {}
     )
     basic = memory_dict.get("customer_basic_info") if isinstance(memory_dict.get("customer_basic_info"), dict) else {}
+    history_events = memory_dict.get("history_events") if isinstance(memory_dict.get("history_events"), list) else []
+    sent_summary = sent_message_summary_for_model({**state, "history_events": history_events})
+    risk_hold = health_risk_hold({**state, "history_events": history_events})
+    compact_orders = _compact_orders(customer_context.get("orders"))
+    sop_delivery = {
+        "history_event_count": len(history_events),
+        "source": "history_events",
+    }
     return _drop_empty(
         {
-            "payment": _pick(customer_context, "deposit_state", "payment_state", "paid_protection_status"),
+            "payment": _payment_fact(state, customer_context=customer_context, sent_summary=sent_summary),
             "orders": {
                 "count": len(customer_context.get("orders") or []) if isinstance(customer_context.get("orders"), list) else 0,
+                "items": compact_orders,
                 "source": customer_context.get("source") or "platform_order_index",
                 "error": customer_dict.get("customer_context_error") or customer_dict.get("orders_error"),
             },
-            "registration": _pick(basic, "registration_state", "customer_name", "phone"),
+            "registration": _registration_fact(basic),
             "visible_store_scope": {
                 "store_count": len(store_dict.get("stores") or []) if isinstance(store_dict.get("stores"), list) else 0,
+                "store_ids": sorted(store_scope_ids(store_dict))[:MAX_FACT_ITEMS],
                 "source": store_dict.get("source"),
                 "error": store_dict.get("error"),
+                "store_scope_error": store_dict.get("store_scope_error"),
             },
-            "sop_delivery": {
-                "history_event_count": len(memory_dict.get("history_events") or [])
-                if isinstance(memory_dict.get("history_events"), list)
-                else 0,
+            "sop_delivery": sop_delivery,
+            "sop_deliveries": {
+                **sop_delivery,
+                "recent_event_types": _recent_event_types(history_events),
             },
+            "structured_messages": _structured_message_facts(sent_summary),
+            "risk_holds": risk_hold,
             "identity": {
                 "resolved": bool(identity_dict.get("request_context") or identity_dict.get("identity_context")),
                 "error": identity_dict.get("error"),
@@ -211,6 +232,13 @@ def _conversation_policy(messages: list[dict[str, Any]]) -> dict[str, Any]:
         "mode": "full_if_100_or_less_else_latest_100_shadow",
         "message_count": len(messages),
         "max_messages": MAX_FULL_TIMELINE_MESSAGES,
+        "all_messages_have_sent_at": all(_string(item.get("sent_at")) for item in messages),
+        "missing_time_message_refs": [
+            _string(item.get("message_ref"))
+            for item in messages
+            if not _string(item.get("sent_at"))
+        ][:MAX_FACT_ITEMS],
+        "source_counts": _source_counts(messages),
     }
 
 
@@ -260,6 +288,90 @@ def _normalize_role(value: Any) -> str:
 
 def _pick(source: dict[str, Any], *keys: str) -> dict[str, Any]:
     return _drop_empty({key: source.get(key) for key in keys if key in source})
+
+
+def _payment_fact(state: dict[str, Any], *, customer_context: dict[str, Any], sent_summary: dict[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            **_pick(customer_context, "deposit_state", "payment_state", "paid_protection_status"),
+            "state_payment_state": state.get("payment_state"),
+            "state_deposit_state": state.get("deposit_state"),
+            "payment_collection": sent_summary.get("payment_collection"),
+            "payment_collection_sent": sent_summary.get("payment_collection_sent"),
+            "source": "customer_context_and_sent_message_summary",
+        }
+    )
+
+
+def _registration_fact(basic: dict[str, Any]) -> dict[str, Any]:
+    phone = _string(basic.get("phone"))
+    return _drop_empty(
+        {
+            "registration_state": basic.get("registration_state"),
+            "customer_name": basic.get("customer_name"),
+            "phone_present": bool(phone),
+            "source": "customer_basic_info",
+        }
+    )
+
+
+def _compact_orders(value: Any) -> list[dict[str, Any]]:
+    orders = value if isinstance(value, list) else []
+    output: list[dict[str, Any]] = []
+    for order in orders[:MAX_FACT_ITEMS]:
+        if not isinstance(order, dict):
+            continue
+        output.append(
+            _drop_empty(
+                {
+                    "order_id": order.get("order_id") or order.get("id"),
+                    "store_id": order.get("store_id"),
+                    "store_name": order.get("store_name"),
+                    "deposit_state": order.get("deposit_state"),
+                    "paid_protection_status": order.get("paid_protection_status"),
+                    "status": order.get("status"),
+                    "created_at": order.get("created_at") or order.get("create_time"),
+                    "time_source": order.get("time_source"),
+                }
+            )
+        )
+    return output
+
+
+def _structured_message_facts(sent_summary: dict[str, Any]) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "payment_collection": sent_summary.get("payment_collection"),
+            "case_image_delivery": sent_summary.get("case_image_delivery"),
+            "activity_intro_image_sent": sent_summary.get("activity_intro_image_sent"),
+            "store_address_delivery": sent_summary.get("store_address_delivery"),
+            "store_anchor_fact": sent_summary.get("store_anchor_fact"),
+            "source": "sent_message_summary",
+        }
+    )
+
+
+def _recent_event_types(history_events: list[Any]) -> list[str]:
+    event_types: list[str] = []
+    for event in history_events[-MAX_FACT_ITEMS:]:
+        if not isinstance(event, dict):
+            continue
+        event_type = _string(event.get("event_type"))
+        if event_type:
+            event_types.append(event_type)
+    return event_types
+
+
+def _source_counts(messages: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for message in messages:
+        source = _string(message.get("source") or "unknown")
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def _time_status(sent_at: Any) -> str:
+    return "known" if _string(sent_at) else "missing"
 
 
 def _string(value: Any) -> str:

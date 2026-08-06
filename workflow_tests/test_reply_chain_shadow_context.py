@@ -55,8 +55,12 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertEqual([item["message_ref"] for item in context["conversation"]["messages"]], ["m1", "m2", "m_current"])
         self.assertEqual(context["conversation"]["messages"][-1]["sent_at"], "2026-07-28T15:56:54+08:00")
         self.assertEqual(context["authoritative_facts"]["orders"]["count"], 1)
+        self.assertEqual(context["authoritative_facts"]["orders"]["items"][0]["order_id"], "o1")
         self.assertEqual(context["authoritative_facts"]["visible_store_scope"]["store_count"], 1)
+        self.assertEqual(context["authoritative_facts"]["visible_store_scope"]["store_ids"], ["101"])
         self.assertEqual(context["authoritative_facts"]["sop_delivery"]["history_event_count"], 1)
+        self.assertEqual(context["authoritative_facts"]["sop_deliveries"]["recent_event_types"], ["x"])
+        self.assertTrue(context["authoritative_facts"]["registration"]["phone_present"] is False)
         self.assertIn("customer_profile.next_sales_strategy", context["excluded_as_authority"])
 
     def test_falls_back_to_request_history_without_timestamps(self) -> None:
@@ -79,6 +83,43 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertEqual(messages[1]["sender"], "assistant")
         self.assertEqual(messages[-1]["message_ref"], "m3")
         self.assertEqual(messages[-1]["content"], "发我")
+        self.assertFalse(context["conversation"]["policy"]["all_messages_have_sent_at"])
+        self.assertIn("history_001", context["conversation"]["policy"]["missing_time_message_refs"])
+        self.assertEqual(messages[0]["time_status"], "missing")
+
+    def test_authoritative_facts_include_structured_delivery_and_risk_hold(self) -> None:
+        context = build_reply_chain_shadow_context(
+            {
+                "content": "我过敏了还能做吗",
+                "normalized_content": "我过敏了还能做吗",
+                "request_context": {"msgid": "risk1", "msgtype": "text", "msgtime": "1785225414095"},
+            },
+            identity={},
+            customer_result={},
+            store_knowledge={},
+            conversation_result={},
+            memory={
+                "history_events": [
+                    {
+                        "event_type": "payment_collection_sent",
+                        "event_id": "pay1",
+                        "created_at": "2026-08-01T10:00:00+08:00",
+                        "facts": {"amount": 10},
+                    },
+                    {
+                        "event_type": "case_image_sent",
+                        "created_at": "2026-08-01T10:01:00+08:00",
+                        "facts": {"image_urls": ["https://example.test/case.jpg"]},
+                    },
+                ]
+            },
+        )
+
+        facts = context["authoritative_facts"]
+        self.assertEqual(facts["payment"]["payment_collection"]["total_count"], 1)
+        self.assertEqual(facts["structured_messages"]["case_image_delivery"]["last_image_count"], 1)
+        self.assertEqual(facts["risk_holds"]["risk_hold"], "health_check_required")
+        self.assertEqual(facts["risk_holds"]["source"], "current_message")
 
     def test_shadow_context_is_not_consumed_by_current_model_payloads(self) -> None:
         state = {
