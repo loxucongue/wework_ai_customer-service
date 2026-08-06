@@ -22,6 +22,7 @@ venv/
 !docs/codex_project_handoff_20260720.md
 !docs/sop_proactive_wakeup_ab_design_20260720.md
 !docs/offline_full_chain_simulation.md
+!docs/parallel_gate_planner_refactor_plan.md
 *.tgz
 *.tar
 *.tar.gz
