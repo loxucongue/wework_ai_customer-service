@@ -54,7 +54,13 @@ def build_reply_chain_shadow_context(
                 "messages": timeline,
             },
             "authoritative_facts": authoritative_facts,
-            "authority_audit": _authority_audit(state, memory=memory, timeline=timeline, facts=authoritative_facts),
+            "authority_audit": _authority_audit(
+                state,
+                memory=memory,
+                conversation_result=conversation_result,
+                timeline=timeline,
+                facts=authoritative_facts,
+            ),
             "excluded_as_authority": [
                 "customer_profile.next_sales_strategy",
                 "customer_profile.decision_stage",
@@ -69,6 +75,7 @@ def _authority_audit(
     state: dict[str, Any],
     *,
     memory: Any,
+    conversation_result: Any,
     timeline: list[dict[str, Any]],
     facts: dict[str, Any],
 ) -> dict[str, Any]:
@@ -84,6 +91,11 @@ def _authority_audit(
             "schema_version": "reply_chain_authority_audit_v1",
             "complete_chat_is_primary_authority": True,
             "soft_profile_excluded_from_authority": True,
+            "timeline_window_audit": _timeline_window_audit(
+                state,
+                conversation_result=conversation_result,
+                timeline=timeline,
+            ),
             "current_message_audit": current_message_audit,
             "soft_profile_fields_seen": seen_soft_fields[:MAX_FACT_ITEMS],
             "timeline_message_count": len(timeline),
@@ -113,6 +125,65 @@ def _authority_audit(
             ],
         }
     )
+
+
+def _timeline_window_audit(
+    state: dict[str, Any],
+    *,
+    conversation_result: Any,
+    timeline: list[dict[str, Any]],
+) -> dict[str, Any]:
+    source_name, source_count = _source_message_window(state, conversation_result=conversation_result)
+    appended_current_count = sum(1 for item in timeline if _string(item.get("source")) == "current_request")
+    available_count = source_count + appended_current_count
+    included_count = len(timeline)
+    truncated = available_count > included_count
+    full_window_required = available_count <= MAX_FULL_TIMELINE_MESSAGES
+    source_window_complete = not full_window_required or included_count == available_count
+    current_preserved = appended_current_count > 0 or any(
+        item.get("source") != "current_request" and _string(item.get("sender")) == "customer"
+        for item in timeline[-1:]
+    )
+    blockers: list[str] = []
+    if full_window_required and not source_window_complete:
+        blockers.append("source_window_incomplete_under_limit")
+    if included_count > MAX_FULL_TIMELINE_MESSAGES:
+        blockers.append("timeline_exceeds_max_window")
+    if source_count and included_count <= 0:
+        blockers.append("timeline_empty_with_source_messages")
+
+    return _drop_empty(
+        {
+            "schema_version": "reply_chain_timeline_window_audit_v1",
+            "policy": "full_if_total_available_100_or_less_else_latest_100",
+            "source": source_name,
+            "source_message_count": source_count,
+            "appended_current_request_count": appended_current_count,
+            "available_timeline_count": available_count,
+            "included_message_count": included_count,
+            "max_messages": MAX_FULL_TIMELINE_MESSAGES,
+            "truncated": truncated,
+            "dropped_message_count": max(0, available_count - included_count),
+            "full_window_required": full_window_required,
+            "source_window_complete": source_window_complete,
+            "current_request_preserved_or_in_source": current_preserved,
+            "ready_for_authoritative_model_input": not blockers,
+            "blockers": blockers,
+        }
+    )
+
+
+def _source_message_window(state: dict[str, Any], *, conversation_result: Any) -> tuple[str, int]:
+    conversation = conversation_result if isinstance(conversation_result, dict) else {}
+    for source_name, value in (
+        ("conversation_turns", conversation.get("conversation_turns")),
+        ("recent_turns", conversation.get("recent_turns")),
+        ("state_conversation_turns", state.get("conversation_turns")),
+        ("conversation_history", state.get("conversation_history")),
+    ):
+        if isinstance(value, list):
+            return source_name, len(value)
+    return "none", 0
 
 
 def _current_message_audit(state: dict[str, Any], timeline: list[dict[str, Any]]) -> dict[str, Any]:

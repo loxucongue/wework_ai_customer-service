@@ -67,6 +67,12 @@ class ReplyChainShadowContextTests(unittest.TestCase):
             context["authority_audit"]["current_message_audit"]["schema_version"],
             "reply_chain_current_message_audit_v1",
         )
+        self.assertEqual(
+            context["authority_audit"]["timeline_window_audit"]["schema_version"],
+            "reply_chain_timeline_window_audit_v1",
+        )
+        self.assertTrue(context["authority_audit"]["timeline_window_audit"]["source_window_complete"])
+        self.assertFalse(context["authority_audit"]["timeline_window_audit"]["truncated"])
         self.assertTrue(context["authority_audit"]["current_message_audit"]["current_message_in_timeline"])
         self.assertTrue(context["authority_audit"]["current_message_audit"]["current_message_is_last"])
         self.assertTrue(context["authority_audit"]["current_message_audit"]["ready_for_authoritative_model_input"])
@@ -105,6 +111,40 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertFalse(context["conversation"]["policy"]["all_messages_have_sent_at"])
         self.assertIn("history_001", context["conversation"]["policy"]["missing_time_message_refs"])
         self.assertEqual(messages[0]["time_status"], "missing")
+
+    def test_timeline_window_audit_allows_only_documented_truncation_above_limit(self) -> None:
+        turns = [
+            {
+                "message_ref": f"m{i}",
+                "role": "customer" if i % 2 else "assistant",
+                "content": f"message {i}",
+                "occurred_at": f"2026-08-01T10:{i % 60:02d}:00+08:00",
+            }
+            for i in range(105)
+        ]
+        context = build_reply_chain_shadow_context(
+            {
+                "content": "current question",
+                "normalized_content": "current question",
+                "request_context": {"msgid": "current", "msgtype": "text", "msgtime": "1785225414095"},
+            },
+            identity={},
+            customer_result={},
+            store_knowledge={},
+            conversation_result={"conversation_turns": turns},
+            memory={},
+        )
+
+        messages = context["conversation"]["messages"]
+        audit = context["authority_audit"]["timeline_window_audit"]
+        self.assertEqual(len(messages), 100)
+        self.assertEqual(audit["source_message_count"], 105)
+        self.assertEqual(audit["appended_current_request_count"], 1)
+        self.assertEqual(audit["available_timeline_count"], 106)
+        self.assertTrue(audit["truncated"])
+        self.assertEqual(audit["dropped_message_count"], 6)
+        self.assertTrue(audit["ready_for_authoritative_model_input"])
+        self.assertEqual(messages[-1]["message_ref"], "current")
 
     def test_authority_audit_blocks_when_current_message_is_not_latest_timeline_item(self) -> None:
         context = build_reply_chain_shadow_context(

@@ -159,6 +159,8 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
             "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
             "current_serial_observation": {
                 "shared_context_authority_audit_schema": "reply_chain_authority_audit_v1",
+                "shared_context_timeline_window_audit_schema": "reply_chain_timeline_window_audit_v1",
+                "shared_context_timeline_window_ready": True,
                 "shared_context_current_message_audit_schema": "reply_chain_current_message_audit_v1",
                 "shared_context_current_message_ready": True,
                 "shared_context_fact_snapshot_schema": "reply_chain_fact_snapshot_audit_v1",

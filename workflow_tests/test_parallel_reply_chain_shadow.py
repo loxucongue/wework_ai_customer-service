@@ -22,6 +22,13 @@ def _reply_chain_shadow_context(
             "soft_profile_excluded_from_authority": True,
             "timeline_message_count": 3,
             "all_messages_have_sent_at": all_messages_have_sent_at,
+            "timeline_window_audit": {
+                "schema_version": "reply_chain_timeline_window_audit_v1",
+                "ready_for_authoritative_model_input": True,
+                "truncated": False,
+                "dropped_message_count": 0,
+                "blockers": [],
+            },
             "current_message_audit": {
                 "schema_version": "reply_chain_current_message_audit_v1",
                 "current_message_in_timeline": current_message_ready,
@@ -136,6 +143,13 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertTrue(shadow["current_serial_observation"]["shared_context_current_message_in_timeline"])
         self.assertTrue(shadow["current_serial_observation"]["shared_context_current_message_is_last"])
         self.assertTrue(shadow["current_serial_observation"]["shared_context_current_message_ready"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["shared_context_timeline_window_audit_schema"],
+            "reply_chain_timeline_window_audit_v1",
+        )
+        self.assertTrue(shadow["current_serial_observation"]["shared_context_timeline_window_ready"])
+        self.assertFalse(shadow["current_serial_observation"]["shared_context_timeline_window_truncated"])
+        self.assertEqual(shadow["current_serial_observation"]["shared_context_timeline_window_dropped_count"], 0)
         self.assertEqual(
             shadow["current_serial_observation"]["shared_context_fact_snapshot_schema"],
             "reply_chain_fact_snapshot_audit_v1",
@@ -295,6 +309,41 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
 
         self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
         self.assertIn("missing_reply_chain_authority_audit", shadow["activation"]["blockers"])
+
+    def test_missing_timeline_window_audit_blocks_parallel_runner_activation(self) -> None:
+        context = _reply_chain_shadow_context()
+        context["authority_audit"].pop("timeline_window_audit")
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=context,
+            gate_router_shadow=_gate_router_shadow(),
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("missing_reply_chain_timeline_window_audit", shadow["activation"]["blockers"])
+
+    def test_timeline_window_blockers_prevent_parallel_runner_activation(self) -> None:
+        context = _reply_chain_shadow_context()
+        context["authority_audit"]["timeline_window_audit"]["ready_for_authoritative_model_input"] = False
+        context["authority_audit"]["timeline_window_audit"]["blockers"] = ["source_window_incomplete_under_limit"]
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=context,
+            gate_router_shadow=_gate_router_shadow(),
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("timeline_window:source_window_incomplete_under_limit", shadow["activation"]["blockers"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["shared_context_timeline_window_blockers"],
+            ["source_window_incomplete_under_limit"],
+        )
 
     def test_incomplete_timestamps_block_parallel_runner_activation(self) -> None:
         shadow = parallel_reply_chain_shadow(

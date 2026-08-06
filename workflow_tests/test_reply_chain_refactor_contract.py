@@ -107,6 +107,7 @@ def test_rule_matrix_has_structural_refactor_review_gates() -> None:
         "payload_isolation_review",
         "authority_snapshot_review",
         "reply_chain_authority_audit_v1",
+        "reply_chain_timeline_window_audit_v1",
         "reply_chain_current_message_audit_v1",
         "reply_chain_fact_snapshot_audit_v1",
         "gate_commit_boundary_review",

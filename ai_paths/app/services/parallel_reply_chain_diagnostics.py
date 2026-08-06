@@ -158,9 +158,11 @@ def _release_review_gate_checklist(
         _gate(
             "authority_snapshot_review",
             "automated_shadow_evidence",
-            "authority_and_current_message_audits_present",
+            "authority_timeline_current_message_and_fact_audits_present",
             passed=(
                 observation.get("shared_context_authority_audit_schema") == "reply_chain_authority_audit_v1"
+                and observation.get("shared_context_timeline_window_audit_schema") == "reply_chain_timeline_window_audit_v1"
+                and observation.get("shared_context_timeline_window_ready") is True
                 and observation.get("shared_context_current_message_audit_schema") == "reply_chain_current_message_audit_v1"
                 and observation.get("shared_context_fact_snapshot_schema") == "reply_chain_fact_snapshot_audit_v1"
                 and observation.get("shared_context_current_message_ready") is True

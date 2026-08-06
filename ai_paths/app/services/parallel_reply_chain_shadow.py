@@ -33,6 +33,9 @@ def parallel_reply_chain_shadow(
     current_message_audit = context_authority_audit.get("current_message_audit")
     if not isinstance(current_message_audit, dict):
         current_message_audit = {}
+    timeline_window_audit = context_authority_audit.get("timeline_window_audit")
+    if not isinstance(timeline_window_audit, dict):
+        timeline_window_audit = {}
     gate_commit_boundary = gate_router_shadow.get("commit_boundary")
     if not isinstance(gate_commit_boundary, dict):
         gate_commit_boundary = {}
@@ -84,6 +87,11 @@ def parallel_reply_chain_shadow(
                 "shared_context_current_message_is_last": current_message_audit.get("current_message_is_last"),
                 "shared_context_current_message_ready": current_message_audit.get("ready_for_authoritative_model_input"),
                 "shared_context_current_message_blockers": current_message_audit.get("blockers"),
+                "shared_context_timeline_window_audit_schema": timeline_window_audit.get("schema_version"),
+                "shared_context_timeline_window_ready": timeline_window_audit.get("ready_for_authoritative_model_input"),
+                "shared_context_timeline_window_truncated": timeline_window_audit.get("truncated"),
+                "shared_context_timeline_window_dropped_count": timeline_window_audit.get("dropped_message_count"),
+                "shared_context_timeline_window_blockers": timeline_window_audit.get("blockers"),
                 "shared_context_fact_snapshot_schema": fact_snapshot_audit.get("schema_version"),
                 "shared_context_fact_sections_with_error": fact_snapshot_audit.get("sections_with_error"),
                 "gate_route": gate_router_shadow.get("route_suggestion"),
@@ -222,6 +230,15 @@ def _context_authority_blockers(reply_chain_shadow_context: dict[str, Any]) -> l
         blockers.append("soft_profile_not_excluded_from_authority")
     if audit.get("all_messages_have_sent_at") is not True:
         blockers.append("incomplete_timestamped_conversation")
+    timeline_window_audit = audit.get("timeline_window_audit")
+    if not isinstance(timeline_window_audit, dict) or timeline_window_audit.get("schema_version") != "reply_chain_timeline_window_audit_v1":
+        blockers.append("missing_reply_chain_timeline_window_audit")
+    elif timeline_window_audit.get("ready_for_authoritative_model_input") is not True:
+        timeline_blockers = timeline_window_audit.get("blockers")
+        if isinstance(timeline_blockers, list) and timeline_blockers:
+            blockers.extend([f"timeline_window:{item}" for item in timeline_blockers if isinstance(item, str) and item])
+        else:
+            blockers.append("timeline_window_not_ready_for_authoritative_model_input")
     current_message_audit = audit.get("current_message_audit")
     if not isinstance(current_message_audit, dict) or current_message_audit.get("schema_version") != "reply_chain_current_message_audit_v1":
         blockers.append("missing_reply_chain_current_message_audit")
