@@ -40,6 +40,7 @@ def _diagnostics_ready() -> dict:
         "phase": "ready_for_human_review",
         "release_review": {
             "schema_version": "reply_chain_release_review_checklist_v1",
+            "can_enable_behavior_switch": False,
             "missing_or_unproven_gates": [],
             "blocker_groups": {
                 "manual_review": {
@@ -174,6 +175,22 @@ def test_behavior_switch_guard_blocks_unresolved_release_review_groups_even_with
         "release_review_blocker_group:reply_payload_schema:gate_not_proven:reply_target_input_schema_review"
         in guard["blockers"]
     )
+
+
+def test_behavior_switch_guard_blocks_release_review_that_claims_switch_approval() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["can_enable_behavior_switch"] = True
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "release_review_missing_non_approval_marker" in guard["blockers"]
 
 
 def test_behavior_switch_guard_allows_only_with_complete_evidence() -> None:

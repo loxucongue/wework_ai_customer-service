@@ -112,6 +112,8 @@ def _diagnostic_blockers(diagnostics: dict[str, Any]) -> list[str]:
     if release_review.get("schema_version") != "reply_chain_release_review_checklist_v1":
         blockers.append("missing_release_review_checklist")
     else:
+        if release_review.get("can_enable_behavior_switch") is not False:
+            blockers.append("release_review_missing_non_approval_marker")
         unproven = _list_strings(release_review.get("missing_or_unproven_gates"))
         if unproven:
             blockers.extend(f"release_review_gate_unproven:{item}" for item in unproven)

@@ -112,12 +112,22 @@ def _cross_component_blockers(state: dict[str, Any], *, require_commit_shadow: b
         audit = _dict(commit.get("precommit_validation_audit"))
         if audit.get("ready_for_commit_shadow") is not True:
             blockers.append("commit_precommit_audit_not_ready")
-    blockers.extend(_diagnostic_release_review_group_blockers(diagnostics))
+    blockers.extend(_diagnostic_release_review_blockers(diagnostics))
     return blockers
 
 
-def _diagnostic_release_review_group_blockers(diagnostics: dict[str, Any]) -> list[str]:
+def _diagnostic_release_review_blockers(diagnostics: dict[str, Any]) -> list[str]:
     release_review = _dict(diagnostics.get("release_review"))
+    if release_review.get("schema_version") != "reply_chain_release_review_checklist_v1":
+        return []
+    blockers: list[str] = []
+    if release_review.get("can_enable_behavior_switch") is not False:
+        blockers.append("release_review_missing_non_approval_marker")
+    blockers.extend(_diagnostic_release_review_group_blockers(release_review))
+    return blockers
+
+
+def _diagnostic_release_review_group_blockers(release_review: dict[str, Any]) -> list[str]:
     blocker_groups = release_review.get("blocker_groups")
     if not isinstance(blocker_groups, dict):
         return []

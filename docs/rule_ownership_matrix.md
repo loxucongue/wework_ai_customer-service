@@ -97,6 +97,11 @@ when the flat gate list is accidentally empty.
 The postcommit shadow bundle audit must apply the same unresolved-group
 protection so `ready_for_refactor_review` cannot disagree with the final switch
 guard on release-review blockers.
+If a release checklist ever reports `can_enable_behavior_switch` as anything
+other than `false`, both the postcommit bundle audit and final guard must block
+it as malformed evidence. Only the final behavior-switch guard may produce a
+positive switch decision after human review and offline simulation evidence are
+present.
 
 Parallel behavior cannot be enabled until `SOP_CHAT_GATE_V2_ENABLED`,
 `TOOL_PLANNER_V2_ENABLED`, and `REPLY_FINAL_BRAIN_V2_ENABLED` are all true and

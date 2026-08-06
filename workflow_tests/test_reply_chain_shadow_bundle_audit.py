@@ -114,6 +114,7 @@ def test_bundle_audit_blocks_unresolved_release_review_groups() -> None:
     state = _ready_state()
     state["parallel_reply_chain_diagnostics"]["release_review"] = {
         "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
         "missing_or_unproven_gates": [],
         "blocker_groups": {
             "reply_payload_schema": {
@@ -132,6 +133,21 @@ def test_bundle_audit_blocks_unresolved_release_review_groups() -> None:
         "release_review_blocker_group:reply_payload_schema:gate_not_proven:reply_target_input_schema_review"
         in audit["blockers"]
     )
+
+
+def test_bundle_audit_blocks_release_review_that_claims_switch_approval() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": True,
+        "missing_or_unproven_gates": [],
+        "blocker_groups": {},
+    }
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "release_review_missing_non_approval_marker" in audit["blockers"]
 
 
 def test_bundle_audit_blocks_when_join_would_own_customer_text() -> None:
