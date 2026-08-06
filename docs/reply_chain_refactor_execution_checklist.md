@@ -288,6 +288,7 @@ python ai_paths/scripts/run_refactor_model_matrix.py `
   --attempts 3 `
   --critical-attempts 5 `
   --concurrency 2 `
+  --profile-timeout-seconds 120 `
   --require-keys
 ```
 
@@ -311,6 +312,7 @@ Required matrix report:
 - `schema_version=reply_chain_refactor_model_matrix_v1`
 - `profiles_requested` includes `claude`, `gemini`, and `openai`
 - each profile is `completed`
+- no profile has `status=timed_out`
 - each completed profile has `profile_summary.semantic_pass_rate`, `p50_ms`, and `p90_ms`
 - any accepted profile has `profile_summary.infrastructure_failures=0`
 - at least one profile has `profile_summary.accepted_by_release_thresholds=true`
