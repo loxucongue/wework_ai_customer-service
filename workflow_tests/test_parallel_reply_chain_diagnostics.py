@@ -80,6 +80,59 @@ def test_diagnostics_reports_ready_for_shadow_comparison_after_runner_success() 
     assert diagnostics["next_safe_step"] == "collect_old_vs_new_shadow_diffs_before_behavior_switch"
 
 
+def test_diagnostics_blocks_behavior_switch_when_comparison_has_diffs() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow={
+            "schema_version": "parallel_gate_planner_runner_shadow_v1",
+            "mode": "completed_shadow",
+            "branches": {
+                "sop_chat_gate": {"status": "completed"},
+                "tool_planner": {"status": "completed"},
+            },
+        },
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "diffs_found",
+            "diffs": [{"field": "gate_route", "serial": "tools_only", "parallel": "direct_text"}],
+        },
+    )
+
+    assert diagnostics["phase"] == "comparison_blocked"
+    assert diagnostics["next_safe_step"] == "fix_shadow_comparison_diffs_before_behavior_switch"
+    assert diagnostics["comparison"]["blockers"] == ["comparison_diffs_found"]
+    assert diagnostics["comparison"]["diff_count"] == 1
+
+
+def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow={
+            "schema_version": "parallel_gate_planner_runner_shadow_v1",
+            "mode": "completed_shadow",
+            "branches": {
+                "sop_chat_gate": {"status": "completed"},
+                "tool_planner": {"status": "completed"},
+            },
+        },
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+            "review_gate": {"can_enable_behavior_switch": False},
+        },
+    )
+
+    assert diagnostics["phase"] == "ready_for_human_review"
+    assert diagnostics["next_safe_step"] == "run_review_gates_and_offline_simulation_before_behavior_switch"
+    assert diagnostics["comparison"]["status"] == "matched_shadow_replay"
+
+
 def test_diagnostics_are_not_consumed_by_current_model_payloads() -> None:
     state = {
         "normalized_content": "怎么预约",
@@ -92,6 +145,10 @@ def test_diagnostics_are_not_consumed_by_current_model_payloads() -> None:
             "schema_version": "parallel_gate_planner_runner_shadow_v1",
             "input_mode": "runner-shadow-only-marker",
         },
+        "parallel_reply_chain_comparison": {
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "shadow-only-comparison-marker",
+        },
         "request_context": {},
     }
 
@@ -103,5 +160,8 @@ def test_diagnostics_are_not_consumed_by_current_model_payloads() -> None:
     assert "parallel_reply_chain_diagnostics" not in reply_payload
     assert "parallel_gate_planner_runner_shadow" not in planner_payload
     assert "parallel_gate_planner_runner_shadow" not in reply_payload
+    assert "parallel_reply_chain_comparison" not in planner_payload
+    assert "parallel_reply_chain_comparison" not in reply_payload
     assert "shadow-only-diagnostics-marker" not in combined
     assert "runner-shadow-only-marker" not in combined
+    assert "shadow-only-comparison-marker" not in combined

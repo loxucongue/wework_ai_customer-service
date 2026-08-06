@@ -7,18 +7,24 @@ def parallel_reply_chain_diagnostics(
     *,
     parallel_reply_chain_shadow: dict[str, Any],
     runner_shadow: dict[str, Any] | None = None,
+    comparison_shadow: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Summarize migration readiness without owning business semantics."""
 
     runner = runner_shadow if isinstance(runner_shadow, dict) else {}
+    comparison = comparison_shadow if isinstance(comparison_shadow, dict) else {}
     contract_blockers = _list_strings((parallel_reply_chain_shadow.get("activation") or {}).get("blockers"))
     runner_mode = str(runner.get("mode") or "not_integrated")
     runner_blockers = _runner_blockers(runner)
+    comparison_status = str(comparison.get("status") or "not_collected")
+    comparison_blockers = _comparison_blockers(comparison)
     phase = _phase(
         parallel_shadow_present=parallel_reply_chain_shadow.get("schema_version") == "parallel_reply_chain_shadow_v1",
         contract_blockers=contract_blockers,
         runner_mode=runner_mode,
         runner_blockers=runner_blockers,
+        comparison_status=comparison_status,
+        comparison_blockers=comparison_blockers,
     )
     return _drop_empty(
         {
@@ -34,6 +40,11 @@ def parallel_reply_chain_diagnostics(
                 "mode": runner_mode,
                 "blockers": runner_blockers,
                 "branch_status": _branch_status(runner),
+            },
+            "comparison": {
+                "status": comparison_status,
+                "blockers": comparison_blockers,
+                "diff_count": len(comparison.get("diffs") or []) if isinstance(comparison.get("diffs"), list) else 0,
             },
             "next_safe_step": _next_safe_step(phase),
             "safety": {
@@ -53,6 +64,8 @@ def _phase(
     contract_blockers: list[str],
     runner_mode: str,
     runner_blockers: list[str],
+    comparison_status: str,
+    comparison_blockers: list[str],
 ) -> str:
     if not parallel_shadow_present:
         return "missing_parallel_contract"
@@ -63,7 +76,11 @@ def _phase(
     if runner_mode == "skipped" or runner_blockers:
         return "runner_blocked"
     if runner_mode == "completed_shadow":
-        return "ready_for_shadow_comparison"
+        if comparison_status == "not_collected":
+            return "ready_for_shadow_comparison"
+        if comparison_blockers:
+            return "comparison_blocked"
+        return "ready_for_human_review"
     return "unknown"
 
 
@@ -74,6 +91,8 @@ def _next_safe_step(phase: str) -> str:
         "ready_for_runner_integration": "wire_shadow_runner_without_runtime_behavior_change",
         "runner_blocked": "fix_runner_inputs_or_refactor_flags",
         "ready_for_shadow_comparison": "collect_old_vs_new_shadow_diffs_before_behavior_switch",
+        "comparison_blocked": "fix_shadow_comparison_diffs_before_behavior_switch",
+        "ready_for_human_review": "run_review_gates_and_offline_simulation_before_behavior_switch",
     }.get(phase, "inspect_parallel_refactor_diagnostics")
 
 
@@ -93,6 +112,19 @@ def _branch_status(runner: dict[str, Any]) -> dict[str, str]:
         for name, branch in branches.items()
         if isinstance(branch, dict)
     }
+
+
+def _comparison_blockers(comparison: dict[str, Any]) -> list[str]:
+    if comparison.get("schema_version") != "parallel_reply_chain_comparison_v1":
+        return []
+    status = str(comparison.get("status") or "")
+    if status == "matched_shadow_replay":
+        return []
+    if status == "diffs_found":
+        return ["comparison_diffs_found"]
+    if status == "not_comparable":
+        return ["comparison_not_comparable"]
+    return [f"comparison_status:{status or 'unknown'}"]
 
 
 def _list_strings(value: Any) -> list[str]:

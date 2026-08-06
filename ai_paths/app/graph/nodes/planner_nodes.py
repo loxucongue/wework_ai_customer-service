@@ -158,15 +158,16 @@ def create_planner_brain_node(
                 refactor_flags=state.get("reply_chain_refactor_flags") if isinstance(state.get("reply_chain_refactor_flags"), dict) else {},
                 parallel_reply_chain_shadow=output["parallel_reply_chain_shadow"],
             )
-            output["parallel_reply_chain_diagnostics"] = parallel_reply_chain_diagnostics(
-                parallel_reply_chain_shadow=output["parallel_reply_chain_shadow"],
-                runner_shadow=output["parallel_gate_planner_runner_shadow"],
-            )
             output["parallel_reply_chain_comparison"] = parallel_reply_chain_comparison(
                 gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},
                 tool_plan_preview=output["tool_plan_preview"],
                 join_shadow=output["reply_chain_join_shadow"],
                 runner_shadow=output["parallel_gate_planner_runner_shadow"],
+            )
+            output["parallel_reply_chain_diagnostics"] = parallel_reply_chain_diagnostics(
+                parallel_reply_chain_shadow=output["parallel_reply_chain_shadow"],
+                runner_shadow=output["parallel_gate_planner_runner_shadow"],
+                comparison_shadow=output["parallel_reply_chain_comparison"],
             )
             span["output_snapshot"] = output
             return output
