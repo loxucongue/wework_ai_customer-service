@@ -186,6 +186,14 @@ def _model_matrix_ready() -> dict:
         "git_commit": "abc123",
         "git_commit_set": ["abc123"],
         "relay_base_url": "https://linkai.shop/v1",
+        "evaluation_scope": {
+            "schema_version": "reply_chain_refactor_model_matrix_scope_v1",
+            "scenario_id": "",
+            "category": "",
+            "max_cases": 0,
+            "targeted_smoke": False,
+            "full_release_gate_candidate": True,
+        },
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
         "profiles": [

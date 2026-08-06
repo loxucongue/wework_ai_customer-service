@@ -12,6 +12,7 @@ from ai_paths.scripts.run_refactor_model_matrix import (
     load_refactor_env,
     matrix_ranking,
     missing_key_profile_result,
+    evaluation_scope,
     profile_artifacts_summary,
     profile_result_summary,
     public_profile_config,
@@ -246,6 +247,34 @@ def test_suite_run_options_normalizes_empty_filters_to_none() -> None:
     assert options["category"] is None
     assert options["max_cases"] == 3
     assert options["skip_review"] is True
+
+
+def test_evaluation_scope_marks_full_release_gate_candidate_only_without_filters() -> None:
+    full = evaluation_scope(
+        argparse.Namespace(
+            scenario_id="",
+            category="",
+            max_cases=0,
+        )
+    )
+    targeted = evaluation_scope(
+        argparse.Namespace(
+            scenario_id="store_v2_county_confirm",
+            category="",
+            max_cases=0,
+        )
+    )
+
+    assert full == {
+        "schema_version": "reply_chain_refactor_model_matrix_scope_v1",
+        "scenario_id": "",
+        "category": "",
+        "max_cases": 0,
+        "targeted_smoke": False,
+        "full_release_gate_candidate": True,
+    }
+    assert targeted["targeted_smoke"] is True
+    assert targeted["full_release_gate_candidate"] is False
 
 
 def test_profile_artifacts_summary_exposes_per_model_report_evidence(tmp_path) -> None:

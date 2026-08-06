@@ -131,6 +131,14 @@ def _model_matrix_ready() -> dict:
         "git_commit": "abc123",
         "git_commit_set": ["abc123"],
         "relay_base_url": "https://linkai.shop/v1",
+        "evaluation_scope": {
+            "schema_version": "reply_chain_refactor_model_matrix_scope_v1",
+            "scenario_id": "",
+            "category": "",
+            "max_cases": 0,
+            "targeted_smoke": False,
+            "full_release_gate_candidate": True,
+        },
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
         "profiles": [
@@ -664,6 +672,31 @@ def test_external_gate_evidence_blocks_wrong_model_for_profile() -> None:
     blockers = model_matrix_report_blockers(model_matrix)
 
     assert "model_matrix_profile_model_mismatch:openai:gpt-5.4-mini" in blockers
+
+
+def test_external_gate_evidence_blocks_targeted_model_matrix_smoke_as_release_gate() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["evaluation_scope"] = {
+        "schema_version": "reply_chain_refactor_model_matrix_scope_v1",
+        "scenario_id": "store_v2_county_confirm",
+        "category": "",
+        "max_cases": 0,
+        "targeted_smoke": True,
+        "full_release_gate_candidate": False,
+    }
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_not_full_release_gate_candidate" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_model_matrix_scope() -> None:
+    model_matrix = _model_matrix_ready()
+    del model_matrix["evaluation_scope"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_missing_evaluation_scope" in blockers
 
 
 def test_external_gate_evidence_blocks_tiny_model_matrix_profile_artifacts() -> None:

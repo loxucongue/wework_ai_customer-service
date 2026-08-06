@@ -457,6 +457,11 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
     relay_base_url = _string_value(model_matrix.get("relay_base_url")).rstrip("/")
     if relay_base_url != "https://linkai.shop/v1":
         blockers.append(f"model_matrix_unapproved_relay_base_url:{relay_base_url or 'missing'}")
+    scope = _dict(model_matrix.get("evaluation_scope"))
+    if scope.get("schema_version") != "reply_chain_refactor_model_matrix_scope_v1":
+        blockers.append("model_matrix_missing_evaluation_scope")
+    elif scope.get("full_release_gate_candidate") is not True:
+        blockers.append("model_matrix_not_full_release_gate_candidate")
     requested = set(_list_strings(model_matrix.get("profiles_requested")))
     required_models = {
         "claude": "claude-opus-4-7",

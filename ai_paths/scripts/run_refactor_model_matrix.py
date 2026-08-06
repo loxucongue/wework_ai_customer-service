@@ -170,6 +170,20 @@ def suite_run_options(args: argparse.Namespace, settings: Settings) -> dict[str,
     }
 
 
+def evaluation_scope(args: argparse.Namespace) -> dict[str, Any]:
+    scenario_id = str(args.scenario_id or "").strip()
+    category = str(args.category or "").strip()
+    max_cases = int(args.max_cases or 0)
+    return {
+        "schema_version": "reply_chain_refactor_model_matrix_scope_v1",
+        "scenario_id": scenario_id,
+        "category": category,
+        "max_cases": max_cases,
+        "targeted_smoke": bool(scenario_id or category or max_cases > 0),
+        "full_release_gate_candidate": not bool(scenario_id or category or max_cases > 0),
+    }
+
+
 def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), dict) else {}
@@ -420,6 +434,7 @@ async def _main() -> int:
         **git_commit_fields(repo_root),
         "fixture": str(fixture),
         "relay_base_url": relay_base_url,
+        "evaluation_scope": evaluation_scope(args),
         "profiles_requested": [profile.name for profile in profiles],
         "executed_profile_count": executed,
         "ranking": matrix_ranking(matrix_results),
