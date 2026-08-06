@@ -513,6 +513,8 @@ Review 重点：
 Review 重点：
 
 - 并行分支输入隔离。
+- 并行分支输出契约必须明确：Gate 分支输出 `gate_router_shadow.schema_version=chat_gate_router_shadow_v1`，Tool Planner 分支输出 `tool_plan_preview.schema_version=tool_plan_preview_v2`。
+- runner 不能只因为两个分支 `completed` 就视为可迁移；缺少必需输出、schema 错误或输出位置错误都必须进入 diagnostics blocker。
 - shadow 字段不进入生产 Prompt。
 - 没有写操作。
 
@@ -522,6 +524,7 @@ Review 重点：
 - `workflow_tests/test_parallel_reply_chain_shadow.py`
 - `workflow_tests/test_parallel_reply_chain_comparison.py`
 - `workflow_tests/test_parallel_reply_chain_diagnostics.py`
+- 分支输出契约审计测试：错误 schema、缺失 `gate_router_shadow`、缺失 `tool_plan_preview` 必须阻断后续行为切换。
 
 ### 14.9 Stage 8：离线全链路仿真
 

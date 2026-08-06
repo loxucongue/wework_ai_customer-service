@@ -233,6 +233,25 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 "initial_state_unchanged_after_branches": True,
                 "shadow_only_fields_present_in_initial_state": [],
             },
+            "branch_output_contract_audit": {
+                "schema_version": "parallel_branch_output_contract_audit_v1",
+                "ready": True,
+                "blockers": [],
+                "required_outputs": {
+                    "sop_chat_gate": {
+                        "required_field": "gate_router_shadow",
+                        "required_schema_version": "chat_gate_router_shadow_v1",
+                        "observed_schema_version": "chat_gate_router_shadow_v1",
+                        "valid": True,
+                    },
+                    "tool_planner": {
+                        "required_field": "tool_plan_preview",
+                        "required_schema_version": "tool_plan_preview_v2",
+                        "observed_schema_version": "tool_plan_preview_v2",
+                        "valid": True,
+                    },
+                },
+            },
             "branches": {
                 "sop_chat_gate": {"status": "completed"},
                 "tool_planner": {"status": "completed"},

@@ -25,6 +25,11 @@ SHADOW_ONLY_FIELDS = (
     "parallel_reply_chain_comparison",
 )
 
+REQUIRED_BRANCH_OUTPUT_SCHEMAS = {
+    "sop_chat_gate": ("gate_router_shadow", "chat_gate_router_shadow_v1"),
+    "tool_planner": ("tool_plan_preview", "tool_plan_preview_v2"),
+}
+
 
 async def run_parallel_gate_planner_shadow(
     *,
@@ -55,6 +60,10 @@ async def run_parallel_gate_planner_shadow(
     gate_task = asyncio.create_task(_run_branch("sop_chat_gate", gate_branch, gate_state))
     planner_task = asyncio.create_task(_run_branch("tool_planner", planner_branch, planner_state))
     gate_result, planner_result = await asyncio.gather(gate_task, planner_task)
+    branches = {
+        "sop_chat_gate": gate_result,
+        "tool_planner": planner_result,
+    }
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     return {
         "schema_version": "parallel_gate_planner_runner_shadow_v1",
@@ -65,10 +74,8 @@ async def run_parallel_gate_planner_shadow(
             gate_state=gate_state,
             planner_state=planner_state,
         ),
-        "branches": {
-            "sop_chat_gate": gate_result,
-            "tool_planner": planner_result,
-        },
+        "branch_output_contract_audit": _branch_output_contract_audit(branches),
+        "branches": branches,
         "metrics": {
             "elapsed_ms": elapsed_ms,
             "sum_branch_duration_ms": _duration(gate_result) + _duration(planner_result),
@@ -176,6 +183,40 @@ def _input_isolation_audit(
         ],
         "target_parallel_input_requires_no_branch_outputs": True,
         "source": "runner_shadow_input_copy_audit",
+    }
+
+
+def _branch_output_contract_audit(branches: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    blockers: list[str] = []
+    required_outputs: dict[str, dict[str, Any]] = {}
+    for branch_name, (field_name, schema_version) in REQUIRED_BRANCH_OUTPUT_SCHEMAS.items():
+        branch = branches.get(branch_name)
+        output = branch.get("output") if isinstance(branch, dict) else None
+        field = output.get(field_name) if isinstance(output, dict) else None
+        observed_schema = field.get("schema_version") if isinstance(field, dict) else None
+        status = branch.get("status") if isinstance(branch, dict) else None
+        valid = status == "completed" and observed_schema == schema_version
+        if not valid:
+            if status != "completed":
+                blockers.append(f"branch_not_completed:{branch_name}")
+            elif not isinstance(output, dict):
+                blockers.append(f"branch_output_not_dict:{branch_name}")
+            elif not isinstance(field, dict):
+                blockers.append(f"branch_missing_required_output:{branch_name}.{field_name}")
+            else:
+                blockers.append(f"branch_output_schema_mismatch:{branch_name}.{field_name}:{observed_schema or 'missing'}")
+        required_outputs[branch_name] = {
+            "required_field": field_name,
+            "required_schema_version": schema_version,
+            "observed_schema_version": observed_schema,
+            "valid": valid,
+        }
+    return {
+        "schema_version": "parallel_branch_output_contract_audit_v1",
+        "ready": not blockers,
+        "blockers": blockers,
+        "required_outputs": required_outputs,
+        "source": "runner_shadow_branch_output_contract_audit",
     }
 
 

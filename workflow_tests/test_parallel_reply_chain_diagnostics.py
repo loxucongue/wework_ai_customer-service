@@ -16,6 +16,25 @@ def _completed_runner_shadow(*, input_shadow_fields: list[str] | None = None) ->
             "initial_state_unchanged_after_branches": True,
             "shadow_only_fields_present_in_initial_state": input_shadow_fields or [],
         },
+        "branch_output_contract_audit": {
+            "schema_version": "parallel_branch_output_contract_audit_v1",
+            "ready": True,
+            "blockers": [],
+            "required_outputs": {
+                "sop_chat_gate": {
+                    "required_field": "gate_router_shadow",
+                    "required_schema_version": "chat_gate_router_shadow_v1",
+                    "observed_schema_version": "chat_gate_router_shadow_v1",
+                    "valid": True,
+                },
+                "tool_planner": {
+                    "required_field": "tool_plan_preview",
+                    "required_schema_version": "tool_plan_preview_v2",
+                    "observed_schema_version": "tool_plan_preview_v2",
+                    "valid": True,
+                },
+            },
+        },
         "branches": {
             "sop_chat_gate": {"status": "completed"},
             "tool_planner": {"status": "completed"},
@@ -252,6 +271,45 @@ def test_diagnostics_blocks_when_runner_input_contains_shadow_fields() -> None:
 
     assert diagnostics["phase"] == "runner_blocked"
     assert "runner_input_contains_shadow_fields:1" in diagnostics["runner"]["blockers"]
+
+
+def test_diagnostics_blocks_when_runner_branch_output_contract_is_invalid() -> None:
+    runner_shadow = _completed_runner_shadow()
+    runner_shadow["branch_output_contract_audit"] = {
+        "schema_version": "parallel_branch_output_contract_audit_v1",
+        "ready": False,
+        "blockers": ["branch_missing_required_output:sop_chat_gate.gate_router_shadow"],
+    }
+
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow=runner_shadow,
+    )
+
+    assert diagnostics["phase"] == "runner_blocked"
+    assert (
+        "runner_output_contract:branch_missing_required_output:sop_chat_gate.gate_router_shadow"
+        in diagnostics["runner"]["blockers"]
+    )
+
+
+def test_diagnostics_blocks_when_runner_branch_output_audit_is_missing() -> None:
+    runner_shadow = _completed_runner_shadow()
+    runner_shadow.pop("branch_output_contract_audit")
+
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow=runner_shadow,
+    )
+
+    assert diagnostics["phase"] == "runner_blocked"
+    assert "missing_runner_branch_output_contract_audit" in diagnostics["runner"]["blockers"]
 
 
 def test_diagnostics_are_not_consumed_by_current_model_payloads() -> None:

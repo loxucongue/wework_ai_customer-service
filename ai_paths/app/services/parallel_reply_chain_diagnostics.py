@@ -253,6 +253,7 @@ def _gate(gate_id: str, evidence_type: str, required_evidence: str, *, passed: b
 def _runner_blockers(runner: dict[str, Any]) -> list[str]:
     blockers = _list_strings(runner.get("activation_blockers"))
     blockers.extend(_runner_input_isolation_blockers(runner))
+    blockers.extend(_runner_output_contract_blockers(runner))
     branches = runner.get("branches") if isinstance(runner.get("branches"), dict) else {}
     for branch_name, branch in branches.items():
         if isinstance(branch, dict) and branch.get("status") == "error":
@@ -273,6 +274,18 @@ def _runner_input_isolation_blockers(runner: dict[str, Any]) -> list[str]:
     if isinstance(shadow_fields, list) and shadow_fields:
         blockers.append(f"runner_input_contains_shadow_fields:{len(shadow_fields)}")
     return blockers
+
+
+def _runner_output_contract_blockers(runner: dict[str, Any]) -> list[str]:
+    if str(runner.get("mode") or "") != "completed_shadow":
+        return []
+    audit = runner.get("branch_output_contract_audit")
+    if not isinstance(audit, dict) or audit.get("schema_version") != "parallel_branch_output_contract_audit_v1":
+        return ["missing_runner_branch_output_contract_audit"]
+    if audit.get("ready") is True:
+        return []
+    blockers = _list_strings(audit.get("blockers"))
+    return [f"runner_output_contract:{item}" for item in blockers] or ["runner_output_contract:not_ready"]
 
 
 def _branch_status(runner: dict[str, Any]) -> dict[str, str]:
