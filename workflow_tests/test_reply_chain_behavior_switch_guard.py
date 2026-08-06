@@ -97,6 +97,17 @@ def _diagnostics_ready() -> dict:
                     "blocker_count": 0,
                 }
             },
+            "gates": [
+                {
+                    "gate_id": "authority_snapshot_review",
+                    "evidence_type": "automated_shadow_evidence",
+                    "required_evidence": "authority_timeline_current_message_and_fact_audits_present",
+                    "passed": True,
+                    "evidence_observed": {
+                        "shared_context_timeline_retained_window_schema": "reply_chain_retained_timeline_window_v1",
+                    },
+                }
+            ],
         },
     }
 
@@ -983,6 +994,22 @@ def test_behavior_switch_guard_blocks_release_review_that_claims_switch_approval
 
     assert guard["can_enable_behavior_switch"] is False
     assert "release_review_missing_non_approval_marker" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_all_clear_release_review_without_retained_timeline_evidence() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["gates"][0]["evidence_observed"] = {}
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        **_complete_external_report_kwargs(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "release_review_missing_retained_timeline_evidence" in guard["blockers"]
 
 
 def test_behavior_switch_guard_allows_only_with_complete_evidence() -> None:

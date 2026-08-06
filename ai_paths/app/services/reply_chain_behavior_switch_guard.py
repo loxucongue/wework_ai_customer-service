@@ -215,7 +215,36 @@ def _diagnostic_blockers(diagnostics: dict[str, Any], *, proven_external_gates: 
         ]
         if unproven:
             blockers.extend(f"release_review_gate_unproven:{item}" for item in unproven)
-        blockers.extend(_release_review_group_blockers(release_review, proven_external_gates=proven_external_gates))
+        group_blockers = _release_review_group_blockers(
+            release_review,
+            proven_external_gates=proven_external_gates,
+        )
+        blockers.extend(group_blockers)
+        if not unproven and not group_blockers:
+            blockers.extend(_release_review_final_authority_evidence_blockers(release_review))
+    return blockers
+
+
+def _release_review_final_authority_evidence_blockers(release_review: dict[str, Any]) -> list[str]:
+    gates = release_review.get("gates")
+    if not isinstance(gates, list):
+        return ["release_review_missing_authority_gate_evidence"]
+    authority_gate = next(
+        (
+            gate
+            for gate in gates
+            if isinstance(gate, dict) and gate.get("gate_id") == "authority_snapshot_review"
+        ),
+        {},
+    )
+    if not authority_gate:
+        return ["release_review_missing_authority_gate_evidence"]
+    blockers: list[str] = []
+    if authority_gate.get("passed") is not True:
+        blockers.append("release_review_authority_gate_not_passed")
+    observed = _dict(authority_gate.get("evidence_observed"))
+    if observed.get("shared_context_timeline_retained_window_schema") != "reply_chain_retained_timeline_window_v1":
+        blockers.append("release_review_missing_retained_timeline_evidence")
     return blockers
 
 

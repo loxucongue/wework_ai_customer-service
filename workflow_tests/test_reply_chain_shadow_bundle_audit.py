@@ -143,6 +143,32 @@ def _ready_state() -> dict:
     }
 
 
+def _release_review_with_external_gate_blockers(*gate_ids: str) -> dict:
+    return {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": list(gate_ids),
+        "blocker_groups": {
+            "manual_review": {
+                "ready": False,
+                "blocker_count": len(gate_ids),
+                "blockers": [f"gate_not_proven:{gate_id}" for gate_id in gate_ids],
+            }
+        },
+        "gates": [
+            {
+                "gate_id": "authority_snapshot_review",
+                "evidence_type": "automated_shadow_evidence",
+                "required_evidence": "authority_timeline_current_message_and_fact_audits_present",
+                "passed": True,
+                "evidence_observed": {
+                    "shared_context_timeline_retained_window_schema": "reply_chain_retained_timeline_window_v1",
+                },
+            }
+        ],
+    }
+
+
 def test_bundle_audit_reports_git_commit_when_evidence_matches() -> None:
     audit = reply_chain_shadow_bundle_audit(
         state=_ready_state(),
@@ -175,18 +201,9 @@ def test_bundle_audit_reports_git_commit_set_when_evidence_differs() -> None:
 
 def test_bundle_audit_accepts_business_wording_freeze_external_gate() -> None:
     state = _ready_state()
-    state["parallel_reply_chain_diagnostics"]["release_review"] = {
-        "schema_version": "reply_chain_release_review_checklist_v1",
-        "can_enable_behavior_switch": False,
-        "missing_or_unproven_gates": ["business_wording_freeze_review"],
-        "blocker_groups": {
-            "manual_review": {
-                "ready": False,
-                "blocker_count": 1,
-                "blockers": ["gate_not_proven:business_wording_freeze_review"],
-            }
-        },
-    }
+    state["parallel_reply_chain_diagnostics"]["release_review"] = _release_review_with_external_gate_blockers(
+        "business_wording_freeze_review"
+    )
 
     audit = reply_chain_shadow_bundle_audit(
         state=state,
@@ -200,18 +217,9 @@ def test_bundle_audit_accepts_business_wording_freeze_external_gate() -> None:
 
 def test_bundle_audit_accepts_payload_isolation_external_gate() -> None:
     state = _ready_state()
-    state["parallel_reply_chain_diagnostics"]["release_review"] = {
-        "schema_version": "reply_chain_release_review_checklist_v1",
-        "can_enable_behavior_switch": False,
-        "missing_or_unproven_gates": ["payload_isolation_review"],
-        "blocker_groups": {
-            "manual_review": {
-                "ready": False,
-                "blocker_count": 1,
-                "blockers": ["gate_not_proven:payload_isolation_review"],
-            }
-        },
-    }
+    state["parallel_reply_chain_diagnostics"]["release_review"] = _release_review_with_external_gate_blockers(
+        "payload_isolation_review"
+    )
 
     audit = reply_chain_shadow_bundle_audit(
         state=state,
@@ -225,18 +233,9 @@ def test_bundle_audit_accepts_payload_isolation_external_gate() -> None:
 
 def test_bundle_audit_accepts_rollback_evidence_external_gate() -> None:
     state = _ready_state()
-    state["parallel_reply_chain_diagnostics"]["release_review"] = {
-        "schema_version": "reply_chain_release_review_checklist_v1",
-        "can_enable_behavior_switch": False,
-        "missing_or_unproven_gates": ["rollback_evidence_review"],
-        "blocker_groups": {
-            "manual_review": {
-                "ready": False,
-                "blocker_count": 1,
-                "blockers": ["gate_not_proven:rollback_evidence_review"],
-            }
-        },
-    }
+    state["parallel_reply_chain_diagnostics"]["release_review"] = _release_review_with_external_gate_blockers(
+        "rollback_evidence_review"
+    )
 
     audit = reply_chain_shadow_bundle_audit(
         state=state,
@@ -250,18 +249,9 @@ def test_bundle_audit_accepts_rollback_evidence_external_gate() -> None:
 
 def test_bundle_audit_accepts_model_semantics_ownership_external_gate() -> None:
     state = _ready_state()
-    state["parallel_reply_chain_diagnostics"]["release_review"] = {
-        "schema_version": "reply_chain_release_review_checklist_v1",
-        "can_enable_behavior_switch": False,
-        "missing_or_unproven_gates": ["model_semantics_ownership_review"],
-        "blocker_groups": {
-            "manual_review": {
-                "ready": False,
-                "blocker_count": 1,
-                "blockers": ["gate_not_proven:model_semantics_ownership_review"],
-            }
-        },
-    }
+    state["parallel_reply_chain_diagnostics"]["release_review"] = _release_review_with_external_gate_blockers(
+        "model_semantics_ownership_review"
+    )
 
     audit = reply_chain_shadow_bundle_audit(
         state=state,
@@ -777,21 +767,10 @@ def test_bundle_audit_blocks_flat_unproven_release_review_gates() -> None:
 
 def test_bundle_audit_accepts_valid_external_reports_for_external_review_gates() -> None:
     state = _ready_state()
-    state["parallel_reply_chain_diagnostics"]["release_review"] = {
-        "schema_version": "reply_chain_release_review_checklist_v1",
-        "can_enable_behavior_switch": False,
-        "missing_or_unproven_gates": ["simulation_regression_review", "model_matrix_review"],
-        "blocker_groups": {
-            "manual_review": {
-                "ready": False,
-                "blocker_count": 2,
-                "blockers": [
-                    "gate_not_proven:simulation_regression_review",
-                    "gate_not_proven:model_matrix_review",
-                ],
-            }
-        },
-    }
+    state["parallel_reply_chain_diagnostics"]["release_review"] = _release_review_with_external_gate_blockers(
+        "simulation_regression_review",
+        "model_matrix_review",
+    )
 
     audit = reply_chain_shadow_bundle_audit(
         state=state,
@@ -899,6 +878,20 @@ def test_bundle_audit_blocks_release_review_that_claims_switch_approval() -> Non
 
     assert audit["ready_for_refactor_review"] is False
     assert "release_review_missing_non_approval_marker" in audit["blockers"]
+
+
+def test_bundle_audit_blocks_all_clear_release_review_without_retained_timeline_evidence() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = _release_review_with_external_gate_blockers()
+    state["parallel_reply_chain_diagnostics"]["release_review"]["blocker_groups"]["manual_review"][
+        "ready"
+    ] = True
+    state["parallel_reply_chain_diagnostics"]["release_review"]["gates"][0]["evidence_observed"] = {}
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "release_review_missing_retained_timeline_evidence" in audit["blockers"]
 
 
 def test_bundle_audit_blocks_when_join_would_own_customer_text() -> None:

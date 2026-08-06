@@ -295,6 +295,9 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
 
     gates = {gate["gate_id"]: gate for gate in diagnostics["release_review"]["gates"]}
     assert gates["authority_snapshot_review"]["passed"] is True
+    assert gates["authority_snapshot_review"]["evidence_observed"][
+        "shared_context_timeline_retained_window_schema"
+    ] == "reply_chain_retained_timeline_window_v1"
     assert gates["gate_commit_boundary_review"]["passed"] is True
     assert gates["branch_input_isolation_review"]["passed"] is True
     assert gates["final_expression_owner_review"]["passed"] is True

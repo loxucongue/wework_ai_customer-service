@@ -182,6 +182,21 @@ def _release_review_gate_checklist(
                 and observation.get("shared_context_fact_snapshot_schema") == "reply_chain_fact_snapshot_audit_v1"
                 and observation.get("shared_context_current_message_ready") is True
             ),
+            evidence_observed={
+                "shared_context_authority_audit_schema": observation.get("shared_context_authority_audit_schema"),
+                "shared_context_timeline_window_audit_schema": observation.get(
+                    "shared_context_timeline_window_audit_schema"
+                ),
+                "shared_context_timeline_window_ready": observation.get("shared_context_timeline_window_ready"),
+                "shared_context_timeline_retained_window_schema": observation.get(
+                    "shared_context_timeline_retained_window_schema"
+                ),
+                "shared_context_current_message_audit_schema": observation.get(
+                    "shared_context_current_message_audit_schema"
+                ),
+                "shared_context_current_message_ready": observation.get("shared_context_current_message_ready"),
+                "shared_context_fact_snapshot_schema": observation.get("shared_context_fact_snapshot_schema"),
+            },
         ),
         _gate(
             "gate_commit_boundary_review",
@@ -306,13 +321,21 @@ def _release_review_gate_checklist(
     }
 
 
-def _gate(gate_id: str, evidence_type: str, required_evidence: str, *, passed: bool | None = None) -> dict[str, Any]:
+def _gate(
+    gate_id: str,
+    evidence_type: str,
+    required_evidence: str,
+    *,
+    passed: bool | None = None,
+    evidence_observed: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return _drop_empty(
         {
             "gate_id": gate_id,
             "evidence_type": evidence_type,
             "required_evidence": required_evidence,
             "passed": passed,
+            "evidence_observed": evidence_observed,
         }
     )
 
