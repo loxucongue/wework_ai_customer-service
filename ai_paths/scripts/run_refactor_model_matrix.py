@@ -157,6 +157,19 @@ def timed_out_profile_result(
     }
 
 
+def suite_run_options(args: argparse.Namespace, settings: Settings) -> dict[str, Any]:
+    return {
+        "attempts": args.attempts,
+        "critical_attempts": args.critical_attempts,
+        "concurrency": args.concurrency,
+        "max_cases": args.max_cases,
+        "scenario_id": args.scenario_id or None,
+        "category": args.category or None,
+        "skip_review": args.skip_review,
+        "base_settings": settings,
+    }
+
+
 def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), dict) else {}
@@ -308,6 +321,8 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--critical-attempts", type=int, default=1)
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--max-cases", type=int, default=0)
+    parser.add_argument("--scenario-id", default="", help="Optional single simulation scenario id to run.")
+    parser.add_argument("--category", default="", help="Optional simulation scenario category to run.")
     parser.add_argument("--skip-review", action="store_true")
     parser.add_argument("--require-keys", action="store_true")
     parser.add_argument(
@@ -364,12 +379,7 @@ async def _main() -> int:
             repo_root=repo_root,
             fixture=fixture,
             output_dir=profile_dir,
-            attempts=args.attempts,
-            critical_attempts=args.critical_attempts,
-            concurrency=args.concurrency,
-            max_cases=args.max_cases,
-            skip_review=args.skip_review,
-            base_settings=settings,
+            **suite_run_options(args, settings),
         )
         try:
             if profile_timeout_seconds and profile_timeout_seconds > 0:

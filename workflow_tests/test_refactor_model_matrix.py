@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 from app.config import Settings
@@ -17,6 +18,7 @@ from ai_paths.scripts.run_refactor_model_matrix import (
     refactor_env_value,
     relay_api_base_url,
     selected_profiles,
+    suite_run_options,
     timed_out_profile_result,
 )
 
@@ -196,6 +198,54 @@ def test_profile_result_summary_exposes_accuracy_and_speed_for_review() -> None:
     assert summary["effect_low_score_count"] == 1
     assert summary["effect_hard_or_infra_count"] == 1
     assert summary["accepted_by_release_thresholds"] is True
+
+
+def test_suite_run_options_passes_scenario_filters_to_simulation() -> None:
+    settings = Settings(_env_file=None)
+    options = suite_run_options(
+        argparse.Namespace(
+            attempts=2,
+            critical_attempts=5,
+            concurrency=2,
+            max_cases=0,
+            scenario_id="store_v2_county_to_nearest_store",
+            category="store",
+            skip_review=False,
+        ),
+        settings,
+    )
+
+    assert options == {
+        "attempts": 2,
+        "critical_attempts": 5,
+        "concurrency": 2,
+        "max_cases": 0,
+        "scenario_id": "store_v2_county_to_nearest_store",
+        "category": "store",
+        "skip_review": False,
+        "base_settings": settings,
+    }
+
+
+def test_suite_run_options_normalizes_empty_filters_to_none() -> None:
+    settings = Settings(_env_file=None)
+    options = suite_run_options(
+        argparse.Namespace(
+            attempts=1,
+            critical_attempts=1,
+            concurrency=1,
+            max_cases=3,
+            scenario_id="",
+            category="",
+            skip_review=True,
+        ),
+        settings,
+    )
+
+    assert options["scenario_id"] is None
+    assert options["category"] is None
+    assert options["max_cases"] == 3
+    assert options["skip_review"] is True
 
 
 def test_profile_artifacts_summary_exposes_per_model_report_evidence(tmp_path) -> None:
