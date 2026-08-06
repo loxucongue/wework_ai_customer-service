@@ -170,6 +170,8 @@ def _static_candidate_safe(gate_router_shadow: dict[str, Any]) -> bool:
     audit = gate_router_shadow.get("direct_reply_candidate_audit")
     if not isinstance(audit, dict):
         return False
+    if audit.get("schema_version") != "chat_gate_direct_reply_candidate_audit_v1":
+        return False
     return audit.get("safe_for_direct_reply_static_candidate") is True
 
 
