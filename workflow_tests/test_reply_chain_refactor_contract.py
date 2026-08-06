@@ -24,6 +24,7 @@ def test_refactor_plan_keeps_review_and_test_gates() -> None:
         "T8：Shadow 对比",
         "不得提交到 `main`，不得部署，不得主动发送真实客户消息",
         "Gate 必须提供非空静态 `direct_reply_candidate`，否则交 Reply 恢复表达",
+        "依赖缺失或重复时只能进入 shadow blocker，不能提前执行",
     ]:
         assert marker in text
 
