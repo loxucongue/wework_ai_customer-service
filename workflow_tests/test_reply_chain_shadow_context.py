@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import json
 
 from app.graph.nodes.reply_chain_shadow_context import build_reply_chain_shadow_context
+from app.graph.nodes.reply_context import reply_user_payload_for_model
+from app.graph.planner.brain_v2 import _planner_payload_for_model
 
 
 class ReplyChainShadowContextTests(unittest.TestCase):
@@ -76,6 +79,26 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertEqual(messages[1]["sender"], "assistant")
         self.assertEqual(messages[-1]["message_ref"], "m3")
         self.assertEqual(messages[-1]["content"], "发我")
+
+    def test_shadow_context_is_not_consumed_by_current_model_payloads(self) -> None:
+        state = {
+            "normalized_content": "效果怎么样",
+            "conversation_history": ["用户: 想淡斑"],
+            "reply_chain_shadow_context": {
+                "schema_version": "reply_chain_shadow_v1",
+                "purpose": "shadow_only_no_model_input_no_customer_effect",
+                "conversation": {"messages": [{"content": "shadow-only"}]},
+            },
+            "request_context": {},
+        }
+
+        planner_payload = _planner_payload_for_model(state)
+        reply_payload = reply_user_payload_for_model(state)
+        combined = json.dumps([planner_payload, reply_payload], ensure_ascii=False)
+
+        self.assertNotIn("reply_chain_shadow_context", planner_payload)
+        self.assertNotIn("reply_chain_shadow_context", reply_payload)
+        self.assertNotIn("shadow-only", combined)
 
 
 if __name__ == "__main__":
