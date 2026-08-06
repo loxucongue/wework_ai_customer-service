@@ -8,6 +8,53 @@ MIN_REQUIRED_SIMULATION_ATTEMPTS = 3
 MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS = 5
 
 
+def payload_isolation_report_blockers(report: dict[str, Any]) -> list[str]:
+    if report.get("schema_version") != "reply_chain_payload_isolation_audit_v1":
+        return ["missing_payload_isolation_audit"]
+    blockers: list[str] = []
+    commit = _string_value(report.get("git_commit"))
+    if not commit:
+        blockers.append("payload_isolation_missing_git_commit")
+    commit_set = _list_strings(report.get("git_commit_set"))
+    if not commit_set:
+        blockers.append("payload_isolation_missing_git_commit_set")
+    elif len(set(commit_set)) != 1:
+        blockers.append(f"payload_isolation_multiple_git_commits:{','.join(commit_set)}")
+    elif commit and commit_set[0] != commit:
+        blockers.append(f"payload_isolation_git_commit_set_mismatch:{commit_set[0]}!={commit}")
+    shadow_fields = _list_strings(report.get("shadow_only_fields"))
+    if not shadow_fields:
+        blockers.append("payload_isolation_missing_shadow_only_fields")
+    payloads_checked = set(_list_strings(report.get("payloads_checked")))
+    for payload_name in (
+        "planner",
+        "reply",
+        "sop_chat_gate_selector",
+        "sop_chat_gate_messages",
+    ):
+        if payload_name not in payloads_checked:
+            blockers.append(f"payload_isolation_missing_payload_check:{payload_name}")
+    leaks = _dict(report.get("leaked_fields_by_payload"))
+    for payload_name, leaked in leaks.items():
+        for field in _list_strings(leaked):
+            blockers.append(f"payload_isolation_leaked_field:{payload_name}:{field}")
+    if report.get("payload_isolation_passed") is not True:
+        blockers.append("payload_isolation_not_passed")
+    if report.get("active_model_payloads_checked") is not True:
+        blockers.append("payload_isolation_missing_active_payload_check")
+    safety = _dict(report.get("safety"))
+    for field, blocker in (
+        ("audit_only", "payload_isolation_missing_audit_only_safety"),
+        ("does_not_change_runtime_behavior", "payload_isolation_missing_no_runtime_change_safety"),
+        ("does_not_send_customer_messages", "payload_isolation_missing_no_send_safety"),
+        ("does_not_write_database", "payload_isolation_missing_no_write_safety"),
+        ("does_not_call_models", "payload_isolation_missing_no_model_call_safety"),
+    ):
+        if safety.get(field) is not True:
+            blockers.append(blocker)
+    return blockers
+
+
 def business_wording_freeze_report_blockers(report: dict[str, Any]) -> list[str]:
     if report.get("schema_version") != "reply_chain_business_wording_freeze_audit_v1":
         return ["missing_business_wording_freeze_audit"]

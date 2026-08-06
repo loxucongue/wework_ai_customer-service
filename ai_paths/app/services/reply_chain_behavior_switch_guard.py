@@ -5,6 +5,7 @@ from typing import Any
 from app.services.reply_chain_external_gate_evidence import (
     business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
+    payload_isolation_report_blockers,
     rollback_evidence_report_blockers,
     simulation_report_blockers,
 )
@@ -31,6 +32,7 @@ def reply_chain_behavior_switch_guard(
     diagnostics: dict[str, Any] | None = None,
     simulation_report: dict[str, Any] | None = None,
     model_matrix_report: dict[str, Any] | None = None,
+    payload_isolation_report: dict[str, Any] | None = None,
     business_wording_freeze_report: dict[str, Any] | None = None,
     rollback_evidence_report: dict[str, Any] | None = None,
     human_review: dict[str, Any] | None = None,
@@ -42,12 +44,18 @@ def reply_chain_behavior_switch_guard(
     diag = _dict(diagnostics)
     simulation = _dict(simulation_report)
     model_matrix = _dict(model_matrix_report)
+    payload_isolation = _dict(payload_isolation_report)
     business_wording_freeze = _dict(business_wording_freeze_report)
     rollback_evidence = _dict(rollback_evidence_report)
     review = _dict(human_review)
     switch_requested = _behavior_switch_requested(flags)
     simulation_blockers = simulation_report_blockers(simulation)
     model_matrix_blockers = model_matrix_report_blockers(model_matrix)
+    payload_isolation_blockers = (
+        payload_isolation_report_blockers(payload_isolation)
+        if payload_isolation_report is not None
+        else []
+    )
     business_wording_freeze_blockers = (
         business_wording_freeze_report_blockers(business_wording_freeze)
         if business_wording_freeze_report is not None
@@ -63,6 +71,8 @@ def reply_chain_behavior_switch_guard(
         proven_external_gates.add("simulation_regression_review")
     if not model_matrix_blockers:
         proven_external_gates.add("model_matrix_review")
+    if payload_isolation_report is not None and not payload_isolation_blockers:
+        proven_external_gates.add("payload_isolation_review")
     if business_wording_freeze_report is not None and not business_wording_freeze_blockers:
         proven_external_gates.add("business_wording_freeze_review")
     if rollback_evidence_report is not None and not rollback_evidence_blockers:
@@ -76,6 +86,7 @@ def reply_chain_behavior_switch_guard(
     blockers.extend(_diagnostic_blockers(diag, proven_external_gates=proven_external_gates))
     blockers.extend(simulation_blockers)
     blockers.extend(model_matrix_blockers)
+    blockers.extend(payload_isolation_blockers)
     blockers.extend(business_wording_freeze_blockers)
     blockers.extend(rollback_evidence_blockers)
     blockers.extend(
@@ -85,6 +96,7 @@ def reply_chain_behavior_switch_guard(
             diagnostics=diag,
             simulation_report=simulation,
             model_matrix_report=model_matrix,
+            payload_isolation_report=payload_isolation,
             business_wording_freeze_report=business_wording_freeze,
             rollback_evidence_report=rollback_evidence,
         )
@@ -106,6 +118,10 @@ def reply_chain_behavior_switch_guard(
                     "and required pass rate"
                 ),
                 "model_matrix_report": "three-model relay matrix with accuracy and latency summary",
+                "payload_isolation_report": (
+                    "reply_chain_payload_isolation_audit_v1 proving shadow-only diagnostics do not "
+                    "enter active Planner, Reply, or SOP Chat Gate model payloads"
+                ),
                 "business_wording_freeze_report": (
                     "reply_chain_business_wording_freeze_audit_v1 proving protected customer-visible "
                     "business assets were not changed by the structural refactor"
@@ -251,6 +267,7 @@ def _human_review_blockers(
     diagnostics: dict[str, Any],
     simulation_report: dict[str, Any],
     model_matrix_report: dict[str, Any],
+    payload_isolation_report: dict[str, Any],
     business_wording_freeze_report: dict[str, Any],
     rollback_evidence_report: dict[str, Any],
 ) -> list[str]:
@@ -271,6 +288,7 @@ def _human_review_blockers(
                 diagnostics=diagnostics,
                 simulation_report=simulation_report,
                 model_matrix_report=model_matrix_report,
+                payload_isolation_report=payload_isolation_report,
                 business_wording_freeze_report=business_wording_freeze_report,
                 rollback_evidence_report=rollback_evidence_report,
             )
@@ -288,12 +306,14 @@ def _review_commit_match_blockers(
     diagnostics: dict[str, Any],
     simulation_report: dict[str, Any],
     model_matrix_report: dict[str, Any],
+    payload_isolation_report: dict[str, Any],
     business_wording_freeze_report: dict[str, Any],
     rollback_evidence_report: dict[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
     simulation_commit = str(simulation_report.get("git_commit") or "").strip()
     model_matrix_commit = str(model_matrix_report.get("git_commit") or "").strip()
+    payload_isolation_commit = str(payload_isolation_report.get("git_commit") or "").strip()
     business_wording_freeze_commit = str(business_wording_freeze_report.get("git_commit") or "").strip()
     rollback_evidence_commit = str(rollback_evidence_report.get("git_commit") or "").strip()
     blockers.extend(_commit_evidence_blockers("shadow_bundle", shadow_bundle_audit, commit_sha))
@@ -302,6 +322,8 @@ def _review_commit_match_blockers(
         blockers.append(f"human_review_commit_mismatch:simulation:{simulation_commit}")
     if model_matrix_commit and model_matrix_commit != commit_sha:
         blockers.append(f"human_review_commit_mismatch:model_matrix:{model_matrix_commit}")
+    if payload_isolation_commit and payload_isolation_commit != commit_sha:
+        blockers.append(f"human_review_commit_mismatch:payload_isolation:{payload_isolation_commit}")
     if business_wording_freeze_commit and business_wording_freeze_commit != commit_sha:
         blockers.append(f"human_review_commit_mismatch:business_wording_freeze:{business_wording_freeze_commit}")
     if rollback_evidence_commit and rollback_evidence_commit != commit_sha:

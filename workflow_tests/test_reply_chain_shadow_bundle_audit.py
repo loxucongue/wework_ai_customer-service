@@ -155,6 +155,31 @@ def test_bundle_audit_accepts_business_wording_freeze_external_gate() -> None:
     assert "business_wording_freeze_review" in audit["external_gate_evidence"]["proven_gates"]
 
 
+def test_bundle_audit_accepts_payload_isolation_external_gate() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": ["payload_isolation_review"],
+        "blocker_groups": {
+            "manual_review": {
+                "ready": False,
+                "blocker_count": 1,
+                "blockers": ["gate_not_proven:payload_isolation_review"],
+            }
+        },
+    }
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
+        payload_isolation_report=_payload_isolation_ready(),
+    )
+
+    assert audit["ready_for_refactor_review"] is True
+    assert "payload_isolation_review" in audit["external_gate_evidence"]["proven_gates"]
+
+
 def test_bundle_audit_accepts_rollback_evidence_external_gate() -> None:
     state = _ready_state()
     state["parallel_reply_chain_diagnostics"]["release_review"] = {
@@ -385,6 +410,37 @@ def _business_wording_freeze_ready() -> dict:
         "changed_protected_paths": [],
         "customer_visible_business_assets_unchanged": True,
         "review_required": False,
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+        },
+    }
+
+
+def _payload_isolation_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_payload_isolation_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "head_ref": "HEAD",
+        "shadow_only_fields": ["reply_chain_shadow_context", "parallel_reply_chain_diagnostics"],
+        "payloads_checked": [
+            "planner",
+            "reply",
+            "sop_chat_gate_selector",
+            "sop_chat_gate_messages",
+        ],
+        "leaked_fields_by_payload": {
+            "planner": [],
+            "reply": [],
+            "sop_chat_gate_selector": [],
+            "sop_chat_gate_messages": [],
+        },
+        "payload_isolation_passed": True,
+        "active_model_payloads_checked": True,
         "safety": {
             "audit_only": True,
             "does_not_change_runtime_behavior": True,

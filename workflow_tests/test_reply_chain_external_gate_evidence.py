@@ -5,6 +5,7 @@ from pathlib import Path
 from app.services.reply_chain_external_gate_evidence import (
     business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
+    payload_isolation_report_blockers,
     rollback_evidence_report_blockers,
     simulation_report_blockers,
 )
@@ -228,6 +229,37 @@ def _business_wording_freeze_ready() -> dict:
     }
 
 
+def _payload_isolation_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_payload_isolation_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "head_ref": "HEAD",
+        "shadow_only_fields": ["reply_chain_shadow_context", "parallel_reply_chain_diagnostics"],
+        "payloads_checked": [
+            "planner",
+            "reply",
+            "sop_chat_gate_selector",
+            "sop_chat_gate_messages",
+        ],
+        "leaked_fields_by_payload": {
+            "planner": [],
+            "reply": [],
+            "sop_chat_gate_selector": [],
+            "sop_chat_gate_messages": [],
+        },
+        "payload_isolation_passed": True,
+        "active_model_payloads_checked": True,
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+        },
+    }
+
+
 def _rollback_evidence_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_rollback_evidence_v1",
@@ -385,6 +417,36 @@ def test_external_gate_evidence_blocks_missing_or_mismatched_model_matrix_commit
 
 def test_external_gate_evidence_accepts_business_wording_freeze_report() -> None:
     assert business_wording_freeze_report_blockers(_business_wording_freeze_ready()) == []
+
+
+def test_external_gate_evidence_accepts_payload_isolation_report() -> None:
+    assert payload_isolation_report_blockers(_payload_isolation_ready()) == []
+
+
+def test_external_gate_evidence_blocks_payload_isolation_leaks() -> None:
+    report = _payload_isolation_ready()
+    report["leaked_fields_by_payload"]["planner"] = ["parallel_reply_chain_diagnostics"]
+    report["payload_isolation_passed"] = False
+
+    blockers = payload_isolation_report_blockers(report)
+
+    assert "payload_isolation_leaked_field:planner:parallel_reply_chain_diagnostics" in blockers
+    assert "payload_isolation_not_passed" in blockers
+
+
+def test_external_gate_evidence_blocks_payload_isolation_missing_payloads_or_safety() -> None:
+    report = _payload_isolation_ready()
+    report["payloads_checked"] = ["planner"]
+    report["safety"]["does_not_call_models"] = False
+    del report["git_commit_set"]
+
+    blockers = payload_isolation_report_blockers(report)
+
+    assert "payload_isolation_missing_git_commit_set" in blockers
+    assert "payload_isolation_missing_payload_check:reply" in blockers
+    assert "payload_isolation_missing_payload_check:sop_chat_gate_selector" in blockers
+    assert "payload_isolation_missing_payload_check:sop_chat_gate_messages" in blockers
+    assert "payload_isolation_missing_no_model_call_safety" in blockers
 
 
 def test_external_gate_evidence_accepts_rollback_evidence_report() -> None:

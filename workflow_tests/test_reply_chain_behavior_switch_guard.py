@@ -285,6 +285,37 @@ def _business_wording_freeze_ready() -> dict:
     }
 
 
+def _payload_isolation_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_payload_isolation_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "head_ref": "HEAD",
+        "shadow_only_fields": ["reply_chain_shadow_context", "parallel_reply_chain_diagnostics"],
+        "payloads_checked": [
+            "planner",
+            "reply",
+            "sop_chat_gate_selector",
+            "sop_chat_gate_messages",
+        ],
+        "leaked_fields_by_payload": {
+            "planner": [],
+            "reply": [],
+            "sop_chat_gate_selector": [],
+            "sop_chat_gate_messages": [],
+        },
+        "payload_isolation_passed": True,
+        "active_model_payloads_checked": True,
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+        },
+    }
+
+
 def _rollback_evidence_ready() -> dict:
     return {
         "schema_version": "reply_chain_refactor_rollback_evidence_v1",
@@ -563,6 +594,53 @@ def test_behavior_switch_guard_blocks_invalid_business_wording_freeze_report() -
     assert guard["can_enable_behavior_switch"] is False
     assert "business_wording_freeze_protected_path_changed:config/sop_reply_packs.json" in guard["blockers"]
     assert "business_wording_freeze_assets_not_unchanged" in guard["blockers"]
+
+
+def test_behavior_switch_guard_filters_payload_isolation_report_gate() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["missing_or_unproven_gates"] = ["payload_isolation_review"]
+    diagnostics["release_review"]["blocker_groups"] = {
+        "manual_review": {
+            "ready": False,
+            "blocker_count": 1,
+            "blockers": ["gate_not_proven:payload_isolation_review"],
+        }
+    }
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        payload_isolation_report=_payload_isolation_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is True
+    assert "blockers" not in guard
+
+
+def test_behavior_switch_guard_blocks_invalid_payload_isolation_report() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["missing_or_unproven_gates"] = ["payload_isolation_review"]
+    report = _payload_isolation_ready()
+    report["leaked_fields_by_payload"]["reply"] = ["reply_chain_shadow_context"]
+    report["payload_isolation_passed"] = False
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        payload_isolation_report=report,
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "payload_isolation_leaked_field:reply:reply_chain_shadow_context" in guard["blockers"]
+    assert "payload_isolation_not_passed" in guard["blockers"]
 
 
 def test_behavior_switch_guard_filters_rollback_evidence_report_gate() -> None:

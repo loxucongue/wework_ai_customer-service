@@ -166,8 +166,8 @@ def _release_review_gate_checklist(
         _gate("rule_matrix_delta_review", "manual_required", "review_rule_ownership_matrix_delta_for_this_commit"),
         _gate(
             "payload_isolation_review",
-            "external_test_required",
-            "run_workflow_tests/test_reply_chain_shadow_payload_isolation.py",
+            "external_report_required",
+            "attach_reply_chain_payload_isolation_audit_before_behavior_switch",
         ),
         _gate(
             "authority_snapshot_review",

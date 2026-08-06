@@ -358,9 +358,9 @@ incomplete, skipped because of absent keys, or contains any safety marker other
 than the values above, the guard must block.
 
 When reviewing postcommit shadow evidence, recompute
-`reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=..., business_wording_freeze_report=..., rollback_evidence_report=...)`
-with the same offline simulation, model matrix, business wording freeze, and
-rollback evidence reports. This keeps the postcommit bundle and final
+`reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=..., payload_isolation_report=..., business_wording_freeze_report=..., rollback_evidence_report=...)`
+with the same offline simulation, model matrix, payload isolation, business
+wording freeze, and rollback evidence reports. This keeps the postcommit bundle and final
 behavior-switch guard aligned: unresolved diagnostic gates remain blockers,
 while externally proven gates are cleared only by valid reports.
 In short, the postcommit bundle and final behavior-switch guard aligned state is required before review.
@@ -411,6 +411,34 @@ Required freeze report:
 This audit is a structural freeze check only. If it reports protected path
 changes, do not hide that by editing the report. Split business wording changes
 into a separately reviewed business commit, or keep the behavior switch blocked.
+
+Payload isolation audit:
+
+```powershell
+$env:PYTHONPATH='ai_paths'
+python ai_paths/scripts/audit_reply_chain_payload_isolation.py `
+  --head-ref HEAD `
+  --report .tmp_runtime/payload_isolation_audit.json
+```
+
+Required payload isolation report:
+
+- `schema_version=reply_chain_payload_isolation_audit_v1`
+- `git_commit` matches the reviewed behavior-switch commit
+- `git_commit_set` contains exactly that commit
+- `shadow_only_fields` is non-empty
+- `payloads_checked` includes `planner`, `reply`, `sop_chat_gate_selector`, and `sop_chat_gate_messages`
+- `leaked_fields_by_payload` has no leaked field entries
+- `payload_isolation_passed=true`
+- `active_model_payloads_checked=true`
+- `safety.audit_only=true`
+- `safety.does_not_change_runtime_behavior=true`
+- `safety.does_not_send_customer_messages=true`
+- `safety.does_not_write_database=true`
+- `safety.does_not_call_models=true`
+
+This audit proves shadow diagnostics stay out of active model inputs. It does
+not prove reply quality, customer psychology, or business-rule correctness.
 
 Rollback/no-deploy evidence audit:
 
@@ -491,6 +519,8 @@ Behavior switching remains blocked unless all evidence is present:
 - offline simulation report passing, with `git_commit` matching the reviewed
   commit;
 - model matrix report passing, with `git_commit` matching the reviewed commit;
+- payload isolation report passing, with `git_commit` matching the reviewed
+  commit;
 - rollback evidence report passing, with `git_commit` matching the reviewed
   commit;
 - explicit human approval for branch, commit, and behavior-switch scope;
