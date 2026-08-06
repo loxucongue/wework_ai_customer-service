@@ -559,6 +559,7 @@ Review 重点：
 - 离线仿真报告。
 - 新旧链路差异。
 - 客户可见话术样本。
+- `reply_chain_precommit_validation_audit_v1` 证明写入发生在最终回复可提交之后。
 - 回滚路径。
 
 ## 15. Review 代码安排
@@ -688,6 +689,8 @@ python -m pytest workflow_tests/test_reply_chain_commit_shadow.py workflow_tests
 目的：
 
 - 写操作只发生在 Reply 校验后。
+- 提交前置审计存在且通过；空回复未被允许时必须阻断行为切换。
+- 测试隔离和 memory 不写入只是 side effect 范围收缩，不应被误判为业务失败。
 - shadow 阶段不写线上状态。
 
 ### 16.7 T6：并行组合测试

@@ -320,6 +320,7 @@ def _commit_blockers(commit: dict[str, Any]) -> list[str]:
         blockers.append("commit_owner_not_runtime_after_reply_validation")
     if commit.get("requires_reply_validation_before_commit") is not True:
         blockers.append("commit_does_not_require_reply_validation")
+    blockers.extend(_commit_precommit_audit_blockers(commit))
     forbidden_owners = commit.get("must_not_be_owned_by")
     if isinstance(forbidden_owners, list):
         required_forbidden = {"sop_chat_gate", "tool_planner", "reply_chain_join"}
@@ -328,6 +329,16 @@ def _commit_blockers(commit: dict[str, Any]) -> list[str]:
     else:
         blockers.append("commit_missing_forbidden_owners")
     return blockers
+
+
+def _commit_precommit_audit_blockers(commit: dict[str, Any]) -> list[str]:
+    audit = commit.get("precommit_validation_audit")
+    if not isinstance(audit, dict) or audit.get("schema_version") != "reply_chain_precommit_validation_audit_v1":
+        return ["missing_reply_chain_precommit_validation_audit"]
+    if audit.get("ready_for_commit_shadow") is True:
+        return []
+    blockers = _list_strings(audit.get("blockers"))
+    return [f"precommit:{item}" for item in blockers] or ["precommit:not_ready"]
 
 
 def _migration_blockers(parallel_reply_chain_shadow: dict[str, Any]) -> list[str]:
