@@ -35,7 +35,12 @@ FACT_AND_TOOL_FIELDS = (
 )
 
 
-def reply_final_brain_handoff_shadow_from_planner_output(output: dict[str, Any]) -> dict[str, Any]:
+def reply_final_brain_handoff_shadow_from_planner_output(
+    output: dict[str, Any],
+    *,
+    reply_chain_shadow_context: dict[str, Any] | None = None,
+    gate_router_shadow: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build the future Reply-final-brain handoff from current Planner output.
 
     This is shadow-only migration evidence. It does not approve, alter, or
@@ -46,6 +51,11 @@ def reply_final_brain_handoff_shadow_from_planner_output(output: dict[str, Any])
     turn_outcome_fields = _present_fields(output, TURN_OUTCOME_FIELDS)
     sales_decision_fields = _present_fields(output, SALES_DECISION_FIELDS)
     fact_and_tool_fields = _present_fields(output, FACT_AND_TOOL_FIELDS)
+    handoff_readiness_audit = _handoff_readiness_audit(
+        output=output,
+        reply_chain_shadow_context=reply_chain_shadow_context or {},
+        gate_router_shadow=gate_router_shadow or {},
+    )
     return _drop_empty(
         {
             "schema_version": "reply_final_brain_handoff_shadow_v1",
@@ -66,6 +76,7 @@ def reply_final_brain_handoff_shadow_from_planner_output(output: dict[str, Any])
                 "legacy_business_field_count": len(customer_message_fields) + len(turn_outcome_fields) + len(sales_decision_fields),
                 "requires_reply_schema_before_activation": True,
             },
+            "handoff_readiness_audit": handoff_readiness_audit,
             "ownership_contract": {
                 "reply_owns": [
                     "final_customer_visible_messages",
@@ -86,6 +97,83 @@ def reply_final_brain_handoff_shadow_from_planner_output(output: dict[str, Any])
                 "no_customer_messages_sent": True,
                 "no_database_writes": True,
             },
+        }
+    )
+
+
+def _handoff_readiness_audit(
+    *,
+    output: dict[str, Any],
+    reply_chain_shadow_context: dict[str, Any],
+    gate_router_shadow: dict[str, Any],
+) -> dict[str, Any]:
+    authority_audit = reply_chain_shadow_context.get("authority_audit")
+    if not isinstance(authority_audit, dict):
+        authority_audit = {}
+    fact_snapshot = authority_audit.get("fact_snapshot")
+    if not isinstance(fact_snapshot, dict):
+        fact_snapshot = {}
+    join_shadow = output.get("reply_chain_join_shadow")
+    if not isinstance(join_shadow, dict):
+        join_shadow = {}
+    final_expression_boundary = join_shadow.get("final_expression_boundary")
+    if not isinstance(final_expression_boundary, dict):
+        final_expression_boundary = {}
+    tool_plan_preview = output.get("tool_plan_preview")
+    if not isinstance(tool_plan_preview, dict):
+        tool_plan_preview = {}
+
+    blockers: list[str] = []
+    if reply_chain_shadow_context.get("schema_version") != "reply_chain_shadow_v1":
+        blockers.append("missing_complete_timed_chat_context")
+    if authority_audit.get("schema_version") != "reply_chain_authority_audit_v1":
+        blockers.append("missing_authority_audit")
+    if authority_audit.get("complete_chat_is_primary_authority") is not True:
+        blockers.append("complete_chat_not_primary_authority")
+    if authority_audit.get("all_messages_have_sent_at") is not True:
+        blockers.append("incomplete_message_timestamps")
+    if fact_snapshot.get("schema_version") != "reply_chain_fact_snapshot_audit_v1":
+        blockers.append("missing_authoritative_fact_snapshot")
+    if gate_router_shadow.get("schema_version") != "chat_gate_router_shadow_v1":
+        blockers.append("missing_gate_content_candidates")
+    if tool_plan_preview.get("schema_version") != "tool_plan_preview_v2":
+        blockers.append("missing_tool_plan_preview")
+    if join_shadow.get("schema_version") != "reply_chain_join_shadow_v1":
+        blockers.append("missing_reply_chain_join_shadow")
+    if final_expression_boundary.get("schema_version") != "reply_final_expression_boundary_v1":
+        blockers.append("missing_final_expression_boundary")
+    if final_expression_boundary.get("join_generates_customer_visible_text") is not False:
+        blockers.append("join_may_generate_customer_visible_text")
+    if final_expression_boundary.get("join_decides_sales_psychology") is not False:
+        blockers.append("join_may_decide_sales_psychology")
+
+    return _drop_empty(
+        {
+            "schema_version": "reply_final_brain_handoff_readiness_audit_v1",
+            "target_reply_input_contract": {
+                "complete_timed_chat_required": True,
+                "authoritative_facts_required": True,
+                "gate_candidates_reference_only": True,
+                "tool_facts_authoritative_reference_only": True,
+                "final_reply_schema_required_before_activation": True,
+                "commit_phase_must_follow_reply_validation": True,
+                "legacy_planner_outputs_shadow_only": True,
+            },
+            "observed_inputs": {
+                "reply_chain_context_schema": reply_chain_shadow_context.get("schema_version"),
+                "authority_audit_schema": authority_audit.get("schema_version"),
+                "all_messages_have_sent_at": authority_audit.get("all_messages_have_sent_at"),
+                "complete_chat_is_primary_authority": authority_audit.get("complete_chat_is_primary_authority"),
+                "fact_snapshot_schema": fact_snapshot.get("schema_version"),
+                "gate_router_schema": gate_router_shadow.get("schema_version"),
+                "tool_plan_schema": tool_plan_preview.get("schema_version"),
+                "join_schema": join_shadow.get("schema_version"),
+                "final_expression_boundary_schema": final_expression_boundary.get("schema_version"),
+                "join_generates_customer_visible_text": final_expression_boundary.get("join_generates_customer_visible_text"),
+                "join_decides_sales_psychology": final_expression_boundary.get("join_decides_sales_psychology"),
+            },
+            "ready_for_reply_payload_switch_shadow": not blockers,
+            "blockers": blockers,
         }
     )
 

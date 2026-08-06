@@ -29,12 +29,19 @@ def _reply_final_brain_handoff_shadow(
     *,
     legacy_business_field_count: int = 4,
     requires_reply_schema_before_activation: bool = True,
+    handoff_ready: bool = True,
+    handoff_blockers: list[str] | None = None,
 ) -> dict:
     return {
         "schema_version": "reply_final_brain_handoff_shadow_v1",
         "migration_audit": {
             "legacy_business_field_count": legacy_business_field_count,
             "requires_reply_schema_before_activation": requires_reply_schema_before_activation,
+        },
+        "handoff_readiness_audit": {
+            "schema_version": "reply_final_brain_handoff_readiness_audit_v1",
+            "ready_for_reply_payload_switch_shadow": handoff_ready,
+            "blockers": handoff_blockers or [],
         },
     }
 
@@ -143,6 +150,11 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
         self.assertFalse(shadow["current_serial_observation"]["join_decides_sales_psychology"])
         self.assertEqual(shadow["current_serial_observation"]["reply_legacy_business_field_count"], 6)
         self.assertTrue(shadow["current_serial_observation"]["reply_handoff_requires_schema"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["reply_handoff_readiness_schema"],
+            "reply_final_brain_handoff_readiness_audit_v1",
+        )
+        self.assertTrue(shadow["current_serial_observation"]["reply_handoff_ready_for_payload_switch_shadow"])
         self.assertIn("final_closing_move", shadow["ownership_contract"]["sop_chat_gate"]["must_not_own"])
         self.assertIn("customer_visible_text", shadow["ownership_contract"]["tool_planner"]["must_not_own"])
         self.assertIn("single_mainline_action", shadow["ownership_contract"]["reply"]["owns"])
@@ -216,6 +228,41 @@ class ParallelReplyChainShadowTests(unittest.TestCase):
 
         self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
         self.assertIn("missing_reply_final_brain_handoff_shadow", shadow["activation"]["blockers"])
+
+    def test_missing_reply_handoff_readiness_audit_blocks_parallel_runner_activation(self) -> None:
+        handoff = _reply_final_brain_handoff_shadow()
+        handoff.pop("handoff_readiness_audit")
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=_reply_chain_shadow_context(),
+            gate_router_shadow=_gate_router_shadow(),
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
+            reply_final_brain_handoff_shadow=handoff,
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("missing_reply_handoff_readiness_audit", shadow["activation"]["blockers"])
+
+    def test_reply_handoff_readiness_blockers_prevent_parallel_runner_activation(self) -> None:
+        shadow = parallel_reply_chain_shadow(
+            reply_chain_shadow_context=_reply_chain_shadow_context(),
+            gate_router_shadow=_gate_router_shadow(),
+            tool_plan_preview={"schema_version": "tool_plan_preview_v2"},
+            read_only_tool_executor_shadow={"schema_version": "read_only_tool_executor_shadow_v1"},
+            reply_chain_join_shadow=_join_shadow(),
+            reply_final_brain_handoff_shadow=_reply_final_brain_handoff_shadow(
+                handoff_ready=False,
+                handoff_blockers=["missing_complete_timed_chat_context"],
+            ),
+        )
+
+        self.assertFalse(shadow["activation"]["ready_for_shadow_parallel_runner"])
+        self.assertIn("reply_handoff:missing_complete_timed_chat_context", shadow["activation"]["blockers"])
+        self.assertEqual(
+            shadow["current_serial_observation"]["reply_handoff_blockers"],
+            ["missing_complete_timed_chat_context"],
+        )
 
     def test_missing_authority_audit_blocks_parallel_runner_activation(self) -> None:
         shadow = parallel_reply_chain_shadow(

@@ -16,15 +16,32 @@ def test_reply_final_brain_handoff_groups_legacy_planner_semantics() -> None:
             "payment_decision": {"action": "send_now"},
             "reply_strategy": {"tone": "warm"},
             "tool_plan_preview": {
+                "schema_version": "tool_plan_preview_v2",
                 "fact_requirement": "required",
                 "read_tool_calls": [{"name": "customer_store_lookup"}],
                 "migration_audit": {"legacy_residue_count": 2},
             },
             "reply_chain_join_shadow": {
+                "schema_version": "reply_chain_join_shadow_v1",
                 "final_route": "reply_with_tools",
                 "direct_reply_allowed": False,
+                "final_expression_boundary": {
+                    "schema_version": "reply_final_expression_boundary_v1",
+                    "join_generates_customer_visible_text": False,
+                    "join_decides_sales_psychology": False,
+                },
             },
-        }
+        },
+        reply_chain_shadow_context={
+            "schema_version": "reply_chain_shadow_v1",
+            "authority_audit": {
+                "schema_version": "reply_chain_authority_audit_v1",
+                "complete_chat_is_primary_authority": True,
+                "all_messages_have_sent_at": True,
+                "fact_snapshot": {"schema_version": "reply_chain_fact_snapshot_audit_v1"},
+            },
+        },
+        gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
     )
 
     assert handoff["schema_version"] == "reply_final_brain_handoff_shadow_v1"
@@ -37,6 +54,8 @@ def test_reply_final_brain_handoff_groups_legacy_planner_semantics() -> None:
     assert handoff["input_groups"]["fact_and_tool_evidence"]["tool_plan_preview"]["read_tool_count"] == 1
     assert handoff["migration_audit"]["legacy_business_field_count"] == 5
     assert handoff["migration_audit"]["requires_reply_schema_before_activation"] is True
+    assert handoff["handoff_readiness_audit"]["schema_version"] == "reply_final_brain_handoff_readiness_audit_v1"
+    assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is True
     assert "customer_visible_text" in handoff["ownership_contract"]["tool_planner_must_not_own"]
 
 
@@ -54,6 +73,37 @@ def test_reply_final_brain_handoff_allows_fact_only_output() -> None:
     assert "customer_message_candidates" not in handoff["input_groups"]
     assert "sales_decision_signals" not in handoff["input_groups"]
     assert handoff["input_groups"]["fact_and_tool_evidence"]["tool_plan_preview"]["fact_requirement"] == "none"
+    assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is False
+    assert "missing_complete_timed_chat_context" in handoff["handoff_readiness_audit"]["blockers"]
+
+
+def test_reply_final_brain_handoff_blocks_when_join_can_generate_customer_text() -> None:
+    handoff = reply_final_brain_handoff_shadow_from_planner_output(
+        {
+            "tool_plan_preview": {"schema_version": "tool_plan_preview_v2"},
+            "reply_chain_join_shadow": {
+                "schema_version": "reply_chain_join_shadow_v1",
+                "final_expression_boundary": {
+                    "schema_version": "reply_final_expression_boundary_v1",
+                    "join_generates_customer_visible_text": True,
+                    "join_decides_sales_psychology": False,
+                },
+            },
+        },
+        reply_chain_shadow_context={
+            "schema_version": "reply_chain_shadow_v1",
+            "authority_audit": {
+                "schema_version": "reply_chain_authority_audit_v1",
+                "complete_chat_is_primary_authority": True,
+                "all_messages_have_sent_at": True,
+                "fact_snapshot": {"schema_version": "reply_chain_fact_snapshot_audit_v1"},
+            },
+        },
+        gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+    )
+
+    assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is False
+    assert "join_may_generate_customer_visible_text" in handoff["handoff_readiness_audit"]["blockers"]
 
 
 def test_reply_final_brain_handoff_is_not_consumed_by_current_model_payloads() -> None:

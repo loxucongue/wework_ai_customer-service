@@ -36,6 +36,9 @@ def parallel_reply_chain_shadow(
     final_expression_boundary = reply_chain_join_shadow.get("final_expression_boundary")
     if not isinstance(final_expression_boundary, dict):
         final_expression_boundary = {}
+    reply_handoff_readiness = (reply_final_brain_handoff_shadow or {}).get("handoff_readiness_audit")
+    if not isinstance(reply_handoff_readiness, dict):
+        reply_handoff_readiness = {}
     return _drop_empty(
         {
             "schema_version": "parallel_reply_chain_shadow_v1",
@@ -97,6 +100,9 @@ def parallel_reply_chain_shadow(
                 "reply_handoff_schema": (reply_final_brain_handoff_shadow or {}).get("schema_version"),
                 "reply_legacy_business_field_count": reply_handoff_migration.get("legacy_business_field_count"),
                 "reply_handoff_requires_schema": reply_handoff_migration.get("requires_reply_schema_before_activation"),
+                "reply_handoff_readiness_schema": reply_handoff_readiness.get("schema_version"),
+                "reply_handoff_ready_for_payload_switch_shadow": reply_handoff_readiness.get("ready_for_reply_payload_switch_shadow"),
+                "reply_handoff_blockers": reply_handoff_readiness.get("blockers"),
                 "refactor_mode": (refactor_flags or {}).get("mode"),
             },
             "safety": {
@@ -141,9 +147,24 @@ def _activation_blockers(
     blockers.extend(_join_final_expression_blockers(reply_chain_join_shadow))
     if reply_final_brain_handoff_shadow.get("schema_version") != "reply_final_brain_handoff_shadow_v1":
         blockers.append("missing_reply_final_brain_handoff_shadow")
+    blockers.extend(_reply_handoff_readiness_blockers(reply_final_brain_handoff_shadow))
     if read_only_tool_executor_shadow.get("blocked"):
         blockers.append("early_tool_executor_has_blocked_calls")
     return blockers
+
+
+def _reply_handoff_readiness_blockers(reply_final_brain_handoff_shadow: dict[str, Any]) -> list[str]:
+    if reply_final_brain_handoff_shadow.get("schema_version") != "reply_final_brain_handoff_shadow_v1":
+        return []
+    audit = reply_final_brain_handoff_shadow.get("handoff_readiness_audit")
+    if not isinstance(audit, dict) or audit.get("schema_version") != "reply_final_brain_handoff_readiness_audit_v1":
+        return ["missing_reply_handoff_readiness_audit"]
+    if audit.get("ready_for_reply_payload_switch_shadow") is True:
+        return []
+    blockers = audit.get("blockers")
+    if not isinstance(blockers, list) or not blockers:
+        return ["reply_handoff_readiness_not_ready"]
+    return [f"reply_handoff:{item}" for item in blockers if isinstance(item, str) and item]
 
 
 def _join_final_expression_blockers(reply_chain_join_shadow: dict[str, Any]) -> list[str]:
