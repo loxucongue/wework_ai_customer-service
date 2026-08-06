@@ -207,11 +207,19 @@ def _current_message_audit(state: dict[str, Any], timeline: list[dict[str, Any]]
             match = message
     current_in_timeline = match_index >= 0
     current_is_last = current_in_timeline and match_index == len(timeline) - 1
+    matched_content = _string(match.get("content"))
+    matched_msgtype = _string(match.get("message_type"))
+    content_matches_request = (not request_content) or matched_content == request_content
+    msgtype_matches_request = (not request_msgtype) or matched_msgtype == request_msgtype
     blockers: list[str] = []
     if current_required and not current_in_timeline:
         blockers.append("current_message_missing_from_timeline")
     if current_required and current_in_timeline and not current_is_last:
         blockers.append("current_message_not_last_in_timeline")
+    if current_required and current_in_timeline and not content_matches_request:
+        blockers.append("current_message_content_mismatch")
+    if current_required and current_in_timeline and not msgtype_matches_request:
+        blockers.append("current_message_type_mismatch")
     if current_required and not _string(match.get("sent_at")):
         blockers.append("current_message_missing_sent_at")
 
@@ -227,6 +235,8 @@ def _current_message_audit(state: dict[str, Any], timeline: list[dict[str, Any]]
             "current_message_is_last": current_is_last,
             "current_message_ref": _string(match.get("message_ref")),
             "current_message_source": _string(match.get("source")),
+            "current_message_content_matches_request": content_matches_request,
+            "current_message_type_matches_request": msgtype_matches_request,
             "current_message_time_status": _string(match.get("time_status")),
             "ready_for_authoritative_model_input": not blockers,
             "blockers": blockers,

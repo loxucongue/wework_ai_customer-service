@@ -243,6 +243,68 @@ class ReplyChainShadowContextTests(unittest.TestCase):
         self.assertFalse(audit["ready_for_authoritative_model_input"])
         self.assertIn("current_message_not_last_in_timeline", audit["blockers"])
 
+    def test_authority_audit_blocks_when_matching_msgid_has_stale_content(self) -> None:
+        context = build_reply_chain_shadow_context(
+            {
+                "content": "pay now",
+                "normalized_content": "pay now",
+                "request_context": {"msgid": "current", "msgtype": "text", "msgtime": "1785225414095"},
+            },
+            identity={},
+            customer_result={},
+            store_knowledge={},
+            conversation_result={
+                "conversation_turns": [
+                    {
+                        "message_ref": "current",
+                        "role": "customer",
+                        "content": "old duplicated id content",
+                        "msgtype": "text",
+                        "occurred_at": "2026-08-01T10:00:00+08:00",
+                    },
+                ]
+            },
+            memory={},
+        )
+
+        audit = context["authority_audit"]["current_message_audit"]
+        self.assertTrue(audit["current_message_in_timeline"])
+        self.assertTrue(audit["current_message_is_last"])
+        self.assertFalse(audit["current_message_content_matches_request"])
+        self.assertTrue(audit["current_message_type_matches_request"])
+        self.assertFalse(audit["ready_for_authoritative_model_input"])
+        self.assertIn("current_message_content_mismatch", audit["blockers"])
+
+    def test_authority_audit_blocks_when_matching_msgid_has_stale_message_type(self) -> None:
+        context = build_reply_chain_shadow_context(
+            {
+                "content": "",
+                "normalized_content": "",
+                "request_context": {"msgid": "current", "msgtype": "location", "msgtime": "1785225414095"},
+            },
+            identity={},
+            customer_result={},
+            store_knowledge={},
+            conversation_result={
+                "conversation_turns": [
+                    {
+                        "message_ref": "current",
+                        "role": "customer",
+                        "content": "[non-text current message: location]",
+                        "msgtype": "text",
+                        "occurred_at": "2026-08-01T10:00:00+08:00",
+                    },
+                ]
+            },
+            memory={},
+        )
+
+        audit = context["authority_audit"]["current_message_audit"]
+        self.assertTrue(audit["current_message_in_timeline"])
+        self.assertFalse(audit["current_message_type_matches_request"])
+        self.assertFalse(audit["ready_for_authoritative_model_input"])
+        self.assertIn("current_message_type_mismatch", audit["blockers"])
+
     def test_authoritative_facts_include_structured_delivery_and_risk_hold(self) -> None:
         context = build_reply_chain_shadow_context(
             {
