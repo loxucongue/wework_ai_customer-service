@@ -136,6 +136,7 @@ def _cross_component_blockers(
     if _list_strings((parallel_shadow.get("activation") or {}).get("blockers")):
         blockers.append("parallel_contract_has_blockers")
     blockers.extend(_tool_plan_migration_blockers(state))
+    blockers.extend(_read_only_tool_dependency_blockers(state))
     blockers.extend(_reply_handoff_migration_blockers(state))
     runner_shadow = _dict(state.get("parallel_gate_planner_runner_shadow"))
     if str(runner_shadow.get("mode") or "") != "completed_shadow":
@@ -358,6 +359,22 @@ def _tool_plan_migration_blockers(state: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def _read_only_tool_dependency_blockers(state: dict[str, Any]) -> list[str]:
+    executor = _dict(state.get("read_only_tool_executor_shadow"))
+    audit = _dict(executor.get("dependency_audit"))
+    if audit.get("schema_version") != "read_only_tool_dependency_audit_v1":
+        return ["read_only_tool_executor_missing_dependency_audit"]
+    if audit.get("ready_for_early_execution_ordering") is True:
+        return []
+    blockers = [
+        f"read_only_tool_dependency:{item}"
+        for item in _list_strings(audit.get("blockers"))
+    ]
+    if blockers:
+        return blockers
+    return ["read_only_tool_dependency_not_ready"]
+
+
 def _reply_handoff_migration_blockers(state: dict[str, Any]) -> list[str]:
     handoff = _dict(state.get("reply_final_brain_handoff_shadow"))
     if handoff.get("schema_version") != "reply_final_brain_handoff_shadow_v1":
@@ -385,6 +402,7 @@ def _review_gates(state: dict[str, Any], *, require_commit_shadow: bool) -> dict
     parallel_shadow = _dict(state.get("parallel_reply_chain_shadow"))
     observation = _dict(parallel_shadow.get("current_serial_observation"))
     tool_plan_migration = _dict(_dict(state.get("tool_plan_preview")).get("migration_audit"))
+    read_tool_dependency = _dict(_dict(state.get("read_only_tool_executor_shadow")).get("dependency_audit"))
     reply_handoff_migration = _dict(_dict(state.get("reply_final_brain_handoff_shadow")).get("migration_audit"))
     reply_handoff_mapping = _dict(reply_handoff_migration.get("field_mapping_audit"))
     runner = _dict(state.get("parallel_gate_planner_runner_shadow"))
@@ -420,6 +438,13 @@ def _review_gates(state: dict[str, Any], *, require_commit_shadow: bool) -> dict
                 and tool_plan_migration.get("review_required_before_migration") is not True
             ),
             "purpose": "tool_planner_does_not_own_customer_visible_sales_semantics",
+        },
+        "read_only_tool_dependencies_ready": {
+            "passed": (
+                read_tool_dependency.get("schema_version") == "read_only_tool_dependency_audit_v1"
+                and read_tool_dependency.get("ready_for_early_execution_ordering") is True
+            ),
+            "purpose": "read_only_tool_calls_have_unique_call_ids_and_valid_dependency_ordering",
         },
         "join_keeps_reply_as_final_owner": {
             "passed": (

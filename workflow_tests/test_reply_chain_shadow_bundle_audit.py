@@ -48,7 +48,16 @@ def _ready_state() -> dict:
                 "review_required_before_migration": False,
             },
         },
-        "read_only_tool_executor_shadow": {"schema_version": "read_only_tool_executor_shadow_v1"},
+        "read_only_tool_executor_shadow": {
+            "schema_version": "read_only_tool_executor_shadow_v1",
+            "dependency_audit": {
+                "schema_version": "read_only_tool_dependency_audit_v1",
+                "read_call_count": 1,
+                "call_ids": ["lookup_store"],
+                "blocked_count": 0,
+                "ready_for_early_execution_ordering": True,
+            },
+        },
         "reply_chain_join_shadow": {"schema_version": "reply_chain_join_shadow_v1"},
         "reply_final_brain_handoff_shadow": {
             "schema_version": "reply_final_brain_handoff_shadow_v1",
@@ -937,6 +946,36 @@ def test_bundle_audit_blocks_tool_plan_preview_without_migration_audit() -> None
     assert audit["ready_for_refactor_review"] is False
     assert "tool_plan_preview_missing_migration_audit" in audit["blockers"]
     assert "review_gate_not_ready:tool_planner_is_tool_only" in audit["blockers"]
+
+
+def test_bundle_audit_blocks_read_only_executor_without_dependency_audit() -> None:
+    state = _ready_state()
+    state["read_only_tool_executor_shadow"] = {"schema_version": "read_only_tool_executor_shadow_v1"}
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "read_only_tool_executor_missing_dependency_audit" in audit["blockers"]
+    assert "review_gate_not_ready:read_only_tool_dependencies_ready" in audit["blockers"]
+    assert audit["review_gates"]["read_only_tool_dependencies_ready"]["passed"] is False
+
+
+def test_bundle_audit_blocks_read_only_executor_with_dependency_blockers() -> None:
+    state = _ready_state()
+    state["read_only_tool_executor_shadow"]["dependency_audit"] = {
+        "schema_version": "read_only_tool_dependency_audit_v1",
+        "read_call_count": 2,
+        "call_ids": ["lookup_store", "rank_distance"],
+        "blocked_count": 1,
+        "ready_for_early_execution_ordering": False,
+        "blockers": ["missing_read_tool_dependency"],
+    }
+
+    audit = reply_chain_shadow_bundle_audit(state=state, require_commit_shadow=True)
+
+    assert audit["ready_for_refactor_review"] is False
+    assert "read_only_tool_dependency:missing_read_tool_dependency" in audit["blockers"]
+    assert "review_gate_not_ready:read_only_tool_dependencies_ready" in audit["blockers"]
 
 
 def test_bundle_audit_blocks_when_direct_reply_is_allowed_without_guard() -> None:
