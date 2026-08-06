@@ -194,6 +194,14 @@ def _model_matrix_ready() -> dict:
             "targeted_smoke": False,
             "full_release_gate_candidate": True,
         },
+        "run_options": {
+            "schema_version": "reply_chain_refactor_model_matrix_run_options_v1",
+            "attempts": 3,
+            "critical_attempts": 5,
+            "concurrency": 2,
+            "skip_review": False,
+            "profile_timeout_seconds": 120,
+        },
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
         "profiles": [

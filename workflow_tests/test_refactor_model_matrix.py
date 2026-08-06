@@ -11,6 +11,7 @@ from ai_paths.scripts.run_refactor_model_matrix import (
     git_commit_fields,
     load_refactor_env,
     matrix_ranking,
+    matrix_run_options,
     missing_key_profile_result,
     evaluation_scope,
     profile_artifacts_summary,
@@ -275,6 +276,27 @@ def test_evaluation_scope_marks_full_release_gate_candidate_only_without_filters
     }
     assert targeted["targeted_smoke"] is True
     assert targeted["full_release_gate_candidate"] is False
+
+
+def test_matrix_run_options_exposes_review_and_attempt_gate_inputs() -> None:
+    options = matrix_run_options(
+        argparse.Namespace(
+            attempts=3,
+            critical_attempts=5,
+            concurrency=2,
+            skip_review=False,
+            profile_timeout_seconds=120,
+        )
+    )
+
+    assert options == {
+        "schema_version": "reply_chain_refactor_model_matrix_run_options_v1",
+        "attempts": 3,
+        "critical_attempts": 5,
+        "concurrency": 2,
+        "skip_review": False,
+        "profile_timeout_seconds": 120,
+    }
 
 
 def test_profile_artifacts_summary_exposes_per_model_report_evidence(tmp_path) -> None:

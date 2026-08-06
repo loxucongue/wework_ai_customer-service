@@ -462,6 +462,21 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
         blockers.append("model_matrix_missing_evaluation_scope")
     elif scope.get("full_release_gate_candidate") is not True:
         blockers.append("model_matrix_not_full_release_gate_candidate")
+    run_options = _dict(model_matrix.get("run_options"))
+    if run_options.get("schema_version") != "reply_chain_refactor_model_matrix_run_options_v1":
+        blockers.append("model_matrix_missing_run_options")
+    else:
+        if run_options.get("skip_review") is not False:
+            blockers.append("model_matrix_skip_review_not_allowed")
+        attempts = _int_value(run_options.get("attempts"))
+        critical_attempts = _int_value(run_options.get("critical_attempts"))
+        if attempts < MIN_REQUIRED_SIMULATION_ATTEMPTS:
+            blockers.append(f"model_matrix_attempts_below_required:{attempts}<{MIN_REQUIRED_SIMULATION_ATTEMPTS}")
+        if critical_attempts < MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS:
+            blockers.append(
+                "model_matrix_critical_attempts_below_required:"
+                f"{critical_attempts}<{MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS}"
+            )
     requested = set(_list_strings(model_matrix.get("profiles_requested")))
     required_models = {
         "claude": "claude-opus-4-7",

@@ -139,6 +139,14 @@ def _model_matrix_ready() -> dict:
             "targeted_smoke": False,
             "full_release_gate_candidate": True,
         },
+        "run_options": {
+            "schema_version": "reply_chain_refactor_model_matrix_run_options_v1",
+            "attempts": 3,
+            "critical_attempts": 5,
+            "concurrency": 2,
+            "skip_review": False,
+            "profile_timeout_seconds": 120,
+        },
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
         "profiles": [
@@ -697,6 +705,35 @@ def test_external_gate_evidence_blocks_missing_model_matrix_scope() -> None:
     blockers = model_matrix_report_blockers(model_matrix)
 
     assert "model_matrix_missing_evaluation_scope" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_model_matrix_run_options() -> None:
+    model_matrix = _model_matrix_ready()
+    del model_matrix["run_options"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_missing_run_options" in blockers
+
+
+def test_external_gate_evidence_blocks_model_matrix_skip_review() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["run_options"]["skip_review"] = True
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_skip_review_not_allowed" in blockers
+
+
+def test_external_gate_evidence_blocks_model_matrix_attempts_below_required() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["run_options"]["attempts"] = 1
+    model_matrix["run_options"]["critical_attempts"] = 1
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_attempts_below_required:1<3" in blockers
+    assert "model_matrix_critical_attempts_below_required:1<5" in blockers
 
 
 def test_external_gate_evidence_blocks_tiny_model_matrix_profile_artifacts() -> None:

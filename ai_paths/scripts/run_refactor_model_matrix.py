@@ -184,6 +184,17 @@ def evaluation_scope(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def matrix_run_options(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "schema_version": "reply_chain_refactor_model_matrix_run_options_v1",
+        "attempts": int(args.attempts or 0),
+        "critical_attempts": int(args.critical_attempts or 0),
+        "concurrency": int(args.concurrency or 0),
+        "skip_review": bool(args.skip_review),
+        "profile_timeout_seconds": int(args.profile_timeout_seconds or 0),
+    }
+
+
 def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), dict) else {}
@@ -435,6 +446,7 @@ async def _main() -> int:
         "fixture": str(fixture),
         "relay_base_url": relay_base_url,
         "evaluation_scope": evaluation_scope(args),
+        "run_options": matrix_run_options(args),
         "profiles_requested": [profile.name for profile in profiles],
         "executed_profile_count": executed,
         "ranking": matrix_ranking(matrix_results),
