@@ -67,10 +67,33 @@ class ReplyChainJoinShadowTests(unittest.TestCase):
         self.assertFalse(shadow["direct_reply_allowed"])
         self.assertFalse(shadow["direct_reply_guard_audit"]["static_candidate_safe_for_direct_reply"])
         self.assertIn(
-            "static_candidate_contains_dynamic_structure",
+            "static_candidate_not_safe_for_direct_reply",
             shadow["direct_reply_guard_audit"]["blockers"],
         )
         self.assertTrue(shadow["final_expression_boundary"]["reply_required_for_complex_turn"])
+        self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
+
+    def test_direct_text_with_empty_static_candidate_must_go_to_reply_with_content(self) -> None:
+        shadow = reply_chain_join_shadow(
+            gate_router_shadow={
+                "route_suggestion": "direct_text",
+                "selected_content": {"message_count": 1},
+                "direct_reply_candidate_audit": {
+                    "schema_version": "chat_gate_direct_reply_candidate_audit_v1",
+                    "safe_for_direct_reply_static_candidate": False,
+                    "blockers": ["candidate_message_content_empty:0:text"],
+                },
+            },
+            tool_plan_preview={"fact_requirement": "none"},
+        )
+
+        self.assertEqual(shadow["final_route"], "reply_with_content")
+        self.assertFalse(shadow["direct_reply_allowed"])
+        self.assertFalse(shadow["direct_reply_guard_audit"]["static_candidate_safe_for_direct_reply"])
+        self.assertIn(
+            "static_candidate_not_safe_for_direct_reply",
+            shadow["direct_reply_guard_audit"]["blockers"],
+        )
         self.assertEqual(shadow["final_expression_boundary"]["final_customer_message_owner"], "reply")
 
     def test_direct_text_with_read_tools_must_go_to_reply_with_content_and_tools(self) -> None:

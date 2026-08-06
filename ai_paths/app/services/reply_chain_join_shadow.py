@@ -133,7 +133,7 @@ def _direct_reply_guard_audit(
     if requested and has_unknown_tools:
         blockers.append("unknown_tools_present")
     if requested and has_content and not static_candidate_safe:
-        blockers.append("static_candidate_contains_dynamic_structure")
+        blockers.append("static_candidate_not_safe_for_direct_reply")
     return {
         "schema_version": "reply_chain_direct_reply_guard_audit_v1",
         "direct_reply_requested": requested,

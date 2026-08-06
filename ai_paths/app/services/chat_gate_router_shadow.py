@@ -131,6 +131,12 @@ def _direct_reply_candidate_audit(reply_messages: list[Any]) -> dict[str, Any]:
     if reply_messages and not message_types:
         blockers.append("candidate_message_type_missing")
     blockers.extend(f"dynamic_structure_message_type:{message_type}" for message_type in dynamic_types)
+    for index, message in enumerate(reply_messages):
+        if not isinstance(message, dict):
+            continue
+        message_type = str(message.get("type") or "").strip()
+        if message_type in STATIC_DIRECT_MESSAGE_TYPES and not _static_message_content_present(message):
+            blockers.append(f"candidate_message_content_empty:{index}:{message_type}")
     return {
         "schema_version": "chat_gate_direct_reply_candidate_audit_v1",
         "message_count": len(reply_messages),
@@ -139,6 +145,33 @@ def _direct_reply_candidate_audit(reply_messages: list[Any]) -> dict[str, Any]:
         "safe_for_direct_reply_static_candidate": bool(reply_messages) and not blockers,
         "blockers": blockers,
     }
+
+
+def _static_message_content_present(message: dict[str, Any]) -> bool:
+    message_type = str(message.get("type") or "").strip()
+    content = message.get("content")
+    if message_type == "text":
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, dict):
+            return bool(str(content.get("text") or content.get("content") or "").strip())
+        return False
+    if message_type in {"image", "video"}:
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, dict):
+            return bool(
+                str(
+                    content.get("url")
+                    or content.get("image_url")
+                    or content.get("video_url")
+                    or content.get("media_url")
+                    or content.get("content")
+                    or ""
+                ).strip()
+            )
+        return False
+    return False
 
 
 def _drop_empty(value: Any) -> Any:
