@@ -307,8 +307,14 @@ def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
         gates["business_wording_freeze_review"]["required_evidence"]
         == "attach_reply_chain_business_wording_freeze_audit_before_behavior_switch"
     )
+    assert gates["rollback_evidence_review"]["evidence_type"] == "external_report_required"
+    assert (
+        gates["rollback_evidence_review"]["required_evidence"]
+        == "attach_reply_chain_refactor_rollback_evidence_before_behavior_switch"
+    )
     assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
     assert "business_wording_freeze_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
+    assert "rollback_evidence_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
     assert diagnostics["release_review"]["blocker_groups"]["reply_payload_schema"]["ready"] is True
     assert diagnostics["release_review"]["blocker_groups"]["manual_review"]["ready"] is False
 

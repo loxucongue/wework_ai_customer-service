@@ -276,8 +276,8 @@ def _release_review_gate_checklist(
         ),
         _gate(
             "rollback_evidence_review",
-            "manual_required",
-            "confirm_commit_is_on_refactor_branch_and_not_deployed",
+            "external_report_required",
+            "attach_reply_chain_refactor_rollback_evidence_before_behavior_switch",
         ),
     ]
     missing = [gate["gate_id"] for gate in gates if gate.get("passed") is not True]

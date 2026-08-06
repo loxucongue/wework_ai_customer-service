@@ -5,6 +5,7 @@ from pathlib import Path
 from app.services.reply_chain_external_gate_evidence import (
     business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
+    rollback_evidence_report_blockers,
     simulation_report_blockers,
 )
 
@@ -227,6 +228,39 @@ def _business_wording_freeze_ready() -> dict:
     }
 
 
+def _rollback_evidence_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_refactor_rollback_evidence_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "base_ref": "main",
+        "head_ref": "HEAD",
+        "branch": "codex/reply-chain-refactor",
+        "expected_branch": "codex/reply-chain-refactor",
+        "changed_paths": ["ai_paths/app/services/chat_gate_router_shadow.py"],
+        "changed_deployment_sensitive_paths": [],
+        "branch_is_refactor": True,
+        "main_branch_untouched": True,
+        "deployment_sensitive_paths_unchanged": True,
+        "rollback_plan": {
+            "schema_version": "reply_chain_behavior_switch_rollback_plan_v1",
+            "restore_flags_to_shadow_or_disabled": True,
+            "revert_stage_commit": True,
+            "rerun_diagnostics_before_reenable": True,
+            "no_deployment_from_refactor_branch": True,
+            "rollback_steps": ["disable flags", "revert commit", "rerun diagnostics"],
+        },
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+            "does_not_deploy": True,
+        },
+    }
+
+
 def test_external_gate_evidence_accepts_complete_reports() -> None:
     assert simulation_report_blockers(_simulation_ready()) == []
     assert model_matrix_report_blockers(_model_matrix_ready()) == []
@@ -351,6 +385,42 @@ def test_external_gate_evidence_blocks_missing_or_mismatched_model_matrix_commit
 
 def test_external_gate_evidence_accepts_business_wording_freeze_report() -> None:
     assert business_wording_freeze_report_blockers(_business_wording_freeze_ready()) == []
+
+
+def test_external_gate_evidence_accepts_rollback_evidence_report() -> None:
+    assert rollback_evidence_report_blockers(_rollback_evidence_ready()) == []
+
+
+def test_external_gate_evidence_blocks_rollback_evidence_wrong_branch_or_deploy_paths() -> None:
+    report = _rollback_evidence_ready()
+    report["branch"] = "main"
+    report["branch_is_refactor"] = False
+    report["main_branch_untouched"] = False
+    report["changed_deployment_sensitive_paths"] = [".github/workflows/deploy.yml"]
+    report["deployment_sensitive_paths_unchanged"] = False
+
+    blockers = rollback_evidence_report_blockers(report)
+
+    assert "rollback_evidence_wrong_branch:main" in blockers
+    assert "rollback_evidence_branch_not_refactor" in blockers
+    assert "rollback_evidence_main_branch_not_untouched" in blockers
+    assert "rollback_evidence_deployment_sensitive_path_changed:.github/workflows/deploy.yml" in blockers
+    assert "rollback_evidence_deployment_sensitive_paths_not_unchanged" in blockers
+
+
+def test_external_gate_evidence_blocks_rollback_evidence_missing_plan_or_safety() -> None:
+    report = _rollback_evidence_ready()
+    report["rollback_plan"]["rollback_steps"] = []
+    report["rollback_plan"]["revert_stage_commit"] = False
+    report["safety"]["does_not_deploy"] = False
+    del report["git_commit_set"]
+
+    blockers = rollback_evidence_report_blockers(report)
+
+    assert "rollback_evidence_missing_git_commit_set" in blockers
+    assert "rollback_evidence_missing_revert_stage_commit" in blockers
+    assert "rollback_evidence_missing_rollback_steps" in blockers
+    assert "rollback_evidence_missing_no_deploy_safety" in blockers
 
 
 def test_external_gate_evidence_blocks_business_wording_freeze_protected_changes() -> None:

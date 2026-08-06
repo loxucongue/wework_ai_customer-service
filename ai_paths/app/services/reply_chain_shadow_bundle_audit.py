@@ -5,6 +5,7 @@ from typing import Any
 from app.services.reply_chain_external_gate_evidence import (
     business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
+    rollback_evidence_report_blockers,
     simulation_report_blockers,
 )
 
@@ -34,6 +35,7 @@ def reply_chain_shadow_bundle_audit(
     simulation_report: dict[str, Any] | None = None,
     model_matrix_report: dict[str, Any] | None = None,
     business_wording_freeze_report: dict[str, Any] | None = None,
+    rollback_evidence_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Summarize shadow migration evidence without changing reply behavior."""
 
@@ -41,6 +43,7 @@ def reply_chain_shadow_bundle_audit(
         simulation_report=simulation_report,
         model_matrix_report=model_matrix_report,
         business_wording_freeze_report=business_wording_freeze_report,
+        rollback_evidence_report=rollback_evidence_report,
     )
     component_schemas = dict(CORE_COMPONENT_SCHEMAS)
     if require_commit_shadow:
@@ -220,6 +223,7 @@ def _external_gate_evidence(
     simulation_report: dict[str, Any] | None,
     model_matrix_report: dict[str, Any] | None,
     business_wording_freeze_report: dict[str, Any] | None,
+    rollback_evidence_report: dict[str, Any] | None,
 ) -> dict[str, Any]:
     proven_gates: list[str] = []
     blockers: list[str] = []
@@ -244,6 +248,13 @@ def _external_gate_evidence(
             blockers.extend(f"business_wording_freeze_report:{item}" for item in freeze_blockers)
         else:
             proven_gates.append("business_wording_freeze_review")
+    if rollback_evidence_report is not None:
+        rollback = _dict(rollback_evidence_report)
+        rollback_blockers = rollback_evidence_report_blockers(rollback)
+        if rollback_blockers:
+            blockers.extend(f"rollback_evidence_report:{item}" for item in rollback_blockers)
+        else:
+            proven_gates.append("rollback_evidence_review")
     return {
         "proven_gates": proven_gates,
         "blockers": blockers,

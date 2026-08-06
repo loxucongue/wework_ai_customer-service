@@ -5,6 +5,7 @@ from typing import Any
 from app.services.reply_chain_external_gate_evidence import (
     business_wording_freeze_report_blockers,
     model_matrix_report_blockers,
+    rollback_evidence_report_blockers,
     simulation_report_blockers,
 )
 
@@ -31,6 +32,7 @@ def reply_chain_behavior_switch_guard(
     simulation_report: dict[str, Any] | None = None,
     model_matrix_report: dict[str, Any] | None = None,
     business_wording_freeze_report: dict[str, Any] | None = None,
+    rollback_evidence_report: dict[str, Any] | None = None,
     human_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate behavior-switch approval without changing runtime behavior."""
@@ -41,6 +43,7 @@ def reply_chain_behavior_switch_guard(
     simulation = _dict(simulation_report)
     model_matrix = _dict(model_matrix_report)
     business_wording_freeze = _dict(business_wording_freeze_report)
+    rollback_evidence = _dict(rollback_evidence_report)
     review = _dict(human_review)
     switch_requested = _behavior_switch_requested(flags)
     simulation_blockers = simulation_report_blockers(simulation)
@@ -50,6 +53,11 @@ def reply_chain_behavior_switch_guard(
         if business_wording_freeze_report is not None
         else []
     )
+    rollback_evidence_blockers = (
+        rollback_evidence_report_blockers(rollback_evidence)
+        if rollback_evidence_report is not None
+        else []
+    )
     proven_external_gates: set[str] = set()
     if not simulation_blockers:
         proven_external_gates.add("simulation_regression_review")
@@ -57,6 +65,8 @@ def reply_chain_behavior_switch_guard(
         proven_external_gates.add("model_matrix_review")
     if business_wording_freeze_report is not None and not business_wording_freeze_blockers:
         proven_external_gates.add("business_wording_freeze_review")
+    if rollback_evidence_report is not None and not rollback_evidence_blockers:
+        proven_external_gates.add("rollback_evidence_review")
 
     blockers: list[str] = []
     if not switch_requested:
@@ -67,6 +77,7 @@ def reply_chain_behavior_switch_guard(
     blockers.extend(simulation_blockers)
     blockers.extend(model_matrix_blockers)
     blockers.extend(business_wording_freeze_blockers)
+    blockers.extend(rollback_evidence_blockers)
     blockers.extend(
         _human_review_blockers(
             review,
@@ -75,6 +86,7 @@ def reply_chain_behavior_switch_guard(
             simulation_report=simulation,
             model_matrix_report=model_matrix,
             business_wording_freeze_report=business_wording_freeze,
+            rollback_evidence_report=rollback_evidence,
         )
     )
 
@@ -97,6 +109,10 @@ def reply_chain_behavior_switch_guard(
                 "business_wording_freeze_report": (
                     "reply_chain_business_wording_freeze_audit_v1 proving protected customer-visible "
                     "business assets were not changed by the structural refactor"
+                ),
+                "rollback_evidence_report": (
+                    "reply_chain_refactor_rollback_evidence_v1 proving this stage is on the refactor "
+                    "branch, has no deployment-sensitive path changes, and has rollback steps"
                 ),
                 "human_review": "explicit reviewer approval for this branch, commit, scope, and rollback plan",
             },
@@ -236,6 +252,7 @@ def _human_review_blockers(
     simulation_report: dict[str, Any],
     model_matrix_report: dict[str, Any],
     business_wording_freeze_report: dict[str, Any],
+    rollback_evidence_report: dict[str, Any],
 ) -> list[str]:
     if review.get("schema_version") != "reply_chain_human_review_approval_v1":
         return ["missing_human_review_approval"]
@@ -255,6 +272,7 @@ def _human_review_blockers(
                 simulation_report=simulation_report,
                 model_matrix_report=model_matrix_report,
                 business_wording_freeze_report=business_wording_freeze_report,
+                rollback_evidence_report=rollback_evidence_report,
             )
         )
     if review.get("scope") != "parallel_gate_planner_behavior_switch":
@@ -271,11 +289,13 @@ def _review_commit_match_blockers(
     simulation_report: dict[str, Any],
     model_matrix_report: dict[str, Any],
     business_wording_freeze_report: dict[str, Any],
+    rollback_evidence_report: dict[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
     simulation_commit = str(simulation_report.get("git_commit") or "").strip()
     model_matrix_commit = str(model_matrix_report.get("git_commit") or "").strip()
     business_wording_freeze_commit = str(business_wording_freeze_report.get("git_commit") or "").strip()
+    rollback_evidence_commit = str(rollback_evidence_report.get("git_commit") or "").strip()
     blockers.extend(_commit_evidence_blockers("shadow_bundle", shadow_bundle_audit, commit_sha))
     blockers.extend(_commit_evidence_blockers("diagnostics", diagnostics, commit_sha))
     if simulation_commit and simulation_commit != commit_sha:
@@ -284,6 +304,8 @@ def _review_commit_match_blockers(
         blockers.append(f"human_review_commit_mismatch:model_matrix:{model_matrix_commit}")
     if business_wording_freeze_commit and business_wording_freeze_commit != commit_sha:
         blockers.append(f"human_review_commit_mismatch:business_wording_freeze:{business_wording_freeze_commit}")
+    if rollback_evidence_commit and rollback_evidence_commit != commit_sha:
+        blockers.append(f"human_review_commit_mismatch:rollback_evidence:{rollback_evidence_commit}")
     return blockers
 
 

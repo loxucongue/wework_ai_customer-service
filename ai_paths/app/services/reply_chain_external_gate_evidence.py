@@ -40,6 +40,61 @@ def business_wording_freeze_report_blockers(report: dict[str, Any]) -> list[str]
     return blockers
 
 
+def rollback_evidence_report_blockers(report: dict[str, Any]) -> list[str]:
+    if report.get("schema_version") != "reply_chain_refactor_rollback_evidence_v1":
+        return ["missing_refactor_rollback_evidence"]
+    blockers: list[str] = []
+    commit = _string_value(report.get("git_commit"))
+    if not commit:
+        blockers.append("rollback_evidence_missing_git_commit")
+    commit_set = _list_strings(report.get("git_commit_set"))
+    if not commit_set:
+        blockers.append("rollback_evidence_missing_git_commit_set")
+    elif len(set(commit_set)) != 1:
+        blockers.append(f"rollback_evidence_multiple_git_commits:{','.join(commit_set)}")
+    elif commit and commit_set[0] != commit:
+        blockers.append(f"rollback_evidence_git_commit_set_mismatch:{commit_set[0]}!={commit}")
+    branch = _string_value(report.get("branch"))
+    expected = _string_value(report.get("expected_branch")) or "codex/reply-chain-refactor"
+    if branch != expected:
+        blockers.append(f"rollback_evidence_wrong_branch:{branch or 'missing'}")
+    if report.get("branch_is_refactor") is not True:
+        blockers.append("rollback_evidence_branch_not_refactor")
+    if report.get("main_branch_untouched") is not True:
+        blockers.append("rollback_evidence_main_branch_not_untouched")
+    changed = _list_strings(report.get("changed_deployment_sensitive_paths"))
+    if changed:
+        blockers.extend(f"rollback_evidence_deployment_sensitive_path_changed:{item}" for item in changed)
+    if report.get("deployment_sensitive_paths_unchanged") is not True:
+        blockers.append("rollback_evidence_deployment_sensitive_paths_not_unchanged")
+    rollback_plan = _dict(report.get("rollback_plan"))
+    if rollback_plan.get("schema_version") != "reply_chain_behavior_switch_rollback_plan_v1":
+        blockers.append("rollback_evidence_missing_rollback_plan")
+    else:
+        for field, blocker in (
+            ("restore_flags_to_shadow_or_disabled", "rollback_evidence_missing_flag_restore"),
+            ("revert_stage_commit", "rollback_evidence_missing_revert_stage_commit"),
+            ("rerun_diagnostics_before_reenable", "rollback_evidence_missing_rerun_diagnostics"),
+            ("no_deployment_from_refactor_branch", "rollback_evidence_missing_no_refactor_deploy"),
+        ):
+            if rollback_plan.get(field) is not True:
+                blockers.append(blocker)
+        if not _list_strings(rollback_plan.get("rollback_steps")):
+            blockers.append("rollback_evidence_missing_rollback_steps")
+    safety = _dict(report.get("safety"))
+    for field, blocker in (
+        ("audit_only", "rollback_evidence_missing_audit_only_safety"),
+        ("does_not_change_runtime_behavior", "rollback_evidence_missing_no_runtime_change_safety"),
+        ("does_not_send_customer_messages", "rollback_evidence_missing_no_send_safety"),
+        ("does_not_write_database", "rollback_evidence_missing_no_write_safety"),
+        ("does_not_call_models", "rollback_evidence_missing_no_model_call_safety"),
+        ("does_not_deploy", "rollback_evidence_missing_no_deploy_safety"),
+    ):
+        if safety.get(field) is not True:
+            blockers.append(blocker)
+    return blockers
+
+
 def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     if simulation.get("schema_version") != "offline_reply_chain_simulation_report_v1":
         return ["missing_offline_simulation_report"]

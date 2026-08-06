@@ -155,6 +155,31 @@ def test_bundle_audit_accepts_business_wording_freeze_external_gate() -> None:
     assert "business_wording_freeze_review" in audit["external_gate_evidence"]["proven_gates"]
 
 
+def test_bundle_audit_accepts_rollback_evidence_external_gate() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["release_review"] = {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "can_enable_behavior_switch": False,
+        "missing_or_unproven_gates": ["rollback_evidence_review"],
+        "blocker_groups": {
+            "manual_review": {
+                "ready": False,
+                "blocker_count": 1,
+                "blockers": ["gate_not_proven:rollback_evidence_review"],
+            }
+        },
+    }
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
+        rollback_evidence_report=_rollback_evidence_ready(),
+    )
+
+    assert audit["ready_for_refactor_review"] is True
+    assert "rollback_evidence_review" in audit["external_gate_evidence"]["proven_gates"]
+
+
 def _simulation_ready() -> dict:
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
@@ -366,6 +391,39 @@ def _business_wording_freeze_ready() -> dict:
             "does_not_send_customer_messages": True,
             "does_not_write_database": True,
             "does_not_call_models": True,
+        },
+    }
+
+
+def _rollback_evidence_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_refactor_rollback_evidence_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
+        "base_ref": "main",
+        "head_ref": "HEAD",
+        "branch": "codex/reply-chain-refactor",
+        "expected_branch": "codex/reply-chain-refactor",
+        "changed_paths": ["ai_paths/app/services/chat_gate_router_shadow.py"],
+        "changed_deployment_sensitive_paths": [],
+        "branch_is_refactor": True,
+        "main_branch_untouched": True,
+        "deployment_sensitive_paths_unchanged": True,
+        "rollback_plan": {
+            "schema_version": "reply_chain_behavior_switch_rollback_plan_v1",
+            "restore_flags_to_shadow_or_disabled": True,
+            "revert_stage_commit": True,
+            "rerun_diagnostics_before_reenable": True,
+            "no_deployment_from_refactor_branch": True,
+            "rollback_steps": ["disable flags", "revert commit", "rerun diagnostics"],
+        },
+        "safety": {
+            "audit_only": True,
+            "does_not_change_runtime_behavior": True,
+            "does_not_send_customer_messages": True,
+            "does_not_write_database": True,
+            "does_not_call_models": True,
+            "does_not_deploy": True,
         },
     }
 

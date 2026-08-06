@@ -358,11 +358,17 @@ incomplete, skipped because of absent keys, or contains any safety marker other
 than the values above, the guard must block.
 
 When reviewing postcommit shadow evidence, recompute
+`reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=..., business_wording_freeze_report=..., rollback_evidence_report=...)`
+with the same offline simulation, model matrix, business wording freeze, and
+rollback evidence reports. This keeps the postcommit bundle and final
+behavior-switch guard aligned: unresolved diagnostic gates remain blockers,
+while externally proven gates are cleared only by valid reports.
+In short, the postcommit bundle and final behavior-switch guard aligned state is required before review.
+The older two-report review call form
 `reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=...)`
-with the same offline simulation and model matrix reports. This keeps the
-postcommit bundle and final behavior-switch guard aligned: unresolved
-diagnostic gates remain blockers, while externally proven simulation and model
-matrix gates are cleared only by valid reports.
+is still valid for simulation/model matrix evidence alone, but it is incomplete
+for final behavior-switch review because it does not prove wording freeze or
+rollback/no-deploy evidence.
 
 The postcommit shadow bundle audit and parallel diagnostics must both expose
 the reviewed `git_commit`. The final behavior-switch guard blocks if the human
@@ -406,6 +412,43 @@ This audit is a structural freeze check only. If it reports protected path
 changes, do not hide that by editing the report. Split business wording changes
 into a separately reviewed business commit, or keep the behavior switch blocked.
 
+Rollback/no-deploy evidence audit:
+
+```powershell
+$env:PYTHONPATH='ai_paths'
+python ai_paths/scripts/audit_refactor_rollback_evidence.py `
+  --base-ref main `
+  --head-ref HEAD `
+  --report .tmp_runtime/rollback_evidence_audit.json
+```
+
+Required rollback evidence report:
+
+- `schema_version=reply_chain_refactor_rollback_evidence_v1`
+- `git_commit` matches the reviewed behavior-switch commit
+- `git_commit_set` contains exactly that commit
+- `branch=codex/reply-chain-refactor`
+- `branch_is_refactor=true`
+- `main_branch_untouched=true`
+- `changed_deployment_sensitive_paths=[]`
+- `deployment_sensitive_paths_unchanged=true`
+- `rollback_plan.schema_version=reply_chain_behavior_switch_rollback_plan_v1`
+- `rollback_plan.restore_flags_to_shadow_or_disabled=true`
+- `rollback_plan.revert_stage_commit=true`
+- `rollback_plan.rerun_diagnostics_before_reenable=true`
+- `rollback_plan.no_deployment_from_refactor_branch=true`
+- `rollback_plan.rollback_steps` is non-empty
+- `safety.audit_only=true`
+- `safety.does_not_change_runtime_behavior=true`
+- `safety.does_not_send_customer_messages=true`
+- `safety.does_not_write_database=true`
+- `safety.does_not_call_models=true`
+- `safety.does_not_deploy=true`
+
+This audit does not prove business quality. It only proves this refactor stage
+is reviewable, revertible, and not mixed with deployment work. If deployment
+sensitive files changed, split them out or keep the behavior switch blocked.
+
 ### T8 Core Regression Bundle
 
 Run before any human review of behavior switch:
@@ -448,6 +491,8 @@ Behavior switching remains blocked unless all evidence is present:
 - offline simulation report passing, with `git_commit` matching the reviewed
   commit;
 - model matrix report passing, with `git_commit` matching the reviewed commit;
+- rollback evidence report passing, with `git_commit` matching the reviewed
+  commit;
 - explicit human approval for branch, commit, and behavior-switch scope;
 - reviewed rollback plan with flag-restore steps and no deployment from this
   branch.
