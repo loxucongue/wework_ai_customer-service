@@ -63,6 +63,13 @@ def parallel_reply_chain_diagnostics(
                 "tool_planner_legacy_residue_count": _tool_planner_legacy_residue_count(parallel_reply_chain_shadow),
                 "tool_planner_only_ready": (parallel_reply_chain_shadow.get("current_serial_observation") or {}).get("tool_planner_only_ready"),
             },
+            "release_review": _release_review_gate_checklist(
+                parallel_reply_chain_shadow=parallel_reply_chain_shadow,
+                runner_shadow=runner,
+                comparison_shadow=comparison,
+                commit_shadow=commit,
+                phase=phase,
+            ),
             "next_safe_step": _next_safe_step(phase),
             "safety": {
                 "diagnostic_only": True,
@@ -119,6 +126,126 @@ def _next_safe_step(phase: str) -> str:
         "tool_planner_migration_blocked": "move_legacy_planner_semantics_to_reply_before_behavior_switch",
         "ready_for_human_review": "run_review_gates_and_offline_simulation_before_behavior_switch",
     }.get(phase, "inspect_parallel_refactor_diagnostics")
+
+
+def _release_review_gate_checklist(
+    *,
+    parallel_reply_chain_shadow: dict[str, Any],
+    runner_shadow: dict[str, Any],
+    comparison_shadow: dict[str, Any],
+    commit_shadow: dict[str, Any],
+    phase: str,
+) -> dict[str, Any]:
+    """Expose release-review evidence without approving a behavior switch."""
+
+    observation = parallel_reply_chain_shadow.get("current_serial_observation")
+    if not isinstance(observation, dict):
+        observation = {}
+    activation = parallel_reply_chain_shadow.get("activation")
+    if not isinstance(activation, dict):
+        activation = {}
+    comparison_review = comparison_shadow.get("review_gate")
+    if not isinstance(comparison_review, dict):
+        comparison_review = {}
+
+    gates = [
+        _gate("rule_matrix_delta_review", "manual_required", "review_rule_ownership_matrix_delta_for_this_commit"),
+        _gate(
+            "payload_isolation_review",
+            "external_test_required",
+            "run_workflow_tests/test_reply_chain_shadow_payload_isolation.py",
+        ),
+        _gate(
+            "authority_snapshot_review",
+            "automated_shadow_evidence",
+            "authority_and_current_message_audits_present",
+            passed=(
+                observation.get("shared_context_authority_audit_schema") == "reply_chain_authority_audit_v1"
+                and observation.get("shared_context_current_message_audit_schema") == "reply_chain_current_message_audit_v1"
+                and observation.get("shared_context_fact_snapshot_schema") == "reply_chain_fact_snapshot_audit_v1"
+                and observation.get("shared_context_current_message_ready") is True
+            ),
+        ),
+        _gate(
+            "gate_commit_boundary_review",
+            "automated_shadow_evidence",
+            "gate_shadow_has_no_commit_side_effects",
+            passed=(
+                observation.get("gate_commit_boundary_schema") == "chat_gate_commit_boundary_v1"
+                and observation.get("gate_shadow_output_only") is True
+                and observation.get("gate_shadow_creates_sop_task") is False
+                and observation.get("gate_shadow_updates_send_once") is False
+                and observation.get("gate_shadow_sends_customer_messages") is False
+                and observation.get("gate_shadow_writes_database") is False
+            ),
+        ),
+        _gate(
+            "branch_input_isolation_review",
+            "automated_runner_evidence",
+            "runner_input_isolation_audit_present_and_clean",
+            passed=not _runner_input_isolation_blockers(runner_shadow) if runner_shadow else False,
+        ),
+        _gate(
+            "final_expression_owner_review",
+            "automated_shadow_evidence",
+            "join_keeps_reply_as_final_complex_owner",
+            passed=(
+                observation.get("join_final_expression_boundary_schema") == "reply_final_expression_boundary_v1"
+                and observation.get("join_final_customer_message_owner") == "reply"
+                and observation.get("join_generates_customer_visible_text") is False
+                and observation.get("join_decides_sales_psychology") is False
+            ),
+        ),
+        _gate(
+            "reply_handoff_readiness_review",
+            "automated_shadow_evidence",
+            "reply_handoff_readiness_audit_ready",
+            passed=(
+                observation.get("reply_handoff_readiness_schema") == "reply_final_brain_handoff_readiness_audit_v1"
+                and observation.get("reply_handoff_ready_for_payload_switch_shadow") is True
+            ),
+        ),
+        _gate(
+            "commit_phase_shadow_review",
+            "automated_runtime_evidence",
+            "commit_shadow_owner_is_runtime_after_reply_validation",
+            passed=not _commit_blockers(commit_shadow) if commit_shadow else False,
+        ),
+        _gate("business_wording_freeze_review", "manual_required", "confirm_no_business_wording_or_rules_changed"),
+        _gate("model_semantics_ownership_review", "manual_required", "confirm_gate_tool_join_do_not_own_sales_psychology"),
+        _gate(
+            "simulation_regression_review",
+            "external_report_required",
+            "attach_offline_simulation_report_before_behavior_switch",
+        ),
+        _gate(
+            "rollback_evidence_review",
+            "manual_required",
+            "confirm_commit_is_on_refactor_branch_and_not_deployed",
+        ),
+    ]
+    missing = [gate["gate_id"] for gate in gates if gate.get("passed") is not True]
+    return {
+        "schema_version": "reply_chain_release_review_checklist_v1",
+        "phase": phase,
+        "can_enable_behavior_switch": False,
+        "reason": "diagnostics_only_review_evidence_not_release_approval",
+        "comparison_review_gate_can_enable": comparison_review.get("can_enable_behavior_switch"),
+        "required_gate_count": len(gates),
+        "missing_or_unproven_gates": missing,
+        "gates": gates,
+    }
+
+
+def _gate(gate_id: str, evidence_type: str, required_evidence: str, *, passed: bool | None = None) -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "gate_id": gate_id,
+            "evidence_type": evidence_type,
+            "required_evidence": required_evidence,
+            "passed": passed,
+        }
+    )
 
 
 def _runner_blockers(runner: dict[str, Any]) -> list[str]:

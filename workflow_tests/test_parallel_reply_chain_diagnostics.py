@@ -146,6 +146,54 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
     assert diagnostics["commit"]["present"] is True
     assert diagnostics["commit"]["commit_phase_owner"] == "runtime_after_reply_validation"
     assert diagnostics["commit"]["requires_reply_validation_before_commit"] is True
+    assert diagnostics["release_review"]["schema_version"] == "reply_chain_release_review_checklist_v1"
+    assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
+    assert diagnostics["release_review"]["required_gate_count"] == 12
+    assert "simulation_regression_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
+
+
+def test_diagnostics_review_checklist_records_automated_gate_evidence() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+            "current_serial_observation": {
+                "shared_context_authority_audit_schema": "reply_chain_authority_audit_v1",
+                "shared_context_current_message_audit_schema": "reply_chain_current_message_audit_v1",
+                "shared_context_current_message_ready": True,
+                "shared_context_fact_snapshot_schema": "reply_chain_fact_snapshot_audit_v1",
+                "gate_commit_boundary_schema": "chat_gate_commit_boundary_v1",
+                "gate_shadow_output_only": True,
+                "gate_shadow_creates_sop_task": False,
+                "gate_shadow_updates_send_once": False,
+                "gate_shadow_sends_customer_messages": False,
+                "gate_shadow_writes_database": False,
+                "join_final_expression_boundary_schema": "reply_final_expression_boundary_v1",
+                "join_final_customer_message_owner": "reply",
+                "join_generates_customer_visible_text": False,
+                "join_decides_sales_psychology": False,
+                "reply_handoff_readiness_schema": "reply_final_brain_handoff_readiness_audit_v1",
+                "reply_handoff_ready_for_payload_switch_shadow": True,
+            },
+        },
+        runner_shadow=_completed_runner_shadow(),
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "status": "matched_shadow_replay",
+            "review_gate": {"can_enable_behavior_switch": False},
+        },
+        commit_shadow=_commit_shadow(),
+    )
+
+    gates = {gate["gate_id"]: gate for gate in diagnostics["release_review"]["gates"]}
+    assert gates["authority_snapshot_review"]["passed"] is True
+    assert gates["gate_commit_boundary_review"]["passed"] is True
+    assert gates["branch_input_isolation_review"]["passed"] is True
+    assert gates["final_expression_owner_review"]["passed"] is True
+    assert gates["reply_handoff_readiness_review"]["passed"] is True
+    assert gates["commit_phase_shadow_review"]["passed"] is True
+    assert diagnostics["release_review"]["can_enable_behavior_switch"] is False
+    assert "business_wording_freeze_review" in diagnostics["release_review"]["missing_or_unproven_gates"]
 
 
 def test_diagnostics_blocks_when_commit_shadow_has_wrong_owner() -> None:
