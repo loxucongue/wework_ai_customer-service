@@ -337,6 +337,13 @@ Required matrix report:
 - `git_commit` matches the reviewed behavior-switch commit
 - `git_commit_set` contains exactly that commit
 - `relay_base_url=https://linkai.shop/v1`
+- `evaluation_scope.schema_version=reply_chain_refactor_model_matrix_scope_v1`
+- `evaluation_scope.full_release_gate_candidate=true`
+- `evaluation_scope.targeted_smoke=false`
+- `run_options.schema_version=reply_chain_refactor_model_matrix_run_options_v1`
+- `run_options.skip_review=false`
+- `run_options.attempts >= 3`
+- `run_options.critical_attempts >= 5`
 - `profiles_requested` includes `claude`, `gemini`, and `openai`
 - each profile is `completed`
 - each completed profile has `model_profile.protocol=openai-compatible relay` and `model_profile.api_key_value_logged=false`
