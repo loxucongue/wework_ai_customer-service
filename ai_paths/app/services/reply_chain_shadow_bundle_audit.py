@@ -46,6 +46,7 @@ def reply_chain_shadow_bundle_audit(
         field: _component_status(state.get(field), required_schema)
         for field, required_schema in component_schemas.items()
     }
+    git_commits = _git_commit_set(state, component_schemas)
     blockers = _component_blockers(components)
     blockers.extend(external_gate_evidence["blockers"])
     blockers.extend(
@@ -64,6 +65,8 @@ def reply_chain_shadow_bundle_audit(
     return _drop_empty(
         {
             "schema_version": "reply_chain_shadow_bundle_audit_v1",
+            "git_commit": git_commits[0] if len(git_commits) == 1 else "",
+            "git_commit_set": git_commits,
             "phase": "postcommit" if require_commit_shadow else "precommit",
             "ready_for_refactor_review": not blockers,
             "blockers": blockers,
@@ -359,6 +362,15 @@ def _list_strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def _git_commit_set(state: dict[str, Any], component_schemas: dict[str, str]) -> list[str]:
+    commits = {str(state.get("git_commit") or "").strip()}
+    for field in component_schemas:
+        component = state.get(field)
+        if isinstance(component, dict):
+            commits.add(str(component.get("git_commit") or "").strip())
+    return sorted(commit for commit in commits if commit)
 
 
 def _int_value(value: Any) -> int:

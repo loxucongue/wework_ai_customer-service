@@ -25,6 +25,8 @@ def _active_flag_snapshot() -> dict:
 def _shadow_bundle_ready() -> dict:
     return {
         "schema_version": "reply_chain_shadow_bundle_audit_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
         "phase": "postcommit",
         "ready_for_refactor_review": True,
         "blockers": [],
@@ -51,6 +53,8 @@ def _shadow_bundle_ready() -> dict:
 def _diagnostics_ready() -> dict:
     return {
         "schema_version": "parallel_reply_chain_diagnostics_v1",
+        "git_commit": "abc123",
+        "git_commit_set": ["abc123"],
         "phase": "ready_for_human_review",
         "release_review": {
             "schema_version": "reply_chain_release_review_checklist_v1",
@@ -345,23 +349,51 @@ def test_behavior_switch_guard_blocks_unreviewed_rollback_plan() -> None:
 
 
 def test_behavior_switch_guard_blocks_human_review_for_different_commit() -> None:
+    shadow = _shadow_bundle_ready()
+    diagnostics = _diagnostics_ready()
     simulation = _simulation_ready()
     model_matrix = _model_matrix_ready()
+    shadow["git_commit"] = "shadow-old"
+    diagnostics["git_commit"] = "diag-old"
     simulation["git_commit"] = "sim-old"
     model_matrix["git_commit"] = "matrix-old"
 
     guard = reply_chain_behavior_switch_guard(
         flag_snapshot=_active_flag_snapshot(),
-        shadow_bundle_audit=_shadow_bundle_ready(),
-        diagnostics=_diagnostics_ready(),
+        shadow_bundle_audit=shadow,
+        diagnostics=diagnostics,
         simulation_report=simulation,
         model_matrix_report=model_matrix,
         human_review=_human_review_approved(),
     )
 
     assert guard["can_enable_behavior_switch"] is False
+    assert "human_review_commit_mismatch:shadow_bundle:shadow-old" in guard["blockers"]
+    assert "human_review_commit_mismatch:diagnostics:diag-old" in guard["blockers"]
     assert "human_review_commit_mismatch:simulation:sim-old" in guard["blockers"]
     assert "human_review_commit_mismatch:model_matrix:matrix-old" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_human_review_without_shadow_commit_evidence() -> None:
+    shadow = _shadow_bundle_ready()
+    diagnostics = _diagnostics_ready()
+    shadow.pop("git_commit")
+    shadow.pop("git_commit_set")
+    diagnostics.pop("git_commit")
+    diagnostics.pop("git_commit_set")
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=shadow,
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "human_review_missing_commit_evidence:shadow_bundle" in guard["blockers"]
+    assert "human_review_missing_commit_evidence:diagnostics" in guard["blockers"]
 
 
 def test_behavior_switch_guard_blocks_shadow_bundle_without_commit_phase_evidence() -> None:

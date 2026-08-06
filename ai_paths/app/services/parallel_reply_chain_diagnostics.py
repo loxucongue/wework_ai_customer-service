@@ -22,6 +22,7 @@ def parallel_reply_chain_diagnostics(
     comparison_blockers = _comparison_blockers(comparison)
     commit_blockers = _commit_blockers(commit)
     migration_blockers = _migration_blockers(parallel_reply_chain_shadow)
+    git_commits = _git_commit_set(parallel_reply_chain_shadow, runner, comparison, commit)
     phase = _phase(
         parallel_shadow_present=parallel_reply_chain_shadow.get("schema_version") == "parallel_reply_chain_shadow_v1",
         contract_blockers=contract_blockers,
@@ -35,6 +36,8 @@ def parallel_reply_chain_diagnostics(
     return _drop_empty(
         {
             "schema_version": "parallel_reply_chain_diagnostics_v1",
+            "git_commit": git_commits[0] if len(git_commits) == 1 else "",
+            "git_commit_set": git_commits,
             "phase": phase,
             "contract": {
                 "present": parallel_reply_chain_shadow.get("schema_version") == "parallel_reply_chain_shadow_v1",
@@ -563,6 +566,16 @@ def _list_strings(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
+
+
+def _git_commit_set(*items: dict[str, Any]) -> list[str]:
+    return sorted(
+        {
+            str(item.get("git_commit") or "").strip()
+            for item in items
+            if isinstance(item, dict) and str(item.get("git_commit") or "").strip()
+        }
+    )
 
 
 def _drop_empty(value: Any) -> Any:

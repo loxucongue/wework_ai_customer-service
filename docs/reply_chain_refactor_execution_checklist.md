@@ -363,6 +363,12 @@ postcommit bundle and final behavior-switch guard aligned: unresolved
 diagnostic gates remain blockers, while externally proven simulation and model
 matrix gates are cleared only by valid reports.
 
+The postcommit shadow bundle audit and parallel diagnostics must both expose
+the reviewed `git_commit`. The final behavior-switch guard blocks if the human
+review commit differs from the shadow bundle, diagnostics, offline simulation,
+or model matrix evidence, or if the shadow bundle/diagnostics commit evidence is
+missing.
+
 After running the matrix, scan changed files and reports for secrets before
 committing:
 
@@ -405,9 +411,13 @@ python -m pytest `
 Behavior switching remains blocked unless all evidence is present:
 
 - flag snapshot with all required active flags;
-- postcommit shadow bundle audit ready;
-- diagnostics ready for human review;
-- offline simulation report passing;
+- postcommit shadow bundle audit ready, with `git_commit` matching the reviewed
+  commit;
+- diagnostics ready for human review, with `git_commit` matching the reviewed
+  commit;
+- offline simulation report passing, with `git_commit` matching the reviewed
+  commit;
+- model matrix report passing, with `git_commit` matching the reviewed commit;
 - explicit human approval for branch, commit, and behavior-switch scope;
 - reviewed rollback plan with flag-restore steps and no deployment from this
   branch.

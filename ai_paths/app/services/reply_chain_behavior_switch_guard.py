@@ -59,6 +59,8 @@ def reply_chain_behavior_switch_guard(
     blockers.extend(
         _human_review_blockers(
             review,
+            shadow_bundle_audit=shadow,
+            diagnostics=diag,
             simulation_report=simulation,
             model_matrix_report=model_matrix,
         )
@@ -213,6 +215,8 @@ def _only_proven_external_gate_blockers(group: dict[str, Any], proven_external_g
 def _human_review_blockers(
     review: dict[str, Any],
     *,
+    shadow_bundle_audit: dict[str, Any],
+    diagnostics: dict[str, Any],
     simulation_report: dict[str, Any],
     model_matrix_report: dict[str, Any],
 ) -> list[str]:
@@ -229,6 +233,8 @@ def _human_review_blockers(
         blockers.extend(
             _review_commit_match_blockers(
                 str(review.get("commit_sha") or "").strip(),
+                shadow_bundle_audit=shadow_bundle_audit,
+                diagnostics=diagnostics,
                 simulation_report=simulation_report,
                 model_matrix_report=model_matrix_report,
             )
@@ -242,12 +248,24 @@ def _human_review_blockers(
 def _review_commit_match_blockers(
     commit_sha: str,
     *,
+    shadow_bundle_audit: dict[str, Any],
+    diagnostics: dict[str, Any],
     simulation_report: dict[str, Any],
     model_matrix_report: dict[str, Any],
 ) -> list[str]:
     blockers: list[str] = []
+    shadow_commit = str(shadow_bundle_audit.get("git_commit") or "").strip()
+    diagnostics_commit = str(diagnostics.get("git_commit") or "").strip()
     simulation_commit = str(simulation_report.get("git_commit") or "").strip()
     model_matrix_commit = str(model_matrix_report.get("git_commit") or "").strip()
+    if not shadow_commit:
+        blockers.append("human_review_missing_commit_evidence:shadow_bundle")
+    elif shadow_commit != commit_sha:
+        blockers.append(f"human_review_commit_mismatch:shadow_bundle:{shadow_commit}")
+    if not diagnostics_commit:
+        blockers.append("human_review_missing_commit_evidence:diagnostics")
+    elif diagnostics_commit != commit_sha:
+        blockers.append(f"human_review_commit_mismatch:diagnostics:{diagnostics_commit}")
     if simulation_commit and simulation_commit != commit_sha:
         blockers.append(f"human_review_commit_mismatch:simulation:{simulation_commit}")
     if model_matrix_commit and model_matrix_commit != commit_sha:

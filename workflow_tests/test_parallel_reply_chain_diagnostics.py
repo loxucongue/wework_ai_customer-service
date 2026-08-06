@@ -82,6 +82,46 @@ def _commit_shadow(**overrides: object) -> dict:
     return base
 
 
+def test_diagnostics_reports_single_git_commit_when_all_evidence_matches() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "git_commit": "abc123",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow={**_completed_runner_shadow(), "git_commit": "abc123"},
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "git_commit": "abc123",
+            "status": "matched_shadow_replay",
+        },
+        commit_shadow=_commit_shadow(git_commit="abc123"),
+    )
+
+    assert diagnostics["git_commit"] == "abc123"
+    assert diagnostics["git_commit_set"] == ["abc123"]
+
+
+def test_diagnostics_reports_git_commit_set_when_evidence_differs() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "git_commit": "abc123",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow={**_completed_runner_shadow(), "git_commit": "def456"},
+        comparison_shadow={
+            "schema_version": "parallel_reply_chain_comparison_v1",
+            "git_commit": "abc123",
+            "status": "matched_shadow_replay",
+        },
+        commit_shadow=_commit_shadow(git_commit="def456"),
+    )
+
+    assert "git_commit" not in diagnostics
+    assert diagnostics["git_commit_set"] == ["abc123", "def456"]
+
+
 def test_diagnostics_reports_runner_integration_as_next_step_when_contract_ready() -> None:
     diagnostics = parallel_reply_chain_diagnostics(
         parallel_reply_chain_shadow={

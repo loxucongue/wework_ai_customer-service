@@ -5,6 +5,7 @@ from app.services.reply_chain_shadow_bundle_audit import reply_chain_shadow_bund
 
 def _ready_state() -> dict:
     return {
+        "git_commit": "abc123",
         "reply_chain_shadow_context": {"schema_version": "reply_chain_shadow_v1"},
         "sop_gate_router_shadow": {"schema_version": "chat_gate_router_shadow_v1"},
         "tool_plan_preview": {
@@ -59,6 +60,8 @@ def _ready_state() -> dict:
         },
         "parallel_reply_chain_diagnostics": {
             "schema_version": "parallel_reply_chain_diagnostics_v1",
+            "git_commit": "abc123",
+            "git_commit_set": ["abc123"],
             "phase": "ready_for_human_review",
         },
         "reply_chain_commit_shadow": {
@@ -95,6 +98,34 @@ def _ready_state() -> dict:
             },
         },
     }
+
+
+def test_bundle_audit_reports_git_commit_when_evidence_matches() -> None:
+    audit = reply_chain_shadow_bundle_audit(
+        state=_ready_state(),
+        require_commit_shadow=True,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+    )
+
+    assert audit["git_commit"] == "abc123"
+    assert audit["git_commit_set"] == ["abc123"]
+
+
+def test_bundle_audit_reports_git_commit_set_when_evidence_differs() -> None:
+    state = _ready_state()
+    state["parallel_reply_chain_diagnostics"]["git_commit"] = "def456"
+    state["parallel_reply_chain_diagnostics"]["git_commit_set"] = ["def456"]
+
+    audit = reply_chain_shadow_bundle_audit(
+        state=state,
+        require_commit_shadow=True,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+    )
+
+    assert "git_commit" not in audit
+    assert audit["git_commit_set"] == ["abc123", "def456"]
 
 
 def _simulation_ready() -> dict:
