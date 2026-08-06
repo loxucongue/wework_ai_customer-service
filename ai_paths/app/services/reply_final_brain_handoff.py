@@ -125,6 +125,14 @@ def _handoff_readiness_audit(
     tool_plan_preview = output.get("tool_plan_preview")
     if not isinstance(tool_plan_preview, dict):
         tool_plan_preview = {}
+    read_only_executor = output.get("read_only_tool_executor_shadow")
+    if not isinstance(read_only_executor, dict):
+        read_only_executor = {}
+    dependency_audit = read_only_executor.get("dependency_audit")
+    if not isinstance(dependency_audit, dict):
+        dependency_audit = {}
+    read_tool_count = len(tool_plan_preview.get("read_tool_calls") or [])
+    dynamic_facts_required = str(tool_plan_preview.get("fact_requirement") or "").strip() == "required"
 
     blockers: list[str] = []
     if reply_chain_shadow_context.get("schema_version") != "reply_chain_shadow_v1":
@@ -149,6 +157,21 @@ def _handoff_readiness_audit(
         blockers.append("missing_gate_content_candidates")
     if tool_plan_preview.get("schema_version") != "tool_plan_preview_v2":
         blockers.append("missing_tool_plan_preview")
+    if dynamic_facts_required and read_tool_count <= 0:
+        blockers.append("required_facts_without_read_tool_calls")
+    if read_tool_count > 0:
+        if read_only_executor.get("schema_version") != "read_only_tool_executor_shadow_v1":
+            blockers.append("missing_read_only_tool_executor_shadow")
+        if read_only_executor.get("blocked"):
+            blockers.append("read_only_tool_executor_has_blocked_calls")
+        if dependency_audit.get("schema_version") != "read_only_tool_dependency_audit_v1":
+            blockers.append("missing_read_only_tool_dependency_audit")
+        elif dependency_audit.get("ready_for_early_execution_ordering") is not True:
+            dependency_blockers = dependency_audit.get("blockers")
+            if isinstance(dependency_blockers, list) and dependency_blockers:
+                blockers.extend([f"read_tool_dependency:{item}" for item in dependency_blockers if isinstance(item, str) and item])
+            else:
+                blockers.append("read_tool_dependency_not_ready")
     if join_shadow.get("schema_version") != "reply_chain_join_shadow_v1":
         blockers.append("missing_reply_chain_join_shadow")
     if final_expression_boundary.get("schema_version") != "reply_final_expression_boundary_v1":
@@ -182,6 +205,12 @@ def _handoff_readiness_audit(
                 "fact_snapshot_schema": fact_snapshot.get("schema_version"),
                 "gate_router_schema": gate_router_shadow.get("schema_version"),
                 "tool_plan_schema": tool_plan_preview.get("schema_version"),
+                "tool_plan_fact_requirement": tool_plan_preview.get("fact_requirement"),
+                "tool_plan_read_tool_count": read_tool_count,
+                "read_only_executor_schema": read_only_executor.get("schema_version"),
+                "read_only_executor_blocked_count": (read_only_executor.get("summary") or {}).get("blocked_count") if isinstance(read_only_executor.get("summary"), dict) else None,
+                "read_tool_dependency_audit_schema": dependency_audit.get("schema_version"),
+                "read_tool_dependency_ready": dependency_audit.get("ready_for_early_execution_ordering"),
                 "join_schema": join_shadow.get("schema_version"),
                 "final_expression_boundary_schema": final_expression_boundary.get("schema_version"),
                 "join_generates_customer_visible_text": final_expression_boundary.get("join_generates_customer_visible_text"),
@@ -216,11 +245,14 @@ def _fact_and_tool_summary(output: dict[str, Any], fields: list[str]) -> dict[st
         )
     if "read_only_tool_executor_shadow" in fields:
         executor = output.get("read_only_tool_executor_shadow") if isinstance(output.get("read_only_tool_executor_shadow"), dict) else {}
+        dependency_audit = executor.get("dependency_audit") if isinstance(executor.get("dependency_audit"), dict) else {}
         summary["read_only_tool_executor_shadow"] = _drop_empty(
             {
                 "mode": executor.get("mode"),
                 "would_execute_count": (executor.get("summary") or {}).get("would_execute_count"),
                 "blocked_count": (executor.get("summary") or {}).get("blocked_count"),
+                "dependency_audit_schema": dependency_audit.get("schema_version"),
+                "dependency_ready": dependency_audit.get("ready_for_early_execution_ordering"),
             }
         )
     if "reply_chain_join_shadow" in fields:
