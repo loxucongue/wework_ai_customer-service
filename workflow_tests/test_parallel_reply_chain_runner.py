@@ -41,7 +41,11 @@ async def _parallel_runner_shadow_runs_gate_and_planner_concurrently() -> None:
     assert result["branches"]["tool_planner"]["status"] == "completed"
     assert result["branches"]["sop_chat_gate"]["output"]["request_id"] == "req-1"
     assert result["branches"]["tool_planner"]["output"]["request_id"] == "req-1"
+    assert result["input_isolation_audit"]["schema_version"] == "parallel_branch_input_isolation_audit_v1"
+    assert result["input_isolation_audit"]["branch_states_are_distinct_objects"] is True
+    assert result["input_isolation_audit"]["initial_state_unchanged_after_branches"] is True
     assert result["safety"]["no_runtime_behavior_change"] is True
+    assert result["safety"]["initial_state_unchanged"] is True
 
 
 def test_parallel_runner_shadow_isolates_branch_state() -> None:
@@ -68,7 +72,36 @@ async def _parallel_runner_shadow_isolates_branch_state() -> None:
     assert initial_state == {"nested": {"original": True}}
     assert result["branches"]["sop_chat_gate"]["output"]["nested"] == {"original": True, "gate": True}
     assert result["branches"]["tool_planner"]["output"]["nested"] == {"original": True, "planner": True}
+    assert result["input_isolation_audit"]["gate_state_is_not_initial_state"] is True
+    assert result["input_isolation_audit"]["planner_state_is_not_initial_state"] is True
     assert result["safety"]["branch_state_isolated"] is True
+
+
+def test_parallel_runner_shadow_reports_shadow_fields_present_in_initial_state() -> None:
+    asyncio.run(_parallel_runner_shadow_reports_shadow_fields_present_in_initial_state())
+
+
+async def _parallel_runner_shadow_reports_shadow_fields_present_in_initial_state() -> None:
+    async def branch(_state: dict) -> dict:
+        return {"ok": True}
+
+    result = await run_parallel_gate_planner_shadow(
+        initial_state={
+            "request_id": "req-shadow-fields",
+            "sop_gate_router_shadow": {"schema_version": "chat_gate_router_shadow_v1"},
+            "tool_plan_preview": {"schema_version": "tool_plan_preview_v2"},
+        },
+        gate_branch=branch,
+        planner_branch=branch,
+        refactor_flags={"safe_for_shadow_observation": True},
+    )
+
+    assert result["mode"] == "completed_shadow"
+    assert result["input_isolation_audit"]["shadow_only_fields_present_in_initial_state"] == [
+        "sop_gate_router_shadow",
+        "tool_plan_preview",
+    ]
+    assert result["input_isolation_audit"]["target_parallel_input_requires_no_branch_outputs"] is True
 
 
 def test_parallel_runner_shadow_skips_when_flags_do_not_allow_shadow() -> None:

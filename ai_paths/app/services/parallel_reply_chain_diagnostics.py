@@ -109,10 +109,26 @@ def _next_safe_step(phase: str) -> str:
 
 def _runner_blockers(runner: dict[str, Any]) -> list[str]:
     blockers = _list_strings(runner.get("activation_blockers"))
+    blockers.extend(_runner_input_isolation_blockers(runner))
     branches = runner.get("branches") if isinstance(runner.get("branches"), dict) else {}
     for branch_name, branch in branches.items():
         if isinstance(branch, dict) and branch.get("status") == "error":
             blockers.append(f"branch_error:{branch_name}")
+    return blockers
+
+
+def _runner_input_isolation_blockers(runner: dict[str, Any]) -> list[str]:
+    if str(runner.get("mode") or "") != "completed_shadow":
+        return []
+    audit = runner.get("input_isolation_audit")
+    if not isinstance(audit, dict) or audit.get("schema_version") != "parallel_branch_input_isolation_audit_v1":
+        return ["missing_runner_input_isolation_audit"]
+    blockers: list[str] = []
+    if audit.get("initial_state_unchanged_after_branches") is not True:
+        blockers.append("runner_initial_state_mutated")
+    shadow_fields = audit.get("shadow_only_fields_present_in_initial_state")
+    if isinstance(shadow_fields, list) and shadow_fields:
+        blockers.append(f"runner_input_contains_shadow_fields:{len(shadow_fields)}")
     return blockers
 
 

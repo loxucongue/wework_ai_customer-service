@@ -7,6 +7,22 @@ from app.graph.planner.brain_v2 import _planner_payload_for_model
 from app.services.parallel_reply_chain_diagnostics import parallel_reply_chain_diagnostics
 
 
+def _completed_runner_shadow(*, input_shadow_fields: list[str] | None = None) -> dict:
+    return {
+        "schema_version": "parallel_gate_planner_runner_shadow_v1",
+        "mode": "completed_shadow",
+        "input_isolation_audit": {
+            "schema_version": "parallel_branch_input_isolation_audit_v1",
+            "initial_state_unchanged_after_branches": True,
+            "shadow_only_fields_present_in_initial_state": input_shadow_fields or [],
+        },
+        "branches": {
+            "sop_chat_gate": {"status": "completed"},
+            "tool_planner": {"status": "completed"},
+        },
+    }
+
+
 def test_diagnostics_reports_runner_integration_as_next_step_when_contract_ready() -> None:
     diagnostics = parallel_reply_chain_diagnostics(
         parallel_reply_chain_shadow={
@@ -48,6 +64,11 @@ def test_diagnostics_reports_runner_branch_errors() -> None:
         runner_shadow={
             "schema_version": "parallel_gate_planner_runner_shadow_v1",
             "mode": "completed_shadow",
+            "input_isolation_audit": {
+                "schema_version": "parallel_branch_input_isolation_audit_v1",
+                "initial_state_unchanged_after_branches": True,
+                "shadow_only_fields_present_in_initial_state": [],
+            },
             "branches": {
                 "sop_chat_gate": {"status": "completed"},
                 "tool_planner": {"status": "error"},
@@ -66,14 +87,7 @@ def test_diagnostics_reports_ready_for_shadow_comparison_after_runner_success() 
             "schema_version": "parallel_reply_chain_shadow_v1",
             "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
         },
-        runner_shadow={
-            "schema_version": "parallel_gate_planner_runner_shadow_v1",
-            "mode": "completed_shadow",
-            "branches": {
-                "sop_chat_gate": {"status": "completed"},
-                "tool_planner": {"status": "completed"},
-            },
-        },
+        runner_shadow=_completed_runner_shadow(),
     )
 
     assert diagnostics["phase"] == "ready_for_shadow_comparison"
@@ -86,14 +100,7 @@ def test_diagnostics_blocks_behavior_switch_when_comparison_has_diffs() -> None:
             "schema_version": "parallel_reply_chain_shadow_v1",
             "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
         },
-        runner_shadow={
-            "schema_version": "parallel_gate_planner_runner_shadow_v1",
-            "mode": "completed_shadow",
-            "branches": {
-                "sop_chat_gate": {"status": "completed"},
-                "tool_planner": {"status": "completed"},
-            },
-        },
+        runner_shadow=_completed_runner_shadow(),
         comparison_shadow={
             "schema_version": "parallel_reply_chain_comparison_v1",
             "status": "diffs_found",
@@ -113,14 +120,7 @@ def test_diagnostics_requires_human_review_after_matched_shadow_comparison() -> 
             "schema_version": "parallel_reply_chain_shadow_v1",
             "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
         },
-        runner_shadow={
-            "schema_version": "parallel_gate_planner_runner_shadow_v1",
-            "mode": "completed_shadow",
-            "branches": {
-                "sop_chat_gate": {"status": "completed"},
-                "tool_planner": {"status": "completed"},
-            },
-        },
+        runner_shadow=_completed_runner_shadow(),
         comparison_shadow={
             "schema_version": "parallel_reply_chain_comparison_v1",
             "status": "matched_shadow_replay",
@@ -143,14 +143,7 @@ def test_diagnostics_blocks_when_tool_planner_still_has_legacy_semantics() -> No
                 "tool_planner_only_ready": False,
             },
         },
-        runner_shadow={
-            "schema_version": "parallel_gate_planner_runner_shadow_v1",
-            "mode": "completed_shadow",
-            "branches": {
-                "sop_chat_gate": {"status": "completed"},
-                "tool_planner": {"status": "completed"},
-            },
-        },
+        runner_shadow=_completed_runner_shadow(),
         comparison_shadow={
             "schema_version": "parallel_reply_chain_comparison_v1",
             "status": "matched_shadow_replay",
@@ -162,6 +155,19 @@ def test_diagnostics_blocks_when_tool_planner_still_has_legacy_semantics() -> No
     assert diagnostics["migration"]["blockers"] == ["tool_planner_legacy_semantic_residue:3"]
     assert diagnostics["migration"]["tool_planner_legacy_residue_count"] == 3
     assert diagnostics["migration"]["tool_planner_only_ready"] is False
+
+
+def test_diagnostics_blocks_when_runner_input_contains_shadow_fields() -> None:
+    diagnostics = parallel_reply_chain_diagnostics(
+        parallel_reply_chain_shadow={
+            "schema_version": "parallel_reply_chain_shadow_v1",
+            "activation": {"ready_for_shadow_parallel_runner": True, "blockers": []},
+        },
+        runner_shadow=_completed_runner_shadow(input_shadow_fields=["sop_gate_router_shadow"]),
+    )
+
+    assert diagnostics["phase"] == "runner_blocked"
+    assert "runner_input_contains_shadow_fields:1" in diagnostics["runner"]["blockers"]
 
 
 def test_diagnostics_are_not_consumed_by_current_model_payloads() -> None:

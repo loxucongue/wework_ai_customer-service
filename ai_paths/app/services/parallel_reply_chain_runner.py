@@ -10,6 +10,22 @@ from typing import Any
 Branch = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
+SHADOW_ONLY_FIELDS = (
+    "sop_gate_preview",
+    "sop_gate_router_shadow",
+    "reply_chain_shadow_context",
+    "tool_plan_preview",
+    "read_only_tool_executor_shadow",
+    "reply_chain_join_shadow",
+    "reply_final_brain_handoff_shadow",
+    "parallel_reply_chain_shadow",
+    "reply_chain_refactor_flags",
+    "parallel_gate_planner_runner_shadow",
+    "parallel_reply_chain_diagnostics",
+    "parallel_reply_chain_comparison",
+)
+
+
 async def run_parallel_gate_planner_shadow(
     *,
     initial_state: dict[str, Any],
@@ -33,6 +49,7 @@ async def run_parallel_gate_planner_shadow(
         }
 
     started = time.perf_counter()
+    initial_snapshot = copy.deepcopy(initial_state)
     gate_state = _branch_state(initial_state)
     planner_state = _branch_state(initial_state)
     gate_task = asyncio.create_task(_run_branch("sop_chat_gate", gate_branch, gate_state))
@@ -42,6 +59,12 @@ async def run_parallel_gate_planner_shadow(
     return {
         "schema_version": "parallel_gate_planner_runner_shadow_v1",
         "mode": "completed_shadow",
+        "input_isolation_audit": _input_isolation_audit(
+            initial_state=initial_state,
+            initial_snapshot=initial_snapshot,
+            gate_state=gate_state,
+            planner_state=planner_state,
+        ),
         "branches": {
             "sop_chat_gate": gate_result,
             "tool_planner": planner_result,
@@ -54,6 +77,7 @@ async def run_parallel_gate_planner_shadow(
         "safety": {
             "no_runtime_behavior_change": True,
             "branch_state_isolated": True,
+            "initial_state_unchanged": initial_state == initial_snapshot,
             "no_customer_messages_sent": True,
             "no_database_writes": True,
         },
@@ -132,6 +156,27 @@ async def _run_branch(name: str, branch: Branch, state: dict[str, Any]) -> dict[
 
 def _branch_state(initial_state: dict[str, Any]) -> dict[str, Any]:
     return copy.deepcopy(initial_state)
+
+
+def _input_isolation_audit(
+    *,
+    initial_state: dict[str, Any],
+    initial_snapshot: dict[str, Any],
+    gate_state: dict[str, Any],
+    planner_state: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "parallel_branch_input_isolation_audit_v1",
+        "branch_states_are_distinct_objects": gate_state is not planner_state,
+        "gate_state_is_not_initial_state": gate_state is not initial_state,
+        "planner_state_is_not_initial_state": planner_state is not initial_state,
+        "initial_state_unchanged_after_branches": initial_state == initial_snapshot,
+        "shadow_only_fields_present_in_initial_state": [
+            field for field in SHADOW_ONLY_FIELDS if field in initial_state
+        ],
+        "target_parallel_input_requires_no_branch_outputs": True,
+        "source": "runner_shadow_input_copy_audit",
+    }
 
 
 def _duration(result: dict[str, Any]) -> int:
