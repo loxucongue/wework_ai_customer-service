@@ -22,6 +22,8 @@ from app.simulation.runner import (
     _semantic_scores,
     load_suite,
     render_markdown,
+    simulation_evaluation_scope,
+    simulation_run_options,
 )
 from app.simulation.runtime import _hard_check, _provider_incidents, _unrecovered_infrastructure_errors
 
@@ -99,6 +101,47 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["missing_required_categories"], [])
         self.assertEqual(report["coverage"]["missing_critical_required_categories"], [])
         self.assertTrue(report["summary"]["acceptance"]["scenario_coverage_complete"])
+
+    def test_aggregate_exposes_simulation_scope_and_run_options(self) -> None:
+        scope = simulation_evaluation_scope(scenario_id="store_case", category="门店V2", max_cases=1)
+        options = simulation_run_options(attempts=1, critical_attempts=1, concurrency=1, skip_review=True)
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=[{"id": "store_case", "category": "门店V2", "critical": True}],
+            results=[
+                {
+                    "scenario_id": "store_case",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                }
+            ],
+            baseline={},
+            evaluation_scope=scope,
+            run_options=options,
+        )
+
+        self.assertEqual(
+            report["evaluation_scope"],
+            {
+                "schema_version": "offline_simulation_scope_v1",
+                "scenario_id": "store_case",
+                "category": "门店V2",
+                "max_cases": 1,
+                "targeted_smoke": True,
+                "full_release_gate_candidate": False,
+            },
+        )
+        self.assertEqual(
+            report["run_options"],
+            {
+                "schema_version": "offline_simulation_run_options_v1",
+                "attempts": 1,
+                "critical_attempts": 1,
+                "concurrency": 1,
+                "skip_review": True,
+                "reviewer_model": "",
+            },
+        )
 
     def test_aggregate_blocks_acceptance_when_required_simulation_category_is_missing(self) -> None:
         report = _aggregate(

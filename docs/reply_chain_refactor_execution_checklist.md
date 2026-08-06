@@ -264,6 +264,13 @@ Required report:
 - `schema_version=offline_reply_chain_simulation_report_v1`
 - `git_commit` matches the reviewed behavior-switch commit
 - `git_commit_set` contains exactly that commit
+- `evaluation_scope.schema_version=offline_simulation_scope_v1`
+- `evaluation_scope.full_release_gate_candidate=true`
+- `evaluation_scope.targeted_smoke=false`
+- `run_options.schema_version=offline_simulation_run_options_v1`
+- `run_options.skip_review=false`
+- `run_options.attempts >= 3`
+- `run_options.critical_attempts >= 5`
 - `scenario_summary` includes every scenario
 - every non-critical scenario has at least `3` attempts
 - every critical scenario has at least `5` attempts

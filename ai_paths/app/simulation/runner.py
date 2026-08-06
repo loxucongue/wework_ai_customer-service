@@ -98,6 +98,18 @@ async def run_suite(
         scenarios = scenarios[:max_cases]
     if not scenarios:
         raise ValueError("no simulation scenarios matched the filters")
+    scope = simulation_evaluation_scope(
+        scenario_id=scenario_id,
+        category=category,
+        max_cases=max_cases,
+    )
+    options = simulation_run_options(
+        attempts=attempts,
+        critical_attempts=critical_attempts,
+        concurrency=concurrency,
+        skip_review=skip_review,
+        reviewer_model=reviewer_model,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_dir = output_dir / "checkpoints"
@@ -151,6 +163,8 @@ async def run_suite(
         scenarios=scenarios,
         results=results,
         baseline=_load_baseline(baseline_path),
+        evaluation_scope=scope,
+        run_options=options,
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -174,6 +188,39 @@ def _record_semantic_review_failure(result: dict[str, Any], exc: Exception) -> N
         "error": review_error,
     }
     result.setdefault("infrastructure_errors", []).append(f"semantic_review:{review_error}")
+
+
+def simulation_evaluation_scope(*, scenario_id: str = "", category: str = "", max_cases: int = 0) -> dict[str, Any]:
+    scenario_filter = str(scenario_id or "").strip()
+    category_filter = str(category or "").strip()
+    case_limit = int(max_cases or 0)
+    targeted = bool(scenario_filter or category_filter or case_limit > 0)
+    return {
+        "schema_version": "offline_simulation_scope_v1",
+        "scenario_id": scenario_filter,
+        "category": category_filter,
+        "max_cases": case_limit,
+        "targeted_smoke": targeted,
+        "full_release_gate_candidate": not targeted,
+    }
+
+
+def simulation_run_options(
+    *,
+    attempts: int = 3,
+    critical_attempts: int = 5,
+    concurrency: int = 2,
+    skip_review: bool = False,
+    reviewer_model: str = "",
+) -> dict[str, Any]:
+    return {
+        "schema_version": "offline_simulation_run_options_v1",
+        "attempts": int(attempts or 0),
+        "critical_attempts": int(critical_attempts or 0),
+        "concurrency": int(concurrency or 0),
+        "skip_review": bool(skip_review),
+        "reviewer_model": str(reviewer_model or ""),
+    }
 
 
 async def _review_result(
@@ -303,6 +350,8 @@ def _aggregate(
     scenarios: list[dict[str, Any]],
     results: list[dict[str, Any]],
     baseline: dict[str, Any],
+    evaluation_scope: dict[str, Any] | None = None,
+    run_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     evaluable = [
         item
@@ -365,6 +414,8 @@ def _aggregate(
         "git_commit": git_commits[0] if len(git_commits) == 1 else "",
         "git_commit_set": git_commits,
         "fixture": str(fixture),
+        "evaluation_scope": evaluation_scope or simulation_evaluation_scope(),
+        "run_options": run_options or simulation_run_options(),
         "scenario_count": len(scenarios),
         "attempt_count": len(results),
         "hard_error_count": hard_error_count,

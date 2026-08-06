@@ -237,6 +237,26 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         blockers.append(f"simulation_multiple_git_commits:{','.join(commit_set)}")
     elif commit and commit_set[0] != commit:
         blockers.append(f"simulation_git_commit_set_mismatch:{commit_set[0]}!={commit}")
+    scope = _dict(simulation.get("evaluation_scope"))
+    if scope.get("schema_version") != "offline_simulation_scope_v1":
+        blockers.append("simulation_missing_evaluation_scope")
+    elif scope.get("full_release_gate_candidate") is not True:
+        blockers.append("simulation_not_full_release_gate_candidate")
+    run_options = _dict(simulation.get("run_options"))
+    if run_options.get("schema_version") != "offline_simulation_run_options_v1":
+        blockers.append("simulation_missing_run_options")
+    else:
+        if run_options.get("skip_review") is not False:
+            blockers.append("simulation_skip_review_not_allowed")
+        attempts = _int_value(run_options.get("attempts"))
+        critical_attempts = _int_value(run_options.get("critical_attempts"))
+        if attempts < MIN_REQUIRED_SIMULATION_ATTEMPTS:
+            blockers.append(f"simulation_attempts_below_required:{attempts}<{MIN_REQUIRED_SIMULATION_ATTEMPTS}")
+        if critical_attempts < MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS:
+            blockers.append(
+                "simulation_critical_attempts_below_required:"
+                f"{critical_attempts}<{MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS}"
+            )
     if simulation.get("hard_error_count") not in (0, "0"):
         blockers.append(f"simulation_hard_errors:{simulation.get('hard_error_count')}")
     try:

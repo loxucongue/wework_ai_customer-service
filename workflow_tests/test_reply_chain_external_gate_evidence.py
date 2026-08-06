@@ -51,6 +51,22 @@ def _simulation_ready() -> dict:
         "schema_version": "offline_reply_chain_simulation_report_v1",
         "git_commit": "abc123",
         "git_commit_set": ["abc123"],
+        "evaluation_scope": {
+            "schema_version": "offline_simulation_scope_v1",
+            "scenario_id": "",
+            "category": "",
+            "max_cases": 0,
+            "targeted_smoke": False,
+            "full_release_gate_candidate": True,
+        },
+        "run_options": {
+            "schema_version": "offline_simulation_run_options_v1",
+            "attempts": 3,
+            "critical_attempts": 5,
+            "concurrency": 2,
+            "skip_review": False,
+            "reviewer_model": "",
+        },
         "scenario_count": 100,
         "attempt_count": 300,
         "hard_error_count": 0,
@@ -477,6 +493,46 @@ def test_external_gate_evidence_blocks_missing_or_mismatched_simulation_commit_s
     blockers = simulation_report_blockers(simulation)
 
     assert "simulation_git_commit_set_mismatch:def456!=abc123" in blockers
+
+
+def test_external_gate_evidence_blocks_targeted_simulation_smoke_as_release_gate() -> None:
+    simulation = _simulation_ready()
+    simulation["evaluation_scope"] = {
+        "schema_version": "offline_simulation_scope_v1",
+        "scenario_id": "store_case",
+        "category": "",
+        "max_cases": 0,
+        "targeted_smoke": True,
+        "full_release_gate_candidate": False,
+    }
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_not_full_release_gate_candidate" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_simulation_scope_or_run_options() -> None:
+    simulation = _simulation_ready()
+    del simulation["evaluation_scope"]
+    del simulation["run_options"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_evaluation_scope" in blockers
+    assert "simulation_missing_run_options" in blockers
+
+
+def test_external_gate_evidence_blocks_simulation_skip_review_and_low_attempts() -> None:
+    simulation = _simulation_ready()
+    simulation["run_options"]["skip_review"] = True
+    simulation["run_options"]["attempts"] = 1
+    simulation["run_options"]["critical_attempts"] = 2
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_skip_review_not_allowed" in blockers
+    assert "simulation_attempts_below_required:1<3" in blockers
+    assert "simulation_critical_attempts_below_required:2<5" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_or_mixed_model_matrix_commit() -> None:

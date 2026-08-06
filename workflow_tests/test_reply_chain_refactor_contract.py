@@ -169,6 +169,13 @@ def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None
 
     for marker in [
         "schema_version=offline_reply_chain_simulation_report_v1",
+        "evaluation_scope.schema_version=offline_simulation_scope_v1",
+        "evaluation_scope.full_release_gate_candidate=true",
+        "evaluation_scope.targeted_smoke=false",
+        "run_options.schema_version=offline_simulation_run_options_v1",
+        "run_options.skip_review=false",
+        "run_options.attempts >= 3",
+        "run_options.critical_attempts >= 5",
         "summary.infrastructure_failures=0",
         "summary.acceptance.infrastructure_failures_zero=true",
         "coverage.schema_version=offline_simulation_coverage_audit_v1",
