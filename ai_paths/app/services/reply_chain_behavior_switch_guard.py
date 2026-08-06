@@ -127,7 +127,7 @@ def reply_chain_behavior_switch_guard(
                 "diagnostics": "parallel_reply_chain_diagnostics_v1 phase=ready_for_human_review",
                 "simulation_report": (
                     "offline full-chain simulation with zero hard errors, complete required scenario coverage, "
-                    "and required pass rate"
+                    "complete semantic review for every attempt, and required pass rate"
                 ),
                 "model_matrix_report": "three-model relay matrix with accuracy and latency summary",
                 "payload_isolation_report": (

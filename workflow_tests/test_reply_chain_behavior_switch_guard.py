@@ -92,9 +92,11 @@ def _simulation_ready() -> dict:
             for index in range(100)
         },
         "summary": {
+            "evaluable_attempts": 300,
             "infrastructure_failures": 0,
             "acceptance": {
                 "hard_errors_zero": True,
+                "semantic_review_complete": True,
                 "semantic_at_least_90": True,
                 "critical_all_pass": True,
                 "infrastructure_failures_zero": True,
@@ -965,6 +967,25 @@ def test_behavior_switch_guard_blocks_simulation_without_required_category_cover
     assert "simulation_missing_required_category:精准问答" in guard["blockers"]
     assert "simulation_missing_required_category:预约金" in guard["blockers"]
     assert "simulation_scenario_coverage_incomplete" in guard["blockers"]
+
+
+def test_behavior_switch_guard_blocks_simulation_without_complete_semantic_review() -> None:
+    simulation = _simulation_ready()
+    simulation["summary"]["evaluable_attempts"] = 0
+    simulation["summary"]["acceptance"]["semantic_review_complete"] = False
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=simulation,
+        model_matrix_report=_model_matrix_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "simulation_evaluable_attempts_below_attempt_count:0<300" in guard["blockers"]
+    assert "simulation_semantic_review_incomplete" in guard["blockers"]
 
 
 def test_behavior_switch_guard_is_not_consumed_by_current_model_payloads() -> None:
