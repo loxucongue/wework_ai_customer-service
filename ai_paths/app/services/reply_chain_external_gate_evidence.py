@@ -294,6 +294,14 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     failed_critical = _list_strings(simulation.get("failed_critical_scenarios"))
     if failed_critical:
         blockers.extend(f"simulation_critical_failed:{item}" for item in failed_critical)
+    baseline_comparison = _dict(simulation.get("baseline_comparison"))
+    if baseline_comparison.get("schema_version") != "offline_simulation_baseline_comparison_v1":
+        blockers.append("simulation_missing_baseline_comparison")
+    else:
+        if baseline_comparison.get("available") is not True:
+            blockers.append("simulation_baseline_comparison_unavailable")
+        for item in _list_strings(baseline_comparison.get("regressed")):
+            blockers.append(f"simulation_baseline_regressed:{item}")
     coverage = _dict(simulation.get("coverage"))
     if coverage.get("schema_version") != "offline_simulation_coverage_audit_v1":
         blockers.append("simulation_missing_coverage_audit")

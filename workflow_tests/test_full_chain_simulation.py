@@ -143,6 +143,50 @@ class FullChainSimulationTests(unittest.TestCase):
             },
         )
 
+    def test_aggregate_exposes_baseline_comparison_schema_and_regressions(self) -> None:
+        scenarios = [
+            {"id": "improved_case", "category": "门店V2", "critical": True},
+            {"id": "regressed_case", "category": "门店V2", "critical": True},
+            {"id": "unchanged_case", "category": "门店V2", "critical": True},
+        ]
+        report = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=scenarios,
+            results=[
+                {
+                    "scenario_id": "improved_case",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                },
+                {
+                    "scenario_id": "regressed_case",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": False},
+                },
+                {
+                    "scenario_id": "unchanged_case",
+                    "hard_pass": True,
+                    "semantic_review": {"available": True, "pass": True},
+                },
+            ],
+            baseline={
+                "scenario_summary": {
+                    "improved_case": {"semantic_passes": 0, "attempts": 1},
+                    "regressed_case": {"semantic_passes": 1, "attempts": 1},
+                    "unchanged_case": {"semantic_passes": 1, "attempts": 1},
+                }
+            },
+        )
+
+        self.assertEqual(
+            report["baseline_comparison"]["schema_version"],
+            "offline_simulation_baseline_comparison_v1",
+        )
+        self.assertTrue(report["baseline_comparison"]["available"])
+        self.assertEqual(report["baseline_comparison"]["improved"], ["improved_case"])
+        self.assertEqual(report["baseline_comparison"]["regressed"], ["regressed_case"])
+        self.assertEqual(report["baseline_comparison"]["unchanged"], ["unchanged_case"])
+
     def test_aggregate_blocks_acceptance_when_required_simulation_category_is_missing(self) -> None:
         report = _aggregate(
             fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",

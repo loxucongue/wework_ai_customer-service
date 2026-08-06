@@ -78,6 +78,13 @@ def _simulation_ready() -> dict:
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
+        "baseline_comparison": {
+            "schema_version": "offline_simulation_baseline_comparison_v1",
+            "available": True,
+            "improved": [],
+            "regressed": [],
+            "unchanged": [f"sim_case_{index}" for index in range(100)],
+        },
         "scenario_summary": {
             f"sim_case_{index}": {
                 "category": "sim",
@@ -719,6 +726,36 @@ def test_external_gate_evidence_blocks_missing_simulation_coverage() -> None:
 
     assert "simulation_missing_required_category:健康风险" in blockers
     assert "simulation_scenario_coverage_incomplete" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_simulation_baseline_comparison() -> None:
+    simulation = _simulation_ready()
+    del simulation["baseline_comparison"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_missing_baseline_comparison" in blockers
+
+
+def test_external_gate_evidence_blocks_unavailable_simulation_baseline_comparison() -> None:
+    simulation = _simulation_ready()
+    simulation["baseline_comparison"] = {
+        "schema_version": "offline_simulation_baseline_comparison_v1",
+        "available": False,
+    }
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_baseline_comparison_unavailable" in blockers
+
+
+def test_external_gate_evidence_blocks_simulation_baseline_regressions() -> None:
+    simulation = _simulation_ready()
+    simulation["baseline_comparison"]["regressed"] = ["store_v2_county_confirm"]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_baseline_regressed:store_v2_county_confirm" in blockers
 
 
 def test_external_gate_evidence_blocks_simulation_coverage_manifest_drift() -> None:

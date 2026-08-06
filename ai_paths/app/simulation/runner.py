@@ -952,7 +952,7 @@ def _load_baseline(path: Path | None) -> dict[str, Any]:
 def _compare_baseline(baseline: dict[str, Any], current: dict[str, Any]) -> dict[str, Any]:
     previous = baseline.get("scenario_summary") if isinstance(baseline.get("scenario_summary"), dict) else {}
     if not previous:
-        return {"available": False}
+        return {"schema_version": "offline_simulation_baseline_comparison_v1", "available": False}
     improved: list[str] = []
     regressed: list[str] = []
     unchanged: list[str] = []
@@ -968,4 +968,10 @@ def _compare_baseline(baseline: dict[str, Any], current: dict[str, Any]) -> dict
             regressed.append(scenario_id)
         else:
             unchanged.append(scenario_id)
-    return {"available": True, "improved": improved, "regressed": regressed, "unchanged": unchanged}
+    return {
+        "schema_version": "offline_simulation_baseline_comparison_v1",
+        "available": True,
+        "improved": improved,
+        "regressed": regressed,
+        "unchanged": unchanged,
+    }
