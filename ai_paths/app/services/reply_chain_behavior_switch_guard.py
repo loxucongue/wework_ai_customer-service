@@ -54,38 +54,22 @@ def reply_chain_behavior_switch_guard(
     switch_requested = _behavior_switch_requested(flags)
     simulation_blockers = simulation_report_blockers(simulation)
     model_matrix_blockers = model_matrix_report_blockers(model_matrix)
-    payload_isolation_blockers = (
-        payload_isolation_report_blockers(payload_isolation)
-        if payload_isolation_report is not None
-        else []
-    )
-    business_wording_freeze_blockers = (
-        business_wording_freeze_report_blockers(business_wording_freeze)
-        if business_wording_freeze_report is not None
-        else []
-    )
-    rollback_evidence_blockers = (
-        rollback_evidence_report_blockers(rollback_evidence)
-        if rollback_evidence_report is not None
-        else []
-    )
-    model_semantics_ownership_blockers = (
-        model_semantics_ownership_report_blockers(model_semantics_ownership)
-        if model_semantics_ownership_report is not None
-        else []
-    )
+    payload_isolation_blockers = payload_isolation_report_blockers(payload_isolation)
+    business_wording_freeze_blockers = business_wording_freeze_report_blockers(business_wording_freeze)
+    rollback_evidence_blockers = rollback_evidence_report_blockers(rollback_evidence)
+    model_semantics_ownership_blockers = model_semantics_ownership_report_blockers(model_semantics_ownership)
     proven_external_gates: set[str] = set()
     if not simulation_blockers:
         proven_external_gates.add("simulation_regression_review")
     if not model_matrix_blockers:
         proven_external_gates.add("model_matrix_review")
-    if payload_isolation_report is not None and not payload_isolation_blockers:
+    if not payload_isolation_blockers:
         proven_external_gates.add("payload_isolation_review")
-    if business_wording_freeze_report is not None and not business_wording_freeze_blockers:
+    if not business_wording_freeze_blockers:
         proven_external_gates.add("business_wording_freeze_review")
-    if rollback_evidence_report is not None and not rollback_evidence_blockers:
+    if not rollback_evidence_blockers:
         proven_external_gates.add("rollback_evidence_review")
-    if model_semantics_ownership_report is not None and not model_semantics_ownership_blockers:
+    if not model_semantics_ownership_blockers:
         proven_external_gates.add("model_semantics_ownership_review")
 
     blockers: list[str] = []

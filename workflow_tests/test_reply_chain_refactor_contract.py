@@ -227,6 +227,7 @@ def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None
         "safety.does_not_call_external_tools=true",
         "reply_chain_behavior_switch_guard(model_matrix_report=...)",
         "reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=...)",
+        "Omitting payload isolation, business wording freeze, rollback",
         "postcommit bundle and final behavior-switch guard aligned",
         "a valid matrix report",
         "authoritative evidence",

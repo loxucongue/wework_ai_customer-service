@@ -454,6 +454,17 @@ def _model_semantics_ownership_ready() -> dict:
     }
 
 
+def _complete_external_report_kwargs() -> dict:
+    return {
+        "simulation_report": _simulation_ready(),
+        "model_matrix_report": _model_matrix_ready(),
+        "payload_isolation_report": _payload_isolation_ready(),
+        "business_wording_freeze_report": _business_wording_freeze_ready(),
+        "rollback_evidence_report": _rollback_evidence_ready(),
+        "model_semantics_ownership_report": _model_semantics_ownership_ready(),
+    }
+
+
 def _human_review_approved() -> dict:
     return {
         "schema_version": "reply_chain_human_review_approval_v1",
@@ -520,6 +531,23 @@ def test_behavior_switch_guard_blocks_human_review_without_rollback_plan() -> No
 
     assert guard["can_enable_behavior_switch"] is False
     assert "missing_behavior_switch_rollback_plan" in guard["blockers"]
+
+
+def test_behavior_switch_guard_requires_all_external_audit_reports_for_review() -> None:
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "missing_payload_isolation_audit" in guard["blockers"]
+    assert "missing_business_wording_freeze_audit" in guard["blockers"]
+    assert "missing_refactor_rollback_evidence" in guard["blockers"]
+    assert "missing_model_semantics_ownership_audit" in guard["blockers"]
 
 
 def test_behavior_switch_guard_blocks_unreviewed_rollback_plan() -> None:
@@ -669,9 +697,10 @@ def test_behavior_switch_guard_filters_business_wording_freeze_report_gate() -> 
         flag_snapshot=_active_flag_snapshot(),
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=diagnostics,
-        simulation_report=_simulation_ready(),
-        model_matrix_report=_model_matrix_ready(),
-        business_wording_freeze_report=_business_wording_freeze_ready(),
+        **{
+            **_complete_external_report_kwargs(),
+            "business_wording_freeze_report": _business_wording_freeze_ready(),
+        },
         human_review=_human_review_approved(),
     )
 
@@ -716,9 +745,10 @@ def test_behavior_switch_guard_filters_payload_isolation_report_gate() -> None:
         flag_snapshot=_active_flag_snapshot(),
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=diagnostics,
-        simulation_report=_simulation_ready(),
-        model_matrix_report=_model_matrix_ready(),
-        payload_isolation_report=_payload_isolation_ready(),
+        **{
+            **_complete_external_report_kwargs(),
+            "payload_isolation_report": _payload_isolation_ready(),
+        },
         human_review=_human_review_approved(),
     )
 
@@ -763,9 +793,10 @@ def test_behavior_switch_guard_filters_model_semantics_ownership_report_gate() -
         flag_snapshot=_active_flag_snapshot(),
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=diagnostics,
-        simulation_report=_simulation_ready(),
-        model_matrix_report=_model_matrix_ready(),
-        model_semantics_ownership_report=_model_semantics_ownership_ready(),
+        **{
+            **_complete_external_report_kwargs(),
+            "model_semantics_ownership_report": _model_semantics_ownership_ready(),
+        },
         human_review=_human_review_approved(),
     )
 
@@ -810,9 +841,10 @@ def test_behavior_switch_guard_filters_rollback_evidence_report_gate() -> None:
         flag_snapshot=_active_flag_snapshot(),
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=diagnostics,
-        simulation_report=_simulation_ready(),
-        model_matrix_report=_model_matrix_ready(),
-        rollback_evidence_report=_rollback_evidence_ready(),
+        **{
+            **_complete_external_report_kwargs(),
+            "rollback_evidence_report": _rollback_evidence_ready(),
+        },
         human_review=_human_review_approved(),
     )
 
@@ -865,8 +897,7 @@ def test_behavior_switch_guard_filters_externally_proven_simulation_and_model_ma
         flag_snapshot=_active_flag_snapshot(),
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=diagnostics,
-        simulation_report=_simulation_ready(),
-        model_matrix_report=_model_matrix_ready(),
+        **_complete_external_report_kwargs(),
         human_review=_human_review_approved(),
     )
 
@@ -956,8 +987,7 @@ def test_behavior_switch_guard_allows_only_with_complete_evidence() -> None:
         flag_snapshot=_active_flag_snapshot(),
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=_diagnostics_ready(),
-        simulation_report=_simulation_ready(),
-        model_matrix_report=_model_matrix_ready(),
+        **_complete_external_report_kwargs(),
         human_review=_human_review_approved(),
     )
 

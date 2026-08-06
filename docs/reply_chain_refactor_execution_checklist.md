@@ -371,6 +371,12 @@ is the authoritative evidence that proves that gate. If the report is missing,
 incomplete, skipped because of absent keys, or contains any safety marker other
 than the values above, the guard must block.
 
+The final behavior-switch guard requires every external evidence report listed
+in this section. Omitting payload isolation, business wording freeze, rollback
+evidence, or model semantics ownership evidence must block the switch even when
+offline simulation, model matrix, diagnostics, shadow bundle, and human review
+are present.
+
 When reviewing postcommit shadow evidence, recompute
 `reply_chain_shadow_bundle_audit(..., simulation_report=..., model_matrix_report=..., payload_isolation_report=..., business_wording_freeze_report=..., rollback_evidence_report=..., model_semantics_ownership_report=...)`
 with the same offline simulation, model matrix, payload isolation, business
