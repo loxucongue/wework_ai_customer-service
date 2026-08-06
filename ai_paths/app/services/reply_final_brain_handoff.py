@@ -33,6 +33,55 @@ FACT_AND_TOOL_FIELDS = (
     "read_only_tool_executor_shadow",
     "reply_chain_join_shadow",
 )
+TARGET_REPLY_ACTIVE_INPUT_GROUPS: tuple[dict[str, str], ...] = (
+    {
+        "group_id": "complete_timed_chat",
+        "source": "reply_chain_shadow_context.timeline",
+        "consumption_rule": "authoritative_input",
+    },
+    {
+        "group_id": "authoritative_facts",
+        "source": "reply_chain_shadow_context.authoritative_facts",
+        "consumption_rule": "authoritative_input",
+    },
+    {
+        "group_id": "gate_content_candidates",
+        "source": "chat_gate_router_shadow.selected_content",
+        "consumption_rule": "reference_only",
+    },
+    {
+        "group_id": "read_only_tool_facts",
+        "source": "read_only_tool_executor_shadow.tool_facts",
+        "consumption_rule": "authoritative_fact_reference",
+    },
+    {
+        "group_id": "join_route_and_conflicts",
+        "source": "reply_chain_join_shadow",
+        "consumption_rule": "routing_context_only",
+    },
+)
+TARGET_REPLY_SHADOW_ONLY_GROUPS: tuple[dict[str, str], ...] = (
+    {
+        "group_id": "legacy_planner_customer_message_candidates",
+        "source": "input_groups.customer_message_candidates",
+        "consumption_rule": "shadow_comparison_only",
+    },
+    {
+        "group_id": "legacy_planner_turn_outcome_signals",
+        "source": "input_groups.turn_outcome_signals",
+        "consumption_rule": "shadow_comparison_only",
+    },
+    {
+        "group_id": "legacy_planner_sales_decision_signals",
+        "source": "input_groups.sales_decision_signals",
+        "consumption_rule": "shadow_comparison_only",
+    },
+    {
+        "group_id": "legacy_planner_field_mapping_audit",
+        "source": "migration_audit.field_mapping_audit",
+        "consumption_rule": "review_evidence_only",
+    },
+)
 LEGACY_FIELD_TARGETS: dict[str, dict[str, str]] = {
     "planner_reply_messages": {
         "target_reply_contract": "reply_output_schema.final_customer_visible_messages",
@@ -160,11 +209,14 @@ def reply_final_brain_handoff_shadow_from_planner_output(
     fact_and_tool_fields = _present_fields(output, FACT_AND_TOOL_FIELDS)
     legacy_business_fields = [*customer_message_fields, *turn_outcome_fields, *sales_decision_fields]
     migration_mapping_audit = _legacy_field_mapping_audit(legacy_business_fields)
+    target_reply_input_schema = _target_reply_input_schema()
+    target_reply_input_schema_audit = _target_reply_input_schema_audit(target_reply_input_schema)
     handoff_readiness_audit = _handoff_readiness_audit(
         output=output,
         reply_chain_shadow_context=reply_chain_shadow_context or {},
         gate_router_shadow=gate_router_shadow or {},
         migration_mapping_audit=migration_mapping_audit,
+        target_reply_input_schema_audit=target_reply_input_schema_audit,
     )
     return _drop_empty(
         {
@@ -178,6 +230,8 @@ def reply_final_brain_handoff_shadow_from_planner_output(
                 "sales_decision_signals": _pick(output, sales_decision_fields),
                 "fact_and_tool_evidence": _fact_and_tool_summary(output, fact_and_tool_fields),
             },
+            "target_reply_input_schema": target_reply_input_schema,
+            "target_reply_input_schema_audit": target_reply_input_schema_audit,
             "migration_audit": {
                 "customer_message_field_count": len(customer_message_fields),
                 "turn_outcome_field_count": len(turn_outcome_fields),
@@ -218,6 +272,7 @@ def _handoff_readiness_audit(
     reply_chain_shadow_context: dict[str, Any],
     gate_router_shadow: dict[str, Any],
     migration_mapping_audit: dict[str, Any],
+    target_reply_input_schema_audit: dict[str, Any],
 ) -> dict[str, Any]:
     authority_audit = reply_chain_shadow_context.get("authority_audit")
     if not isinstance(authority_audit, dict):
@@ -306,6 +361,9 @@ def _handoff_readiness_audit(
     unmapped_fields = migration_mapping_audit.get("unmapped_legacy_business_fields")
     if isinstance(unmapped_fields, list):
         blockers.extend([f"unmapped_legacy_business_field:{field}" for field in unmapped_fields if isinstance(field, str) and field])
+    schema_blockers = target_reply_input_schema_audit.get("blockers")
+    if isinstance(schema_blockers, list):
+        blockers.extend([f"target_reply_input_schema:{item}" for item in schema_blockers if isinstance(item, str) and item])
 
     return _drop_empty(
         {
@@ -319,6 +377,7 @@ def _handoff_readiness_audit(
                 "commit_phase_must_follow_reply_validation": True,
                 "legacy_planner_outputs_shadow_only": True,
                 "all_legacy_business_fields_must_have_target_contract": True,
+                "legacy_planner_groups_must_not_be_active_reply_inputs": True,
             },
             "observed_inputs": {
                 "reply_chain_context_schema": reply_chain_shadow_context.get("schema_version"),
@@ -349,8 +408,77 @@ def _handoff_readiness_audit(
                 "legacy_business_field_mapping_schema": migration_mapping_audit.get("schema_version"),
                 "mapped_legacy_business_field_count": migration_mapping_audit.get("mapped_legacy_business_field_count"),
                 "unmapped_legacy_business_field_count": len(unmapped_fields) if isinstance(unmapped_fields, list) else None,
+                "target_reply_input_schema_version": target_reply_input_schema_audit.get("target_schema_version"),
+                "target_reply_input_schema_ready": target_reply_input_schema_audit.get("ready_for_reply_payload_design_review"),
+                "target_reply_active_group_count": target_reply_input_schema_audit.get("active_group_count"),
+                "target_reply_shadow_only_group_count": target_reply_input_schema_audit.get("shadow_only_group_count"),
             },
             "ready_for_reply_payload_switch_shadow": not blockers,
+            "blockers": blockers,
+        }
+    )
+
+
+def _target_reply_input_schema() -> dict[str, Any]:
+    return _drop_empty(
+        {
+            "schema_version": "reply_final_brain_target_input_schema_v1",
+            "purpose": "define_future_reply_payload_groups_before_behavior_switch",
+            "active_input_groups": list(TARGET_REPLY_ACTIVE_INPUT_GROUPS),
+            "shadow_only_groups": list(TARGET_REPLY_SHADOW_ONLY_GROUPS),
+            "output_contract": {
+                "reply_messages": "final_customer_visible_messages_generated_by_reply",
+                "single_mainline_action": "one_natural_next_action_or_empty_when_context_requires",
+                "deferred_write_handoff": "post_reply_validation_commit_phase_only",
+            },
+            "safety": {
+                "legacy_planner_groups_are_not_active_inputs": True,
+                "no_customer_visible_behavior_change": True,
+                "no_model_payload_consumption": True,
+            },
+        }
+    )
+
+
+def _target_reply_input_schema_audit(target_schema: dict[str, Any]) -> dict[str, Any]:
+    active_groups = target_schema.get("active_input_groups")
+    shadow_only_groups = target_schema.get("shadow_only_groups")
+    if not isinstance(active_groups, list):
+        active_groups = []
+    if not isinstance(shadow_only_groups, list):
+        shadow_only_groups = []
+    active_group_ids = [
+        str(group.get("group_id") or "")
+        for group in active_groups
+        if isinstance(group, dict) and group.get("group_id")
+    ]
+    shadow_only_group_ids = [
+        str(group.get("group_id") or "")
+        for group in shadow_only_groups
+        if isinstance(group, dict) and group.get("group_id")
+    ]
+    blockers: list[str] = []
+    if target_schema.get("schema_version") != "reply_final_brain_target_input_schema_v1":
+        blockers.append("invalid_target_reply_input_schema")
+    for group_id in active_group_ids:
+        lowered = group_id.lower()
+        if "legacy" in lowered or "planner" in lowered:
+            blockers.append(f"legacy_or_planner_group_marked_active:{group_id}")
+    required_shadow_groups = {
+        "legacy_planner_customer_message_candidates",
+        "legacy_planner_turn_outcome_signals",
+        "legacy_planner_sales_decision_signals",
+        "legacy_planner_field_mapping_audit",
+    }
+    missing_shadow_groups = sorted(required_shadow_groups.difference(shadow_only_group_ids))
+    blockers.extend([f"missing_shadow_only_legacy_group:{group_id}" for group_id in missing_shadow_groups])
+    return _drop_empty(
+        {
+            "schema_version": "reply_final_brain_target_input_schema_audit_v1",
+            "target_schema_version": target_schema.get("schema_version"),
+            "active_group_count": len(active_group_ids),
+            "shadow_only_group_count": len(shadow_only_group_ids),
+            "ready_for_reply_payload_design_review": not blockers,
             "blockers": blockers,
         }
     )

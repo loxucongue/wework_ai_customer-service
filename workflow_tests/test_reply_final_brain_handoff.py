@@ -77,6 +77,20 @@ def test_reply_final_brain_handoff_groups_legacy_planner_semantics() -> None:
     assert handoff["input_groups"]["fact_and_tool_evidence"]["read_only_tool_executor_shadow"]["dependency_ready"] is True
     assert handoff["migration_audit"]["legacy_business_field_count"] == 5
     assert handoff["migration_audit"]["requires_reply_schema_before_activation"] is True
+    target_schema = handoff["target_reply_input_schema"]
+    assert target_schema["schema_version"] == "reply_final_brain_target_input_schema_v1"
+    active_group_ids = {group["group_id"] for group in target_schema["active_input_groups"]}
+    shadow_only_group_ids = {group["group_id"] for group in target_schema["shadow_only_groups"]}
+    assert "complete_timed_chat" in active_group_ids
+    assert "authoritative_facts" in active_group_ids
+    assert "gate_content_candidates" in active_group_ids
+    assert "read_only_tool_facts" in active_group_ids
+    assert "join_route_and_conflicts" in active_group_ids
+    assert "legacy_planner_customer_message_candidates" not in active_group_ids
+    assert "legacy_planner_customer_message_candidates" in shadow_only_group_ids
+    assert "legacy_planner_sales_decision_signals" in shadow_only_group_ids
+    assert handoff["target_reply_input_schema_audit"]["schema_version"] == "reply_final_brain_target_input_schema_audit_v1"
+    assert handoff["target_reply_input_schema_audit"]["ready_for_reply_payload_design_review"] is True
     mapping_audit = handoff["migration_audit"]["field_mapping_audit"]
     assert mapping_audit["schema_version"] == "reply_legacy_field_mapping_audit_v1"
     assert mapping_audit["legacy_business_field_count"] == 5
@@ -93,6 +107,8 @@ def test_reply_final_brain_handoff_groups_legacy_planner_semantics() -> None:
     assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is True
     assert handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_window_audit_schema"] == "reply_chain_timeline_window_audit_v1"
     assert handoff["handoff_readiness_audit"]["observed_inputs"]["timeline_window_ready"] is True
+    assert handoff["handoff_readiness_audit"]["observed_inputs"]["target_reply_input_schema_version"] == "reply_final_brain_target_input_schema_v1"
+    assert handoff["handoff_readiness_audit"]["observed_inputs"]["target_reply_input_schema_ready"] is True
     assert "customer_visible_text" in handoff["ownership_contract"]["tool_planner_must_not_own"]
 
 
@@ -162,6 +178,72 @@ def test_reply_final_brain_handoff_blocks_unmapped_legacy_business_fields(monkey
     assert mapping_audit["unmapped_legacy_business_fields"] == ["payment_decision"]
     assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is False
     assert "unmapped_legacy_business_field:payment_decision" in handoff["handoff_readiness_audit"]["blockers"]
+
+
+def test_reply_final_brain_handoff_blocks_legacy_planner_groups_in_active_schema(monkeypatch) -> None:
+    import app.services.reply_final_brain_handoff as handoff_module
+
+    monkeypatch.setattr(
+        handoff_module,
+        "TARGET_REPLY_ACTIVE_INPUT_GROUPS",
+        (
+            {
+                "group_id": "complete_timed_chat",
+                "source": "reply_chain_shadow_context.timeline",
+                "consumption_rule": "authoritative_input",
+            },
+            {
+                "group_id": "legacy_planner_sales_decision_signals",
+                "source": "input_groups.sales_decision_signals",
+                "consumption_rule": "active_input",
+            },
+        ),
+    )
+
+    handoff = reply_final_brain_handoff_shadow_from_planner_output(
+        {
+            "tool_plan_preview": {"schema_version": "tool_plan_preview_v2"},
+            "reply_chain_join_shadow": {
+                "schema_version": "reply_chain_join_shadow_v1",
+                "final_expression_boundary": {
+                    "schema_version": "reply_final_expression_boundary_v1",
+                    "join_generates_customer_visible_text": False,
+                    "join_decides_sales_psychology": False,
+                },
+            },
+        },
+        reply_chain_shadow_context={
+            "schema_version": "reply_chain_shadow_v1",
+            "authority_audit": {
+                "schema_version": "reply_chain_authority_audit_v1",
+                "complete_chat_is_primary_authority": True,
+                "all_messages_have_sent_at": True,
+                "timeline_window_audit": {
+                    "schema_version": "reply_chain_timeline_window_audit_v1",
+                    "ready_for_authoritative_model_input": True,
+                    "source_window_complete": True,
+                    "truncated": False,
+                },
+                "current_message_audit": {
+                    "schema_version": "reply_chain_current_message_audit_v1",
+                    "ready_for_authoritative_model_input": True,
+                },
+                "fact_snapshot": {"schema_version": "reply_chain_fact_snapshot_audit_v1"},
+            },
+        },
+        gate_router_shadow={"schema_version": "chat_gate_router_shadow_v1"},
+    )
+
+    assert handoff["target_reply_input_schema_audit"]["ready_for_reply_payload_design_review"] is False
+    assert (
+        "legacy_or_planner_group_marked_active:legacy_planner_sales_decision_signals"
+        in handoff["target_reply_input_schema_audit"]["blockers"]
+    )
+    assert handoff["handoff_readiness_audit"]["ready_for_reply_payload_switch_shadow"] is False
+    assert (
+        "target_reply_input_schema:legacy_or_planner_group_marked_active:legacy_planner_sales_decision_signals"
+        in handoff["handoff_readiness_audit"]["blockers"]
+    )
 
 
 def test_reply_final_brain_handoff_blocks_when_join_can_generate_customer_text() -> None:

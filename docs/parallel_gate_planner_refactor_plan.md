@@ -521,6 +521,7 @@ Review 重点：
 Review 重点：
 
 - Reply 收到完整聊天、权威事实、Gate 候选、工具事实。
+- Reply handoff 必须输出 `reply_final_brain_target_input_schema_v1` 和 `reply_final_brain_target_input_schema_audit_v1`；旧 Planner 话术、阶段、成交和付款决策只能出现在 shadow-only groups，不能成为 active Reply input。
 - Tool Planner 如果声明 `fact_requirement=required` 或存在只读工具计划，Reply handoff 必须同时看到 `read_only_tool_executor_shadow_v1` 和 `read_only_tool_dependency_audit_v1`，否则不能切换 Reply 输入。
 - “有工具计划”不等于“Reply 有可用事实”；缺 executor、依赖错误、blocked 工具都必须进入 handoff readiness blocker。
 - Reply 仍是最终表达和复杂判断 owner。
