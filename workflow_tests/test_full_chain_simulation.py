@@ -475,6 +475,9 @@ class FullChainSimulationTests(unittest.TestCase):
             {
                 "scenario_count": 1,
                 "attempt_count": 1,
+                "git_commit": "abc123",
+                "git_commit_set": ["abc123"],
+                "fixture": "workflow_tests/fixtures/full_chain_simulation_v1.json",
                 "evaluation_scope": {
                     "schema_version": "offline_simulation_scope_v1",
                     "scenario_id": "",
@@ -535,6 +538,10 @@ class FullChainSimulationTests(unittest.TestCase):
 
         for marker in [
             "# \u79bb\u7ebf\u5168\u94fe\u8def\u4eff\u771f\u62a5\u544a",
+            "## \u7248\u672c\u8bc1\u636e",
+            "Git commit\uff1aabc123",
+            "Git commit set\uff1aabc123",
+            "Fixture\uff1aworkflow_tests/fixtures/full_chain_simulation_v1.json",
             "## \u8fd0\u884c\u8303\u56f4\u4e0e\u9009\u9879",
             "\u53d1\u5e03\u95e8\u7981\u5019\u9009\uff1a\u662f",
             "\u5b9a\u5411 smoke\uff1a\u5426",
