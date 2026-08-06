@@ -107,6 +107,7 @@ def _simulation_ready() -> dict:
                 "infrastructure_failures_zero": True,
                 "scenario_coverage_complete": True,
                 "isolation_audit_passed": True,
+                "baseline_comparison_passed": True,
             },
         },
         "coverage": {
@@ -759,6 +760,15 @@ def test_external_gate_evidence_blocks_unavailable_simulation_baseline_compariso
     assert "simulation_baseline_comparison_unavailable" in blockers
 
 
+def test_external_gate_evidence_blocks_missing_simulation_baseline_acceptance() -> None:
+    simulation = _simulation_ready()
+    simulation["summary"]["acceptance"]["baseline_comparison_passed"] = False
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_baseline_acceptance_missing_or_false" in blockers
+
+
 def test_external_gate_evidence_blocks_simulation_baseline_regressions() -> None:
     simulation = _simulation_ready()
     simulation["baseline_comparison"]["regressed"] = ["store_v2_county_confirm"]
@@ -927,6 +937,7 @@ def test_external_gate_evidence_blocks_missing_core_simulation_acceptance_fields
     assert "simulation_semantic_review_incomplete" in blockers
     assert "simulation_semantic_acceptance_missing_or_false" in blockers
     assert "simulation_critical_acceptance_missing_or_false" in blockers
+    assert "simulation_baseline_acceptance_missing_or_false" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_simulation_review_artifacts() -> None:

@@ -177,6 +177,7 @@ def _simulation_ready() -> dict:
                 "infrastructure_failures_zero": True,
                 "scenario_coverage_complete": True,
                 "isolation_audit_passed": True,
+                "baseline_comparison_passed": True,
             },
         },
         "coverage": {

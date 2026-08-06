@@ -288,6 +288,7 @@ Required report:
 - `coverage.missing_required_categories=[]`
 - `coverage.missing_critical_required_categories=[]`
 - `summary.acceptance.scenario_coverage_complete=true`
+- `summary.acceptance.baseline_comparison_passed=true`
 - failed critical scenarios: `[]`
 - semantic pass rate: at least `0.90`
 - `safety.production_customer_messages_sent=false`

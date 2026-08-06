@@ -372,6 +372,8 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         blockers.append("simulation_scenario_coverage_incomplete")
     if acceptance.get("isolation_audit_passed") is not True:
         blockers.append("simulation_isolation_acceptance_missing_or_false")
+    if acceptance.get("baseline_comparison_passed") is not True:
+        blockers.append("simulation_baseline_acceptance_missing_or_false")
     effect_review = _dict(simulation.get("effect_review"))
     if effect_review.get("schema_version") != "offline_simulation_effect_review_v1":
         blockers.append("simulation_missing_effect_review")

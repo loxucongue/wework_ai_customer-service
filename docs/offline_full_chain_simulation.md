@@ -105,7 +105,7 @@ python ai_paths/scripts/run_full_chain_simulation.py `
 
 这些字段只用于审查和发布门禁，不参与模型输入，也不改变生产回复。
 
-套件报告同时输出 `coverage.schema_version=offline_simulation_coverage_audit_v1`，用于确认发布前仿真没有漏掉必测业务类别。当前必测类别包括门店、SOP 主线、效果案例、精准问答、项目范围、健康风险、预约金、已付登记、客户异议、明确拒绝、SOP Event、消息归一和模型恢复等。`summary.acceptance.scenario_coverage_complete` 必须为 `true`，否则不能把报告作为行为切换证据。
+套件报告同时输出 `coverage.schema_version=offline_simulation_coverage_audit_v1`，用于确认发布前仿真没有漏掉必测业务类别。当前必测类别包括门店、SOP 主线、效果案例、精准问答、项目范围、健康风险、预约金、已付登记、客户异议、明确拒绝、SOP Event、消息归一和模型恢复等。`summary.acceptance.scenario_coverage_complete` 必须为 `true`，否则不能把报告作为行为切换证据。报告还必须包含可用的基线对比且无退化，聚合字段为 `summary.acceptance.baseline_comparison_passed=true`。
 
 仿真报告只用于审核和发布门禁，不会自动修改 Prompt、部署或发送客户消息。
 

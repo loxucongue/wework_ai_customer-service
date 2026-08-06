@@ -186,6 +186,7 @@ def test_execution_checklist_requires_safe_three_model_matrix_evidence() -> None
         "coverage.schema_version=offline_simulation_coverage_audit_v1",
         "coverage.missing_required_categories=[]",
         "summary.acceptance.scenario_coverage_complete=true",
+        "summary.acceptance.baseline_comparison_passed=true",
         "safety.production_customer_messages_sent=false",
         "safety.production_writes_allowed=false",
         "safety.virtual_outbox_only=true",

@@ -408,6 +408,11 @@ def _aggregate(
     )
     infrastructure_failures = sum(1 for item in results if item.get("infrastructure_errors"))
     coverage = _coverage_audit(scenarios)
+    baseline_comparison = _compare_baseline(baseline, scenario_summary)
+    baseline_comparison_passed = (
+        baseline_comparison.get("available") is True
+        and not baseline_comparison.get("regressed")
+    )
     return {
         "schema_version": "offline_reply_chain_simulation_report_v1",
         "generated_at": datetime.now().astimezone().isoformat(),
@@ -441,13 +446,14 @@ def _aggregate(
                     and not coverage["missing_critical_required_categories"]
                 ),
                 "isolation_audit_passed": isolation_audit["passed"],
+                "baseline_comparison_passed": baseline_comparison_passed,
             },
         },
         "coverage": coverage,
         "scenario_summary": scenario_summary,
         "effect_review": _effect_review(results),
         "review_artifacts": _review_artifacts(results),
-        "baseline_comparison": _compare_baseline(baseline, scenario_summary),
+        "baseline_comparison": baseline_comparison,
         "results": results,
     }
 

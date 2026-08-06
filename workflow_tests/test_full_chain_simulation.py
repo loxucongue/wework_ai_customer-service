@@ -186,6 +186,31 @@ class FullChainSimulationTests(unittest.TestCase):
         self.assertEqual(report["baseline_comparison"]["improved"], ["improved_case"])
         self.assertEqual(report["baseline_comparison"]["regressed"], ["regressed_case"])
         self.assertEqual(report["baseline_comparison"]["unchanged"], ["unchanged_case"])
+        self.assertFalse(report["summary"]["acceptance"]["baseline_comparison_passed"])
+
+    def test_aggregate_exposes_baseline_acceptance_when_available_and_not_regressed(self) -> None:
+        scenarios = [{"id": "stable_case", "category": "门店V2", "critical": True}]
+        result = {
+            "scenario_id": "stable_case",
+            "hard_pass": True,
+            "semantic_review": {"available": True, "pass": True},
+        }
+
+        without_baseline = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=scenarios,
+            results=[result],
+            baseline={},
+        )
+        with_baseline = _aggregate(
+            fixture=REPO_ROOT / "workflow_tests" / "fixtures" / "full_chain_simulation_v1.json",
+            scenarios=scenarios,
+            results=[result],
+            baseline={"scenario_summary": {"stable_case": {"semantic_passes": 1, "attempts": 1}}},
+        )
+
+        self.assertFalse(without_baseline["summary"]["acceptance"]["baseline_comparison_passed"])
+        self.assertTrue(with_baseline["summary"]["acceptance"]["baseline_comparison_passed"])
 
     def test_aggregate_blocks_acceptance_when_required_simulation_category_is_missing(self) -> None:
         report = _aggregate(
