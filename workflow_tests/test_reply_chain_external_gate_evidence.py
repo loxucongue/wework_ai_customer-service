@@ -70,7 +70,19 @@ def _simulation_ready() -> dict:
             "tool_call_count": 5,
             "outbox_batch_count": 4,
             "simulated_write_count": 2,
-            "results": [{"scenario_id": "sim_case", "request_ids": ["sim_request_1"]}],
+            "results": [
+                {
+                    "scenario_id": "sim_case",
+                    "attempt": 1,
+                    "request_ids": ["sim_request_1"],
+                    "event_ids": [],
+                    "node_trace_names": ["sop_chat_gate", "planner", "reply"],
+                    "tool_call_names": ["customer_store_lookup"],
+                    "sync_reply_message_count": 1,
+                    "outbox_batch_count": 1,
+                    "simulated_write_count": 0,
+                }
+            ],
         },
         "safety": {
             "production_customer_messages_sent": False,
@@ -735,6 +747,50 @@ def test_external_gate_evidence_blocks_incomplete_simulation_review_artifacts() 
 
     assert "simulation_review_artifacts_missing_field:tool_call_count" in blockers
     assert "simulation_review_artifacts_missing_results" in blockers
+
+
+def test_external_gate_evidence_blocks_incomplete_simulation_review_artifact_rows() -> None:
+    simulation = _simulation_ready()
+    simulation["review_artifacts"]["results"] = [
+        {
+            "scenario_id": "sim_case",
+            "attempt": 1,
+            "request_ids": "sim_request_1",
+            "node_trace_names": [],
+            "sync_reply_message_count": "",
+        },
+        "not-a-dict",
+    ]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_review_artifacts_result_field_not_list:sim_case:request_ids" in blockers
+    assert "simulation_review_artifacts_result_missing_field:sim_case:event_ids" in blockers
+    assert "simulation_review_artifacts_result_missing_field:sim_case:tool_call_names" in blockers
+    assert "simulation_review_artifacts_result_field_not_number:sim_case:sync_reply_message_count" in blockers
+    assert "simulation_review_artifacts_invalid_result:1" in blockers
+
+
+def test_external_gate_evidence_blocks_incomplete_effect_review_items() -> None:
+    simulation = _simulation_ready()
+    simulation["semantic_pass_rate"] = 0.89
+    simulation["effect_review"]["low_score_count"] = 1
+    simulation["effect_review"]["items"] = [
+        {
+            "scenario_id": "low_score_case",
+            "attempt": 1,
+            "issue_types": ["semantic_low_score"],
+            "customer_input_excerpt": "做一次能好吗",
+        },
+        "not-a-dict",
+    ]
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_effect_review_item_missing_field:low_score_case:assistant_reply_excerpt" in blockers
+    assert "simulation_effect_review_item_missing_field:low_score_case:review_reasons" in blockers
+    assert "simulation_effect_review_item_missing_scores:low_score_case" in blockers
+    assert "simulation_effect_review_invalid_item:1" in blockers
 
 
 def test_external_gate_evidence_blocks_accepted_model_with_infrastructure_failures() -> None:

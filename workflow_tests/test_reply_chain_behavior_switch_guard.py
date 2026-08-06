@@ -125,7 +125,19 @@ def _simulation_ready() -> dict:
             "tool_call_count": 5,
             "outbox_batch_count": 4,
             "simulated_write_count": 2,
-            "results": [{"scenario_id": "sim_case", "request_ids": ["sim_request_1"]}],
+            "results": [
+                {
+                    "scenario_id": "sim_case",
+                    "attempt": 1,
+                    "request_ids": ["sim_request_1"],
+                    "event_ids": [],
+                    "node_trace_names": ["sop_chat_gate", "planner", "reply"],
+                    "tool_call_names": ["customer_store_lookup"],
+                    "sync_reply_message_count": 1,
+                    "outbox_batch_count": 1,
+                    "simulated_write_count": 0,
+                }
+            ],
         },
         "safety": {
             "production_customer_messages_sent": False,

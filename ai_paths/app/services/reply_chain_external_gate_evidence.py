@@ -315,6 +315,11 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
                 blockers.append(f"simulation_effect_review_missing_hard_error_samples:{hard_error_count}")
         if pass_rate < 0.9 and _int_value(effect_review.get("low_score_count")) <= 0:
             blockers.append("simulation_effect_review_missing_low_score_samples")
+        effect_items = effect_review.get("items")
+        if not isinstance(effect_items, list):
+            blockers.append("simulation_effect_review_missing_items")
+        else:
+            blockers.extend(_effect_review_item_blockers(effect_items))
     isolation = _dict(simulation.get("isolation_audit"))
     if isolation.get("schema_version") != "offline_simulation_isolation_summary_v1":
         blockers.append("simulation_missing_isolation_audit")
@@ -365,6 +370,8 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
                 blockers.append(f"simulation_review_artifacts_missing_field:{field}")
         if not isinstance(review_artifacts.get("results"), list):
             blockers.append("simulation_review_artifacts_missing_results")
+        else:
+            blockers.extend(_review_artifact_result_blockers(review_artifacts["results"]))
     safety = _dict(simulation.get("safety"))
     if safety.get("production_customer_messages_sent") is not False:
         blockers.append("simulation_missing_no_customer_send_safety")
@@ -374,6 +381,57 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
         blockers.append("simulation_missing_virtual_outbox_safety")
     if _int_value(safety.get("production_write_count")) != 0:
         blockers.append(f"simulation_production_writes:{safety.get('production_write_count')}")
+    return blockers
+
+
+def _effect_review_item_blockers(items: list[Any]) -> list[str]:
+    blockers: list[str] = []
+    required_fields = (
+        "scenario_id",
+        "attempt",
+        "issue_types",
+        "customer_input_excerpt",
+        "assistant_reply_excerpt",
+        "review_reasons",
+    )
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            blockers.append(f"simulation_effect_review_invalid_item:{index}")
+            continue
+        scenario_id = _string_value(item.get("scenario_id")) or f"index_{index}"
+        for field in required_fields:
+            if field not in item:
+                blockers.append(f"simulation_effect_review_item_missing_field:{scenario_id}:{field}")
+        issue_types = item.get("issue_types")
+        if not isinstance(issue_types, list):
+            blockers.append(f"simulation_effect_review_item_field_not_list:{scenario_id}:issue_types")
+            continue
+        if "semantic_low_score" in {str(value) for value in issue_types}:
+            scores = item.get("scores")
+            if not isinstance(scores, dict) or not scores:
+                blockers.append(f"simulation_effect_review_item_missing_scores:{scenario_id}")
+    return blockers
+
+
+def _review_artifact_result_blockers(items: list[Any]) -> list[str]:
+    blockers: list[str] = []
+    list_fields = ("request_ids", "event_ids", "node_trace_names", "tool_call_names")
+    numeric_fields = ("sync_reply_message_count", "outbox_batch_count", "simulated_write_count")
+    required_fields = ("scenario_id", "attempt", *list_fields, *numeric_fields)
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            blockers.append(f"simulation_review_artifacts_invalid_result:{index}")
+            continue
+        scenario_id = _string_value(item.get("scenario_id")) or f"index_{index}"
+        for field in required_fields:
+            if field not in item:
+                blockers.append(f"simulation_review_artifacts_result_missing_field:{scenario_id}:{field}")
+        for field in list_fields:
+            if field in item and not isinstance(item.get(field), list):
+                blockers.append(f"simulation_review_artifacts_result_field_not_list:{scenario_id}:{field}")
+        for field in numeric_fields:
+            if field in item and not _has_number(item.get(field)):
+                blockers.append(f"simulation_review_artifacts_result_field_not_number:{scenario_id}:{field}")
     return blockers
 
 
