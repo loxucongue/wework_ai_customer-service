@@ -195,6 +195,11 @@ def test_profile_result_summary_exposes_accuracy_and_speed_for_review() -> None:
                 "low_score_count": 1,
                 "hard_or_infra_count": 1,
             },
+            "baseline_comparison": {
+                "schema_version": "offline_simulation_baseline_comparison_v1",
+                "available": True,
+                "regressed": [],
+            },
         }
     )
 
@@ -205,6 +210,9 @@ def test_profile_result_summary_exposes_accuracy_and_speed_for_review() -> None:
     assert summary["effect_issue_count"] == 2
     assert summary["effect_low_score_count"] == 1
     assert summary["effect_hard_or_infra_count"] == 1
+    assert summary["baseline_comparison_available"] is True
+    assert summary["baseline_regression_count"] == 0
+    assert summary["baseline_regressed_scenarios"] == []
     assert summary["accepted_by_release_thresholds"] is True
 
 
@@ -219,6 +227,7 @@ def test_suite_run_options_passes_scenario_filters_to_simulation() -> None:
             scenario_id="store_v2_county_to_nearest_store",
             category="store",
             skip_review=False,
+            baseline=Path(".tmp_runtime/simulation/baseline/result.json"),
         ),
         settings,
     )
@@ -231,6 +240,7 @@ def test_suite_run_options_passes_scenario_filters_to_simulation() -> None:
         "scenario_id": "store_v2_county_to_nearest_store",
         "category": "store",
         "skip_review": False,
+        "baseline_path": Path(".tmp_runtime/simulation/baseline/result.json"),
         "base_settings": settings,
     }
 
@@ -246,6 +256,7 @@ def test_suite_run_options_normalizes_empty_filters_to_none() -> None:
             scenario_id="",
             category="",
             skip_review=True,
+            baseline=None,
         ),
         settings,
     )
@@ -292,6 +303,7 @@ def test_matrix_run_options_exposes_review_and_attempt_gate_inputs() -> None:
             concurrency=2,
             skip_review=False,
             profile_timeout_seconds=120,
+            baseline=Path(".tmp_runtime/simulation/baseline/result.json"),
         )
     )
 
@@ -302,6 +314,7 @@ def test_matrix_run_options_exposes_review_and_attempt_gate_inputs() -> None:
         "concurrency": 2,
         "skip_review": False,
         "profile_timeout_seconds": 120,
+        "baseline_path_present": True,
     }
 
 
@@ -358,11 +371,62 @@ def test_profile_result_summary_rejects_infrastructure_failures() -> None:
                     "critical_all_pass": True,
                 },
             },
+            "baseline_comparison": {
+                "schema_version": "offline_simulation_baseline_comparison_v1",
+                "available": True,
+                "regressed": [],
+            },
         }
     )
 
     assert summary["infrastructure_failures"] == 1
     assert summary["accepted_by_release_thresholds"] is False
+
+
+def test_profile_result_summary_rejects_missing_or_regressed_baseline() -> None:
+    def report_with_baseline(baseline: dict | None) -> dict:
+        report = {
+            "hard_error_count": 0,
+            "semantic_pass_rate": 1.0,
+            "failed_critical_scenarios": [],
+            "summary": {
+                "hard_pass_rate": "100.0%",
+                "evaluable_attempts": 10,
+                "infrastructure_failures": 0,
+                "p50_ms": 1200,
+                "p90_ms": 2200,
+                "acceptance": {
+                    "hard_errors_zero": True,
+                    "semantic_at_least_90": True,
+                    "critical_all_pass": True,
+                },
+            },
+            "effect_review": {
+                "issue_count": 0,
+                "low_score_count": 0,
+                "hard_or_infra_count": 0,
+            },
+        }
+        if baseline is not None:
+            report["baseline_comparison"] = baseline
+        return report
+
+    missing = profile_result_summary(report_with_baseline(None))
+    regressed = profile_result_summary(
+        report_with_baseline(
+            {
+                "schema_version": "offline_simulation_baseline_comparison_v1",
+                "available": True,
+                "regressed": ["store_v2_county_confirm"],
+            }
+        )
+    )
+
+    assert missing["baseline_comparison_available"] is False
+    assert missing["accepted_by_release_thresholds"] is False
+    assert regressed["baseline_regression_count"] == 1
+    assert regressed["baseline_regressed_scenarios"] == ["store_v2_county_confirm"]
+    assert regressed["accepted_by_release_thresholds"] is False
 
 
 def test_timed_out_profile_result_is_not_release_accepted_and_does_not_log_key() -> None:

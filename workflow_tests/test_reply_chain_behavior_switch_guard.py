@@ -6,6 +6,7 @@ from app.config import Settings
 from app.graph.nodes.reply_context import reply_user_payload_for_model
 from app.graph.planner.brain_v2 import _planner_payload_for_model
 from app.services.reply_chain_behavior_switch_guard import reply_chain_behavior_switch_guard
+from app.services.reply_chain_external_gate_evidence import REQUIRED_SIMULATION_COVERAGE_CATEGORIES
 from app.services.reply_chain_refactor_flags import reply_chain_refactor_flag_snapshot
 
 
@@ -138,6 +139,13 @@ def _simulation_ready() -> dict:
         "hard_error_count": 0,
         "semantic_pass_rate": 0.93,
         "failed_critical_scenarios": [],
+        "baseline_comparison": {
+            "schema_version": "offline_simulation_baseline_comparison_v1",
+            "available": True,
+            "improved": [],
+            "regressed": [],
+            "unchanged": [f"sim_case_{index}" for index in range(100)],
+        },
         "scenario_summary": {
             f"sim_case_{index}": {
                 "category": "sim",
@@ -164,6 +172,7 @@ def _simulation_ready() -> dict:
         },
         "coverage": {
             "schema_version": "offline_simulation_coverage_audit_v1",
+            "required_categories": list(REQUIRED_SIMULATION_COVERAGE_CATEGORIES),
             "missing_required_categories": [],
             "missing_critical_required_categories": [],
         },
@@ -228,6 +237,7 @@ def _model_matrix_ready() -> dict:
             "concurrency": 2,
             "skip_review": False,
             "profile_timeout_seconds": 120,
+            "baseline_path_present": True,
         },
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
@@ -250,6 +260,9 @@ def _model_matrix_ready() -> dict:
                     "effect_issue_count": 0,
                     "effect_low_score_count": 0,
                     "effect_hard_or_infra_count": 0,
+                    "baseline_comparison_available": True,
+                    "baseline_regression_count": 0,
+                    "baseline_regressed_scenarios": [],
                     "accepted_by_release_thresholds": True,
                 },
                 "profile_artifacts": _profile_artifacts("claude"),
@@ -272,6 +285,9 @@ def _model_matrix_ready() -> dict:
                     "effect_issue_count": 1,
                     "effect_low_score_count": 1,
                     "effect_hard_or_infra_count": 0,
+                    "baseline_comparison_available": True,
+                    "baseline_regression_count": 0,
+                    "baseline_regressed_scenarios": [],
                     "accepted_by_release_thresholds": True,
                 },
                 "profile_artifacts": _profile_artifacts("gemini"),
@@ -294,6 +310,9 @@ def _model_matrix_ready() -> dict:
                     "effect_issue_count": 0,
                     "effect_low_score_count": 0,
                     "effect_hard_or_infra_count": 0,
+                    "baseline_comparison_available": True,
+                    "baseline_regression_count": 0,
+                    "baseline_regressed_scenarios": [],
                     "accepted_by_release_thresholds": True,
                 },
                 "profile_artifacts": _profile_artifacts("openai"),

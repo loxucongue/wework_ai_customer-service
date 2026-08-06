@@ -176,6 +176,7 @@ def _model_matrix_ready() -> dict:
             "concurrency": 2,
             "skip_review": False,
             "profile_timeout_seconds": 120,
+            "baseline_path_present": True,
         },
         "profiles_requested": ["claude", "gemini", "openai"],
         "executed_profile_count": 3,
@@ -198,6 +199,9 @@ def _model_matrix_ready() -> dict:
                     "effect_issue_count": 0,
                     "effect_low_score_count": 0,
                     "effect_hard_or_infra_count": 0,
+                    "baseline_comparison_available": True,
+                    "baseline_regression_count": 0,
+                    "baseline_regressed_scenarios": [],
                     "accepted_by_release_thresholds": True,
                 },
                 "profile_artifacts": _profile_artifacts("claude"),
@@ -220,6 +224,9 @@ def _model_matrix_ready() -> dict:
                     "effect_issue_count": 1,
                     "effect_low_score_count": 1,
                     "effect_hard_or_infra_count": 0,
+                    "baseline_comparison_available": True,
+                    "baseline_regression_count": 0,
+                    "baseline_regressed_scenarios": [],
                     "accepted_by_release_thresholds": True,
                 },
                 "profile_artifacts": _profile_artifacts("gemini"),
@@ -242,6 +249,9 @@ def _model_matrix_ready() -> dict:
                     "effect_issue_count": 0,
                     "effect_low_score_count": 0,
                     "effect_hard_or_infra_count": 0,
+                    "baseline_comparison_available": True,
+                    "baseline_regression_count": 0,
+                    "baseline_regressed_scenarios": [],
                     "accepted_by_release_thresholds": True,
                 },
                 "profile_artifacts": _profile_artifacts("openai"),
@@ -855,6 +865,15 @@ def test_external_gate_evidence_blocks_missing_model_matrix_run_options() -> Non
     assert "model_matrix_missing_run_options" in blockers
 
 
+def test_external_gate_evidence_blocks_model_matrix_missing_baseline_path() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["run_options"]["baseline_path_present"] = False
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_missing_baseline_path" in blockers
+
+
 def test_external_gate_evidence_blocks_model_matrix_skip_review() -> None:
     model_matrix = _model_matrix_ready()
     model_matrix["run_options"]["skip_review"] = True
@@ -1116,6 +1135,30 @@ def test_external_gate_evidence_blocks_model_matrix_missing_effect_review_counts
     assert "model_matrix_missing_effect_issue_count:gemini" in blockers
     assert "model_matrix_missing_effect_low_score_count:gemini" in blockers
     assert "model_matrix_missing_effect_hard_or_infra_count:gemini" in blockers
+
+
+def test_external_gate_evidence_blocks_model_matrix_missing_profile_baseline() -> None:
+    model_matrix = _model_matrix_ready()
+    del model_matrix["profiles"][1]["profile_summary"]["baseline_comparison_available"]
+    del model_matrix["profiles"][1]["profile_summary"]["baseline_regression_count"]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_profile_missing_baseline_comparison:gemini" in blockers
+    assert "model_matrix_missing_baseline_regression_count:gemini" in blockers
+
+
+def test_external_gate_evidence_blocks_accepted_model_matrix_baseline_regressions() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"][0]["profile_summary"]["baseline_regression_count"] = 2
+    model_matrix["profiles"][0]["profile_summary"]["baseline_regressed_scenarios"] = [
+        "soft_refusal",
+        "health_risk",
+    ]
+
+    blockers = model_matrix_report_blockers(model_matrix)
+
+    assert "model_matrix_accepted_profile_has_baseline_regressions:claude:2" in blockers
 
 
 def test_external_gate_evidence_blocks_model_matrix_missing_profile_artifacts() -> None:

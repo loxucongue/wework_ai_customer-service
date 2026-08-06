@@ -168,6 +168,7 @@ def suite_run_options(args: argparse.Namespace, settings: Settings) -> dict[str,
         "scenario_id": args.scenario_id or None,
         "category": args.category or None,
         "skip_review": args.skip_review,
+        "baseline_path": getattr(args, "baseline", None),
         "base_settings": settings,
     }
 
@@ -194,6 +195,7 @@ def matrix_run_options(args: argparse.Namespace) -> dict[str, Any]:
         "concurrency": int(args.concurrency or 0),
         "skip_review": bool(args.skip_review),
         "profile_timeout_seconds": int(args.profile_timeout_seconds or 0),
+        "baseline_path_present": bool(getattr(args, "baseline", None)),
     }
 
 
@@ -201,7 +203,9 @@ def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
     acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), dict) else {}
     effect_review = report.get("effect_review") if isinstance(report.get("effect_review"), dict) else {}
+    baseline = report.get("baseline_comparison") if isinstance(report.get("baseline_comparison"), dict) else {}
     infrastructure_failures = int(summary.get("infrastructure_failures") or 0)
+    baseline_regressed = baseline.get("regressed") if isinstance(baseline.get("regressed"), list) else []
     return {
         "hard_error_count": report.get("hard_error_count"),
         "semantic_pass_rate": report.get("semantic_pass_rate"),
@@ -214,11 +218,16 @@ def profile_result_summary(report: dict[str, Any]) -> dict[str, Any]:
         "effect_issue_count": effect_review.get("issue_count"),
         "effect_low_score_count": effect_review.get("low_score_count"),
         "effect_hard_or_infra_count": effect_review.get("hard_or_infra_count"),
+        "baseline_comparison_available": baseline.get("available") is True,
+        "baseline_regression_count": len(baseline_regressed),
+        "baseline_regressed_scenarios": baseline_regressed,
         "accepted_by_release_thresholds": (
             acceptance.get("hard_errors_zero") is True
             and acceptance.get("semantic_at_least_90") is True
             and acceptance.get("critical_all_pass") is True
             and infrastructure_failures == 0
+            and baseline.get("available") is True
+            and not baseline_regressed
         ),
     }
 
@@ -351,6 +360,11 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--scenario-id", default="", help="Optional single simulation scenario id to run.")
     parser.add_argument("--category", default="", help="Optional simulation scenario category to run.")
     parser.add_argument("--skip-review", action="store_true")
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="Required for release-gate model comparison. Points to a prior full simulation result.json.",
+    )
     parser.add_argument("--require-keys", action="store_true")
     parser.add_argument(
         "--profile-timeout-seconds",

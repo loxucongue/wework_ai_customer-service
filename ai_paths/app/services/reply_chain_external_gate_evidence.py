@@ -549,6 +549,8 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
                 "model_matrix_critical_attempts_below_required:"
                 f"{critical_attempts}<{MIN_REQUIRED_CRITICAL_SIMULATION_ATTEMPTS}"
             )
+        if run_options.get("baseline_path_present") is not True:
+            blockers.append("model_matrix_missing_baseline_path")
     requested = set(_list_strings(model_matrix.get("profiles_requested")))
     required_models = {
         "claude": "claude-opus-4-7",
@@ -630,6 +632,10 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
             blockers.append(f"model_matrix_missing_effect_low_score_count:{_profile_name(item)}")
         if not _has_number(summary.get("effect_hard_or_infra_count")):
             blockers.append(f"model_matrix_missing_effect_hard_or_infra_count:{_profile_name(item)}")
+        if summary.get("baseline_comparison_available") is not True:
+            blockers.append(f"model_matrix_profile_missing_baseline_comparison:{_profile_name(item)}")
+        if not _has_number(summary.get("baseline_regression_count")):
+            blockers.append(f"model_matrix_missing_baseline_regression_count:{_profile_name(item)}")
         blockers.extend(_model_matrix_profile_artifact_blockers(item))
         if summary.get("accepted_by_release_thresholds") is True:
             accepted = True
@@ -658,6 +664,14 @@ def model_matrix_report_blockers(model_matrix: dict[str, Any]) -> list[str]:
                 blockers.append(
                     f"model_matrix_accepted_profile_has_infrastructure_failures:{_profile_name(item)}:"
                     f"{summary.get('infrastructure_failures')}"
+                )
+            if summary.get("baseline_comparison_available") is not True:
+                blockers.append(f"model_matrix_accepted_profile_missing_baseline:{_profile_name(item)}")
+            baseline_regressions = _int_value(summary.get("baseline_regression_count"))
+            if baseline_regressions != 0:
+                blockers.append(
+                    f"model_matrix_accepted_profile_has_baseline_regressions:{_profile_name(item)}:"
+                    f"{summary.get('baseline_regression_count')}"
                 )
     if not accepted:
         blockers.append("model_matrix_no_candidate_meets_release_thresholds")
