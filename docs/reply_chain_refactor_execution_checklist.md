@@ -323,6 +323,11 @@ python ai_paths/scripts/run_refactor_model_matrix.py `
   --require-keys
 ```
 
+The runner defaults to `--attempts 3 --critical-attempts 5` so a full run is
+release-gate shaped by default. Lower values are allowed only for targeted
+smoke or debugging, and those reports must not be used as model-selection
+evidence for behavior switching.
+
 The matrix currently compares:
 
 - `claude-opus-4-7`
