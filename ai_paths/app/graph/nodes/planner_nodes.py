@@ -11,6 +11,7 @@ from app.services.parallel_reply_chain_diagnostics import parallel_reply_chain_d
 from app.services.parallel_reply_chain_runner import replay_parallel_gate_planner_shadow_from_serial_outputs
 from app.services.parallel_reply_chain_shadow import parallel_reply_chain_shadow
 from app.services.read_only_tool_executor_shadow import read_only_tool_executor_shadow_from_plan
+from app.services.reply_final_brain_handoff import reply_final_brain_handoff_shadow_from_planner_output
 from app.services.reply_chain_join_shadow import reply_chain_join_shadow
 from app.services.trace_logger import TraceLogger
 from app.services.tool_plan_preview import tool_plan_preview_from_planner_output
@@ -151,6 +152,7 @@ def create_planner_brain_node(
                 reply_chain_join_shadow=output["reply_chain_join_shadow"],
                 refactor_flags=state.get("reply_chain_refactor_flags") if isinstance(state.get("reply_chain_refactor_flags"), dict) else {},
             )
+            output["reply_final_brain_handoff_shadow"] = reply_final_brain_handoff_shadow_from_planner_output(output)
             output["parallel_gate_planner_runner_shadow"] = await replay_parallel_gate_planner_shadow_from_serial_outputs(
                 initial_state=dict(state),
                 gate_router_shadow=state.get("sop_gate_router_shadow") if isinstance(state.get("sop_gate_router_shadow"), dict) else {},

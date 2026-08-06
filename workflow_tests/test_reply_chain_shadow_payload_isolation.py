@@ -16,6 +16,7 @@ SHADOW_ONLY_FIELDS = (
     "tool_plan_preview",
     "read_only_tool_executor_shadow",
     "reply_chain_join_shadow",
+    "reply_final_brain_handoff_shadow",
     "parallel_reply_chain_shadow",
     "reply_chain_refactor_flags",
     "parallel_gate_planner_runner_shadow",
