@@ -46,3 +46,22 @@ Review notes:
 - A rule may move owners only with a named target owner and a regression test.
 - Business wording changes belong in a separate business-review commit, not in
   structural refactor commits.
+
+## Structural Refactor Review Gate
+
+These review gates are mandatory for every commit that changes the reply-chain
+architecture. They are not business rules. They are release controls to keep the
+refactor aligned with the project constitution.
+
+| gate_id | purpose | required evidence |
+| --- | --- | --- |
+| rule_matrix_delta_review | Every moved or split responsibility must keep its active business rule mapped. | Updated row in this matrix, named target owner, and a regression test reference. |
+| payload_isolation_review | Shadow-only diagnostics must not influence active Gate, Planner, or Reply prompts. | `workflow_tests/test_reply_chain_shadow_payload_isolation.py` passes and any new shadow field is listed there. |
+| business_wording_freeze_review | Structural commits must not silently change customer-visible business facts or sales wording. | Diff review confirms no unrelated edits to `business_rules.json`, SOP pack text, or precision QA text; intentional wording changes use a separate business-review commit. |
+| model_semantics_ownership_review | Code, Join, and Tool Planner must not take ownership of customer psychology, objections, or sales rhythm. | Reviewer confirms ordinary sales semantics remain in model prompts/Reply decisions, with code limited to facts, tools, schema, safety, and fallback. |
+| simulation_regression_review | Behavior flags cannot be enabled until old and new chains are compared on representative conversations. | Offline simulation report covers SOP, precision QA, store, payment, paid registration, risk, and model-failure cases. |
+| rollback_evidence_review | Each stage must be independently revertible and must not be deployed from this branch. | Commit hash recorded for the stage, no deployment command run, and `codex/reply-chain-refactor` remains separate from `main`. |
+
+Before any behavior flag changes from shadow mode to active mode, the reviewer
+must check all six gates above and attach the test output or report path in the
+commit or review note.

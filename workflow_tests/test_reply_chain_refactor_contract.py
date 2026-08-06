@@ -83,6 +83,24 @@ def test_rule_matrix_covers_recent_high_risk_business_areas() -> None:
         assert rows[rule_id]["target owner"], rule_id
 
 
+def test_rule_matrix_has_structural_refactor_review_gates() -> None:
+    text = MATRIX_PATH.read_text(encoding="utf-8")
+
+    for marker in [
+        "Structural Refactor Review Gate",
+        "rule_matrix_delta_review",
+        "payload_isolation_review",
+        "business_wording_freeze_review",
+        "model_semantics_ownership_review",
+        "simulation_regression_review",
+        "rollback_evidence_review",
+        "workflow_tests/test_reply_chain_shadow_payload_isolation.py",
+        "Offline simulation report covers SOP, precision QA, store, payment, paid registration, risk, and model-failure cases.",
+        "must not be deployed from this branch",
+    ]:
+        assert marker in text
+
+
 def _matrix_rows() -> list[dict[str, str]]:
     lines = MATRIX_PATH.read_text(encoding="utf-8").splitlines()
     table_lines = [line for line in lines if line.startswith("| ") and " | " in line]
