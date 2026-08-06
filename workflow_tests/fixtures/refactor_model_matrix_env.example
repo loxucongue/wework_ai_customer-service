@@ -1,6 +1,14 @@
 # Local-only example for the reply-chain refactor model matrix.
 # Copy these names into an ignored .env or export them in the shell before running
 # ai_paths/scripts/run_refactor_model_matrix.py. Never commit real key values.
+#
+# Approved branch-only candidates:
+# - claude-opus-4-7 through LinkAI OpenAI-compatible relay
+# - gemini-3.5-flash through LinkAI OpenAI-compatible relay
+# - gpt-5.4 through LinkAI OpenAI-compatible relay
+#
+# Reports must compare both reply accuracy and latency. They may record the
+# environment variable names below, but must never write actual secret values.
 
 REFACTOR_MODEL_RELAY_BASE_URL=https://linkai.shop
 REFACTOR_MODEL_CLAUDE_API_KEY=<local-only-claude-key>

@@ -137,6 +137,10 @@ def test_refactor_model_matrix_env_example_is_safe_and_not_loaded() -> None:
     values = load_refactor_env(example_path.parent)
 
     for marker in [
+        "claude-opus-4-7 through LinkAI OpenAI-compatible relay",
+        "gemini-3.5-flash through LinkAI OpenAI-compatible relay",
+        "gpt-5.4 through LinkAI OpenAI-compatible relay",
+        "Reports must compare both reply accuracy and latency",
         "REFACTOR_MODEL_RELAY_BASE_URL=https://linkai.shop",
         "REFACTOR_MODEL_CLAUDE_API_KEY=<local-only-claude-key>",
         "REFACTOR_MODEL_GEMINI_API_KEY=<local-only-gemini-key>",
