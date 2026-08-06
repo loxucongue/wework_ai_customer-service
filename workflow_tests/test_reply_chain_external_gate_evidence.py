@@ -20,6 +20,9 @@ def _simulation_ready() -> dict:
         "summary": {
             "infrastructure_failures": 0,
             "acceptance": {
+                "hard_errors_zero": True,
+                "semantic_at_least_90": True,
+                "critical_all_pass": True,
                 "infrastructure_failures_zero": True,
                 "scenario_coverage_complete": True,
             },
@@ -142,6 +145,20 @@ def test_external_gate_evidence_blocks_missing_or_failed_simulation_infrastructu
 
     assert "simulation_infrastructure_failures:1" in blockers
     assert "simulation_infrastructure_acceptance_missing_or_false" in blockers
+
+
+def test_external_gate_evidence_blocks_missing_core_simulation_acceptance_fields() -> None:
+    simulation = _simulation_ready()
+    simulation["summary"]["acceptance"] = {
+        "infrastructure_failures_zero": True,
+        "scenario_coverage_complete": True,
+    }
+
+    blockers = simulation_report_blockers(simulation)
+
+    assert "simulation_hard_error_acceptance_missing_or_false" in blockers
+    assert "simulation_semantic_acceptance_missing_or_false" in blockers
+    assert "simulation_critical_acceptance_missing_or_false" in blockers
 
 
 def test_external_gate_evidence_blocks_missing_simulation_review_artifacts() -> None:

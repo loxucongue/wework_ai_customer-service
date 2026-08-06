@@ -61,6 +61,9 @@ def _simulation_ready() -> dict:
         "summary": {
             "infrastructure_failures": 0,
             "acceptance": {
+                "hard_errors_zero": True,
+                "semantic_at_least_90": True,
+                "critical_all_pass": True,
                 "infrastructure_failures_zero": True,
                 "scenario_coverage_complete": True,
             },

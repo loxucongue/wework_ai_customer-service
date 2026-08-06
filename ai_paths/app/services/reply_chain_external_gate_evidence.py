@@ -28,6 +28,13 @@ def simulation_report_blockers(simulation: dict[str, Any]) -> list[str]:
     if _int_value(summary.get("infrastructure_failures")) != 0:
         blockers.append(f"simulation_infrastructure_failures:{summary.get('infrastructure_failures')}")
     acceptance = _dict(summary.get("acceptance"))
+    for field, blocker in (
+        ("hard_errors_zero", "simulation_hard_error_acceptance_missing_or_false"),
+        ("semantic_at_least_90", "simulation_semantic_acceptance_missing_or_false"),
+        ("critical_all_pass", "simulation_critical_acceptance_missing_or_false"),
+    ):
+        if acceptance.get(field) is not True:
+            blockers.append(blocker)
     if acceptance.get("infrastructure_failures_zero") is not True:
         blockers.append("simulation_infrastructure_acceptance_missing_or_false")
     if acceptance.get("scenario_coverage_complete") is not True:
