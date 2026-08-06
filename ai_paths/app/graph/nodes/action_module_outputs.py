@@ -47,6 +47,21 @@ def _store_resolution_status(
     return "no_valid_candidate"
 
 
+def _distance_city_fallback_should_send_multiple(
+    *,
+    has_real_ranking: bool,
+    scope_match_level: str,
+    exact_scope_has_store: Any,
+    candidate_store_ids: list[str],
+) -> bool:
+    return (
+        has_real_ranking
+        and exact_scope_has_store is False
+        and scope_match_level == "city_fallback"
+        and len(candidate_store_ids) >= 2
+    )
+
+
 def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -> dict[str, Any]:
     """Provide factual evidence to the final reply model without customer-facing wording."""
     facts: list[str] = []
@@ -289,10 +304,27 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                 for item in structured_facts["store_facts"]
                 if str(item.get("store_id") or item.get("id") or "")
             ]
+            scope_match_level = str(
+                value.get("scope_match_level")
+                or previous_resolution.get("scope_match_level")
+                or ""
+            )
+            exact_scope_has_store = (
+                value.get("exact_scope_has_store")
+                if value.get("exact_scope_has_store") is not None
+                else previous_resolution.get("exact_scope_has_store")
+            )
+            if _distance_city_fallback_should_send_multiple(
+                has_real_ranking=has_real_ranking,
+                scope_match_level=scope_match_level,
+                exact_scope_has_store=exact_scope_has_store,
+                candidate_store_ids=candidate_store_ids,
+            ):
+                v2_status = "send_multiple"
             delivery_store_ids = (
                 [ranked_recommended_store_id]
                 if v2_status == "send_single" and ranked_recommended_store_id
-                else candidate_store_ids if v2_status == "send_multiple" else []
+                else candidate_store_ids[:3] if v2_status == "send_multiple" else []
             )
             structured_facts["store_resolution_fact"] = _drop_empty(
                 {
@@ -306,16 +338,8 @@ def build_planner_fact_output(tool_results: dict[str, Any], state: AgentState) -
                     "city": city,
                     "district": district,
                     "township": township,
-                    "scope_match_level": str(
-                        value.get("scope_match_level")
-                        or previous_resolution.get("scope_match_level")
-                        or ""
-                    ),
-                    "exact_scope_has_store": (
-                        value.get("exact_scope_has_store")
-                        if value.get("exact_scope_has_store") is not None
-                        else previous_resolution.get("exact_scope_has_store")
-                    ),
+                    "scope_match_level": scope_match_level,
+                    "exact_scope_has_store": exact_scope_has_store,
                     "candidate_store_ids": candidate_store_ids,
                     "visible_candidate_ids": candidate_store_ids,
                     "visible_candidate_count": visible_candidate_count,
