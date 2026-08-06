@@ -61,6 +61,50 @@ def _simulation_ready() -> dict:
     }
 
 
+def _model_matrix_ready() -> dict:
+    return {
+        "schema_version": "reply_chain_refactor_model_matrix_v1",
+        "profiles_requested": ["claude", "gemini", "openai"],
+        "profiles": [
+            {
+                "status": "completed",
+                "model_profile": {"name": "claude", "model": "claude-opus-4-7"},
+                "profile_summary": {
+                    "semantic_pass_rate": 0.91,
+                    "p50_ms": 6200,
+                    "p90_ms": 11000,
+                    "accepted_by_release_thresholds": True,
+                },
+            },
+            {
+                "status": "completed",
+                "model_profile": {"name": "gemini", "model": "gemini-3.5-flash"},
+                "profile_summary": {
+                    "semantic_pass_rate": 0.9,
+                    "p50_ms": 3900,
+                    "p90_ms": 7600,
+                    "accepted_by_release_thresholds": True,
+                },
+            },
+            {
+                "status": "completed",
+                "model_profile": {"name": "openai", "model": "gpt-5.4"},
+                "profile_summary": {
+                    "semantic_pass_rate": 0.94,
+                    "p50_ms": 4800,
+                    "p90_ms": 8200,
+                    "accepted_by_release_thresholds": True,
+                },
+            },
+        ],
+        "safety": {
+            "api_keys_written_to_report": False,
+            "production_customer_messages_sent": False,
+            "production_writes_allowed": False,
+        },
+    }
+
+
 def _human_review_approved() -> dict:
     return {
         "schema_version": "reply_chain_human_review_approval_v1",
@@ -95,6 +139,7 @@ def test_behavior_switch_guard_blocks_without_simulation_and_human_review() -> N
 
     assert guard["can_enable_behavior_switch"] is False
     assert "missing_offline_simulation_report" in guard["blockers"]
+    assert "missing_model_matrix_report" in guard["blockers"]
     assert "missing_human_review_approval" in guard["blockers"]
 
 
@@ -110,13 +155,44 @@ def test_behavior_switch_guard_blocks_unproven_release_review_gates() -> None:
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=diagnostics,
         simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
         human_review=_human_review_approved(),
     )
 
     assert guard["can_enable_behavior_switch"] is False
-    assert "release_review_gate_unproven:simulation_regression_review" in guard["blockers"]
+    assert "release_review_gate_unproven:simulation_regression_review" not in guard["blockers"]
     assert "release_review_gate_unproven:business_wording_freeze_review" in guard["blockers"]
     assert guard["diagnostic_blocker_groups"]["manual_review"]["ready"] is True
+
+
+def test_behavior_switch_guard_filters_externally_proven_simulation_and_model_matrix_gates() -> None:
+    diagnostics = _diagnostics_ready()
+    diagnostics["release_review"]["missing_or_unproven_gates"] = [
+        "simulation_regression_review",
+        "model_matrix_review",
+    ]
+    diagnostics["release_review"]["blocker_groups"] = {
+        "manual_review": {
+            "ready": False,
+            "blocker_count": 2,
+            "blockers": [
+                "gate_not_proven:simulation_regression_review",
+                "gate_not_proven:model_matrix_review",
+            ],
+        }
+    }
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=diagnostics,
+        simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is True
+    assert "blockers" not in guard
 
 
 def test_behavior_switch_guard_exposes_release_review_blocker_groups_for_review() -> None:
@@ -139,6 +215,7 @@ def test_behavior_switch_guard_exposes_release_review_blocker_groups_for_review(
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=diagnostics,
         simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
         human_review=_human_review_approved(),
     )
 
@@ -166,6 +243,7 @@ def test_behavior_switch_guard_blocks_unresolved_release_review_groups_even_with
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=diagnostics,
         simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
         human_review=_human_review_approved(),
     )
 
@@ -186,6 +264,7 @@ def test_behavior_switch_guard_blocks_release_review_that_claims_switch_approval
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=diagnostics,
         simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
         human_review=_human_review_approved(),
     )
 
@@ -199,6 +278,7 @@ def test_behavior_switch_guard_allows_only_with_complete_evidence() -> None:
         shadow_bundle_audit=_shadow_bundle_ready(),
         diagnostics=_diagnostics_ready(),
         simulation_report=_simulation_ready(),
+        model_matrix_report=_model_matrix_ready(),
         human_review=_human_review_approved(),
     )
 
@@ -207,6 +287,28 @@ def test_behavior_switch_guard_allows_only_with_complete_evidence() -> None:
     assert "blockers" not in guard
     assert guard["diagnostic_blocker_groups"]["manual_review"]["ready"] is True
     assert guard["required_evidence"]["simulation_report"].startswith("offline full-chain")
+    assert guard["required_evidence"]["model_matrix_report"].startswith("three-model")
+
+
+def test_behavior_switch_guard_blocks_invalid_model_matrix_report() -> None:
+    model_matrix = _model_matrix_ready()
+    model_matrix["profiles"] = [
+        item
+        for item in model_matrix["profiles"]
+        if item["model_profile"]["name"] != "gemini"
+    ]
+
+    guard = reply_chain_behavior_switch_guard(
+        flag_snapshot=_active_flag_snapshot(),
+        shadow_bundle_audit=_shadow_bundle_ready(),
+        diagnostics=_diagnostics_ready(),
+        simulation_report=_simulation_ready(),
+        model_matrix_report=model_matrix,
+        human_review=_human_review_approved(),
+    )
+
+    assert guard["can_enable_behavior_switch"] is False
+    assert "model_matrix_profile_not_completed:gemini" in guard["blockers"]
 
 
 def test_behavior_switch_guard_is_not_consumed_by_current_model_payloads() -> None:

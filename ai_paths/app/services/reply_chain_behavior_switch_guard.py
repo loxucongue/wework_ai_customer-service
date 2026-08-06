@@ -23,6 +23,7 @@ def reply_chain_behavior_switch_guard(
     shadow_bundle_audit: dict[str, Any] | None = None,
     diagnostics: dict[str, Any] | None = None,
     simulation_report: dict[str, Any] | None = None,
+    model_matrix_report: dict[str, Any] | None = None,
     human_review: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Gate behavior-switch approval without changing runtime behavior."""
@@ -31,16 +32,25 @@ def reply_chain_behavior_switch_guard(
     shadow = _dict(shadow_bundle_audit)
     diag = _dict(diagnostics)
     simulation = _dict(simulation_report)
+    model_matrix = _dict(model_matrix_report)
     review = _dict(human_review)
     switch_requested = _behavior_switch_requested(flags)
+    simulation_blockers = _simulation_blockers(simulation)
+    model_matrix_blockers = _model_matrix_blockers(model_matrix)
+    proven_external_gates: set[str] = set()
+    if not simulation_blockers:
+        proven_external_gates.add("simulation_regression_review")
+    if not model_matrix_blockers:
+        proven_external_gates.add("model_matrix_review")
 
     blockers: list[str] = []
     if not switch_requested:
         blockers.append("behavior_switch_not_requested")
     blockers.extend(_flag_blockers(flag_snapshot, flags))
     blockers.extend(_shadow_bundle_blockers(shadow))
-    blockers.extend(_diagnostic_blockers(diag))
-    blockers.extend(_simulation_blockers(simulation))
+    blockers.extend(_diagnostic_blockers(diag, proven_external_gates=proven_external_gates))
+    blockers.extend(simulation_blockers)
+    blockers.extend(model_matrix_blockers)
     blockers.extend(_human_review_blockers(review))
 
     return _drop_empty(
@@ -55,6 +65,7 @@ def reply_chain_behavior_switch_guard(
                 "shadow_bundle_audit": "reply_chain_shadow_bundle_audit_v1 ready_for_refactor_review=true",
                 "diagnostics": "parallel_reply_chain_diagnostics_v1 phase=ready_for_human_review",
                 "simulation_report": "offline full-chain simulation with zero hard errors and required pass rate",
+                "model_matrix_report": "three-model relay matrix with accuracy and latency summary",
                 "human_review": "explicit reviewer approval for this branch and commit",
             },
             "safety": {
@@ -102,7 +113,8 @@ def _shadow_bundle_blockers(shadow: dict[str, Any]) -> list[str]:
     return blockers
 
 
-def _diagnostic_blockers(diagnostics: dict[str, Any]) -> list[str]:
+def _diagnostic_blockers(diagnostics: dict[str, Any], *, proven_external_gates: set[str] | None = None) -> list[str]:
+    proven_external_gates = proven_external_gates or set()
     if diagnostics.get("schema_version") != "parallel_reply_chain_diagnostics_v1":
         return ["missing_parallel_reply_chain_diagnostics"]
     blockers: list[str] = []
@@ -114,14 +126,23 @@ def _diagnostic_blockers(diagnostics: dict[str, Any]) -> list[str]:
     else:
         if release_review.get("can_enable_behavior_switch") is not False:
             blockers.append("release_review_missing_non_approval_marker")
-        unproven = _list_strings(release_review.get("missing_or_unproven_gates"))
+        unproven = [
+            item
+            for item in _list_strings(release_review.get("missing_or_unproven_gates"))
+            if item not in proven_external_gates
+        ]
         if unproven:
             blockers.extend(f"release_review_gate_unproven:{item}" for item in unproven)
-        blockers.extend(_release_review_group_blockers(release_review))
+        blockers.extend(_release_review_group_blockers(release_review, proven_external_gates=proven_external_gates))
     return blockers
 
 
-def _release_review_group_blockers(release_review: dict[str, Any]) -> list[str]:
+def _release_review_group_blockers(
+    release_review: dict[str, Any],
+    *,
+    proven_external_gates: set[str] | None = None,
+) -> list[str]:
+    proven_external_gates = proven_external_gates or set()
     blocker_groups = release_review.get("blocker_groups")
     if not isinstance(blocker_groups, dict):
         return []
@@ -130,9 +151,15 @@ def _release_review_group_blockers(release_review: dict[str, Any]) -> list[str]:
         if not isinstance(group, dict):
             blockers.append(f"release_review_blocker_group_invalid:{group_name}")
             continue
-        group_blockers = _list_strings(group.get("blockers"))
-        blocker_count = _int_value(group.get("blocker_count"))
+        group_blockers = [
+            item
+            for item in _list_strings(group.get("blockers"))
+            if item not in {f"gate_not_proven:{gate_id}" for gate_id in proven_external_gates}
+        ]
+        blocker_count = len(group_blockers)
         if group.get("ready") is False or group_blockers or blocker_count > 0:
+            if group.get("ready") is False and not group_blockers and _only_proven_external_gate_blockers(group, proven_external_gates):
+                continue
             blockers.append(f"release_review_blocker_group_unresolved:{group_name}")
             blockers.extend(f"release_review_blocker_group:{group_name}:{item}" for item in group_blockers)
     return blockers
@@ -164,6 +191,67 @@ def _simulation_blockers(simulation: dict[str, Any]) -> list[str]:
     if failed_critical:
         blockers.extend(f"simulation_critical_failed:{item}" for item in failed_critical)
     return blockers
+
+
+def _model_matrix_blockers(model_matrix: dict[str, Any]) -> list[str]:
+    if model_matrix.get("schema_version") != "reply_chain_refactor_model_matrix_v1":
+        return ["missing_model_matrix_report"]
+    blockers: list[str] = []
+    requested = set(_list_strings(model_matrix.get("profiles_requested")))
+    required = {"claude", "gemini", "openai"}
+    missing = sorted(required - requested)
+    if missing:
+        blockers.extend(f"model_matrix_missing_requested_profile:{item}" for item in missing)
+    profiles = model_matrix.get("profiles") if isinstance(model_matrix.get("profiles"), list) else []
+    completed_names = {
+        str((_dict(item.get("model_profile")).get("name") or "")).strip()
+        for item in profiles
+        if isinstance(item, dict) and item.get("status") == "completed"
+    }
+    missing_completed = sorted(required - completed_names)
+    if missing_completed:
+        blockers.extend(f"model_matrix_profile_not_completed:{item}" for item in missing_completed)
+    accepted = False
+    for item in profiles:
+        if not isinstance(item, dict) or item.get("status") != "completed":
+            continue
+        summary = _dict(item.get("profile_summary"))
+        if not _has_number(summary.get("semantic_pass_rate")):
+            blockers.append(f"model_matrix_missing_semantic_pass_rate:{_profile_name(item)}")
+        if not _has_number(summary.get("p50_ms")):
+            blockers.append(f"model_matrix_missing_p50:{_profile_name(item)}")
+        if not _has_number(summary.get("p90_ms")):
+            blockers.append(f"model_matrix_missing_p90:{_profile_name(item)}")
+        accepted = accepted or summary.get("accepted_by_release_thresholds") is True
+    if not accepted:
+        blockers.append("model_matrix_no_candidate_meets_release_thresholds")
+    safety = _dict(model_matrix.get("safety"))
+    if safety.get("api_keys_written_to_report") is not False:
+        blockers.append("model_matrix_missing_key_redaction_safety")
+    if safety.get("production_customer_messages_sent") is not False:
+        blockers.append("model_matrix_missing_no_send_safety")
+    if safety.get("production_writes_allowed") is not False:
+        blockers.append("model_matrix_missing_no_write_safety")
+    return blockers
+
+
+def _profile_name(item: dict[str, Any]) -> str:
+    return str(_dict(item.get("model_profile")).get("name") or "unknown")
+
+
+def _has_number(value: Any) -> bool:
+    try:
+        float(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _only_proven_external_gate_blockers(group: dict[str, Any], proven_external_gates: set[str]) -> bool:
+    original = _list_strings(group.get("blockers"))
+    if not original:
+        return False
+    return all(item in {f"gate_not_proven:{gate_id}" for gate_id in proven_external_gates} for item in original)
 
 
 def _human_review_blockers(review: dict[str, Any]) -> list[str]:
