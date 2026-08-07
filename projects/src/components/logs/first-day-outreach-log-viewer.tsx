@@ -383,7 +383,7 @@ function StatusBadge({ status }: { status: string }) {
 function SummaryFact({ label, value }: { label: string; value: string }) { return <div className="min-h-24 bg-white p-4"><div className="text-xs font-medium text-zinc-500">{label}</div><div className="mt-2 break-words text-sm font-semibold leading-6">{value}</div></div>; }
 function Metric({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) { return <div><dt className="text-xs text-zinc-500">{label}</dt><dd className={`mt-1 break-words ${mono ? "font-mono text-xs" : ""}`}>{value}</dd></div>; }
 function SectionTitle({ icon, title }: { icon: ReactNode; title: string }) { return <h3 className="flex items-center gap-2 text-sm font-semibold">{icon}{title}</h3>; }
-function EmptyState({ icon, text }: { icon: ReactNode; text: string }) { return <div className="flex min-h-40 flex-col items-center justify-center gap-2 p-6 text-center text-sm text-zinc-500">{icon}<span>{text}</span></div>; }
+function EmptyState({ icon, text }: { icon: ReactNode; text: string }) { return <div className="flex h-full min-h-20 flex-col items-center justify-center gap-1 p-3 text-center text-sm text-zinc-500">{icon}<span>{text}</span></div>; }
 
 function sceneAnalysis(detail: RunDetail): unknown { const workflow = detail.workflow || {}; return workflow.scene_analysis || (workflow.scene_analyst as JsonRecord | undefined)?.output || {}; }
 function sceneLabel(value: unknown): string { const key = String(value || ""); return SCENE_LABELS[key] || key || "未选择"; }
