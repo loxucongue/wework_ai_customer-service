@@ -13,6 +13,7 @@ from app.services.outreach_first_day_prompts import (
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
     FIRST_DAY_PLAN_WRITER_PROMPT,
     FIRST_DAY_SCENE_ANALYST_PROMPT,
+    FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT,
 )
 from app.services.outreach_prompts import (
     OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT,
@@ -24,12 +25,16 @@ from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.sop_platform_task_policy import personalized_payment_collection_eligibility
 from app.services.outreach_service import (
     FIRST_DAY_SILENCE_TRIGGER_TYPE,
+    _first_day_final_plan_error,
     _first_day_scene_analysis_error,
     _first_day_scene_lock_error,
     _first_day_verifier_error,
     _first_day_outreach_plan_error,
     _first_day_message_policy_error,
+    _merge_first_day_scene_schema_repair,
     _normalize_first_day_scene_analysis,
+    _normalize_first_day_repaired_plan,
+    _first_day_writer_payload,
     _first_day_sop_pack_assets,
     _first_day_sop_pack_context,
     _normalize_outreach_plan_response,
@@ -125,30 +130,44 @@ psychology_accuracy、arc_diversity、asset_fit、human_tone、conversion_action
 只输出有效 json。
 """.strip()
 
-FIRST_DAY_TEST_REVIEW_CALIBRATION = """
-你正在评审 `first_day_opened_silence` 单节点测试。`case.expected` 是该案例的验收合同，
-必须逐条对照客户实际收到的 `plan.steps[*].reply_messages`、素材策略和发卡动作，不能只看
-后台的 intent/new_value 标签。违反 expected 时必须把对应维度降到 3 分以下；事实、安全、
-支付、抑制或明确场景顺序冲突时设置 hard_error=true。
+FIRST_DAY_SEMANTIC_REVIEW_PROMPT = """
+你是首日微信沉默跟进的独立语义评审，只评价客户实际看到的两步消息，不检查程序结构。
 
-首日专项校准：
-- `您/亲/顾客/很多人` 是本链路明确允许的中性表达，绝不能因为出现“亲”而判定性别违规。
-- 计划中的 `asset_strategy=configured_image` 且 `asset_id` 来自真实目录，表示线上代码会在文字后
-  直接拼装并发送该真实图片；不得因为 `reply_messages` 里没有 image 就说“没有实际发送图片”。
-  `reply_messages` 本来就只允许 text，模型直接放 image 反而是结构错误。
-- 判断两步是否为不同场景时，先读取 `plan.steps[*].scene` 和 `workflow.scene_analysis`；两个
-  scene 值不同且客户可见内容分别执行了对应目标时，不得凭主观印象说成同一场景。
-- 历史已有客服效果说明并紧邻真实 image，且活动尚未介绍：第一步必须直接进入活动介绍。
-  继续讲一次效果、原相机、再发案例或其他证明机制属于失败。
-- 客户问效果或发图且历史没有真实效果图片：第一步必须实际选择真实效果素材并直接发送；
-  仅讲护理、检测、原相机原理或承诺以后发图属于失败。
-- 门店区域只能询问一次。第二步再次问省市、区县、常去区域，或说帮忙查、匹配、缩小到
-  最近门店，属于硬错误；第二步应切换效果或活动。
-- `payment_collection_gate.eligible=false` 只禁止卡片，不允许因此抑制一个已真实开口且无
-  其他硬边界的客户。客户想付款但缺订单/门店时，应保留两步并推进缺失门店事实及另一场景。
-- 有当前发痒、起疹、破损或未解除健康风险时应抑制营销计划；生成两步健康提醒也不算正确。
-- 首日有效订单支付卡允许第一步直接发送，第二步必须是不同的非支付 value_only 场景。
-- 轻过渡、共情或一句通用解释不算完成推进。第一步必须同条交付下一场景的实质内容。
+输入包含测试案例、权威场景分析、候选计划、素材目录和 `runtime_delivery_view`。分别给以下五项 1 至 5 分，4 分表示可上线：
+- `workflow.scene_analysis` 是已经通过代码合同的权威场景锁。测试案例中的预期字段只用于离线统计，不能覆盖权威场景锁；不得仅因候选执行的锁定场景与测试案例预期不同而降低任何语义分数。
+- `conversation_continuity`：是否自然承接客户最近聊天，而不是重新开场或答非所问。
+- `scene_execution`：两步客户可见文本是否分别真正完成锁定场景，而不只是后台 scene 标签正确。
+- `semantic_non_repeat`：第一步是否避开历史客服/SOP内容，两步是否交付不同的新价值。
+- `human_tone`：是否像真人微信短聊，具体、自然、没有报告腔、问卷腔或流程尾巴。
+- `barrier_accuracy`：是否准确处理客户真实卡点，并保持合理销售推进。
+
+评审边界：
+- `您、亲、顾客、很多人` 都是中性表达，“亲”绝不是性别称谓。
+- `asset_strategy=configured_image` 且 `asset_id` 来自素材目录，表示代码会在文字后立即发送真实图片；`reply_messages` 只能包含文本，禁止要求其中出现 image 或 URL。
+- `runtime_delivery_view.structured_delivery_appended_by_code.asset_will_be_sent=true` 是图片会随本步骤真实发送的确定性事实。此时绝对禁止声称“只有文本、没有图片、没有实际发送素材”。
+- 当锁定场景是 `effect_proof` 且上述图片发送事实为 true 时，真实图片本身就是本步骤交付的新效果证据。自然、简短且用于引出图片的一句话是合格的微信短聊，不得因为文字没有复述图片内容而降低 `scene_execution` 或 `semantic_non_repeat`。
+- `trust_repair` 中“到店先看效果和方案，满意或确认适合再做”是直接交付的低风险价值，不是送客或等待式承接，不得因此降低 `scene_execution`、`human_tone` 或 `barrier_accuracy`。只有“您慢慢看、以后需要再联系、方便时再说、下次再聊”等结束当前推进的表达才是送客。
+- `persuasion_angle=self_image` 必须真正写到改善后的自信、重视自身状态或给自己一次改善机会；“确认适合再决定、心里更稳或更有底”仍是低风险决策语义。若两步分别交付真实的低风险价值和真实的自我形象价值，应视为两个不同场景；若两步都围绕适合后再决定，则降低 `scene_execution` 和 `semantic_non_repeat`。
+- 只能根据 `recent_messages` 和结构事实判断客户卡点。禁止凭空声称存在费用、支付、距离、健康或其他聊天中没有出现的异议，并禁止因此降低 `barrier_accuracy`。
+- 第二步延迟 15、16、17、18、19 或 20 分钟都合法，时间由代码评审，不得主观扣分。
+- 支付门禁为 false 只代表禁止发卡，不代表应停止文本计划。
+- `scene_delivery_check` 是内部自检，只能辅助理解；必须以 `reply_messages` 的真实文本和素材动作判断是否完成场景。
+- 当 `case.expected` 明确要求停止触达，且场景分析正确输出 `eligible=false`、计划没有步骤时，五项都给 5 分，不得因没有客户话术扣分。
+- 轻微措辞偏好只能扣对应分数，不能设置 `hard_error=true`。
+- 只有客户可见文本明显虚构已查到门店、已锁名额、已创建订单等事实，或场景文字与锁定目标完全相反时，才可设置 `hard_error=true`。
+- 必须逐条对照 `case.expected`，但当它与上述运行时合同冲突时以上述合同为准。
+
+只返回一个 JSON：
+{
+  "conversation_continuity": 5,
+  "scene_execution": 5,
+  "semantic_non_repeat": 5,
+  "human_tone": 5,
+  "barrier_accuracy": 5,
+  "hard_error": false,
+  "hard_error_reason": "",
+  "concise_reason": "简洁结论"
+}
 """.strip()
 
 ALLOWED_ANGLES = {
@@ -162,6 +181,87 @@ ALLOWED_ANGLES = {
     "low_risk_action",
 }
 ALLOWED_ASSET_STRATEGIES = {"none", "configured_image", "operation_video", "case_search"}
+
+FIRST_DAY_EXPECTED_SCENES: dict[str, dict[str, Any]] = {
+    "first_day_effect_next_scene": {"step1": {"activity_intro", "trust_repair", "objection_resolution"}, "step2": {"activity_intro", "store_area_request", "trust_repair", "objection_resolution"}},
+    "first_day_price_already_explained": {"step1": {"effect_proof", "trust_repair", "objection_resolution", "store_area_request"}, "step2": {"effect_proof", "store_area_request", "trust_repair", "objection_resolution"}},
+    "first_day_store_without_lookup": {"step1": {"store_area_request"}, "step2": {"effect_proof", "activity_intro"}},
+    "first_day_consider_neutral_self_image": {"step1": {"trust_repair"}, "step2": {"effect_proof", "activity_intro", "store_area_request", "objection_resolution"}},
+    "first_day_history_near_repeat": {"step1": {"trust_repair", "objection_resolution"}, "step2": {"store_area_request", "trust_repair", "objection_resolution"}},
+    "first_day_unknown_gender": {"step1": {"effect_proof"}, "step2": {"store_area_request", "trust_repair"}},
+    "real_effect_many_images_then_activity": {"step1": {"activity_intro"}, "step2": {"trust_repair", "objection_resolution"}},
+    "real_effect_text_only_should_deliver_images": {"step1": {"effect_proof"}, "step2": {"activity_intro"}},
+    "real_price_complete_scam_objection": {"step1": {"effect_proof", "trust_repair"}, "step2": {"trust_repair", "objection_resolution", "store_area_request"}},
+    "real_price_asked_but_not_answered": {"step1": {"activity_intro"}, "step2": {"store_area_request", "trust_repair", "objection_resolution"}},
+    "real_effect_after_customer_photo_no_overdiagnosis": {"step1": {"activity_intro"}, "step2": {"store_area_request"}},
+    "real_long_full_funnel_do_not_restart": {"step1": {"trust_repair"}, "step2": {"objection_resolution"}},
+    "real_long_location_correction_and_noise": {"step1": {"effect_proof"}, "step2": {"activity_intro", "trust_repair"}},
+    "real_consider_after_full_pitch_neutral": {"step1": {"trust_repair"}, "step2": {"store_area_request"}},
+    "real_too_far_soft_refusal_new_value": {"step1": {"effect_proof"}, "step2": {"activity_intro"}},
+    "real_busy_weather_no_date_pressure": {"step1": {"effect_proof", "activity_intro"}, "step2": {"effect_proof", "activity_intro"}},
+    "real_active_itch_health_risk_suppress": {"eligible": False},
+    "real_auto_opening_only_defensive_suppress": {"eligible": False},
+    "real_noisy_long_unknown_gender_no_repeat": {"step1": {"trust_repair"}, "step2": {"objection_resolution"}},
+    "real_store_city_missing_no_lookup_tool": {"step1": {"store_area_request"}, "step2": {"effect_proof", "activity_intro"}},
+    "real_store_city_known_district_missing": {"step1": {"store_area_request"}, "step2": {"effect_proof"}},
+    "real_store_card_already_sent_progress_activity": {"step1": {"effect_proof"}, "step2": {"activity_intro"}},
+    "real_payment_page_slow_valid_order": {"step1": {"deposit_close"}, "step2": {"effect_proof", "trust_repair"}},
+    "real_payment_requested_but_order_missing": {"step1": {"store_area_request"}, "step2": {"effect_proof", "trust_repair"}},
+}
+
+
+def _first_day_scene_contract_passed(case_id: str, scene_analysis: dict[str, Any]) -> bool:
+    expected = FIRST_DAY_EXPECTED_SCENES.get(case_id)
+    if not expected:
+        return False
+    eligible = bool(scene_analysis.get("eligible"))
+    if expected.get("eligible") is False:
+        return bool(scene_analysis) and scene_analysis.get("eligible") is False
+    return bool(
+        eligible
+        and str(scene_analysis.get("step1_scene") or "") in expected["step1"]
+        and str(scene_analysis.get("step2_scene") or "") in expected["step2"]
+        and str(scene_analysis.get("step1_scene") or "")
+        != str(scene_analysis.get("step2_scene") or "")
+    )
+
+
+def _first_day_review_delivery_view(
+    plan: dict[str, Any],
+    asset_catalog: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    assets = {
+        str(item.get("asset_id") or ""): item
+        for item in asset_catalog
+        if isinstance(item, dict) and str(item.get("asset_id") or "")
+    }
+    output: list[dict[str, Any]] = []
+    for step in plan.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        asset_id = str(step.get("asset_id") or "")
+        asset = assets.get(asset_id) or {}
+        output.append(
+            {
+                "step": step.get("step"),
+                "scene": step.get("scene"),
+                "customer_visible_texts": [
+                    str((message.get("content") or {}).get("text") or "")
+                    for message in step.get("reply_messages") or []
+                    if isinstance(message, dict) and isinstance(message.get("content"), dict)
+                ],
+                "structured_delivery_appended_by_code": {
+                    "asset_will_be_sent": bool(
+                        str(step.get("asset_strategy") or "none") != "none" and asset_id in assets
+                    ),
+                    "asset_strategy": step.get("asset_strategy") or "none",
+                    "asset_id": asset_id,
+                    "asset_type": asset.get("type") or "",
+                    "payment_card_will_be_sent": bool(step.get("should_send_payment_collection")),
+                },
+            }
+        )
+    return output
 
 
 def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]) -> list[str]:
@@ -283,29 +383,65 @@ def _long_silence_timing_is_valid(plan: dict[str, Any], case: dict[str, Any]) ->
     )
 
 
+async def _first_day_chat_json(
+    client: ModelClient,
+    messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    for attempt in range(1, 4):
+        try:
+            return await client.chat_json(
+                messages,
+                tier="strong",
+                temperature=0.0,
+            )
+        except Exception as exc:
+            if attempt >= 3 or "timeout" not in f"{type(exc).__name__}: {exc}".lower():
+                raise
+    raise RuntimeError("首日模型超时重试异常结束")
+
+
 async def _run_first_day_workflow(
     client: ModelClient,
     payload: dict[str, Any],
     artifacts: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    scene_analysis = await client.chat_json(
+    if int((payload.get("conversation_activity") or {}).get("real_customer_message_count") or 0) == 0:
+        scene_analysis = _normalize_first_day_scene_analysis(
+            {},
+            message_count=len(payload.get("recent_messages") or []),
+            source_snapshot=payload,
+        )
+        artifacts["scene_analysis"] = scene_analysis
+        artifacts["routing_decision"] = "first_day_customer_not_opened"
+        return (
+            {
+                "should_create_plan": False,
+                "stall_reason": "first_day_customer_not_opened",
+                "plan_arc": "",
+                "steps": [],
+            },
+            artifacts,
+        )
+    scene_analysis = await _first_day_chat_json(
+        client,
         [
             {"role": "system", "content": FIRST_DAY_SCENE_ANALYST_PROMPT},
             {"role": "user", "content": json.dumps({"source_snapshot": payload}, ensure_ascii=False)},
         ],
-        tier="strong",
-        temperature=0.0,
     )
     artifacts["scene_analysis_raw"] = scene_analysis
     scene_analysis = _normalize_first_day_scene_analysis(
         scene_analysis,
         message_count=len(payload.get("recent_messages") or []),
+        source_snapshot=payload,
     )
     scene_error = _first_day_scene_analysis_error(scene_analysis, source_snapshot=payload)
     if scene_error:
-        scene_analysis = await client.chat_json(
+        invalid_scene_analysis = scene_analysis
+        scene_analysis = await _first_day_chat_json(
+            client,
             [
-                {"role": "system", "content": FIRST_DAY_SCENE_ANALYST_PROMPT},
+                {"role": "system", "content": FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT},
                 {
                     "role": "user",
                     "content": json.dumps(
@@ -313,20 +449,54 @@ async def _run_first_day_workflow(
                             "source_snapshot": payload,
                             "invalid_scene_analysis": scene_analysis,
                             "schema_error": scene_error,
-                            "instruction": "Repair only the JSON contract.",
+                            "instruction": "只修复 JSON 结构合同，不改变已有业务判断。",
                         },
                         ensure_ascii=False,
                     ),
                 },
             ],
-            tier="strong",
-            temperature=0.0,
+        )
+        scene_analysis = _merge_first_day_scene_schema_repair(
+            invalid_scene_analysis,
+            scene_analysis,
         )
         scene_analysis = _normalize_first_day_scene_analysis(
             scene_analysis,
             message_count=len(payload.get("recent_messages") or []),
+            source_snapshot=payload,
         )
         artifacts["scene_analysis_repaired"] = scene_analysis
+        scene_error = _first_day_scene_analysis_error(scene_analysis, source_snapshot=payload)
+    if scene_error:
+        invalid_scene_analysis = scene_analysis
+        scene_analysis = await _first_day_chat_json(
+            client,
+            [
+                {"role": "system", "content": FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "source_snapshot": payload,
+                            "invalid_scene_analysis": scene_analysis,
+                            "schema_error": scene_error,
+                            "instruction": "再次只修复剩余 JSON 结构错误，保留已有业务判断并返回完整对象。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+        )
+        scene_analysis = _merge_first_day_scene_schema_repair(
+            invalid_scene_analysis,
+            scene_analysis,
+        )
+        scene_analysis = _normalize_first_day_scene_analysis(
+            scene_analysis,
+            message_count=len(payload.get("recent_messages") or []),
+            source_snapshot=payload,
+        )
+        artifacts["scene_analysis_repaired_2"] = scene_analysis
         scene_error = _first_day_scene_analysis_error(scene_analysis, source_snapshot=payload)
     if scene_error:
         raise RuntimeError(f"scene_analysis_invalid: {scene_error}")
@@ -342,27 +512,29 @@ async def _run_first_day_workflow(
             artifacts,
         )
 
-    writer_result = await client.chat_json(
+    writer_result = await _first_day_chat_json(
+        client,
         [
             {"role": "system", "content": FIRST_DAY_PLAN_WRITER_PROMPT},
             {
                 "role": "user",
                 "content": json.dumps(
-                    {"source_snapshot": payload, "scene_contract": scene_analysis},
+                    _first_day_writer_payload(payload, scene_analysis),
                     ensure_ascii=False,
                 ),
             },
         ],
-        tier="strong",
-        temperature=0.0,
     )
     artifacts["writer_result"] = writer_result
-    writer_structure_error = _first_day_scene_lock_error(
-        _normalize_outreach_plan_response(dict(writer_result)),
+    normalized_writer_result = _normalize_outreach_plan_response(dict(writer_result))
+    writer_structure_error = _first_day_final_plan_error(
+        normalized_writer_result,
         scene_analysis=scene_analysis,
+        source_snapshot=payload,
     )
     artifacts["writer_structure_error"] = writer_structure_error
-    verifier_result = await client.chat_json(
+    verifier_result = await _first_day_chat_json(
+        client,
         [
             {"role": "system", "content": FIRST_DAY_CONTRACT_VERIFIER_PROMPT},
             {
@@ -378,14 +550,12 @@ async def _run_first_day_workflow(
                 ),
             },
         ],
-        tier="strong",
-        temperature=0.0,
     )
     artifacts["verifier_result_raw"] = verifier_result
-    verifier_retry_used = False
     verifier_error = _first_day_verifier_error(verifier_result)
     if verifier_error:
-        verifier_result = await client.chat_json(
+        verifier_result = await _first_day_chat_json(
+            client,
             [
                 {"role": "system", "content": FIRST_DAY_CONTRACT_VERIFIER_PROMPT},
                 {
@@ -397,16 +567,13 @@ async def _run_first_day_workflow(
                             "candidate_plan": writer_result,
                             "invalid_verifier_result": verifier_result,
                             "schema_error": verifier_error,
-                            "instruction": "Repair only the verifier JSON contract.",
+                            "instruction": "只修复审核结果 JSON 合同，不得输出或改写客户计划。",
                         },
                         ensure_ascii=False,
                     ),
                 },
             ],
-            tier="strong",
-            temperature=0.0,
         )
-        verifier_retry_used = True
         artifacts["verifier_result_repaired"] = verifier_result
         verifier_error = _first_day_verifier_error(verifier_result)
     if verifier_error:
@@ -422,52 +589,59 @@ async def _run_first_day_workflow(
             },
             artifacts,
         )
-    plan = _normalize_outreach_plan_response(dict(verifier_result.get("verified_plan") or {}))
-    plan_error = _first_day_scene_lock_error(plan, scene_analysis=scene_analysis)
-    if plan_error and not verifier_retry_used:
-        verifier_result = await client.chat_json(
+    needs_repair = bool(writer_structure_error) or str(verifier_result.get("decision") or "") == "repair"
+    if needs_repair:
+        violations = list(verifier_result.get("violations") or [])
+        repair_instructions = list(verifier_result.get("repair_instructions") or [])
+        if writer_structure_error and not repair_instructions:
+            violations.append(
+                {
+                    "code": "deterministic_contract_error",
+                    "field": "candidate_plan",
+                    "evidence": writer_structure_error,
+                }
+            )
+            repair_instructions.append(
+                {
+                    "field": "candidate_plan",
+                    "instruction": "修复确定性合同错误，严格保留两个锁定场景和业务目标。",
+                }
+            )
+        repaired_writer_result = await _first_day_chat_json(
+            client,
             [
-                {"role": "system", "content": FIRST_DAY_CONTRACT_VERIFIER_PROMPT},
+                {"role": "system", "content": FIRST_DAY_PLAN_WRITER_PROMPT},
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {
-                            "source_snapshot": payload,
-                            "scene_contract": scene_analysis,
-                            "candidate_plan": writer_result,
-                            "candidate_structure_error": writer_structure_error,
-                            "invalid_verifier_result": verifier_result,
-                            "verified_plan_error": plan_error,
-                            "instruction": (
-                                "Repair only the verified plan contract. Preserve both locked scenes exactly."
-                            ),
-                        },
+                        _first_day_writer_payload(
+                            payload,
+                            scene_analysis,
+                            candidate_plan=writer_result,
+                            violations=violations,
+                            repair_instructions=repair_instructions,
+                            deterministic_error=writer_structure_error,
+                        ),
                         ensure_ascii=False,
                     ),
                 },
             ],
-            tier="strong",
-            temperature=0.0,
         )
-        artifacts["verifier_contract_repair"] = verifier_result
-        verifier_error = _first_day_verifier_error(verifier_result)
-        if verifier_error:
-            raise RuntimeError(f"verifier_invalid: {verifier_error}")
-        artifacts["verifier_result"] = verifier_result
-        if str(verifier_result.get("decision") or "") == "block":
-            return (
-                {
-                    "should_create_plan": False,
-                    "stall_reason": "contract_verifier_blocked",
-                    "plan_arc": "",
-                    "steps": [],
-                },
-                artifacts,
-            )
-        plan = _normalize_outreach_plan_response(dict(verifier_result.get("verified_plan") or {}))
-        plan_error = _first_day_scene_lock_error(plan, scene_analysis=scene_analysis)
+        artifacts["writer_repair_result"] = repaired_writer_result
+        plan = _normalize_first_day_repaired_plan(
+            _normalize_outreach_plan_response(dict(repaired_writer_result)),
+            scene_analysis=scene_analysis,
+        )
+    else:
+        plan = normalized_writer_result
+    plan_error = _first_day_final_plan_error(
+        plan,
+        scene_analysis=scene_analysis,
+        source_snapshot=payload,
+    )
+    artifacts["final_contract_error"] = plan_error
     if plan_error:
-        raise RuntimeError(f"verified_plan_invalid: {plan_error}")
+        raise RuntimeError(f"final_plan_invalid: {plan_error}")
     return plan, artifacts
 
 
@@ -615,17 +789,18 @@ async def _run_case(
                 "plan": {},
                 "review": {},
                 "workflow": workflow_artifacts,
+                "scene_contract_passed": _first_day_scene_contract_passed(
+                    str(case.get("id") or ""),
+                    workflow_artifacts.get("scene_analysis") or {},
+                ) if first_day else True,
                 "model_error": f"{type(exc).__name__}: {exc}",
             }
         try:
-            review = await client.chat_json(
-                [
-                    {"role": "system", "content": REVIEW_PROMPT},
-                    *(
-                        [{"role": "system", "content": FIRST_DAY_TEST_REVIEW_CALIBRATION}]
-                        if first_day
-                        else []
-                    ),
+            review_messages = [
+                    {
+                        "role": "system",
+                        "content": FIRST_DAY_SEMANTIC_REVIEW_PROMPT if first_day else REVIEW_PROMPT,
+                    },
                     {
                         "role": "user",
                         "content": json.dumps(
@@ -635,13 +810,23 @@ async def _run_case(
                                 "asset_catalog": payload["asset_catalog"],
                                 "plan": plan,
                                 "workflow": workflow_artifacts,
+                                "runtime_delivery_view": _first_day_review_delivery_view(
+                                    plan,
+                                    asset_catalog,
+                                ) if first_day else [],
                             },
                             ensure_ascii=False,
                         ),
                     },
-                ],
-                tier="strong",
-                temperature=0.0,
+                ]
+            review = (
+                await _first_day_chat_json(client, review_messages)
+                if first_day
+                else await client.chat_json(
+                    review_messages,
+                    tier="strong",
+                    temperature=0.0,
+                )
             )
         except Exception as exc:
             review = {
@@ -670,17 +855,30 @@ async def _run_case(
         review["timing_fit_model"] = model_timing_fit
         review["timing_fit"] = max(4, model_timing_fit)
         review["timing_fit_source"] = "deterministic_long_silence_boundary"
-    scores = [
-        int(review.get(key) or 0)
-        for key in (
-            "psychology_accuracy",
-            "arc_diversity",
-            "asset_fit",
-            "human_tone",
-            "conversion_action",
-            "timing_fit",
-        )
-    ]
+    if first_day:
+        scores = [
+            int(review.get(key) or 0)
+            for key in (
+                "conversation_continuity",
+                "scene_execution",
+                "semantic_non_repeat",
+                "human_tone",
+                "barrier_accuracy",
+            )
+        ]
+        review["deterministic_contract_passed"] = not hard_errors
+    else:
+        scores = [
+            int(review.get(key) or 0)
+            for key in (
+                "psychology_accuracy",
+                "arc_diversity",
+                "asset_fit",
+                "human_tone",
+                "conversion_action",
+                "timing_fit",
+            )
+        ]
     passed = (
         not hard_errors
         and not bool(review.get("review_unavailable"))
@@ -700,16 +898,17 @@ async def _run_case(
         "hard_errors": hard_errors,
         "plan": plan,
         "workflow": workflow_artifacts,
+        "scene_contract_passed": _first_day_scene_contract_passed(
+            str(case.get("id") or ""),
+            workflow_artifacts.get("scene_analysis") or {},
+        ) if first_day else True,
         "review": review,
     }
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--fixture",
-        default="workflow_tests/fixtures/outreach_personalized_model_cases_20260728.json",
-    )
+    parser.add_argument("--fixture", action="append", default=[])
     parser.add_argument(
         "--report",
         default=".tmp_runtime/outreach_personalized_model_report_20260728.json",
@@ -721,19 +920,34 @@ async def main() -> int:
 
     settings = Settings()
     client = ModelClient(settings)
-    fixture_payload = json.loads(Path(args.fixture).read_text(encoding="utf-8"))
-    fixture_metadata: dict[str, Any] = {}
-    if isinstance(fixture_payload, dict):
-        fixture_metadata = {
-            key: value
-            for key, value in fixture_payload.items()
-            if key != "cases"
-        }
-        cases = fixture_payload.get("cases") or []
-    else:
-        cases = fixture_payload
-    if not isinstance(cases, list):
-        raise ValueError("fixture cases must be a list")
+    fixture_paths = args.fixture or [
+        "workflow_tests/fixtures/outreach_personalized_model_cases_20260728.json"
+    ]
+    fixture_metadata: list[dict[str, Any]] = []
+    cases: list[dict[str, Any]] = []
+    for fixture_path in fixture_paths:
+        fixture_payload = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
+        if isinstance(fixture_payload, dict):
+            fixture_metadata.append(
+                {
+                    "fixture": fixture_path,
+                    **{
+                        key: value
+                        for key, value in fixture_payload.items()
+                        if key != "cases"
+                    },
+                }
+            )
+            fixture_cases = fixture_payload.get("cases") or []
+        else:
+            fixture_metadata.append({"fixture": fixture_path})
+            fixture_cases = fixture_payload
+        if not isinstance(fixture_cases, list):
+            raise ValueError(f"fixture cases must be a list: {fixture_path}")
+        cases.extend(fixture_cases)
+    case_ids = [str(case.get("id") or "") for case in cases]
+    if len(case_ids) != len(set(case_ids)):
+        raise ValueError("fixture case ids must be unique across all input files")
     selected_case_ids = {str(item).strip() for item in args.case_id if str(item).strip()}
     if selected_case_ids:
         cases = [case for case in cases if str(case.get("id") or "") in selected_case_ids]
@@ -773,8 +987,47 @@ async def main() -> int:
     evaluable = len(results) - unavailable
     semantic_pass_rate = round(passed / evaluable, 4) if evaluable else 0
     availability_rate = round(evaluable / len(results), 4) if results else 0
+    first_day_results = [
+        item
+        for item in results
+        if str((next((case for case in cases if case.get("id") == item.get("case_id")), {})
+                .get("trigger_context") or {}).get("trigger_type") or "")
+        == FIRST_DAY_SILENCE_TRIGGER_TYPE
+    ]
+    scene_accuracy = round(
+        sum(bool(item.get("scene_contract_passed")) for item in first_day_results)
+        / len(first_day_results),
+        4,
+    ) if first_day_results else 1.0
+    scene_pairs_by_case: dict[str, list[tuple[Any, Any, Any]]] = {}
+    for item in first_day_results:
+        analysis = (item.get("workflow") or {}).get("scene_analysis") or {}
+        pair = (
+            bool(analysis.get("eligible")),
+            analysis.get("step1_scene"),
+            analysis.get("step2_scene"),
+        )
+        scene_pairs_by_case.setdefault(str(item.get("case_id") or ""), []).append(pair)
+    scene_consistency_rate = round(
+        sum(len(set(pairs)) == 1 for pairs in scene_pairs_by_case.values())
+        / len(scene_pairs_by_case),
+        4,
+    ) if scene_pairs_by_case else 1.0
+    evaluable_results = [
+        item for item in results if item.get("evaluation_status") not in {"model_unavailable", "review_unavailable"}
+    ]
+    deterministic_contract_pass_rate = round(
+        sum(not item.get("hard_errors") for item in evaluable_results) / len(evaluable_results),
+        4,
+    ) if evaluable_results else 0.0
+    first_day_evaluable = [item for item in evaluable_results if item in first_day_results]
+    scene_execution_rate = round(
+        sum(int((item.get("review") or {}).get("scene_execution") or 0) >= 4 for item in first_day_evaluable)
+        / len(first_day_evaluable),
+        4,
+    ) if first_day_evaluable else 1.0
     report = {
-        "fixture": str(args.fixture),
+        "fixture": fixture_paths,
         "fixture_metadata": fixture_metadata,
         "total": len(results),
         "passed": passed,
@@ -783,6 +1036,10 @@ async def main() -> int:
         "unavailable": unavailable,
         "semantic_pass_rate": semantic_pass_rate,
         "availability_rate": availability_rate,
+        "scene_accuracy": scene_accuracy,
+        "scene_consistency_rate": scene_consistency_rate,
+        "deterministic_contract_pass_rate": deterministic_contract_pass_rate,
+        "scene_execution_rate": scene_execution_rate,
         "results": results,
     }
     report_path = Path(args.report)
@@ -795,16 +1052,25 @@ async def main() -> int:
                 for key in (
                     "total",
                     "passed",
+                    "pass_rate",
                     "evaluable",
                     "unavailable",
                     "semantic_pass_rate",
                     "availability_rate",
+                    "scene_accuracy",
+                    "scene_consistency_rate",
+                    "deterministic_contract_pass_rate",
+                    "scene_execution_rate",
                 )
             },
             ensure_ascii=False,
         )
     )
-    return 0 if semantic_pass_rate >= 0.9 and availability_rate >= 0.9 else 1
+    passed_gate = bool(
+        report["pass_rate"] >= 0.9
+        and deterministic_contract_pass_rate == 1.0
+    )
+    return 0 if passed_gate else 1
 
 
 if __name__ == "__main__":

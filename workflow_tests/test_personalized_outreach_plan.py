@@ -11,12 +11,14 @@ from app.services.outreach_service import (
     OutreachService,
     _compose_outreach_messages,
     _conversation_activity_from_context,
+    _first_day_final_plan_error,
     _first_day_sop_pack_assets,
     _first_day_sop_pack_context,
     _first_day_outreach_plan_error,
     _first_day_scene_analysis_error,
     _first_day_scene_lock_error,
     _first_day_verifier_error,
+    _first_day_writer_payload,
     _normalize_first_day_outreach_schedule,
     _normalize_first_day_scene_analysis,
     _normalize_outreach_plan_response,
@@ -35,22 +37,77 @@ from app.services.sop_platform_task_policy import personalized_payment_collectio
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
+    async def test_first_day_model_node_retries_one_timeout_and_records_trace(self) -> None:
+        class _TimeoutThenSuccessModel:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.last_usage = {"model": "test"}
+
+            async def chat_json(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                self.calls += 1
+                if self.calls <= 2:
+                    raise TimeoutError("total timeout 40.0s")
+                return {"ok": True}
+
+        service = OutreachService.__new__(OutreachService)
+        service.model_client = _TimeoutThenSuccessModel()
+
+        response, trace = await service._run_first_day_model_node(
+            node="scene_analyst",
+            prompt="测试提示词",
+            prompt_version="test-v1",
+            payload={"value": 1},
+        )
+
+        self.assertEqual(response, {"ok": True})
+        self.assertEqual(service.model_client.calls, 3)
+        self.assertEqual(trace["attempt_count"], 3)
+        self.assertEqual(
+            [item["status"] for item in trace["attempts"]],
+            ["timeout", "timeout", "completed"],
+        )
+
+    async def test_first_day_model_node_does_not_retry_non_timeout_errors(self) -> None:
+        class _InvalidModel:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def chat_json(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                self.calls += 1
+                raise ValueError("invalid json")
+
+        service = OutreachService.__new__(OutreachService)
+        service.model_client = _InvalidModel()
+
+        with self.assertRaises(ValueError):
+            await service._run_first_day_model_node(
+                node="scene_analyst",
+                prompt="测试提示词",
+                prompt_version="test-v1",
+                payload={"value": 1},
+            )
+        self.assertEqual(service.model_client.calls, 1)
+
     def test_first_day_prompts_have_separate_roles_and_locked_contracts(self) -> None:
         analyst = " ".join(FIRST_DAY_SCENE_ANALYST_PROMPT.split())
         writer = " ".join(FIRST_DAY_PLAN_WRITER_PROMPT.split())
         verifier = " ".join(FIRST_DAY_CONTRACT_VERIFIER_PROMPT.split())
 
-        self.assertIn("You never write customer-facing copy", analyst)
-        self.assertIn("Scene Vocabulary", analyst)
-        self.assertIn("text-only effect explanation is not image proof", analyst)
+        self.assertIn("绝不撰写任何客户可见话术", analyst)
+        self.assertIn("场景枚举", analyst)
+        self.assertIn("只有文字效果说明不等于已经交付图片证据", analyst)
         self.assertIn("payment_collection_gate.eligible=true", analyst)
-        self.assertIn("The scene contract is authoritative", writer)
-        self.assertIn("light transition + useful scene content", writer)
-        self.assertIn("15-20 minutes", writer)
-        self.assertIn("Never infer or mention gender", writer)
-        self.assertIn("You do not re-plan its business scenes", verifier)
-        self.assertIn("semantically repeats", verifier)
+        self.assertIn("scene_contract` 是不可更改的权威合同", writer)
+        self.assertIn("轻过渡 + 有效场景内容", writer)
+        self.assertIn("15 至 20 分钟", writer)
+        self.assertIn("禁止推断或提及客户性别", writer)
+        self.assertIn("不得重新规划业务场景", verifier)
+        self.assertIn("语义上重复", verifier)
         self.assertIn("pass|repair|block", verifier)
+        for prompt in (analyst, writer, verifier):
+            self.assertNotIn("# 1. Role", prompt)
+            self.assertNotIn("# 2. Objective", prompt)
+            self.assertNotIn("Output Contract", prompt)
 
     def test_first_day_sop_packs_supply_model_context_and_resolvable_assets(self) -> None:
         config = {
@@ -142,6 +199,81 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized["evidence"][0]["message_index"], 1)
         self.assertEqual(normalized["delivered_scenes"][0]["message_indexes"], [0])
 
+    def test_first_day_scene_analysis_tolerates_mixed_zero_and_one_based_indexes(self) -> None:
+        analysis = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="activity_intro",
+        )
+        analysis["message_index_base"] = 1
+        analysis["scene_completion_matrix"]["effect_proof"]["message_indexes"] = [0, 1, 3, 4]
+        analysis["writer_context_message_indexes"] = [0, 2, 3, 9]
+
+        normalized = _normalize_first_day_scene_analysis(analysis, message_count=3)
+
+        self.assertEqual(
+            normalized["scene_completion_matrix"]["effect_proof"]["message_indexes"],
+            [0, 2],
+        )
+        self.assertEqual(normalized["writer_context_message_indexes"], [0, 1, 2])
+        self.assertEqual(
+            _first_day_scene_analysis_error(
+                normalized,
+                source_snapshot={"recent_messages": [{}, {}, {}], "asset_catalog": []},
+            ),
+            "",
+        )
+
+    def test_first_day_scene_analysis_deterministically_suppresses_unopened_customer(self) -> None:
+        analysis = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="activity_intro",
+        )
+        snapshot = {
+            "recent_messages": [{"direction": "staff", "content": "企微自动开场"}],
+            "conversation_activity": {"real_customer_message_count": 0},
+            "asset_catalog": [],
+        }
+
+        normalized = _normalize_first_day_scene_analysis(
+            analysis,
+            message_count=1,
+            source_snapshot=snapshot,
+        )
+
+        self.assertFalse(normalized["eligible"])
+        self.assertEqual(normalized["step1_scene"], "suppress")
+        self.assertEqual(normalized["step2_scene"], "suppress")
+        self.assertEqual(
+            _first_day_scene_analysis_error(normalized, source_snapshot=snapshot),
+            "",
+        )
+
+    def test_first_day_scene_analysis_defaults_missing_non_payment_action(self) -> None:
+        analysis = _first_day_scene_analysis(
+            step1_scene="trust_repair",
+            step2_scene="objection_resolution",
+        )
+        analysis.pop("payment_action")
+        snapshot = {
+            "recent_messages": [{"direction": "customer"}, {"direction": "staff"}],
+            "conversation_activity": {"real_customer_message_count": 1},
+            "payment_collection_gate": {"eligible": False},
+            "asset_catalog": [],
+        }
+
+        normalized = _normalize_first_day_scene_analysis(
+            analysis,
+            message_count=2,
+            source_snapshot=snapshot,
+        )
+
+        self.assertEqual(normalized["payment_action"]["step"], 0)
+        self.assertFalse(normalized["payment_action"]["allowed"])
+        self.assertEqual(
+            _first_day_scene_analysis_error(normalized, source_snapshot=snapshot),
+            "",
+        )
+
     def test_first_day_verifier_contract_and_scene_lock_are_structural_boundaries(self) -> None:
         plan = _ModelClient().response
         plan["steps"][0].update({"delay_minutes": 0, "scene": "store_area_request"})
@@ -156,6 +288,31 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             _first_day_scene_lock_error(plan, scene_analysis=scene_analysis),
             "",
         )
+        self.assertEqual(
+            _first_day_verifier_error(
+                {
+                    "decision": "pass",
+                    "block_category": "none",
+                    "violations": [],
+                    "repair_instructions": [],
+                    "verified_plan": plan,
+                }
+            ),
+            "first-day verifier must not return customer plan content",
+        )
+        self.assertEqual(
+            _first_day_verifier_error(
+                {
+                    "decision": "repair",
+                    "block_category": "none",
+                    "violations": [
+                        {"code": "repeat", "field": "steps.0", "evidence": "与历史重复"}
+                    ],
+                    "repair_instructions": [],
+                }
+            ),
+            "repair verifier response requires violations and repair instructions",
+        )
         plan["steps"][1]["scene"] = "store_area_request"
         self.assertEqual(
             _first_day_scene_lock_error(plan, scene_analysis=scene_analysis),
@@ -166,12 +323,89 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "decision": "block",
                     "block_category": "source_hard_boundary",
-                    "violations": [{"code": "health"}],
-                    "verified_plan": {},
+                    "violations": [
+                        {"code": "health", "field": "source_snapshot", "evidence": "健康风险"}
+                    ],
+                    "repair_instructions": [],
                 }
             ),
             "",
         )
+
+    def test_first_day_writer_payload_only_contains_selected_context_and_materials(self) -> None:
+        analysis = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="activity_intro",
+        )
+        analysis["writer_context_message_indexes"] = [1, 2]
+        analysis["selected_source_ids"] = {
+            "step1": ["effect-pack"],
+            "step2": ["objection-material"],
+        }
+        analysis["required_assets"]["step1"] = {
+            "strategy": "configured_image",
+            "asset_id": "effect-image",
+            "reason": "发送效果图",
+        }
+        payload = _first_day_writer_payload(
+            {
+                "recent_messages": [
+                    {"direction": "staff", "content": "无关旧消息"},
+                    {"direction": "customer", "content": "效果怎么样"},
+                    {"direction": "staff", "content": "只有文字说明"},
+                ],
+                "first_day_sop_packs": [
+                    {"id": "effect-pack", "reply_messages": []},
+                    {"id": "unused-pack", "reply_messages": []},
+                ],
+                "sop_objection_materials": [
+                    {"material_id": "objection-material", "example_contents": ["参考"]}
+                ],
+                "asset_catalog": [
+                    {"asset_id": "effect-image", "type": "image"},
+                    {"asset_id": "unused-image", "type": "image"},
+                ],
+            },
+            analysis,
+        )
+
+        writer_context = payload["writer_context"]
+        self.assertEqual(
+            [message["message_index"] for message in writer_context["recent_messages"]],
+            [1, 2],
+        )
+        self.assertEqual(
+            {item.get("id") or item.get("material_id") for item in writer_context["selected_materials"]},
+            {"effect-pack", "objection-material"},
+        )
+        self.assertEqual(
+            [item["asset_id"] for item in writer_context["selected_assets"]],
+            ["effect-image"],
+        )
+
+    def test_first_day_final_contract_rejects_near_repeat_before_plan_creation(self) -> None:
+        plan = _ModelClient().response
+        plan["steps"][0].update({"delay_minutes": 0, "scene": "effect_proof"})
+        plan["steps"][1].update(
+            {"delay_minutes": 15, "urgency_level": "immediate", "scene": "activity_intro"}
+        )
+        repeated = "亲，到店会先看斑点情况和适合的方向，合适再决定，您主要是哪类斑点呢？"
+        plan["steps"][0]["reply_messages"][0]["content"]["text"] = repeated
+        analysis = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="activity_intro",
+        )
+
+        error = _first_day_final_plan_error(
+            plan,
+            scene_analysis=analysis,
+            source_snapshot={
+                "recent_messages": [{"direction": "staff", "content": repeated}],
+                "recent_sop_delivery": [],
+            },
+        )
+
+        self.assertIn("first_day_message_too_similar_to_history", error)
 
     def test_first_day_structure_rejects_long_term_second_step_delay(self) -> None:
         response = _ModelClient().response
@@ -660,8 +894,9 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 response,
                 {
                     "decision": "pass",
+                    "block_category": "none",
                     "violations": [],
-                    "verified_plan": response,
+                    "repair_instructions": [],
                 },
             ]
         )
@@ -765,7 +1000,12 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     step2_scene="trust_repair",
                 ),
                 response,
-                {"decision": "pass", "violations": [], "verified_plan": response},
+                {
+                    "decision": "pass",
+                    "block_category": "none",
+                    "violations": [],
+                    "repair_instructions": [],
+                },
             ]
         )
         service = _MonitorOutreachService(
@@ -803,6 +1043,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 invalid_writer,
                 {
                     "decision": "repair",
+                    "block_category": "none",
                     "violations": [
                         {
                             "code": "missing_second_step",
@@ -810,8 +1051,14 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                             "evidence": "only one incomplete step",
                         }
                     ],
-                    "verified_plan": repaired,
+                    "repair_instructions": [
+                        {
+                            "field": "candidate_plan.steps",
+                            "instruction": "补齐第二步并保留锁定场景",
+                        }
+                    ],
                 },
+                repaired,
             ]
         )
         repository = _Repository()
@@ -865,7 +1112,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "violations": [
                         {"code": "hard_boundary", "field": "source_snapshot", "evidence": "unsafe"}
                     ],
-                    "verified_plan": {},
+                    "repair_instructions": [],
                 },
             ]
         )
@@ -1836,14 +2083,40 @@ def _first_day_scene_analysis(
     return {
         "eligible": True,
         "suppress_reason": "",
+        "hard_boundary": {"active": False, "type": "none", "message_indexes": [], "fact": "无"},
+        "precedence_decision": {"row_id": "freeform", "message_indexes": [0], "reason": "测试"},
         "current_scene": step1_scene,
+        "scene_completion_matrix": {
+            scene: {
+                "status": "not_delivered",
+                "message_indexes": [],
+                "asset_ids": [],
+                "summary": "尚未交付",
+            }
+            for scene in (
+                "store_area_request",
+                "effect_proof",
+                "activity_intro",
+                "objection_resolution",
+                "deposit_close",
+                "trust_repair",
+            )
+        },
         "delivered_scenes": [],
         "unresolved_customer_need": "需要自然承接并推进",
+        "customer_mainline": {
+            "latest_customer_main_need": "需要自然承接并推进",
+            "silence_barrier": "客户暂时沉默",
+            "symptom_role": "无",
+            "next_business_action": "执行第一步锁定场景",
+        },
         "step1_scene": step1_scene,
         "step2_scene": step2_scene,
         "step1_objective": "立即推进当前场景",
         "step2_objective": "未回复时推进不同场景",
         "forbidden_repetitions": ["上一条客服回复"],
+        "writer_context_message_indexes": [0],
+        "selected_source_ids": {"step1": [], "step2": []},
         "required_assets": {
             "step1": {"strategy": "none", "asset_id": "", "reason": "无需素材"},
             "step2": {"strategy": "none", "asset_id": "", "reason": "无需素材"},
@@ -1878,6 +2151,11 @@ class _ModelClient:
                     "avoid_repeating": ["门店距离"],
                     "before_send_check": True,
                     "message_goal": "化解距离顾虑",
+                    "scene_delivery_check": {
+                        "new_value_delivered": "到店时间可以后定",
+                        "historical_difference": "不重复门店距离",
+                        "objective_match": "通过低压力安排化解顾虑",
+                    },
                     "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，您上次主要是觉得距离不太方便。活动名额可以先留着，到店时间按您方便安排。"}}],
                     "asset_strategy": "none",
                     "cta": "回复是否愿意继续了解",
@@ -1898,6 +2176,11 @@ class _ModelClient:
                     "avoid_repeating": ["活动名额"],
                     "before_send_check": True,
                     "message_goal": "用专业流程降低到店顾虑",
+                    "scene_delivery_check": {
+                        "new_value_delivered": "先检测再决定",
+                        "historical_difference": "切换到专业流程价值",
+                        "objective_match": "直接说明到店判断流程",
+                    },
                     "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，到店会先看斑点情况和适合的方向，合适再决定，您主要是哪类斑点呢？"}}],
                     "asset_strategy": "none",
                     "cta": "回复斑点类型",
