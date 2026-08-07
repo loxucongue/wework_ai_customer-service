@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
 from app.services.customer_scope import build_customer_scope
+from app.services.first_day_outreach_log import redact_first_day_log_value
 from app.services.storage.serialization import dumps, loads_dict, loads_list, utc_now_iso
 from app.services.storage.store_base import scalar
 
@@ -129,6 +132,303 @@ def _latest_platform_customer_names(conn: Any, rows: list[Any]) -> dict[tuple[st
 
 
 class OutreachRepositoryMixin:
+    _FIRST_DAY_RUN_JSON_FIELDS = {
+        "input_snapshot_json": "input_snapshot",
+        "workflow_json": "workflow",
+        "final_plan_json": "final_plan",
+    }
+
+    def create_first_day_outreach_run(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        user_id: str,
+        wechat: str,
+        external_userid: str,
+        trigger_type: str,
+        input_snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        workflow_run_id = str(uuid4())
+        now = utc_now_iso()
+        with self.store.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO first_day_outreach_runs
+                    (workflow_run_id, corp_id, user_id, wechat, customer_id, external_userid,
+                     trigger_type, status, input_snapshot_json, started_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)
+                """,
+                (
+                    workflow_run_id,
+                    corp_id,
+                    user_id,
+                    wechat,
+                    customer_id,
+                    external_userid,
+                    trigger_type,
+                    dumps(redact_first_day_log_value(input_snapshot or {})),
+                    now,
+                    now,
+                    now,
+                ),
+            )
+        return self.get_first_day_outreach_run(workflow_run_id, include_related=False)
+
+    def update_first_day_outreach_run(self, workflow_run_id: str, **changes: Any) -> dict[str, Any]:
+        scalar_fields = {
+            "plan_id", "first_task_id", "second_task_id", "status", "reason_code",
+            "final_decision", "first_scene", "second_scene", "model_attempt_count",
+            "retry_count", "duration_ms", "error_node", "error_type", "error_message",
+            "finished_at", "raw_redacted_at",
+        }
+        json_fields = set(self._FIRST_DAY_RUN_JSON_FIELDS)
+        assignments: list[str] = []
+        params: list[Any] = []
+        for key, value in changes.items():
+            if key in scalar_fields:
+                assignments.append(f"{key}=?")
+                params.append(
+                    redact_first_day_log_value(value)
+                    if key in {"error_message"}
+                    else value
+                )
+            elif key in json_fields:
+                assignments.append(f"{key}=?")
+                params.append(dumps(redact_first_day_log_value(value or {})))
+        if not assignments:
+            return self.get_first_day_outreach_run(workflow_run_id, include_related=False)
+        assignments.append("updated_at=?")
+        params.extend((utc_now_iso(), workflow_run_id))
+        with self.store.connect() as conn:
+            conn.execute(
+                f"UPDATE first_day_outreach_runs SET {', '.join(assignments)} WHERE workflow_run_id=?",
+                params,
+            )
+        return self.get_first_day_outreach_run(workflow_run_id, include_related=False)
+
+    def list_first_day_outreach_runs(
+        self,
+        *,
+        limit: int = 50,
+        cursor: str = "",
+        started_from: str = "",
+        started_to: str = "",
+        customer_id: str = "",
+        external_userid: str = "",
+        corp_id: str = "",
+        wechat: str = "",
+        plan_id: str = "",
+        status: str = "",
+        reason_code: str = "",
+        first_scene: str = "",
+        second_scene: str = "",
+        failed: bool | None = None,
+    ) -> dict[str, Any]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        filters = {
+            "customer_id": customer_id,
+            "external_userid": external_userid,
+            "corp_id": corp_id,
+            "wechat": wechat,
+            "plan_id": plan_id,
+            "status": status,
+            "reason_code": reason_code,
+            "first_scene": first_scene,
+            "second_scene": second_scene,
+        }
+        for field, value in filters.items():
+            if value:
+                clauses.append(f"{field}=?")
+                params.append(value)
+        if started_from:
+            clauses.append("started_at>=?")
+            params.append(started_from)
+        if started_to:
+            clauses.append("started_at<=?")
+            params.append(started_to)
+        if failed is True:
+            clauses.append("status='failed'")
+        elif failed is False:
+            clauses.append("status!='failed'")
+        cursor_value = self._decode_first_day_cursor(cursor)
+        if cursor_value:
+            clauses.append("(started_at<? OR (started_at=? AND workflow_run_id<?))")
+            params.extend((cursor_value[0], cursor_value[0], cursor_value[1]))
+        page_size = max(1, min(int(limit or 50), 200))
+        params.append(page_size + 1)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM first_day_outreach_runs
+                {where}
+                ORDER BY started_at DESC, workflow_run_id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        decoded = [self._decode_first_day_outreach_run(dict(row)) for row in rows]
+        has_more = len(decoded) > page_size
+        items = decoded[:page_size]
+        task_ids = sorted(
+            {
+                _string(item.get(field))
+                for item in items
+                for field in ("first_task_id", "second_task_id")
+                if _string(item.get(field))
+            }
+        )
+        task_statuses: dict[str, str] = {}
+        if task_ids:
+            placeholders = ",".join("?" for _ in task_ids)
+            with self.store.connect() as conn:
+                task_rows = conn.execute(
+                    f"SELECT id, status FROM outreach_tasks WHERE id IN ({placeholders})",
+                    task_ids,
+                ).fetchall()
+            task_statuses = {_string(row["id"]): _string(row["status"]) for row in task_rows}
+        for item in items:
+            item["first_task_status"] = task_statuses.get(_string(item.get("first_task_id")), "")
+            item["second_task_status"] = task_statuses.get(_string(item.get("second_task_id")), "")
+            item.pop("input_snapshot", None)
+            item.pop("workflow", None)
+            item.pop("final_plan", None)
+        next_cursor = ""
+        if has_more and items:
+            next_cursor = self._encode_first_day_cursor(
+                _string(items[-1].get("started_at")),
+                _string(items[-1].get("workflow_run_id")),
+            )
+        return redact_first_day_log_value(
+            {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+        )
+
+    def get_first_day_outreach_run(
+        self,
+        workflow_run_id: str,
+        *,
+        include_related: bool = True,
+    ) -> dict[str, Any]:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM first_day_outreach_runs WHERE workflow_run_id=?",
+                (workflow_run_id,),
+            ).fetchone()
+        if not row:
+            return {}
+        result = self._decode_first_day_outreach_run(dict(row))
+        if include_related and _string(result.get("plan_id")):
+            related = self.get_outreach_plan(_string(result.get("plan_id")))
+            result["tasks"] = related.get("tasks") or []
+            result["events"] = related.get("events") or []
+        else:
+            result["tasks"] = []
+            result["events"] = []
+        return redact_first_day_log_value(result)
+
+    def prune_first_day_outreach_runs(
+        self,
+        *,
+        raw_days: int = 30,
+        summary_days: int = 90,
+    ) -> dict[str, int]:
+        now = datetime.now(timezone.utc)
+        raw_cutoff = (now - timedelta(days=max(1, raw_days))).isoformat()
+        summary_cutoff = (now - timedelta(days=max(raw_days + 1, summary_days))).isoformat()
+        terminal = "('blocked','sent','cancelled','failed','completed')"
+        with self.store.connect() as conn:
+            old_rows = conn.execute(
+                f"""
+                SELECT workflow_run_id, plan_id
+                FROM first_day_outreach_runs
+                WHERE status IN {terminal} AND finished_at!='' AND finished_at<? AND raw_redacted_at=''
+                """,
+                (raw_cutoff,),
+            ).fetchall()
+            redacted_runs = 0
+            redacted_plans = 0
+            redacted_events = 0
+            redacted_at = utc_now_iso()
+            for row in old_rows:
+                cursor = conn.execute(
+                    """
+                    UPDATE first_day_outreach_runs
+                    SET input_snapshot_json='{}', workflow_json='{}', final_plan_json='{}',
+                        raw_redacted_at=?, updated_at=?
+                    WHERE workflow_run_id=? AND raw_redacted_at=''
+                    """,
+                    (redacted_at, redacted_at, row["workflow_run_id"]),
+                )
+                redacted_runs += int(cursor.rowcount or 0)
+                plan_id = _string(row["plan_id"])
+                if not plan_id:
+                    continue
+                plan_row = conn.execute(
+                    "SELECT source_snapshot FROM outreach_plans WHERE id=?",
+                    (plan_id,),
+                ).fetchone()
+                if plan_row:
+                    snapshot = loads_dict(plan_row["source_snapshot"])
+                    retained = {
+                        "workflow_run_id": _string(snapshot.get("workflow_run_id")),
+                        "trigger_context": snapshot.get("trigger_context") or {},
+                        "retention_redacted_at": redacted_at,
+                    }
+                    conn.execute(
+                        "UPDATE outreach_plans SET source_snapshot=?, updated_at=? WHERE id=?",
+                        (dumps(retained), redacted_at, plan_id),
+                    )
+                    redacted_plans += 1
+                event_cursor = conn.execute(
+                    """
+                    UPDATE outreach_events
+                    SET payload_json='{}'
+                    WHERE plan_id=? AND created_at<? AND payload_json!='{}'
+                    """,
+                    (plan_id, raw_cutoff),
+                )
+                redacted_events += int(event_cursor.rowcount or 0)
+            deleted_cursor = conn.execute(
+                f"""
+                DELETE FROM first_day_outreach_runs
+                WHERE status IN {terminal} AND finished_at!='' AND finished_at<?
+                """,
+                (summary_cutoff,),
+            )
+        return {
+            "raw_redacted_runs": redacted_runs,
+            "raw_redacted_plans": redacted_plans,
+            "raw_redacted_events": redacted_events,
+            "deleted_runs": int(deleted_cursor.rowcount or 0),
+        }
+
+    @classmethod
+    def _decode_first_day_outreach_run(cls, row: dict[str, Any]) -> dict[str, Any]:
+        for storage_field, output_field in cls._FIRST_DAY_RUN_JSON_FIELDS.items():
+            row[output_field] = loads_dict(row.get(storage_field))
+            row.pop(storage_field, None)
+        return row
+
+    @staticmethod
+    def _encode_first_day_cursor(started_at: str, workflow_run_id: str) -> str:
+        raw = json.dumps([started_at, workflow_run_id], separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_first_day_cursor(cursor: str) -> tuple[str, str] | None:
+        if not cursor:
+            return None
+        try:
+            padded = cursor + "=" * (-len(cursor) % 4)
+            value = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+            if isinstance(value, list) and len(value) == 2 and all(isinstance(item, str) for item in value):
+                return value[0], value[1]
+        except (ValueError, TypeError, json.JSONDecodeError):
+            return None
+        return None
+
     def touch_customer_message_time(self, memory_key: str, *, field: str, value: str | None = None) -> None:
         if field not in {
             "last_customer_message_at",
@@ -643,9 +943,11 @@ class OutreachRepositoryMixin:
         source_snapshot: dict[str, Any],
         tasks: list[dict[str, Any]],
         sop_plan_id: str = "",
+        workflow_run_id: str = "",
     ) -> dict[str, Any]:
         now = utc_now_iso()
         plan_id = str(uuid4())
+        task_ids: list[str] = []
         with self.store.connect() as conn:
             conn.execute(
                 """
@@ -673,6 +975,8 @@ class OutreachRepositoryMixin:
                 ),
             )
             for index, task in enumerate(tasks, start=1):
+                task_id = str(uuid4())
+                task_ids.append(task_id)
                 conn.execute(
                     """
                     INSERT INTO outreach_tasks
@@ -681,7 +985,7 @@ class OutreachRepositoryMixin:
                     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        str(uuid4()),
+                        task_id,
                         plan_id,
                         customer_id,
                         int(task.get("step_index") or index),
@@ -693,6 +997,21 @@ class OutreachRepositoryMixin:
                         1 if task.get("before_send_check", True) else 0,
                         now,
                         now,
+                    ),
+                )
+            if workflow_run_id:
+                conn.execute(
+                    """
+                    UPDATE first_day_outreach_runs
+                    SET plan_id=?, first_task_id=?, second_task_id=?, updated_at=?
+                    WHERE workflow_run_id=?
+                    """,
+                    (
+                        plan_id,
+                        task_ids[0] if task_ids else "",
+                        task_ids[1] if len(task_ids) > 1 else "",
+                        now,
+                        workflow_run_id,
                     ),
                 )
         self.add_outreach_event(
@@ -1239,6 +1558,29 @@ class OutreachRepositoryMixin:
                 event_summary="Customer replied; remaining personalized outreach was cancelled",
                 payload={"request_id": request_id, "skipped_tasks": skipped_tasks},
             )
+            with self.store.connect() as conn:
+                run_row = conn.execute(
+                    """
+                    SELECT workflow_run_id, started_at FROM first_day_outreach_runs
+                    WHERE plan_id=? AND status IN ('running','created')
+                    ORDER BY started_at DESC LIMIT 1
+                    """,
+                    (plan_id,),
+                ).fetchone()
+                started_at = _parse_iso(_string(run_row["started_at"])) if run_row else None
+                duration_ms = max(
+                    0,
+                    round((datetime.now(timezone.utc) - started_at).total_seconds() * 1000),
+                ) if started_at else 0
+                conn.execute(
+                    """
+                    UPDATE first_day_outreach_runs
+                    SET status='cancelled', reason_code='customer_replied',
+                        final_decision='second_task_cancelled', duration_ms=?, finished_at=?, updated_at=?
+                    WHERE plan_id=? AND status IN ('running','created')
+                    """,
+                    (duration_ms, now, now, plan_id),
+                )
         if plan_ids:
             self.update_customer_outreach_state(
                 scope.sales_contact_key,
@@ -1463,6 +1805,19 @@ class OutreachRepositoryMixin:
     ) -> dict[str, Any]:
         event_id = str(uuid4())
         with self.store.connect() as conn:
+            event_payload = dict(payload or {})
+            first_day_event = bool(event_payload.get("workflow_run_id"))
+            if plan_id and not event_payload.get("workflow_run_id"):
+                run_row = conn.execute(
+                    """
+                    SELECT workflow_run_id FROM first_day_outreach_runs
+                    WHERE plan_id=? ORDER BY started_at DESC LIMIT 1
+                    """,
+                    (plan_id,),
+                ).fetchone()
+                if run_row:
+                    event_payload["workflow_run_id"] = _string(run_row["workflow_run_id"])
+                    first_day_event = True
             conn.execute(
                 """
                 INSERT INTO outreach_events
@@ -1476,7 +1831,7 @@ class OutreachRepositoryMixin:
                     customer_id,
                     event_type,
                     event_summary,
-                    dumps(payload or {}),
+                    dumps(redact_first_day_log_value(event_payload) if first_day_event else event_payload),
                     utc_now_iso(),
                 ),
             )

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -146,6 +147,7 @@ sop_platform_pull_worker: asyncio.Task[None] | None = None
 storage_retention_worker: asyncio.Task[None] | None = None
 store_snapshot_refresh_worker: asyncio.Task[None] | None = None
 outreach_plan_monitor_worker: asyncio.Task[None] | None = None
+first_day_retention_last_date = ""
 
 
 async def _run_sop_platform_pull_worker() -> None:
@@ -153,6 +155,7 @@ async def _run_sop_platform_pull_worker() -> None:
 
 
 async def _run_storage_retention_worker() -> None:
+    global first_day_retention_last_date
     while True:
         try:
             result = await asyncio.to_thread(
@@ -162,6 +165,15 @@ async def _run_storage_retention_worker() -> None:
             )
             if any(result.values()):
                 logger.info("Pruned AICS runtime history: %s", result)
+            beijing_date = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+            if first_day_retention_last_date != beijing_date:
+                first_day_result = await asyncio.to_thread(
+                    repository.prune_first_day_outreach_runs,
+                    raw_days=30,
+                    summary_days=90,
+                )
+                first_day_retention_last_date = beijing_date
+                logger.info("Pruned first-day outreach run history: %s", first_day_result)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -909,3 +921,46 @@ async def admin_outreach_events(
     plan_id: str = "",
 ) -> dict[str, Any]:
     return {"items": outreach_service.list_events(limit=limit, customer_id=customer_id, plan_id=plan_id)}
+
+
+@app.get("/admin/outreach/first-day-runs", dependencies=[Depends(require_api_key)])
+async def admin_first_day_outreach_runs(
+    limit: int = 50,
+    cursor: str = "",
+    started_from: str = "",
+    started_to: str = "",
+    customer_id: str = "",
+    external_userid: str = "",
+    corp_id: str = "",
+    wechat: str = "",
+    plan_id: str = "",
+    status: str = "",
+    reason_code: str = "",
+    first_scene: str = "",
+    second_scene: str = "",
+    failed: bool | None = None,
+) -> dict[str, Any]:
+    return repository.list_first_day_outreach_runs(
+        limit=limit,
+        cursor=cursor,
+        started_from=started_from,
+        started_to=started_to,
+        customer_id=customer_id,
+        external_userid=external_userid,
+        corp_id=corp_id,
+        wechat=wechat,
+        plan_id=plan_id,
+        status=status,
+        reason_code=reason_code,
+        first_scene=first_scene,
+        second_scene=second_scene,
+        failed=failed,
+    )
+
+
+@app.get("/admin/outreach/first-day-runs/{workflow_run_id}", dependencies=[Depends(require_api_key)])
+async def admin_first_day_outreach_run(workflow_run_id: str) -> dict[str, Any]:
+    detail = repository.get_first_day_outreach_run(workflow_run_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="first-day outreach run not found")
+    return detail

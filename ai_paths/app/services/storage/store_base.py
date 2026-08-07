@@ -16,6 +16,7 @@ LOGICAL_TABLES = (
     "outreach_plans",
     "outreach_tasks",
     "outreach_events",
+    "first_day_outreach_runs",
     "sop_events",
     "sop_send_tasks",
 )

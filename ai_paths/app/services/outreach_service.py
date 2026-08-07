@@ -1844,6 +1844,7 @@ def _first_day_writer_payload(
         if isinstance(item, dict) and _string(item.get("asset_id")) in required_asset_ids
     ]
     payload: dict[str, Any] = {
+        "workflow_run_id": _string(source_snapshot.get("workflow_run_id")),
         "scene_contract": scene_analysis,
         "writer_context": {
             "recent_messages": selected_messages,
@@ -2042,6 +2043,28 @@ class OutreachService:
                     }
                 )
                 if attempt >= 3 or not is_timeout:
+                    workflow_run_id = self._first_day_run_id_from_value(payload)
+                    if workflow_run_id:
+                        current = self.repository.get_first_day_outreach_run(
+                            workflow_run_id,
+                            include_related=False,
+                        )
+                        workflow = dict(current.get("workflow") or {})
+                        workflow[node] = {"input": payload, "attempts": attempts}
+                        self.repository.update_first_day_outreach_run(
+                            workflow_run_id,
+                            status="failed",
+                            reason_code="model_node_failed",
+                            final_decision="failed",
+                            model_attempt_count=int(current.get("model_attempt_count") or 0) + len(attempts),
+                            retry_count=int(current.get("retry_count") or 0) + max(0, len(attempts) - 1),
+                            workflow_json=workflow,
+                            error_node=node,
+                            error_type=type(exc).__name__,
+                            error_message=str(exc)[:4000],
+                            duration_ms=round((time.perf_counter() - started) * 1000),
+                            finished_at=utc_now_iso(),
+                        )
                     raise
         trace = {
             "node": node,
@@ -2051,7 +2074,77 @@ class OutreachService:
             "attempts": attempts,
             "model_usage": dict(getattr(self.model_client, "last_usage", None) or {}),
         }
+        workflow_run_id = self._first_day_run_id_from_value(payload)
+        if workflow_run_id:
+            current = self.repository.get_first_day_outreach_run(
+                workflow_run_id,
+                include_related=False,
+            )
+            workflow = dict(current.get("workflow") or {})
+            workflow[node] = {"input": payload, "output": response, "trace": trace}
+            self.repository.update_first_day_outreach_run(
+                workflow_run_id,
+                workflow_json=workflow,
+                model_attempt_count=int(current.get("model_attempt_count") or 0) + len(attempts),
+                retry_count=int(current.get("retry_count") or 0) + max(0, len(attempts) - 1),
+            )
         return response if isinstance(response, dict) else {}, trace
+
+    @classmethod
+    def _first_day_run_id_from_value(cls, value: Any) -> str:
+        if isinstance(value, dict):
+            direct = _string(value.get("workflow_run_id"))
+            if direct:
+                return direct
+            for item in value.values():
+                nested = cls._first_day_run_id_from_value(item)
+                if nested:
+                    return nested
+        elif isinstance(value, list):
+            for item in value:
+                nested = cls._first_day_run_id_from_value(item)
+                if nested:
+                    return nested
+        return ""
+
+    def _sync_first_day_run_for_task(
+        self,
+        *,
+        plan: dict[str, Any],
+        task: dict[str, Any],
+        status: str,
+        reason_code: str,
+        final_decision: str,
+        terminal: bool = False,
+        error: Exception | str | None = None,
+    ) -> None:
+        snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+        workflow_run_id = _string(snapshot.get("workflow_run_id"))
+        if not workflow_run_id:
+            return
+        current = self.repository.get_first_day_outreach_run(workflow_run_id, include_related=False)
+        changes: dict[str, Any] = {
+            "status": status,
+            "reason_code": reason_code,
+            "final_decision": final_decision,
+        }
+        if terminal:
+            changes["finished_at"] = utc_now_iso()
+            started_at = _parse_iso(_string(current.get("started_at")))
+            if started_at:
+                changes["duration_ms"] = max(
+                    0,
+                    round((datetime.now(timezone.utc) - started_at).total_seconds() * 1000),
+                )
+        if error is not None:
+            changes.update(
+                error_node="task_send",
+                error_type=type(error).__name__ if isinstance(error, Exception) else "TaskExecutionError",
+                error_message=str(error)[:4000],
+            )
+        if reason_code in {"daily_limit", "before_send_check_failed"}:
+            changes["retry_count"] = int(current.get("retry_count") or 0) + 1
+        self.repository.update_first_day_outreach_run(workflow_run_id, **changes)
 
     def list_candidates(
         self,
@@ -2274,6 +2367,76 @@ class OutreachService:
         source_context: dict[str, Any] | None = None,
         trigger_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        started = time.perf_counter()
+        first_day_trigger = _is_first_day_opened_silence_trigger(trigger_context)
+        workflow_run_id = ""
+        run_creator = getattr(self.repository, "create_first_day_outreach_run", None)
+        if first_day_trigger and callable(run_creator):
+            run = run_creator(
+                customer_id=customer_id,
+                corp_id=corp_id,
+                user_id=user_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                trigger_type=FIRST_DAY_SILENCE_TRIGGER_TYPE,
+                input_snapshot={"trigger_context": trigger_context or {}},
+            )
+            workflow_run_id = _string(run.get("workflow_run_id"))
+        try:
+            return await self._generate_plan_impl(
+                customer_id=customer_id,
+                corp_id=corp_id,
+                user_id=user_id,
+                wechat=wechat,
+                external_userid=external_userid,
+                current_stage=current_stage,
+                business_goal=business_goal,
+                sop_plan_id=sop_plan_id,
+                source_context=source_context,
+                trigger_context=trigger_context,
+                workflow_run_id=workflow_run_id,
+            )
+        except Exception as exc:
+            if workflow_run_id:
+                current = self.repository.get_first_day_outreach_run(
+                    workflow_run_id,
+                    include_related=False,
+                )
+                if _string(current.get("status")) not in {"blocked", "sent", "cancelled", "failed", "completed"}:
+                    self.repository.update_first_day_outreach_run(
+                        workflow_run_id,
+                        status="failed",
+                        reason_code="workflow_failed",
+                        final_decision="failed",
+                        error_node=_string(current.get("error_node")) or "plan_generation",
+                        error_type=_string(current.get("error_type")) or type(exc).__name__,
+                        error_message=_string(current.get("error_message")) or str(exc)[:4000],
+                        finished_at=utc_now_iso(),
+                    )
+            raise
+        finally:
+            if workflow_run_id:
+                self.repository.update_first_day_outreach_run(
+                    workflow_run_id,
+                    duration_ms=round((time.perf_counter() - started) * 1000),
+                )
+
+    async def _generate_plan_impl(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str = "",
+        user_id: str = "",
+        wechat: str = "",
+        external_userid: str = "",
+        current_stage: str = "",
+        business_goal: str = "",
+        sop_plan_id: str = "",
+        source_context: dict[str, Any] | None = None,
+        trigger_context: dict[str, Any] | None = None,
+        workflow_run_id: str = "",
+    ) -> dict[str, Any]:
+        first_day_trigger = _is_first_day_opened_silence_trigger(trigger_context)
         context = dict(
             source_context
             or self.repository.recent_customer_context(
@@ -2299,7 +2462,7 @@ class OutreachService:
                     limit=50,
                 )
             except Exception as exc:
-                return self._relation_plan_skip(
+                result = self._relation_plan_skip(
                     customer_id=customer_id,
                     corp_id=corp_id,
                     wechat=wechat,
@@ -2315,6 +2478,18 @@ class OutreachService:
                     },
                     trigger_context=trigger_context or {},
                 )
+                if workflow_run_id:
+                    self.repository.update_first_day_outreach_run(
+                        workflow_run_id,
+                        status="failed",
+                        reason_code="customer_relation_check_failed",
+                        final_decision="failed",
+                        error_node="conversation_refresh",
+                        error_type=type(exc).__name__,
+                        error_message=str(exc)[:4000],
+                        finished_at=utc_now_iso(),
+                    )
+                return result
             customer_relation = (
                 refreshed.get("customer_relation")
                 if isinstance(refreshed.get("customer_relation"), dict)
@@ -2325,7 +2500,7 @@ class OutreachService:
                 context["recent_messages"] = refreshed_messages[-50:]
         context["customer_relation"] = customer_relation
         if not customer_relation.get("available"):
-            return self._relation_plan_skip(
+            result = self._relation_plan_skip(
                 customer_id=customer_id,
                 corp_id=corp_id,
                 wechat=wechat,
@@ -2334,8 +2509,17 @@ class OutreachService:
                 relation=customer_relation,
                 trigger_context=trigger_context or {},
             )
+            if workflow_run_id:
+                self.repository.update_first_day_outreach_run(
+                    workflow_run_id,
+                    status="blocked",
+                    reason_code="customer_relation_unavailable",
+                    final_decision="no_plan",
+                    finished_at=utc_now_iso(),
+                )
+            return result
         if customer_relation_is_deleted(customer_relation):
-            return self._relation_plan_skip(
+            result = self._relation_plan_skip(
                 customer_id=customer_id,
                 corp_id=corp_id,
                 wechat=wechat,
@@ -2344,6 +2528,15 @@ class OutreachService:
                 relation=customer_relation,
                 trigger_context=trigger_context or {},
             )
+            if workflow_run_id:
+                self.repository.update_first_day_outreach_run(
+                    workflow_run_id,
+                    status="blocked",
+                    reason_code="customer_deleted",
+                    final_decision="no_plan",
+                    finished_at=utc_now_iso(),
+                )
+            return result
         memory = context.get("memory") or {}
         recent_messages = context.get("recent_messages") or []
         conversation_activity = _conversation_activity_from_context(
@@ -2357,7 +2550,6 @@ class OutreachService:
             0,
         )
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
-        first_day_trigger = _is_first_day_opened_silence_trigger(trigger_context)
         asset_catalog = self._outreach_asset_catalog()
         first_day_sop_packs: list[dict[str, Any]] = []
         if first_day_trigger and self.sop_reply_pack_service is not None:
@@ -2383,6 +2575,7 @@ class OutreachService:
                 hours=72,
             )
         source_snapshot = {
+            "workflow_run_id": workflow_run_id,
             "customer_id": customer_id,
             "corp_id": corp_id,
             "user_id": user_id,
@@ -2420,6 +2613,11 @@ class OutreachService:
             "first_day_sop_packs": first_day_sop_packs,
             "sop_objection_materials": _sop_objection_material_catalog(self.sop_objection_material_service),
         }
+        if workflow_run_id:
+            self.repository.update_first_day_outreach_run(
+                workflow_run_id,
+                input_snapshot_json=source_snapshot,
+            )
         unopened_first_day = first_day_trigger and _int(
             conversation_activity.get("real_customer_message_count"),
             -1,
@@ -2754,8 +2952,29 @@ class OutreachService:
                     "trigger_context": trigger_context or {},
                     "ai_result": response,
                     "first_day_workflow": source_snapshot.get("first_day_workflow") or {},
+                    "workflow_run_id": workflow_run_id,
                 },
             )
+            if workflow_run_id:
+                workflow = source_snapshot.get("first_day_workflow") or {}
+                scene_analysis = workflow.get("scene_analysis") if isinstance(workflow, dict) else {}
+                current_run = self.repository.get_first_day_outreach_run(
+                    workflow_run_id,
+                    include_related=False,
+                )
+                recorded_workflow = dict(current_run.get("workflow") or {})
+                recorded_workflow["summary"] = workflow
+                self.repository.update_first_day_outreach_run(
+                    workflow_run_id,
+                    status="blocked",
+                    reason_code=str(response.get("stall_reason") or "plan_rejected"),
+                    final_decision="no_plan",
+                    first_scene=_string((scene_analysis or {}).get("step1_scene")),
+                    second_scene=_string((scene_analysis or {}).get("step2_scene")),
+                    workflow_json=recorded_workflow,
+                    final_plan_json=response,
+                    finished_at=utc_now_iso(),
+                )
             return {"created": False, "ai_result": response}
         structure_error = (
             _first_day_outreach_plan_error(response)
@@ -2859,9 +3078,7 @@ class OutreachService:
         if not tasks:
             raise RuntimeError("outreach_plan_model_missing_reviewable_drafts")
         source_snapshot["ai_result"] = response
-        return {
-            "created": True,
-            **self.repository.create_outreach_plan(
+        created_plan = self.repository.create_outreach_plan(
                 customer_id=customer_id,
                 corp_id=corp_id,
                 user_id=user_id,
@@ -2874,8 +3091,36 @@ class OutreachService:
                 source_snapshot=source_snapshot,
                 tasks=tasks[:3],
                 sop_plan_id=sop_plan_id,
-            ),
-        }
+                workflow_run_id=workflow_run_id,
+            )
+        if workflow_run_id:
+            plan = created_plan.get("plan") if isinstance(created_plan.get("plan"), dict) else {}
+            created_tasks = created_plan.get("tasks") if isinstance(created_plan.get("tasks"), list) else []
+            current_run = self.repository.get_first_day_outreach_run(
+                workflow_run_id,
+                include_related=False,
+            )
+            recorded_workflow = dict(current_run.get("workflow") or {})
+            recorded_workflow["summary"] = source_snapshot.get("first_day_workflow") or {}
+            updates: dict[str, Any] = {
+                "plan_id": _string(plan.get("id")),
+                "first_task_id": _string((created_tasks[0] if created_tasks else {}).get("id")),
+                "second_task_id": _string((created_tasks[1] if len(created_tasks) > 1 else {}).get("id")),
+                "first_scene": _string((raw_steps[0] if raw_steps else {}).get("scene")),
+                "second_scene": _string((raw_steps[1] if len(raw_steps) > 1 else {}).get("scene")),
+                "workflow_json": recorded_workflow,
+                "final_plan_json": response,
+            }
+            if _string(current_run.get("status")) not in {
+                "blocked", "sent", "cancelled", "failed", "completed"
+            }:
+                updates.update(
+                    status="created",
+                    reason_code="plan_created",
+                    final_decision="send_pending",
+                )
+            self.repository.update_first_day_outreach_run(workflow_run_id, **updates)
+        return {"created": True, **created_plan}
 
     def _relation_plan_skip(
         self,
@@ -4011,6 +4256,13 @@ class OutreachService:
                         event_summary="Personalized outreach daily limit reached; task deferred",
                         payload={"sent_today": sent_today_count, "next_window": next_window.isoformat()},
                     )
+                    self._sync_first_day_run_for_task(
+                        plan=plan,
+                        task=task,
+                        status="created",
+                        reason_code="daily_limit",
+                        final_decision="retry_pending",
+                    )
                     return {"ok": True, "status": "rescheduled", "reason": "daily_limit"}
             if task.get("before_send_check"):
                 try:
@@ -4045,6 +4297,14 @@ class OutreachService:
                             event_summary="Customer deleted the sales contact before outreach execution",
                             payload={"customer_relation": customer_relation},
                         )
+                        self._sync_first_day_run_for_task(
+                            plan=plan,
+                            task=task,
+                            status="cancelled",
+                            reason_code="customer_deleted",
+                            final_decision="cancelled",
+                            terminal=True,
+                        )
                         return {
                             "ok": True,
                             "status": "skipped",
@@ -4066,6 +4326,14 @@ class OutreachService:
                             event_type="task_skipped_customer_replied",
                             event_summary="Customer replied before outreach task execution",
                             payload=refresh,
+                        )
+                        self._sync_first_day_run_for_task(
+                            plan=plan,
+                            task=task,
+                            status="cancelled",
+                            reason_code="customer_replied",
+                            final_decision="second_task_cancelled",
+                            terminal=True,
                         )
                         return {"ok": True, "status": "skipped", "reason": "customer_replied"}
                     order_gate = await self._refresh_order_eligibility(task=task, plan=plan)
@@ -4089,6 +4357,14 @@ class OutreachService:
                             event_summary="Customer order state changed before outreach execution",
                             payload=order_gate,
                         )
+                        self._sync_first_day_run_for_task(
+                            plan=plan,
+                            task=task,
+                            status="cancelled",
+                            reason_code="order_state_changed",
+                            final_decision="cancelled",
+                            terminal=True,
+                        )
                         return {"ok": True, "status": "skipped", "reason": "order_state_changed"}
                 except Exception as exc:
                     message = f"{type(exc).__name__}: {exc}"
@@ -4104,6 +4380,14 @@ class OutreachService:
                         event_type="before_send_check_failed",
                         event_summary="Conversation check failed before outreach send; send blocked",
                         payload={"error": message},
+                    )
+                    self._sync_first_day_run_for_task(
+                        plan=plan,
+                        task=task,
+                        status="created",
+                        reason_code="before_send_check_failed",
+                        final_decision="retry_pending",
+                        error=exc,
                     )
                     return {"ok": False, "status": "rescheduled", "error": message, "retryable": True}
             try:
@@ -4124,6 +4408,14 @@ class OutreachService:
                     event_type="task_skipped_message_policy",
                     event_summary="First-day outreach message remained unsafe after rewrite",
                     payload={"reason": reason},
+                )
+                self._sync_first_day_run_for_task(
+                    plan=plan,
+                    task=task,
+                    status="blocked",
+                    reason_code=reason,
+                    final_decision="blocked",
+                    terminal=True,
                 )
                 return {"ok": True, "status": "skipped", "reason": reason}
             task = self.repository.update_outreach_task(
@@ -4151,6 +4443,15 @@ class OutreachService:
                 event_type="task_failed",
                 event_summary=message[:240],
                 payload={"error": message},
+            )
+            self._sync_first_day_run_for_task(
+                plan=plan,
+                task=task,
+                status="failed",
+                reason_code="task_failed",
+                final_decision="failed",
+                terminal=True,
+                error=exc,
             )
             return {"ok": False, "status": "failed", "error": message}
         data = send_result.get("data") if isinstance(send_result.get("data"), dict) else {}
@@ -4188,6 +4489,14 @@ class OutreachService:
             event_type="task_sent",
             event_summary="Outreach task sent",
             payload={"reply_messages": reply_messages, "send_result": send_result},
+        )
+        self._sync_first_day_run_for_task(
+            plan=plan,
+            task=task,
+            status="sent" if not has_remaining_tasks else "created",
+            reason_code="plan_completed" if not has_remaining_tasks else "first_task_sent",
+            final_decision="sent" if not has_remaining_tasks else "second_task_pending",
+            terminal=not has_remaining_tasks,
         )
         if not has_remaining_tasks:
             self.repository.add_outreach_event(

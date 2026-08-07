@@ -153,6 +153,10 @@ export function RunLogViewer() {
               <Clock className="h-4 w-4" />
               第三方任务
             </Link>
+            <Link href="/logs/outreach-first-day" className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
+              <Bot className="h-4 w-4" />
+              首日千人千面
+            </Link>
             <button
               type="button"
               onClick={() => void loadRuns()}
