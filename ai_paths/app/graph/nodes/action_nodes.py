@@ -1438,11 +1438,12 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         in _compact_store_text(resolved_query)
         for item in text_candidates
     )
+    scope_geocode = _geocode_for_query_scope(resolved_query, geocode)
     location_evidence = build_location_evidence(
         state,
         raw_text=raw_query,
         query=resolved_query,
-        geocode=geocode,
+        geocode=scope_geocode,
         confirmed_by_customer=bool(tool.get("confirmed_by_customer")),
     )
     if (
@@ -1578,8 +1579,19 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "candidate_store_count": 0,
             "missing": ["confirmed_location"],
         }
-    candidates = [] if geocode_conflict else _stores_for_geocode(geocode, stores, purpose)
+    scope_level = _geocode_resolved_admin_level(resolved_query, scope_geocode)
+    candidates = [] if geocode_conflict else _stores_for_geocode(scope_geocode, stores, purpose)
     source = "customer_scope_geocode_conflict_ignored" if geocode_conflict else "customer_scope_geocode"
+    text_narrowing_allowed = exact_store_reference or scope_level not in {"province", "city"}
+    if (
+        candidates
+        and text_candidates
+        and text_narrowing_allowed
+        and purpose != "nearby_candidates"
+        and len(text_candidates) < len(candidates)
+    ):
+        candidates = text_candidates
+        source = "customer_scope_text_region"
     if not candidates and exact_store_reference:
         candidates = text_candidates
         source = "customer_scope_exact_store_name"
@@ -1597,7 +1609,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     pre_scope_fields = _store_lookup_scope_fields(
         {
             "query": resolved_query,
-            "geocode": geocode,
+            "geocode": scope_geocode,
             "candidate_stores": [_store_lookup_item(store) for store in candidates[:60]],
         }
     )
@@ -1606,7 +1618,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     scope_fields = _store_lookup_scope_fields(
         {
             "query": resolved_query,
-            "geocode": geocode,
+            "geocode": scope_geocode,
             "candidate_stores": normalized,
         }
     )
@@ -1618,7 +1630,11 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
         "purpose": purpose,
         "source": source,
         "geocode_conflict_ignored": geocode_conflict,
-        "geocode": {key: geocode.get(key) for key in ("formatted_address", "province", "city", "district", "township", "location") if geocode.get(key)},
+        "geocode": {
+            key: scope_geocode.get(key)
+            for key in ("formatted_address", "province", "city", "district", "township", "location")
+            if scope_geocode.get(key)
+        },
         "location_evidence": location_evidence,
         "normalization_evidence": _store_normalization_evidence(selected_candidate, geocode_attempts),
         **scope_fields,
@@ -1764,6 +1780,18 @@ async def _distance_calculate(
             "filtered_invalid_stores": invalid_candidates,
             "error": "no_candidate_stores",
         }
+    if _distance_origin_is_broad_lookup_scope(tool_results or {}, candidate_count=len(all_candidates)):
+        return {
+            "origin": origin,
+            "geocode_origin": str(origin or ""),
+            "status": "broad_origin_requires_location",
+            "candidate_stores": all_candidates,
+            "ranked_stores": [],
+            "candidate_store_count": len(all_candidates),
+            "ranked_candidate_count": 0,
+            "filtered_invalid_stores": invalid_candidates,
+            **_distance_lookup_scope_fields(tool, tool_results or {}),
+        }
     geocode_workflow_id = str(getattr(coze_client.settings, "geocode_workflow_id", "") or "").strip()
     if not geocode_workflow_id:
         return {
@@ -1902,6 +1930,21 @@ def _distance_origin_geocode_from_lookup(tool_results: dict[str, Any]) -> dict[s
     return {**geocode, "origin_source": "geocode"}
 
 
+def _distance_origin_is_broad_lookup_scope(tool_results: dict[str, Any], *, candidate_count: int) -> bool:
+    lookup = tool_results.get("customer_store_lookup") if isinstance(tool_results, dict) else {}
+    if not isinstance(lookup, dict) or str(lookup.get("status") or "") != "ok":
+        return False
+    location_evidence = lookup.get("location_evidence") if isinstance(lookup.get("location_evidence"), dict) else {}
+    if str(location_evidence.get("confirmation_mode") or "") == "authoritative_location_card":
+        return False
+    if str(location_evidence.get("detail") or "").strip():
+        return False
+    resolved_level = str(lookup.get("resolved_admin_level") or "").strip()
+    if resolved_level == "province":
+        return True
+    return resolved_level == "city" and candidate_count > 3
+
+
 def _preselect_distance_candidates(
     candidates: list[dict[str, Any]],
     origin_point: tuple[float, float],
@@ -1972,6 +2015,66 @@ def _stores_for_geocode(geocode: dict[str, Any], stores: list[dict[str, Any]], p
     return []
 
 
+def _geocode_for_query_scope(query: str, geocode: dict[str, Any]) -> dict[str, Any]:
+    """Remove default lower-level geocode fields that the customer did not actually provide."""
+
+    if not isinstance(geocode, dict):
+        return {}
+    scoped = dict(geocode)
+    province = str(scoped.get("province") or "").strip()
+    city = str(scoped.get("city") or "").strip()
+    district = str(scoped.get("district") or "").strip()
+    township = str(scoped.get("township") or "").strip()
+    if township and not _admin_name_mentioned_in_query(query, township, parent_city=city, parent_district=district):
+        scoped.pop("township", None)
+        township = ""
+    if district and not _admin_name_mentioned_in_query(query, district, parent_city=city):
+        scoped.pop("district", None)
+        scoped.pop("township", None)
+        district = ""
+    if city and not district and not township and not _admin_name_mentioned_in_query(query, city, parent_province=province):
+        scoped.pop("city", None)
+        scoped.pop("district", None)
+        scoped.pop("township", None)
+    return scoped
+
+
+def _admin_name_mentioned_in_query(
+    query: str,
+    value: str,
+    *,
+    parent_province: str = "",
+    parent_city: str = "",
+    parent_district: str = "",
+) -> bool:
+    text = _compact_text(query)
+    full = _compact_text(value)
+    if not text or not full:
+        return False
+    if full in text:
+        return True
+    base = _strip_admin_suffix(full)
+    if len(base) < 2 or base not in text:
+        return False
+    parent_bases = {
+        _strip_admin_suffix(_compact_text(parent_province)),
+        _strip_admin_suffix(_compact_text(parent_city)),
+        _strip_admin_suffix(_compact_text(parent_district)),
+    }
+    parent_bases.discard("")
+    if base in parent_bases and full not in text:
+        return False
+    return True
+
+
+def _strip_admin_suffix(value: str) -> str:
+    text = _compact_text(value)
+    for suffix in ("省", "市", "区", "县", "镇", "乡", "村", "街道", "社区"):
+        if text.endswith(suffix) and len(text) > len(suffix):
+            return text[: -len(suffix)]
+    return text
+
+
 def _stores_for_text_query(query: str, stores: list[dict[str, Any]], purpose: str) -> list[dict[str, Any]]:
     text = _compact_text(query)
     if not text:
@@ -1990,6 +2093,9 @@ def _stores_for_text_query(query: str, stores: list[dict[str, Any]], purpose: st
             city_stores = [store for store in stores if _region_equal(store.get("city"), top_city)]
             if city_stores:
                 return city_stores
+    top_score = scored[0][0]
+    if len(scored) > 1 and top_score > scored[1][0]:
+        return [store for score, store in scored if score == top_score]
     return [store for _, store in scored]
 
 

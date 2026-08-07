@@ -5,6 +5,7 @@ import unittest
 from app.graph.nodes.action_nodes import (
     _administrative_area_origin_candidate,
     _distance_candidate_stores,
+    _geocode_for_query_scope,
     _haversine_km,
     _geocode_has_unconflicted_location,
     _normalize_known_landmark_origin,
@@ -141,6 +142,33 @@ class DistanceOriginNormalizationTests(unittest.TestCase):
         )
 
         self.assertEqual([item["store_id"] for item in candidates], ["227", "386"])
+
+    def test_city_query_does_not_inherit_default_geocode_district(self) -> None:
+        scoped = _geocode_for_query_scope(
+            "\u8346\u5dde\u5e02\u6709\u95e8\u5e97\u5417",
+            {
+                "province": "\u6e56\u5317\u7701",
+                "city": "\u8346\u5dde\u5e02",
+                "district": "\u8346\u5dde\u533a",
+                "location": "112.190000,30.350000",
+            },
+        )
+
+        self.assertEqual(scoped.get("city"), "\u8346\u5dde\u5e02")
+        self.assertNotIn("district", scoped)
+
+    def test_district_query_keeps_explicit_geocode_district(self) -> None:
+        scoped = _geocode_for_query_scope(
+            "\u756a\u79ba\u533a",
+            {
+                "province": "\u5e7f\u4e1c\u7701",
+                "city": "\u5e7f\u5dde\u5e02",
+                "district": "\u756a\u79ba\u533a",
+                "location": "113.380000,22.940000",
+            },
+        )
+
+        self.assertEqual(scoped.get("district"), "\u756a\u79ba\u533a")
 
     def test_nearby_geocode_prefers_district_matches_before_city_scope(self) -> None:
         stores = [

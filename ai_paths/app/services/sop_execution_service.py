@@ -2783,6 +2783,8 @@ def _chat_gate_output_violations(
             violations.append("selected_pack_missing_or_not_unfinished")
         elif resume_stage != _string(packs[pack_id].get("mainline_stage")):
             violations.append("resume_stage_must_match_selected_pack")
+        if _chat_gate_opening_repeats_recent_location_context(selector_input, pack_id):
+            violations.append("opening_pack_repeats_recent_location_context")
         if pack_id in packs:
             violations.extend(_chat_gate_party_size_violations(selector_output, selector_input, packs[pack_id]))
     else:
@@ -2795,6 +2797,62 @@ def _chat_gate_output_violations(
         }:
             violations.append("unknown_resume_stage")
     return violations
+
+
+def _chat_gate_opening_repeats_recent_location_context(selector_input: dict[str, Any], pack_id: str) -> bool:
+    if pack_id != "s10_new_customer_opening":
+        return False
+    if not _is_short_ack_message(_string(selector_input.get("current_message"))):
+        return False
+    previous_messages = [
+        item
+        for item in selector_input.get("conversation_evidence") or []
+        if isinstance(item, dict) and _string(item.get("message_ref")) != "current_message"
+    ][-12:]
+    customer_location_seen = False
+    assistant_location_handled = False
+    for item in previous_messages:
+        direction = _string(item.get("direction"))
+        content = _string(item.get("content"))
+        if direction == "customer" and _looks_like_location_or_store_content(content):
+            customer_location_seen = True
+        elif direction == "assistant" and _looks_like_location_or_store_content(content):
+            assistant_location_handled = True
+    return customer_location_seen and assistant_location_handled
+
+
+def _is_short_ack_message(content: str) -> bool:
+    text = re.sub(r"\s+", "", content or "")
+    if not text or len(text) > 8:
+        return False
+    return text in {
+        "\u597d",
+        "\u597d\u7684",
+        "\u597d\u554a",
+        "\u597d\u5462",
+        "\u597d\u561e",
+        "\u53ef\u4ee5",
+        "\u884c",
+        "\u884c\u7684",
+        "\u55ef",
+        "\u55ef\u55ef",
+        "\u77e5\u9053\u4e86",
+        "\u6536\u5230",
+        "ok",
+        "OK",
+    }
+
+
+def _looks_like_location_or_store_content(content: str) -> bool:
+    text = _string(content)
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"(\u95e8\u5e97|\u5730\u5740|\u5b9a\u4f4d|\u4f4d\u7f6e|\u5e97|\u7701|\u5e02|\u533a|\u53bf|\u9547|\u6751|\u8857\u9053|\u8fd9\u8fb9\u6211\u8bb0\u4e0b)",
+            text,
+        )
+    )
 
 
 def _chat_gate_active_task(value: Any) -> dict[str, str]:

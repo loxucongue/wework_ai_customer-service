@@ -238,6 +238,14 @@
       "expected": {"must_reply": true, "forbidden_types": ["store_address"], "forbidden_phrases": ["惠州"]}
     },
     {
+      "id": "store_v2_city_nearest_need_district",
+      "category": "门店V2",
+      "critical": true,
+      "semantic_goal": "多门店城市只问最近时仍缺少距离原点，应补区县或定位，不直接挑一家门店卡。",
+      "timeline": [{"kind": "customer_message", "content": "广州这边最近是哪家"}],
+      "expected": {"must_reply": true, "forbidden_types": ["store_address"], "forbidden_phrases": ["最近的是", "最近就是", "相对近一些的是"]}
+    },
+    {
       "id": "store_v2_inferred_district_confirm",
       "category": "门店V2",
       "critical": true,
@@ -401,10 +409,11 @@
       "id": "province_scope",
       "category": "门店匹配",
       "critical": true,
-      "semantic_goal": "只说省份时询问具体市区，不按省中心编造最近门店。",
+      "semantic_goal": "只说省份时先询问具体市区；客户补充明确区县后，发送1-3家合法候选门店。",
       "expected": {
         "must_reply": true,
-        "forbidden_types": ["store_address"]
+        "required_types": ["store_address"],
+        "required_store_ids": ["241", "242"]
       },
       "timeline": [{"kind": "customer_message", "content": "湖北省"}],
       "followup": "荆州市荆州区",
@@ -414,10 +423,11 @@
       "id": "city_many_stores",
       "category": "门店匹配",
       "critical": true,
-      "semantic_goal": "城市门店较多时询问所在区，不一次丢全城门店。",
+      "semantic_goal": "城市门店较多时先询问所在区；客户补充区后，只发送该区合法门店卡。",
       "expected": {
         "must_reply": true,
-        "forbidden_types": ["store_address"]
+        "required_types": ["store_address"],
+        "required_store_ids": ["301"]
       },
       "timeline": [{"kind": "customer_message", "content": "广州有吗"}],
       "followup": "番禺区",
@@ -427,10 +437,11 @@
       "id": "city_few_stores",
       "category": "门店匹配",
       "critical": true,
-      "semantic_goal": "只有城市时先补区县或定位，客户补充完整区县后再匹配门店。",
+      "semantic_goal": "城市候选只有1-3家时，可以直接发送全部真实门店卡并让客户选择。",
       "expected": {
         "must_reply": true,
-        "forbidden_types": ["store_address"]
+        "required_types": ["store_address"],
+        "required_store_ids": ["241", "242"]
       },
       "timeline": [{"kind": "customer_message", "content": "荆州市有门店吗"}],
       "followup": "荆州区",
@@ -440,10 +451,11 @@
       "id": "county_parent_city",
       "category": "门店匹配",
       "critical": true,
-      "semantic_goal": "只有县级市时先解析并确认上级省市，客户确认后才匹配合法候选。",
+      "semantic_goal": "县级市能唯一解析时，发送客户可见范围内相对合适的合法门店卡。",
       "expected": {
         "must_reply": true,
-        "forbidden_types": ["store_address"],
+        "required_types": ["store_address"],
+        "required_any_store_ids": ["241", "242"],
         "forbidden_phrases": ["重新发一下城市", "再说一下城市"]
       },
       "timeline": [{"kind": "customer_message", "content": "洪湖市"}],
@@ -454,10 +466,11 @@
       "id": "town_parent_province",
       "category": "门店匹配",
       "critical": true,
-      "semantic_goal": "乡镇所属省市区由POI推断时先确认，客户确认后才匹配真实候选。",
+      "semantic_goal": "乡镇所属省市区可唯一解析时，发送客户可见范围内相对合适的合法门店卡。",
       "expected": {
         "must_reply": true,
-        "forbidden_types": ["store_address"]
+        "required_types": ["store_address"],
+        "required_store_ids": ["501"]
       },
       "timeline": [{"kind": "customer_message", "content": "甲良镇"}],
       "followup": "对的，就是贵州荔波县甲良镇",

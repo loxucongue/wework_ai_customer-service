@@ -28,8 +28,9 @@ def _store_resolution_status(
         "need_location",
         "need_location_confirmation",
         "ambiguous_location",
+        "broad_origin_requires_location",
     }:
-        return tool_status
+        return "need_location" if tool_status == "broad_origin_requires_location" else tool_status
     if tool_status in {"geocode_query_conflict", "origin_geocode_failed"}:
         return "need_location_confirmation"
     if tool_status in {"missing_query", "missing_origin"}:

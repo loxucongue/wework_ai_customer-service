@@ -924,11 +924,6 @@ class SopEventService:
         customer_context: dict[str, Any],
         event_policy_evidence: dict[str, Any],
     ) -> dict[str, Any]:
-        customer_relation = (
-            conversation_fetch.get("customer_relation")
-            if isinstance(conversation_fetch.get("customer_relation"), dict)
-            else {}
-        )
         raw_messages = _actions_to_reply_messages(_customer_actions(payload, customer))
         messages, sanitize_summary = sanitize_sop_reply_messages(
             raw_messages,
@@ -941,99 +936,6 @@ class SopEventService:
             customer_context=customer_context,
             customer_memory=customer_memory,
         )
-        if routing["route"] == "suppress_day1":
-            return self._create_task_record(
-                payload,
-                customer,
-                index=index,
-                identity=identity,
-                sop_pack_id="platform_actions",
-                sop_pack_name="platform_actions",
-                sop_category="platform_actions",
-                reply_messages=[],
-                status="skipped_day1_platform_task",
-                error="",
-                send_payload={
-                    "identity": identity,
-                    "routing_mode": "suppress_day1_platform_task",
-                    "platform_task_routing": routing,
-                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
-                    "conversation_activity": conversation_activity,
-                },
-            )
-        if routing["route"] == "defer":
-            return self._create_task_record(
-                payload,
-                customer,
-                index=index,
-                identity=identity,
-                sop_pack_id="platform_actions",
-                sop_pack_name="platform_actions",
-                sop_category="platform_actions",
-                reply_messages=[],
-                status="failed_order_fetch",
-                error=str((routing.get("order_gate") or {}).get("error") or routing["reason"]),
-                send_payload={
-                    "identity": identity,
-                    "routing_mode": "defer_platform_task_order_unknown",
-                    "platform_task_routing": routing,
-                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
-                    "conversation_activity": conversation_activity,
-                },
-            )
-        if routing["route"] == "personalized":
-            if self.personalized_outreach_service is None:
-                plan_result = {
-                    "created": False,
-                    "error": "personalized_outreach_service_not_configured",
-                }
-                status = "failed_personalized_outreach_not_configured"
-                error = "personalized_outreach_service_not_configured"
-            else:
-                try:
-                    plan_result = await self.personalized_outreach_service.ensure_platform_task_plan(
-                        identity=identity,
-                        conversation_messages=conversation_messages,
-                        conversation_activity=conversation_activity,
-                        customer_context=customer_context,
-                        customer_relation=customer_relation,
-                        platform_task={
-                            "event_id": str(payload.get("event_id") or ""),
-                            "created_at": str(payload.get("created_at") or ""),
-                            "messages": messages,
-                        },
-                    )
-                    status = "filtered_personalized_outreach"
-                    error = ""
-                except Exception as exc:
-                    plan_result = {
-                        "created": False,
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                    status = "failed_personalized_outreach_plan"
-                    error = str(plan_result["error"])
-            return self._create_task_record(
-                payload,
-                customer,
-                index=index,
-                identity=identity,
-                sop_pack_id="personalized_outreach",
-                sop_pack_name="personalized_outreach",
-                sop_category="personalized_outreach",
-                reply_messages=[],
-                status=status,
-                error=error,
-                send_payload={
-                    "identity": identity,
-                    "routing_mode": "personalized_outreach_plan",
-                    "platform_task_routing": routing,
-                    "suppressed_platform_messages": messages,
-                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
-                    "conversation_activity": conversation_activity,
-                    "outreach_plan": compact(plan_result, max_chars=12000),
-                },
-                send_response={"outreach_plan": compact(plan_result, max_chars=12000)},
-            )
         if not messages:
             return self._create_task_record(
                 payload,
@@ -1079,103 +981,6 @@ class SopEventService:
                 },
             )
 
-        decision = await self._event_decision(
-            payload=payload,
-            customer=customer,
-            identity=identity,
-            event_type="sop_platform_task",
-            conversation_messages=conversation_messages,
-            conversation_activity=conversation_activity,
-            customer_memory=customer_memory,
-            customer_context=customer_context,
-            candidate_packs=[],
-            actions_reply_messages=messages,
-            event_policy_evidence=event_policy_evidence,
-        )
-        decision_name = _string(decision.get("decision"))
-        if not decision_name:
-            selector_output = decision.get("selector_output") if isinstance(decision.get("selector_output"), dict) else {}
-            decision_name = _string(selector_output.get("decision"))
-        if not decision.get("send_sop"):
-            is_model_error = bool(decision.get("error"))
-            rejected_status = (
-                "deferred_model"
-                if decision_name == "defer"
-                else "skipped_handoff_to_ai_reply"
-                if decision_name == "handoff_to_ai_reply"
-                else "failed_model_error"
-                if is_model_error
-                else "skipped_model_rejected"
-            )
-            return self._create_task_record(
-                payload,
-                customer,
-                index=index,
-                identity=identity,
-                sop_pack_id="platform_actions",
-                sop_pack_name="platform_actions",
-                sop_category="platform_actions",
-                reply_messages=[],
-                status=rejected_status,
-                error=str(decision.get("error") or "") if is_model_error else "",
-                send_payload={
-                    "identity": identity,
-                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
-                    "conversation_activity": conversation_activity,
-                    "message_sanitize": sanitize_summary,
-                    "ai_auto_reply": ai_auto_reply,
-                    "routing_mode": "event_guarded_platform_actions",
-                    "platform_task_routing": routing,
-                    "event_policy_evidence": event_policy_evidence,
-                    "event_decision_input": decision.get("selector_input", {}),
-                },
-                send_response={"event_decision": decision},
-            )
-
-        selector_output = decision.get("selector_output") if isinstance(decision.get("selector_output"), dict) else {}
-        if decision_name in {"send_ai_touch", "handoff_or_safety_notice"}:
-            touch_messages = selector_output.get("ai_touch_messages") if isinstance(selector_output.get("ai_touch_messages"), list) else []
-            final_messages, final_sanitize_summary = sanitize_sop_reply_messages(
-                touch_messages,
-                conversation_messages=conversation_messages,
-            )
-            adjustment_summary: dict[str, Any] = {"mode": "event_ai_touch"}
-        else:
-            adjusted_messages, adjustment_summary = apply_sop_text_adjustments(
-                messages,
-                decision.get("text_adjustments"),
-                decision.get("message_operations"),
-            )
-            final_messages, final_sanitize_summary = sanitize_sop_reply_messages(
-                adjusted_messages,
-                conversation_messages=conversation_messages,
-            )
-        if not final_messages:
-            return self._create_task_record(
-                payload,
-                customer,
-                index=index,
-                identity=identity,
-                sop_pack_id="platform_actions",
-                sop_pack_name="platform_actions",
-                sop_category="platform_actions",
-                reply_messages=[],
-                status="skipped_empty_reply_messages",
-                error="platform_messages_empty_after_event_decision",
-                send_payload={
-                    "identity": identity,
-                    "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
-                    "conversation_activity": conversation_activity,
-                    "message_sanitize": final_sanitize_summary,
-                    "message_adjustment": adjustment_summary,
-                    "ai_auto_reply": ai_auto_reply,
-                    "routing_mode": "event_guarded_platform_actions",
-                    "platform_task_routing": routing,
-                    "event_policy_evidence": event_policy_evidence,
-                    "event_decision_input": decision.get("selector_input", {}),
-                },
-                send_response={"event_decision": decision},
-            )
         return self._create_task_record(
             payload,
             customer,
@@ -1184,22 +989,21 @@ class SopEventService:
             sop_pack_id="platform_actions",
             sop_pack_name="platform_actions",
             sop_category="platform_actions",
-            reply_messages=final_messages,
+            reply_messages=messages,
             status="pending",
             error="",
             send_payload={
                 "identity": identity,
                 "conversation_fetch": _conversation_fetch_summary(conversation_fetch),
                 "conversation_activity": conversation_activity,
-                "message_sanitize": final_sanitize_summary,
-                "message_adjustment": adjustment_summary,
+                "message_sanitize": sanitize_summary,
+                "message_adjustment": {"mode": "direct_platform_actions"},
                 "ai_auto_reply": ai_auto_reply,
-                "routing_mode": "event_guarded_platform_actions",
+                "routing_mode": "direct_platform_actions",
                 "platform_task_routing": routing,
                 "event_policy_evidence": event_policy_evidence,
-                "event_decision_input": decision.get("selector_input", {}),
             },
-            send_response={"event_decision": decision},
+            send_response={"platform_task_route": routing},
         )
 
     async def _event_decision(

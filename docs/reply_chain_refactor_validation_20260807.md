@@ -66,6 +66,36 @@ Post-fix SOP Gate evidence:
 
 The specific SOP Gate payment handoff regression is fixed and verified in offline simulation.
 
+## Additional Validation Notes
+
+Later validation on this branch found and fixed three evidence gaps before any behavior switch:
+
+1. SOP Gate repeated the new-customer opening pack when the latest customer message was only a short acknowledgement after a recent location exchange. The guard now treats this as a structural stage-regression violation and asks the model to pick the next unfinished post-location mainline pack or route to ordinary AI when tool facts are needed.
+2. `sop_platform_task` was still affected by legacy suppression and personalization branches. Per the current protocol contract, platform tasks now preserve `message_content` and pass through directly, while keeping hard payment safety checks.
+3. City-level store lookup could be incorrectly narrowed by geocode default districts or text similarity. The store tool now separates the administrative level explicitly present in the customer's wording from lower-level geocode defaults, and text narrowing is only allowed for district/township/detail/store-name scopes.
+
+Additional deterministic checks after these fixes:
+
+- `git diff --check`: passed
+- `py_compile` for changed Python modules: passed
+- `workflow_tests/test_full_chain_simulation.py workflow_tests/test_sop_configuration_contract.py workflow_tests/test_prompt_refactor_contract.py workflow_tests/test_distance_origin_normalization.py workflow_tests/test_store_resolution_v2.py`: `128 passed, 1 warning`
+- Store scope deterministic tests: `44 passed, 1 warning`
+
+Additional offline simulation evidence:
+
+| Scope | Report | Hard Pass | Semantic Pass | Notes |
+|---|---|---:|---:|---|
+| 门店 V2 after guard | `.tmp_runtime/simulation/suite-20260807-120703/report.md` | 100% | 100% | 13 evaluable attempts, critical pass |
+| SOP Event after platform-task pass-through | `.tmp_runtime/simulation/sop_event_20260807_1237/report.md` | 100% | 87.5% | Remaining semantic failures are expected no-send scenarios that the reviewer scored as failure; hard behavior is correct |
+| 广州多店 -> 番禺区 targeted | `.tmp_runtime/simulation/city_many_v01_20260807_1315/report.md` | 100% | 100% | Follow-up district sends store `301` |
+| 荆州市 1-3 stores targeted | `.tmp_runtime/simulation/city_few_v01_20260807_1410/report.md` | 100% | 100% | City-level lookup keeps both visible city candidates |
+| 湖北省 -> 荆州市荆州区 targeted | `.tmp_runtime/simulation/province_scope_v01_20260807_1410/report.md` | 100% | 100% | Province asks for city/district first, follow-up sends required stores |
+
+Invalid or incomplete evidence:
+
+- `.tmp_runtime/simulation/suite-20260807-104818/report.md` is invalid because model environment variables were missing.
+- `.tmp_runtime/simulation/store_match_20260807_1320/` is incomplete because the local command hit a 20-minute timeout before generating `report.md`. Its checkpoint files were used only to identify failures, not as release-gate evidence.
+
 This is still not enough evidence to enable the behavior switch. Missing release-gate evidence:
 
 - Full three-model matrix with normal attempts `3` and critical attempts `5`.
