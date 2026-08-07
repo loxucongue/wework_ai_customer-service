@@ -35,12 +35,11 @@ from app.policies.business_rules import (
     planner_recovery_business_rules_prompt_section,
 )
 from app.policies.sales_flow import precision_qa_context_for_planner
-from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.customer_payment_state import is_inactive_order, normalize_prepay_facts
 from app.services.model_client import ModelClient
+from app.services.store_resolution_v2 import customer_location_hint_texts
 from app.services.risk_hold import HEALTH_RISK_TERMS, current_health_risk_hold_for_model
 from app.services.runtime_budget import can_start_model_retry, model_deadline_monotonic, runtime_budget_snapshot
-from app.services.store_snapshot_service import store_snapshot_rows
 
 PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 你是企业微信线上活动接待的应急 planner。上一轮完整 planner 超时，本轮只用精简事实输出合法 JSON。
@@ -54,7 +53,8 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 需要具体门店/地址/停车/营业时间/导航/附近候选时，用 customer_store_lookup。
 - 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；该工具只按经纬度直线距离排序，客户可见不要输出公里、分钟、车程或路线。
 - 当前普通流程只登记到店日期和时间意向，不调用 available_time/create_order_plan；没有既有正式预约事实不能承诺已安排或已留位。
-- 效果、怕没效果、怕反黑、要效果图时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。
+- 效果、怕没效果、怕反黑、要效果图或担心一次可能没效果时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。一次效果先明确“当前淡斑效果活动价就是268元、绝大多数客户都是一次就好”，再用真实案例建立信任；完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解。
+- 客户说不做了、不要了或算了但同句给出效果、次数、价格、距离、时间或信任等具体原因时，按可挽回异议针对原因处理一次，不得直接 terminal/close。只有明确要求停止联系、投诉退款、当前风险，或近期已处理同一异议后再次强拒绝才停止推进。
 - 客户已经发送皮肤图片时直接使用 `image_info`；需要效果证据只查 case_studies。当前没有询问门店且近聊已有门店锚点时，不得因图片 URL 或合并消息调用门店工具；案例后必须推进一个未完成主线动作。
 - 预约金由 payment_decision 决定；客户口头声称已付不能确认到账。当前订单 `prepay_paid>0`、清晰支付成功截图或结构化 `deposit_state=paid_by_platform_transfer_event` 才是权威已付，可推进付款后信息确认。
 - `stage/sub_rule_id` 必须从 Current Recovery Business Rules 的 `scene_index` 选择，不能自造英文场景名。
@@ -455,6 +455,10 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
     risk_hold = {} if suppress_memory else current_health_risk_hold_for_model(state)
     turn_evidence = _turn_evidence_for_planner(current_turn_context)
     recent_turns = [] if suppress_memory else _recent_turns_for_planner(state)
+    gate_decision = _sop_gate_decision_for_planner(state)
+    selected_scene_id = str(
+        gate_decision.get("selected_scene_id") or gate_decision.get("priority_question_id") or ""
+    ).strip()
     payload = {
         "current_date": _current_date_iso(),
         "timezone": "Asia/Shanghai",
@@ -479,9 +483,10 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         ),
         "sent_message_summary": sent_message_summary,
         "sop_progress_evidence": _sop_progress_evidence_for_planner(state),
-        "sop_gate_decision": _sop_gate_decision_for_planner(state),
+        "sop_gate_decision": gate_decision,
         "precision_qa_playbook": precision_qa_context_for_planner(
-            include_answer_details_in_index=True
+            selected_scene_id,
+            include_answer_details_in_index=False,
         ),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
@@ -527,25 +532,19 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
 def _compact_precision_qa_for_timeout(value: Any, gate_decision: Any) -> dict[str, Any]:
     playbook = value if isinstance(value, dict) else {}
     gate = gate_decision if isinstance(gate_decision, dict) else {}
-    priority_question_id = str(gate.get("priority_question_id") or "").strip()
-    question_index: list[dict[str, str]] = []
-    selected_question = (
-        precision_qa_context_for_planner(priority_question_id).get("selected_question") or {}
-        if priority_question_id
-        else {}
+    selected_scene_id = str(
+        gate.get("selected_scene_id") or gate.get("priority_question_id") or ""
+    ).strip()
+    selected_context = precision_qa_context_for_planner(
+        selected_scene_id,
+        include_answer_details_in_index=False,
     )
-    for item in playbook.get("question_index") or []:
-        if not isinstance(item, dict):
-            continue
-        question_id = str(item.get("id") or "").strip()
-        intent_definition = str(item.get("intent_definition") or "").strip()
-        if question_id:
-            question_index.append(_drop_empty({"id": question_id, "intent_definition": intent_definition}))
     return _drop_empty(
         {
-            "global_answer_policy": playbook.get("global_answer_policy") or {},
-            "question_index": question_index,
-            "selected_question": selected_question,
+            "selected_scene": playbook.get("selected_scene")
+            or selected_context.get("selected_scene"),
+            "selected_question": playbook.get("selected_question")
+            or selected_context.get("selected_question"),
         }
     )
 
@@ -719,18 +718,7 @@ def _stores_matching_text_for_planner(state: AgentState, text: str) -> list[dict
 
 
 def _known_store_candidates_for_planner(state: AgentState) -> list[dict[str, Any]]:
-    candidates = list(_customer_scope_stores_for_planner(state))
-    seen_names = {_store_name_for_planner(store) for store in candidates if _store_name_for_planner(store)}
-    for store in store_snapshot_rows():
-        name = _store_name_for_planner(store)
-        if name and name not in seen_names:
-            candidates.append(store)
-            seen_names.add(name)
-    for name in KNOWN_STORE_NAMES:
-        if name and name not in seen_names:
-            candidates.append({"store_name": name})
-            seen_names.add(name)
-    return candidates
+    return list(_customer_scope_stores_for_planner(state))
 
 
 def _dedupe_store_matches(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -870,6 +858,7 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
             "route": gate.get("route") or gate.get("mode"),
             "coverage": gate.get("coverage"),
             "priority_question_id": gate.get("priority_question_id"),
+            "selected_scene_id": gate.get("selected_scene_id") or gate.get("priority_question_id"),
             "resume_stage": gate.get("resume_stage"),
             "sop_pack_id": gate.get("sop_pack_id"),
         }
@@ -882,6 +871,7 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
             "reason": raw.get("reason"),
             "task": _compact_gate_task(raw.get("active_task")),
             "priority_question_id": raw.get("priority_question_id"),
+            "selected_scene_id": raw.get("selected_scene_id") or raw.get("priority_question_id"),
             "resume_stage": raw.get("resume_stage"),
             "sop_pack_id": raw.get("sop_pack_id"),
             "sop_message_types": raw.get("sop_message_types"),
@@ -1220,8 +1210,7 @@ def _store_scope_location_hints(
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     values = [
-        state.get("normalized_content") or state.get("content"),
-        *[_conversation_item_text(item) for item in (state.get("conversation_history") or [])[-6:]],
+        *customer_location_hint_texts(state, limit=6),
         basic.get("province"),
         basic.get("city") or basic.get("current_city"),
         basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),

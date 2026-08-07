@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.policies.business_rules import load_business_rules
+import pytest
+
 from app.services.sop_execution_service import first_add_candidate_packs
 from app.services.sop_reply_pack_service import SopReplyPackService
 
@@ -15,6 +17,14 @@ OPENING_EFFICACY_IMAGE = (
 ACTIVITY_AD_IMAGE = (
     "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/"
     "d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png"
+)
+EFFECT_CASE_IMAGES = [
+    "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_click_url-90f975480879.png",
+    "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_second-de0488d149ea.png",
+]
+DEPOSIT_LIGHT_IMAGE = (
+    "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/"
+    "deposit_light-d61147a81539.png"
 )
 
 
@@ -73,12 +83,37 @@ def test_activity_intro_image_matches_business_rule_fact_source() -> None:
     assert offer["activity_intro_image_url"] == _image_urls(activity)[0]
 
 
-def test_first_activity_intro_does_not_send_payment_card_in_same_turn() -> None:
+def test_activity_intro_includes_deposit_card_after_refund_rule_text() -> None:
     activity = _pack(_load_config(), "s10_activity_intro")
+    messages = activity.get("reply_messages") or []
 
-    assert "payment_collection" not in {
-        message.get("type") for message in activity.get("reply_messages") or []
-    }
+    assert [message.get("type") for message in messages] == [
+        "text",
+        "image",
+        "text",
+        "payment_collection",
+    ]
+    assert messages[-1]["content"] == {"amount": 10, "remark": ""}
+    assert "未做或不满意可退" in messages[-2]["content"]["text"]
+    assert "实际按付款记录核对" in messages[-2]["content"]["text"]
+
+
+def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
+    config = _load_config()
+    cases = _pack(config, "s10_need_and_case")
+    store_prompt = _pack(config, "s10_store_prompt")
+    deposit = _pack(config, "s10_deposit_close")
+
+    assert _image_urls(cases) == EFFECT_CASE_IMAGES
+    assert store_prompt["enabled"] is True
+    assert store_prompt["reply_messages"][0]["content"]["text"] == "亲，您是在那个省份那个城市呢？我给您匹配最近的店铺。"
+    assert deposit["enabled"] is True
+    assert _image_urls(deposit) == [DEPOSIT_LIGHT_IMAGE]
+    assert [message.get("type") for message in deposit["reply_messages"]] == [
+        "text",
+        "image",
+        "payment_collection",
+    ]
 
 
 def test_activity_intro_tail_does_not_ask_default_single_person_count() -> None:
@@ -91,7 +126,8 @@ def test_activity_intro_tail_does_not_ask_default_single_person_count() -> None:
 
     for phrase in ["自己一位参加吗", "1位参加对吧", "几位参加", "按人数"]:
         assert phrase not in visible_text
-    assert "10元预约金入口" in visible_text
+    assert "10元预约金" in visible_text
+    assert "到店抵扣" in visible_text
 
 
 def test_static_sop_copy_does_not_contain_absolute_effect_or_safety_claims() -> None:
@@ -143,3 +179,17 @@ def test_active_configuration_has_no_event_scope_audit_error() -> None:
 
     assert "non_chat_gate_scope" not in error_codes
     assert "event_activity_quote_missing" not in error_codes
+
+
+def test_save_rejects_incomplete_refund_policy_with_pack_and_message_position(tmp_path: Path) -> None:
+    service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=tmp_path / "sop_reply_packs.json"))
+    payload = _load_config()
+    deposit = _pack(payload, "s10_deposit_close")
+    deposit["reply_messages"][0]["content"]["text"] = "10元预约金到店抵扣，未做或不满意可退。"
+
+    with pytest.raises(ValueError) as exc_info:
+        service.save(payload)
+
+    message = str(exc_info.value)
+    assert "s10_deposit_close 第 1 条" in message
+    assert "实际按付款记录核对" in message

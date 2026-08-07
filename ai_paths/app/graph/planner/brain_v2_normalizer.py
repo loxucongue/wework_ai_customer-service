@@ -44,7 +44,7 @@ from app.graph.planner.planner_transaction_guards import (
     postpaid_scheduling_tool_violations as _structured_postpaid_scheduling_tool_violations,
 )
 from app.graph.state import AgentState
-from app.policies.constants import KNOWN_STORE_FACTS, KNOWN_STORE_NAMES
+from app.policies.constants import KNOWN_STORE_NAMES
 from app.policies.sales_flow import precision_qa_for_id
 from app.services.payment_collection import (
     activity_intro_completed_for_payment,
@@ -301,8 +301,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     required_tools = _dedupe_tools(planner_tool_calls)
     required_tools = _complete_explicit_kb_search_arguments(required_tools, state)
     required_tools = required_tools or [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
-    required_tools = _rewrite_reference_store_lookup_queries(required_tools, state)
-    required_tools = _normalize_current_message_store_lookup_queries(required_tools, state)
     required_tools = _normalize_available_time_dates_from_context(required_tools, state)
     decision, planner_reply_messages, required_tools = _enforce_location_card_store_lookup(
         decision=decision,
@@ -319,12 +317,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     decision, planner_reply_messages, required_tools = _enforce_declared_store_detail_lookup(
         decision=decision,
         sub_rule_id=sub_rule_id,
-        messages=planner_reply_messages,
-        required_tools=required_tools,
-        state=state,
-    )
-    decision, planner_reply_messages, required_tools = _enforce_explicit_location_store_lookup(
-        decision=decision,
         messages=planner_reply_messages,
         required_tools=required_tools,
         state=state,
@@ -572,12 +564,6 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
             {**state, "store_binding_decision": store_binding_decision},
         ),
         *_store_detail_tool_violations(
-            decision=decision,
-            messages=planner_reply_messages,
-            required_tools=required_tools,
-            state=state,
-        ),
-        *_explicit_location_store_lookup_violations(
             decision=decision,
             messages=planner_reply_messages,
             required_tools=required_tools,
@@ -871,82 +857,6 @@ def _has_store_address_message(messages: list[dict[str, Any]]) -> bool:
     return any(str(item.get("type") or "") == "store_address" for item in messages if isinstance(item, dict))
 
 
-def _rewrite_reference_store_lookup_queries(required_tools: list[dict[str, Any]], state: AgentState) -> list[dict[str, Any]]:
-    content = str(state.get("normalized_content") or state.get("content") or "")
-    if not _should_rewrite_store_lookup_with_context_anchor(content, state):
-        return required_tools
-    anchor = _recent_store_name_from_context(state)
-    if not anchor:
-        return required_tools
-    rewritten: list[dict[str, Any]] = []
-    for tool in required_tools:
-        if isinstance(tool, dict) and str(tool.get("name") or "") == "customer_store_lookup":
-            query = str(tool.get("query") or "").strip()
-            if _store_lookup_query_has_explicit_scope(query, state):
-                rewritten.append(tool)
-                continue
-            updated = dict(tool)
-            updated["query"] = anchor
-            rewritten.append(updated)
-        else:
-            rewritten.append(tool)
-    return rewritten
-
-
-def _normalize_current_message_store_lookup_queries(
-    required_tools: list[dict[str, Any]], state: AgentState
-) -> list[dict[str, Any]]:
-    current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
-    if not current_text or not _raw_text_mentions_store_location_request(current_text):
-        return required_tools
-    current_query = _current_message_store_lookup_query(current_text)
-    add_distance_for_overridden_nearby_query = False
-    normalized: list[dict[str, Any]] = []
-    for tool in required_tools:
-        if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
-            normalized.append(tool)
-            continue
-        query = str(tool.get("query") or "").strip()
-        if (
-            query
-            and not _store_lookup_query_comes_from_current_message(query, state)
-            and _store_lookup_query_has_explicit_scope(query, state)
-        ):
-            normalized.append(tool)
-            continue
-        if not _store_lookup_query_comes_from_current_message(query, state):
-            if current_query:
-                updated = dict(tool)
-                updated["query"] = current_query
-                if _current_message_asks_nearby_store(current_text):
-                    updated["purpose"] = "nearby_candidates"
-                    add_distance_for_overridden_nearby_query = True
-                normalized.append(updated)
-            else:
-                normalized.append(tool)
-            continue
-        cleaned = _strip_location_answer_prefixes(_clean_scoped_location_query(query))
-        if cleaned and (_looks_like_bare_location_token(cleaned) or _looks_like_specific_region(_compact_text(cleaned))):
-            updated = dict(tool)
-            updated["query"] = cleaned
-            normalized.append(updated)
-        else:
-            normalized.append(tool)
-    if (
-        add_distance_for_overridden_nearby_query
-        and current_query
-        and not _has_tool(normalized, "distance_calculate")
-    ):
-        normalized.append(
-            {
-                "name": "distance_calculate",
-                "origin": current_query,
-                "candidate_source": "customer_store_lookup",
-            }
-        )
-    return _order_store_lookup_before_dependent_distance(normalized)
-
-
 def _order_store_lookup_before_dependent_distance(required_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     lookup_tools: list[dict[str, Any]] = []
     dependent_distance_tools: list[dict[str, Any]] = []
@@ -985,51 +895,6 @@ def _order_store_lookup_before_dependent_distance(required_tools: list[dict[str,
             continue
         ordered.append(tool)
     return ordered
-
-
-def _current_message_store_lookup_query(current_text: str) -> str:
-    cleaned = _strip_location_answer_prefixes(_strip_store_question_words(_clean_scoped_location_query(current_text)))
-    cleaned = re.sub(r"(我)?(现在)?(过去|去)?(看看|看下|看一看|瞧瞧|了解一下)$", "", cleaned).strip()
-    if cleaned and (_looks_like_bare_location_token(cleaned) or _looks_like_specific_region(_compact_text(cleaned))):
-        return cleaned
-    return ""
-
-
-def _current_message_asks_nearby_store(current_text: str) -> bool:
-    compact = _compact_text(current_text)
-    return any(term in compact for term in ("附近", "最近", "近一点", "近点", "周边", "旁边"))
-
-
-def _should_rewrite_store_lookup_with_context_anchor(content: str, state: AgentState) -> bool:
-    if not _current_message_requests_store_detail(content):
-        return False
-    if not is_context_reference_message(content):
-        return False
-    if _current_message_has_explicit_store_or_location_scope(content, state):
-        return False
-    return True
-
-
-def _current_message_has_explicit_store_or_location_scope(content: str, state: AgentState) -> bool:
-    if _store_names_matching_text(state, content):
-        return True
-    return _location_query_has_current_message_scope(content, state)
-
-
-def _store_lookup_query_has_explicit_scope(query: str, state: AgentState) -> bool:
-    if not str(query or "").strip():
-        return False
-    if _store_lookup_query_comes_from_current_message(query, state):
-        return True
-    if _store_lookup_query_comes_from_recent_customer_location(query, state):
-        return True
-    if _query_matches_current_message_store_name(query, state):
-        return True
-    if _query_is_unique_real_store_name(query, state):
-        return True
-    if _query_matches_scope_store_name(query, state):
-        return True
-    return False
 
 
 def _store_lookup_query_comes_from_current_message(query: str, state: AgentState) -> bool:
@@ -2812,86 +2677,6 @@ def _enforce_sop_gate_active_task(
     return "need_tools", [], _dedupe_tools(tools)
 
 
-def _enforce_explicit_location_store_lookup(
-    *,
-    decision: str,
-    messages: list[dict[str, Any]],
-    required_tools: list[dict[str, Any]],
-    state: AgentState,
-) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
-    """Apply the store-fact requirement whenever the model omits a required lookup."""
-    violations = _explicit_location_store_lookup_violations(
-        decision=decision,
-        messages=messages,
-        required_tools=required_tools,
-        state=state,
-    )
-    if not violations:
-        return decision, messages, required_tools
-    raw_query = str(state.get("normalized_content") or state.get("content") or "").strip()
-    query = _strip_location_answer_prefixes(_clean_scoped_location_query(raw_query)) or raw_query
-    if not query:
-        return decision, messages, required_tools
-    tools = [tool for tool in required_tools if str(tool.get("name") or "") != "no_tool"]
-    tools.append(
-        {
-            "name": "customer_store_lookup",
-            "purpose": "existence",
-            "query": query,
-        }
-    )
-    return "need_tools", [], _dedupe_tools(tools)
-
-
-def _explicit_location_store_lookup_violations(
-    *,
-    decision: str,
-    messages: list[dict[str, Any]],
-    required_tools: list[dict[str, Any]],
-    state: AgentState,
-) -> list[dict[str, str]]:
-    if decision != "direct_reply" or _has_tool(required_tools, "customer_store_lookup"):
-        return []
-    current_text = str(state.get("normalized_content") or state.get("content") or "")
-    if not _current_message_has_explicit_location_for_lookup(current_text, state):
-        return []
-    if _current_message_is_province_only_location(current_text):
-        return []
-    text = " ".join(
-        _message_text(item.get("content"))
-        for item in messages
-        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
-    )
-    if _direct_text_is_store_scope_clarification(text) and _location_question_can_clarify_without_lookup(current_text, state):
-        return []
-    if _has_store_address_message(messages) and _store_address_messages_are_requested_district_backed(messages, state):
-        return []
-    message_ids = {
-        _store_address_id(item.get("content"))
-        for item in messages
-        if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
-    }
-    message_ids.discard("")
-    expected_ids = _snapshot_store_ids_for_current_location(current_text)
-    if expected_ids and message_ids == expected_ids:
-        return []
-    if _fact_envelope_store_ids(state):
-        return []
-    return [
-        {
-            "task_type": "tool_required",
-            "subtype": "customer_store_lookup",
-            "missing": "store_location_lookup_required_before_direct_reply",
-            "note": (
-                "The customer provided a concrete city, district, county, town, village, or landmark. Do not direct_reply from "
-                "profile or partial scope facts. Use need_tools + customer_store_lookup(query=current customer location). "
-                "If the tool reports ambiguity or no exact local store, the reply model can ask for a higher-level city/location "
-                "or recommend verified fallback candidates from tool facts."
-            ),
-        }
-    ]
-
-
 def _current_message_has_explicit_location_for_lookup(text: str, state: AgentState) -> bool:
     compact = _compact_text(text)
     if not compact:
@@ -2901,18 +2686,6 @@ def _current_message_has_explicit_location_for_lookup(text: str, state: AgentSta
     if _current_message_has_bare_location_for_store_lookup(compact, state):
         return True
     return bool(_matching_current_message_region_tokens(compact, state))
-
-
-def _current_message_is_province_only_location(text: str) -> bool:
-    compact = _strip_store_question_words(_compact_text(text))
-    return bool(compact.endswith("省") and not re.search(r"(市|区|县|镇|乡|村|街道|自治州|地区|盟|旗)", compact[:-1]))
-
-
-def _location_question_can_clarify_without_lookup(text: str, state: AgentState) -> bool:
-    compact = _strip_store_question_words(_compact_text(text))
-    if max(_snapshot_city_store_count_for_query(compact), _state_city_store_count_for_query(compact, state)) > 3:
-        return True
-    return False
 
 
 def _strip_store_question_words(text: str) -> str:
@@ -3656,11 +3429,11 @@ def _snapshot_store_values_for_guard() -> list[dict[str, Any]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return [dict(item) for item in KNOWN_STORE_FACTS]
+        return []
     stores_by_id = data.get("stores_by_id") if isinstance(data, dict) else {}
     if isinstance(stores_by_id, dict) and stores_by_id:
         return [dict(store) for store in stores_by_id.values() if isinstance(store, dict)]
-    return [dict(item) for item in KNOWN_STORE_FACTS]
+    return []
 
 
 def _region_token_variants(value: Any) -> set[str]:

@@ -33,6 +33,36 @@ def test_activity_closing_facts_reach_planner_and_reply() -> None:
     assert "offer_facts.approved_closing_reasons" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
 
 
+def test_original_price_is_answerable_but_not_used_in_proactive_marketing() -> None:
+    planner_facts = json.loads(planner_business_rules_prompt_section())
+    offer = planner_facts["offer_facts"]
+
+    assert offer["original_price"] == 1980
+    assert "明确询问原价" in offer["original_price_visibility"]
+    assert "不主动报1980元" in offer["original_price_visibility"]
+    assert "1980" not in offer["quota"]
+    assert all("1980" not in item for item in offer["scarcity_reasons"])
+    assert all("1980" not in item for item in offer["approved_closing_reasons"])
+
+
+def test_activity_sop_copy_does_not_proactively_quote_original_price() -> None:
+    payload = json.loads(open("config/sop_reply_packs.json", encoding="utf-8").read())
+    target_ids = {"s10_activity_intro", "event_s10_price_quote_60min", "event_s10_deposit_push_70min"}
+    texts = {
+        pack["id"]: "\n".join(
+            str(message.get("content", {}).get("text") or "")
+            for message in pack.get("reply_messages") or []
+            if message.get("type") == "text"
+        )
+        for pack in payload["packs"]
+        if pack.get("id") in target_ids
+    }
+
+    assert set(texts) == target_ids
+    assert all("1980" not in text for text in texts.values())
+    assert "名额满活动结束并恢复原价；线下客户到店按原价。" in texts["s10_activity_intro"]
+
+
 def test_legacy_unapproved_gift_is_removed_from_runtime_offer() -> None:
     context_text = json.dumps(ACTIVE_S10_OFFER_CONTEXT, ensure_ascii=False)
     prompt = s10_offer_prompt_section()

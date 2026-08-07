@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -10,31 +11,114 @@ from urllib.parse import urlparse
 ALLOWED_OUTREACH_ASSET_TYPES = {"image", "video"}
 
 
-def build_outreach_asset_catalog(config: dict[str, Any]) -> list[dict[str, Any]]:
-    configured_assets = config.get("assets") if isinstance(config.get("assets"), list) else []
+def _appointment_scene_id(applicable_scene: str) -> str:
+    digest = hashlib.sha1(applicable_scene.encode("utf-8")).hexdigest()[:12]
+    return f"scene_{digest}"
+
+
+def build_appointment_blocker_asset_catalog(playbook: dict[str, Any]) -> list[dict[str, Any]]:
+    items = playbook.get("items") if isinstance(playbook.get("items"), list) else []
     assets: list[dict[str, Any]] = []
-    for configured in configured_assets:
-        if not isinstance(configured, dict) or not bool(configured.get("enabled")):
+    for item in items:
+        if not isinstance(item, dict):
             continue
-        asset_id = _string(configured.get("id"))
-        asset_type = _string(configured.get("type"))
-        url = _string(configured.get("url"))
-        if not asset_id or asset_type not in ALLOWED_OUTREACH_ASSET_TYPES or not _is_http_url(url):
+        content_id = _string(item.get("content_id"))
+        applicable_scene = _string(item.get("applicable_scene"))
+        blocker_type = _string(item.get("blocker_type"))
+        if not content_id or not applicable_scene:
             continue
-        assets.append(
+        for order, message in enumerate(item.get("reply_messages") or [], start=1):
+            if not isinstance(message, dict) or message.get("source_missing"):
+                continue
+            asset_type = _string(message.get("type"))
+            content = message.get("content")
+            url = _string(content.get("url")) if isinstance(content, dict) else _string(content)
+            if asset_type not in ALLOWED_OUTREACH_ASSET_TYPES or not _is_http_url(url):
+                continue
+            assets.append(
+                {
+                    "asset_id": f"appointment-blocker:{content_id}:{order}",
+                    "type": asset_type,
+                    "url": url,
+                    "source": "appointment_blocker_playbook",
+                    "name": content_id,
+                    "annotation": applicable_scene,
+                    "use_cases": [applicable_scene],
+                    "avoid_when": ["近期已经发送相同素材"],
+                    "tags": [blocker_type, content_id],
+                    "content_id": content_id,
+                }
+            )
+    return assets
+
+
+def build_appointment_blocker_scene_index(playbook: dict[str, Any]) -> list[dict[str, Any]]:
+    items = playbook.get("items") if isinstance(playbook.get("items"), list) else []
+    groups: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        content_id = _string(item.get("content_id"))
+        applicable_scene = _string(item.get("applicable_scene"))
+        blocker_type = _string(item.get("blocker_type"))
+        if not content_id or not applicable_scene:
+            continue
+        scene_id = _appointment_scene_id(applicable_scene)
+        group = groups.setdefault(
+            scene_id,
             {
-                "asset_id": asset_id,
-                "type": asset_type,
-                "url": url,
-                "source": "outreach_asset_library",
-                "name": _string(configured.get("name")),
-                "annotation": _string(configured.get("annotation")),
-                "use_cases": _string_list(configured.get("use_cases")),
-                "avoid_when": _string_list(configured.get("avoid_when")),
-                "tags": _string_list(configured.get("tags")),
+                "scene_id": scene_id,
+                "applicable_scene": applicable_scene,
+                "blocker_types": [],
+                "source_ids": [],
+                "asset_ids": [],
+            },
+        )
+        if blocker_type and blocker_type not in group["blocker_types"]:
+            group["blocker_types"].append(blocker_type)
+        group["source_ids"].append(f"appointment-blocker:{content_id}")
+        for order, message in enumerate(item.get("reply_messages") or [], start=1):
+            if not isinstance(message, dict) or message.get("source_missing"):
+                continue
+            if _string(message.get("type")) in ALLOWED_OUTREACH_ASSET_TYPES:
+                group["asset_ids"].append(f"appointment-blocker:{content_id}:{order}")
+    return list(groups.values())
+
+
+def appointment_blocker_materials(playbook: dict[str, Any]) -> list[dict[str, Any]]:
+    items = playbook.get("items") if isinstance(playbook.get("items"), list) else []
+    output: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        content_id = _string(item.get("content_id"))
+        if not content_id:
+            continue
+        reply_messages: list[dict[str, Any]] = []
+        for order, message in enumerate(item.get("reply_messages") or [], start=1):
+            if not isinstance(message, dict) or message.get("source_missing"):
+                continue
+            message_type = _string(message.get("type"))
+            if message_type == "text":
+                reply_messages.append({"type": "text", "order": order, "content": message.get("content")})
+            elif message_type in ALLOWED_OUTREACH_ASSET_TYPES:
+                reply_messages.append(
+                    {
+                        "type": message_type,
+                        "order": order,
+                        "asset_id": f"appointment-blocker:{content_id}:{order}",
+                    }
+                )
+        output.append(
+            {
+                "source_id": f"appointment-blocker:{content_id}",
+                "content_id": content_id,
+                "blocker_type": _string(item.get("blocker_type")),
+                "applicable_scene": _string(item.get("applicable_scene")),
+                "reply_messages": reply_messages,
             }
         )
-    return assets
+    return output
 
 
 def recent_outreach_media(
@@ -57,6 +141,66 @@ def recent_outreach_media(
             if document_id and document_id not in document_ids:
                 document_ids.append(document_id)
     return {"urls": urls, "document_ids": document_ids}
+
+
+def enrich_recent_outreach_media(
+    delivery: dict[str, Any],
+    catalog: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach configured asset facts to sent URLs without inferring sales intent."""
+    output = {
+        "urls": list(delivery.get("urls") or []),
+        "document_ids": list(delivery.get("document_ids") or []),
+        "items": [],
+        "configured_deliveries": [],
+    }
+    assets_by_url: dict[str, list[dict[str, Any]]] = {}
+    for asset in catalog:
+        if not isinstance(asset, dict):
+            continue
+        url = _string(asset.get("url"))
+        if url:
+            assets_by_url.setdefault(url, []).append(asset)
+    for url in output["urls"]:
+        matches = assets_by_url.get(_string(url), [])
+        output["items"].append(
+            {
+                "url": url,
+                "configured_matches": [
+                    {
+                        key: asset.get(key)
+                        for key in (
+                            "asset_id",
+                            "type",
+                            "source",
+                            "name",
+                            "annotation",
+                            "use_cases",
+                            "tags",
+                        )
+                        if asset.get(key)
+                    }
+                    for asset in matches
+                ],
+            }
+        )
+        for asset in matches:
+            fact = {
+                key: asset.get(key)
+                for key in (
+                    "asset_id",
+                    "type",
+                    "source",
+                    "name",
+                    "annotation",
+                    "use_cases",
+                    "tags",
+                )
+                if asset.get(key)
+            }
+            if fact not in output["configured_deliveries"]:
+                output["configured_deliveries"].append(fact)
+    return output
 
 
 def resolve_configured_asset(

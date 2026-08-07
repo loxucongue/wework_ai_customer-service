@@ -170,6 +170,44 @@ CREATE TABLE IF NOT EXISTS outreach_events (
 CREATE INDEX IF NOT EXISTS idx_outreach_events_plan_id ON outreach_events(plan_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_outreach_events_customer_id ON outreach_events(customer_id, created_at);
 
+CREATE TABLE IF NOT EXISTS first_day_outreach_runs (
+    workflow_run_id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL DEFAULT '',
+    first_task_id TEXT NOT NULL DEFAULT '',
+    second_task_id TEXT NOT NULL DEFAULT '',
+    corp_id TEXT NOT NULL DEFAULT '',
+    user_id TEXT NOT NULL DEFAULT '',
+    wechat TEXT NOT NULL DEFAULT '',
+    customer_id TEXT NOT NULL DEFAULT '',
+    external_userid TEXT NOT NULL DEFAULT '',
+    trigger_type TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'running',
+    reason_code TEXT NOT NULL DEFAULT '',
+    final_decision TEXT NOT NULL DEFAULT '',
+    first_scene TEXT NOT NULL DEFAULT '',
+    second_scene TEXT NOT NULL DEFAULT '',
+    model_attempt_count INTEGER NOT NULL DEFAULT 0,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    workflow_json TEXT NOT NULL DEFAULT '{}',
+    final_plan_json TEXT NOT NULL DEFAULT '{}',
+    error_node TEXT NOT NULL DEFAULT '',
+    error_type TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL DEFAULT '',
+    raw_redacted_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_first_day_runs_started ON first_day_outreach_runs(started_at, workflow_run_id);
+CREATE INDEX IF NOT EXISTS idx_first_day_runs_status ON first_day_outreach_runs(status, started_at);
+CREATE INDEX IF NOT EXISTS idx_first_day_runs_plan ON first_day_outreach_runs(plan_id);
+CREATE INDEX IF NOT EXISTS idx_first_day_runs_contact
+ON first_day_outreach_runs(corp_id, wechat, external_userid, customer_id, started_at);
+
 CREATE TABLE IF NOT EXISTS sop_events (
     id TEXT NOT NULL DEFAULT '',
     event_id TEXT PRIMARY KEY,

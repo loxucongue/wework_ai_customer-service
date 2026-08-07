@@ -163,10 +163,6 @@ class Settings(BaseSettings):
         default=Path("config/precision_qa_playbook.json"),
         alias="PRECISION_QA_PLAYBOOK_PATH",
     )
-    outreach_asset_library_path: Path = Field(
-        default=Path("config/outreach_assets.json"),
-        alias="OUTREACH_ASSET_LIBRARY_PATH",
-    )
     sop_objection_materials_path: Path = Field(
         default=Path("config/sop_objection_materials.json"),
         alias="SOP_OBJECTION_MATERIALS_PATH",
@@ -190,6 +186,8 @@ class Settings(BaseSettings):
         default=True,
         alias="OUTREACH_PLAN_MONITOR_AUTO_ACTIVATE",
     )
+    outreach_first_day_silence_enabled: bool = Field(default=True, alias="OUTREACH_FIRST_DAY_SILENCE_ENABLED")
+    outreach_first_day_silence_minutes: int = Field(default=3, alias="OUTREACH_FIRST_DAY_SILENCE_MINUTES")
     debug_platform_context_enabled: bool = Field(default=False, alias="DEBUG_PLATFORM_CONTEXT_ENABLED")
     debug_platform_customer_id: str = Field(default="", alias="DEBUG_PLATFORM_CUSTOMER_ID")
     debug_platform_customer_add_wechat_id: str = Field(default="", alias="DEBUG_PLATFORM_CUSTOMER_ADD_WECHAT_ID")

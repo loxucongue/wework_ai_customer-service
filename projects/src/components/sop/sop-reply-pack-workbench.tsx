@@ -969,9 +969,21 @@ function validateConfig(config: SopConfig): Array<{ level: "error" | "warning"; 
       if (!messageContentFilled(message)) {
         diagnostics.push({ level: "warning", message: `${pack.name || pack.id} 的第 ${message.order} 条消息内容为空` });
       }
+      if (message.type === "text" && hasInvalidRefundPolicy(stringValue(message.content.text))) {
+        diagnostics.push({
+          level: "error",
+          message: `${pack.name || pack.id} 的第 ${message.order} 条消息：预约金退款口径必须包含“到店抵扣；未做或不满意可退，实际按付款记录核对”`,
+        });
+      }
     }
   }
   return diagnostics;
+}
+
+function hasInvalidRefundPolicy(text: string): boolean {
+  const hasLegacyText = text.includes("不做退10元") || text.includes("不做退还10元");
+  const hasIncompletePolicy = text.includes("未做或不满意可退") && !text.includes("实际按付款记录核对");
+  return hasLegacyText || hasIncompletePolicy;
 }
 
 function auditDiagnostics(audit: SopAudit | undefined): Array<{ level: "error" | "warning"; message: string }> {

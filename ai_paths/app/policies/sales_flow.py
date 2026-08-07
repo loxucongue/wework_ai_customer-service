@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -39,30 +40,14 @@ def precision_qa_context_for_planner(
     include_answer_details_in_index: bool = True,
 ) -> dict[str, Any]:
     playbook = load_precision_qa_playbook()
-    questions: list[dict[str, Any]] = []
-    for item in playbook.get("questions") or []:
-        if not isinstance(item, dict):
-            continue
-        question = {
-            "id": item.get("id"),
-            "intent_definition": item.get("intent_definition"),
-            "customer_psychology": item.get("customer_psychology"),
-            "question_role": item.get("question_role"),
-            "must_not_substitute": item.get("must_not_substitute") or [],
-            "first_ask_strategy": item.get("first_ask_strategy"),
-            "allowed_confidence": item.get("allowed_confidence") or [],
-            "evidence_requirement": item.get("evidence_requirement"),
-            "resume_mainline_stage": item.get("resume_mainline_stage"),
-        }
-        if include_answer_details_in_index:
-            question["must_answer"] = item.get("must_answer") or []
-        questions.append(_drop_empty(question))
+    scenes = precision_qa_index_for_gate()
+    selected = precision_qa_for_id(question_id)
+    selected_key = "selected_scene" if str(question_id or "").startswith("scene_") else "selected_question"
     return _drop_empty(
         {
-            "purpose": playbook.get("purpose"),
-            "global_answer_policy": playbook.get("global_answer_policy") or {},
-            "question_index": questions,
-            "selected_question": precision_qa_for_id(question_id),
+            "purpose": "预约卡点适用场景索引；Planner 只使用场景，不读取参考话术。",
+            "scene_index": scenes if include_answer_details_in_index else [],
+            selected_key: selected,
         }
     )
 
@@ -71,10 +56,54 @@ def precision_qa_for_id(question_id: str) -> dict[str, Any]:
     target = str(question_id or "").strip()
     if not target:
         return {}
-    for item in load_precision_qa_playbook().get("questions") or []:
-        if isinstance(item, dict) and str(item.get("id") or "").strip() == target:
-            return item
+    grouped = _appointment_blocker_groups()
+    if target in grouped:
+        return {
+            "id": target,
+            "scene_id": target,
+            "applicable_scene": grouped[target]["applicable_scene"],
+        }
+    if target in _HARD_PRECISION_QUESTION_IDS:
+        return {"id": target, "hard_rule": True}
     return {}
+
+
+def appointment_blocker_reference_for_reply(scene_id: str) -> dict[str, Any]:
+    target = str(scene_id or "").strip()
+    group = _appointment_blocker_groups().get(target)
+    if not group:
+        return {}
+    candidates: list[dict[str, Any]] = []
+    for item in group["items"]:
+        sendable_messages = [
+            message
+            for message in item.get("reply_messages") or []
+            if isinstance(message, dict) and not message.get("source_missing")
+        ]
+        missing_media = [
+            {
+                "type": str(message.get("type") or ""),
+                "content": str(message.get("content") or ""),
+            }
+            for message in item.get("reply_messages") or []
+            if isinstance(message, dict) and message.get("source_missing")
+        ]
+        candidates.append(
+            _drop_empty(
+                {
+                    "content_id": item.get("content_id"),
+                    "blocker_type": item.get("blocker_type"),
+                    "reference_messages": sendable_messages,
+                    "unavailable_media": missing_media,
+                }
+            )
+        )
+    return {
+        "scene_id": target,
+        "applicable_scene": group["applicable_scene"],
+        "usage": "仅作语义与表达参考，必须依据当前事实改写，禁止照抄冲突价格、绝对承诺和性别称谓。",
+        "candidates": candidates,
+    }
 
 
 def load_sales_mainline() -> dict[str, Any]:
@@ -108,28 +137,42 @@ def sales_mainline_for_model() -> dict[str, Any]:
 
 
 def precision_qa_index_for_gate() -> list[dict[str, Any]]:
-    questions: list[dict[str, Any]] = []
-    for item in load_precision_qa_playbook().get("questions") or []:
+    return [
+        {"scene_id": scene_id, "applicable_scene": group["applicable_scene"]}
+        for scene_id, group in _appointment_blocker_groups().items()
+    ]
+
+
+def _appointment_blocker_groups() -> dict[str, dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for item in load_precision_qa_playbook().get("items") or []:
         if not isinstance(item, dict):
             continue
-        questions.append(
-            _drop_empty(
-                {
-                    "id": item.get("id"),
-                    "intent_definition": _compact_text(item.get("intent_definition"), max_chars=120),
-                    "customer_psychology": _compact_text(item.get("customer_psychology"), max_chars=90),
-                    "question_role": item.get("question_role"),
-                    "must_not_substitute": [
-                        _compact_text(value, max_chars=80)
-                        for value in (item.get("must_not_substitute") or [])[:2]
-                        if _compact_text(value, max_chars=80)
-                    ],
-                    "evidence_requirement": item.get("evidence_requirement"),
-                    "resume_mainline_stage": item.get("resume_mainline_stage"),
-                }
-            )
-        )
-    return questions
+        scene = " ".join(str(item.get("applicable_scene") or "").split())
+        if not scene:
+            continue
+        scene_id = f"scene_{hashlib.sha1(scene.encode('utf-8')).hexdigest()[:12]}"
+        group = groups.setdefault(scene_id, {"applicable_scene": scene, "items": []})
+        group["items"].append(item)
+    return groups
+
+
+_HARD_PRECISION_QUESTION_IDS = {
+    "one_session_effect",
+    "price_transparency",
+    "rebound_and_safety",
+    "effect_authenticity",
+    "project_scope",
+    "can_treat_spots",
+    "body_area_and_price",
+    "companion_party_size",
+    "unsupported_online_projects",
+    "aftercare_guidance",
+    "maintenance_and_reappearance",
+    "treatment_sensation_and_recovery",
+    "treatment_method",
+    "age_eligibility",
+}
 
 
 def mainline_stage_for_pack(pack_id: str) -> str:

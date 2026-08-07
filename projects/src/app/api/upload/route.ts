@@ -236,7 +236,7 @@ export async function POST(request: NextRequest) {
   try {
     const scope = request.nextUrl.searchParams.get("scope") || "";
     const requireOss = request.nextUrl.searchParams.get("requireOss") === "1";
-    const isOutreach = scope === "outreach";
+    const isAppointmentBlocker = scope === "appointment-blocker";
     const requestContentType = request.headers.get("content-type") || "";
     let buffer: Buffer;
     let safeName: string;
@@ -244,8 +244,8 @@ export async function POST(request: NextRequest) {
     let sourceUrl = "";
 
     if (requestContentType.includes("application/json")) {
-      if (!isOutreach || !requireOss) {
-        return jsonResponse({ error: "URL transfer is only available for the Outreach asset library" }, { status: 400 });
+      if (!isAppointmentBlocker || !requireOss) {
+        return jsonResponse({ error: "URL transfer is only available for appointment blocker media" }, { status: 400 });
       }
       const payload = (await request.json()) as { sourceUrl?: unknown };
       if (typeof payload.sourceUrl !== "string" || !payload.sourceUrl.trim()) {
@@ -274,17 +274,17 @@ export async function POST(request: NextRequest) {
         { status: 413 }
       );
     }
-    if (isOutreach && !isAllowedMediaType(contentType)) {
-      return jsonResponse({ error: "Outreach assets must be images or videos" }, { status: 415 });
+    if (isAppointmentBlocker && !isAllowedMediaType(contentType)) {
+      return jsonResponse({ error: "Appointment blocker media must be images or videos" }, { status: 415 });
     }
 
-    if (isOutreach || requireOss) {
+    if (isAppointmentBlocker || requireOss) {
       try {
         const ossUpload = await uploadToOss({
           buffer,
           safeName,
           contentType,
-          objectPrefix: "ai-outreach/assets",
+          objectPrefix: "appointment-blockers/media",
         });
         if (!ossUpload) {
           return jsonResponse({ error: "OSS is not configured" }, { status: 503 });

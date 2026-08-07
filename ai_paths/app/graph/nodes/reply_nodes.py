@@ -9,8 +9,6 @@ from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, 
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
 from app.graph.nodes.reply_validation import _paid_deposit_context, validate_reply_consistency
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
-from app.graph.nodes.store_scope_summary import region_mentioned_in_text
-from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.payment_collection import (
     normalize_payment_amount_text,
     payment_collection_content,
@@ -34,6 +32,7 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - 人数按到店总人数理解：“我朋友也一起”通常是本人+1位朋友=2位；“我带两个朋友”是本人+2位朋友=3位。卡片金额必须服从 Planner 的人数和金额决策。
 - 客户明确要入口/预约时，不要因为缺订单或开单失败暴露“入口没对上/不能发卡”，也不能再反问“如果你要我再发”；活动报价已铺垫且无硬阻断时按当前结构事实发卡，否则只补最小必要信息。
 - 没有真实 case_facts/image 不能说“我给您发图/图发您了”；有图且当前明确要图时才输出 image。上一轮顾虑已回答、客户只确认时不要擅自重发案例。
+- 客户因担心一次没效果或可能需要多次而说不做时，这是带原因的效果异议，不按“不做了”字面送客。先明确“当前淡斑效果活动价就是268元、绝大多数客户都是一次就好”，有真实 case_facts 时同轮发图，再说明完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解；不得说因人而异、可能需要多次、单次单部位或以后再来找我。明确要求停止联系或近期已处理同一异议后再次强拒绝时才收口。
 - `store_resolution_fact.status=no_valid_candidate` 且 `candidate_search_complete=true` 表示客户位置已经确认，完整查询后该省范围当前没有可发送的合法门店。不要承诺发卡；要如实、简短地说“您这个地区目前暂时没有门店”，然后只问客户平时常去哪个城市，例如：“亲，您这个地区目前暂时没有门店，您平时更常去哪个城市？我再按您常去的城市帮您看。”不要继续问当前地区的商圈，也不要用“我不乱发、不乱指、不瞎推荐、不敢乱说”这类系统免责表达。若 `candidate_search_complete=false`，这是门店事实加载不完整，不能对客户断言没有门店，也不能主动猜测或列举权威门店事实中没有出现的城市供客户选择。
 - 退款、扣款异常只能先核对门店、时间、金额、项目或截图；不能说已经同意/正在办理退款，也不能承诺自动退回、原路到账或处理时效。
 - 不输出公里、分钟、车程；不承诺绝对效果；没有真实预约事实不能说已经安排好。
@@ -120,40 +119,22 @@ def create_synthesize_reply_node(
                     model_call["stale_handoff_notice_removed"] = True
             fallback_source = ""
             if not messages and errors:
-                store_fallback_messages = _store_resolution_final_fallback_messages(state)
-                if store_fallback_messages:
-                    try:
-                        messages = _prepare_structural_messages(store_fallback_messages, state, warnings)
-                        validate_reply_consistency(messages, state)
-                        reply_source = "deterministic_store_resolution_fallback"
-                        fallback_source = reply_source
-                    except Exception:
-                        messages = []
-                if not messages:
-                    messages = _neutral_final_fallback_messages()
-                    reply_source = "deterministic_neutral_final_fallback"
-                    fallback_source = reply_source
+                messages = _neutral_final_fallback_messages()
+                reply_source = "deterministic_neutral_final_fallback"
+                fallback_source = reply_source
                 recovered_error = errors.pop() if errors else None
                 if recovered_error:
                     warnings.append(
                         {
                             "node": "synthesize_reply",
-                            "message": (
-                                "final_reply_recovered_by_store_resolution_fallback"
-                                if reply_source == "deterministic_store_resolution_fallback"
-                                else "final_reply_recovered_by_neutral_fallback"
-                            ),
+                            "message": "final_reply_recovered_by_neutral_fallback",
                             "detail": str(recovered_error.get("detail") if isinstance(recovered_error, dict) else recovered_error),
                         }
                     )
                 warnings.append(
                     {
                         "node": "synthesize_reply",
-                        "message": (
-                            "store_resolution_fallback_used"
-                            if reply_source == "deterministic_store_resolution_fallback"
-                            else "neutral_final_fallback_used"
-                        ),
+                        "message": "neutral_final_fallback_used",
                     }
                 )
                 if model_call:
@@ -409,12 +390,6 @@ def _prepare_structural_messages(
     prepared, duplicate_payment_removed = _dedupe_payment_collection_messages(prepared)
     if duplicate_payment_removed:
         warnings.append({"node": "synthesize_reply", "message": "duplicate_payment_collection_removed"})
-    prepared, planner_store_cards_preserved = _preserve_planner_store_address_actions(prepared, state)
-    if planner_store_cards_preserved:
-        warnings.append({"node": "synthesize_reply", "message": "planner_store_address_action_preserved"})
-    prepared, required_store_cards_appended = _append_required_store_address_actions(prepared, state)
-    if required_store_cards_appended:
-        warnings.append({"node": "synthesize_reply", "message": "required_store_address_action_appended"})
     for warning in warnings:
         if isinstance(warning, dict) and warning.get("message") == "activity_intro_image_appended":
             warning.setdefault("node", "synthesize_reply")
@@ -546,88 +521,6 @@ def _needs_strong_reply_model(state: AgentState) -> bool:
 
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
     return [{"type": "text", "order": 1, "content": "您稍等一下"}]
-
-
-def _store_resolution_final_fallback_messages(state: AgentState) -> list[dict[str, Any]]:
-    records = _store_resolution_fallback_records(state)
-    if not records:
-        return []
-    envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
-    structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
-    resolution = structured.get("store_resolution_fact") if isinstance(structured.get("store_resolution_fact"), dict) else {}
-    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
-    raw_place = str(resolution.get("raw_place") or lookup.get("raw_query") or lookup.get("query") or "").strip()
-    place_prefix = f"{raw_place}这边" if raw_place else "您这个位置"
-    names = [str(item.get("store_name") or item.get("name") or "").strip() for item in records]
-    names = [name for name in names if name]
-    if len(records) == 1:
-        name = names[0] if names else "这家门店"
-        text = f"收到亲，{place_prefix}当前可对接的是{name}，我把公开位置发您核对。"
-    else:
-        text = f"收到亲，{place_prefix}当前有这几家可对接的门店，我把公开位置都发您核对。"
-    messages: list[dict[str, Any]] = [{"type": "text", "order": 1, "content": text}]
-    for record in records[:3]:
-        store_id = str(record.get("store_id") or record.get("id") or "").strip()
-        if store_id:
-            messages.append({"type": "store_address", "order": len(messages) + 1, "content": {"store_id": store_id}})
-    return _renumber(messages)
-
-
-def _store_resolution_fallback_records(state: AgentState) -> list[dict[str, Any]]:
-    envelope = state.get("fact_envelope") if isinstance(state.get("fact_envelope"), dict) else {}
-    structured = envelope.get("structured_facts") if isinstance(envelope.get("structured_facts"), dict) else {}
-    resolution = structured.get("store_resolution_fact") if isinstance(structured.get("store_resolution_fact"), dict) else {}
-    status = str(resolution.get("status") or "").strip()
-    delivery_mode = str(resolution.get("delivery_mode") or "").strip()
-    if status not in {"send_single", "send_multiple"} and delivery_mode not in {
-        "send_recommended",
-        "send_all_candidates",
-    }:
-        return []
-    expected_ids = [
-        str(item or "").strip()
-        for item in resolution.get("delivery_store_ids") or resolution.get("visible_candidate_ids") or []
-        if str(item or "").strip()
-    ]
-    if not 1 <= len(expected_ids) <= 3:
-        return []
-    records_by_id: dict[str, dict[str, Any]] = {}
-    for item in structured.get("store_facts") or []:
-        if not isinstance(item, dict):
-            continue
-        store_id = str(item.get("store_id") or item.get("id") or "").strip()
-        if not store_id or not _store_record_valid_for_fallback(item):
-            continue
-        records_by_id[store_id] = item
-    records = [records_by_id[store_id] for store_id in expected_ids if store_id in records_by_id]
-    return records if len(records) == len(expected_ids) else []
-
-
-def _store_record_valid_for_fallback(record: dict[str, Any]) -> bool:
-    if record.get("scope_authorized") is False:
-        return False
-    integrity = str(record.get("store_fact_integrity") or "valid").strip().lower()
-    if integrity and integrity != "valid":
-        return False
-    violations = record.get("store_fact_integrity_violations")
-    return not (isinstance(violations, list) and violations)
-
-
-def _maybe_append_required_store_address(
-    messages: list[dict[str, Any]],
-    state: AgentState,
-    exc: Exception,
-) -> list[dict[str, Any]] | None:
-    if "store_address_message_required_when_reply_promises_location_card" not in str(exc):
-        return None
-    store_id = _single_store_fact_id(state)
-    if not store_id:
-        return None
-    if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
-        return None
-    if _store_address_card_conflicts_with_visible_text(messages, state, store_id):
-        return None
-    return _renumber([*messages, {"type": "store_address", "content": {"store_id": store_id}}])
 
 
 def _maybe_build_required_payment_collection_fallback(
@@ -828,129 +721,6 @@ def _structured_facts(state: AgentState) -> dict[str, Any]:
     return structured if isinstance(structured, dict) else {}
 
 
-def _single_store_fact_id(state: AgentState) -> str:
-    structured = _structured_facts(state)
-    store_facts = [item for item in structured.get("store_facts") or [] if isinstance(item, dict)]
-    ids = list(
-        dict.fromkeys(
-            str(item.get("store_id") or item.get("id") or "").strip()
-            for item in store_facts
-            if str(item.get("store_id") or item.get("id") or "").strip()
-        )
-    )
-    return ids[0] if len(ids) == 1 else ""
-
-
-def _store_address_card_conflicts_with_visible_text(
-    messages: list[dict[str, Any]],
-    state: AgentState,
-    store_id: str,
-) -> bool:
-    text = _combined_visible_text(messages)
-    if not text:
-        return False
-    target = _store_record_for_id(state, store_id)
-    if not target:
-        return False
-    target_names = _store_record_names(target)
-    target_tokens = {_compact_text(item) for item in [*target_names, *_store_record_regions(target)] if _compact_text(item)}
-    for record in _known_store_records(state):
-        if str(record.get("store_id") or record.get("id") or "").strip() == store_id:
-            continue
-        for name in _store_record_names(record):
-            if name and name in text and name not in target_names:
-                return True
-        other_region_hit = any(region_mentioned_in_text(region, text) for region in _store_record_regions(record))
-        if other_region_hit and target_tokens and not any(token and token in _compact_text(text) for token in target_tokens):
-            return True
-    for name in KNOWN_STORE_NAMES:
-        store_name = str(name or "").strip()
-        if store_name and store_name in text and store_name not in target_names:
-            return True
-    return False
-
-
-def _combined_visible_text(messages: list[dict[str, Any]]) -> str:
-    return " ".join(
-        _message_text(item.get("content"))
-        for item in messages
-        if isinstance(item, dict) and str(item.get("type") or "text") == "text"
-    )
-
-
-def _store_record_for_id(state: AgentState, store_id: str) -> dict[str, Any]:
-    for record in _known_store_records(state):
-        if str(record.get("store_id") or record.get("id") or "").strip() == store_id:
-            return record
-    return {}
-
-
-def _known_store_records(state: AgentState) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-    structured = _structured_facts(state)
-    for key in ("store_facts", "appointment_facts"):
-        for item in structured.get(key) or []:
-            if isinstance(item, dict):
-                records.append(item)
-    recommended = structured.get("recommended_store")
-    if isinstance(recommended, dict):
-        records.append(recommended)
-    knowledge = state.get("customer_store_knowledge") if isinstance(state.get("customer_store_knowledge"), dict) else {}
-    for item in knowledge.get("stores") or []:
-        if isinstance(item, dict):
-            records.append(item)
-    basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
-    if basic:
-        records.append(
-            {
-                "store_id": basic.get("preferred_store_id") or basic.get("store_id"),
-                "store_name": basic.get("preferred_store_name") or basic.get("store_name"),
-                "city": basic.get("city") or basic.get("current_city"),
-                "district": basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),
-            }
-        )
-    output: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for item in records:
-        store_id = str(item.get("store_id") or item.get("id") or "").strip()
-        store_name = str(item.get("store_name") or item.get("name") or "").strip()
-        key = (store_id, store_name)
-        if not (store_id or store_name) or key in seen:
-            continue
-        seen.add(key)
-        output.append(item)
-    return output
-
-
-def _store_record_names(record: dict[str, Any]) -> list[str]:
-    values = [str(record.get(key) or "").strip() for key in ("store_name", "name")]
-    return [item for item in dict.fromkeys(values) if item]
-
-
-def _store_record_regions(record: dict[str, Any]) -> list[str]:
-    values: list[str] = []
-    for key in ("province", "city", "district", "area", "region", "address_region"):
-        value = str(record.get(key) or "").strip()
-        if value:
-            values.append(value)
-    address = str(record.get("address") or record.get("store_address") or "").strip()
-    if address:
-        values.extend(_known_region_tokens_in_text(address))
-    return [item for item in dict.fromkeys(values) if len(_compact_text(item)) >= 2]
-
-
-def _known_region_tokens_in_text(text: str) -> list[str]:
-    tokens: list[str] = []
-    for suffix in ("省", "市", "区", "县", "镇", "乡", "旗", "州", "盟", "新区"):
-        for part in str(text or "").replace("，", " ").replace(",", " ").split():
-            if suffix in part:
-                index = part.find(suffix)
-                token = part[: index + len(suffix)]
-                if token:
-                    tokens.append(token)
-    return tokens
-
-
 def _compact_text(value: Any) -> str:
     return "".join(str(value or "").split()).lower()
 
@@ -961,7 +731,7 @@ def _reply_repair_hint(error: str) -> str:
     if "precision_reply_missing_mainline_action" in error:
         return "精准支线问题不能只答疑后停住。请保留当前问题的正面回答，再补一条明确主线动作句：问城市或区域、主动接活动名额、发案例、推进预约金或登记到店时间。动作句要具体、像微信销售，不要写“继续处理/安排下一步/如果您想”。"
     if "precision_reply_weak_one_session_confidence" in error:
-        return "客户问只能淡或一次效果时，先给正向信心：不是只能淡一点，我们这边很多客户改善都很明显，做前做后原相机对比能直观看到变化。不要复述客户的绝对化问题，也不要以不能保证开头；最后接一个主线动作。"
+        return "客户问只能淡或一次效果时，先明确说当前淡斑效果活动价就是268元、绝大多数客户都是一次就好；有真实 case_facts 时同轮发效果图，再说明完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解。不要以因人而异、可能需要多次、需要看深浅和时间开头，不主动说单次单部位，也不要直接送客。"
     if "payment_collection_blocked_by_health_risk_hold" in error:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_blocked_by_payment_action" in error:
@@ -989,7 +759,7 @@ def _reply_repair_hint(error: str) -> str:
     if "case_image_required_for_effect_turn" in error:
         return "本轮客户在问效果或案例，且已有 case_facts 案例图片事实。必须先用 text 肯定效果方向，再追加 1 条 case_facts.image_url 的 image。"
     if "effect_reply_confidence_order_required" in error:
-        return "效果疑问要先肯定对应需求可以做、大多数客户改善反馈不错，再补到店检测更准确；不要第一句就说因人而异、不保证或具体看个人情况。"
+        return "效果疑问要先明确当前淡斑效果活动价268元、绝大多数客户都是一次就好，并用真实案例建立信任；完成线上活动登记后可到门店免费做皮肤检测并听取具体情况讲解。不要第一句就说因人而异、可能需要多次、不保证或具体看个人情况。"
     if "effect_absolute_safety_claim" in error:
         return "效果和安全顾虑可以积极承接，允许‘一般不会反黑’和‘多数客户反馈都比较正常’这类信心表达；只避免明确的绝对、保证或100%安全承诺，再自然接到店检测或当前主线。"
     if "reply_too_similar" in error:
@@ -1014,12 +784,6 @@ def _reply_repair_hint(error: str) -> str:
         return "本轮 store_resolution_fact 要求 clarify_location，说明客户只给了省份、候选超过3家或地点仍有歧义。删除所有 store_address，只问一个最小必要字段：具体城市、区县或定位。"
     if "store_cards_not_allowed_for_province_only_scope" in error:
         return "客户当前只给了省份，且没有可靠的城市、区县或定位事实。删除所有 store_address，不按省中心猜门店；只自然追问具体城市、区县或请客户发定位。"
-    if "complete_store_listing_cards_required" in error:
-        return "本轮门店工具已经返回 purpose=existence 的完整 1 至 3 家真实门店。请保留自然说明，并为 tool_facts.store_facts 中每个 store_id 各输出一条 store_address；不能只用编号或文字列出门店来代替卡片。"
-    if "store_detail_public_card_required" in error:
-        return "客户在追问具体到店指引，但本轮还没有权威楼号或房间号。请先解释预约登记和避免跑空的原因，并为 tool_facts.store_facts 中的真实门店追加对应 store_address 供客户核对；最后只确认登记或到店意向，不要转问斑点、案例、活动或预约金。"
-    if "recommended_store_card_required" in error:
-        return "本轮 store_resolution_fact.status=send_single，必须只发送 delivery_store_ids 中唯一门店卡。请自然承接并追加对应 store_address；不要自行选择其他门店，也不要新增“已安排、已预约、已登记、已留位”等没有事实支持的状态。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
         return "你在文本里承诺了发送地址或位置卡，但本轮没有对应门店卡。只有 store_resolution_fact.status=send_single/send_multiple 时，才按 delivery_store_ids 追加对应 store_address；其他状态必须删除发卡承诺，并按状态补问地区、确认解析结果或询问客户常去的市区/商圈。"
     if "store_cards_not_allowed_when_service_area_clarification_required" in error:
@@ -1033,7 +797,7 @@ def _reply_repair_hint(error: str) -> str:
     if "nearby_store_claim_without_location_fact" in error:
         return "没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”。请改成“我给您看下门店/对下城市或区域”，不要编距离感。"
     if "available_time_fact_required" in error:
-        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“多数可以看改善 + 发送 case_facts.image_url + 到店专业检测更准”。"
+        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“当前淡斑效果活动价268元、绝大多数客户一次就好 + 发送 case_facts.image_url + 登记后可到门店免费检测并听取具体情况讲解”。"
     if "appointment_confirmation_fact_required" in error:
         return "available_time 只表示目标时段目前可选，不代表已经留位、改约或安排成功。普通预约可问“这个时间方便吗”；已有旧预约的改约场景只输出一条：“这个时间目前可以，您确认要改到这个时间吗？”。删除其他“继续核对/先按这个时间/帮您改过去/帮您留/锁定/安排/记上/预约成功”表达。"
     if "too_many_appointment_time_options" in error:
@@ -1178,153 +942,6 @@ def _normalize_payment_amount_text_messages(messages: list[dict[str, Any]]) -> l
         else:
             output.append({**item, "content": normalize_payment_amount_text(str(content or ""), amount)})
     return _renumber(output)
-
-
-def _preserve_planner_store_address_actions(
-    messages: list[dict[str, Any]],
-    state: AgentState,
-) -> tuple[list[dict[str, Any]], bool]:
-    """Keep Planner-approved, fact-validated store cards from being lost by Reply."""
-    if str(state.get("planner_decision") or "") != "direct_reply":
-        return messages, False
-    planner_messages = _normalize_planner_reply_messages(state.get("planner_reply_messages"), state=state)
-    planned_cards = [item for item in planner_messages if str(item.get("type") or "") == "store_address"]
-    if not planned_cards:
-        return messages, False
-
-    existing_ids = {
-        _store_id_from_message(item)
-        for item in messages
-        if str(item.get("type") or "") == "store_address"
-    }
-    additions = [item for item in planned_cards if _store_id_from_message(item) and _store_id_from_message(item) not in existing_ids]
-    if not additions:
-        return messages, False
-
-    candidate = _renumber([*messages, *additions])
-    try:
-        validate_reply_consistency(candidate, state)
-    except Exception:
-        return messages, False
-    return candidate, True
-
-
-def _append_required_store_address_actions(
-    messages: list[dict[str, Any]],
-    state: AgentState,
-) -> tuple[list[dict[str, Any]], bool]:
-    """Complete store-card structure using only current, validated tool facts."""
-    structured = _structured_facts(state)
-    resolution = (
-        structured.get("store_resolution_fact")
-        if isinstance(structured.get("store_resolution_fact"), dict)
-        else {}
-    )
-    resolution_status = str(resolution.get("status") or "")
-    if resolution_status in {
-        "need_location",
-        "need_location_confirmation",
-        "ambiguous_location",
-        "no_valid_candidate",
-        "reuse_confirmed_store",
-    } or str(resolution.get("delivery_mode") or "") == "clarify_location":
-        return messages, False
-
-    required_ids = list(
-        dict.fromkeys(
-            str(item or "").strip()
-            for item in resolution.get("delivery_store_ids") or []
-            if str(item or "").strip()
-        )
-    )
-    if required_ids:
-        expected_count = 1 if resolution_status == "send_single" else len(required_ids)
-        if resolution_status == "send_single" and len(required_ids) != 1:
-            return messages, False
-        if resolution_status == "send_multiple" and not 2 <= len(required_ids) <= 3:
-            return messages, False
-        if expected_count != len(required_ids):
-            return messages, False
-
-    recommended = (
-        structured.get("recommended_store")
-        if isinstance(structured.get("recommended_store"), dict)
-        else {}
-    )
-    recommended_id = str(recommended.get("store_id") or recommended.get("id") or "").strip()
-    delivery_mode = str(resolution.get("delivery_mode") or "")
-    if not required_ids and (
-        delivery_mode in {"", "send_recommended"}
-        and recommended_id
-        and str(recommended.get("reason") or "") in {"distance_calculate_rank_1", "haversine_rank_1"}
-    ):
-        required_ids = [recommended_id]
-    elif not required_ids and delivery_mode == "send_all_candidates":
-        required_ids = list(
-            dict.fromkeys(
-                str(item or "").strip()
-                for item in resolution.get("visible_candidate_ids") or []
-                if str(item or "").strip()
-            )
-        )
-        if not 1 <= len(required_ids) <= 3:
-            return messages, False
-    elif not required_ids:
-        lookup = (
-            structured.get("store_lookup_status")
-            if isinstance(structured.get("store_lookup_status"), dict)
-            else {}
-        )
-        store_ids = list(
-            dict.fromkeys(
-                str(item.get("store_id") or item.get("id") or "").strip()
-                for item in structured.get("store_facts") or []
-                if isinstance(item, dict)
-                and str(item.get("store_id") or item.get("id") or "").strip()
-            )
-        )
-        try:
-            candidate_count = int(lookup.get("candidate_count") or 0)
-        except (TypeError, ValueError):
-            candidate_count = 0
-        if (
-            str(lookup.get("status") or "") == "ok"
-            and str(lookup.get("resolved_admin_level") or "") != "province"
-            and 1 <= candidate_count <= 3
-            and len(store_ids) == candidate_count
-        ):
-            required_ids = store_ids
-
-    if not required_ids:
-        return messages, False
-    existing_ids = {
-        _store_id_from_message(item)
-        for item in messages
-        if isinstance(item, dict) and str(item.get("type") or "") == "store_address"
-    }
-    additions = [
-        {"type": "store_address", "content": {"store_id": store_id}}
-        for store_id in required_ids
-        if store_id not in existing_ids
-    ]
-    if not additions:
-        return messages, False
-
-    insert_at = next(
-        (
-            index + 1
-            for index, item in enumerate(messages)
-            if isinstance(item, dict) and str(item.get("type") or "") == "text"
-        ),
-        len(messages),
-    )
-    candidate = _renumber([*messages[:insert_at], *additions, *messages[insert_at:]])
-    return candidate, True
-
-
-def _store_id_from_message(message: dict[str, Any]) -> str:
-    content = message.get("content") if isinstance(message.get("content"), dict) else {}
-    return str(content.get("store_id") or "").strip()
 
 
 def _first_payment_collection_amount(messages: list[dict[str, Any]]) -> int:

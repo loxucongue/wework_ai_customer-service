@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 
 from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
@@ -16,7 +17,6 @@ from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
-from app.services.outreach_asset_library_service import OutreachAssetLibraryService
 from app.services.outreach_service import OutreachService, classify_conversation_refresh_error
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.outreach_system_client import OutreachSystemClient
@@ -61,14 +61,13 @@ customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_
 store_service = StoreService(platform_agent_client)
 sop_reply_pack_service = SopReplyPackService(settings)
 precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
-outreach_asset_library_service = OutreachAssetLibraryService(settings)
 sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
 outreach_service = OutreachService(
     repository=repository,
     model_client=model_client,
     system_client=outreach_system_client,
     customer_context_service=customer_context_service,
-    outreach_asset_library_service=outreach_asset_library_service,
+    precision_qa_playbook_service=precision_qa_playbook_service,
     coze_client=coze_client,
     before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
 )
@@ -143,6 +142,8 @@ logger = logging.getLogger(__name__)
 sop_platform_pull_worker: asyncio.Task[None] | None = None
 storage_retention_worker: asyncio.Task[None] | None = None
 store_snapshot_refresh_worker: asyncio.Task[None] | None = None
+outreach_plan_monitor_worker: asyncio.Task[None] | None = None
+first_day_retention_last_date = ""
 
 
 async def _run_sop_platform_pull_worker() -> None:
@@ -150,6 +151,7 @@ async def _run_sop_platform_pull_worker() -> None:
 
 
 async def _run_storage_retention_worker() -> None:
+    global first_day_retention_last_date
     while True:
         try:
             result = await asyncio.to_thread(
@@ -159,6 +161,15 @@ async def _run_storage_retention_worker() -> None:
             )
             if any(result.values()):
                 logger.info("Pruned AICS runtime history: %s", result)
+            beijing_date = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+            if first_day_retention_last_date != beijing_date:
+                first_day_result = await asyncio.to_thread(
+                    repository.prune_first_day_outreach_runs,
+                    raw_days=30,
+                    summary_days=90,
+                )
+                first_day_retention_last_date = beijing_date
+                logger.info("Pruned first-day outreach run history: %s", first_day_result)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -184,10 +195,43 @@ async def _run_store_snapshot_refresh_worker() -> None:
         await asyncio.sleep(max(300, int(settings.store_snapshot_refresh_interval_seconds)))
 
 
+async def _run_outreach_plan_monitor_worker() -> None:
+    while True:
+        try:
+            if settings.outreach_first_day_silence_enabled:
+                await outreach_service.evaluate_first_day_opened_silence_customers(
+                    limit=settings.outreach_plan_monitor_batch_size,
+                    silent_minutes=settings.outreach_first_day_silence_minutes,
+                    auto_activate=settings.outreach_plan_monitor_auto_activate,
+                )
+                await outreach_service.execute_due_first_day_tasks(
+                    limit=settings.outreach_auto_send_batch_size,
+                )
+            if settings.outreach_plan_monitor_enabled:
+                await outreach_service.evaluate_silent_customers(
+                    limit=settings.outreach_plan_monitor_batch_size,
+                    silent_minutes=settings.outreach_plan_monitor_silent_minutes,
+                    auto_activate=settings.outreach_plan_monitor_auto_activate,
+                )
+            if settings.outreach_auto_send_enabled:
+                await outreach_service.execute_due_tasks(
+                    limit=settings.outreach_auto_send_batch_size,
+                    auto_approved_only=True,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Outreach plan monitor iteration failed")
+        await asyncio.sleep(max(5.0, float(settings.outreach_plan_monitor_poll_seconds)))
+
+
 @app.on_event("startup")
 async def startup() -> None:
-    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
     storage_store.initialize()
+    backfill_result = await asyncio.to_thread(repository.backfill_first_day_outreach_runs)
+    if backfill_result.get("created_runs"):
+        logger.info("Backfilled first-day outreach run history: %s", backfill_result)
     if settings.sop_platform_pull_enabled and (
         sop_platform_pull_worker is None or sop_platform_pull_worker.done()
     ):
@@ -198,11 +242,16 @@ async def startup() -> None:
         store_snapshot_refresh_worker is None or store_snapshot_refresh_worker.done()
     ):
         store_snapshot_refresh_worker = asyncio.create_task(_run_store_snapshot_refresh_worker())
+    if (
+        settings.outreach_first_day_silence_enabled
+        or settings.outreach_plan_monitor_enabled
+    ) and (outreach_plan_monitor_worker is None or outreach_plan_monitor_worker.done()):
+        outreach_plan_monitor_worker = asyncio.create_task(_run_outreach_plan_monitor_worker())
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker
+    global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
     if sop_platform_pull_worker is not None:
         sop_platform_pull_worker.cancel()
         with suppress(asyncio.CancelledError):
@@ -218,6 +267,11 @@ async def shutdown() -> None:
         with suppress(asyncio.CancelledError):
             await store_snapshot_refresh_worker
         store_snapshot_refresh_worker = None
+    if outreach_plan_monitor_worker is not None:
+        outreach_plan_monitor_worker.cancel()
+        with suppress(asyncio.CancelledError):
+            await outreach_plan_monitor_worker
+        outreach_plan_monitor_worker = None
     await platform_voice_batch_coordinator.aclose()
     await model_client.aclose()
     await coze_client.aclose()
@@ -326,14 +380,22 @@ async def admin_update_precision_qa_playbook(payload: dict[str, Any] = Body(...)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/admin/outreach/assets", dependencies=[Depends(require_api_key)])
-async def admin_outreach_assets() -> dict[str, Any]:
-    return outreach_asset_library_service.load()
-
-
-@app.put("/admin/outreach/assets", dependencies=[Depends(require_api_key)])
-async def admin_update_outreach_assets(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    raise HTTPException(status_code=410, detail="旧 Outreach 已转为历史只读")
+@app.get("/admin/operations-dashboard", dependencies=[Depends(require_api_key)])
+async def admin_operations_dashboard(
+    started_from: str = "",
+    started_to: str = "",
+    corp_id: str = "",
+    wechat: str = "",
+) -> dict[str, Any]:
+    try:
+        return repository.operations_dashboard(
+            started_from=started_from,
+            started_to=started_to,
+            corp_id=corp_id,
+            wechat=wechat,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/admin/sop-objection-materials", dependencies=[Depends(require_api_key)])
@@ -649,9 +711,12 @@ async def admin_outreach_dashboard() -> dict[str, Any]:
             "before_send_retry_seconds": settings.outreach_before_send_retry_seconds,
         },
         "plan_monitor": {
-            "enabled": False,
+            "enabled": settings.outreach_plan_monitor_enabled or settings.outreach_first_day_silence_enabled,
+            "day2_plus_enabled": settings.outreach_plan_monitor_enabled,
+            "first_day_enabled": settings.outreach_first_day_silence_enabled,
             "poll_seconds": settings.outreach_plan_monitor_poll_seconds,
             "silent_minutes": settings.outreach_plan_monitor_silent_minutes,
+            "first_day_silent_minutes": settings.outreach_first_day_silence_minutes,
             "batch_size": settings.outreach_plan_monitor_batch_size,
             "auto_activate": settings.outreach_plan_monitor_auto_activate,
             **outreach_service.monitor_status(),
@@ -863,3 +928,46 @@ async def admin_outreach_events(
     plan_id: str = "",
 ) -> dict[str, Any]:
     return {"items": outreach_service.list_events(limit=limit, customer_id=customer_id, plan_id=plan_id)}
+
+
+@app.get("/admin/outreach/first-day-runs", dependencies=[Depends(require_api_key)])
+async def admin_first_day_outreach_runs(
+    limit: int = 50,
+    cursor: str = "",
+    started_from: str = "",
+    started_to: str = "",
+    customer_id: str = "",
+    external_userid: str = "",
+    corp_id: str = "",
+    wechat: str = "",
+    plan_id: str = "",
+    status: str = "",
+    reason_code: str = "",
+    first_scene: str = "",
+    second_scene: str = "",
+    failed: bool | None = None,
+) -> dict[str, Any]:
+    return repository.list_first_day_outreach_runs(
+        limit=limit,
+        cursor=cursor,
+        started_from=started_from,
+        started_to=started_to,
+        customer_id=customer_id,
+        external_userid=external_userid,
+        corp_id=corp_id,
+        wechat=wechat,
+        plan_id=plan_id,
+        status=status,
+        reason_code=reason_code,
+        first_scene=first_scene,
+        second_scene=second_scene,
+        failed=failed,
+    )
+
+
+@app.get("/admin/outreach/first-day-runs/{workflow_run_id}", dependencies=[Depends(require_api_key)])
+async def admin_first_day_outreach_run(workflow_run_id: str) -> dict[str, Any]:
+    detail = repository.get_first_day_outreach_run(workflow_run_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="first-day outreach run not found")
+    return detail

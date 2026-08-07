@@ -14,7 +14,6 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.policies.constants import KNOWN_STORE_FACTS
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.coze_oauth import CozeOAuthTokenProvider
 from app.services.store_fact_integrity import filter_valid_store_facts
@@ -27,7 +26,9 @@ def store_snapshot_rows(path: str | Path = Path("data/store_snapshot.json")) -> 
     try:
         modified_ns = resolved.stat().st_mtime_ns
     except OSError:
-        return [dict(item) for item in KNOWN_STORE_FACTS]
+        # Missing snapshot means the fact source is unavailable. Static examples
+        # must not be exposed as current production store facts.
+        return []
     return [dict(item) for item in _cached_snapshot_rows(str(resolved), modified_ns)]
 
 

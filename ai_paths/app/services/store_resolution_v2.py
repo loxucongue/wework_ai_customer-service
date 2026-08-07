@@ -15,6 +15,15 @@ STORE_RESOLUTION_STATUSES = {
 }
 
 
+def customer_location_hint_texts(state: dict[str, Any], *, limit: int = 6) -> list[str]:
+    """Return current and recent customer-authored location evidence only."""
+
+    current = str(state.get("normalized_content") or state.get("content") or "").strip()
+    customer_messages, _ = _recent_message_evidence(state)
+    values = [current, *[text for _, text in customer_messages[-max(1, limit) :]]]
+    return list(dict.fromkeys(text for text in values if text))
+
+
 def build_location_evidence(
     state: dict[str, Any],
     *,

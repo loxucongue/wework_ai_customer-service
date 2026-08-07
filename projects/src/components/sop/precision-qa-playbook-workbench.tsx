@@ -1,748 +1,167 @@
 "use client";
 
-import Link from "next/link";
-import type { ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
-import {
-  ArrowLeft,
-  ChevronDown,
-  ChevronUp,
-  Copy,
-  Plus,
-  RefreshCw,
-  Save,
-  Settings2,
-  Trash2,
-} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ChevronDown, ChevronUp, Copy, ImagePlus, Plus, RefreshCw, Save, Search, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 
-type GlobalAnswerPolicy = {
-  first_answer: string;
-  confidence: string;
-  mainline_resume: string;
-  variation: string;
-  facts: string;
-  [key: string]: unknown;
-};
-
-type ReplyExample = {
-  context: string;
-  reply: string[];
-  [key: string]: unknown;
-};
-
-type PrecisionQuestion = {
-  id: string;
-  intent_definition: string;
-  customer_psychology: string;
-  question_role: string;
-  must_answer: string[];
-  must_not_substitute: string[];
-  first_ask_strategy: string;
-  repeated_ask_strategy: string;
-  allowed_confidence: string[];
-  forbidden_claims: string[];
-  evidence_requirement: string;
-  resume_mainline_stage: string;
-  reply_examples: ReplyExample[];
-  [key: string]: unknown;
-};
-
-type PrecisionAuditIssue = {
-  severity: "error" | "warning";
-  code: string;
-  question_id: string;
-  message: string;
-};
-
-type PrecisionAudit = {
-  status: "ok" | "warning" | "error";
-  error_count: number;
-  warning_count: number;
-  issues: PrecisionAuditIssue[];
-};
-
-type PrecisionQaConfig = {
+type MessageType = "text" | "image" | "image_reference" | "video_reference" | "media_reference";
+type ReplyMessage = { type: MessageType; content: string; source_missing?: boolean };
+type BlockerItem = { blocker_type: string; applicable_scene: string; content_id: string; reply_messages: ReplyMessage[] };
+type Config = {
   version: number;
   updated_at: string;
-  purpose: string;
-  global_answer_policy: GlobalAnswerPolicy;
-  questions: PrecisionQuestion[];
-  audit?: PrecisionAudit;
-  storage?: Record<string, unknown>;
-  [key: string]: unknown;
+  items: BlockerItem[];
+  audit?: { warning_count?: number; error_count?: number; issues?: Array<{ content_id?: string; message?: string }> };
 };
 
-const GLOBAL_ID = "__global";
-
-const EMPTY_CONFIG: PrecisionQaConfig = {
-  version: 1,
-  updated_at: "",
-  purpose: "",
-  global_answer_policy: {
-    first_answer: "",
-    confidence: "",
-    mainline_resume: "",
-    variation: "",
-    facts: "",
-  },
-  questions: [],
-};
-
-const POLICY_FIELDS: Array<{ key: keyof GlobalAnswerPolicy; label: string }> = [
-  { key: "first_answer", label: "优先回答原则" },
-  { key: "confidence", label: "信心表达原则" },
-  { key: "mainline_resume", label: "回答后恢复主线" },
-  { key: "variation", label: "多样化与重复追问" },
-  { key: "facts", label: "事实边界" },
-];
-
-const QUESTION_ROLES = ["core_blocker", "mainline_slot", "side_question", "tool_fact"];
-const EVIDENCE_REQUIREMENTS = ["none", "business_rule", "case_image", "store_fact", "payment_fact", "appointment_fact"];
-const MAINLINE_STAGES = ["opening_and_positioning", "store_match", "need_and_case", "activity_and_price", "deposit_decision", "post_paid_registration"];
+const EMPTY: Config = { version: 4, updated_at: "", items: [] };
+const MESSAGE_TYPES: MessageType[] = ["text", "image", "image_reference", "video_reference", "media_reference"];
 
 export function PrecisionQaPlaybookWorkbench() {
-  const [config, setConfig] = useState<PrecisionQaConfig>(EMPTY_CONFIG);
-  const [selectedId, setSelectedId] = useState(GLOBAL_ID);
+  const [config, setConfig] = useState<Config>(EMPTY);
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [sceneFilter, setSceneFilter] = useState("");
+  const [editingId, setEditingId] = useState("");
+  const [draft, setDraft] = useState<BlockerItem | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState("");
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
 
-  const selectedQuestion = useMemo(
-    () => config.questions.find((question) => question.id === selectedId),
-    [config.questions, selectedId]
-  );
-  const diagnostics = useMemo(
-    () => [...validatePrecisionConfig(config), ...auditDiagnostics(config.audit)],
-    [config]
-  );
-  const blockingErrors = diagnostics.filter((item) => item.level === "error");
-  const warnings = diagnostics.filter((item) => item.level === "warning");
+  const types = useMemo(() => [...new Set(config.items.map((item) => item.blocker_type))].sort(), [config.items]);
+  const scenes = useMemo(() => [...new Set(config.items.map((item) => item.applicable_scene))].sort(), [config.items]);
+  const filtered = useMemo(() => config.items.filter((item) => {
+    const text = `${item.content_id} ${item.blocker_type} ${item.applicable_scene} ${item.reply_messages.map((message) => message.content).join(" ")}`.toLowerCase();
+    return (!query.trim() || text.includes(query.trim().toLowerCase()))
+      && (!typeFilter || item.blocker_type === typeFilter)
+      && (!sceneFilter || item.applicable_scene === sceneFilter);
+  }), [config.items, query, sceneFilter, typeFilter]);
 
-  useEffect(() => {
-    void loadConfig();
-  }, []);
+  const missingCount = config.items.flatMap((item) => item.reply_messages).filter((message) => message.source_missing).length;
+  const imageCount = config.items.flatMap((item) => item.reply_messages).filter((message) => message.type === "image").length;
 
-  useEffect(() => {
-    if (selectedId !== GLOBAL_ID && !config.questions.some((question) => question.id === selectedId)) {
-      setSelectedId(config.questions[0]?.id || GLOBAL_ID);
-    }
-  }, [config.questions, selectedId]);
-
-  async function loadConfig() {
-    setLoading(true);
-    setError("");
-    setStatus("");
+  async function load() {
+    setLoading(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/precision-qa-playbook", { cache: "no-store" });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.detail || data?.error || "加载精准回复配置失败");
-      }
-      setConfig(normalizePrecisionConfig(data));
-      setStatus("已加载最新配置");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载精准回复配置失败");
-    } finally {
-      setLoading(false);
-    }
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || payload.error || "加载预约卡点话术失败");
+      setConfig(normalize(payload));
+      setNotice("已加载线上配置");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "加载失败"); }
+    finally { setLoading(false); }
   }
 
-  async function saveConfig() {
-    if (blockingErrors.length) {
-      setStatus("");
-      setError("请先处理红色校验项");
-      return;
-    }
-    setSaving(true);
-    setError("");
-    setStatus("");
+  useEffect(() => { void load(); }, []);
+
+  async function save() {
+    const validation = validate(config);
+    if (validation) { setError(validation); return; }
+    setSaving(true); setError(""); setNotice("");
     try {
       const response = await fetch("/api/precision-qa-playbook", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify(config),
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config),
       });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.detail || data?.error || "保存精准回复配置失败");
-      }
-      setConfig(normalizePrecisionConfig(data));
-      setStatus("已保存，模型节点已读取新版本");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "保存精准回复配置失败");
-    } finally {
-      setSaving(false);
-    }
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail || payload.error || "保存失败");
+      setConfig(normalize(payload)); setNotice("已保存，模型节点将读取新配置");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "保存失败"); }
+    finally { setSaving(false); }
   }
 
-  function addQuestion() {
-    const question = createQuestion(uniqueQuestionId(config.questions, "precision_question"));
-    setConfig((current) => ({ ...current, questions: [...current.questions, question] }));
-    setSelectedId(question.id);
+  function openEditor(item: BlockerItem) { setEditingId(item.content_id); setDraft(structuredClone(item)); }
+  function commitDraft() {
+    if (!draft) return;
+    const itemError = validateItem(draft);
+    if (itemError) { setError(itemError); return; }
+    const duplicate = config.items.some((item) => item.content_id === draft.content_id && item.content_id !== editingId);
+    if (duplicate) { setError(`内容编号 ${draft.content_id} 已存在`); return; }
+    setConfig((current) => ({ ...current, items: current.items.map((item) => item.content_id === editingId ? draft : item) }));
+    setDraft(null); setEditingId(""); setError("");
   }
-
-  function duplicateQuestion(question: PrecisionQuestion) {
-    const copied = {
-      ...clone(question),
-      id: uniqueQuestionId(config.questions, `${question.id}_copy`),
-    };
-    setConfig((current) => ({ ...current, questions: [...current.questions, copied] }));
-    setSelectedId(copied.id);
+  function addItem() {
+    const number = Math.max(0, ...config.items.map((item) => Number(item.content_id.replace(/\D/g, "")) || 0)) + 1;
+    const item: BlockerItem = { blocker_type: "", applicable_scene: "", content_id: `YYHF-${String(number).padStart(4, "0")}`, reply_messages: [{ type: "text", content: "" }] };
+    setConfig((current) => ({ ...current, items: [...current.items, item] })); openEditor(item);
   }
-
-  function deleteQuestion(questionId: string) {
-    setConfig((current) => ({
-      ...current,
-      questions: current.questions.filter((question) => question.id !== questionId),
-    }));
-  }
-
-  function moveQuestion(questionId: string, direction: -1 | 1) {
-    setConfig((current) => {
-      const questions = current.questions.slice();
-      const index = questions.findIndex((question) => question.id === questionId);
-      const nextIndex = index + direction;
-      if (index < 0 || nextIndex < 0 || nextIndex >= questions.length) return current;
-      const [question] = questions.splice(index, 1);
-      questions.splice(nextIndex, 0, question);
-      return { ...current, questions };
-    });
-  }
-
-  function updateQuestion(questionId: string, patch: Partial<PrecisionQuestion>) {
-    setConfig((current) => ({
-      ...current,
-      questions: current.questions.map((question) =>
-        question.id === questionId ? { ...question, ...patch } : question
-      ),
-    }));
-    if (patch.id && selectedId === questionId) {
-      setSelectedId(patch.id);
-    }
+  function duplicate(item: BlockerItem) {
+    const number = Math.max(0, ...config.items.map((candidate) => Number(candidate.content_id.replace(/\D/g, "")) || 0)) + 1;
+    const copy = { ...structuredClone(item), content_id: `YYHF-${String(number).padStart(4, "0")}` };
+    setConfig((current) => ({ ...current, items: [...current.items, copy] })); openEditor(copy);
   }
 
   return (
-    <main className="min-h-screen bg-zinc-50 text-zinc-950">
-      <header className="sticky top-16 z-20 border-b bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-5 py-3">
-          <div className="flex items-center gap-3">
-            <Button asChild variant="outline" size="icon" aria-label="返回">
-              <Link href="/">
-                <ArrowLeft />
-              </Link>
-            </Button>
-            <div>
-              <h1 className="text-xl font-semibold leading-tight">精准回复配置</h1>
-              <p className="text-sm text-zinc-500">配置高频问题的语义边界、回答目标和主线衔接。</p>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" onClick={loadConfig} disabled={loading || saving}>
-              <RefreshCw className={loading ? "animate-spin" : ""} />
-              刷新
-            </Button>
-            <Button onClick={saveConfig} disabled={saving || loading}>
-              <Save />
-              {saving ? "保存中" : "保存精准回复"}
-            </Button>
-          </div>
-        </div>
-      </header>
-
-      <div className="mx-auto grid max-w-7xl grid-cols-1 gap-5 px-5 py-5 lg:grid-cols-[320px_minmax(0,1fr)]">
-        <aside className="space-y-3">
-          <div className="rounded-lg border bg-white p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-sm font-semibold">精准回复</div>
-                <div className="text-xs text-zinc-500">{config.questions.length} 个高频问题</div>
-              </div>
-              <Button size="sm" onClick={addQuestion}>
-                <Plus />
-                新增
-              </Button>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setSelectedId(GLOBAL_ID)}
-            className={`w-full rounded-lg border bg-white p-3 text-left transition hover:border-zinc-400 ${
-              selectedId === GLOBAL_ID ? "border-zinc-950 shadow-sm" : "border-zinc-200"
-            }`}
-          >
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <Settings2 className="size-4" />
-              全局回答策略
-            </div>
-            <div className="mt-1 text-xs text-zinc-500">适用于全部精准问题</div>
-          </button>
-
-          <div className="space-y-2">
-            {config.questions.map((question) => (
-              <button
-                key={question.id}
-                type="button"
-                onClick={() => setSelectedId(question.id)}
-                className={`w-full rounded-lg border bg-white p-3 text-left transition hover:border-zinc-400 ${
-                  selectedId === question.id ? "border-zinc-950 shadow-sm" : "border-zinc-200"
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0 truncate text-sm font-semibold">{question.id}</div>
-                  <Badge variant="outline">{question.question_role || "未分类"}</Badge>
-                </div>
-                <div className="mt-2 line-clamp-2 text-xs text-zinc-500">
-                  {question.intent_definition || "未填写意图定义"}
-                </div>
-                <div className="mt-2 truncate text-xs text-zinc-500">
-                  回到 {question.resume_mainline_stage || "未配置主线"}
-                </div>
-              </button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="space-y-4">
-          {(error || status || blockingErrors.length > 0 || warnings.length > 0) && (
-            <div className="rounded-lg border bg-white p-4 text-sm">
-              {error && <div className="text-red-600">{error}</div>}
-              {status && !error && <div className="text-emerald-700">{status}</div>}
-              {blockingErrors.length > 0 && (
-                <div className="mt-2 space-y-1 text-red-600">
-                  {blockingErrors.map((item, index) => <div key={`${item.message}-${index}`}>{item.message}</div>)}
-                </div>
-              )}
-              {warnings.length > 0 && (
-                <div className="mt-2 space-y-1 text-amber-700">
-                  {warnings.map((item, index) => <div key={`${item.message}-${index}`}>{item.message}</div>)}
-                </div>
-              )}
-            </div>
-          )}
-
-          {loading ? (
-            <div className="rounded-lg border bg-white p-8 text-sm text-zinc-500">正在加载配置...</div>
-          ) : selectedId === GLOBAL_ID ? (
-            <GlobalPolicyEditor
-              config={config}
-              onChange={(patch) => setConfig((current) => ({ ...current, ...patch }))}
-            />
-          ) : selectedQuestion ? (
-            <PrecisionQuestionEditor
-              question={selectedQuestion}
-              index={config.questions.findIndex((question) => question.id === selectedQuestion.id)}
-              total={config.questions.length}
-              onChange={(patch) => updateQuestion(selectedQuestion.id, patch)}
-              onDuplicate={() => duplicateQuestion(selectedQuestion)}
-              onDelete={() => deleteQuestion(selectedQuestion.id)}
-              onMove={(direction) => moveQuestion(selectedQuestion.id, direction)}
-            />
-          ) : (
-            <div className="rounded-lg border bg-white p-8 text-sm text-zinc-500">请选择一条精准回复。</div>
-          )}
-        </section>
-      </div>
-    </main>
-  );
-}
-
-function GlobalPolicyEditor({
-  config,
-  onChange,
-}: {
-  config: PrecisionQaConfig;
-  onChange: (patch: Partial<PrecisionQaConfig>) => void;
-}) {
-  function updatePolicy(key: keyof GlobalAnswerPolicy, value: string) {
-    onChange({ global_answer_policy: { ...config.global_answer_policy, [key]: value } });
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="rounded-lg border bg-white p-5">
-        <div>
-          <h2 className="text-lg font-semibold">全局回答策略</h2>
-          <p className="text-sm text-zinc-500">版本 {config.version} · 最近保存 {formatUpdatedAt(config.updated_at)}</p>
-        </div>
-        <div className="mt-5">
-          <Field label="精准回复库目的">
-            <Textarea value={config.purpose} onChange={(event) => onChange({ purpose: event.target.value })} className="min-h-24" />
-          </Field>
+    <div className="mx-auto max-w-[1600px] space-y-4 p-4 lg:p-6">
+      <div className="flex flex-col justify-between gap-3 border-b pb-4 lg:flex-row lg:items-end">
+        <div><h2 className="text-base font-semibold">预约卡点话术库</h2><p className="mt-1 text-sm text-zinc-500">Gate 只读取适用场景，Reply 在命中后参考同场景候选内容。</p></div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => void load()} disabled={loading}><RefreshCw className={loading ? "animate-spin" : ""} />刷新</Button>
+          <Button variant="outline" onClick={addItem}><Plus />新增</Button>
+          <Button onClick={() => void save()} disabled={saving}><Save />{saving ? "保存中" : "保存配置"}</Button>
         </div>
       </div>
-      <div className="rounded-lg border bg-white p-5">
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {POLICY_FIELDS.map((field) => (
-            <Field key={String(field.key)} label={field.label} className={field.key === "facts" ? "col-span-2" : ""}>
-              <Textarea
-                value={stringValue(config.global_answer_policy[field.key])}
-                onChange={(event) => updatePolicy(field.key, event.target.value)}
-                className="min-h-28"
-              />
-            </Field>
-          ))}
-        </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Summary label="话术条目" value={config.items.length} />
+        <Summary label="有效图片实例" value={imageCount} />
+        <Summary label="缺失媒体" value={missingCount} warning />
       </div>
-      <JsonPreview title="当前全局策略 JSON" value={{ purpose: config.purpose, global_answer_policy: config.global_answer_policy }} />
+
+      {(notice || error) && <div className={`rounded-md border px-3 py-2 text-sm ${error ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>{error || notice}</div>}
+
+      <div className="grid gap-2 rounded-md border bg-white p-3 md:grid-cols-[minmax(240px,1fr)_220px_320px]">
+        <div className="relative"><Search className="absolute left-3 top-2.5 size-4 text-zinc-400" /><Input className="pl-9" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索编号、场景或话术" /></div>
+        <select className="h-9 rounded-md border bg-white px-3 text-sm" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}><option value="">全部卡点类型</option>{types.map((value) => <option key={value}>{value}</option>)}</select>
+        <select className="h-9 min-w-0 rounded-md border bg-white px-3 text-sm" value={sceneFilter} onChange={(event) => setSceneFilter(event.target.value)}><option value="">全部适用场景</option>{scenes.map((value) => <option key={value}>{value}</option>)}</select>
+      </div>
+
+      <div className="space-y-2 md:hidden">
+        {filtered.map((item) => {
+          const missing = item.reply_messages.filter((message) => message.source_missing).length;
+          return <article key={item.content_id} className="rounded-md border bg-white p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="font-medium">{item.blocker_type}</span><span className="font-mono text-xs text-zinc-500">{item.content_id}</span></div><p className="mt-2 text-sm text-zinc-600">{item.applicable_scene}</p></div><Button size="icon" variant="ghost" onClick={() => openEditor(item)} title="编辑"><Search /></Button></div><div className="mt-3 line-clamp-3 whitespace-pre-wrap border-t pt-3 text-sm text-zinc-500">{item.reply_messages.map((message) => message.type === "text" ? message.content : `[${message.type}] ${message.content}`).join("\n")}</div>{missing > 0 && <Badge variant="outline" className="mt-2 border-amber-300 text-amber-700"><AlertTriangle />{missing} 个媒体缺失</Badge>}<div className="mt-2 flex justify-end gap-1"><Button size="sm" variant="ghost" onClick={() => duplicate(item)}><Copy />复制</Button><Button size="sm" variant="ghost" onClick={() => setConfig((current) => ({ ...current, items: current.items.filter((candidate) => candidate.content_id !== item.content_id) }))}><Trash2 />删除</Button></div></article>;
+        })}
+      </div>
+
+      <div className="hidden overflow-hidden rounded-md border bg-white md:block">
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[980px] table-fixed text-left text-sm">
+            <thead className="border-b bg-zinc-50 text-xs text-zinc-500"><tr><th className="w-36 px-3 py-3">卡点类型</th><th className="w-[34%] px-3 py-3">适用场景</th><th className="w-32 px-3 py-3">内容编号</th><th className="px-3 py-3">话术内容</th><th className="w-28 px-3 py-3 text-right">操作</th></tr></thead>
+            <tbody className="divide-y">{filtered.map((item) => {
+              const missing = item.reply_messages.filter((message) => message.source_missing).length;
+              return <tr key={item.content_id} className="align-top hover:bg-zinc-50/70"><td className="px-3 py-3 font-medium">{item.blocker_type}</td><td className="px-3 py-3 text-zinc-600">{item.applicable_scene}</td><td className="px-3 py-3 font-mono text-xs">{item.content_id}</td><td className="px-3 py-3"><div className="line-clamp-3 whitespace-pre-wrap text-zinc-600">{item.reply_messages.map((message) => message.type === "text" ? message.content : `[${message.type}] ${message.content}`).join("\n")}</div>{missing > 0 && <Badge variant="outline" className="mt-2 border-amber-300 text-amber-700"><AlertTriangle />{missing} 个媒体缺失</Badge>}</td><td className="px-3 py-3"><div className="flex justify-end gap-1"><Button size="icon" variant="ghost" onClick={() => openEditor(item)} title="编辑"><Search /></Button><Button size="icon" variant="ghost" onClick={() => duplicate(item)} title="复制"><Copy /></Button><Button size="icon" variant="ghost" onClick={() => setConfig((current) => ({ ...current, items: current.items.filter((candidate) => candidate.content_id !== item.content_id) }))} title="删除"><Trash2 /></Button></div></td></tr>;
+            })}</tbody>
+          </table>
+        </div>
+        {!loading && filtered.length === 0 && <div className="p-10 text-center text-sm text-zinc-400">没有符合条件的话术</div>}
+      </div>
+
+      <EditorDialog draft={draft} onChange={setDraft} onClose={() => { setDraft(null); setEditingId(""); }} onSave={commitDraft} />
     </div>
   );
 }
 
-function PrecisionQuestionEditor({
-  question,
-  index,
-  total,
-  onChange,
-  onDuplicate,
-  onDelete,
-  onMove,
-}: {
-  question: PrecisionQuestion;
-  index: number;
-  total: number;
-  onChange: (patch: Partial<PrecisionQuestion>) => void;
-  onDuplicate: () => void;
-  onDelete: () => void;
-  onMove: (direction: -1 | 1) => void;
-}) {
-  function updateExample(exampleIndex: number, patch: Partial<ReplyExample>) {
-    onChange({
-      reply_examples: question.reply_examples.map((example, currentIndex) =>
-        currentIndex === exampleIndex ? { ...example, ...patch } : example
-      ),
-    });
+function EditorDialog({ draft, onChange, onClose, onSave }: { draft: BlockerItem | null; onChange: (value: BlockerItem | null) => void; onClose: () => void; onSave: () => void }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploadingIndex, setUploadingIndex] = useState(-1);
+  if (!draft) return null;
+  const update = (patch: Partial<BlockerItem>) => onChange({ ...draft, ...patch });
+  const updateMessage = (index: number, patch: Partial<ReplyMessage>) => update({ reply_messages: draft.reply_messages.map((message, current) => current === index ? { ...message, ...patch } : message) });
+  const move = (index: number, direction: -1 | 1) => { const messages = [...draft.reply_messages]; const target = index + direction; if (target < 0 || target >= messages.length) return; [messages[index], messages[target]] = [messages[target], messages[index]]; update({ reply_messages: messages }); };
+  async function upload(file: File | undefined, index: number) {
+    if (!file) return; setUploadingIndex(index);
+    try { const body = new FormData(); body.append("file", file); const response = await fetch("/api/upload?scope=appointment-blocker&requireOss=1", { method: "POST", body }); const result = await response.json(); if (!response.ok || !result.url || result.storage !== "oss") throw new Error(result.error || "OSS 上传失败"); updateMessage(index, { type: "image", content: result.url, source_missing: false }); } finally { setUploadingIndex(-1); if (fileRef.current) fileRef.current.value = ""; }
   }
-
-  function addExample() {
-    onChange({ reply_examples: [...question.reply_examples, { context: "", reply: [""] }] });
-  }
-
-  function deleteExample(exampleIndex: number) {
-    onChange({ reply_examples: question.reply_examples.filter((_, currentIndex) => currentIndex !== exampleIndex) });
-  }
-
-  function moveExample(exampleIndex: number, direction: -1 | 1) {
-    const nextIndex = exampleIndex + direction;
-    if (nextIndex < 0 || nextIndex >= question.reply_examples.length) return;
-    const examples = question.reply_examples.slice();
-    const [example] = examples.splice(exampleIndex, 1);
-    examples.splice(nextIndex, 0, example);
-    onChange({ reply_examples: examples });
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="rounded-lg border bg-white p-5">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h2 className="text-lg font-semibold">{question.id}</h2>
-            <p className="text-sm text-zinc-500">精准问题 #{index + 1}</p>
-          </div>
-          <div className="flex flex-wrap gap-1">
-            <Button variant="ghost" size="icon-sm" onClick={() => onMove(-1)} disabled={index <= 0} aria-label="上移">
-              <ChevronUp />
-            </Button>
-            <Button variant="ghost" size="icon-sm" onClick={() => onMove(1)} disabled={index >= total - 1} aria-label="下移">
-              <ChevronDown />
-            </Button>
-            <Button variant="outline" size="sm" onClick={onDuplicate}>
-              <Copy />
-              复制
-            </Button>
-            <Button variant="outline" size="sm" onClick={onDelete}>
-              <Trash2 />
-              删除
-            </Button>
-          </div>
-        </div>
-
-        <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Field label="ID">
-            <Input value={question.id} onChange={(event) => onChange({ id: cleanIdentifier(event.target.value) })} />
-          </Field>
-          <Field label="问题角色">
-            <Input list="precision-question-roles" value={question.question_role} onChange={(event) => onChange({ question_role: event.target.value })} />
-            <datalist id="precision-question-roles">{QUESTION_ROLES.map((value) => <option key={value} value={value} />)}</datalist>
-          </Field>
-          <Field label="意图定义" className="col-span-2">
-            <Textarea value={question.intent_definition} onChange={(event) => onChange({ intent_definition: event.target.value })} className="min-h-24" />
-          </Field>
-          <Field label="客户心理" className="col-span-2">
-            <Textarea value={question.customer_psychology} onChange={(event) => onChange({ customer_psychology: event.target.value })} className="min-h-24" />
-          </Field>
-          <Field label="事实要求">
-            <Input list="precision-evidence-requirements" value={question.evidence_requirement} onChange={(event) => onChange({ evidence_requirement: event.target.value })} />
-            <datalist id="precision-evidence-requirements">{EVIDENCE_REQUIREMENTS.map((value) => <option key={value} value={value} />)}</datalist>
-          </Field>
-          <Field label="回答后恢复主线">
-            <Input list="precision-mainline-stages" value={question.resume_mainline_stage} onChange={(event) => onChange({ resume_mainline_stage: event.target.value })} />
-            <datalist id="precision-mainline-stages">{MAINLINE_STAGES.map((value) => <option key={value} value={value} />)}</datalist>
-          </Field>
-        </div>
-      </div>
-
-      <div className="rounded-lg border bg-white p-5">
-        <h3 className="font-semibold">回答内容边界</h3>
-        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-          <LineListField label="必须回答，一行一条" value={question.must_answer} onChange={(value) => onChange({ must_answer: value })} />
-          <LineListField label="不能用来替代答案，一行一条" value={question.must_not_substitute} onChange={(value) => onChange({ must_not_substitute: value })} />
-          <LineListField label="允许的信心表达，一行一条" value={question.allowed_confidence} onChange={(value) => onChange({ allowed_confidence: value })} />
-          <LineListField label="禁止承诺，一行一条" value={question.forbidden_claims} onChange={(value) => onChange({ forbidden_claims: value })} />
-        </div>
-      </div>
-
-      <div className="rounded-lg border bg-white p-5">
-        <h3 className="font-semibold">回答策略</h3>
-        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
-          <Field label="首次提问">
-            <Textarea value={question.first_ask_strategy} onChange={(event) => onChange({ first_ask_strategy: event.target.value })} className="min-h-28" />
-          </Field>
-          <Field label="重复追问">
-            <Textarea value={question.repeated_ask_strategy} onChange={(event) => onChange({ repeated_ask_strategy: event.target.value })} className="min-h-28" />
-          </Field>
-        </div>
-      </div>
-
-      <div className="rounded-lg border bg-white p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h3 className="font-semibold">优秀回复示例</h3>
-          <Button variant="outline" size="sm" onClick={addExample}>
-            <Plus />
-            新增示例
-          </Button>
-        </div>
-        <div className="mt-4 space-y-3">
-          {question.reply_examples.map((example, exampleIndex) => (
-            <div key={exampleIndex} className="rounded-lg border border-zinc-200 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <Badge variant="outline">示例 {exampleIndex + 1}</Badge>
-                <div className="flex flex-wrap gap-1">
-                  <Button variant="ghost" size="icon-sm" onClick={() => moveExample(exampleIndex, -1)} disabled={exampleIndex === 0} aria-label="示例上移"><ChevronUp /></Button>
-                  <Button variant="ghost" size="icon-sm" onClick={() => moveExample(exampleIndex, 1)} disabled={exampleIndex === question.reply_examples.length - 1} aria-label="示例下移"><ChevronDown /></Button>
-                  <Button variant="ghost" size="icon-sm" onClick={() => deleteExample(exampleIndex)} aria-label="删除示例"><Trash2 /></Button>
-                </div>
-              </div>
-              <div className="mt-3 space-y-3">
-                <Field label="适用上下文">
-                  <Input value={example.context} onChange={(event) => updateExample(exampleIndex, { context: event.target.value })} />
-                </Field>
-                <LineListField label="回复消息，一行一条" value={example.reply} onChange={(value) => updateExample(exampleIndex, { reply: value })} minHeight="min-h-28" />
-              </div>
-            </div>
-          ))}
-          {question.reply_examples.length === 0 && (
-            <div className="rounded-lg border border-dashed p-8 text-center text-sm text-zinc-500">还没有优秀回复示例。</div>
-          )}
-        </div>
-      </div>
-
-      <JsonPreview title="当前精准回复 JSON" value={question} />
-    </div>
-  );
+  return <Dialog open onOpenChange={(open) => !open && onClose()}><DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-3xl"><DialogHeader><DialogTitle>编辑预约卡点话术</DialogTitle><DialogDescription>四个业务字段与 Excel 结构一致；消息顺序即 Reply 的参考顺序。</DialogDescription></DialogHeader><div className="grid gap-3 sm:grid-cols-2"><Field label="卡点类型"><Input value={draft.blocker_type} onChange={(event) => update({ blocker_type: event.target.value })} /></Field><Field label="内容编号"><Input value={draft.content_id} onChange={(event) => update({ content_id: event.target.value })} /></Field><Field label="适用场景" wide><Textarea rows={3} value={draft.applicable_scene} onChange={(event) => update({ applicable_scene: event.target.value })} /></Field></div><div className="space-y-3"><div className="flex items-center justify-between"><div className="text-sm font-medium">话术内容</div><Button size="sm" variant="outline" onClick={() => update({ reply_messages: [...draft.reply_messages, { type: "text", content: "" }] })}><Plus />添加消息</Button></div>{draft.reply_messages.map((message, index) => <div key={`${index}-${message.type}`} className="rounded-md border p-3"><div className="mb-2 flex flex-wrap items-center gap-2"><select className="h-8 rounded-md border px-2 text-sm" value={message.type} onChange={(event) => updateMessage(index, { type: event.target.value as MessageType, source_missing: event.target.value.endsWith("_reference") || event.target.value === "media_reference" ? message.source_missing : false })}>{MESSAGE_TYPES.map((type) => <option key={type}>{type}</option>)}</select>{message.source_missing && <Badge variant="outline" className="border-amber-300 text-amber-700"><AlertTriangle />源文件缺失，不发送</Badge>}<div className="ml-auto flex gap-1"><Button size="icon" variant="ghost" onClick={() => move(index, -1)} disabled={index === 0}><ChevronUp /></Button><Button size="icon" variant="ghost" onClick={() => move(index, 1)} disabled={index === draft.reply_messages.length - 1}><ChevronDown /></Button><Button size="icon" variant="ghost" onClick={() => update({ reply_messages: draft.reply_messages.filter((_, current) => current !== index) })}><Trash2 /></Button></div></div>{message.type === "text" ? <Textarea rows={5} value={message.content} onChange={(event) => updateMessage(index, { content: event.target.value })} /> : <><Input value={message.content} onChange={(event) => updateMessage(index, { content: event.target.value })} placeholder="OSS URL 或缺失媒体名称" /><div className="mt-2 flex items-center gap-2"><input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(event) => void upload(event.target.files?.[0], index)} /><Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={uploadingIndex === index}><ImagePlus />{uploadingIndex === index ? "上传中" : "上传图片到 OSS"}</Button>{message.type === "image" && message.content && <img src={message.content} alt="话术素材预览" className="h-16 w-16 rounded-md border object-cover" />}</div></>}</div>)}</div><DialogFooter><Button variant="outline" onClick={onClose}>取消</Button><Button onClick={onSave}>应用修改</Button></DialogFooter></DialogContent></Dialog>;
 }
 
-function LineListField({
-  label,
-  value,
-  onChange,
-  minHeight = "min-h-36",
-}: {
-  label: string;
-  value: string[];
-  onChange: (value: string[]) => void;
-  minHeight?: string;
-}) {
-  return (
-    <Field label={label}>
-      <Textarea
-        value={value.join("\n")}
-        onChange={(event) => onChange(lines(event.target.value))}
-        className={minHeight}
-      />
-    </Field>
-  );
-}
-
-function JsonPreview({ title, value }: { title: string; value: unknown }) {
-  return (
-    <div className="rounded-lg border bg-white p-5">
-      <h3 className="font-semibold">{title}</h3>
-      <pre className="mt-3 max-h-[360px] overflow-auto rounded-md bg-zinc-950 p-4 text-xs text-zinc-50">
-        {JSON.stringify(value, null, 2)}
-      </pre>
-    </div>
-  );
-}
-
-function Field({ label, className, children }: { label: string; className?: string; children: ReactNode }) {
-  return (
-    <div className={className}>
-      <Label className="mb-2 text-xs text-zinc-500">{label}</Label>
-      {children}
-    </div>
-  );
-}
-
-function normalizePrecisionConfig(value: unknown): PrecisionQaConfig {
-  if (!isRecord(value)) return EMPTY_CONFIG;
-  const rawPolicy = isRecord(value.global_answer_policy) ? value.global_answer_policy : {};
-  return {
-    ...value,
-    version: numberValue(value.version, 1),
-    updated_at: stringValue(value.updated_at),
-    purpose: stringValue(value.purpose),
-    global_answer_policy: {
-      ...rawPolicy,
-      first_answer: stringValue(rawPolicy.first_answer),
-      confidence: stringValue(rawPolicy.confidence),
-      mainline_resume: stringValue(rawPolicy.mainline_resume),
-      variation: stringValue(rawPolicy.variation),
-      facts: stringValue(rawPolicy.facts),
-    },
-    questions: Array.isArray(value.questions) ? value.questions.map(normalizeQuestion) : [],
-    audit: normalizeAudit(value.audit),
-    storage: isRecord(value.storage) ? value.storage : undefined,
-  };
-}
-
-function normalizeQuestion(value: unknown): PrecisionQuestion {
-  const record = isRecord(value) ? value : {};
-  return {
-    ...record,
-    id: cleanIdentifier(stringValue(record.id)),
-    intent_definition: stringValue(record.intent_definition),
-    customer_psychology: stringValue(record.customer_psychology),
-    question_role: stringValue(record.question_role),
-    must_answer: stringList(record.must_answer),
-    must_not_substitute: stringList(record.must_not_substitute),
-    first_ask_strategy: stringValue(record.first_ask_strategy),
-    repeated_ask_strategy: stringValue(record.repeated_ask_strategy),
-    allowed_confidence: stringList(record.allowed_confidence),
-    forbidden_claims: stringList(record.forbidden_claims),
-    evidence_requirement: stringValue(record.evidence_requirement),
-    resume_mainline_stage: stringValue(record.resume_mainline_stage),
-    reply_examples: Array.isArray(record.reply_examples) ? record.reply_examples.map(normalizeExample) : [],
-  };
-}
-
-function normalizeExample(value: unknown): ReplyExample {
-  const record = isRecord(value) ? value : {};
-  return { ...record, context: stringValue(record.context), reply: stringList(record.reply) };
-}
-
-function normalizeAudit(value: unknown): PrecisionAudit | undefined {
-  if (!isRecord(value)) return undefined;
-  const issues = Array.isArray(value.issues)
-    ? value.issues.map((item) => {
-        const record = isRecord(item) ? item : {};
-        return {
-          severity: stringValue(record.severity) === "error" ? "error" as const : "warning" as const,
-          code: stringValue(record.code),
-          question_id: stringValue(record.question_id),
-          message: stringValue(record.message),
-        };
-      })
-    : [];
-  const status = stringValue(value.status);
-  return {
-    status: status === "error" || status === "warning" ? status : "ok",
-    error_count: numberValue(value.error_count, 0),
-    warning_count: numberValue(value.warning_count, 0),
-    issues,
-  };
-}
-
-function validatePrecisionConfig(config: PrecisionQaConfig): Array<{ level: "error" | "warning"; message: string }> {
-  const diagnostics: Array<{ level: "error" | "warning"; message: string }> = [];
-  const ids = new Set<string>();
-  for (const question of config.questions) {
-    if (!question.id) diagnostics.push({ level: "error", message: "存在空的精准问题 ID" });
-    if (ids.has(question.id)) diagnostics.push({ level: "error", message: `精准问题 ID 重复：${question.id}` });
-    ids.add(question.id);
-    if (!question.intent_definition.trim()) diagnostics.push({ level: "error", message: `${question.id || "未命名问题"} 缺少意图定义` });
-    if (question.must_answer.length === 0) diagnostics.push({ level: "error", message: `${question.id || "未命名问题"} 至少需要一条必须回答` });
-    if (question.reply_examples.length === 0) diagnostics.push({ level: "warning", message: `${question.id || "未命名问题"} 没有优秀回复示例` });
-  }
-  return diagnostics;
-}
-
-function auditDiagnostics(audit: PrecisionAudit | undefined): Array<{ level: "error" | "warning"; message: string }> {
-  if (!audit?.issues?.length) return [];
-  return audit.issues.map((issue) => ({
-    level: issue.severity,
-    message: issue.question_id ? `${issue.question_id}: ${issue.message}` : issue.message,
-  }));
-}
-
-function createQuestion(id: string): PrecisionQuestion {
-  return {
-    id,
-    intent_definition: "",
-    customer_psychology: "",
-    question_role: "core_blocker",
-    must_answer: [],
-    must_not_substitute: [],
-    first_ask_strategy: "",
-    repeated_ask_strategy: "",
-    allowed_confidence: [],
-    forbidden_claims: [],
-    evidence_requirement: "none",
-    resume_mainline_stage: "need_and_case",
-    reply_examples: [],
-  };
-}
-
-function uniqueQuestionId(questions: PrecisionQuestion[], baseId: string) {
-  const existing = new Set(questions.map((question) => question.id));
-  let next = cleanIdentifier(baseId) || "precision_question";
-  let index = 2;
-  while (existing.has(next)) {
-    next = `${cleanIdentifier(baseId)}_${index}`;
-    index += 1;
-  }
-  return next;
-}
-
-function lines(value: string) {
-  return value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-}
-
-function stringList(value: unknown) {
-  return Array.isArray(value) ? value.map(stringValue).filter(Boolean) : [];
-}
-
-function cleanIdentifier(value: string) {
-  return value.replace(/[^a-zA-Z0-9_-]/g, "");
-}
-
-function numberValue(value: unknown, fallback: number) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function stringValue(value: unknown) {
-  if (value === null || value === undefined) return "";
-  return String(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function formatUpdatedAt(value: string) {
-  if (!value) return "尚未保存到独立配置";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
-}
+function Field({ label, wide, children }: { label: string; wide?: boolean; children: React.ReactNode }) { return <label className={wide ? "sm:col-span-2" : ""}><span className="mb-1 block text-xs font-medium text-zinc-500">{label}</span>{children}</label>; }
+function Summary({ label, value, warning = false }: { label: string; value: number; warning?: boolean }) { return <div className="rounded-md border bg-white p-3"><div className="text-xs text-zinc-500">{label}</div><div className={`mt-1 text-xl font-semibold tabular-nums ${warning && value ? "text-amber-700" : ""}`}>{value}</div></div>; }
+function normalize(payload: Partial<Config>): Config { return { version: Number(payload.version || 4), updated_at: String(payload.updated_at || ""), items: Array.isArray(payload.items) ? payload.items : [], audit: payload.audit }; }
+function validate(config: Config) { const ids = new Set<string>(); for (const item of config.items) { const issue = validateItem(item); if (issue) return issue; if (ids.has(item.content_id)) return `内容编号 ${item.content_id} 重复`; ids.add(item.content_id); } return ""; }
+function validateItem(item: BlockerItem) { if (!item.blocker_type.trim() || !item.applicable_scene.trim() || !item.content_id.trim()) return "卡点类型、适用场景和内容编号不能为空"; if (!item.reply_messages.length || item.reply_messages.some((message) => !message.content.trim())) return `${item.content_id} 的话术消息不能为空`; return ""; }

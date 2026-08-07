@@ -270,9 +270,6 @@ def validate_reply_consistency(messages: list[dict[str, Any]], state: dict[str, 
     _validate_finished_tool_turn_does_not_promise_pending_work(messages, state)
     _validate_fact_boundaries(messages, state)
     _validate_store_address_card_consistency(messages, state)
-    _validate_store_detail_public_card_delivery(messages, state)
-    _validate_complete_store_listing_delivery(messages, state)
-    _validate_recommended_store_delivery(messages, state)
     _validate_store_delivery_text_matches_cards(messages, state)
 
 
@@ -697,108 +694,6 @@ def _promises_store_info_delivery_without_cards(text: str) -> bool:
     )
 
 
-def _validate_complete_store_listing_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    """Require cards when the completed lookup fact is a small, complete store listing."""
-
-    if not _current_turn_requires_complete_store_listing(state):
-        return
-    if _current_scope_is_province_only(state):
-        return
-    current_content = str(state.get("normalized_content") or state.get("content") or "")
-    compact_current = re.sub(r"\s+", "", current_content)
-    if (
-        any(term in compact_current for term in ("这家", "那家", "这个店", "刚刚那家", "刚才那家"))
-        and not _current_message_requests_store_address_card(current_content)
-    ):
-        return
-    store_ids = _required_complete_store_listing_ids(state)
-    if not store_ids:
-        return
-    if not store_ids.issubset(_emitted_store_address_ids(messages)):
-        raise ValueError("complete_store_listing_cards_required")
-
-
-def _validate_store_detail_public_card_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    """Keep detail replies grounded when Planner chose registration/visit intent as the next step."""
-
-    if str(state.get("planner_sub_rule_id") or "") not in {
-        "S2_LOCATION_DETAIL",
-        "S2_ADDRESS_PARKING_HOURS",
-    }:
-        return
-    closing_move = state.get("closing_move") if isinstance(state.get("closing_move"), dict) else {}
-    if str(closing_move.get("action") or "") not in {"ask_registration", "ask_visit_intent"}:
-        return
-    structured = _structured_facts(state)
-    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
-    if str(lookup.get("purpose") or "") != "detail":
-        return
-    store_facts = _authorized_store_facts_for_validation(state)
-    if not store_facts:
-        return
-    has_arrival_guidance = any(
-        any(
-            str(item.get(key) or "").strip()
-            for key in (
-                "floor",
-                "room",
-                "room_number",
-                "suite",
-                "arrival_guidance",
-                "arrival_instructions",
-                "reception_guidance",
-            )
-        )
-        for item in store_facts
-        if isinstance(item, dict)
-    )
-    if has_arrival_guidance:
-        return
-    required_ids = {
-        str(item.get("store_id") or item.get("id") or "").strip()
-        for item in store_facts
-        if isinstance(item, dict) and str(item.get("store_id") or item.get("id") or "").strip()
-    }
-    if required_ids and not required_ids.issubset(_emitted_store_address_ids(messages)):
-        raise ValueError("store_detail_public_card_required")
-
-
-def _current_turn_requires_complete_store_listing(state: dict[str, Any]) -> bool:
-    """Limit complete-list enforcement to a current store-delivery turn."""
-
-    structured = _structured_facts(state)
-    resolution = (
-        structured.get("store_resolution_fact")
-        if isinstance(structured.get("store_resolution_fact"), dict)
-        else {}
-    )
-    resolution_status = str(resolution.get("status") or "")
-    if resolution_status:
-        return resolution_status == "send_multiple"
-    if str(
-        resolution.get("delivery_mode") or ""
-    ) == "send_all_candidates":
-        return True
-    lookup = structured.get("store_lookup_status") if isinstance(structured.get("store_lookup_status"), dict) else {}
-    if str(lookup.get("status") or "") == "ok":
-        return True
-
-    current_text = str(state.get("normalized_content") or state.get("content") or "")
-    if _current_message_requests_store_address_card(current_text):
-        return True
-    for region in _store_scope_summary_regions(state):
-        requested_areas = region.get("requested_areas") if isinstance(region.get("requested_areas"), list) else []
-        if any(
-            str(area or "").strip() and region_mentioned_in_text(str(area), current_text)
-            for area in requested_areas
-        ):
-            return True
-        city = str(region.get("city") or "").strip()
-        if city and region_mentioned_in_text(city, current_text):
-            return True
-    return False
-
-
 def _validate_store_resolution_delivery_mode(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     """A structured clarification result cannot be turned into guessed store cards."""
 
@@ -848,11 +743,11 @@ def _validate_store_resolution_v2_contract(messages: list[dict[str, Any]], state
             raise ValueError(f"store_cards_not_allowed_for_resolution_status:{status}")
         return
     if status == "send_single":
-        if len(delivery_ids) != 1 or emitted != delivery_ids:
+        if emitted and (len(delivery_ids) != 1 or emitted != delivery_ids):
             raise ValueError("store_resolution_send_single_contract_violation")
         return
     if status == "send_multiple":
-        if not 2 <= len(delivery_ids) <= 3 or emitted != delivery_ids:
+        if emitted and (not 2 <= len(delivery_ids) <= 3 or emitted != delivery_ids):
             raise ValueError("store_resolution_send_multiple_contract_violation")
 
 
@@ -1028,18 +923,6 @@ def _required_complete_store_listing_ids(state: dict[str, Any]) -> set[str]:
         if 1 <= len(ids) <= 3:
             matched_regions.append(ids)
     return matched_regions[0] if len(matched_regions) == 1 else set()
-
-
-def _validate_recommended_store_delivery(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    """Require the model-selected distance recommendation to be delivered as a real card."""
-
-    structured = _structured_facts(state)
-    if not _has_distance_ranking_fact(structured):
-        return
-    recommended = structured.get("recommended_store") if isinstance(structured.get("recommended_store"), dict) else {}
-    store_id = str(recommended.get("store_id") or recommended.get("id") or "").strip()
-    if store_id and store_id not in _emitted_store_address_ids(messages):
-        raise ValueError("recommended_store_card_required")
 
 
 def _store_fact_ids(structured: dict[str, Any]) -> set[str]:

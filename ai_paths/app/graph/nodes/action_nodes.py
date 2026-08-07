@@ -17,8 +17,8 @@ from app.graph.planner.runtime_plan import (
     planner_required_tools,
     planner_secondary_tasks,
 )
+from app.graph.planner.planner_contract import ALLOWED_KBS
 from app.graph.state import AgentState
-from app.policies.constants import KNOWN_STORE_FACTS
 from app.services.coze_client import CozeClient
 from app.services.platform_agent_client import PlatformAgentClient
 from app.services.customer_payment_state import is_paid_deposit_state, normalize_prepay_facts
@@ -940,12 +940,12 @@ def _queue_planned_tool_tasks(
         return
     if name == "kb_search":
         kb_name = str(tool.get("kb_name") or "").strip()
-        if kb_name and kb_name != "case_studies":
+        if kb_name and kb_name not in ALLOWED_KBS:
             tool_results[kb_name] = {
                 "kb_name": kb_name,
                 "items": [],
                 "error": "planner_tool_rejected",
-                "rejected_reason": "Only kb_search(case_studies) is selectable. sales_talk_qa is currently disabled.",
+                "rejected_reason": "Planner requested a knowledge base that is not enabled in the tool contract.",
             }
             tool_calls.append(
                 {
@@ -1294,7 +1294,7 @@ def _appointment_query_from_planner(required_tools: list[dict[str, Any]], state:
 
 
 async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_client: CozeClient) -> dict[str, Any]:
-    raw_query = str(tool.get("query") or tool.get("origin") or tool.get("address") or state.get("normalized_content") or "").strip()
+    raw_query = str(tool.get("query") or tool.get("origin") or tool.get("address") or "").strip()
     query = _clean_store_lookup_query(raw_query)
     purpose = str(tool.get("purpose") or "").strip()
     raw_scope_stores = _customer_scope_stores(state)
@@ -1595,12 +1595,6 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
     if not candidates and exact_store_reference:
         candidates = text_candidates
         source = "customer_scope_exact_store_name"
-    if not candidates and scope_unavailable:
-        candidates = _snapshot_stores_for_exact_query(resolved_query)
-        source = "store_snapshot_exact_name"
-    if not candidates and scope_unavailable and _snapshot_region_fallback_allowed(resolved_query, geocode):
-        candidates = _snapshot_stores_for_region_query(resolved_query, geocode, purpose)
-        source = "store_snapshot_region_fallback"
     candidates, invalid_candidates = filter_valid_store_facts(
         candidates,
         known_stores=[*_snapshot_store_values(), *stores, *candidates],
@@ -2452,54 +2446,6 @@ def _customer_store_scope_unavailable(state: AgentState) -> bool:
     return str(cache.get("store_scope_status") or "") in {"miss", "error"}
 
 
-def _snapshot_stores_for_exact_query(query: str) -> list[dict[str, Any]]:
-    text = _compact_text(query)
-    if not text:
-        return []
-    stores = _usable_snapshot_store_values()
-    matched: list[dict[str, Any]] = []
-    for store in stores:
-        name = _compact_text(store.get("store_name") or store.get("name"))
-        if not name:
-            continue
-        if _snapshot_store_name_matches_query(name, text):
-            matched.append(store)
-    return _without_subsumed_snapshot_stores(_dedupe_snapshot_stores(matched))[:5]
-
-
-def _snapshot_stores_for_region_query(query: str, geocode: dict[str, Any], purpose: str) -> list[dict[str, Any]]:
-    stores = _usable_snapshot_store_values()
-    candidates = _stores_for_geocode(geocode, stores, purpose)
-    return _dedupe_snapshot_stores(candidates)[:60]
-
-
-def _augment_with_snapshot_region_candidates(
-    candidates: list[dict[str, Any]],
-    geocode: dict[str, Any],
-    purpose: str,
-) -> tuple[list[dict[str, Any]], bool]:
-    city = str(geocode.get("city") or "").strip() if isinstance(geocode, dict) else ""
-    province = str(geocode.get("province") or "").strip() if isinstance(geocode, dict) else ""
-    if not province and not city:
-        return candidates, False
-    same_city_candidates = [
-        store
-        for store in _usable_snapshot_store_values()
-        if (not province or _region_equal(store.get("province"), province))
-        and city
-        and _region_equal(store.get("city"), city)
-    ]
-    snapshot_candidates = same_city_candidates
-    if not snapshot_candidates and province:
-        snapshot_candidates = [
-            store
-            for store in _usable_snapshot_store_values()
-            if _region_equal(store.get("province"), province)
-        ]
-    merged = _dedupe_snapshot_stores([*candidates, *snapshot_candidates])
-    return merged[:60], len(merged) > len(_dedupe_snapshot_stores(candidates))
-
-
 def _store_lookup_scope_fields(result: dict[str, Any]) -> dict[str, Any]:
     geocode = result.get("geocode") if isinstance(result.get("geocode"), dict) else {}
     candidates = result.get("candidate_stores") if isinstance(result.get("candidate_stores"), list) else []
@@ -2622,60 +2568,6 @@ def _store_contains_region_text(store: dict[str, Any], region: str) -> bool:
     return bool(_compact_text(region) and _compact_text(region) in text)
 
 
-def _snapshot_region_fallback_allowed(query: str, geocode: dict[str, Any]) -> bool:
-    text = _compact_text(query)
-    if not text or text in {"门店", "门店在哪里", "你们门店在哪里", "地址", "位置", "附近"}:
-        return False
-    if isinstance(geocode, dict) and (geocode.get("city") or geocode.get("district")):
-        return True
-    return _query_matches_snapshot_region(query)
-
-
-def _query_matches_snapshot_region(query: str) -> bool:
-    text = _compact_text(query)
-    if not text or len(text) < 2:
-        return False
-    for store in _usable_snapshot_store_values():
-        for key in ("city", "district", "province", "store_address"):
-            value = str(store.get(key) or "").strip()
-            for token in _region_tokens(value):
-                compact_token = _compact_text(token)
-                if compact_token and (compact_token in text or (len(text) >= 2 and text in compact_token)):
-                    return True
-    return False
-
-
-def _usable_snapshot_store_values() -> list[dict[str, Any]]:
-    rows = [store for store in _snapshot_store_values() if _snapshot_store_is_usable(store)]
-    valid, _ = filter_valid_store_facts(rows)
-    return valid
-
-
-def _snapshot_store_is_usable(store: dict[str, Any]) -> bool:
-    name = str(store.get("store_name") or store.get("name") or "").strip()
-    address = str(store.get("store_address") or store.get("address") or "").strip()
-    store_id = str(store.get("store_id") or store.get("id") or "").strip()
-    if not (store_id and name and address):
-        return False
-    return "停业" not in name and store_fact_is_valid(store)
-
-
-def _snapshot_store_name_matches_query(name: str, text: str) -> bool:
-    if name in text or (len(text) >= 4 and text in name):
-        return True
-    normalized_name = _normalize_store_name_for_match(name)
-    normalized_text = _normalize_store_name_for_match(text)
-    return bool(
-        normalized_name
-        and normalized_text
-        and (normalized_name in normalized_text or (len(normalized_text) >= 4 and normalized_text in normalized_name))
-    )
-
-
-def _normalize_store_name_for_match(value: str) -> str:
-    return str(value or "").replace("市", "").replace("百星", "").strip()
-
-
 def _snapshot_store_values() -> list[dict[str, Any]]:
     global _STORE_SNAPSHOT_CACHE, _STORE_SNAPSHOT_CACHE_KEY
     snapshot: dict[str, Any] = {}
@@ -2701,7 +2593,9 @@ def _snapshot_store_values() -> list[dict[str, Any]]:
     stores_by_id = _STORE_SNAPSHOT_CACHE.get("stores_by_id") if isinstance(_STORE_SNAPSHOT_CACHE, dict) else {}
     if isinstance(stores_by_id, dict) and stores_by_id:
         return [store for store in stores_by_id.values() if isinstance(store, dict)]
-    return [dict(item) for item in KNOWN_STORE_FACTS]
+    # A missing production snapshot is an unavailable fact source. Static example
+    # stores must never become customer-visible fallback facts.
+    return []
 
 
 def _snapshot_store_candidate_paths() -> list[Path]:
@@ -2727,32 +2621,6 @@ def _snapshot_store_candidate_paths() -> list[Path]:
             continue
         seen.add(key)
         output.append(path)
-    return output
-
-
-def _dedupe_snapshot_stores(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    output: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for store in stores:
-        key = (
-            str(store.get("store_id") or store.get("id") or "").strip(),
-            str(store.get("store_name") or store.get("name") or "").strip(),
-        )
-        if not key[1] or key in seen:
-            continue
-        seen.add(key)
-        output.append(store)
-    return output
-
-
-def _without_subsumed_snapshot_stores(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    names = [str(store.get("store_name") or store.get("name") or "").strip() for store in stores]
-    output: list[dict[str, Any]] = []
-    for store, name in zip(stores, names):
-        compact_name = _compact_text(name)
-        if any(compact_name != _compact_text(other) and compact_name in _compact_text(other) for other in names):
-            continue
-        output.append(store)
     return output
 
 

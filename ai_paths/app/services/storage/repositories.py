@@ -4,6 +4,7 @@ from app.services.storage.conversation_repository import ConversationRepositoryM
 from app.services.storage.customer_record_admin_repository import CustomerRecordAdminRepositoryMixin
 from app.services.storage.memory_repository import MemoryRepositoryMixin
 from app.services.storage.outreach_repository import OutreachRepositoryMixin
+from app.services.storage.operations_dashboard_repository import OperationsDashboardRepositoryMixin
 from app.services.storage.run_repository import RunRepositoryMixin
 from app.services.storage.store_base import Store
 from app.services.storage.sop_event_repository import SopEventRepositoryMixin
@@ -14,6 +15,7 @@ class AppRepository(
     CustomerRecordAdminRepositoryMixin,
     MemoryRepositoryMixin,
     OutreachRepositoryMixin,
+    OperationsDashboardRepositoryMixin,
     RunRepositoryMixin,
     SopEventRepositoryMixin,
 ):

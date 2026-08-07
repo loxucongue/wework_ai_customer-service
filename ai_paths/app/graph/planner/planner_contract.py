@@ -16,6 +16,8 @@ ALLOWED_TOOLS = (
 
 ALLOWED_KBS = (
     "case_studies",
+    "教学类",
+    "合作类",
 )
 
 ALLOWED_CONVERSION_STAGES = (

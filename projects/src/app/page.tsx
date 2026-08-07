@@ -1,5 +1,5 @@
-import { ChatMain } from "@/components/chat/chat-main";
+import { OperationsDashboard } from "@/components/admin/operations-dashboard";
 
 export default function Home() {
-  return <ChatMain />;
+  return <OperationsDashboard />;
 }

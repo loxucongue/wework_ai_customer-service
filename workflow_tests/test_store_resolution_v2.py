@@ -615,6 +615,56 @@ def test_planner_fact_output_emits_single_v2_delivery_contract() -> None:
     assert resolution["customer_claim_level"] == "relative_near"
 
 
+def test_city_fallback_distance_ranking_delivers_top_three_store_options() -> None:
+    stores = [
+        {**_store(str(store_id), f"store-{store_id}", location=location, district=district), "distance_km": distance, "distance_source": "haversine"}
+        for store_id, location, district, distance in (
+            (218, "114.320528,30.388406", "Jiangxia", 12.0),
+            (344, "114.275676,30.588601", "Jianghan", 15.0),
+            (149, "114.339542,30.557202", "Wuchang", 18.0),
+            (590, "114.412893,30.493390", "Guanggu", 24.0),
+        )
+    ]
+    output = build_planner_fact_output(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "raw_query": "Wuhan Zhuankou",
+                "query": "Wuhan Zhuankou",
+                "province": "Hubei",
+                "city": "Wuhan",
+                "district": "Caidian",
+                "resolved_admin_level": "district",
+                "scope_match_level": "city_fallback",
+                "exact_scope_has_store": False,
+                "stores": stores,
+            },
+            "distance_calculate": {
+                "status": "ok",
+                "origin": "Wuhan Zhuankou",
+                "province": "Hubei",
+                "city": "Wuhan",
+                "district": "Caidian",
+                "resolved_admin_level": "district",
+                "scope_match_level": "city_fallback",
+                "exact_scope_has_store": False,
+                "ranking_method": "haversine",
+                "ranked_stores": stores,
+                "candidate_store_count": 4,
+            },
+        },
+        {"customer_store_knowledge": {"stores": stores}, "guardrail_result": {}},
+    )
+    resolution = output["structured_facts"]["store_resolution_fact"]
+
+    assert resolution["status"] == "send_multiple"
+    assert resolution["recommended_store_id"] == "218"
+    assert resolution["delivery_store_ids"] == ["218", "344", "149"]
+    assert resolution["visible_candidate_ids"] == ["218", "344", "149", "590"]
+    assert resolution["ranking_method"] == "haversine"
+    assert resolution["customer_claim_level"] == "relative_near"
+
+
 def test_empty_distance_result_does_not_erase_location_confirmation_contract() -> None:
     output = build_planner_fact_output(
         {

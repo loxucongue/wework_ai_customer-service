@@ -170,6 +170,9 @@ class ChatRuntime:
             "route": str(sop_gate.get("route") or sop_gate.get("mode") or ""),
             "coverage": str(sop_gate.get("coverage") or ""),
             "priority_question_id": str(sop_gate.get("priority_question_id") or ""),
+            "selected_scene_id": str(
+                sop_gate.get("selected_scene_id") or sop_gate.get("priority_question_id") or ""
+            ),
             "resume_stage": str(sop_gate.get("resume_stage") or ""),
             "sop_pack_id": str(sop_gate.get("sop_pack_id") or ""),
             "sop_message_types": [

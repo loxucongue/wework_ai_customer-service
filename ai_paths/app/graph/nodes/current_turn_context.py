@@ -11,9 +11,7 @@ from app.graph.nodes.turn_evidence_payment import build_payment_turn_evidence
 from app.graph.nodes.turn_evidence_risk import build_risk_evidence
 from app.graph.nodes.turn_evidence_store import build_store_evidence
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
-from app.services.store_snapshot_service import store_snapshot_rows
 from app.policies.constants import (
-    KNOWN_STORE_NAMES,
     STORE_CONTEXT_FACT_TERMS,
     STORE_CONTEXT_REFERENCE_TERMS,
     TIME_REFERENCE_TERMS,
@@ -837,15 +835,6 @@ def _store_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
     if name and name not in seen:
         stores.append({"store_name": name, "store_id": basic.get("confirmed_store_id")})
         seen.add(name)
-    for store in store_snapshot_rows():
-        name = _store_name(store)
-        if name and name not in seen:
-            stores.append(store)
-            seen.add(name)
-    for name in KNOWN_STORE_NAMES:
-        if name and name not in seen:
-            stores.append({"store_name": name})
-            seen.add(name)
     return stores
 
 

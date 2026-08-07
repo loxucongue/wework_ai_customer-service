@@ -669,6 +669,10 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
                     "用户: 我想去厦门思明店。",
                     "小贝: 好的，厦门思明店可以继续看时间。",
                 ],
+                "customer_store_knowledge": {
+                    "source": "platform_scope",
+                    "stores": [{"store_id": "12", "store_name": "厦门思明店", "city": "厦门市"}],
+                },
             },
             client,  # type: ignore[arg-type]
         )

@@ -476,7 +476,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             "您稍等一下",
         )
 
-    async def test_reply_failure_uses_store_resolution_fallback_when_cards_are_required(self) -> None:
+    async def test_reply_failure_does_not_turn_tool_candidates_into_store_cards(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             node = create_synthesize_reply_node(
                 trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
@@ -543,9 +543,8 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             output = await node(state)
 
         self.assertEqual(output["errors"], [])
-        self.assertEqual(output["reply_source"], "deterministic_store_resolution_fallback")
-        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "store_address"])
-        self.assertEqual(output["reply_messages"][1]["content"]["store_id"], "321")
+        self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
+        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text"])
 
     async def test_handoff_notice_fallback_when_reply_model_unavailable(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

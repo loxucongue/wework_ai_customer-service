@@ -79,6 +79,26 @@ def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_informat
     assert "缺少成功 order_id 或开单失败不得取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "订单和开单不是发卡前置" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不调用 available_time/create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
+
+
+def test_one_session_effect_reasoned_refusal_contract_is_present() -> None:
+    rules = load_business_rules()
+    offer = rules["offer"]
+    evidence = rules["customer_visible_evidence_policy"]
+
+    assert "完成线上活动登记后" in offer["registration_skin_test"]
+    assert "绝大多数客户都是一次就好" in evidence["effect_confidence"]
+    assert "带原因的可挽回异议" in str(rules["conversion_psychology"])
+    assert "不能按“不做了/不要了/算了”几个字直接终止" in PLANNER_SYSTEM_PROMPT
+    assert "不得输出 `terminal/close/no_action`" in PLANNER_SYSTEM_PROMPT
+    assert "绝大多数客户都是一次就好" in PLANNER_SYSTEM_PROMPT
+    assert "最终结果必须是 `decision=need_tools`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
+    assert "`closing_move.must_not_repeat` 也不得写 `case_image`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
+    assert "视为语义冲突" in REPLY_SYSTEM_PROMPT
+    assert "第一条 text 必须完整保留" in REPLY_SYSTEM_PROMPT
+    assert "不得弱化成" in REPLY_SYSTEM_PROMPT
+    assert "先不参加也没关系" in REPLY_SYSTEM_PROMPT
+    assert "只有明确追问脸和手等多个部位是否共用268元" in REPLY_SYSTEM_PROMPT
     assert "客户口头说“我付了/转好了”不能单独确认已到账" in PLANNER_TRANSACTION_PATCH_PROMPT
 
 
@@ -115,7 +135,11 @@ def test_timeout_and_recovery_prompts_keep_platform_transfer_as_authoritative_pa
     from app.graph.planner.brain_v2 import PLANNER_TIMEOUT_RECOVERY_PROMPT
 
     assert "deposit_state=paid_by_platform_transfer_event" in PLANNER_TIMEOUT_RECOVERY_PROMPT
+    assert "绝大多数客户都是一次就好" in PLANNER_TIMEOUT_RECOVERY_PROMPT
+    assert "按可挽回异议针对原因处理一次" in PLANNER_TIMEOUT_RECOVERY_PROMPT
     assert "paid_by_platform_transfer_event 是权威已付" in REPLY_RECOVERY_SYSTEM_PROMPT
+    assert "带原因的效果异议" in REPLY_RECOVERY_SYSTEM_PROMPT
+    assert "绝大多数客户都是一次就好" in REPLY_RECOVERY_SYSTEM_PROMPT
 
 
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
@@ -242,8 +266,6 @@ def test_acne_marks_and_scars_are_online_bookable_scope() -> None:
     assert "痘坑" not in unsupported
     assert "痘印改善" in runtime_text
     assert "痘坑改善" in runtime_text
-    playbook_text = Path("ai_paths/app/policies/precision_qa_playbook.json").read_text(encoding="utf-8")
-    assert "痘印、痘坑属于当前活动范围，不能命中本条" in playbook_text
     assert "痘印、痘坑属于当前淡斑活动改善范围，不能命中 unsupported" in PLANNER_SYSTEM_PROMPT
     assert "痘印、痘坑、混合斑点" in REPLY_SYSTEM_PROMPT
 
@@ -272,6 +294,14 @@ def test_supported_spot_scope_and_sales_answer_policy_are_explicit() -> None:
     assert "后续做好日常防晒护理，基本不会出现反弹情况的哦" in REPLY_SYSTEM_PROMPT
     assert "我们采用的是肌源调肤点斑技术" in REPLY_SYSTEM_PROMPT
     assert "很多户外工作的顾客做了反馈都不错的" in REPLY_SYSTEM_PROMPT
+
+
+def test_teaching_and_cooperation_kb_boundaries_are_prompted() -> None:
+    assert "`kb_search(教学类)`" in PLANNER_SYSTEM_PROMPT
+    assert "`kb_search(合作类)`" in PLANNER_SYSTEM_PROMPT
+    assert "没有本轮 `knowledge_facts` 时不得承诺" in PLANNER_SYSTEM_PROMPT
+    assert "tool_facts.knowledge_facts" in REPLY_SYSTEM_PROMPT
+    assert "不得说“有教学、有安排学习、可以培训、可以合作、能加盟、给您对接合作”" in REPLY_SYSTEM_PROMPT
 
 
 def test_runtime_business_fact_views_preserve_all_current_rule_semantics() -> None:
@@ -458,7 +488,7 @@ def test_planner_timeout_recovery_keeps_current_scene_and_flat_tool_contracts() 
     selected_payload = json.loads(selected_messages[-1]["content"])
     selected = selected_payload["precision_qa_playbook"]["selected_question"]
     assert selected["id"] == "one_session_effect"
-    assert selected.get("must_answer")
+    assert selected.get("hard_rule") is True
 
 
 def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
@@ -528,7 +558,9 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "`current_known_store` 不覆盖歧义" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "unresolved/no_match" in REPLY_SYSTEM_PROMPT
     assert "不得用常识、相似地名或猜测补成某个城市" in REPLY_SYSTEM_PROMPT
-    assert "`status=send_single` 时只发送 `delivery_store_ids` 中唯一真实门店卡" in REPLY_SYSTEM_PROMPT
+    assert "门店工具事实只是本轮可使用的事实，不是自动发送命令" in REPLY_SYSTEM_PROMPT
+    assert "当前问题已切换到发货、收费、效果、护理、活动等其他事项时" in REPLY_SYSTEM_PROMPT
+    assert "只发送 `recommended_store.store_id` 对应的一张卡" in REPLY_SYSTEM_PROMPT
     assert "`send_multiple` 时发齐其中 2–3 家" in REPLY_SYSTEM_PROMPT
     assert "孤立地名" in PLANNER_SYSTEM_PROMPT
     assert "禁止 `nearby_candidates/distance_calculate`" in PLANNER_SYSTEM_PROMPT
@@ -658,6 +690,20 @@ def test_planner_and_reply_do_not_invent_body_area_boundaries_for_face_confirmat
         assert "脸上的也能做吧" in prompt
         assert "两个部位总价" in prompt
         assert "不主动展开手脸同次操作" in prompt
+
+
+def test_planner_and_reply_demote_historical_body_area_for_non_body_questions() -> None:
+    for prompt in (PLANNER_SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT):
+        assert "历史里出现过手部、脸部或多个部位" in prompt
+        assert "收口改成" in prompt
+
+def test_s1_need_answer_moves_to_real_case_instead_of_symptom_loop() -> None:
+    assert "时长、斑型、部位、数量、年龄、图片" in PLANNER_SYSTEM_PROMPT
+    assert "必须 `need_tools + kb_search(case_studies)`" in PLANNER_SYSTEM_PROMPT
+    assert "脸上有几颗扁平疣/有几颗斑/脸上几个点" in PLANNER_SYSTEM_PROMPT
+    assert "不得 `direct_reply` 空口说“给您接同类参考/给您发效果图”" in PLANNER_SYSTEM_PROMPT
+    assert "没有 `case_facts` 或 `sop_gate_decision.sop_image_count` 时不要承诺" in REPLY_SYSTEM_PROMPT
+    assert "不得承诺“给您接同类参考/发效果图”" in REPLY_SYSTEM_PROMPT
 
 
 def test_runtime_prompts_no_longer_carry_legacy_non_refund_policy() -> None:

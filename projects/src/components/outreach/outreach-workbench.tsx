@@ -923,6 +923,13 @@ export function OutreachWorkbench() {
           <span className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
             历史只读
           </span>
+          <Link
+            href="/logs/outreach-first-day"
+            className="inline-flex items-center gap-2 rounded-md border border-zinc-200 bg-white px-3 py-2 text-sm hover:bg-zinc-50"
+          >
+            <Activity className="h-4 w-4" />
+            首日千人千面日志
+          </Link>
           <button
             onClick={() => {
               loadCandidates();

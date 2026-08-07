@@ -4,68 +4,67 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.services.outreach_assets import (
+    appointment_blocker_materials,
     asset_reply_message,
-    build_outreach_asset_catalog,
+    build_appointment_blocker_asset_catalog,
+    build_appointment_blocker_scene_index,
     recent_outreach_media,
     resolve_case_asset,
     resolve_configured_asset,
 )
 
 
-def test_enabled_outreach_media_builds_model_annotated_asset_catalog() -> None:
-    catalog = build_outreach_asset_catalog(
-        {
-            "assets": [
-                {
-                    "id": "effect-reference",
-                    "enabled": True,
-                    "type": "image",
-                    "name": "真实效果参考",
-                    "url": "https://cdn.example/case.jpg",
-                    "annotation": "苹果原相机拍摄的做前做后效果参考，用于客户担心效果时建立信任。",
-                    "use_cases": ["效果顾虑", "信任建立"],
-                    "avoid_when": ["最近已发送同类案例"],
-                    "tags": ["案例", "效果"],
-                },
-                {
-                    "id": "disabled-video",
-                    "enabled": False,
-                    "type": "video",
-                    "url": "https://cdn.example/old.mp4",
-                },
-            ]
-        }
-    )
+def test_appointment_blocker_media_builds_model_annotated_asset_catalog() -> None:
+    playbook = {
+        "items": [
+            {
+                "blocker_type": "距离远",
+                "applicable_scene": "客户所在城市有门店但距离较远",
+                "content_id": "YYHF-0001",
+                "reply_messages": [
+                    {"type": "text", "content": "参考表达"},
+                    {"type": "image", "content": "https://cdn.example/case.jpg"},
+                    {
+                        "type": "image",
+                        "content": "missing://source-image",
+                        "source_missing": True,
+                    },
+                ],
+            }
+        ]
+    }
+    catalog = build_appointment_blocker_asset_catalog(playbook)
 
     assert catalog == [
         {
-            "asset_id": "effect-reference",
+            "asset_id": "appointment-blocker:YYHF-0001:2",
             "type": "image",
             "url": "https://cdn.example/case.jpg",
-            "source": "outreach_asset_library",
-            "name": "真实效果参考",
-            "annotation": "苹果原相机拍摄的做前做后效果参考，用于客户担心效果时建立信任。",
-            "use_cases": ["效果顾虑", "信任建立"],
-            "avoid_when": ["最近已发送同类案例"],
-            "tags": ["案例", "效果"],
+            "source": "appointment_blocker_playbook",
+            "name": "YYHF-0001",
+            "annotation": "客户所在城市有门店但距离较远",
+            "use_cases": ["客户所在城市有门店但距离较远"],
+            "avoid_when": ["近期已经发送相同素材"],
+            "tags": ["距离远", "YYHF-0001"],
+            "content_id": "YYHF-0001",
         }
     ]
-
-
-def test_sop_reply_pack_media_is_not_an_outreach_asset_source() -> None:
-    assert build_outreach_asset_catalog(
+    scene_index = build_appointment_blocker_scene_index(playbook)
+    assert len(scene_index) == 1
+    assert scene_index[0]["source_ids"] == ["appointment-blocker:YYHF-0001"]
+    assert scene_index[0]["asset_ids"] == ["appointment-blocker:YYHF-0001:2"]
+    assert appointment_blocker_materials(playbook) == [
         {
-            "packs": [
-                {
-                    "id": "s10_need_and_case",
-                    "enabled": True,
-                    "reply_messages": [
-                        {"type": "image", "order": 1, "content": {"url": "https://cdn.example/sop.jpg"}}
-                    ],
-                }
-            ]
+            "source_id": "appointment-blocker:YYHF-0001",
+            "content_id": "YYHF-0001",
+            "blocker_type": "距离远",
+            "applicable_scene": "客户所在城市有门店但距离较远",
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": "参考表达"},
+                {"type": "image", "order": 2, "asset_id": "appointment-blocker:YYHF-0001:2"},
+            ],
         }
-    ) == []
+    ]
 
 
 def test_recent_media_is_deduplicated_and_blocks_reuse() -> None:

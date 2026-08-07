@@ -10,28 +10,7 @@ from app.config import Settings
 from app.policies.sales_flow import configure_precision_qa_playbook_path
 
 
-_POLICY_FIELDS = (
-    "first_answer",
-    "confidence",
-    "mainline_resume",
-    "variation",
-    "facts",
-)
-_QUESTION_TEXT_FIELDS = (
-    "intent_definition",
-    "customer_psychology",
-    "question_role",
-    "first_ask_strategy",
-    "repeated_ask_strategy",
-    "evidence_requirement",
-    "resume_mainline_stage",
-)
-_QUESTION_LIST_FIELDS = (
-    "must_answer",
-    "must_not_substitute",
-    "allowed_confidence",
-    "forbidden_claims",
-)
+_ALLOWED_MESSAGE_TYPES = {"text", "image", "image_reference", "video_reference", "media_reference"}
 
 
 class PrecisionQaPlaybookService:
@@ -76,61 +55,58 @@ class PrecisionQaPlaybookService:
     def _normalize(self, payload: Any) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError("payload must be an object")
-        raw_questions = payload.get("questions")
-        if not isinstance(raw_questions, list):
-            raise ValueError("questions must be a list")
+        raw_items = payload.get("items")
+        if not isinstance(raw_items, list):
+            raise ValueError("items must be a list")
 
         result = deepcopy(payload)
         result.pop("audit", None)
         result.pop("storage", None)
-        result["version"] = _positive_int(payload.get("version"), 1)
-        result["purpose"] = _text(payload.get("purpose"))
+        result["version"] = max(4, _positive_int(payload.get("version"), 4))
         result["updated_at"] = _text(payload.get("updated_at"))
+        result.pop("purpose", None)
+        result.pop("global_answer_policy", None)
+        result.pop("questions", None)
 
-        raw_policy = payload.get("global_answer_policy")
-        policy = deepcopy(raw_policy) if isinstance(raw_policy, dict) else {}
-        for field in _POLICY_FIELDS:
-            policy[field] = _text(policy.get(field))
-        result["global_answer_policy"] = policy
-
-        questions = [self._normalize_question(item, index) for index, item in enumerate(raw_questions)]
+        items = [self._normalize_item(item, index) for index, item in enumerate(raw_items)]
         seen_ids: set[str] = set()
-        for question in questions:
-            question_id = question["id"]
-            if question_id in seen_ids:
-                raise ValueError(f"duplicated precision QA id: {question_id}")
-            seen_ids.add(question_id)
-        result["questions"] = questions
+        for item in items:
+            content_id = item["content_id"]
+            if content_id in seen_ids:
+                raise ValueError(f"duplicated content id: {content_id}")
+            seen_ids.add(content_id)
+        result["items"] = items
         return result
 
-    def _normalize_question(self, item: Any, index: int) -> dict[str, Any]:
+    def _normalize_item(self, item: Any, index: int) -> dict[str, Any]:
         if not isinstance(item, dict):
-            raise ValueError(f"question #{index + 1} must be an object")
-        result = deepcopy(item)
-        question_id = _identifier(item.get("id"))
-        if not question_id:
-            raise ValueError(f"question #{index + 1} id is required")
-        result["id"] = question_id
-        for field in _QUESTION_TEXT_FIELDS:
-            result[field] = _text(item.get(field))
-        for field in _QUESTION_LIST_FIELDS:
-            result[field] = _text_list(item.get(field))
-
-        raw_examples = item.get("reply_examples")
-        if raw_examples is None:
-            raw_examples = []
-        if not isinstance(raw_examples, list):
-            raise ValueError(f"question {question_id} reply_examples must be a list")
-        examples: list[dict[str, Any]] = []
-        for example_index, example in enumerate(raw_examples):
-            if not isinstance(example, dict):
-                raise ValueError(f"question {question_id} example #{example_index + 1} must be an object")
-            normalized_example = deepcopy(example)
-            normalized_example["context"] = _text(example.get("context"))
-            normalized_example["reply"] = _text_list(example.get("reply"))
-            examples.append(normalized_example)
-        result["reply_examples"] = examples
-        return result
+            raise ValueError(f"item #{index + 1} must be an object")
+        content_id = _identifier(item.get("content_id"))
+        blocker_type = _text(item.get("blocker_type"))
+        applicable_scene = _text(item.get("applicable_scene"))
+        if not content_id or not blocker_type or not applicable_scene:
+            raise ValueError(f"item #{index + 1} requires blocker_type, applicable_scene and content_id")
+        raw_messages = item.get("reply_messages")
+        if not isinstance(raw_messages, list) or not raw_messages:
+            raise ValueError(f"item {content_id} reply_messages must be a non-empty list")
+        messages: list[dict[str, Any]] = []
+        for message_index, message in enumerate(raw_messages):
+            if not isinstance(message, dict):
+                raise ValueError(f"item {content_id} message #{message_index + 1} must be an object")
+            message_type = _text(message.get("type"))
+            content = _text(message.get("content"))
+            if message_type not in _ALLOWED_MESSAGE_TYPES or not content:
+                raise ValueError(f"item {content_id} message #{message_index + 1} is invalid")
+            normalized = {"type": message_type, "content": content}
+            if message.get("source_missing"):
+                normalized["source_missing"] = True
+            messages.append(normalized)
+        return {
+            "blocker_type": blocker_type,
+            "applicable_scene": applicable_scene,
+            "content_id": content_id,
+            "reply_messages": messages,
+        }
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,24 +119,13 @@ class PrecisionQaPlaybookService:
 
 def _audit_playbook(playbook: dict[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
-    if not _text(playbook.get("purpose")):
-        issues.append(_issue("warning", "purpose_empty", "", "精准回复库未填写总体目的。"))
-    policy = playbook.get("global_answer_policy") if isinstance(playbook.get("global_answer_policy"), dict) else {}
-    for field in _POLICY_FIELDS:
-        if not _text(policy.get(field)):
-            issues.append(_issue("warning", "global_policy_empty", field, f"全局策略 {field} 为空。"))
-    for question in playbook.get("questions") or []:
-        if not isinstance(question, dict):
+    for item in playbook.get("items") or []:
+        if not isinstance(item, dict):
             continue
-        question_id = _text(question.get("id"))
-        if not _text(question.get("intent_definition")):
-            issues.append(_issue("error", "intent_definition_empty", question_id, "意图定义不能为空。"))
-        if not _text_list(question.get("must_answer")):
-            issues.append(_issue("error", "must_answer_empty", question_id, "必须回答至少需要一条。"))
-        if not _text(question.get("resume_mainline_stage")):
-            issues.append(_issue("warning", "resume_mainline_stage_empty", question_id, "未配置回答后的主线恢复阶段。"))
-        if not question.get("reply_examples"):
-            issues.append(_issue("warning", "reply_examples_empty", question_id, "没有优秀回复示例。"))
+        content_id = _text(item.get("content_id"))
+        for message in item.get("reply_messages") or []:
+            if isinstance(message, dict) and message.get("source_missing"):
+                issues.append(_issue("warning", "source_missing", content_id, "媒体源文件缺失，不会进入发送候选。"))
     errors = sum(1 for issue in issues if issue["severity"] == "error")
     warnings = sum(1 for issue in issues if issue["severity"] == "warning")
     return {
@@ -171,8 +136,8 @@ def _audit_playbook(playbook: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _issue(severity: str, code: str, question_id: str, message: str) -> dict[str, str]:
-    return {"severity": severity, "code": code, "question_id": question_id, "message": message}
+def _issue(severity: str, code: str, content_id: str, message: str) -> dict[str, str]:
+    return {"severity": severity, "code": code, "content_id": content_id, "message": message}
 
 
 def _text(value: Any) -> str:

@@ -26,8 +26,8 @@
       "messages": ["是不是做一次就可以了", "一次能弄好吗", "我只想知道要做几次"],
       "history": ["小贝: 这类斑点多数可以先看改善。"],
       "expected_planner": {"decisions": ["direct_reply"]},
-      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["一次包干净", "保证一次", "永久不会"]},
-      "semantic_goal": "直接回答多数客户一次能看到明显改善，具体程度看类型深浅和时间，到店检测更准，并自然恢复案例或活动主线；不能用可做斑型替代次数答案。"
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["所有客户一次包干净", "永久不会", "可能需要多次", "因人而异", "单次单部位"]},
+      "semantic_goal": "直接说明当前淡斑效果活动价268元、绝大多数客户一次就好，用真实效果证据建立信任；完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解。不得用可做斑型、因人而异、可能需要多次或单次单部位替代当前次数答案。"
     },
     {
       "id": "one_session_repeated_ask",
@@ -35,8 +35,68 @@
       "messages": ["这不是钱的问题，我就问是不是一次", "你还是没回答我，一次到底行不行"],
       "history": ["用户: 是不是一次就好", "小贝: 很多客户做一次就能看到变化，具体要看斑点深浅。"],
       "expected_planner": {"decisions": ["direct_reply"]},
-      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["雀斑晒斑老年斑都能做", "一次包干净"]},
-      "semantic_goal": "识别为重复核心追问，换角度加深解释，明确不能未检测就承诺一次全部干净，但多数一次可见变化；不要复读第一次答案或用主线打断。"
+      "expected_reply": {"required_types": ["text"], "forbidden_phrases": ["雀斑晒斑老年斑都能做", "所有客户一次包干净", "可能需要多次", "单次单部位"]},
+      "semantic_goal": "识别为重复核心追问，换角度用真实效果案例加深信任，保持绝大多数客户一次就好的明确结论；不能复读第一次答案、改成可能需要多次或用其他主线打断。"
+    },
+    {
+      "id": "one_session_effect_reasoned_refusal_long_history",
+      "category": "精准问答-一次效果异议挽回",
+      "messages": ["噢，那不做了，单次不一定去斑，可能必须多次，有点不合适"],
+      "history": [
+        "小贝: 您在哪个城市哪个区？我给您对下门店。",
+        "用户: 河北廊坊文安",
+        "小贝: 我先帮您匹配附近能去的门店。",
+        "用户: 是点还是激光呀？多少钱？",
+        "小贝: 现在是周年庆线上淡斑活动，活动价268元，线上登记每位10元预约金，到店抵扣，做付258元。",
+        "小贝: [活动图片]",
+        "小贝: 到店先看效果和方案，满意再做；线上10元预约金到店抵扣，未做或不满意可退。",
+        "小贝: 付款给：黛伊科技",
+        "用户: 是点一次268还是多次268？",
+        "小贝: 268是单次单部位的活动价，不是多次都按268。先付10元预约金锁活动资格，到店做再付258，合起来还是268。",
+        "小贝: 268是单次单部位的活动价，不是多次都按268。先付10元预约金锁活动资格，到店做再付258，合起来还是268。",
+        "小贝: 268是单次单部位的活动价，不是多次都按268。先付10元预约金锁活动资格，到店做再付258，合起来还是268。",
+        "小贝: 268是单次单部位的活动价，不是多次都按268。先付10元预约金锁活动资格，到店做再付258，合起来还是268。"
+      ],
+      "state_patch": {
+        "sent_message_summary": {
+          "activity_intro_image_sent": true,
+          "case_image_delivery": {"recently_sent": false, "count": 0, "source": "authoritative_events"}
+        },
+        "sop_progress_evidence": {
+          "completed_pack_ids": ["s10_activity_intro"],
+          "completed_categories": ["activity_intro"]
+        }
+      },
+      "reply_fact_envelope": {
+        "structured_facts": {
+          "case_facts": [
+            {
+              "document_id": "case-anon-once-effect-001",
+              "title": "匿名化真实淡斑效果参考",
+              "image_url": "https://example.com/case-anon-once-effect-001.png"
+            }
+          ]
+        },
+        "usable_facts": ["已取得可发送的匿名化真实淡斑效果参考图"]
+      },
+      "expected_planner": {
+        "decisions": ["need_tools"],
+        "required_tools": ["kb_search"],
+        "forbidden_message_types": ["payment_collection"]
+      },
+      "expected_reply": {
+        "required_types": ["text", "image"],
+        "forbidden_phrases": [
+          "先不参加也没关系",
+          "后面想了解再找我",
+          "那就不打扰了",
+          "可能需要多次",
+          "因人而异",
+          "单次单部位",
+          "未登记也可以免费检测"
+        ]
+      },
+      "semantic_goal": "这是带明确效果和次数原因的可挽回异议，不是停止联系。Planner必须选择one_session_effect和effect blocker继续承接；没有近期权威效果图时查询case_studies。回复先明确淡斑效果活动价268元、绝大多数客户一次就好，同轮发送真实效果图，再说明完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解；不得直接送客、重复活动规则或主动说单次单部位。是否发预约金卡由模型结合态度判断，本案例在客户刚表示不合适且历史连续催付后不得发卡。"
     },
     {
       "id": "price_transparency",

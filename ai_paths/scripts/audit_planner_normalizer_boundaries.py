@@ -53,14 +53,14 @@ BOUNDARY_MARKERS: dict[str, dict[str, Any]] = {
         "reason": "Schema, enum, and tool allowlist cleanup is allowed before model handoff.",
         "markers": ["normalize_enum", "ALLOWED_TOOLS", "dedupe_tools"],
     },
-    "location_and_date_argument_cleanup": {
+    "date_argument_cleanup": {
         "category": "data_cleanup",
         "owner": "tool_argument_normalizer",
-        "reason": "Query/date cleanup can improve factual tool execution without deciding customer psychology.",
-        "markers": [
-            "_normalize_current_message_store_lookup_queries",
-            "_normalize_available_time_dates_from_context",
-        ],
+        "reason": (
+            "Date normalization can improve factual tool execution without deciding customer psychology. "
+            "Store lookup query meaning remains model-owned and must not be rewritten from historical context in code."
+        ),
+        "markers": ["_normalize_available_time_dates_from_context"],
     },
     "reply_repair_hints_not_runtime_decisions": {
         "category": "soft_prompt",
