@@ -3083,7 +3083,11 @@ def test_short_non_location_message_does_not_get_tool_deleted_by_normalizer() ->
     )
 
     assert not any(
-        item.get("missing") == "store_lookup_not_relevant_to_current_turn_removed"
+        item.get("missing")
+        in {
+            "store_lookup_not_relevant_to_current_turn_removed",
+            "store_lookup_may_reopen_stale_location_context",
+        }
         for item in plan["tool_policy_violations"]
     )
     assert plan["planner_decision"] == "need_tools"
@@ -3094,6 +3098,7 @@ def test_short_non_location_message_does_not_get_tool_deleted_by_normalizer() ->
             "query": "浙江省温州市龙湾区",
         }
     ]
+    assert plan["required_tools"] == plan["planner_tool_calls"]
 
 
 def test_bare_location_answer_after_store_prompt_is_not_reclassified_by_python() -> None:

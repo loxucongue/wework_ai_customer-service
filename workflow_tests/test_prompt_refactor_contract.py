@@ -102,6 +102,64 @@ def test_one_session_effect_reasoned_refusal_contract_is_present() -> None:
     assert "客户口头说“我付了/转好了”不能单独确认已到账" in PLANNER_TRANSACTION_PATCH_PROMPT
 
 
+def test_business_rules_are_layered_for_model_runtime() -> None:
+    planner_rules = json.loads(planner_business_rules_prompt_section())
+    taxonomy = planner_rules.get("rule_taxonomy") or {}
+    layers = planner_rules.get("rule_layers") or {}
+
+    assert {"hard_law", "business_fact", "strong_default", "playbook", "deprecated"} <= set(
+        (taxonomy.get("levels") or {}).keys()
+    )
+    for section in ["MUST FOLLOW", "AUTHORITATIVE FACTS", "DEFAULT STRATEGY", "STYLE PLAYBOOK"]:
+        assert section in layers
+
+    scene_catalog = planner_rules.get("scene_catalog") or []
+    assert scene_catalog
+    for rule in scene_catalog:
+        assert rule.get("rule_level") in {"hard_law", "business_fact", "strong_default", "playbook"}
+        assert rule.get("owner")
+        assert rule.get("validation_mode") in {
+            "hard_check",
+            "fact_consistency",
+            "soft_warning_or_semantic_review",
+            "semantic_review",
+        }
+
+    hard_rule_ids = {rule.get("id") for rule in scene_catalog if rule.get("rule_level") == "hard_law"}
+    assert hard_rule_ids
+    assert hard_rule_ids <= set((layers.get("MUST FOLLOW") or {}).get("hard_rule_ids") or [])
+
+    default_modes = {
+        rule.get("validation_mode")
+        for rule in scene_catalog
+        if rule.get("rule_level") in {"strong_default", "playbook"}
+    }
+    assert default_modes <= {"soft_warning_or_semantic_review", "semantic_review"}
+    assert "hard_check" not in default_modes
+
+
+def test_reply_runtime_rules_keep_stage_metadata() -> None:
+    reply_rules = reply_business_rules_for_model(stage="S2", sub_rule_id="S2_STORE_LOCATION")
+    assert "rule_taxonomy" in reply_rules
+    assert "rule_layers" in reply_rules
+    stage_rules = ((reply_rules.get("current_stage_rules") or {}).get("rules") or [])
+    assert stage_rules
+    for rule in stage_rules:
+        assert rule.get("rule_level")
+        assert rule.get("owner")
+        assert rule.get("validation_mode")
+
+
+def test_default_strategy_can_pause_for_current_customer_context() -> None:
+    assert "strong_default" in GLOBAL_STRUCTURED_NODE_CONTRACT
+    assert "客户当前在质疑真假、投诉退款、健康风险、明确拒绝、反复说明时间不确定或正在工作/忙" in GLOBAL_REPLY_CONTRACT
+    assert "可暂停主线推进" in PLANNER_SYSTEM_PROMPT
+    assert "默认" in PLANNER_SYSTEM_PROMPT and "门店" in PLANNER_SYSTEM_PROMPT
+    assert "不要继续细分追问 2 点/3 点/4 点" in REPLY_SYSTEM_PROMPT
+    assert "先暂停主线推进并处理当前情境" in REPLY_SYSTEM_PROMPT
+    assert "客户质疑被骗、虚假地址或担心白跑时，先完整解决信任问题" in REPLY_SYSTEM_PROMPT
+
+
 def test_sop_gate_exposes_structured_active_task_for_planner_causality() -> None:
     assert '"active_task"' in SOP_CHAT_GATE_SYSTEM_PROMPT
     assert "type=location_confirmation" in SOP_CHAT_GATE_SYSTEM_PROMPT
@@ -451,8 +509,8 @@ def test_planner_and_reply_prompts_close_need_inquiry_after_first_answer() -> No
     joined = "\n".join([PLANNER_SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT])
 
     for marker in [
-        "S1 需求问诊只允许一个轻问题",
-        "默认就是“斑点大概多久了”",
+        "S1 需求问诊正常只问一个轻问题",
+        "默认是“斑点大概多久了”",
         "不是在线问诊或采集完整病史",
         "自然进入效果案例 SOP 场景",
         "好的/谢谢",

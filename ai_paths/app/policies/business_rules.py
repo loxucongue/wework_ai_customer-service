@@ -55,8 +55,14 @@ def reply_business_rules_for_model(*, stage: str = "", sub_rule_id: str = "") ->
     """Return the current-stage rules and shared facts needed by Reply."""
     rules = load_business_rules()
     offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
+    current_stage_rules = _relevant_stage_rules(rules, stage=stage, sub_rule_id=sub_rule_id)
     return {
         "version": rules.get("version"),
+        "rule_taxonomy": _rule_taxonomy(rules),
+        "rule_layers": _rule_layers_for_model(
+            rules,
+            current_rules=current_stage_rules.get("rules") if isinstance(current_stage_rules, dict) else [],
+        ),
         "identity_facts": _selected_dict_fields(
             rules.get("identity"),
             ("public_role", "style", "goal"),
@@ -70,7 +76,7 @@ def reply_business_rules_for_model(*, stage: str = "", sub_rule_id: str = "") ->
         "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
         "transaction_policy": rules.get("transaction_policy") or {},
         "conversion_psychology": _conversion_psychology(rules),
-        "current_stage_rules": _relevant_stage_rules(rules, stage=stage, sub_rule_id=sub_rule_id),
+        "current_stage_rules": current_stage_rules,
         "tool_policy": _tool_policy(rules),
         "hard_forbidden": rules.get("forbidden") or [],
     }
@@ -118,8 +124,11 @@ def sop_platform_business_facts_for_model() -> dict[str, Any]:
 
 def _planner_runtime_rules(rules: dict[str, Any]) -> dict[str, Any]:
     offer = rules.get("offer") if isinstance(rules.get("offer"), dict) else {}
+    scene_catalog = _scene_catalog(rules)
     return {
         "version": rules.get("version"),
+        "rule_taxonomy": _rule_taxonomy(rules),
+        "rule_layers": _rule_layers_for_model(rules, current_rules=scene_catalog),
         "identity_facts": _selected_dict_fields(rules.get("identity"), ("public_role", "style", "goal")),
         "brand_trust_facts": _selected_dict_fields(
             rules.get("brand_trust_policy"),
@@ -130,9 +139,81 @@ def _planner_runtime_rules(rules: dict[str, Any]) -> dict[str, Any]:
         "customer_visible_evidence_policy": rules.get("customer_visible_evidence_policy") or {},
         "transaction_policy": rules.get("transaction_policy") or {},
         "conversion_psychology": _conversion_psychology(rules),
-        "scene_catalog": _scene_catalog(rules),
+        "scene_catalog": scene_catalog,
         "tool_policy": _tool_policy(rules),
         "hard_forbidden": rules.get("forbidden") or [],
+    }
+
+
+def _rule_taxonomy(rules: dict[str, Any]) -> dict[str, Any]:
+    taxonomy = rules.get("rule_taxonomy")
+    if isinstance(taxonomy, dict):
+        return taxonomy
+    return {
+        "levels": {
+            "hard_law": "Absolute safety, factual, structural, and compliance boundaries. Code may hard-check these.",
+            "business_fact": "Authoritative business facts. The model must not contradict them, but decides when they matter.",
+            "strong_default": "Default sales strategy. Follow in normal cases, but adapt or skip when the current customer context conflicts.",
+            "playbook": "Expression guidance and examples. Use for tone and phrasing only.",
+            "deprecated": "Superseded historical rule kept only for migration audit and never rendered into prompts.",
+        },
+        "validation_modes": {
+            "hard_law": "hard_check",
+            "business_fact": "fact_consistency",
+            "strong_default": "soft_warning_or_semantic_review",
+            "playbook": "semantic_review",
+            "deprecated": "audit_only",
+        },
+    }
+
+
+def _rule_layers_for_model(rules: dict[str, Any], *, current_rules: list[dict[str, Any]]) -> dict[str, Any]:
+    current_rules = current_rules or []
+    hard_rules = [
+        item
+        for item in current_rules
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "hard_law"
+    ]
+    business_rules = [
+        item
+        for item in current_rules
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "business_fact"
+    ]
+    default_rules = [
+        item
+        for item in current_rules
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "strong_default"
+    ]
+    playbook_rules = [
+        item
+        for item in current_rules
+        if isinstance(item, dict) and str(item.get("rule_level") or "") == "playbook"
+    ]
+    return {
+        "MUST FOLLOW": {
+            "description": "Hard boundaries. Never violate; code may also enforce them.",
+            "hard_forbidden": rules.get("forbidden") or [],
+            "hard_rule_ids": [item.get("id") for item in hard_rules if item.get("id")],
+        },
+        "AUTHORITATIVE FACTS": {
+            "description": "Business facts are true constraints, but the model decides whether the current reply should mention them.",
+            "business_fact_rule_ids": [item.get("id") for item in business_rules if item.get("id")],
+            "offer": _offer_facts(rules.get("offer") if isinstance(rules.get("offer"), dict) else {}),
+            "store_address_disclosure_policy": rules.get("store_address_disclosure_policy") or {},
+            "transaction_policy": rules.get("transaction_policy") or {},
+        },
+        "DEFAULT STRATEGY": {
+            "description": (
+                "Strong defaults for sales rhythm. Follow when the customer context allows; pause or adjust for trust challenge, "
+                "complaint/refund, health risk, explicit refusal, repeated time uncertainty, or active busy/working context."
+            ),
+            "strong_default_rule_ids": [item.get("id") for item in default_rules if item.get("id")],
+            "conversion_psychology": _conversion_psychology(rules),
+        },
+        "STYLE PLAYBOOK": {
+            "description": "Tone and expression references only. They must not override facts or current customer context.",
+            "playbook_rule_ids": [item.get("id") for item in playbook_rules if item.get("id")],
+        },
     }
 
 
@@ -171,6 +252,48 @@ def _conversion_psychology(rules: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _rule_metadata(rule_id: str, tools: list[str]) -> dict[str, str]:
+    rule_id = str(rule_id or "").strip()
+    tool_set = {str(tool or "").strip() for tool in tools}
+    if rule_id in {"S4_COMPLAINT_REFUND", "S4_HEALTH_RISK", "S3_APPOINTMENT_TIME"}:
+        level = "hard_law"
+        owner = "code_and_model"
+        validation = "hard_check"
+    elif tool_set or rule_id in {
+        "S1_BRAND_TRUST",
+        "S1_PROJECT_DIRECTION",
+        "S2_STORE_LOCATION",
+        "S2_CITY_ONLY",
+        "S2_LOCATION_DETAIL",
+        "S2_ADDRESS_PARKING_HOURS",
+        "S2_PRE_VISIT_TRANSPORT_POLICY",
+        "S3_PRICE",
+        "S3_PAYMENT_COLLECTION",
+    }:
+        level = "business_fact"
+        owner = "model_with_code_fact_checks"
+        validation = "fact_consistency"
+    elif rule_id in {
+        "S1_GREETING",
+        "S1_NEED_AND_CASE",
+        "S4_HESITATION",
+        "S4_SOFT_REFUSAL",
+        "S4_MAINLINE_RECOVERY",
+    }:
+        level = "strong_default"
+        owner = "model"
+        validation = "soft_warning_or_semantic_review"
+    else:
+        level = "strong_default"
+        owner = "model"
+        validation = "soft_warning_or_semantic_review"
+    return {
+        "rule_level": level,
+        "owner": owner,
+        "validation_mode": validation,
+    }
+
+
 def _scene_catalog(rules: dict[str, Any]) -> list[dict[str, Any]]:
     transaction = rules.get("transaction_policy") if isinstance(rules.get("transaction_policy"), dict) else {}
     stages = rules.get("stages") if isinstance(rules.get("stages"), list) else []
@@ -182,6 +305,7 @@ def _scene_catalog(rules: dict[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(rule, dict):
                 continue
             tools = [str(item) for item in rule.get("tools") or [] if str(item or "").strip()]
+            metadata = _rule_metadata(str(rule.get("id") or ""), tools)
             output.append(
                 {
                     "stage": stage.get("id"),
@@ -197,6 +321,7 @@ def _scene_catalog(rules: dict[str, Any]) -> list[dict[str, Any]]:
                         tools,
                         transaction_policy=transaction,
                     ),
+                    **metadata,
                 }
             )
     return output
@@ -280,20 +405,27 @@ def _relevant_stage_rules(rules: dict[str, Any], *, stage: str, sub_rule_id: str
             "name": item.get("name"),
             "goal": item.get("goal"),
             "rules": [
-                {
-                    "id": rule.get("id"),
-                    "scenes": rule.get("scenes") or [],
-                    "decision": rule.get("decision"),
-                    "tools": rule.get("tools") or [],
-                    "reply_focus": rule.get("reply_focus"),
-                    "fact_boundary": _fact_boundary_for_rule(
-                        str(rule.get("id") or ""),
-                        [str(tool) for tool in rule.get("tools") or [] if str(tool or "").strip()],
-                        transaction_policy=transaction,
-                    ),
-                }
+                _stage_rule_for_model(rule, transaction_policy=transaction)
                 for rule in selected_rules
                 if isinstance(rule, dict)
             ],
         }
     return {}
+
+
+def _stage_rule_for_model(rule: dict[str, Any], *, transaction_policy: dict[str, Any]) -> dict[str, Any]:
+    tools = [str(tool) for tool in rule.get("tools") or [] if str(tool or "").strip()]
+    rule_id = str(rule.get("id") or "")
+    return {
+        "id": rule.get("id"),
+        "scenes": rule.get("scenes") or [],
+        "decision": rule.get("decision"),
+        "tools": tools,
+        "reply_focus": rule.get("reply_focus"),
+        "fact_boundary": _fact_boundary_for_rule(
+            rule_id,
+            tools,
+            transaction_policy=transaction_policy,
+        ),
+        **_rule_metadata(rule_id, tools),
+    }
