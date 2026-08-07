@@ -455,6 +455,10 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
     risk_hold = {} if suppress_memory else current_health_risk_hold_for_model(state)
     turn_evidence = _turn_evidence_for_planner(current_turn_context)
     recent_turns = [] if suppress_memory else _recent_turns_for_planner(state)
+    gate_decision = _sop_gate_decision_for_planner(state)
+    selected_scene_id = str(
+        gate_decision.get("selected_scene_id") or gate_decision.get("priority_question_id") or ""
+    ).strip()
     payload = {
         "current_date": _current_date_iso(),
         "timezone": "Asia/Shanghai",
@@ -479,9 +483,10 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
         ),
         "sent_message_summary": sent_message_summary,
         "sop_progress_evidence": _sop_progress_evidence_for_planner(state),
-        "sop_gate_decision": _sop_gate_decision_for_planner(state),
+        "sop_gate_decision": gate_decision,
         "precision_qa_playbook": precision_qa_context_for_planner(
-            include_answer_details_in_index=True
+            selected_scene_id,
+            include_answer_details_in_index=False,
         ),
         "available_tools": [tool for tool in ALLOWED_TOOLS if tool != "no_tool"],
     }
@@ -527,25 +532,19 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
 def _compact_precision_qa_for_timeout(value: Any, gate_decision: Any) -> dict[str, Any]:
     playbook = value if isinstance(value, dict) else {}
     gate = gate_decision if isinstance(gate_decision, dict) else {}
-    priority_question_id = str(gate.get("priority_question_id") or "").strip()
-    question_index: list[dict[str, str]] = []
-    selected_question = (
-        precision_qa_context_for_planner(priority_question_id).get("selected_question") or {}
-        if priority_question_id
-        else {}
+    selected_scene_id = str(
+        gate.get("selected_scene_id") or gate.get("priority_question_id") or ""
+    ).strip()
+    selected_context = precision_qa_context_for_planner(
+        selected_scene_id,
+        include_answer_details_in_index=False,
     )
-    for item in playbook.get("question_index") or []:
-        if not isinstance(item, dict):
-            continue
-        question_id = str(item.get("id") or "").strip()
-        intent_definition = str(item.get("intent_definition") or "").strip()
-        if question_id:
-            question_index.append(_drop_empty({"id": question_id, "intent_definition": intent_definition}))
     return _drop_empty(
         {
-            "global_answer_policy": playbook.get("global_answer_policy") or {},
-            "question_index": question_index,
-            "selected_question": selected_question,
+            "selected_scene": playbook.get("selected_scene")
+            or selected_context.get("selected_scene"),
+            "selected_question": playbook.get("selected_question")
+            or selected_context.get("selected_question"),
         }
     )
 
@@ -859,6 +858,7 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
             "route": gate.get("route") or gate.get("mode"),
             "coverage": gate.get("coverage"),
             "priority_question_id": gate.get("priority_question_id"),
+            "selected_scene_id": gate.get("selected_scene_id") or gate.get("priority_question_id"),
             "resume_stage": gate.get("resume_stage"),
             "sop_pack_id": gate.get("sop_pack_id"),
         }
@@ -871,6 +871,7 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
             "reason": raw.get("reason"),
             "task": _compact_gate_task(raw.get("active_task")),
             "priority_question_id": raw.get("priority_question_id"),
+            "selected_scene_id": raw.get("selected_scene_id") or raw.get("priority_question_id"),
             "resume_stage": raw.get("resume_stage"),
             "sop_pack_id": raw.get("sop_pack_id"),
             "sop_message_types": raw.get("sop_message_types"),

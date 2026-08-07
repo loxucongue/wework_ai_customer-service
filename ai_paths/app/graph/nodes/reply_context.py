@@ -14,7 +14,7 @@ from app.graph.planner.runtime_plan import (
 )
 from app.graph.state import AgentState
 from app.policies.business_rules import reply_business_rules_for_model
-from app.policies.sales_flow import precision_qa_context_for_planner
+from app.policies.sales_flow import appointment_blocker_reference_for_reply, precision_qa_context_for_planner
 from app.policies.compliance_terms import (
     QUALIFICATION_CONTEXT_SAFE_NOTE,
     SERVICE_COMMITMENT_CONTEXT_SAFE_NOTE,
@@ -48,6 +48,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
             location_hints=_store_scope_location_hints_for_reply(state),
         )
     )
+    selected_scene_id = _selected_appointment_scene_id(state)
     return _drop_empty({
         "current_message": state.get("normalized_content"),
         "location_card": location_card_from_state(state),
@@ -95,6 +96,7 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
         "precision_qa_playbook": precision_qa_context_for_planner(
             str((state.get("precision_qa_decision") or {}).get("question_id") or "")
         ),
+        "appointment_blocker_reference": appointment_blocker_reference_for_reply(selected_scene_id),
         "tool_facts": _tool_facts_for_reply(fact_envelope),
         "fact_notes": _fact_notes_for_model(
             fact_envelope,
@@ -102,6 +104,16 @@ def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
             sent_message_summary=sent_message_summary,
         ),
     })
+
+
+def _selected_appointment_scene_id(state: AgentState) -> str:
+    for key in ("sop_gate_decision", "sop_gate"):
+        gate = state.get(key)
+        if isinstance(gate, dict):
+            value = gate.get("selected_scene_id") or gate.get("priority_question_id")
+            if str(value or "").strip().startswith("scene_"):
+                return str(value).strip()
+    return ""
 
 
 def reply_recovery_payload_for_model(state: AgentState) -> dict[str, Any]:

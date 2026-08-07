@@ -384,6 +384,24 @@ async def admin_update_precision_qa_playbook(payload: dict[str, Any] = Body(...)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/admin/operations-dashboard", dependencies=[Depends(require_api_key)])
+async def admin_operations_dashboard(
+    started_from: str = "",
+    started_to: str = "",
+    corp_id: str = "",
+    wechat: str = "",
+) -> dict[str, Any]:
+    try:
+        return repository.operations_dashboard(
+            started_from=started_from,
+            started_to=started_to,
+            corp_id=corp_id,
+            wechat=wechat,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/admin/outreach/assets", dependencies=[Depends(require_api_key)])
 async def admin_outreach_assets() -> dict[str, Any]:
     return outreach_asset_library_service.load()

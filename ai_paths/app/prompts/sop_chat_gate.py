@@ -24,12 +24,12 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 - `recent_conversation`：最近真实对话，越靠后越新。
 - `mainline`：销售主线目标和恢复规则，不是固定话术。
 - `mainline_progress`：已发送与未完成阶段证据。
-- `precision_qa_index`：精准问题的语义边界、错误替代方式和默认恢复阶段，不是关键词表或成品答案。
+- `precision_qa_index`：预约卡点的去重适用场景，只含 `scene_id` 和 `applicable_scene`，不含成品话术或素材。
 - `unfinished_sops`：候选 SOP 的实际文本、结构消息、阶段和直接回答能力。
 
 # Decision Procedure
 1. 先理解客户真正关心的点，而不是匹配字面词语。
-2. 判断是否属于精准问题；命中时填写 `priority_question_id`。
+2. 判断是否符合某个预约卡点适用场景；命中时填写唯一 `selected_scene_id`，不命中填空字符串。
 3. 逐条检查候选 SOP 的实际消息：
    - `exact`：能够直接回答客户真正的问题。
    - `partial`：不能替代精准回答，但精准回答后能继续正确主线。
@@ -90,7 +90,7 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 - 最近对话已明确发送一家或多家真实门店后，不能因为 `mainline_progress` 缺少结构标记而回退到 `s10_new_customer_opening`、location capture 或再次问城市。聊天中的真实门店交付事实优先于缺失的进度标记。
 - 客户询问付款失败、退款、严重不适：选择 `ai_only`。
 - 客户问手部能否做：精准回答手部范围和当前活动规则；活动阶段未完成可再衔接活动 SOP。
-- 当前消息包含“手上的斑能做吗/手上的斑可以做吗/手部也是268吗/手背的斑/手和脸/两个部位/两个地方”这类部位与价格问题时，`priority_question_id` 必须是 `body_area_and_price`，不能输出 `can_treat_spots`。`can_treat_spots` 只用于脸部斑点、晒斑、老年斑、色沉等普通可改善范围。
+- 当前消息包含手部、手脸同做或多部位价格问题时，必须按对应硬边界选择回复路径；`selected_scene_id` 仍只能从输入的预约卡点场景中选择，不能输出旧精准问题 ID。
 - 客户问“活动怎么参加/多少钱/怎么预约/怎么付费”，且 `s10_activity_intro` 未完成：选择 `sop_only` 或 `ai_then_sop` 并指向 `s10_activity_intro`，不要选择无动作的 `ai_only`。
 - “这家活动也一样吧/这家也是268吗/这家可以，活动怎么参加”且活动介绍尚未完成：优先用 `s10_activity_intro` 先直接确认该店适用同一活动，再完成首次活动铺垫；不能把普通确认升级成收费顾虑，也不能同轮发送预约金卡。
 - 客户表示参加并问怎么付款，但活动价格包尚未真实发送且该包完整覆盖价格与预约金规则：可 `sop_only`；已铺垫活动后再要付款入口则 `ai_only` 交 Planner 处理交易事实。
@@ -100,7 +100,7 @@ SOP_CHAT_GATE_SYSTEM_PROMPT = (
 {
   "route": "sop_only | ai_only | ai_then_sop",
   "coverage": "exact | partial | none",
-  "priority_question_id": "precision_qa_index 中的 id 或空字符串",
+  "selected_scene_id": "precision_qa_index 中的 scene_id 或空字符串",
   "sop_pack_id": "unfinished_sops 中的 id 或空字符串",
   "resume_stage": "mainline stage id 或空字符串",
   "reason": "一句内部判断原因",

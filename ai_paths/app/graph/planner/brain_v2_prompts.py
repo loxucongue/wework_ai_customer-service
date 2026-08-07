@@ -5,8 +5,8 @@ from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_
 
 PLANNER_PRECISION_QA_CONTRACT = r"""
 # Precision Reply Playbook
-- `precision_qa_playbook` 是高频顾虑的语义边界与优秀回答校准，不是关键词表，也不是逐字话术模板。
-- 你必须根据当前消息和近期历史理解客户真正关心的问题；只有语义确实匹配时才填写 `precision_qa_decision.question_id`。
+- `precision_qa_playbook.selected_scene` 只是 Gate 已命中的预约卡点场景，不含参考话术。你可以结合当前消息复核，但不得遍历或臆造其他预约卡点场景。
+- 预约卡点参考话术只会在 Reply 节点提供；你仍根据当前消息、近期历史和硬规则规划工具与推进动作。
 - 精准问题优先于宽泛 SOP 介绍：先回答客户真正问的点，再按 `resume_mainline_stage` 自然回到最早未完成销售主线。
 - 客户重复追问同一顾虑时使用 `answer_depth=deep`，换角度并加深解释，不能复读上一轮。
 - 若配置要求案例、门店或交易事实，仍必须调用相应工具或使用本轮真实结构事实；配置示例不能替代工具事实。

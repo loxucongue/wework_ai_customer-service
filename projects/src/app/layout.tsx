@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Inspector } from 'react-dev-inspector';
 import './globals.css';
+import { AppShell } from '@/components/admin/app-shell';
 
 export const metadata: Metadata = {
   title: {
@@ -63,10 +64,10 @@ export default function RootLayout({
   const isDev = process.env.COZE_PROJECT_ENV === 'DEV';
 
   return (
-    <html lang="en">
+    <html lang="zh-CN">
       <body className={`antialiased`}>
         {isDev && <Inspector />}
-        {children}
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );

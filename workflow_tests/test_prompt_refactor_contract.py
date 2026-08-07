@@ -264,8 +264,6 @@ def test_acne_marks_and_scars_are_online_bookable_scope() -> None:
     assert "痘坑" not in unsupported
     assert "痘印改善" in runtime_text
     assert "痘坑改善" in runtime_text
-    playbook_text = Path("ai_paths/app/policies/precision_qa_playbook.json").read_text(encoding="utf-8")
-    assert "痘印、痘坑属于当前活动范围，不能命中本条" in playbook_text
     assert "痘印、痘坑属于当前淡斑活动改善范围，不能命中 unsupported" in PLANNER_SYSTEM_PROMPT
     assert "痘印、痘坑、混合斑点" in REPLY_SYSTEM_PROMPT
 
@@ -488,7 +486,7 @@ def test_planner_timeout_recovery_keeps_current_scene_and_flat_tool_contracts() 
     selected_payload = json.loads(selected_messages[-1]["content"])
     selected = selected_payload["precision_qa_playbook"]["selected_question"]
     assert selected["id"] == "one_session_effect"
-    assert selected.get("must_answer")
+    assert selected.get("hard_rule") is True
 
 
 def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:

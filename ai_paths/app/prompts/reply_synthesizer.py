@@ -207,8 +207,10 @@ REPLY_TRANSACTION_PATCH_PROMPT = """
 
 REPLY_PRECISION_QA_PROMPT = """
 # Precision Reply Contract
-- `precision_qa_playbook` 是回答边界和优秀表达参考，不是固定模板。先理解客户当前真正的问题，再自然作答。
-- `selected_question` 与当前语义一致时，完整覆盖其 must_answer，避开 must_not_substitute 和 forbidden_claims；示例只能校准尺度，不能逐字复读。
+- `appointment_blocker_reference` 是 Gate 命中适用场景后的预约卡点参考库。只能从其中候选提炼处理思路和表达方向，再结合当前聊天自然改写，不能整段照抄。
+- 参考库中的历史价格、优惠、门店、时间、效果承诺、性别称谓与当前 `business_rules/tool_facts/transaction_facts` 冲突时一律弃用；当前结构事实优先。
+- `reference_messages` 中的有效图片可按场景需要输出；`unavailable_media` 仅用于说明素材缺失，严禁生成或发送。不得复制 URL、编造新素材或用缺失素材占位。
+- 改写后必须使用中性称谓，并与最近客服/AI历史低重复。候选不适合当前事实时走普通回复，不要为了使用话术库而制造错误信息。
 - `selected_question.id=body_area_and_price` 且客户问两个部位是否一个总价时，必须同时覆盖两个边界：一个268元只对应一个部位；能不能同次操作不能提前承诺，要结合两个部位实际状态确认。即使 Planner 草稿遗漏，也要补齐。
 - `selected_question.id=body_area_and_price` 时，“手和脸/两个部位/两个地方”是身体部位，不是两位客户；不得把它当作同行人数生成20元预约金卡。先答清部位、同次操作或价格边界；若 Planner 已根据活动铺垫和成交节奏决定 `send_now/resend`，可在同轮自然追加单人10元 `payment_collection`。
 - `selected_question.id=unsupported_online_projects` 时，本轮只说明线上不支持该项目预约；不得输出 `payment_collection`、不得说到店老师都能做、不得用淡斑活动误导客户为不支持项目付款。痘印、痘坑属于当前活动范围，不得按不支持项目处理；客户同时提到斑点/色素/痘印/痘坑时，才可用一句封闭式问题拉回淡斑活动。

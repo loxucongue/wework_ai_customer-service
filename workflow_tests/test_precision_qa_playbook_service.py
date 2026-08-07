@@ -10,71 +10,75 @@ from app.policies.sales_flow import configure_precision_qa_playbook_path, load_p
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 
 
-def test_precision_qa_service_saves_utf8_and_refreshes_runtime_cache(tmp_path: Path) -> None:
+def test_appointment_blocker_service_saves_utf8_and_refreshes_runtime_cache(tmp_path: Path) -> None:
     configured_path = tmp_path / "precision_qa_playbook.json"
     service = PrecisionQaPlaybookService(SimpleNamespace(precision_qa_playbook_path=configured_path))
     try:
         payload = service.load()
         assert payload["storage"]["source"] == "bundled_default"
-        payload["purpose"] = "中文精准回复配置保存验证"
+        payload["items"][0]["applicable_scene"] = "中文预约卡点场景"
         payload["future_extension"] = {"kept": True}
 
         saved = service.save(payload)
 
         assert saved["storage"]["source"] == "configured"
         raw_text = configured_path.read_text(encoding="utf-8")
-        assert "中文精准回复配置保存验证" in raw_text
+        assert "中文预约卡点场景" in raw_text
         assert "\\u4e2d" not in raw_text
         stored = json.loads(raw_text)
         assert "audit" not in stored
         assert "storage" not in stored
         assert stored["future_extension"] == {"kept": True}
-        assert load_precision_qa_playbook()["purpose"] == "中文精准回复配置保存验证"
+        assert load_precision_qa_playbook()["items"][0]["applicable_scene"] == "中文预约卡点场景"
     finally:
         configure_precision_qa_playbook_path(None)
 
 
-def test_precision_qa_service_rejects_duplicate_question_ids(tmp_path: Path) -> None:
-    service = PrecisionQaPlaybookService(
-        SimpleNamespace(precision_qa_playbook_path=tmp_path / "precision_qa_playbook.json")
-    )
+def test_appointment_blocker_service_rejects_duplicate_content_ids(tmp_path: Path) -> None:
+    service = PrecisionQaPlaybookService(SimpleNamespace(precision_qa_playbook_path=tmp_path / "precision_qa_playbook.json"))
     try:
         payload = service.load()
-        payload["questions"].append(dict(payload["questions"][0]))
-
-        with pytest.raises(ValueError, match="duplicated precision QA id"):
+        payload["items"].append(dict(payload["items"][0]))
+        with pytest.raises(ValueError, match="duplicated content id"):
             service.save(payload)
     finally:
         configure_precision_qa_playbook_path(None)
 
 
-def test_precision_qa_runtime_cache_refreshes_when_config_file_changes(tmp_path: Path) -> None:
+def test_runtime_cache_refreshes_when_config_file_changes(tmp_path: Path) -> None:
     configured_path = tmp_path / "precision_qa_playbook.json"
     service = PrecisionQaPlaybookService(SimpleNamespace(precision_qa_playbook_path=configured_path))
     try:
         payload = service.load()
-        payload["purpose"] = "第一版"
+        payload["items"][0]["blocker_type"] = "第一版"
         service.save(payload)
-        assert load_precision_qa_playbook()["purpose"] == "第一版"
+        assert load_precision_qa_playbook()["items"][0]["blocker_type"] == "第一版"
 
         stored = json.loads(configured_path.read_text(encoding="utf-8"))
-        stored["purpose"] = "第二版"
+        stored["items"][0]["blocker_type"] = "第二版"
         configured_path.write_text(json.dumps(stored, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-        assert load_precision_qa_playbook()["purpose"] == "第二版"
+        assert load_precision_qa_playbook()["items"][0]["blocker_type"] == "第二版"
     finally:
         configure_precision_qa_playbook_path(None)
 
 
-def test_precision_qa_service_rejects_incomplete_question(tmp_path: Path) -> None:
-    service = PrecisionQaPlaybookService(
-        SimpleNamespace(precision_qa_playbook_path=tmp_path / "precision_qa_playbook.json")
-    )
+def test_service_rejects_empty_messages(tmp_path: Path) -> None:
+    service = PrecisionQaPlaybookService(SimpleNamespace(precision_qa_playbook_path=tmp_path / "precision_qa_playbook.json"))
     try:
         payload = service.load()
-        payload["questions"][0]["must_answer"] = []
-
-        with pytest.raises(ValueError, match="必须回答至少需要一条"):
+        payload["items"][0]["reply_messages"] = []
+        with pytest.raises(ValueError, match="non-empty list"):
             service.save(payload)
     finally:
         configure_precision_qa_playbook_path(None)
+
+
+def test_bundled_appointment_blocker_dataset_contract() -> None:
+    service = PrecisionQaPlaybookService(SimpleNamespace(precision_qa_playbook_path=Path("missing-config.json")))
+    payload = service.load()
+    messages = [message for item in payload["items"] for message in item["reply_messages"]]
+    assert len(payload["items"]) == 104
+    assert len({item["content_id"] for item in payload["items"]}) == 104
+    assert sum(message["type"] == "image" for message in messages) == 64
+    assert sum(bool(message.get("source_missing")) for message in messages) == 15
+    assert payload["audit"]["warning_count"] == 15

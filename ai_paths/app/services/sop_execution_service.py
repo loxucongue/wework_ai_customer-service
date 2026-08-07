@@ -13,6 +13,7 @@ from app.policies.sales_flow import (
     mainline_stage_for_event_pack,
     mainline_stage_for_event_values,
     mainline_stage_for_pack,
+    precision_qa_for_id,
     precision_qa_index_for_gate,
     sales_mainline_for_model,
 )
@@ -456,7 +457,11 @@ class SopExecutionService:
             route = _chat_gate_route(selector_output)
             result["route"] = route
             result["coverage"] = _chat_gate_coverage(selector_output)
-            result["priority_question_id"] = _string(selector_output.get("priority_question_id"))
+            selected_scene_id = _string(
+                selector_output.get("selected_scene_id") or selector_output.get("priority_question_id")
+            )
+            result["selected_scene_id"] = selected_scene_id
+            result["priority_question_id"] = selected_scene_id
             result["resume_stage"] = _string(selector_output.get("resume_stage"))
             result["active_task"] = _chat_gate_active_task(selector_output.get("active_task"))
             result["text_adjustments"] = _text_adjustments(selector_output.get("text_adjustments"))
@@ -741,6 +746,7 @@ class SopExecutionService:
             "route": "ai_only",
             "coverage": "none",
             "priority_question_id": "",
+            "selected_scene_id": "",
             "sop_pack_id": "",
             "resume_stage": "",
             "reason": "chat_gate_invalid_after_repair_continue_ai",
@@ -2753,17 +2759,19 @@ def _chat_gate_output_violations(
     coverage = _chat_gate_coverage(selector_output)
     pack_id = _string(selector_output.get("sop_pack_id"))
     resume_stage = _string(selector_output.get("resume_stage"))
-    priority_question_id = _string(selector_output.get("priority_question_id"))
+    selected_scene_id = _string(
+        selector_output.get("selected_scene_id") or selector_output.get("priority_question_id")
+    )
     active_task = _chat_gate_active_task(selector_output.get("active_task"))
     packs = {
         _string(item.get("id")): item
         for item in selector_input.get("unfinished_sops") or []
         if isinstance(item, dict) and _string(item.get("id"))
     }
-    question_ids = {
-        _string(item.get("id"))
+    scene_ids = {
+        _string(item.get("scene_id"))
         for item in selector_input.get("precision_qa_index") or []
-        if isinstance(item, dict) and _string(item.get("id"))
+        if isinstance(item, dict) and _string(item.get("scene_id"))
     }
     violations: list[str] = []
     expected_coverage = {
@@ -2773,8 +2781,9 @@ def _chat_gate_output_violations(
     }[route]
     if coverage != expected_coverage:
         violations.append(f"route_coverage_mismatch:{route}:{coverage}")
-    if priority_question_id and priority_question_id not in question_ids:
-        violations.append("unknown_priority_question_id")
+    hard_rule = precision_qa_for_id(selected_scene_id)
+    if selected_scene_id and selected_scene_id not in scene_ids and not hard_rule.get("hard_rule"):
+        violations.append("unknown_selected_scene_id")
     if active_task.get("type") == "location_confirmation":
         if active_task.get("required_tool") != "customer_store_lookup" or not active_task.get("query"):
             violations.append("location_confirmation_requires_store_lookup_task")
