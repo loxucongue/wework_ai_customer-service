@@ -43,7 +43,11 @@ def sent_message_summary_for_model(
 
     for item in state.get("conversation_history") or []:
         text = _conversation_text(item)
-        if "activity_intro_image" in text or "anniversary-268.jpg" in text:
+        if (
+            "activity_intro_image" in text
+            or "anniversary-268.jpg" in text
+            or "d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png" in text
+        ):
             activity_intro_image_sent = True
         if "store_address" in text or "门店位置卡" in text:
             for match in re.finditer(r"(?:store_id|门店ID)\s*[=:：]\s*(\d+)", text, flags=re.IGNORECASE):

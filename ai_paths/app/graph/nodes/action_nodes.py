@@ -1937,12 +1937,17 @@ def _distance_origin_is_broad_lookup_scope(tool_results: dict[str, Any], *, cand
     location_evidence = lookup.get("location_evidence") if isinstance(lookup.get("location_evidence"), dict) else {}
     if str(location_evidence.get("confirmation_mode") or "") == "authoritative_location_card":
         return False
-    if str(location_evidence.get("detail") or "").strip():
-        return False
     resolved_level = str(lookup.get("resolved_admin_level") or "").strip()
     if resolved_level == "province":
         return True
-    return resolved_level == "city" and candidate_count > 3
+    if resolved_level != "city" or candidate_count <= 3:
+        return False
+    if str(location_evidence.get("district") or "").strip() or str(location_evidence.get("township") or "").strip():
+        return False
+    geocode = lookup.get("geocode") if isinstance(lookup.get("geocode"), dict) else {}
+    if str(geocode.get("district") or "").strip():
+        return False
+    return True
 
 
 def _preselect_distance_candidates(

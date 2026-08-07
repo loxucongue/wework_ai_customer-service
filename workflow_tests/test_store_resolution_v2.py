@@ -9,6 +9,7 @@ from app.graph.nodes.action_nodes import (
     _customer_store_lookup,
     _distance_calculate,
     _distance_origin_geocode_from_lookup,
+    _distance_origin_is_broad_lookup_scope,
     _filter_invalid_planned_tools,
     _geocode_explicit_region_conflict,
     _lookup_result_allows_distance_calculate,
@@ -151,6 +152,32 @@ def test_distance_tool_requires_successful_lookup_candidates() -> None:
                 "candidate_stores": [{"store_id": "350"}],
             }
         }
+    )
+
+
+def test_distance_origin_rejects_city_level_lookup_even_with_junk_detail() -> None:
+    assert _distance_origin_is_broad_lookup_scope(
+        {
+            "customer_store_lookup": {
+                "status": "ok",
+                "resolved_admin_level": "city",
+                "geocode": {
+                    "province": "Guangdong",
+                    "city": "Guangzhou",
+                    "district": "",
+                    "location": "113.33,23.13",
+                },
+                "location_evidence": {
+                    "province": "Guangdong",
+                    "city": "Guangzhou",
+                    "district": "",
+                    "township": "",
+                    "detail": "is",
+                    "confirmation_mode": "informational_echo",
+                },
+            }
+        },
+        candidate_count=4,
     )
 
 

@@ -74,7 +74,7 @@ def _activity_intro_image_sent(state: AgentState, url: str) -> bool:
             return True
     for item in state.get("conversation_history") or []:
         text = str(item or "")
-        if url in text or "anniversary-268.jpg" in text:
+        if url in text or "anniversary-268.jpg" in text or "d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png" in text:
             return True
     return False
 

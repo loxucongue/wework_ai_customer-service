@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from app.policies.business_rules import load_business_rules
 from app.services.sop_execution_service import first_add_candidate_packs
 from app.services.sop_reply_pack_service import SopReplyPackService
 
@@ -65,6 +66,13 @@ def test_chat_activity_quote_remains_available_to_normal_ai_reply_gate() -> None
     assert _image_urls(activity) == [ACTIVITY_AD_IMAGE]
 
 
+def test_activity_intro_image_matches_business_rule_fact_source() -> None:
+    activity = _pack(_load_config(), "s10_activity_intro")
+    offer = load_business_rules().get("offer") or {}
+
+    assert offer["activity_intro_image_url"] == _image_urls(activity)[0]
+
+
 def test_first_activity_intro_does_not_send_payment_card_in_same_turn() -> None:
     activity = _pack(_load_config(), "s10_activity_intro")
 
@@ -84,6 +92,27 @@ def test_activity_intro_tail_does_not_ask_default_single_person_count() -> None:
     for phrase in ["自己一位参加吗", "1位参加对吧", "几位参加", "按人数"]:
         assert phrase not in visible_text
     assert "10元预约金入口" in visible_text
+
+
+def test_static_sop_copy_does_not_contain_absolute_effect_or_safety_claims() -> None:
+    config = _load_config()
+    visible_text = "\n".join(
+        str((message.get("content") or {}).get("text") or "")
+        for pack in config["packs"]
+        for message in pack.get("reply_messages") or []
+        if message.get("type") == "text"
+    )
+
+    forbidden_phrases = [
+        "公认最先进",
+        "最先进最有效",
+        "做完不伤害皮肤",
+        "不伤害皮肤",
+        "随做随走不影响出门上班",
+        "随做随走，不影响上班出门",
+    ]
+    for phrase in forbidden_phrases:
+        assert phrase not in visible_text
 
 
 def test_legacy_first_add_candidate_generation_is_empty_after_retirement() -> None:

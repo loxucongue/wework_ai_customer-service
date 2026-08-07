@@ -65,7 +65,7 @@
     ],
     "closing_reason_policy": "每轮结合客户当前阻力只选择一个最自然的已批准理由，不机械堆叠全部价格、退款、赠送和名额信息。可以同理客户希望改善斑点、让皮肤状态更好的心理，但不得暗示客户脸脏、不好看或制造羞耻。除approved_closing_reasons和本轮权威事实外，不得新增赠品、报销、接送、指定老师、固定日期、效果保证或其他承诺。",
     "payment_message_type": "payment_collection",
-    "activity_intro_image_url": "https://test.by4dev.4ba.cn/assets/activity/anniversary-268.jpg",
+    "activity_intro_image_url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png",
     "case_image_fallback_urls": [
       "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f52d53829c1fc73e-1329752764320508_1780495764839841063_EURwtgbwZf.png",
       "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/47715b170aba6133-1329752764320508_1780495757690203274_fX4YTfxiDH.png",
