@@ -517,6 +517,12 @@
       "category": "SOP Gate",
       "critical": true,
       "semantic_goal": "客户问活动且活动包未完成时触发活动介绍SOP并自然过渡。",
+      "expected": {
+        "must_reply": true,
+        "required_types": ["text", "payment_collection"],
+        "payment_amount": 10,
+        "forbidden_phrases": ["先确认实际参加人数", "您这边是1位参加吗", "自己一位参加吗", "1位参加对吧", "几位参加", "按人数", "确定人数后"]
+      },
       "initial": {
         "conversation": [
           "小贝: 您脸上的斑大概多久了？",

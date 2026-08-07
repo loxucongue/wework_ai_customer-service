@@ -73,6 +73,19 @@ def test_first_activity_intro_does_not_send_payment_card_in_same_turn() -> None:
     }
 
 
+def test_activity_intro_tail_does_not_ask_default_single_person_count() -> None:
+    activity = _pack(_load_config(), "s10_activity_intro")
+    visible_text = "\n".join(
+        str((message.get("content") or {}).get("text") or "")
+        for message in activity.get("reply_messages") or []
+        if message.get("type") == "text"
+    )
+
+    for phrase in ["自己一位参加吗", "1位参加对吧", "几位参加", "按人数"]:
+        assert phrase not in visible_text
+    assert "10元预约金入口" in visible_text
+
+
 def test_legacy_first_add_candidate_generation_is_empty_after_retirement() -> None:
     config = _load_config()
 
