@@ -1228,10 +1228,6 @@ def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
     for item in structured.get("appointment_facts") or []:
         if isinstance(item, dict):
             _add_store_id(allowed, item)
-    for key in ("confirmed_store_id", "store_id"):
-        value = str(state.get(key) or "").strip()
-        if value and value != "0":
-            allowed.add(value)
     allowed.update(store_scope_ids(knowledge))
     for region in _store_scope_summary_regions(state):
         for key in ("stores", "requested_district_stores"):

@@ -2049,6 +2049,23 @@ def _query_looks_like_specific_geocode_place(query: str, geocode: dict[str, Any]
     text = _compact_text(query)
     if not text or not _parse_lng_lat(str(geocode.get("location") or "")):
         return False
+    province = str(geocode.get("province") or "").strip()
+    city = str(geocode.get("city") or "").strip()
+    district = str(geocode.get("district") or "").strip()
+    township = str(geocode.get("township") or "").strip()
+    if township and _admin_name_mentioned_in_query(
+        query,
+        township,
+        parent_city=city,
+        parent_district=district,
+    ):
+        return True
+    if district and _admin_name_mentioned_in_query(query, district, parent_city=city):
+        return False
+    if city and _admin_name_mentioned_in_query(query, city, parent_province=province):
+        return False
+    if province and _admin_name_mentioned_in_query(query, province):
+        return False
     if text.endswith(("省", "市", "区", "县")):
         return False
     if text.endswith(("镇", "乡", "村", "街道", "社区")):
