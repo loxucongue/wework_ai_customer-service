@@ -240,7 +240,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
                 "type": "text",
                 "order": 2,
                 "content": {
-                    "text": "到店先看效果和方案，满意再做；线上10元预约金到店抵扣，未做或不满意可退，主要是先帮您保留活动价名额。"
+                    "text": "到店先看效果和方案，满意再做；线上10元预约金到店抵扣，未做或不满意可退，实际按付款记录核对，主要是先帮您保留活动价名额。"
                 },
             },
             {
@@ -309,7 +309,7 @@ EVENT_FIRST_ADD_TEMPLATE_PACKS: list[dict[str, Any]] = [
                 "type": "text",
                 "order": 1,
                 "content": {
-                    "text": "您看下这个改善参考，活动名额先锁住更稳，到店时间按您方便安排，10元预约金到店抵扣；未做或不满意可退。"
+                    "text": "您看下这个改善参考，活动名额先锁住更稳，到店时间按您方便安排，10元预约金到店抵扣；未做或不满意可退，实际按付款记录核对。"
                 },
             },
             {
@@ -411,7 +411,7 @@ class SopReplyPackService:
         audit = _audit_config(normalized)
         errors = [issue for issue in audit["issues"] if issue.get("severity") == "error"]
         if errors:
-            summary = "; ".join(str(issue.get("message") or issue.get("code") or "") for issue in errors[:5])
+            summary = "; ".join(_audit_issue_summary(issue) for issue in errors[:5])
             raise ValueError(f"SOP reply pack audit failed: {summary}")
         normalized["version"] = int(normalized.get("version") or 1)
         normalized["updated_at"] = datetime.now(UTC).isoformat()
@@ -587,7 +587,9 @@ def _audit_config(config: dict[str, Any]) -> dict[str, Any]:
                 text = str(content.get("text") or "")
                 if enabled and not text.strip():
                     issues.append(_audit_issue("error", "empty_text", pack_id, "启用包存在空 text 消息。", order=index))
-                if "不做退10元" in text or "不做退还10元" in text:
+                has_legacy_refund_text = "不做退10元" in text or "不做退还10元" in text
+                has_incomplete_refund_text = "未做或不满意可退" in text and "实际按付款记录核对" not in text
+                if has_legacy_refund_text or has_incomplete_refund_text:
                     issues.append(_audit_issue("error", "legacy_deposit_refund_policy", pack_id, "预约金退款口径必须统一为“到店抵扣；未做或不满意可退，实际按付款记录核对”。", order=index))
                 previous_text = text
                 continue
@@ -751,6 +753,14 @@ def _audit_issue(severity: str, code: str, pack_id: str, message: str, *, order:
     if order is not None:
         issue["message_order"] = order
     return issue
+
+
+def _audit_issue_summary(issue: dict[str, Any]) -> str:
+    pack_id = str(issue.get("pack_id") or "未知话术包")
+    order = issue.get("message_order")
+    position = f"{pack_id} 第 {order} 条" if order is not None else pack_id
+    message = str(issue.get("message") or issue.get("code") or "配置不合法")
+    return f"{position}：{message}"
 
 
 def _first_message_value(messages: list[Any], message_type: str, field: str) -> str:

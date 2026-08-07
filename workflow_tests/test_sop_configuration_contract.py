@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.sop_execution_service import first_add_candidate_packs
 from app.services.sop_reply_pack_service import SopReplyPackService
 
@@ -85,6 +87,7 @@ def test_activity_intro_includes_deposit_card_after_refund_rule_text() -> None:
     ]
     assert messages[-1]["content"] == {"amount": 10, "remark": ""}
     assert "未做或不满意可退" in messages[-2]["content"]["text"]
+    assert "实际按付款记录核对" in messages[-2]["content"]["text"]
 
 
 def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
@@ -133,3 +136,17 @@ def test_active_configuration_has_no_event_scope_audit_error() -> None:
 
     assert "non_chat_gate_scope" not in error_codes
     assert "event_activity_quote_missing" not in error_codes
+
+
+def test_save_rejects_incomplete_refund_policy_with_pack_and_message_position(tmp_path: Path) -> None:
+    service = SopReplyPackService(SimpleNamespace(sop_reply_packs_path=tmp_path / "sop_reply_packs.json"))
+    payload = _load_config()
+    deposit = _pack(payload, "s10_deposit_close")
+    deposit["reply_messages"][0]["content"]["text"] = "10元预约金到店抵扣，未做或不满意可退。"
+
+    with pytest.raises(ValueError) as exc_info:
+        service.save(payload)
+
+    message = str(exc_info.value)
+    assert "s10_deposit_close 第 1 条" in message
+    assert "实际按付款记录核对" in message
