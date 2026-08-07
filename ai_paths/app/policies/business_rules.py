@@ -140,6 +140,8 @@ def _offer_facts(offer: dict[str, Any]) -> dict[str, Any]:
     return {
         "public_names": offer.get("public_names") or [],
         "new_customer_price": offer.get("new_customer_price"),
+        "original_price": offer.get("original_price"),
+        "original_price_visibility": offer.get("original_price_visibility"),
         "prepay_amount": offer.get("prepay_amount"),
         "tail_amount": offer.get("tail_amount"),
         "refund_rule": offer.get("refund_rule"),
