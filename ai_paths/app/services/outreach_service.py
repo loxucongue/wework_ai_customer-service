@@ -71,6 +71,7 @@ OUTREACH_MAX_STEP_GAP_MINUTES = 72 * 60
 OUTREACH_MAX_PLAN_MINUTES = 7 * 24 * 60
 OUTREACH_DAILY_TASK_LIMIT = 2
 FIRST_DAY_DAILY_PLAN_LIMIT = 2
+FIRST_DAY_DAILY_TASK_LIMIT = FIRST_DAY_DAILY_PLAN_LIMIT * 2
 OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 FIRST_DAY_WINDOW_MINUTES = 24 * 60
 FIRST_DAY_SILENCE_TRIGGER_TYPE = "first_day_opened_silence"
@@ -3879,6 +3880,24 @@ class OutreachService:
                     finished_at=utc_now_iso(),
                 )
                 return {"status": "skipped", "customer_id": customer_id, "reason": "not_waiting_for_customer_reply"}
+            if self._completed_cycle_blocks_auto_plan(
+                customer_id=customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+                latest_customer_message_at=latest_customer_text,
+            ):
+                _update_run(
+                    status="blocked",
+                    reason_code="outreach_cycle_completed_without_new_customer_reply",
+                    final_decision="no_plan",
+                    finished_at=utc_now_iso(),
+                )
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "outreach_cycle_completed_without_new_customer_reply",
+                }
             wait_minutes = max(
                 0,
                 int((datetime.now(timezone.utc) - latest_staff.astimezone(timezone.utc)).total_seconds() // 60),
@@ -4379,7 +4398,48 @@ class OutreachService:
                     wechat=str(task.get("wechat") or plan.get("wechat") or ""),
                     external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
                 )
-                if sent_today_count >= OUTREACH_DAILY_TASK_LIMIT:
+                source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+                trigger_context = (
+                    source_snapshot.get("trigger_context")
+                    if isinstance(source_snapshot.get("trigger_context"), dict)
+                    else {}
+                )
+                is_first_day_plan = _string(trigger_context.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
+                daily_task_limit = FIRST_DAY_DAILY_TASK_LIMIT if is_first_day_plan else OUTREACH_DAILY_TASK_LIMIT
+                if sent_today_count >= daily_task_limit:
+                    if is_first_day_plan:
+                        self.repository.update_outreach_task(
+                            task_id,
+                            status="skipped",
+                            error_message="first_day_daily_task_limit_reached",
+                        )
+                        self.repository.skip_remaining_outreach_tasks(
+                            str(task["plan_id"]),
+                            reason="first_day_daily_task_limit_reached",
+                            exclude_task_id=task_id,
+                        )
+                        self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+                        self.repository.add_outreach_event(
+                            plan_id=str(task["plan_id"]),
+                            task_id=task_id,
+                            customer_id=str(task["customer_id"]),
+                            event_type="plan_cancelled_first_day_daily_task_limit",
+                            event_summary="First-day outreach plan cancelled because its daily task limit was reached",
+                            payload={"sent_today": sent_today_count, "daily_task_limit": daily_task_limit},
+                        )
+                        self._sync_first_day_run_for_task(
+                            plan=plan,
+                            task=task,
+                            status="cancelled",
+                            reason_code="first_day_daily_task_limit_reached",
+                            final_decision="no_send",
+                            terminal=True,
+                        )
+                        return {
+                            "ok": True,
+                            "status": "skipped",
+                            "reason": "first_day_daily_task_limit_reached",
+                        }
                     next_window = _next_outreach_day_start()
                     delay_seconds = max(
                         1,

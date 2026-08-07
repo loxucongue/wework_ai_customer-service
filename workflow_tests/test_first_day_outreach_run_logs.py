@@ -337,3 +337,144 @@ def test_first_day_monitor_logs_and_reuses_conversation_refresh_failure(tmp_path
     assert run["reason_code"] == "conversation_refresh_failed"
     assert run["error_node"] == "conversation_refresh"
     assert run["retry_count"] == 1
+
+
+def test_first_day_monitor_does_not_replan_completed_cycle_without_customer_reply(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    now = datetime.now(timezone.utc)
+    customer_at = (now - timedelta(minutes=10)).isoformat()
+    staff_at = (now - timedelta(minutes=4)).isoformat()
+    completed = repository.create_outreach_plan(
+        customer_id="customer-completed-cycle",
+        corp_id="corp",
+        user_id="user",
+        wechat="staff",
+        external_userid="external-completed-cycle",
+        customer_stage="opened",
+        stall_reason="silent",
+        customer_psychology="interested",
+        plan_goal="follow up",
+        source_snapshot={"trigger_context": {"trigger_type": "first_day_opened_silence"}},
+        tasks=[
+            {"step_index": 1, "reply_messages": [{"type": "text", "content": "first"}]},
+            {"step_index": 2, "reply_messages": [{"type": "text", "content": "second"}]},
+        ],
+        sop_plan_id="first_day_opened_silence",
+    )
+    repository.update_outreach_plan_status(completed["plan"]["id"], "completed")
+
+    class CompletedCycleService(OutreachService):
+        async def refresh_customer_conversation(self, **_kwargs):
+            return {
+                "messages": [
+                    {"direction": "customer", "content": "hello", "created_at": customer_at},
+                    {"direction": "staff", "content": "reply", "created_at": staff_at},
+                ],
+                "customer_relation": {"available": True, "status": "active", "is_deleted": False},
+            }
+
+    service = CompletedCycleService(
+        repository=repository,
+        model_client=object(),
+        system_client=object(),
+    )
+    result = asyncio.run(
+        service._evaluate_first_day_silence_candidate(
+            {
+                "customer_id": "customer-completed-cycle",
+                "corp_id": "corp",
+                "user_id": "user",
+                "wechat": "staff",
+                "external_userid": "external-completed-cycle",
+                "sales_contact_started_at": (now - timedelta(hours=1)).isoformat(),
+                "last_customer_message_at": customer_at,
+                "last_staff_message_at": staff_at,
+                "latest_outbound_message_at": staff_at,
+                "awaiting_customer_reply": True,
+                "reply_wait_minutes": 4,
+            },
+            silent_minutes=3,
+            auto_activate=True,
+        )
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "outreach_cycle_completed_without_new_customer_reply"
+    runs = repository.list_first_day_outreach_runs(customer_id="customer-completed-cycle")["items"]
+    assert len(runs) == 1
+    assert runs[0]["status"] == "blocked"
+    assert runs[0]["reason_code"] == "outreach_cycle_completed_without_new_customer_reply"
+
+
+def test_first_day_daily_task_limit_cancels_whole_plan_without_rescheduling(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    now = datetime.now(timezone.utc).isoformat()
+    identity = {
+        "customer_id": "customer-daily-task-limit",
+        "corp_id": "corp",
+        "user_id": "user",
+        "wechat": "staff",
+        "external_userid": "external-daily-task-limit",
+    }
+    for cycle in range(2):
+        historical = repository.create_outreach_plan(
+            **identity,
+            customer_stage="opened",
+            stall_reason="silent",
+            customer_psychology="interested",
+            plan_goal="follow up",
+            source_snapshot={"trigger_context": {"trigger_type": "first_day_opened_silence"}},
+            tasks=[
+                {"step_index": 1, "reply_messages": [{"type": "text", "content": f"first-{cycle}"}]},
+                {"step_index": 2, "reply_messages": [{"type": "text", "content": f"second-{cycle}"}]},
+            ],
+            sop_plan_id="first_day_opened_silence",
+        )
+        with repository.store.connect() as conn:
+            conn.execute(
+                "UPDATE outreach_tasks SET status='sent', sent_at=?, updated_at=? WHERE plan_id=?",
+                (now, now, historical["plan"]["id"]),
+            )
+        repository.update_outreach_plan_status(historical["plan"]["id"], "completed")
+
+    run = repository.create_first_day_outreach_run(
+        **identity,
+        trigger_type="first_day_opened_silence",
+    )
+    pending = repository.create_outreach_plan(
+        **identity,
+        customer_stage="opened",
+        stall_reason="silent",
+        customer_psychology="interested",
+        plan_goal="follow up",
+        source_snapshot={
+            "workflow_run_id": run["workflow_run_id"],
+            "trigger_context": {
+                "trigger_type": "first_day_opened_silence",
+                "activation_policy": "auto_approved",
+            },
+        },
+        tasks=[
+            {"step_index": 1, "scheduled_at": now, "reply_messages": [{"type": "text", "content": "first"}]},
+            {"step_index": 2, "scheduled_at": now, "reply_messages": [{"type": "text", "content": "second"}]},
+        ],
+        sop_plan_id="first_day_opened_silence",
+        workflow_run_id=run["workflow_run_id"],
+    )
+    repository.update_outreach_plan_status(pending["plan"]["id"], "active")
+    service = OutreachService(repository=repository, model_client=object(), system_client=object())
+
+    result = asyncio.run(service.execute_task(pending["tasks"][0]["id"]))
+
+    assert result == {
+        "ok": True,
+        "status": "skipped",
+        "reason": "first_day_daily_task_limit_reached",
+    }
+    detail = repository.get_outreach_plan(pending["plan"]["id"])
+    assert detail["plan"]["status"] == "cancelled"
+    assert [task["status"] for task in detail["tasks"]] == ["skipped", "skipped"]
+    assert all(task["error_message"] == "first_day_daily_task_limit_reached" for task in detail["tasks"])
+    updated_run = repository.get_first_day_outreach_run(run["workflow_run_id"])
+    assert updated_run["status"] == "cancelled"
+    assert updated_run["reason_code"] == "first_day_daily_task_limit_reached"
