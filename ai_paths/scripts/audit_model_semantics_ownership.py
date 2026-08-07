@@ -11,11 +11,13 @@ from app.services.parallel_reply_chain_shadow import parallel_reply_chain_shadow
 from app.services.reply_chain_join_shadow import reply_chain_join_shadow
 from app.services.reply_final_brain_handoff import reply_final_brain_handoff_shadow_from_planner_output
 from app.services.tool_plan_preview import tool_plan_preview_from_planner_output
+from ai_paths.scripts.audit_planner_normalizer_boundaries import audit_planner_normalizer_boundaries
 
 
 def audit_model_semantics_ownership(*, repo_root: Path, head_ref: str = "HEAD") -> dict[str, Any]:
     """Audit reply-chain semantic ownership without changing runtime behavior."""
 
+    normalizer_boundary = audit_planner_normalizer_boundaries(repo_root=repo_root, head_ref=head_ref)
     tool_plan = tool_plan_preview_from_planner_output(
         {
             "planner_tool_calls": [
@@ -72,6 +74,10 @@ def audit_model_semantics_ownership(*, repo_root: Path, head_ref: str = "HEAD") 
         handoff=handoff,
         field_mapping=field_mapping,
     )
+    blockers.extend(
+        f"normalizer_boundary:{item}"
+        for item in _list_strings(normalizer_boundary.get("blockers"))
+    )
     commit = _git_output(repo_root, ["git", "rev-parse", head_ref])
     return {
         "schema_version": "reply_chain_model_semantics_ownership_audit_v1",
@@ -104,6 +110,12 @@ def audit_model_semantics_ownership(*, repo_root: Path, head_ref: str = "HEAD") 
             "join_generates_customer_visible_text": observation.get("join_generates_customer_visible_text"),
             "join_decides_sales_psychology": observation.get("join_decides_sales_psychology"),
             "reply_handoff_ready_for_payload_switch_shadow": observation.get("reply_handoff_ready_for_payload_switch_shadow"),
+        },
+        "normalizer_boundary_audit": {
+            "schema_version": normalizer_boundary.get("schema_version"),
+            "normalizer_boundary_passed": normalizer_boundary.get("normalizer_boundary_passed"),
+            "summary": normalizer_boundary.get("summary"),
+            "blockers": normalizer_boundary.get("blockers"),
         },
         "semantic_ownership_passed": not blockers,
         "blockers": blockers,

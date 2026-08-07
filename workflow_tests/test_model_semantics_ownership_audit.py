@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ai_paths.scripts.audit_model_semantics_ownership import audit_model_semantics_ownership
+from ai_paths.scripts.audit_planner_normalizer_boundaries import audit_planner_normalizer_boundaries
 from app.services.reply_chain_external_gate_evidence import model_semantics_ownership_report_blockers
 from app.services.tool_plan_preview import tool_plan_preview_from_planner_output
 
@@ -23,6 +24,9 @@ def test_model_semantics_ownership_audit_produces_valid_external_report() -> Non
     assert report["join_final_customer_message_owner"] == "reply"
     assert report["join_generates_customer_visible_text"] is False
     assert report["join_decides_sales_psychology"] is False
+    assert report["normalizer_boundary_audit"]["schema_version"] == "planner_normalizer_boundary_audit_v1"
+    assert report["normalizer_boundary_audit"]["normalizer_boundary_passed"] is True
+    assert report["normalizer_boundary_audit"]["summary"]["semantic_overreach_count"] == 0
     assert report["safety"]["does_not_call_models"] is True
     assert report["safety"]["does_not_call_external_tools"] is True
 
@@ -41,3 +45,19 @@ def test_tool_plan_preview_detects_sales_semantic_residue_before_audit_can_pass(
     assert migration["legacy_residue_count"] == 2
     assert "payment_decision" in migration["business_semantic_fields_present"]
     assert "planner_reply_messages" in migration["customer_visible_fields_present"]
+
+
+def test_planner_normalizer_boundary_audit_classifies_current_guards() -> None:
+    report = audit_planner_normalizer_boundaries(repo_root=ROOT, head_ref="HEAD")
+
+    assert report["schema_version"] == "planner_normalizer_boundary_audit_v1"
+    assert report["normalizer_boundary_passed"] is True
+    assert report["summary"]["fact_hard_boundary_count"] >= 5
+    assert report["summary"]["data_cleanup_count"] >= 2
+    assert report["summary"]["semantic_overreach_count"] == 0
+    hard_ids = {item["rule_id"] for item in report["categories"]["fact_hard_boundary"]}
+    assert "paid_state_blocks_payment_card" in hard_ids
+    assert "visible_store_and_real_store_integrity" in hard_ids
+    assert "order_required_before_payment_card" not in {
+        item.get("rule_id") for item in report["categories"]["semantic_overreach"]
+    }

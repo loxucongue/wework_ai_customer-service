@@ -713,6 +713,15 @@ def _model_semantics_ownership_ready() -> dict:
         "legacy_business_field_mapping_schema": "reply_legacy_field_mapping_audit_v1",
         "unmapped_legacy_business_fields": [],
         "parallel_shadow_schema": "parallel_reply_chain_shadow_v1",
+        "normalizer_boundary_audit": {
+            "schema_version": "planner_normalizer_boundary_audit_v1",
+            "normalizer_boundary_passed": True,
+            "summary": {
+                "semantic_overreach_count": 0,
+                "missing_required_count": 0,
+            },
+            "blockers": [],
+        },
         "semantic_ownership_passed": True,
         "blockers": [],
         "safety": {

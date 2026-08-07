@@ -223,6 +223,21 @@ def model_semantics_ownership_report_blockers(report: dict[str, Any]) -> list[st
     blockers.extend(f"model_semantics_ownership_unmapped_legacy_field:{item}" for item in unmapped)
     if report.get("parallel_shadow_schema") != "parallel_reply_chain_shadow_v1":
         blockers.append("model_semantics_ownership_missing_parallel_shadow")
+    normalizer_audit = _dict(report.get("normalizer_boundary_audit"))
+    if normalizer_audit.get("schema_version") != "planner_normalizer_boundary_audit_v1":
+        blockers.append("model_semantics_ownership_missing_normalizer_boundary_audit")
+    if normalizer_audit.get("normalizer_boundary_passed") is not True:
+        blockers.append("model_semantics_ownership_normalizer_boundary_not_passed")
+    normalizer_summary = _dict(normalizer_audit.get("summary"))
+    if _int_value(normalizer_summary.get("semantic_overreach_count")) != 0:
+        blockers.append(
+            "model_semantics_ownership_normalizer_semantic_overreach:"
+            f"{normalizer_summary.get('semantic_overreach_count')}"
+        )
+    blockers.extend(
+        f"model_semantics_ownership_normalizer_boundary:{item}"
+        for item in _list_strings(normalizer_audit.get("blockers"))
+    )
     blockers.extend(f"model_semantics_ownership_report_blocker:{item}" for item in _list_strings(report.get("blockers")))
     if report.get("semantic_ownership_passed") is not True:
         blockers.append("model_semantics_ownership_not_passed")
