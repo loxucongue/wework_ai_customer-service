@@ -233,6 +233,9 @@ async def _run_outreach_plan_monitor_worker() -> None:
 async def startup() -> None:
     global sop_platform_pull_worker, storage_retention_worker, store_snapshot_refresh_worker, outreach_plan_monitor_worker
     storage_store.initialize()
+    backfill_result = await asyncio.to_thread(repository.backfill_first_day_outreach_runs)
+    if backfill_result.get("created_runs"):
+        logger.info("Backfilled first-day outreach run history: %s", backfill_result)
     if settings.sop_platform_pull_enabled and (
         sop_platform_pull_worker is None or sop_platform_pull_worker.done()
     ):

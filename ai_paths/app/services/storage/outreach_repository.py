@@ -30,6 +30,13 @@ def _silent_minutes(value: str | None) -> int:
     return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds() // 60))
 
 
+def _int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _latest_iso_value(*values: Any) -> str:
     parsed_values = [
         (parsed, _string(value))
@@ -174,6 +181,154 @@ class OutreachRepositoryMixin:
                 ),
             )
         return self.get_first_day_outreach_run(workflow_run_id, include_related=False)
+
+    def backfill_first_day_outreach_runs(self) -> dict[str, int]:
+        """Create observability rows for first-day plans created before run logging existed."""
+        created_count = 0
+        linked_active_count = 0
+        with self.store.connect() as conn:
+            existing_plan_ids = {
+                _string(row["plan_id"])
+                for row in conn.execute(
+                    "SELECT plan_id FROM first_day_outreach_runs WHERE plan_id!=''"
+                ).fetchall()
+            }
+            plans = conn.execute(
+                """
+                SELECT * FROM outreach_plans
+                WHERE sop_plan_id='first_day_opened_silence'
+                ORDER BY created_at ASC
+                """
+            ).fetchall()
+            for raw_plan in plans:
+                plan = dict(raw_plan)
+                plan_id = _string(plan.get("id"))
+                if not plan_id or plan_id in existing_plan_ids:
+                    continue
+                source_snapshot = loads_dict(plan.get("source_snapshot"))
+                trigger_context = (
+                    source_snapshot.get("trigger_context")
+                    if isinstance(source_snapshot.get("trigger_context"), dict)
+                    else {}
+                )
+                if _string(trigger_context.get("trigger_type")) != "first_day_opened_silence":
+                    continue
+
+                tasks = conn.execute(
+                    """
+                    SELECT id, status, step_index, sent_at
+                    FROM outreach_tasks WHERE plan_id=?
+                    ORDER BY step_index ASC, created_at ASC
+                    """,
+                    (plan_id,),
+                ).fetchall()
+                task_rows = [dict(row) for row in tasks]
+                first_task = task_rows[0] if task_rows else {}
+                second_task = task_rows[1] if len(task_rows) > 1 else {}
+                customer_reply_cancelled = bool(
+                    conn.execute(
+                        """
+                        SELECT 1 FROM outreach_events
+                        WHERE plan_id=? AND event_type='plan_cancelled_customer_replied'
+                        LIMIT 1
+                        """,
+                        (plan_id,),
+                    ).fetchone()
+                )
+                ai_result = (
+                    source_snapshot.get("ai_result")
+                    if isinstance(source_snapshot.get("ai_result"), dict)
+                    else {}
+                )
+                steps = ai_result.get("steps") if isinstance(ai_result.get("steps"), list) else []
+                plan_status = _string(plan.get("status"))
+                task_statuses = {_string(task.get("status")) for task in task_rows}
+                status = "created"
+                reason_code = "legacy_plan_backfilled"
+                final_decision = "send_pending"
+                finished_at = ""
+                if plan_status == "cancelled":
+                    status = "cancelled"
+                    reason_code = "customer_replied" if customer_reply_cancelled else "plan_cancelled"
+                    final_decision = "remaining_tasks_cancelled"
+                    finished_at = _string(plan.get("updated_at"))
+                elif plan_status in {"failed", "rejected"}:
+                    status = "failed"
+                    reason_code = "legacy_plan_failed"
+                    final_decision = "failed"
+                    finished_at = _string(plan.get("updated_at"))
+                elif plan_status == "completed":
+                    status = "sent"
+                    reason_code = "all_tasks_finished"
+                    final_decision = "completed"
+                    finished_at = _string(plan.get("updated_at"))
+                elif "sent" in task_statuses:
+                    final_decision = "first_task_sent_second_pending"
+
+                started_at = _string(plan.get("created_at")) or utc_now_iso()
+                finished = _parse_iso(finished_at)
+                started = _parse_iso(started_at)
+                duration_ms = (
+                    max(0, round((finished - started).total_seconds() * 1000))
+                    if finished and started
+                    else 0
+                )
+                workflow_run_id = str(uuid4())
+                workflow = {
+                    "summary": source_snapshot.get("first_day_workflow") or {},
+                    "backfilled_from_legacy_plan": True,
+                }
+                conn.execute(
+                    """
+                    INSERT INTO first_day_outreach_runs
+                        (workflow_run_id, plan_id, first_task_id, second_task_id,
+                         corp_id, user_id, wechat, customer_id, external_userid,
+                         trigger_type, status, reason_code, final_decision,
+                         first_scene, second_scene, duration_ms,
+                         input_snapshot_json, workflow_json, final_plan_json,
+                         started_at, finished_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'first_day_opened_silence',
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        workflow_run_id,
+                        plan_id,
+                        _string(first_task.get("id")),
+                        _string(second_task.get("id")),
+                        _string(plan.get("corp_id")),
+                        _string(plan.get("user_id")),
+                        _string(plan.get("wechat")),
+                        _string(plan.get("customer_id")),
+                        _string(plan.get("external_userid")),
+                        status,
+                        reason_code,
+                        final_decision,
+                        _string((steps[0] if steps else {}).get("scene")),
+                        _string((steps[1] if len(steps) > 1 else {}).get("scene")),
+                        duration_ms,
+                        dumps(redact_first_day_log_value(source_snapshot)),
+                        dumps(redact_first_day_log_value(workflow)),
+                        dumps(redact_first_day_log_value(ai_result)),
+                        started_at,
+                        finished_at,
+                        started_at,
+                        _string(plan.get("updated_at")) or started_at,
+                    ),
+                )
+                if plan_status in {"draft", "active", "waiting", "paused"}:
+                    source_snapshot["workflow_run_id"] = workflow_run_id
+                    conn.execute(
+                        "UPDATE outreach_plans SET source_snapshot=? WHERE id=?",
+                        (dumps(source_snapshot), plan_id),
+                    )
+                    linked_active_count += 1
+                existing_plan_ids.add(plan_id)
+                created_count += 1
+        return {
+            "scanned_plans": len(plans),
+            "created_runs": created_count,
+            "linked_active_plans": linked_active_count,
+        }
 
     def update_first_day_outreach_run(self, workflow_run_id: str, **changes: Any) -> dict[str, Any]:
         scalar_fields = {

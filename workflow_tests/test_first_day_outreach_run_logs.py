@@ -199,3 +199,86 @@ def test_plan_and_task_ids_are_linked_to_run_in_plan_creation_transaction(tmp_pa
     assert linked["first_task_id"] == created["tasks"][0]["id"]
     assert linked["second_task_id"] == created["tasks"][1]["id"]
     assert linked["events"][0]["payload"]["workflow_run_id"] == run["workflow_run_id"]
+
+
+def test_legacy_first_day_plans_are_backfilled_once_and_active_plan_is_linked(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    created = repository.create_outreach_plan(
+        customer_id="customer-legacy",
+        corp_id="corp",
+        user_id="user",
+        wechat="staff",
+        external_userid="external-legacy",
+        customer_stage="opened",
+        stall_reason="silent",
+        customer_psychology="interested",
+        plan_goal="follow up",
+        source_snapshot={
+            "trigger_context": {"trigger_type": "first_day_opened_silence"},
+            "ai_result": {
+                "steps": [
+                    {"scene": "effect_proof"},
+                    {"scene": "activity_intro"},
+                ]
+            },
+        },
+        tasks=[
+            {"step_index": 1, "reply_messages": [{"type": "text", "content": "第一步"}]},
+            {"step_index": 2, "reply_messages": [{"type": "text", "content": "第二步"}]},
+        ],
+        sop_plan_id="first_day_opened_silence",
+    )
+
+    first = repository.backfill_first_day_outreach_runs()
+    second = repository.backfill_first_day_outreach_runs()
+
+    assert first == {"scanned_plans": 1, "created_runs": 1, "linked_active_plans": 1}
+    assert second == {"scanned_plans": 1, "created_runs": 0, "linked_active_plans": 0}
+    page = repository.list_first_day_outreach_runs(customer_id="customer-legacy")
+    assert len(page["items"]) == 1
+    run = page["items"][0]
+    assert run["plan_id"] == created["plan"]["id"]
+    assert run["first_scene"] == "effect_proof"
+    assert run["second_scene"] == "activity_intro"
+    linked_plan = repository.get_outreach_plan(created["plan"]["id"])["plan"]
+    assert linked_plan["source_snapshot"]["workflow_run_id"] == run["workflow_run_id"]
+
+
+def test_dashboard_outcome_stats_accept_string_delay_metadata(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    created = repository.create_outreach_plan(
+        customer_id="customer-dashboard",
+        corp_id="corp",
+        user_id="user",
+        wechat="staff",
+        external_userid="external-dashboard",
+        customer_stage="opened",
+        stall_reason="silent",
+        customer_psychology="interested",
+        plan_goal="follow up",
+        source_snapshot={"trigger_context": {"activation_policy": "auto_approved"}},
+        tasks=[
+            {
+                "step_index": 1,
+                "reply_messages": [{"type": "text", "content": "第一步"}],
+                "content_sources": [
+                    {
+                        "outreach_task_metadata": {
+                            "normalized_delay_minutes": "15",
+                            "persuasion_angle": "effect",
+                        }
+                    }
+                ],
+            }
+        ],
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    with repository.store.connect() as conn:
+        conn.execute(
+            "UPDATE outreach_tasks SET status='sent', sent_at=?, updated_at=? WHERE id=?",
+            (now, now, created["tasks"][0]["id"]),
+        )
+
+    stats = repository.outreach_dashboard_stats(now=now)
+
+    assert stats["outcomes"]["sent_tasks"] == 1
