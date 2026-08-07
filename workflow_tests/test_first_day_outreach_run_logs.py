@@ -282,3 +282,58 @@ def test_dashboard_outcome_stats_accept_string_delay_metadata(tmp_path) -> None:
     stats = repository.outreach_dashboard_stats(now=now)
 
     assert stats["outcomes"]["sent_tasks"] == 1
+
+
+def test_first_day_monitor_logs_and_reuses_conversation_refresh_failure(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    now = datetime.now(timezone.utc)
+    customer_at = (now - timedelta(minutes=10)).isoformat()
+    staff_at = (now - timedelta(minutes=4)).isoformat()
+    candidate = {
+        "customer_id": "customer-refresh-failure",
+        "corp_id": "corp",
+        "user_id": "user",
+        "wechat": "staff",
+        "external_userid": "external-refresh-failure",
+        "sales_contact_started_at": (now - timedelta(hours=1)).isoformat(),
+        "last_customer_message_at": customer_at,
+        "last_staff_message_at": staff_at,
+        "latest_outbound_message_at": staff_at,
+        "awaiting_customer_reply": True,
+        "reply_wait_minutes": 4,
+    }
+
+    class RefreshFailureService(OutreachService):
+        async def refresh_customer_conversation(self, **_kwargs):
+            raise RuntimeError("outreach_system_http_403: scope mismatch")
+
+    service = RefreshFailureService(
+        repository=repository,
+        model_client=object(),
+        system_client=object(),
+    )
+
+    first = asyncio.run(
+        service._evaluate_first_day_silence_candidate(
+            candidate,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+    )
+    second = asyncio.run(
+        service._evaluate_first_day_silence_candidate(
+            candidate,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+    )
+
+    assert first["status"] == "error"
+    assert second["status"] == "error"
+    page = repository.list_first_day_outreach_runs(customer_id=candidate["customer_id"])
+    assert len(page["items"]) == 1
+    run = page["items"][0]
+    assert run["status"] == "failed"
+    assert run["reason_code"] == "conversation_refresh_failed"
+    assert run["error_node"] == "conversation_refresh"
+    assert run["retry_count"] == 1

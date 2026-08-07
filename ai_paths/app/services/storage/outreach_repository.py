@@ -182,6 +182,36 @@ class OutreachRepositoryMixin:
             )
         return self.get_first_day_outreach_run(workflow_run_id, include_related=False)
 
+    def find_first_day_outreach_run_by_fingerprint(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+        conversation_fingerprint: str,
+    ) -> dict[str, Any]:
+        if not all((customer_id, corp_id, wechat, external_userid, conversation_fingerprint)):
+            return {}
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM first_day_outreach_runs
+                WHERE customer_id=? AND corp_id=? AND lower(wechat)=lower(?)
+                  AND external_userid=?
+                ORDER BY started_at DESC
+                LIMIT 20
+                """,
+                (customer_id, corp_id, wechat, external_userid),
+            ).fetchall()
+        for row in rows:
+            decoded = self._decode_first_day_outreach_run(dict(row))
+            snapshot = decoded.get("input_snapshot") if isinstance(decoded.get("input_snapshot"), dict) else {}
+            trigger = snapshot.get("trigger_context") if isinstance(snapshot.get("trigger_context"), dict) else {}
+            if _string(trigger.get("conversation_fingerprint")) == conversation_fingerprint:
+                return decoded
+        return {}
+
     def backfill_first_day_outreach_runs(self) -> dict[str, int]:
         """Create observability rows for first-day plans created before run logging existed."""
         created_count = 0
