@@ -7,8 +7,10 @@ import {
   AlertCircle,
   ArrowLeft,
   Bot,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Clock3,
   Filter,
   ListTree,
@@ -124,6 +126,7 @@ export function FirstDayOutreachLogViewer() {
   const [error, setError] = useState("");
   const [tab, setTab] = useState<Tab>("执行摘要");
   const [showMobileDetail, setShowMobileDetail] = useState(false);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
 
   const loadRuns = useCallback(async (cursor = "") => {
     setLoading(true);
@@ -176,6 +179,7 @@ export function FirstDayOutreachLogViewer() {
 
   const selected = detail?.workflow_run_id === selectedId ? detail : items.find((item) => item.workflow_run_id === selectedId) || null;
   const selectedDetail = detail?.workflow_run_id === selectedId ? detail : null;
+  const activeFilterCount = Object.values(filters).filter(Boolean).length;
 
   const runSearch = () => {
     setCursorHistory([]);
@@ -212,24 +216,40 @@ export function FirstDayOutreachLogViewer() {
           </nav>
         </header>
 
-        <section className="border-b border-zinc-200 p-4">
-          <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-zinc-600"><Filter className="h-3.5 w-3.5" />筛选条件</div>
-          <div className="grid grid-cols-2 gap-2">
-            <FilterInput label="客户 ID" value={filters.customer_id} onChange={(value) => setFilters((prev) => ({ ...prev, customer_id: value }))} />
-            <FilterInput label="external_userid" value={filters.external_userid} onChange={(value) => setFilters((prev) => ({ ...prev, external_userid: value }))} />
-            <FilterInput label="企业 ID" value={filters.corp_id} onChange={(value) => setFilters((prev) => ({ ...prev, corp_id: value }))} />
-            <FilterInput label="接待账号" value={filters.wechat} onChange={(value) => setFilters((prev) => ({ ...prev, wechat: value }))} />
-            <FilterSelect label="状态" value={filters.status} onChange={(value) => setFilters((prev) => ({ ...prev, status: value }))} options={Object.entries(STATUS_LABELS)} />
-            <FilterSelect label="失败" value={filters.failed} onChange={(value) => setFilters((prev) => ({ ...prev, failed: value }))} options={[["true", "仅失败"], ["false", "排除失败"]]} />
-            <FilterInput label="原因码" value={filters.reason_code} onChange={(value) => setFilters((prev) => ({ ...prev, reason_code: value }))} />
-            <FilterInput label="计划 ID" value={filters.plan_id} onChange={(value) => setFilters((prev) => ({ ...prev, plan_id: value }))} />
-            <FilterSelect label="第一场景" value={filters.first_scene} onChange={(value) => setFilters((prev) => ({ ...prev, first_scene: value }))} options={Object.entries(SCENE_LABELS)} />
-            <FilterSelect label="第二场景" value={filters.second_scene} onChange={(value) => setFilters((prev) => ({ ...prev, second_scene: value }))} options={Object.entries(SCENE_LABELS)} />
-            <FilterInput label="开始时间" type="datetime-local" value={filters.started_from} onChange={(value) => setFilters((prev) => ({ ...prev, started_from: value }))} />
-            <FilterInput label="结束时间" type="datetime-local" value={filters.started_to} onChange={(value) => setFilters((prev) => ({ ...prev, started_to: value }))} />
-          </div>
-          <button type="button" onClick={runSearch} className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-zinc-900 px-3 text-sm text-white hover:bg-zinc-800"><Search className="h-4 w-4" />查询</button>
-          {error ? <div className="mt-3 flex gap-2 border-l-2 border-red-500 bg-red-50 p-2 text-xs text-red-700"><AlertCircle className="h-4 w-4 shrink-0" />{error}</div> : null}
+        <section className="border-b border-zinc-200">
+          <button
+            type="button"
+            aria-expanded={filtersExpanded}
+            onClick={() => setFiltersExpanded((current) => !current)}
+            className="flex h-11 w-full items-center justify-between px-4 text-left hover:bg-zinc-50"
+          >
+            <span className="flex min-w-0 items-center gap-2 text-xs font-semibold text-zinc-700">
+              <Filter className="h-3.5 w-3.5 shrink-0" />
+              筛选条件
+              {activeFilterCount ? <span className="rounded bg-zinc-900 px-1.5 py-0.5 text-[11px] font-medium text-white">{activeFilterCount}</span> : <span className="font-normal text-zinc-400">未设置</span>}
+            </span>
+            {filtersExpanded ? <ChevronUp className="h-4 w-4 text-zinc-500" /> : <ChevronDown className="h-4 w-4 text-zinc-500" />}
+          </button>
+          {filtersExpanded ? (
+            <div className="border-t border-zinc-100 px-4 pb-4 pt-3">
+              <div className="grid grid-cols-2 gap-2">
+                <FilterInput label="客户 ID" value={filters.customer_id} onChange={(value) => setFilters((prev) => ({ ...prev, customer_id: value }))} />
+                <FilterInput label="external_userid" value={filters.external_userid} onChange={(value) => setFilters((prev) => ({ ...prev, external_userid: value }))} />
+                <FilterInput label="企业 ID" value={filters.corp_id} onChange={(value) => setFilters((prev) => ({ ...prev, corp_id: value }))} />
+                <FilterInput label="接待账号" value={filters.wechat} onChange={(value) => setFilters((prev) => ({ ...prev, wechat: value }))} />
+                <FilterSelect label="状态" value={filters.status} onChange={(value) => setFilters((prev) => ({ ...prev, status: value }))} options={Object.entries(STATUS_LABELS)} />
+                <FilterSelect label="失败" value={filters.failed} onChange={(value) => setFilters((prev) => ({ ...prev, failed: value }))} options={[["true", "仅失败"], ["false", "排除失败"]]} />
+                <FilterInput label="原因码" value={filters.reason_code} onChange={(value) => setFilters((prev) => ({ ...prev, reason_code: value }))} />
+                <FilterInput label="计划 ID" value={filters.plan_id} onChange={(value) => setFilters((prev) => ({ ...prev, plan_id: value }))} />
+                <FilterSelect label="第一场景" value={filters.first_scene} onChange={(value) => setFilters((prev) => ({ ...prev, first_scene: value }))} options={Object.entries(SCENE_LABELS)} />
+                <FilterSelect label="第二场景" value={filters.second_scene} onChange={(value) => setFilters((prev) => ({ ...prev, second_scene: value }))} options={Object.entries(SCENE_LABELS)} />
+                <FilterInput label="开始时间" type="datetime-local" value={filters.started_from} onChange={(value) => setFilters((prev) => ({ ...prev, started_from: value }))} />
+                <FilterInput label="结束时间" type="datetime-local" value={filters.started_to} onChange={(value) => setFilters((prev) => ({ ...prev, started_to: value }))} />
+              </div>
+              <button type="button" onClick={runSearch} className="mt-3 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-zinc-900 px-3 text-sm text-white hover:bg-zinc-800"><Search className="h-4 w-4" />查询</button>
+            </div>
+          ) : null}
+          {error ? <div className="mx-4 mb-3 flex gap-2 border-l-2 border-red-500 bg-red-50 p-2 text-xs text-red-700"><AlertCircle className="h-4 w-4 shrink-0" />{error}</div> : null}
         </section>
 
         <section className="min-h-0 flex-1 overflow-y-auto">
