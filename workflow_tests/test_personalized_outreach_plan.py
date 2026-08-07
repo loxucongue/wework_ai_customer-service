@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,25 +11,283 @@ from app.services.outreach_service import (
     OutreachService,
     _compose_outreach_messages,
     _conversation_activity_from_context,
+    _first_day_sop_pack_assets,
+    _first_day_sop_pack_context,
+    _first_day_outreach_plan_error,
+    _first_day_scene_analysis_error,
+    _first_day_scene_lock_error,
+    _first_day_verifier_error,
     _normalize_first_day_outreach_schedule,
+    _normalize_first_day_scene_analysis,
     _normalize_outreach_plan_response,
     _normalize_outreach_schedule,
     _outreach_plan_context_error,
     _outreach_plan_structure_error,
     build_outreach_activity_quote_fact,
 )
-from app.services.outreach_prompts import FIRST_DAY_OPENED_SILENCE_PLAN_PROMPT
+from app.services.outreach_first_day_prompts import (
+    FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
+    FIRST_DAY_PLAN_WRITER_PROMPT,
+    FIRST_DAY_SCENE_ANALYST_PROMPT,
+)
+from app.services.outreach_assets import enrich_recent_outreach_media
+from app.services.sop_platform_task_policy import personalized_payment_collection_eligibility
 
 
 class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
-    def test_first_day_prompt_requires_transition_plus_progress_scenes(self) -> None:
-        prompt = " ".join(FIRST_DAY_OPENED_SILENCE_PLAN_PROMPT.split())
-        self.assertIn("first sentence is a light transition", prompt)
-        self.assertIn("store matching/address", prompt)
-        self.assertIn("effect proof", prompt)
-        self.assertIn("activity introduction/quote", prompt)
-        self.assertIn("deposit closing", prompt)
-        self.assertIn("15 to 20", prompt)
+    def test_first_day_prompts_have_separate_roles_and_locked_contracts(self) -> None:
+        analyst = " ".join(FIRST_DAY_SCENE_ANALYST_PROMPT.split())
+        writer = " ".join(FIRST_DAY_PLAN_WRITER_PROMPT.split())
+        verifier = " ".join(FIRST_DAY_CONTRACT_VERIFIER_PROMPT.split())
+
+        self.assertIn("You never write customer-facing copy", analyst)
+        self.assertIn("Scene Vocabulary", analyst)
+        self.assertIn("text-only effect explanation is not image proof", analyst)
+        self.assertIn("payment_collection_gate.eligible=true", analyst)
+        self.assertIn("The scene contract is authoritative", writer)
+        self.assertIn("light transition + useful scene content", writer)
+        self.assertIn("15-20 minutes", writer)
+        self.assertIn("Never infer or mention gender", writer)
+        self.assertIn("You do not re-plan its business scenes", verifier)
+        self.assertIn("semantically repeats", verifier)
+        self.assertIn("pass|repair|block", verifier)
+
+    def test_first_day_sop_packs_supply_model_context_and_resolvable_assets(self) -> None:
+        config = {
+            "packs": [
+                {
+                    "id": "s10_need_and_case",
+                    "enabled": True,
+                    "scope": "chat_gate",
+                    "day_stage": "day1",
+                    "sop_category": "effect_case",
+                    "name": "效果展示",
+                    "purpose": "展示真实改善参考",
+                    "triggers": ["effect_question"],
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": "效果参考"}},
+                        {"type": "image", "order": 2, "content": {"url": "https://oss.example/effect.png"}},
+                    ],
+                },
+                {
+                    "id": "event_day2",
+                    "enabled": True,
+                    "scope": "event_first_add",
+                    "day_stage": "day2",
+                    "reply_messages": [],
+                },
+            ]
+        }
+
+        packs = _first_day_sop_pack_context(config)
+        assets = _first_day_sop_pack_assets(packs)
+
+        self.assertEqual([pack["id"] for pack in packs], ["s10_need_and_case"])
+        self.assertEqual(assets[0]["asset_id"], "sop-pack:s10_need_and_case:2")
+        self.assertEqual(assets[0]["url"], "https://oss.example/effect.png")
+        self.assertEqual(assets[0]["source"], "sop_reply_pack")
+
+        recent = enrich_recent_outreach_media(
+            {"urls": ["https://oss.example/effect.png"], "document_ids": []},
+            assets,
+        )
+        match = recent["items"][0]["configured_matches"][0]
+        self.assertEqual(match["asset_id"], "sop-pack:s10_need_and_case:2")
+        self.assertEqual(match["name"], "效果展示")
+        self.assertEqual(match["annotation"], "展示真实改善参考")
+        self.assertEqual(
+            recent["configured_deliveries"][0]["asset_id"],
+            "sop-pack:s10_need_and_case:2",
+        )
+
+    def test_first_day_scene_contract_rejects_duplicate_scenes_and_payment_without_gate(self) -> None:
+        snapshot = {
+            "recent_messages": [{"direction": "customer", "content": "想看看效果"}],
+            "asset_catalog": [],
+            "payment_collection_gate": {"eligible": False},
+        }
+        duplicate = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="effect_proof",
+        )
+        self.assertEqual(
+            _first_day_scene_analysis_error(duplicate, source_snapshot=snapshot),
+            "first-day scene analysis must select two different scenes",
+        )
+
+        payment = _first_day_scene_analysis(
+            step1_scene="deposit_close",
+            step2_scene="trust_repair",
+        )
+        payment["payment_action"] = {"step": 1, "allowed": True, "reason": "customer wants to pay"}
+        self.assertEqual(
+            _first_day_scene_analysis_error(payment, source_snapshot=snapshot),
+            "scene analysis payment action violates payment gate or scene lock",
+        )
+
+    def test_first_day_scene_analysis_normalizes_explicit_or_inferred_one_based_evidence(self) -> None:
+        analysis = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="activity_intro",
+        )
+        analysis["message_index_base"] = 1
+        analysis["evidence"] = [{"message_index": 2, "fact": "last message"}]
+        analysis["delivered_scenes"] = [
+            {"scene": "trust_repair", "message_indexes": [1], "asset_ids": [], "evidence": "first"}
+        ]
+
+        normalized = _normalize_first_day_scene_analysis(analysis, message_count=2)
+
+        self.assertEqual(normalized["message_index_base"], 0)
+        self.assertEqual(normalized["evidence"][0]["message_index"], 1)
+        self.assertEqual(normalized["delivered_scenes"][0]["message_indexes"], [0])
+
+    def test_first_day_verifier_contract_and_scene_lock_are_structural_boundaries(self) -> None:
+        plan = _ModelClient().response
+        plan["steps"][0].update({"delay_minutes": 0, "scene": "store_area_request"})
+        plan["steps"][1].update(
+            {"delay_minutes": 15, "urgency_level": "immediate", "scene": "trust_repair"}
+        )
+        scene_analysis = _first_day_scene_analysis(
+            step1_scene="store_area_request",
+            step2_scene="trust_repair",
+        )
+        self.assertEqual(
+            _first_day_scene_lock_error(plan, scene_analysis=scene_analysis),
+            "",
+        )
+        plan["steps"][1]["scene"] = "store_area_request"
+        self.assertEqual(
+            _first_day_scene_lock_error(plan, scene_analysis=scene_analysis),
+            "first-day plan scenes must exactly match the scene analysis contract",
+        )
+        self.assertEqual(
+            _first_day_verifier_error(
+                {
+                    "decision": "block",
+                    "block_category": "source_hard_boundary",
+                    "violations": [{"code": "health"}],
+                    "verified_plan": {},
+                }
+            ),
+            "",
+        )
+
+    def test_first_day_structure_rejects_long_term_second_step_delay(self) -> None:
+        response = _ModelClient().response
+        response["steps"] = [dict(response["steps"][0]), dict(response["steps"][1])]
+        response["steps"][0]["delay_minutes"] = 0
+        response["steps"][1]["delay_minutes"] = 1440
+
+        self.assertEqual(
+            _first_day_outreach_plan_error(response),
+            "first-day second step delay_minutes must be between 15 and 20",
+        )
+
+    def test_first_day_structure_allows_no_final_cta_but_never_non_text_messages(self) -> None:
+        response = _ModelClient().response
+        response["steps"][0]["delay_minutes"] = 0
+        response["steps"][1].update(
+            {"delay_minutes": 15, "urgency_level": "immediate", "cta": "none"}
+        )
+        self.assertEqual(_first_day_outreach_plan_error(response), "")
+
+        response["steps"][0]["reply_messages"][0]["type"] = "object"
+        self.assertEqual(
+            _first_day_outreach_plan_error(response),
+            "plan step reply_messages must contain one or two non-empty text items",
+        )
+
+    def test_first_day_structure_allows_immediate_payment_when_order_gate_is_ready(self) -> None:
+        response = _ModelClient().response
+        response["steps"] = [dict(response["steps"][0]), dict(response["steps"][1])]
+        response["steps"][0].update(
+            {
+                "delay_minutes": 0,
+                "content_mode": "transaction",
+                "should_send_payment_collection": True,
+                "payment_collection_basis": "model_selected_after_quote",
+            }
+        )
+        response["steps"][1].update(
+            {
+                "delay_minutes": 18,
+                "content_mode": "value_only",
+                "should_send_payment_collection": False,
+            }
+        )
+
+        self.assertEqual(_first_day_outreach_plan_error(response), "")
+
+    def test_first_day_immediate_payment_still_requires_transaction_content_mode(self) -> None:
+        response = _ModelClient().response
+        response["steps"] = [dict(response["steps"][0]), dict(response["steps"][1])]
+        response["steps"][0].update(
+            {
+                "delay_minutes": 0,
+                "content_mode": "soft_conversion",
+                "should_send_payment_collection": True,
+                "payment_collection_basis": "model_selected_after_quote",
+            }
+        )
+        response["steps"][1]["delay_minutes"] = 18
+
+        self.assertEqual(
+            _first_day_outreach_plan_error(response),
+            "payment_collection step must use transaction content_mode",
+        )
+
+    def test_realistic_first_day_model_fixtures_use_production_message_shape(self) -> None:
+        fixture_paths = sorted(
+            Path("workflow_tests/fixtures").glob(
+                "outreach_first_day_realistic_*_set_20260806.json"
+            )
+        )
+        cases = []
+        for fixture_path in fixture_paths:
+            payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+            cases.extend(payload["cases"])
+
+        self.assertEqual(len(fixture_paths), 4)
+        self.assertGreaterEqual(len(cases), 18)
+        self.assertGreaterEqual(sum(len(case["recent_messages"]) for case in cases), 180)
+        for case in cases:
+            self.assertEqual(
+                case["trigger_context"]["trigger_type"],
+                "first_day_opened_silence",
+            )
+            for message in case["recent_messages"]:
+                self.assertIn(message["direction"], {"customer", "staff"})
+                self.assertIn(message["sender_type"], {"customer", "staff"})
+                self.assertTrue(message["msgtype"])
+                self.assertTrue(message["created_at"])
+
+    def test_payment_collection_requires_matching_unpaid_platform_order(self) -> None:
+        no_order = personalized_payment_collection_eligibility(
+            {"source": "platform_agent", "orders": []},
+            amount=10,
+        )
+        matching_order = personalized_payment_collection_eligibility(
+            {
+                "source": "platform_agent",
+                "orders": [
+                    {
+                        "id": "order-unpaid",
+                        "status": "pending",
+                        "is_current_order": True,
+                        "store_id": "store-101",
+                        "prepay_required": 10,
+                        "prepay_paid": 0,
+                    }
+                ],
+            },
+            amount=10,
+        )
+
+        self.assertFalse(no_order["eligible"])
+        self.assertEqual(no_order["reason"], "payment_collection_order_not_ready")
+        self.assertTrue(matching_order["eligible"])
+        self.assertEqual(matching_order["order_id"], "order-unpaid")
 
     def test_plan_normalizer_wraps_text_content_in_reply_message_object(self) -> None:
         response = _ModelClient().response
@@ -389,7 +648,23 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         response["steps"][0]["delay_minutes"] = 0
         response["steps"][1]["delay_minutes"] = 15
         response["steps"][1]["urgency_level"] = "immediate"
-        model = _ModelClient(response=response)
+        response["steps"][0]["scene"] = "store_area_request"
+        response["steps"][1]["scene"] = "trust_repair"
+        scene_analysis = _first_day_scene_analysis(
+            step1_scene="store_area_request",
+            step2_scene="trust_repair",
+        )
+        model = _SequenceModelClient(
+            [
+                scene_analysis,
+                response,
+                {
+                    "decision": "pass",
+                    "violations": [],
+                    "verified_plan": response,
+                },
+            ]
+        )
         service = _MonitorOutreachService(
             repository=repository,
             model_client=model,
@@ -424,6 +699,199 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             15,
         )
         self.assertEqual(repository.updated_statuses, [("plan-created", "active")])
+        workflow = repository.created_plan["source_snapshot"]["first_day_workflow"]
+        self.assertEqual(workflow["scene_analysis"]["step1_scene"], "store_area_request")
+        self.assertEqual(workflow["verifier_result"]["decision"], "pass")
+        self.assertEqual(len(model.calls), 3)
+
+    async def test_first_day_monitor_skips_before_model_after_two_plans_today(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        customer_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        repository.first_day_plan_count = 2
+        repository.candidates = [
+            {
+                **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+            }
+        ]
+        model = _ModelClient()
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "我再考虑一下", "created_at": customer_at},
+                {"direction": "staff", "content": "好的亲", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_first_day_opened_silence_customers(
+            limit=5,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+
+        self.assertEqual(result["created_count"], 0)
+        self.assertEqual(result["results"][0]["reason"], "first_day_daily_plan_limit_reached")
+        self.assertEqual(result["results"][0]["created_today"], 2)
+        self.assertEqual(model.calls, [])
+
+    async def test_first_day_monitor_allows_second_plan_today(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        customer_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        repository.first_day_plan_count = 1
+        repository.candidates = [
+            {
+                **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+            }
+        ]
+        response = _ModelClient().response
+        response["steps"][0].update({"delay_minutes": 0, "scene": "store_area_request"})
+        response["steps"][1].update(
+            {"delay_minutes": 15, "urgency_level": "immediate", "scene": "trust_repair"}
+        )
+        model = _SequenceModelClient(
+            [
+                _first_day_scene_analysis(
+                    step1_scene="store_area_request",
+                    step2_scene="trust_repair",
+                ),
+                response,
+                {"decision": "pass", "violations": [], "verified_plan": response},
+            ]
+        )
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "武汉哪里有店", "created_at": customer_at},
+                {"direction": "staff", "content": "您在武汉哪个区呢？", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_first_day_opened_silence_customers(
+            limit=5,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(len(model.calls), 3)
+
+    async def test_first_day_verifier_can_repair_writer_without_changing_locked_scenes(self) -> None:
+        scene_analysis = _first_day_scene_analysis(
+            step1_scene="store_area_request",
+            step2_scene="trust_repair",
+        )
+        invalid_writer = {"should_create_plan": True, "steps": [{"step": 1}]}
+        repaired = _ModelClient().response
+        repaired["steps"][0].update({"delay_minutes": 0, "scene": "store_area_request"})
+        repaired["steps"][1].update(
+            {"delay_minutes": 15, "urgency_level": "immediate", "scene": "trust_repair"}
+        )
+        model = _SequenceModelClient(
+            [
+                scene_analysis,
+                invalid_writer,
+                {
+                    "decision": "repair",
+                    "violations": [
+                        {
+                            "code": "missing_second_step",
+                            "field": "candidate_plan.steps",
+                            "evidence": "only one incomplete step",
+                        }
+                    ],
+                    "verified_plan": repaired,
+                },
+            ]
+        )
+        repository = _Repository()
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=_ConversationSystemClient(),
+        )
+
+        result = await service.generate_plan(
+            customer_id="22000001",
+            source_context={
+                "memory": {},
+                "recent_messages": [
+                    {"direction": "customer", "content": "武汉有门店吗"},
+                    {"direction": "staff", "content": "有的亲"},
+                ],
+                "customer_context": {"source": "platform_agent", "orders": []},
+                "customer_relation": {"available": True, "status": "active", "is_deleted": False},
+            },
+            trigger_context={"trigger_type": "first_day_opened_silence"},
+            sop_plan_id="first_day_opened_silence",
+        )
+
+        self.assertTrue(result["created"])
+        workflow = repository.created_plan["source_snapshot"]["first_day_workflow"]
+        self.assertIn("exactly 2 steps", workflow["writer_structure_error"])
+        self.assertEqual(workflow["verifier_result"]["decision"], "repair")
+        self.assertEqual(
+            [task["content_sources"][2]["outreach_task_metadata"]["scene"] for task in repository.created_plan["tasks"]],
+            ["store_area_request", "trust_repair"],
+        )
+
+    async def test_first_day_verifier_block_rejects_plan_and_records_workflow(self) -> None:
+        scene_analysis = _first_day_scene_analysis(
+            step1_scene="store_area_request",
+            step2_scene="trust_repair",
+        )
+        writer = _ModelClient().response
+        writer["steps"][0].update({"delay_minutes": 0, "scene": "store_area_request"})
+        writer["steps"][1].update(
+            {"delay_minutes": 15, "urgency_level": "immediate", "scene": "trust_repair"}
+        )
+        model = _SequenceModelClient(
+            [
+                scene_analysis,
+                writer,
+                {
+                    "decision": "block",
+                    "block_category": "source_hard_boundary",
+                    "violations": [
+                        {"code": "hard_boundary", "field": "source_snapshot", "evidence": "unsafe"}
+                    ],
+                    "verified_plan": {},
+                },
+            ]
+        )
+        repository = _Repository()
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=_ConversationSystemClient(),
+        )
+
+        result = await service.generate_plan(
+            customer_id="22000001",
+            source_context={
+                "memory": {},
+                "recent_messages": [{"direction": "customer", "content": "先等等"}],
+                "customer_context": {"source": "platform_agent", "orders": []},
+                "customer_relation": {"available": True, "status": "active", "is_deleted": False},
+            },
+            trigger_context={"trigger_type": "first_day_opened_silence"},
+        )
+
+        self.assertFalse(result["created"])
+        self.assertEqual(result["ai_result"]["stall_reason"], "hard_boundary")
+        event = repository.events[-1]
+        self.assertEqual(event["event_type"], "plan_rejected")
+        self.assertEqual(event["payload"]["first_day_workflow"]["verifier_result"]["decision"], "block")
 
     async def test_first_day_monitor_excludes_wecom_auto_opening(self) -> None:
         now = datetime.now(timezone.utc)
@@ -938,7 +1406,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("structure_error", repair_payload)
         self.assertIn("unsupported_angle", repair_payload)
 
-    async def test_payment_card_can_be_selected_on_final_step_after_activity_quote(self) -> None:
+    async def test_payment_card_can_be_selected_after_quote_with_matching_unpaid_order(self) -> None:
         response = {
             "should_create_plan": True,
             "plan_arc": "先共情时间压力，再降低付款决策成本",
@@ -1015,7 +1483,19 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 "reply_wait_minutes": 20,
                 "customer_silence_minutes": 20,
             },
-            customer_context={"orders": []},
+            customer_context={
+                "source": "platform_agent",
+                "orders": [
+                    {
+                        "id": "order-unpaid",
+                        "status": "pending",
+                        "is_current_order": True,
+                        "store_id": "store-101",
+                        "prepay_required": 10,
+                        "prepay_paid": 0,
+                    }
+                ],
+            },
             platform_task={"event_id": "platform-task-card", "messages": []},
         )
 
@@ -1348,6 +1828,32 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+def _first_day_scene_analysis(
+    *,
+    step1_scene: str,
+    step2_scene: str,
+) -> dict[str, Any]:
+    return {
+        "eligible": True,
+        "suppress_reason": "",
+        "current_scene": step1_scene,
+        "delivered_scenes": [],
+        "unresolved_customer_need": "需要自然承接并推进",
+        "step1_scene": step1_scene,
+        "step2_scene": step2_scene,
+        "step1_objective": "立即推进当前场景",
+        "step2_objective": "未回复时推进不同场景",
+        "forbidden_repetitions": ["上一条客服回复"],
+        "required_assets": {
+            "step1": {"strategy": "none", "asset_id": "", "reason": "无需素材"},
+            "step2": {"strategy": "none", "asset_id": "", "reason": "无需素材"},
+        },
+        "payment_action": {"step": 0, "allowed": False, "reason": "不发卡"},
+        "confidence": 0.9,
+        "evidence": [],
+    }
+
+
 class _ModelClient:
     def __init__(self, response: dict[str, Any] | None = None) -> None:
         self.response = response or {
@@ -1475,6 +1981,7 @@ class _Repository:
         self.updated_statuses: list[tuple[str, str]] = []
         self.candidates: list[dict[str, Any]] = []
         self.evaluated_fingerprints: set[str] = set()
+        self.first_day_plan_count = 0
 
     def list_outreach_candidates(self, **_kwargs: Any) -> list[dict[str, Any]]:
         return [dict(item) for item in self.candidates]
@@ -1508,6 +2015,9 @@ class _Repository:
         **_kwargs: Any,
     ) -> bool:
         return conversation_fingerprint in self.evaluated_fingerprints
+
+    def count_outreach_plans_for_trigger_between(self, **_kwargs: Any) -> int:
+        return self.first_day_plan_count
 
     def update_outreach_plan_status(self, plan_id: str, status: str) -> dict[str, Any]:
         self.updated_statuses.append((plan_id, status))

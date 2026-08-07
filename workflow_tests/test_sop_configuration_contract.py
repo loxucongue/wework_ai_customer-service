@@ -15,6 +15,14 @@ ACTIVITY_AD_IMAGE = (
     "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/"
     "d89bd3bcde50f4f6-1329752764320508_1782884693042278684_8BIuTnVvSC.png"
 )
+EFFECT_CASE_IMAGES = [
+    "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_click_url-90f975480879.png",
+    "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_second-de0488d149ea.png",
+]
+DEPOSIT_LIGHT_IMAGE = (
+    "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/"
+    "deposit_light-d61147a81539.png"
+)
 
 
 def _load_config() -> dict:
@@ -65,12 +73,36 @@ def test_chat_activity_quote_remains_available_to_normal_ai_reply_gate() -> None
     assert _image_urls(activity) == [ACTIVITY_AD_IMAGE]
 
 
-def test_first_activity_intro_does_not_send_payment_card_in_same_turn() -> None:
+def test_activity_intro_includes_deposit_card_after_refund_rule_text() -> None:
     activity = _pack(_load_config(), "s10_activity_intro")
+    messages = activity.get("reply_messages") or []
 
-    assert "payment_collection" not in {
-        message.get("type") for message in activity.get("reply_messages") or []
-    }
+    assert [message.get("type") for message in messages] == [
+        "text",
+        "image",
+        "text",
+        "payment_collection",
+    ]
+    assert messages[-1]["content"] == {"amount": 10, "remark": ""}
+    assert "未做或不满意可退" in messages[-2]["content"]["text"]
+
+
+def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
+    config = _load_config()
+    cases = _pack(config, "s10_need_and_case")
+    store_prompt = _pack(config, "s10_store_prompt")
+    deposit = _pack(config, "s10_deposit_close")
+
+    assert _image_urls(cases) == EFFECT_CASE_IMAGES
+    assert store_prompt["enabled"] is True
+    assert store_prompt["reply_messages"][0]["content"]["text"] == "亲，您是在那个省份那个城市呢？我给您匹配最近的店铺。"
+    assert deposit["enabled"] is True
+    assert _image_urls(deposit) == [DEPOSIT_LIGHT_IMAGE]
+    assert [message.get("type") for message in deposit["reply_messages"]] == [
+        "text",
+        "image",
+        "payment_collection",
+    ]
 
 
 def test_legacy_first_add_candidate_generation_is_empty_after_retirement() -> None:

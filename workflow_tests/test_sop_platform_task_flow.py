@@ -112,6 +112,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         service, _repo, _platform, system = _service(model=model, material_service=material_service)
         task = _task(use_ai_copy=True)
         task["triggerEvent"] = "add_wecom"
+        task["firstAddedAt"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
 
         await service.process_task(task)
 
@@ -287,8 +289,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             [
                 {
                     "decision": "send",
-                    "reason": "recent first add",
-                    "reply_messages": [_text("模型擅自改写")],
+                    "reason": "first add remains useful",
+                    "reply_messages": [_text("model copy ignored")],
                 }
             ]
         )
@@ -296,12 +298,16 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         service, _repo, platform, system = _service(model=model, settings=settings)
         task = _task(use_ai_copy=False)
         task["triggerEvent"] = "add_wecom"
-        task["scheduledAt"] = _beijing_epoch("2026-08-05 01:00:00")
+        current_beijing = datetime.now(timezone(timedelta(hours=8)))
+        scheduled_at = current_beijing.replace(hour=1, minute=0, second=0, microsecond=0)
+        if scheduled_at > current_beijing:
+            scheduled_at -= timedelta(days=1)
+        task["scheduledAt"] = scheduled_at.timestamp()
         system.conversation_payload["data"]["messages"] = [
             {
                 "direction": "customer",
                 "content": "我已经添加了你，现在我们可以开始聊天了。",
-                "msgtime": _beijing_epoch("2026-08-05 00:31:00") * 1000,
+                "msgtime": (scheduled_at - timedelta(minutes=29)).timestamp() * 1000,
             }
         ]
 
@@ -309,12 +315,61 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(system.conversation_calls, 3)
+        self.assertEqual(system.conversation_calls, 4)
         self.assertEqual(len(system.send_calls), 1)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
         self.assertEqual(len(model.calls), 1)
 
-    async def test_first_day_unopened_first_add_task_is_consumed_without_send(self) -> None:
-        model = _Model([])
+    async def test_first_day_unopened_first_add_task_continues_normal_model_chain(self) -> None:
+        model = _Model(
+            [
+                {
+                    "decision": "send",
+                    "reason": "first add remains useful",
+                    "reply_messages": [_text("model copy ignored")],
+                }
+            ]
+        )
+        service, repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "add_wecom"
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "我已经添加了你，现在我们可以开始聊天了。",
+                "msgtime": int(time.time() * 1000),
+            }
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(len(model.calls), 1)
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(
+            payload["decision"]["reason"],
+            "first add remains useful",
+        )
+        self.assertEqual(
+            payload["context"]["first_day_platform_sop_route"]["route_reason"],
+            "first_add_unopened_continued_normal_model_chain",
+        )
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
+
+    async def test_first_day_unopened_first_add_can_be_filtered_by_normal_model_chain(self) -> None:
+        model = _Model(
+            [
+                {
+                    "decision": "no_send",
+                    "reason": "conflicts with unresolved customer question",
+                    "reason_code": "unresolved_customer_question",
+                    "reply_messages": [],
+                }
+            ]
+        )
         service, repo, platform, system = _service(model=model)
         task = _task(use_ai_copy=False)
         task["triggerEvent"] = "add_wecom"
@@ -332,25 +387,17 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         self.assertEqual(system.send_calls, [])
-        self.assertEqual(model.calls, [])
+        self.assertEqual(len(model.calls), 1)
         payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(payload["decision"]["reason_code"], "unresolved_customer_question")
         self.assertEqual(
-            payload["decision"]["reason"],
-            "first_add_unopened_platform_sop_consumed_no_send",
+            payload["context"]["first_day_platform_sop_route"]["opening_state"],
+            "unopened",
         )
-        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
-    async def test_first_day_real_customer_opening_does_not_use_unopened_intercept(self) -> None:
-        model = _Model(
-            [
-                {
-                    "decision": "send",
-                    "reason": "real customer opened",
-                    "reply_messages": [_text("自然承接")],
-                }
-            ]
-        )
-        service, _repo, platform, system = _service(model=model)
+    async def test_first_day_real_customer_opening_is_consumed_without_send_or_model(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
         task = _task(use_ai_copy=True)
         task["triggerEvent"] = "add_wecom"
         task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
@@ -364,10 +411,57 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await service.process_task(task)
 
-        self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(
+            payload["decision"]["reason"],
+            "first_add_opened_platform_sop_consumed_no_send",
+        )
+
+    async def test_first_day_unknown_opening_state_is_consumed_without_send(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "add_wecom"
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_error = RuntimeError("conversation timeout")
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(
+            payload["decision"]["reason"],
+            "first_add_opening_state_unavailable_consumed_no_send",
+        )
+
+    async def test_first_day_customer_message_without_time_is_not_treated_as_unopened(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        task = _task(use_ai_copy=False)
+        task["triggerEvent"] = "add_wecom"
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["messages"] = [
+            {"direction": "customer", "content": "你好，在吗"},
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        payload = next(iter(repo.tasks.values()))["send_payload"]
+        self.assertEqual(
+            payload["decision"]["reason"],
+            "first_add_opening_state_unavailable_consumed_no_send",
+        )
 
     async def test_quiet_hours_blocks_inactive_first_add(self) -> None:
         model = _Model([])
@@ -1148,6 +1242,7 @@ class _System:
         self.send_calls: list[dict[str, Any]] = []
         self.send_responses: list[dict[str, Any]] = []
         self.conversation_calls = 0
+        self.conversation_error: Exception | None = None
         self.conversation_limits: list[int | None] = []
         self.conversation_payload = {
             "code": 0,
@@ -1160,6 +1255,8 @@ class _System:
     async def conversation(self, **_kwargs):
         self.conversation_calls += 1
         self.conversation_limits.append(_kwargs.get("limit"))
+        if self.conversation_error is not None:
+            raise self.conversation_error
         return self.conversation_payload
 
     async def send(self, **kwargs):

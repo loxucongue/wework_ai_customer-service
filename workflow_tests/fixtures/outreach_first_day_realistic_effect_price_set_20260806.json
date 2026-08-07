@@ -1,0 +1,108 @@
+{
+  "dataset_id": "first_day_realistic_effect_price",
+  "source": "anonymized_and_scenario_derived_from_production_conversations",
+  "source_sample_count": 6,
+  "privacy": "all customer identifiers, names, phones, exact addresses and message ids were removed or replaced",
+  "cases": [
+    {
+      "id": "real_effect_many_images_then_activity",
+      "description": "长聊中已发多张真实效果图，客户继续追问一次效果后沉默",
+      "trigger_context": {"trigger_type": "first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"我已经添加了你，现在我们可以开始聊天了。","msgtype":"text","created_at":"2026-08-06T08:00:00+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"您好，您在哪个城市哪个区？","msgtype":"text","created_at":"2026-08-06T08:00:04+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"我在江城东区","msgtype":"text","created_at":"2026-08-06T08:01:20+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"收到，您脸上斑点大概多久了？","msgtype":"text","created_at":"2026-08-06T08:01:48+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"一点点，有两年了","msgtype":"text","created_at":"2026-08-06T08:02:30+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"了解，我先给您发几组同类斑点的真实改善参考。","msgtype":"text","created_at":"2026-08-06T08:02:55+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_click_url-90f975480879.png"},"msgtype":"image","created_at":"2026-08-06T08:02:56+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_second-de0488d149ea.png"},"msgtype":"image","created_at":"2026-08-06T08:02:57+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"图片里是做一次达到的吗","msgtype":"text","created_at":"2026-08-06T08:04:10+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"很多顾客做一次能看到比较直观的改善，具体程度要结合斑点深浅和皮肤状态，到店看会更准。","msgtype":"text","created_at":"2026-08-06T08:04:42+08:00"}
+      ],
+      "recent_media_delivery": {"urls":["https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_click_url-90f975480879.png","https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_second-de0488d149ea.png"],"document_ids":[]},
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":7},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "第一步不能再发效果图或复述一次效果，应以自然短句承接后直接进入活动介绍；第二步15至20分钟后进入门店区域或低风险下一动作。"
+    },
+    {
+      "id": "real_effect_text_only_should_deliver_images",
+      "description": "长聊只做了文字效果说明，没有真实图片发送证据",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"你们效果怎么样","msgtype":"text","created_at":"2026-08-06T09:00:00+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"很多顾客做完能看到改善方向，具体要看斑点深浅。","msgtype":"text","created_at":"2026-08-06T09:00:25+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"是一次包好吗","msgtype":"text","created_at":"2026-08-06T09:01:10+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"不能做绝对保证，多数顾客一次能看到变化，实际以到店看皮肤状态为准。","msgtype":"text","created_at":"2026-08-06T09:01:42+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"黄褐斑也行吗","msgtype":"text","created_at":"2026-08-06T09:02:16+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"这类色素问题可以先看改善方向，不能只凭一句话判断具体程度。","msgtype":"text","created_at":"2026-08-06T09:02:48+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"那我怎么看你们真实效果","msgtype":"text","created_at":"2026-08-06T09:03:25+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"做前做后会留原相机对比，变化会比较直观。","msgtype":"text","created_at":"2026-08-06T09:03:50+08:00"}
+      ],
+      "recent_media_delivery": {"urls":[],"document_ids":[]},
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "第一步应轻承接后直接采用介绍效果SOP话术包并选择真实效果图，不要继续问症状；第二步再进入活动介绍，不能重复效果场景。"
+    },
+    {
+      "id": "real_price_complete_scam_objection",
+      "description": "完整报价后客户连续质疑低价引流和到店加价",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"一次多少钱","msgtype":"text","created_at":"2026-08-06T10:00:00+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"周年庆活动单部位总价268元，线上先付10元预约金，到店抵扣，做的话再付258元；未做或不满意可退。","msgtype":"text","created_at":"2026-08-06T10:00:28+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://oss.example.invalid/activity.png"},"msgtype":"image","created_at":"2026-08-06T10:00:29+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"不会到店又要几千吧","msgtype":"text","created_at":"2026-08-06T10:01:20+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"活动范围内不会强制加项目，额外项目不认可不做就不产生费用。","msgtype":"text","created_at":"2026-08-06T10:01:55+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"好多都是骗人进去加价","msgtype":"text","created_at":"2026-08-06T10:02:40+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"您这个担心很正常，费用以活动范围和付款记录核对，不会临时换成另一套价格。","msgtype":"text","created_at":"2026-08-06T10:03:14+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"我还是不太放心","msgtype":"text","created_at":"2026-08-06T10:04:02+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"可以先到店看效果和方案，满意再做，不满意不操作。","msgtype":"text","created_at":"2026-08-06T10:04:29+08:00"}
+      ],
+      "recent_media_delivery": {"urls":["https://oss.example.invalid/activity.png"],"document_ids":[]},
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "不得重讲268、10、258、退款或不强制消费。第一步应换成尚未交付的真实效果证据或信任卡点；第二步换到门店区域等不同场景。没有有效订单不得发预约金卡。"
+    },
+    {
+      "id": "real_price_asked_but_not_answered",
+      "description": "客户同时问效果、次数和价格，最近回复只回答了效果次数",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"能去掉吗","msgtype":"text","created_at":"2026-08-06T11:00:00+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"这类斑点多数有改善空间，我给您放一张同类参考。","msgtype":"text","created_at":"2026-08-06T11:00:30+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://oss.example.invalid/case-one.png"},"msgtype":"image","created_at":"2026-08-06T11:00:31+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"一次多少钱，要做几次","msgtype":"text","created_at":"2026-08-06T11:01:18+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"很多顾客先做一次就能看到比较明显的改善，具体次数要结合面积和深浅。","msgtype":"text","created_at":"2026-08-06T11:01:54+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"那价格呢","msgtype":"text","created_at":"2026-08-06T11:02:30+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"我先把活动情况给您接上。","msgtype":"text","created_at":"2026-08-06T11:02:52+08:00"}
+      ],
+      "recent_media_delivery": {"urls":["https://oss.example.invalid/case-one.png"],"document_ids":[]},
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "第一步轻过渡后直接完整介绍活动价格，不能再问症状或重复次数；第二步进入门店区域或低风险动作。没有订单时不能附预约金卡。"
+    },
+    {
+      "id": "real_effect_after_customer_photo_no_overdiagnosis",
+      "description": "客户发图问能不能改善，历史有一张参考但没有活动介绍",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":{"url":"https://upload.example.invalid/customer-photo.png"},"msgtype":"image","created_at":"2026-08-06T12:00:00+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"眼睛边上的可以吗","msgtype":"text","created_at":"2026-08-06T12:00:03+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"眼周位置先以皮肤状态为准，具体要到店看深浅和分布，不能只凭图片下结论。","msgtype":"text","created_at":"2026-08-06T12:00:35+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"那到底有没有效果","msgtype":"text","created_at":"2026-08-06T12:01:12+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"多数同类顾客能看到改善方向，我放一张同类参考给您。","msgtype":"text","created_at":"2026-08-06T12:01:40+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://oss.example.invalid/eye-case.png"},"msgtype":"image","created_at":"2026-08-06T12:01:41+08:00"}
+      ],
+      "recent_media_delivery": {"urls":["https://oss.example.invalid/eye-case.png"],"document_ids":[]},
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "已有真实效果图，第一步应自然承接并直接推进活动介绍，不得诊断图片、不再问症状或重复发图；第二步推进门店区域。"
+    }
+  ]
+}

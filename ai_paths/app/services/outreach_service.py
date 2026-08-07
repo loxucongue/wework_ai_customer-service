@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import time
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from typing import Any
 
 from app.services.customer_context import CustomerContextService
@@ -15,15 +17,23 @@ from app.services.customer_scope import build_customer_scope
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
 from app.services.outreach_asset_library_service import OutreachAssetLibraryService
+from app.services.outreach_first_day_prompts import (
+    FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
+    FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
+    FIRST_DAY_PLAN_WRITER_PROMPT,
+    FIRST_DAY_PLAN_WRITER_PROMPT_VERSION,
+    FIRST_DAY_SCENE_ANALYST_PROMPT,
+    FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION,
+)
 from app.services.outreach_assets import (
     asset_reply_message,
     build_outreach_asset_catalog,
+    enrich_recent_outreach_media,
     recent_outreach_media,
     resolve_case_asset,
     resolve_configured_asset,
 )
 from app.services.outreach_prompts import (
-    FIRST_DAY_OPENED_SILENCE_PLAN_PROMPT,
     OUTREACH_MESSAGE_SYSTEM_PROMPT,
     OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT,
     OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT,
@@ -31,7 +41,10 @@ from app.services.outreach_prompts import (
     S10_OUTREACH_CONTEXT,
 )
 from app.services.outreach_system_client import OutreachSystemClient
-from app.services.sop_platform_task_policy import personalized_order_eligibility
+from app.services.sop_platform_task_policy import (
+    personalized_order_eligibility,
+    personalized_payment_collection_eligibility,
+)
 from app.services.storage import AppRepository
 from app.services.storage.serialization import dumps, utc_now_iso
 
@@ -55,10 +68,74 @@ OUTREACH_MIN_STEP_GAP_MINUTES = 6 * 60
 OUTREACH_MAX_STEP_GAP_MINUTES = 72 * 60
 OUTREACH_MAX_PLAN_MINUTES = 7 * 24 * 60
 OUTREACH_DAILY_TASK_LIMIT = 2
+FIRST_DAY_DAILY_PLAN_LIMIT = 2
 OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 FIRST_DAY_WINDOW_MINUTES = 24 * 60
 FIRST_DAY_SILENCE_TRIGGER_TYPE = "first_day_opened_silence"
 FIRST_DAY_SOP_PLAN_ID = "first_day_opened_silence"
+FIRST_DAY_SCENES = {
+    "store_area_request",
+    "effect_proof",
+    "activity_intro",
+    "objection_resolution",
+    "deposit_close",
+    "trust_repair",
+    "health_hold",
+    "suppress",
+}
+FIRST_DAY_REPEAT_SIMILARITY_LIMIT = 0.85
+FIRST_DAY_GENDERED_TERMS = (
+    "女孩子",
+    "美女",
+    "姐妹",
+    "女士",
+    "先生",
+    "帅哥",
+    "哥哥",
+    "姐姐",
+    "妹妹",
+    "男士",
+)
+FIRST_DAY_PROCESS_TAIL_TERMS = (
+    "回我",
+    "回复我",
+    "回一句",
+    "回复一个",
+    "回复关键词",
+    "想看就回",
+    "如果想继续了解",
+    "如果您想继续了解",
+    "想继续看",
+    "我再发",
+    "我可以继续",
+    "我先把活动信息发",
+    "先不打扰",
+    "慢慢看",
+    "方便时再说",
+    "想继续了解时",
+    "按您目前的情况先放着",
+    "支付条件方便了",
+    "后面想继续",
+    "以后需要再",
+)
+FIRST_DAY_UNSUPPORTED_STORE_ACTIONS = (
+    "帮您查",
+    "帮您匹配",
+    "帮您看位置",
+    "帮您看下",
+    "给您推荐",
+    "推荐附近",
+    "按附近看",
+    "往就近",
+    "帮您看怎么方便",
+    "缩小到更近",
+    "缩小到最近",
+    "最近的门店",
+    "更近的门店",
+    "帮您看怎么安排",
+    "我直接帮您看",
+    "给您对接",
+)
 OUTREACH_DURABLE_EVENT_TYPES = {
     "voice_transcript_received",
     "image_facts_received",
@@ -78,6 +155,10 @@ OUTREACH_DURABLE_EVENT_TYPES = {
     "health_risk",
     "manual_handoff",
 }
+
+
+class OutreachMessagePolicyError(RuntimeError):
+    pass
 
 
 def classify_conversation_refresh_error(error: Exception | str) -> tuple[str, str]:
@@ -643,6 +724,161 @@ def _reply_texts(messages: Any, *, limit: int = 2) -> list[str]:
     return output
 
 
+def _normalize_repeat_text(value: Any) -> str:
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", _string(value).lower())
+
+
+def _message_visible_texts(message: Any) -> list[str]:
+    if not isinstance(message, dict):
+        return []
+    output: list[str] = []
+    content = message.get("content")
+    if isinstance(content, dict):
+        text = _string(content.get("text"))
+    else:
+        text = _string(content)
+    if text:
+        output.append(text)
+    output.extend(_reply_texts(message.get("reply_messages"), limit=20))
+    return output
+
+
+def _nested_sop_texts(value: Any) -> list[str]:
+    if isinstance(value, list):
+        output: list[str] = []
+        for item in value:
+            output.extend(_nested_sop_texts(item))
+        return output
+    if not isinstance(value, dict):
+        return []
+    output = _message_visible_texts(value)
+    for key, item in value.items():
+        if key in {"content", "reply_messages"}:
+            continue
+        if isinstance(item, (dict, list)):
+            output.extend(_nested_sop_texts(item))
+    return output
+
+
+def _first_day_history_texts(plan: dict[str, Any], context: dict[str, Any]) -> list[str]:
+    source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+    messages: list[Any] = []
+    for candidate in (source_snapshot.get("recent_messages"), context.get("recent_messages")):
+        if isinstance(candidate, list):
+            messages.extend(candidate)
+    output: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = _string(
+            message.get("direction")
+            or message.get("role")
+            or message.get("sender_type")
+            or message.get("from")
+        ).lower()
+        if role not in {"staff", "assistant", "service", "ai", "bot"}:
+            continue
+        output.extend(_message_visible_texts(message))
+    output.extend(_nested_sop_texts(source_snapshot.get("recent_sop_delivery")))
+    return list(dict.fromkeys(text for text in output if _normalize_repeat_text(text)))
+
+
+def _first_day_message_policy_error(
+    texts: list[str],
+    *,
+    step_index: int,
+    plan: dict[str, Any],
+    context: dict[str, Any],
+) -> tuple[str, str]:
+    visible_text = " ".join(_string(text) for text in texts if _string(text))
+    for term in FIRST_DAY_GENDERED_TERMS:
+        if term in visible_text:
+            return "first_day_gendered_language", term
+    for term in FIRST_DAY_PROCESS_TAIL_TERMS:
+        if term in visible_text:
+            return "first_day_process_tail", term
+    for term in FIRST_DAY_UNSUPPORTED_STORE_ACTIONS:
+        if term in visible_text:
+            return "first_day_unsupported_store_action", term
+    if step_index != 1:
+        return "", ""
+    candidates = [visible_text, *texts]
+    for candidate in candidates:
+        normalized_candidate = _normalize_repeat_text(candidate)
+        if len(normalized_candidate) < 8:
+            continue
+        for history_text in _first_day_history_texts(plan, context):
+            normalized_history = _normalize_repeat_text(history_text)
+            if min(len(normalized_candidate), len(normalized_history)) < 8:
+                continue
+            similarity = SequenceMatcher(None, normalized_history, normalized_candidate).ratio()
+            if similarity > FIRST_DAY_REPEAT_SIMILARITY_LIMIT:
+                return "first_day_message_too_similar_to_history", history_text
+    return "", ""
+
+
+def _first_day_sop_pack_context(config: Any) -> list[dict[str, Any]]:
+    packs = config.get("packs") if isinstance(config, dict) and isinstance(config.get("packs"), list) else []
+    output: list[dict[str, Any]] = []
+    for pack in packs:
+        if not isinstance(pack, dict) or not bool(pack.get("enabled")):
+            continue
+        scopes = pack.get("scopes") if isinstance(pack.get("scopes"), list) else [pack.get("scope")]
+        if "chat_gate" not in {_string(scope) for scope in scopes}:
+            continue
+        if _string(pack.get("day_stage")) not in {"", "day1"}:
+            continue
+        pack_id = _string(pack.get("id"))
+        if not pack_id:
+            continue
+        output.append(
+            {
+                "id": pack_id,
+                "sop_category": _string(pack.get("sop_category")),
+                "name": _string(pack.get("name")),
+                "purpose": _string(pack.get("purpose")),
+                "triggers": _list_strings(pack.get("triggers")),
+                "reply_messages": [
+                    dict(message)
+                    for message in pack.get("reply_messages") or []
+                    if isinstance(message, dict)
+                ],
+            }
+        )
+    return output
+
+
+def _first_day_sop_pack_assets(packs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    assets: list[dict[str, Any]] = []
+    for pack in packs:
+        pack_id = _string(pack.get("id"))
+        for message in pack.get("reply_messages") or []:
+            if not isinstance(message, dict):
+                continue
+            asset_type = _string(message.get("type"))
+            if asset_type not in {"image", "video"}:
+                continue
+            content = message.get("content") if isinstance(message.get("content"), dict) else {}
+            url = _string(content.get("url"))
+            if not url.startswith(("http://", "https://")):
+                continue
+            order = _int(message.get("order"), len(assets) + 1)
+            assets.append(
+                {
+                    "asset_id": f"sop-pack:{pack_id}:{order}",
+                    "type": asset_type,
+                    "url": url,
+                    "source": "sop_reply_pack",
+                    "name": _string(pack.get("name")),
+                    "annotation": _string(pack.get("purpose")),
+                    "use_cases": _list_strings(pack.get("triggers")),
+                    "avoid_when": [],
+                    "tags": [_string(pack.get("sop_category")), pack_id],
+                }
+            )
+    return assets
+
+
 def _plan_step_text(step: dict[str, Any]) -> str:
     texts = _plan_step_texts(step)
     return texts[0] if texts else ""
@@ -853,22 +1089,252 @@ def _outreach_plan_context_error(
 
 
 def _first_day_outreach_plan_error(response: dict[str, Any]) -> str:
-    base_error = _outreach_plan_structure_error(response)
-    if base_error:
-        if base_error == "adjacent step delay must be between 360 and 4320 minutes":
-            pass
-        else:
-            return base_error
     steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
     if not bool(response.get("should_create_plan", True)):
+        if steps or _string(response.get("plan_arc")):
+            return "should_create_plan=false cannot include plan_arc or steps"
         return ""
     if len(steps) != 2:
         return "first-day opened silence plan must contain exactly 2 steps"
+    content_modes = [_string(step.get("content_mode")) for step in steps]
+    if any(mode not in OUTREACH_CONTENT_MODES for mode in content_modes):
+        return "every step must use one allowed content_mode"
+    if "value_only" not in content_modes:
+        return "plan must contain at least one value_only step"
+    if any(_string(step.get("urgency_level")) not in OUTREACH_URGENCY_LEVELS for step in steps):
+        return "every step must use one allowed urgency_level"
+    if any(not _string(step.get("timing_reason")) for step in steps):
+        return "every step must contain timing_reason"
+    no_reply_actions = [_string(step.get("no_reply_action")) for step in steps]
+    if no_reply_actions != ["advance_to_next_step", "end_plan"]:
+        return "first-day steps must advance once and then end the plan"
+    if any(not _string(step.get("no_reply_strategy")) for step in steps):
+        return "every step must contain no_reply_strategy"
+    for step in steps:
+        messages = step.get("reply_messages")
+        if not isinstance(messages, list) or len(messages) not in {1, 2}:
+            return "every step must contain one or two reply_messages text items"
+        if any(
+            not isinstance(message, dict)
+            or _string(message.get("type")) != "text"
+            or not isinstance(message.get("content"), dict)
+            for message in messages
+        ) or len(_reply_texts(messages)) != len(messages):
+            return "plan step reply_messages must contain one or two non-empty text items"
+        asset_strategy = _string(step.get("asset_strategy")) or "none"
+        if asset_strategy not in OUTREACH_ASSET_STRATEGIES:
+            return "every step must use one allowed asset_strategy"
+        if _string(step.get("content_mode")) == "value_only" and _bool(
+            step.get("should_send_payment_collection")
+        ):
+            return "value_only step cannot send payment_collection"
     if _int(steps[0].get("delay_minutes"), -1) != 0:
         return "first-day first step must be immediate with delay_minutes=0"
     second_delay = _int(steps[1].get("delay_minutes"), -1)
-    if second_delay < 1:
-        return "first-day second step must be scheduled after the immediate touch"
+    if second_delay < 15 or second_delay > 20:
+        return "first-day second step delay_minutes must be between 15 and 20"
+    payment_steps = [
+        step
+        for step in steps
+        if _bool(step.get("should_send_payment_collection"))
+    ]
+    if len(payment_steps) > 1:
+        return "plan can contain at most one payment_collection step"
+    if payment_steps:
+        payment_step = payment_steps[0]
+        if _string(payment_step.get("content_mode")) != "transaction":
+            return "payment_collection step must use transaction content_mode"
+        if _string(payment_step.get("payment_collection_basis")) != "model_selected_after_quote":
+            return "payment_collection step must use model_selected_after_quote basis"
+    return ""
+
+
+def _first_day_scene_analysis_error(
+    response: dict[str, Any],
+    *,
+    source_snapshot: dict[str, Any],
+) -> str:
+    if not isinstance(response, dict):
+        return "scene analysis must be a json object"
+    eligible = response.get("eligible")
+    if not isinstance(eligible, bool):
+        return "scene analysis eligible must be boolean"
+    step1_scene = _string(response.get("step1_scene"))
+    step2_scene = _string(response.get("step2_scene"))
+    current_scene = _string(response.get("current_scene"))
+    if current_scene not in FIRST_DAY_SCENES:
+        return "scene analysis current_scene is invalid"
+    if not eligible:
+        if step1_scene != "suppress" or step2_scene != "suppress":
+            return "suppressed scene analysis must lock both steps to suppress"
+        if not _string(response.get("suppress_reason")):
+            return "suppressed scene analysis requires suppress_reason"
+        return ""
+    if step1_scene not in FIRST_DAY_SCENES - {"suppress", "health_hold"}:
+        return "scene analysis step1_scene is invalid"
+    if step2_scene not in FIRST_DAY_SCENES - {"suppress", "health_hold"}:
+        return "scene analysis step2_scene is invalid"
+    if step1_scene == step2_scene:
+        return "first-day scene analysis must select two different scenes"
+    if not _string(response.get("step1_objective")) or not _string(response.get("step2_objective")):
+        return "scene analysis requires both step objectives"
+    required_assets = response.get("required_assets")
+    if not isinstance(required_assets, dict):
+        return "scene analysis required_assets must be an object"
+    available_asset_ids = {
+        _string(asset.get("asset_id"))
+        for asset in source_snapshot.get("asset_catalog") or []
+        if isinstance(asset, dict) and _string(asset.get("asset_id"))
+    }
+    for key in ("step1", "step2"):
+        asset = required_assets.get(key)
+        if not isinstance(asset, dict):
+            return f"scene analysis required_assets.{key} must be an object"
+        strategy = _string(asset.get("strategy")) or "none"
+        if strategy not in OUTREACH_ASSET_STRATEGIES:
+            return f"scene analysis required_assets.{key}.strategy is invalid"
+        asset_id = _string(asset.get("asset_id"))
+        if strategy in {"configured_image", "operation_video"} and (
+            not asset_id or asset_id not in available_asset_ids
+        ):
+            return f"scene analysis required_assets.{key}.asset_id is unavailable"
+    payment_action = response.get("payment_action")
+    if not isinstance(payment_action, dict):
+        return "scene analysis payment_action must be an object"
+    payment_step = _int(payment_action.get("step"), -1)
+    if payment_step not in {0, 1, 2}:
+        return "scene analysis payment_action.step must be 0, 1, or 2"
+    payment_allowed = _bool(payment_action.get("allowed"))
+    if payment_allowed != (payment_step in {1, 2}):
+        return "scene analysis payment_action allowed and step disagree"
+    deposit_steps = [
+        index
+        for index, scene in enumerate((step1_scene, step2_scene), start=1)
+        if scene == "deposit_close"
+    ]
+    if deposit_steps != ([payment_step] if payment_step else []):
+        return "scene analysis deposit scene must exactly match payment_action.step"
+    if payment_allowed:
+        payment_gate = source_snapshot.get("payment_collection_gate") or {}
+        expected_scene = step1_scene if payment_step == 1 else step2_scene
+        if not _bool(payment_gate.get("eligible")) or expected_scene != "deposit_close":
+            return "scene analysis payment action violates payment gate or scene lock"
+    message_count = len(source_snapshot.get("recent_messages") or [])
+    for evidence in response.get("evidence") or []:
+        if not isinstance(evidence, dict):
+            return "scene analysis evidence items must be objects"
+        message_index = evidence.get("message_index")
+        if not isinstance(message_index, int) or not 0 <= message_index < message_count:
+            return "scene analysis evidence message_index is outside recent_messages"
+    return ""
+
+
+def _normalize_first_day_scene_analysis(
+    response: dict[str, Any],
+    *,
+    message_count: int,
+) -> dict[str, Any]:
+    if not isinstance(response, dict) or message_count <= 0:
+        return response
+    raw_evidence = response.get("evidence") or []
+    evidence_items = [
+        item
+        for item in raw_evidence
+        if isinstance(item, dict) and isinstance(item.get("message_index"), int)
+    ]
+    delivered_items = [
+        item
+        for item in response.get("delivered_scenes") or []
+        if isinstance(item, dict)
+    ]
+    indexes = [item["message_index"] for item in evidence_items]
+    for item in delivered_items:
+        indexes.extend(index for index in item.get("message_indexes") or [] if isinstance(index, int))
+    index_base = _int(response.get("message_index_base"), 0)
+    inferred_one_based = bool(indexes) and any(index == message_count for index in indexes)
+    if index_base == 1 or inferred_one_based:
+        for item in evidence_items:
+            item["message_index"] -= 1
+        for item in delivered_items:
+            item["message_indexes"] = [
+                index - 1 if isinstance(index, int) else index
+                for index in item.get("message_indexes") or []
+            ]
+    response["message_index_base"] = 0
+    warnings = _list_strings(response.get("normalization_warnings"))
+    valid_evidence = []
+    for item in evidence_items:
+        index = item.get("message_index")
+        if isinstance(index, int) and 0 <= index < message_count:
+            valid_evidence.append(item)
+        else:
+            warnings.append(f"dropped_invalid_evidence_index:{index}")
+    if len(valid_evidence) != len(raw_evidence):
+        response["evidence"] = valid_evidence
+    if warnings:
+        response["normalization_warnings"] = list(dict.fromkeys(warnings))
+    return response
+
+
+def _first_day_scene_lock_error(
+    response: dict[str, Any],
+    *,
+    scene_analysis: dict[str, Any],
+) -> str:
+    structure_error = _first_day_outreach_plan_error(response)
+    if structure_error:
+        return structure_error
+    steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
+    expected_scenes = [
+        _string(scene_analysis.get("step1_scene")),
+        _string(scene_analysis.get("step2_scene")),
+    ]
+    actual_scenes = [_string(step.get("scene")) for step in steps]
+    if actual_scenes != expected_scenes:
+        return "first-day plan scenes must exactly match the scene analysis contract"
+    payment_action = scene_analysis.get("payment_action") or {}
+    expected_payment_step = _int(payment_action.get("step"), 0)
+    actual_payment_steps = [
+        index
+        for index, step in enumerate(steps, start=1)
+        if _bool(step.get("should_send_payment_collection"))
+    ]
+    if actual_payment_steps != ([expected_payment_step] if expected_payment_step else []):
+        return "first-day plan payment step must exactly match the scene analysis contract"
+    required_assets = scene_analysis.get("required_assets") or {}
+    for index, step in enumerate(steps, start=1):
+        required = required_assets.get(f"step{index}") or {}
+        required_strategy = _string(required.get("strategy")) or "none"
+        if _string(step.get("asset_strategy")) != required_strategy:
+            return f"first-day plan step {index} asset strategy must match scene analysis"
+        required_asset_id = _string(required.get("asset_id"))
+        if required_asset_id and _string(step.get("asset_id")) != required_asset_id:
+            return f"first-day plan step {index} asset id must match scene analysis"
+    return ""
+
+
+def _first_day_verifier_error(response: dict[str, Any]) -> str:
+    if not isinstance(response, dict):
+        return "first-day verifier response must be a json object"
+    decision = _string(response.get("decision"))
+    if decision not in {"pass", "repair", "block"}:
+        return "first-day verifier decision must be pass, repair, or block"
+    violations = response.get("violations")
+    if not isinstance(violations, list):
+        return "first-day verifier violations must be a list"
+    block_category = _string(response.get("block_category")) or "none"
+    if block_category not in {"none", "source_hard_boundary", "locked_scene_impossible"}:
+        return "first-day verifier block_category is invalid"
+    if decision == "block":
+        if block_category == "none" or not violations:
+            return "blocked verifier response requires a source block category and evidence"
+        if response.get("verified_plan") not in ({}, None):
+            return "blocked verifier response must not include a plan"
+        return ""
+    if block_category != "none":
+        return "pass or repair verifier response must use block_category=none"
+    if not isinstance(response.get("verified_plan"), dict):
+        return "pass or repair verifier response requires verified_plan"
     return ""
 
 
@@ -888,6 +1354,7 @@ class OutreachService:
         outreach_asset_library_service: OutreachAssetLibraryService | None = None,
         coze_client: CozeClient | None = None,
         sop_objection_material_service: Any | None = None,
+        sop_reply_pack_service: Any | None = None,
         before_send_retry_seconds: int = 60,
     ) -> None:
         self.repository = repository
@@ -897,6 +1364,7 @@ class OutreachService:
         self.outreach_asset_library_service = outreach_asset_library_service
         self.coze_client = coze_client
         self.sop_objection_material_service = sop_objection_material_service
+        self.sop_reply_pack_service = sop_reply_pack_service
         self.before_send_retry_seconds = max(1, int(before_send_retry_seconds))
         self._plan_locks: dict[str, asyncio.Lock] = {}
         self._monitor_status: dict[str, Any] = {
@@ -911,6 +1379,31 @@ class OutreachService:
             "skip_reasons": {},
             "last_error": "",
         }
+
+    async def _run_first_day_model_node(
+        self,
+        *,
+        node: str,
+        prompt: str,
+        prompt_version: str,
+        payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        started = time.perf_counter()
+        response = await self.model_client.chat_json(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": dumps(payload)},
+            ],
+            tier="strong",
+            temperature=0.0,
+        )
+        trace = {
+            "node": node,
+            "prompt_version": prompt_version,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+            "model_usage": dict(getattr(self.model_client, "last_usage", None) or {}),
+        }
+        return response if isinstance(response, dict) else {}, trace
 
     def list_candidates(
         self,
@@ -1218,8 +1711,19 @@ class OutreachService:
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
         first_day_trigger = _is_first_day_opened_silence_trigger(trigger_context)
         asset_catalog = self._outreach_asset_catalog()
-        recent_media = recent_outreach_media(recent_messages, hours=72)
+        first_day_sop_packs: list[dict[str, Any]] = []
+        if first_day_trigger and self.sop_reply_pack_service is not None:
+            first_day_sop_packs = _first_day_sop_pack_context(self.sop_reply_pack_service.load())
+            asset_catalog.extend(_first_day_sop_pack_assets(first_day_sop_packs))
+        recent_media = enrich_recent_outreach_media(
+            recent_outreach_media(recent_messages, hours=72),
+            asset_catalog,
+        )
         activity_quote_fact = build_outreach_activity_quote_fact(recent_messages, memory)
+        payment_collection_gate = personalized_payment_collection_eligibility(
+            context.get("customer_context") or {},
+            amount=10,
+        )
         recent_sop_delivery = []
         recent_sop_delivery_loader = getattr(self.repository, "recent_sop_delivery", None)
         if callable(recent_sop_delivery_loader):
@@ -1244,6 +1748,7 @@ class OutreachService:
             "sop_plan_id": sop_plan_id,
             "offer_context": S10_OUTREACH_CONTEXT,
             "activity_quote_fact": activity_quote_fact,
+            "payment_collection_gate": payment_collection_gate,
             "trigger_context": trigger_context or {},
             "customer_context": context.get("customer_context") or {},
             "customer_relation": customer_relation,
@@ -1264,96 +1769,217 @@ class OutreachService:
             ],
             "recent_media_delivery": recent_media,
             "recent_sop_delivery": recent_sop_delivery,
-            "first_day_sop_packs": recent_sop_delivery,
+            "first_day_sop_packs": first_day_sop_packs,
             "sop_objection_materials": _sop_objection_material_catalog(self.sop_objection_material_service),
         }
-        model_messages = [
-            {"role": "system", "content": OUTREACH_PLAN_SYSTEM_PROMPT},
-            *(
-                [{"role": "system", "content": FIRST_DAY_OPENED_SILENCE_PLAN_PROMPT}]
-                if first_day_trigger
-                else []
-            ),
-            {"role": "user", "content": dumps(source_snapshot)},
-        ]
-        response = await self.model_client.chat_json(
-            model_messages,
-            tier="strong",
-            temperature=0.0,
-        )
-        response = _normalize_outreach_plan_response(response)
-        structure_error = (
-            _first_day_outreach_plan_error(response)
-            if first_day_trigger
-            else _outreach_plan_structure_error(response) or _outreach_plan_context_error(
-                response,
-                activity_quote_fact=activity_quote_fact,
-                reply_wait_minutes=reply_wait_minutes,
-                customer_silence_minutes=customer_silence_minutes,
+        if first_day_trigger:
+            first_day_model_snapshot = dict(source_snapshot)
+            scene_analysis, analyst_trace = await self._run_first_day_model_node(
+                node="scene_analyst",
+                prompt=FIRST_DAY_SCENE_ANALYST_PROMPT,
+                prompt_version=FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION,
+                payload={"source_snapshot": first_day_model_snapshot},
             )
-        )
-        if structure_error:
-            response = await self.model_client.chat_json(
-                [
-                    *model_messages,
-                    {"role": "assistant", "content": dumps(response)},
-                    {
-                        "role": "user",
-                        "content": (
-                            "上一个 json 不符合结构合同。"
-                            f"错误：{structure_error}。"
-                            "请保留事实和销售判断，重新输出完整有效 json；不要解释。"
-                        ),
+            scene_analysis = _normalize_first_day_scene_analysis(
+                scene_analysis,
+                message_count=len(first_day_model_snapshot.get("recent_messages") or []),
+            )
+            scene_error = _first_day_scene_analysis_error(
+                scene_analysis,
+                source_snapshot=first_day_model_snapshot,
+            )
+            if scene_error:
+                scene_analysis, repair_trace = await self._run_first_day_model_node(
+                    node="scene_analyst_schema_repair",
+                    prompt=FIRST_DAY_SCENE_ANALYST_PROMPT,
+                    prompt_version=FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION,
+                    payload={
+                        "source_snapshot": first_day_model_snapshot,
+                        "invalid_scene_analysis": scene_analysis,
+                        "schema_error": scene_error,
+                        "instruction": "Repair only the JSON contract and return a complete scene analysis.",
                     },
-                ],
+                )
+                scene_analysis = _normalize_first_day_scene_analysis(
+                    scene_analysis,
+                    message_count=len(first_day_model_snapshot.get("recent_messages") or []),
+                )
+                analyst_trace["schema_repair"] = repair_trace
+                scene_error = _first_day_scene_analysis_error(
+                    scene_analysis,
+                    source_snapshot=first_day_model_snapshot,
+                )
+            if scene_error:
+                raise RuntimeError(f"first_day_scene_analysis_invalid: {scene_error}")
+
+            source_snapshot["first_day_workflow"] = {
+                "scene_analysis": scene_analysis,
+                "writer_result": {},
+                "verifier_result": {},
+                "traces": {"scene_analyst": analyst_trace},
+            }
+            if not _bool(scene_analysis.get("eligible")):
+                response = {
+                    "should_create_plan": False,
+                    "stall_reason": _string(scene_analysis.get("suppress_reason"))
+                    or "first_day_scene_analyst_suppressed",
+                    "plan_arc": "",
+                    "steps": [],
+                }
+            else:
+                writer_result, writer_trace = await self._run_first_day_model_node(
+                    node="plan_writer",
+                    prompt=FIRST_DAY_PLAN_WRITER_PROMPT,
+                    prompt_version=FIRST_DAY_PLAN_WRITER_PROMPT_VERSION,
+                    payload={
+                        "source_snapshot": first_day_model_snapshot,
+                        "scene_contract": scene_analysis,
+                    },
+                )
+                source_snapshot["first_day_workflow"]["writer_result"] = writer_result
+                source_snapshot["first_day_workflow"]["traces"]["plan_writer"] = writer_trace
+                writer_structure_error = _first_day_scene_lock_error(
+                    _normalize_outreach_plan_response(dict(writer_result)),
+                    scene_analysis=scene_analysis,
+                )
+                source_snapshot["first_day_workflow"]["writer_structure_error"] = writer_structure_error
+                verifier_result, verifier_trace = await self._run_first_day_model_node(
+                    node="contract_verifier",
+                    prompt=FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
+                    prompt_version=FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
+                    payload={
+                        "source_snapshot": first_day_model_snapshot,
+                        "scene_contract": scene_analysis,
+                        "candidate_plan": writer_result,
+                        "candidate_structure_error": writer_structure_error,
+                    },
+                )
+                verifier_retry_used = False
+                verifier_error = _first_day_verifier_error(verifier_result)
+                if verifier_error:
+                    verifier_result, verifier_repair_trace = await self._run_first_day_model_node(
+                        node="contract_verifier_schema_repair",
+                        prompt=FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
+                        prompt_version=FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
+                        payload={
+                            "source_snapshot": first_day_model_snapshot,
+                            "scene_contract": scene_analysis,
+                            "candidate_plan": writer_result,
+                            "invalid_verifier_result": verifier_result,
+                            "schema_error": verifier_error,
+                            "instruction": "Repair only the verifier JSON contract. Do not change locked scenes.",
+                        },
+                    )
+                    verifier_retry_used = True
+                    verifier_trace["schema_repair"] = verifier_repair_trace
+                    verifier_error = _first_day_verifier_error(verifier_result)
+                if verifier_error:
+                    raise RuntimeError(f"first_day_contract_verifier_invalid: {verifier_error}")
+                source_snapshot["first_day_workflow"]["verifier_result"] = verifier_result
+                source_snapshot["first_day_workflow"]["traces"]["contract_verifier"] = verifier_trace
+                if _string(verifier_result.get("decision")) == "block":
+                    violations = verifier_result.get("violations") or []
+                    response = {
+                        "should_create_plan": False,
+                        "stall_reason": _string((violations[0] if violations else {}).get("code"))
+                        or "first_day_contract_verifier_blocked",
+                        "plan_arc": "",
+                        "steps": [],
+                    }
+                else:
+                    response = _normalize_outreach_plan_response(
+                        dict(verifier_result.get("verified_plan") or {})
+                    )
+                    structure_error = _first_day_scene_lock_error(
+                        response,
+                        scene_analysis=scene_analysis,
+                    )
+                    if structure_error and not verifier_retry_used:
+                        verifier_result, verifier_contract_trace = await self._run_first_day_model_node(
+                            node="contract_verifier_contract_repair",
+                            prompt=FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
+                            prompt_version=FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
+                            payload={
+                                "source_snapshot": first_day_model_snapshot,
+                                "scene_contract": scene_analysis,
+                                "candidate_plan": writer_result,
+                                "candidate_structure_error": writer_structure_error,
+                                "invalid_verifier_result": verifier_result,
+                                "verified_plan_error": structure_error,
+                                "instruction": (
+                                    "Repair only the verified plan contract. Preserve both locked scenes exactly."
+                                ),
+                            },
+                        )
+                        verifier_trace["contract_repair"] = verifier_contract_trace
+                        verifier_error = _first_day_verifier_error(verifier_result)
+                        if verifier_error:
+                            raise RuntimeError(f"first_day_contract_verifier_invalid: {verifier_error}")
+                        source_snapshot["first_day_workflow"]["verifier_result"] = verifier_result
+                        if _string(verifier_result.get("decision")) == "block":
+                            violations = verifier_result.get("violations") or []
+                            response = {
+                                "should_create_plan": False,
+                                "stall_reason": _string((violations[0] if violations else {}).get("code"))
+                                or "first_day_contract_verifier_blocked",
+                                "plan_arc": "",
+                                "steps": [],
+                            }
+                            structure_error = ""
+                        else:
+                            response = _normalize_outreach_plan_response(
+                                dict(verifier_result.get("verified_plan") or {})
+                            )
+                            structure_error = _first_day_scene_lock_error(
+                                response,
+                                scene_analysis=scene_analysis,
+                            )
+                    if structure_error:
+                        raise RuntimeError(f"first_day_verified_plan_invalid: {structure_error}")
+        else:
+            model_messages = [
+                {"role": "system", "content": OUTREACH_PLAN_SYSTEM_PROMPT},
+                {"role": "user", "content": dumps(source_snapshot)},
+            ]
+            response = await self.model_client.chat_json(
+                model_messages,
                 tier="strong",
                 temperature=0.0,
             )
             response = _normalize_outreach_plan_response(response)
-        response = await self.model_client.chat_json(
-            [
-                {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": dumps(
-                        {
-                            "source_snapshot": source_snapshot,
-                            "candidate_plan": response,
-                        }
-                    ),
-                },
-            ],
-            tier="strong",
-            temperature=0.0,
-        )
-        response = _normalize_outreach_plan_response(response)
-        structure_error = (
-            _first_day_outreach_plan_error(response)
-            if first_day_trigger
-            else _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+            structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
                 response,
                 activity_quote_fact=activity_quote_fact,
                 reply_wait_minutes=reply_wait_minutes,
                 customer_silence_minutes=customer_silence_minutes,
             )
-        )
-        for _repair_attempt in range(3):
-            if not structure_error:
-                break
+            if structure_error:
+                response = await self.model_client.chat_json(
+                    [
+                        *model_messages,
+                        {"role": "assistant", "content": dumps(response)},
+                        {
+                            "role": "user",
+                            "content": (
+                                "上一个 json 不符合结构合同。"
+                                f"错误：{structure_error}。"
+                                "请保留事实和销售判断，重新输出完整有效 json；不要解释。"
+                            ),
+                        },
+                    ],
+                    tier="strong",
+                    temperature=0.0,
+                )
+                response = _normalize_outreach_plan_response(response)
             response = await self.model_client.chat_json(
                 [
-                    {"role": "system", "content": OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT},
+                    {"role": "system", "content": OUTREACH_PLAN_REVIEW_SYSTEM_PROMPT},
                     {
                         "role": "user",
                         "content": dumps(
                             {
                                 "source_snapshot": source_snapshot,
                                 "candidate_plan": response,
-                                "structure_error": structure_error,
-                                "repair_instruction": (
-                                    "严格按 structure_error 修复完整 json；保留现有业务语义和客户可见文字，"
-                                    "不要重新判断是否创建计划，不要解释。"
-                                ),
                             }
                         ),
                     },
@@ -1362,16 +1988,43 @@ class OutreachService:
                 temperature=0.0,
             )
             response = _normalize_outreach_plan_response(response)
-            structure_error = (
-                _first_day_outreach_plan_error(response)
-                if first_day_trigger
-                else _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+            structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
+                response,
+                activity_quote_fact=activity_quote_fact,
+                reply_wait_minutes=reply_wait_minutes,
+                customer_silence_minutes=customer_silence_minutes,
+            )
+            for _repair_attempt in range(3):
+                if not structure_error:
+                    break
+                response = await self.model_client.chat_json(
+                    [
+                        {"role": "system", "content": OUTREACH_PLAN_SCHEMA_REPAIR_SYSTEM_PROMPT},
+                        {
+                            "role": "user",
+                            "content": dumps(
+                                {
+                                    "source_snapshot": source_snapshot,
+                                    "candidate_plan": response,
+                                    "structure_error": structure_error,
+                                    "repair_instruction": (
+                                        "严格按 structure_error 修复完整 json；保留现有业务语义和客户可见文字，"
+                                        "不要重新判断是否创建计划，不要解释。"
+                                    ),
+                                }
+                            ),
+                        },
+                    ],
+                    tier="strong",
+                    temperature=0.0,
+                )
+                response = _normalize_outreach_plan_response(response)
+                structure_error = _outreach_plan_structure_error(response) or _outreach_plan_context_error(
                     response,
                     activity_quote_fact=activity_quote_fact,
                     reply_wait_minutes=reply_wait_minutes,
                     customer_silence_minutes=customer_silence_minutes,
                 )
-            )
         if not bool(response.get("should_create_plan", True)):
             self.repository.add_outreach_event(
                 plan_id="",
@@ -1388,6 +2041,7 @@ class OutreachService:
                     },
                     "trigger_context": trigger_context or {},
                     "ai_result": response,
+                    "first_day_workflow": source_snapshot.get("first_day_workflow") or {},
                 },
             )
             return {"created": False, "ai_result": response}
@@ -1438,11 +2092,12 @@ class OutreachService:
             payment_collection_basis = _string(step.get("payment_collection_basis"))
             should_send_payment_collection = (
                 _bool(step.get("should_send_payment_collection"))
-                and index == len(raw_steps)
+                and (first_day_trigger or index == len(raw_steps))
                 and content_mode == "transaction"
                 and payment_collection_basis == "model_selected_after_quote"
                 and not payment_collection_added
                 and _valid_activity_quote_evidence(activity_quote_fact)
+                and bool(payment_collection_gate.get("eligible"))
             )
             payment_collection_added = payment_collection_added or should_send_payment_collection
             draft_texts = _plan_step_texts(step)
@@ -1450,6 +2105,7 @@ class OutreachService:
                 continue
             resolved_asset = resolved_assets[index - 1]
             task_metadata = {
+                "scene": _string(step.get("scene")),
                 "content_mode": content_mode,
                 "persuasion_angle": _string(step.get("persuasion_angle")),
                 "new_value": _string(step.get("new_value")),
@@ -2076,6 +2732,26 @@ class OutreachService:
             )
             if active:
                 return {"status": "skipped", "customer_id": customer_id, "reason": "nonterminal_plan_exists"}
+            local_now = datetime.now(timezone.utc).astimezone(OUTREACH_BEIJING_TIMEZONE)
+            local_day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            local_day_end = local_day_start + timedelta(days=1)
+            created_today = self.repository.count_outreach_plans_for_trigger_between(
+                customer_id=customer_id,
+                corp_id=identity["corp_id"],
+                wechat=identity["wechat"],
+                external_userid=identity["external_userid"],
+                trigger_type=FIRST_DAY_SILENCE_TRIGGER_TYPE,
+                started_at=local_day_start.astimezone(timezone.utc).isoformat(),
+                ended_at=local_day_end.astimezone(timezone.utc).isoformat(),
+            )
+            if created_today >= FIRST_DAY_DAILY_PLAN_LIMIT:
+                return {
+                    "status": "skipped",
+                    "customer_id": customer_id,
+                    "reason": "first_day_daily_plan_limit_reached",
+                    "created_today": created_today,
+                    "daily_limit": FIRST_DAY_DAILY_PLAN_LIMIT,
+                }
             try:
                 refreshed = await self.refresh_customer_conversation(
                     customer_id=customer_id,
@@ -2718,7 +3394,26 @@ class OutreachService:
                         payload={"error": message},
                     )
                     return {"ok": False, "status": "rescheduled", "error": message, "retryable": True}
-            reply_messages = await self._generate_task_messages(task=task, plan=plan)
+            try:
+                reply_messages = await self._generate_task_messages(task=task, plan=plan)
+            except OutreachMessagePolicyError as exc:
+                reason = _string(exc) or "first_day_message_policy_violation"
+                self.repository.update_outreach_task(task_id, status="skipped", error_message=reason)
+                self.repository.skip_remaining_outreach_tasks(
+                    str(task["plan_id"]),
+                    reason=reason,
+                    exclude_task_id=task_id,
+                )
+                self.repository.update_outreach_plan_status(str(task["plan_id"]), "cancelled")
+                self.repository.add_outreach_event(
+                    plan_id=str(task["plan_id"]),
+                    task_id=task_id,
+                    customer_id=str(task["customer_id"]),
+                    event_type="task_skipped_message_policy",
+                    event_summary="First-day outreach message remained unsafe after rewrite",
+                    payload={"reason": reason},
+                )
+                return {"ok": True, "status": "skipped", "reason": reason}
             task = self.repository.update_outreach_task(
                 task_id,
                 status="sending",
@@ -2832,6 +3527,8 @@ class OutreachService:
             memory=local_context.get("memory") or {},
             request_context=request_context,
         )
+        if bool(task.get("should_send_payment_collection")):
+            return personalized_payment_collection_eligibility(customer_context, amount=10)
         return personalized_order_eligibility(customer_context)
 
     async def preview_task(self, task_id: str) -> dict[str, Any]:
@@ -2865,8 +3562,20 @@ class OutreachService:
         )
         resolved_asset = _task_resolved_asset(task)
         task_metadata = _task_metadata(task)
+        source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}
+        trigger_context = (
+            source_snapshot.get("trigger_context")
+            if isinstance(source_snapshot.get("trigger_context"), dict)
+            else {}
+        )
+        first_day_opened_silence = (
+            _string(trigger_context.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
+        )
+        step_index = _int(task.get("step_index"), 0)
         payload = {
             "task": {
+                "step_index": step_index,
+                "first_day_opened_silence": first_day_opened_silence,
                 "intent": task.get("intent"),
                 "message_goal": task.get("message_goal"),
                 "draft_text": _first_reply_text(task.get("reply_messages")),
@@ -2898,22 +3607,59 @@ class OutreachService:
             "customer_context": context,
             "offer_context": S10_OUTREACH_CONTEXT,
         }
-        response = await self.model_client.chat_json(
-            [
-                {"role": "system", "content": OUTREACH_MESSAGE_SYSTEM_PROMPT},
-                {"role": "user", "content": dumps(payload)},
-            ],
-            tier="balanced",
-            temperature=0.0,
-        )
-        texts = _reply_texts(response.get("reply_messages"))
-        if not texts:
-            raise RuntimeError("outreach_message_model_empty")
-        return _compose_outreach_messages(
-            texts,
-            resolved_asset=resolved_asset,
-            should_send_payment_collection=bool(task.get("should_send_payment_collection")),
-        )
+        model_messages = [
+            {"role": "system", "content": OUTREACH_MESSAGE_SYSTEM_PROMPT},
+            {"role": "user", "content": dumps(payload)},
+        ]
+        last_error = ""
+        last_evidence = ""
+        for attempt in range(2):
+            response = await self.model_client.chat_json(
+                model_messages,
+                tier="balanced",
+                temperature=0.0,
+            )
+            texts = _reply_texts(response.get("reply_messages"))
+            if not texts:
+                raise RuntimeError("outreach_message_model_empty")
+            if not first_day_opened_silence:
+                return _compose_outreach_messages(
+                    texts,
+                    resolved_asset=resolved_asset,
+                    should_send_payment_collection=bool(task.get("should_send_payment_collection")),
+                )
+            last_error, last_evidence = _first_day_message_policy_error(
+                texts,
+                step_index=step_index,
+                plan=plan,
+                context=context,
+            )
+            if not last_error:
+                return _compose_outreach_messages(
+                    texts,
+                    resolved_asset=resolved_asset,
+                    should_send_payment_collection=bool(task.get("should_send_payment_collection")),
+                )
+            if attempt == 0:
+                model_messages.extend(
+                    [
+                        {"role": "assistant", "content": dumps(response)},
+                        {
+                            "role": "user",
+                            "content": dumps(
+                                {
+                                    "policy_error": last_error,
+                                    "conflicting_text": last_evidence[:240],
+                                    "repair_instruction": (
+                                        "保持计划锁定的场景、事实、素材和CTA不变，完整重写客户可见文字。"
+                                        "不得只换称呼或语序；使用中性称谓，不得出现任何性别化称呼或暗示。"
+                                    ),
+                                }
+                            ),
+                        },
+                    ]
+                )
+        raise OutreachMessagePolicyError(last_error or "first_day_message_policy_violation")
 
     def _plan_customer_id(self, plan_id: str) -> str:
         detail = self.repository.get_outreach_plan(plan_id)

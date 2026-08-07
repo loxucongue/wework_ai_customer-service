@@ -134,6 +134,87 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_first_day_first_message_is_rewritten_when_it_repeats_history(self) -> None:
+        repeated = "亲，效果和活动前面都给您介绍清楚了，您可以再考虑一下。"
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            trigger_type="first_day_opened_silence",
+            recent_messages=[{"role": "assistant", "content": repeated}],
+        )
+        model = _SequenceMessageModelClient(
+            [
+                repeated,
+                "亲，您平时主要在哪个区活动呀？我先记下您方便到店的区域。",
+            ]
+        )
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(
+            system.sent[0]["reply_messages"][0]["content"]["text"],
+            "亲，您平时主要在哪个区活动呀？我先记下您方便到店的区域。",
+        )
+
+    async def test_first_day_repeated_message_is_blocked_after_one_rewrite(self) -> None:
+        repeated = "亲，效果和活动前面都给您介绍清楚了，您可以再考虑一下。"
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            trigger_type="first_day_opened_silence",
+            recent_messages=[{"role": "assistant", "content": repeated}],
+        )
+        model = _SequenceMessageModelClient([repeated, repeated])
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "first_day_message_too_similar_to_history")
+        self.assertEqual(system.sent, [])
+        self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
+        self.assertEqual(repository.events[-1]["event_type"], "task_skipped_message_policy")
+
+    async def test_first_day_gendered_customer_language_is_rewritten_to_neutral(self) -> None:
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            trigger_type="first_day_opened_silence",
+        )
+        model = _SequenceMessageModelClient(
+            [
+                "女孩子还是要多爱惜自己一点呀。",
+                "很多顾客改善后都会更自信一些，您也可以先看看适合自己的方案。",
+            ]
+        )
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(model.calls), 2)
+        sent_text = system.sent[0]["reply_messages"][0]["content"]["text"]
+        self.assertNotIn("女孩子", sent_text)
+        self.assertIn("很多顾客", sent_text)
+
     async def test_unavailable_order_check_reschedules_instead_of_sending(self) -> None:
         repository = _ExecutionRepository(order_status="no_order")
         system = _SystemClient()
@@ -735,11 +816,39 @@ class _MessageModelClient:
         }
 
 
+class _SequenceMessageModelClient:
+    def __init__(self, texts: list[str]) -> None:
+        self.texts = list(texts)
+        self.calls: list[list[dict[str, Any]]] = []
+
+    async def chat_json(self, messages: list[dict[str, Any]], **_kwargs: Any) -> dict[str, Any]:
+        self.calls.append(messages)
+        if not self.texts:
+            raise AssertionError("unexpected model call")
+        return {
+            "reply_messages": [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": self.texts.pop(0)},
+                }
+            ]
+        }
+
+
 class _ExecutionRepository:
-    def __init__(self, order_status: str, *, remaining_tasks: bool = False, trigger_type: str = "") -> None:
+    def __init__(
+        self,
+        order_status: str,
+        *,
+        remaining_tasks: bool = False,
+        trigger_type: str = "",
+        recent_messages: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.order_status = order_status
         self.remaining_tasks = remaining_tasks
         self.trigger_type = trigger_type
+        self.recent_messages = recent_messages or []
         self.task_statuses: list[tuple[str, str]] = []
         self.plan_statuses: list[tuple[str, str]] = []
         self.events: list[dict[str, Any]] = []
@@ -756,6 +865,7 @@ class _ExecutionRepository:
             "wechat": "DY258",
             "external_userid": "external-1",
             "status": "pending",
+            "step_index": 2 if task_id == "task-2" else 1,
             "before_send_check": True,
             "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，前面您主要担心效果，我再给您说清楚一点。"}}],
         }
@@ -775,6 +885,7 @@ class _ExecutionRepository:
                 "created_at": "2026-07-28T08:00:00+08:00",
                 "source_snapshot": {
                     "memory": {"last_customer_message_at": "2026-07-28T08:00:00+08:00"},
+                    "recent_messages": self.recent_messages,
                     "trigger_context": {
                         "source": "sop_platform_task",
                         "activation_policy": "auto_approved",
@@ -785,7 +896,10 @@ class _ExecutionRepository:
         }
 
     def recent_customer_context(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return {"memory": {"last_customer_message_at": "2026-07-28T08:00:00+08:00"}}
+        return {
+            "memory": {"last_customer_message_at": "2026-07-28T08:00:00+08:00"},
+            "recent_messages": self.recent_messages,
+        }
 
     def touch_customer_message_time(self, *_args: Any, **_kwargs: Any) -> None:
         return None

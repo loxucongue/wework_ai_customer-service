@@ -71,6 +71,7 @@ outreach_service = OutreachService(
     outreach_asset_library_service=outreach_asset_library_service,
     coze_client=coze_client,
     sop_objection_material_service=sop_objection_material_service,
+    sop_reply_pack_service=sop_reply_pack_service,
     before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
 )
 sop_execution_service = SopExecutionService(

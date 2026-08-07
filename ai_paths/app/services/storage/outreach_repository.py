@@ -983,6 +983,58 @@ class OutreachRepositoryMixin:
                 return True
         return False
 
+    def count_outreach_plans_for_trigger_between(
+        self,
+        *,
+        customer_id: str,
+        corp_id: str,
+        wechat: str,
+        external_userid: str,
+        trigger_type: str,
+        started_at: str,
+        ended_at: str,
+    ) -> int:
+        if not all(
+            (
+                customer_id,
+                corp_id,
+                wechat,
+                external_userid,
+                trigger_type,
+                started_at,
+                ended_at,
+            )
+        ):
+            return 0
+        trigger_expression = self.store.json_text(
+            "source_snapshot",
+            "$.trigger_context.trigger_type",
+        )
+        with self.store.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM outreach_plans
+                WHERE customer_id=?
+                  AND corp_id=?
+                  AND lower(wechat)=lower(?)
+                  AND external_userid=?
+                  AND {trigger_expression}=?
+                  AND created_at>=?
+                  AND created_at<?
+                """,
+                (
+                    customer_id,
+                    corp_id,
+                    wechat,
+                    external_userid,
+                    trigger_type,
+                    started_at,
+                    ended_at,
+                ),
+            ).fetchone()
+        return int(scalar(row) or 0)
+
     def list_outreach_events(
         self,
         *,

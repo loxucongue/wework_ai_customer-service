@@ -59,6 +59,66 @@ def recent_outreach_media(
     return {"urls": urls, "document_ids": document_ids}
 
 
+def enrich_recent_outreach_media(
+    delivery: dict[str, Any],
+    catalog: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Attach configured asset facts to sent URLs without inferring sales intent."""
+    output = {
+        "urls": list(delivery.get("urls") or []),
+        "document_ids": list(delivery.get("document_ids") or []),
+        "items": [],
+        "configured_deliveries": [],
+    }
+    assets_by_url: dict[str, list[dict[str, Any]]] = {}
+    for asset in catalog:
+        if not isinstance(asset, dict):
+            continue
+        url = _string(asset.get("url"))
+        if url:
+            assets_by_url.setdefault(url, []).append(asset)
+    for url in output["urls"]:
+        matches = assets_by_url.get(_string(url), [])
+        output["items"].append(
+            {
+                "url": url,
+                "configured_matches": [
+                    {
+                        key: asset.get(key)
+                        for key in (
+                            "asset_id",
+                            "type",
+                            "source",
+                            "name",
+                            "annotation",
+                            "use_cases",
+                            "tags",
+                        )
+                        if asset.get(key)
+                    }
+                    for asset in matches
+                ],
+            }
+        )
+        for asset in matches:
+            fact = {
+                key: asset.get(key)
+                for key in (
+                    "asset_id",
+                    "type",
+                    "source",
+                    "name",
+                    "annotation",
+                    "use_cases",
+                    "tags",
+                )
+                if asset.get(key)
+            }
+            if fact not in output["configured_deliveries"]:
+                output["configured_deliveries"].append(fact)
+    return output
+
+
 def resolve_configured_asset(
     catalog: list[dict[str, Any]],
     asset_id: str,

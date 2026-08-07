@@ -802,51 +802,6 @@ class SopPlatformTaskService:
                 "platform_response": completed,
             }
 
-        day1_unopened_intercept = await self._first_day_unopened_intercept(
-            platform_task,
-            identity=identity,
-        )
-        if day1_unopened_intercept.get("decision"):
-            decision = day1_unopened_intercept["decision"]
-            context = {
-                "source": "first_day_unopened_platform_sop_intercept",
-                **{
-                    key: value
-                    for key, value in day1_unopened_intercept.items()
-                    if key != "decision"
-                },
-            }
-            if self.settings.sop_platform_shadow_mode:
-                self.repository.update_sop_send_task(
-                    str(local_task.get("id") or ""),
-                    status="shadow_no_send",
-                    send_payload={"decision": decision, "context": context},
-                )
-                self.repository.update_sop_event_status(event_id, status="shadow_no_send")
-                self._counters[str(decision.get("reason") or "first_day_unopened_intercept")] += 1
-                return {"processed": True, "status": "shadow_no_send", "task_id": task_id, "decision": decision}
-            started = time.perf_counter()
-            claimed = await self.platform_client.consume(task_id=task_id, status=20)
-            self._observe("claim", time.perf_counter() - started)
-            _require_platform_status(claimed, 20)
-            self.repository.update_sop_send_task(
-                str(local_task.get("id") or ""),
-                status="completed_without_send",
-                send_payload={"decision": decision, "context": context},
-            )
-            self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
-            completed = await self.platform_client.consume(task_id=task_id, status=30)
-            _require_platform_status(completed, 30)
-            self.repository.update_sop_event_status(event_id, status="platform_completed")
-            self._counters[str(decision.get("reason") or "first_day_unopened_intercept")] += 1
-            return {
-                "processed": True,
-                "status": "completed_without_send",
-                "task_id": task_id,
-                "decision": decision,
-                "platform_response": completed,
-            }
-
         preflight_reason = _task_preflight_no_send_reason(
             platform_task,
             identity=identity,
@@ -938,11 +893,28 @@ class SopPlatformTaskService:
                 self._counters[preflight_reason] += 1
             else:
                 started = time.perf_counter()
-                context = await self._load_context(platform_task, identity=identity)
+                first_day_route = await self._first_day_opening_route(
+                    platform_task,
+                    identity=identity,
+                )
                 self._observe("context", time.perf_counter() - started)
-                started = time.perf_counter()
-                decision = await self._decide(platform_task, context=context)
-                self._observe("model", time.perf_counter() - started)
+                if first_day_route.get("decision"):
+                    decision = first_day_route["decision"]
+                    context = {
+                        "source": "first_day_platform_sop_route",
+                        **{
+                            key: value
+                            for key, value in first_day_route.items()
+                            if key != "decision"
+                        },
+                    }
+                else:
+                    context = await self._load_context(platform_task, identity=identity)
+                    if first_day_route.get("route_checked"):
+                        context["first_day_platform_sop_route"] = first_day_route
+                    started = time.perf_counter()
+                    decision = await self._decide(platform_task, context=context)
+                    self._observe("model", time.perf_counter() - started)
             if self.settings.sop_platform_shadow_mode:
                 status = f"shadow_{decision['decision']}"
                 self.repository.update_sop_send_task(
@@ -1120,7 +1092,7 @@ class SopPlatformTaskService:
             "reason": "quiet_hours_recent_first_add_allowed",
         }
 
-    async def _first_day_unopened_intercept(
+    async def _first_day_opening_route(
         self,
         platform_task: dict[str, Any],
         *,
@@ -1142,31 +1114,64 @@ class SopPlatformTaskService:
             conversation = await self.system_client.conversation(**identity, limit=80)
         except Exception as exc:
             return {
-                "intercept_checked": True,
-                "intercept_skipped_reason": "conversation_unavailable",
-                "error": f"{type(exc).__name__}: {exc}",
+                "decision": {
+                    "decision": "no_send",
+                    "reason": "first_add_opening_state_unavailable_consumed_no_send",
+                    "reason_code": "opening_state_unavailable",
+                    "reply_messages": [],
+                },
+                "route_checked": True,
+                "opening_state": "unavailable",
+                "conversation_error": f"{type(exc).__name__}: {exc}",
                 "first_add_age_seconds": round(age_seconds, 3),
             }
         data = conversation.get("data") if isinstance(conversation.get("data"), dict) else conversation
         relation = data.get("customer_relation") if isinstance(data.get("customer_relation"), dict) else {}
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
-            return {}
+            return {
+                "decision": {
+                    "decision": "no_send",
+                    "reason": "customer_relation_deleted",
+                    "reason_code": "customer_relation_deleted",
+                    "reply_messages": [],
+                },
+                "route_checked": True,
+                "opening_state": "blocked",
+                "customer_relation": _compact_customer_relation(relation),
+                "first_add_age_seconds": round(age_seconds, 3),
+            }
         messages = data.get("messages") if isinstance(data.get("messages"), list) else []
         activity = _real_customer_opening_activity(messages[-80:])
         if activity["real_customer_message_count"] > 0:
             return {
-                "intercept_checked": True,
-                "intercept_skipped_reason": "customer_already_opened",
+                "decision": {
+                    "decision": "no_send",
+                    "reason": "first_add_opened_platform_sop_consumed_no_send",
+                    "reason_code": "customer_already_opened",
+                    "reply_messages": [],
+                },
+                "route_checked": True,
+                "opening_state": "opened",
+                "first_add_age_seconds": round(age_seconds, 3),
+                "activity": activity,
+            }
+        if activity["unknown_customer_time_count"] > 0:
+            return {
+                "decision": {
+                    "decision": "no_send",
+                    "reason": "first_add_opening_state_unavailable_consumed_no_send",
+                    "reason_code": "opening_state_unavailable",
+                    "reply_messages": [],
+                },
+                "route_checked": True,
+                "opening_state": "unavailable",
                 "first_add_age_seconds": round(age_seconds, 3),
                 "activity": activity,
             }
         return {
-            "decision": {
-                "decision": "no_send",
-                "reason": "first_add_unopened_platform_sop_consumed_no_send",
-                "reason_code": "first_add_unopened",
-                "reply_messages": [],
-            },
+            "route_checked": True,
+            "opening_state": "unopened",
+            "route_reason": "first_add_unopened_continued_normal_model_chain",
             "first_add_age_seconds": round(age_seconds, 3),
             "activity": activity,
         }
@@ -2288,6 +2293,11 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
     relation = context.get("customer_relation") if isinstance(context.get("customer_relation"), dict) else {}
     customer_context = context.get("business_state") if isinstance(context.get("business_state"), dict) else {}
     quiet_hours = context.get("quiet_hours") if isinstance(context.get("quiet_hours"), dict) else {}
+    first_day_route = (
+        context.get("first_day_platform_sop_route")
+        if isinstance(context.get("first_day_platform_sop_route"), dict)
+        else {}
+    )
     return {
         "source": str(context.get("source") or ""),
         "conversation_count": int(context.get("conversation_count") or 0),
@@ -2296,4 +2306,5 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
         "customer_context_error": customer_context.get("error"),
         "task_timing": context.get("task_timing") if isinstance(context.get("task_timing"), dict) else {},
         "quiet_hours": quiet_hours,
+        "first_day_platform_sop_route": first_day_route,
     }

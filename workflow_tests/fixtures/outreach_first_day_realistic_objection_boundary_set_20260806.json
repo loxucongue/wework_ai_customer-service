@@ -1,0 +1,123 @@
+{
+  "dataset_id": "first_day_realistic_objection_boundary",
+  "source": "anonymized_and_scenario_derived_from_production_conversations",
+  "source_sample_count": 7,
+  "privacy": "all customer identifiers, names, phones, exact addresses and message ids were removed or replaced",
+  "cases": [
+    {
+      "id": "real_consider_after_full_pitch_neutral",
+      "description": "效果、活动和预约金都讲过，客户说考虑后沉默",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"效果真的看得出来吗","msgtype":"text","created_at":"2026-08-06T08:00:00+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"我给您放几张同类改善参考。","msgtype":"text","created_at":"2026-08-06T08:00:22+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://oss.example.invalid/case-a.png"},"msgtype":"image","created_at":"2026-08-06T08:00:23+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://oss.example.invalid/case-b.png"},"msgtype":"image","created_at":"2026-08-06T08:00:24+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"多少钱","msgtype":"text","created_at":"2026-08-06T08:01:10+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"周年庆活动单部位总价268元，线上先付10元预约金，到店抵扣，做的话再付258元；未做或不满意可退。","msgtype":"text","created_at":"2026-08-06T08:01:35+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"我考虑一下吧","msgtype":"text","created_at":"2026-08-06T08:02:20+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"可以的亲，您考虑一下。","msgtype":"text","created_at":"2026-08-06T08:02:42+08:00"}
+      ],
+      "recent_media_delivery": {"urls":["https://oss.example.invalid/case-a.png","https://oss.example.invalid/case-b.png"],"document_ids":[]},
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "不得复述效果、价格或让客户继续考虑。第一步可用改善后更自信、对自己好一点等中性心理价值并推进；严禁美女、女士、姐妹等性别化表达。第二步切换到门店区域。"
+    },
+    {
+      "id": "real_too_far_soft_refusal_new_value",
+      "description": "客户觉得门店远但没有要求停止联系",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"附近有店吗","msgtype":"text","created_at":"2026-08-06T09:00:00+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"store_id":"store-anon-403"},"msgtype":"store_address","created_at":"2026-08-06T09:00:28+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"离我有七公里","msgtype":"text","created_at":"2026-08-06T09:01:12+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"这家目前相对方便，您有空可以过去。","msgtype":"text","created_at":"2026-08-06T09:01:40+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"还是有点远，算了吧","msgtype":"text","created_at":"2026-08-06T09:02:18+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"好的。","msgtype":"text","created_at":"2026-08-06T09:02:35+08:00"}
+      ],
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "这是软拒绝而非停止联系，不应抑制。第一步不能继续争论距离或重复门店，应直接给尚未交付的效果价值；第二步再介绍活动，且不发预约金卡。"
+    },
+    {
+      "id": "real_busy_weather_no_date_pressure",
+      "description": "客户因天气和时间说改天去，历史已连续追问日期",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"有空了直接到店看看吧","msgtype":"text","created_at":"2026-08-06T10:00:00+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"您大概想今天、明天还是周末过去？","msgtype":"text","created_at":"2026-08-06T10:00:25+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"可能周末，还确定不了","msgtype":"text","created_at":"2026-08-06T10:01:15+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"您更倾向周六还是周日？","msgtype":"text","created_at":"2026-08-06T10:01:38+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"天气太热了，改天去吧","msgtype":"text","created_at":"2026-08-06T10:02:22+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"可以的，天气凉快些再安排。","msgtype":"text","created_at":"2026-08-06T10:02:44+08:00"}
+      ],
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "不得再问今天明天、周末、周六周日或具体时段。第一步降低时间压力后直接补效果或活动新价值；第二步推进不同场景。"
+    },
+    {
+      "id": "real_active_itch_health_risk_suppress",
+      "description": "客户图片后反复说明高温时发痒，最近回复要求先稳定皮肤",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":{"url":"https://upload.example.invalid/customer-body.png"},"msgtype":"image","created_at":"2026-08-06T11:00:00+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"身体上两年左右就有了","msgtype":"text","created_at":"2026-08-06T11:00:04+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"身体色素问题可以先看改善方向。","msgtype":"text","created_at":"2026-08-06T11:00:28+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"天气到35度左右会有点痒","msgtype":"text","created_at":"2026-08-06T11:01:16+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"有发痒先别刺激或操作，保持干爽，让皮肤先稳定。明显加重、起疹或破损要先线下看。","msgtype":"text","created_at":"2026-08-06T11:01:48+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"现在还是痒","msgtype":"text","created_at":"2026-08-06T11:02:20+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"当前还痒就先不要做相关操作，等状态稳定后再评估。","msgtype":"text","created_at":"2026-08-06T11:02:45+08:00"}
+      ],
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6},
+      "customer_context": {"source":"platform_agent","orders":[],"risk":{"active":true,"type":"active_skin_discomfort"}},
+      "expected": "存在当前健康风险，应该 should_create_plan=false，不生成营销两步计划。"
+    },
+    {
+      "id": "real_auto_opening_only_defensive_suppress",
+      "description": "只有企微固定自动开场，没有客户本人真实开口",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"我已经添加了你，现在我们可以开始聊天了。","msgtype":"text","created_at":"2026-08-06T12:00:00+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"您好，您在哪个城市哪个区？","msgtype":"text","created_at":"2026-08-06T12:00:05+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://oss.example.invalid/opening.png"},"msgtype":"image","created_at":"2026-08-06T12:00:06+08:00"}
+      ],
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6,"real_customer_message_count":0},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "expected": "没有真实开口，模型应防御性输出 should_create_plan=false；该客户应继续由第三方SOP原文发送链路处理。"
+    },
+    {
+      "id": "real_noisy_long_unknown_gender_no_repeat",
+      "description": "长聊天含图片、撤回、位置、效果、报价、预约金与支付问题，且性别未知",
+      "trigger_context": {"trigger_type":"first_day_opened_silence"},
+      "recent_messages": [
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"我已经添加了你，现在我们可以开始聊天了。","msgtype":"text","created_at":"2026-08-06T13:00:00+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"您好，您在哪个城市哪个区？","msgtype":"text","created_at":"2026-08-06T13:00:04+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"我在江城","msgtype":"text","created_at":"2026-08-06T13:01:12+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"store_id":"store-anon-403"},"msgtype":"store_address","created_at":"2026-08-06T13:01:40+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"一点点斑","msgtype":"text","created_at":"2026-08-06T13:02:10+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"我给您发三张同类改善参考。","msgtype":"text","created_at":"2026-08-06T13:02:35+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://oss.example.invalid/noisy-a.png"},"msgtype":"image","created_at":"2026-08-06T13:02:36+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://oss.example.invalid/noisy-b.png"},"msgtype":"image","created_at":"2026-08-06T13:02:37+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":{"url":"https://oss.example.invalid/noisy-c.png"},"msgtype":"image","created_at":"2026-08-06T13:02:38+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"多少钱","msgtype":"text","created_at":"2026-08-06T13:03:14+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"周年庆活动单部位总价268元，线上先付10元预约金，到店抵扣，做的话再付258元；未做或不满意可退。","msgtype":"text","created_at":"2026-08-06T13:03:42+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"[消息已撤回]","msgtype":"text","created_at":"2026-08-06T13:04:10+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"刚才消息撤回了，您可以继续说。","msgtype":"text","created_at":"2026-08-06T13:04:32+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"晚上能去吗","msgtype":"text","created_at":"2026-08-06T13:05:14+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"晚上时间需要再确认，您大概几点？","msgtype":"text","created_at":"2026-08-06T13:05:40+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"我手机现在没钱","msgtype":"text","created_at":"2026-08-06T13:06:18+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"没关系，方便时再处理支付。","msgtype":"text","created_at":"2026-08-06T13:06:42+08:00"},
+        {"direction":"customer","sender_type":"customer","sender_name":"客户","content":"微信也不能付","msgtype":"text","created_at":"2026-08-06T13:07:14+08:00"},
+        {"direction":"staff","sender_type":"staff","sender_name":"员工","content":"收到，先不用勉强操作。","msgtype":"text","created_at":"2026-08-06T13:07:35+08:00"}
+      ],
+      "recent_media_delivery": {"urls":["https://oss.example.invalid/noisy-a.png","https://oss.example.invalid/noisy-b.png","https://oss.example.invalid/noisy-c.png"],"document_ids":[]},
+      "conversation_activity": {"reply_wait_minutes":3,"customer_silence_minutes":6},
+      "customer_context": {"source":"platform_agent","orders":[]},
+      "forbid_payment_collection": true,
+      "expected": "必须理解完整长历史：不得重复门店、效果图、报价、具体到店时间或催支付。第一步应处理支付条件不足的低压力卡点并给新价值，第二步换场景；全程中性称谓且没有订单不得发卡。"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-07-21T01:30:00+00:00",
+  "updated_at": "2026-08-06T13:35:00+00:00",
   "packs": [
     {
       "id": "s10_new_customer_opening",
@@ -72,35 +72,21 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "亲，像雀斑、晒斑、老年斑、遗传斑、痘印、痘坑、混合斑点、色素沉着这类斑点和色素问题，大多数都是可以先看改善方向的，现在很多顾客都会选择这种方式，反馈也不错"
+            "text": "亲，您看一下这个是参加活动进来的顾客做完后的参考，主要是淡化黑色素，不伤皮肤。"
           }
         },
         {
           "type": "image",
           "order": 2,
           "content": {
-            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f52d53829c1fc73e-1329752764320508_1780495764839841063_EURwtgbwZf.png"
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_click_url-90f975480879.png"
           }
         },
         {
           "type": "image",
           "order": 3,
           "content": {
-            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/47715b170aba6133-1329752764320508_1780495757690203274_fX4YTfxiDH.png"
-          }
-        },
-        {
-          "type": "image",
-          "order": 4,
-          "content": {
-            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/972ba51fb3eb0fed-1329752764320508_1780495762650549425_IPXfQYnsyV.png"
-          }
-        },
-        {
-          "type": "text",
-          "order": 5,
-          "content": {
-            "text": "您是看到我们线上推广活动加进来的是吗?"
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_second-de0488d149ea.png"
           }
         }
       ]
@@ -148,7 +134,47 @@
           "type": "text",
           "order": 3,
           "content": {
-            "text": "亲，活动名额目前还可以登记。您这边是自己一位参加吗？我按人数接着给您登记。"
+            "text": "到店先看效果和方案，满意再做；线上10元预约金到店抵扣，未做或不满意可退，主要是先帮您保留活动价名额。"
+          }
+        },
+        {
+          "type": "payment_collection",
+          "order": 4,
+          "content": {
+            "amount": 10,
+            "remark": ""
+          }
+        }
+      ]
+    },
+    {
+      "id": "s10_store_prompt",
+      "enabled": true,
+      "scope": "chat_gate",
+      "scopes": [
+        "chat_gate"
+      ],
+      "sop_category": "store_prompt",
+      "name": "轻度询问客户所在城市",
+      "purpose": "客户需要匹配附近门店但尚未提供省市时，轻问所在省份和城市。",
+      "order": 35,
+      "send_once": true,
+      "event_type": "",
+      "delay_minutes": 0,
+      "day_stage": "day1",
+      "customer_state": "",
+      "stage_tag": "store_prompt",
+      "triggers": [
+        "store_prompt",
+        "ask_customer_city",
+        "need_store_match"
+      ],
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "亲，您是在那个省份那个城市呢？我给您匹配最近的店铺。"
           }
         }
       ]
@@ -211,11 +237,11 @@
     },
     {
       "id": "s10_deposit_close",
-      "enabled": false,
+      "enabled": true,
       "scope": "chat_gate",
-      "sop_category": "s10_deposit_close",
-      "name": "预约金推进",
-      "purpose": "客户已有明确兴趣或愿意登记时，推进 10 元预约金入口。",
+      "sop_category": "deposit_push",
+      "name": "轻度催预约金",
+      "purpose": "客户已了解活动且未支付预约金时，用效果参考和可退抵扣规则轻度推动预约金。",
       "order": 50,
       "send_once": true,
       "event_type": "sop_platform_task",
@@ -224,9 +250,34 @@
       "customer_state": "",
       "stage_tag": "",
       "triggers": [
-        "deposit_intent"
+        "deposit_intent",
+        "deposit_push",
+        "after_quote_no_reply"
       ],
-      "reply_messages": []
+      "reply_messages": [
+        {
+          "type": "text",
+          "order": 1,
+          "content": {
+            "text": "您看下这个改善参考，活动名额先锁住更稳，到店时间按您方便安排，10元预约金到店抵扣；未做或不满意可退。"
+          }
+        },
+        {
+          "type": "image",
+          "order": 2,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/deposit_light-d61147a81539.png"
+          }
+        },
+        {
+          "type": "payment_collection",
+          "order": 3,
+          "content": {
+            "amount": 10,
+            "remark": ""
+          }
+        }
+      ]
     },
     {
       "id": "event_s10_intro_1min",
@@ -296,7 +347,7 @@
           "type": "text",
           "order": 1,
           "content": {
-            "text": "亲，您是在什么城市哪个区呢？我们全国连锁门店比较多，我先帮您看附近方便到店的位置。"
+            "text": "亲，您是在那个省份那个城市呢？我给您匹配最近的店铺。"
           }
         }
       ]
@@ -343,7 +394,14 @@
           "type": "image",
           "order": 2,
           "content": {
-            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/f39ca4ff98754506-63c3c33d9f8777431fea56e4-f39ca4ff98754506472880e.jpg"
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_click_url-90f975480879.png"
+          }
+        },
+        {
+          "type": "image",
+          "order": 3,
+          "content": {
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/effect_second-de0488d149ea.png"
           }
         }
       ]
@@ -399,6 +457,14 @@
           "order": 3,
           "content": {
             "text": "到店先看效果和方案，满意再做；线上10元预约金到店抵扣，未做或不满意可退，主要是先帮您保留活动价名额。"
+          }
+        },
+        {
+          "type": "payment_collection",
+          "order": 4,
+          "content": {
+            "amount": 10,
+            "remark": ""
           }
         }
       ]
@@ -504,14 +570,15 @@
           "type": "image",
           "order": 2,
           "content": {
-            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/aa3a631d6695ceeb-0c2f169cb20a46d94574726f-aa3a631d6695ceebb674949.jpg"
+            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260806/deposit_light-d61147a81539.png"
           }
         },
         {
-          "type": "image",
+          "type": "payment_collection",
           "order": 3,
           "content": {
-            "url": "https://test.by4dev.4ba.cn/ai-paths/sop-media/20260702/4dacb2bc1439b0de-1329752764320508_1780495782026006111_Tv2Q4qEwhb.jpg"
+            "amount": 10,
+            "remark": ""
           }
         }
       ]

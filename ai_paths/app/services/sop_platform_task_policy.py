@@ -55,6 +55,45 @@ def personalized_order_eligibility(customer_context: dict[str, Any]) -> dict[str
     }
 
 
+def personalized_payment_collection_eligibility(
+    customer_context: dict[str, Any],
+    *,
+    amount: int = 10,
+) -> dict[str, Any]:
+    base = personalized_order_eligibility(customer_context)
+    if not base.get("available"):
+        return {**base, "eligible": False}
+    order = _current_order(customer_context)
+    payment = normalize_prepay_facts(order) if order else {}
+    order_id = str(order.get("id") or order.get("order_id") or "") if order else ""
+    store_id = str(order.get("store_id") or order.get("storeId") or "") if order else ""
+    required = payment.get("prepay_required")
+    try:
+        required_amount = int(required)
+    except (TypeError, ValueError):
+        required_amount = 0
+    deposit_state = str(payment.get("deposit_state") or "unknown")
+    order_status = str(base.get("order_status") or "unknown")
+    eligible = bool(
+        order
+        and order_status in PERSONALIZED_ORDER_STATUSES
+        and order_id
+        and store_id
+        and required_amount == int(amount)
+        and not bool(payment.get("prepay_paid"))
+        and deposit_state not in {"paid", "paid_by_order"}
+    )
+    return {
+        **base,
+        "eligible": eligible,
+        "reason": "matching_unpaid_order" if eligible else "payment_collection_order_not_ready",
+        "order_id": order_id,
+        "store_id": store_id,
+        "prepay_required": required_amount,
+        "deposit_state": deposit_state,
+    }
+
+
 def classify_platform_task_route(
     *,
     payload: dict[str, Any],
