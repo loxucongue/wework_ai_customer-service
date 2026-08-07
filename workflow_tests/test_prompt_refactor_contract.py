@@ -91,7 +91,11 @@ def test_one_session_effect_reasoned_refusal_contract_is_present() -> None:
     assert "不能按“不做了/不要了/算了”几个字直接终止" in PLANNER_SYSTEM_PROMPT
     assert "不得输出 `terminal/close/no_action`" in PLANNER_SYSTEM_PROMPT
     assert "绝大多数客户都是一次就好" in PLANNER_SYSTEM_PROMPT
+    assert "最终结果必须是 `decision=need_tools`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
+    assert "`closing_move.must_not_repeat` 也不得写 `case_image`" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
     assert "视为语义冲突" in REPLY_SYSTEM_PROMPT
+    assert "第一条 text 必须完整保留" in REPLY_SYSTEM_PROMPT
+    assert "不得弱化成" in REPLY_SYSTEM_PROMPT
     assert "先不参加也没关系" in REPLY_SYSTEM_PROMPT
     assert "只有明确追问脸和手等多个部位是否共用268元" in REPLY_SYSTEM_PROMPT
     assert "客户口头说“我付了/转好了”不能单独确认已到账" in PLANNER_TRANSACTION_PATCH_PROMPT

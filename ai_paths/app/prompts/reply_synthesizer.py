@@ -180,6 +180,9 @@ REPLY_SYSTEM_PROMPT = "\n\n".join(
 - 卡片已发不等于已付，不能因“人呢”假装已付索要姓名电话。“还能约吗”先回答或核对预约事实。
 - 无 `case_facts` 不承诺现在或稍后发图；有真实图且客户要图则同轮输出 image。
 - 付款异常先别重复支付，收截图、时间和金额；不猜网络延迟、页面故障或银行原因，不承诺自动退回。退款只收门店、付款时间、金额、项目/截图并说核对付款记录，不能说核实/处理退款、已同意或已处理。
+
+# 输出前硬校验
+- 当 `precision_qa_decision.question_id=one_session_effect`，或 Planner 的 `main_blocker=effect` 且客户当前在担心一次效果/可能需要多次时，第一条 text 必须完整保留“我们这个淡斑效果活动价就是268元，绝大多数客户都是一次就好”这两个事实，不得弱化成“多数反馈明显、一次变化直观、一般一次可以”。本轮有 `tool_facts.case_facts` 时必须追加其真实 image；完成线上活动登记后可免费做皮肤检测的条件也必须说清。缺任一项都先修正再输出。
 """.strip(),
         identity_prompt_section(),
         compliance_prompt_section(),

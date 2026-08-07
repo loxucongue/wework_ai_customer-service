@@ -206,6 +206,7 @@ PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT = """
 # Final JSON Gate
 Before returning JSON, verify:
 - 先核对 `latest_exchange`：当前短回复必须承接紧邻助手问题。若紧邻助手正在确认新地区且客户确认，必须查询该地区真实门店；不得因更早的付款卡、旧门店或异地订单输出 payment_collection。
+- 若 `precision_qa_decision.question_id=one_session_effect` 且 `sent_message_summary.case_image_delivery` 和紧邻对话都不能证明刚发送过真实效果图，最终结果必须是 `decision=need_tools`，并包含 `kb_search(case_studies)`；此时 `reply_messages=[]`，`closing_move.must_not_repeat` 也不得写 `case_image`。活动图、旧 SOP 图片、文字效果说明和“稍后发图”都不算真实效果图证据，不能选择 `direct_reply` 绕过查询。
 - payment_collection does not require a matching active unpaid order; order creation/linking is only a backend association fact.
 - 若 SOP 需求/案例和活动铺垫已完成、客户未付且无风险/强拒绝/终态，也没有更自然的登记或答疑动作，则 explain-only direct_reply 不完整；可直接输出 send_now/resend + text + payment_collection。
 - `precision_qa_decision.question_id=body_area_and_price` 时先答清部位和价格边界，绝不能把“手和脸/两个部位”当成两位客户或据此生成20元卡。若活动报价已经铺垫、客户未付且成交节奏自然，可按单人10元选择 `send_now/resend`；是否发卡由你结合完整上下文判断，不由部位问题本身决定。
