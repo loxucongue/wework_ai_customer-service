@@ -408,6 +408,8 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         )
         reply_constraints.append("历史健康风险只作为背景证据；当前消息没有再次提出健康/投诉/人工诉求时，不调用 professional_assist。")
         reply_strategy["current_turn_context_guard"] = "advisory_health_history_removed_professional_assist_tool"
+    required_tools = _order_store_lookup_before_dependent_distance(required_tools)
+    executable_tools = [tool for tool in required_tools if tool.get("name") != "no_tool"]
     if executable_tools and decision == "direct_reply":
         decision = "need_tools"
     if decision == "need_tools":
@@ -898,18 +900,27 @@ def _normalize_current_message_store_lookup_queries(
     if not current_text or not _raw_text_mentions_store_location_request(current_text):
         return required_tools
     current_query = _current_message_store_lookup_query(current_text)
+    add_distance_for_overridden_nearby_query = False
     normalized: list[dict[str, Any]] = []
     for tool in required_tools:
         if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
             normalized.append(tool)
             continue
         query = str(tool.get("query") or "").strip()
+        if (
+            query
+            and not _store_lookup_query_comes_from_current_message(query, state)
+            and _store_lookup_query_has_explicit_scope(query, state)
+        ):
+            normalized.append(tool)
+            continue
         if not _store_lookup_query_comes_from_current_message(query, state):
             if current_query:
                 updated = dict(tool)
                 updated["query"] = current_query
                 if _current_message_asks_nearby_store(current_text):
                     updated["purpose"] = "nearby_candidates"
+                    add_distance_for_overridden_nearby_query = True
                 normalized.append(updated)
             else:
                 normalized.append(tool)
@@ -921,7 +932,11 @@ def _normalize_current_message_store_lookup_queries(
             normalized.append(updated)
         else:
             normalized.append(tool)
-    if current_query and _current_message_asks_nearby_store(current_text) and not _has_tool(normalized, "distance_calculate"):
+    if (
+        add_distance_for_overridden_nearby_query
+        and current_query
+        and not _has_tool(normalized, "distance_calculate")
+    ):
         normalized.append(
             {
                 "name": "distance_calculate",
@@ -929,7 +944,47 @@ def _normalize_current_message_store_lookup_queries(
                 "candidate_source": "customer_store_lookup",
             }
         )
-    return normalized
+    return _order_store_lookup_before_dependent_distance(normalized)
+
+
+def _order_store_lookup_before_dependent_distance(required_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    lookup_tools: list[dict[str, Any]] = []
+    dependent_distance_tools: list[dict[str, Any]] = []
+    for tool in required_tools:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name") or "")
+        if name == "customer_store_lookup":
+            lookup_tools.append(tool)
+        elif name == "distance_calculate" and str(tool.get("candidate_source") or "") == "customer_store_lookup":
+            dependent_distance_tools.append(tool)
+    if not lookup_tools or not dependent_distance_tools:
+        return required_tools
+    ordered: list[dict[str, Any]] = []
+    inserted_lookup = False
+    for tool in required_tools:
+        if not isinstance(tool, dict):
+            ordered.append(tool)
+            continue
+        name = str(tool.get("name") or "")
+        if name == "customer_store_lookup":
+            if inserted_lookup and tool in ordered:
+                continue
+            ordered.append(tool)
+            inserted_lookup = True
+            continue
+        if name == "distance_calculate" and str(tool.get("candidate_source") or "") == "customer_store_lookup":
+            if not inserted_lookup:
+                for lookup in lookup_tools:
+                    if lookup not in ordered:
+                        ordered.append(lookup)
+                inserted_lookup = True
+            ordered.append(tool)
+            continue
+        if tool in lookup_tools and inserted_lookup:
+            continue
+        ordered.append(tool)
+    return ordered
 
 
 def _current_message_store_lookup_query(current_text: str) -> str:

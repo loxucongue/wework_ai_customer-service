@@ -936,6 +936,12 @@ class SopEventService:
             customer_context=customer_context,
             customer_memory=customer_memory,
         )
+        routing = {
+            **routing,
+            "classified_route": routing.get("route"),
+            "route": "direct",
+            "routing_mode": "direct_platform_actions",
+        }
         if not messages:
             return self._create_task_record(
                 payload,

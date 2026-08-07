@@ -2026,14 +2026,19 @@ def _geocode_for_query_scope(query: str, geocode: dict[str, Any]) -> dict[str, A
     if not isinstance(geocode, dict):
         return {}
     scoped = dict(geocode)
+    if _query_looks_like_specific_geocode_place(query, scoped):
+        return scoped
     province = str(scoped.get("province") or "").strip()
     city = str(scoped.get("city") or "").strip()
     district = str(scoped.get("district") or "").strip()
     township = str(scoped.get("township") or "").strip()
+    township_mentioned = False
     if township and not _admin_name_mentioned_in_query(query, township, parent_city=city, parent_district=district):
         scoped.pop("township", None)
         township = ""
-    if district and not _admin_name_mentioned_in_query(query, district, parent_city=city):
+    elif township:
+        township_mentioned = True
+    if district and not township_mentioned and not _admin_name_mentioned_in_query(query, district, parent_city=city):
         scoped.pop("district", None)
         scoped.pop("township", None)
         district = ""
@@ -2042,6 +2047,24 @@ def _geocode_for_query_scope(query: str, geocode: dict[str, Any]) -> dict[str, A
         scoped.pop("district", None)
         scoped.pop("township", None)
     return scoped
+
+
+def _query_looks_like_specific_geocode_place(query: str, geocode: dict[str, Any]) -> bool:
+    """Keep parent admin facts for concrete POIs/townships with a unique geocode."""
+
+    text = _compact_text(query)
+    if not text or not _parse_lng_lat(str(geocode.get("location") or "")):
+        return False
+    if text.endswith(("省", "市", "区", "县")):
+        return False
+    if text.endswith(("镇", "乡", "村", "街道", "社区")):
+        return True
+    if len(text) >= 4:
+        return True
+    return any(
+        marker in text
+        for marker in ("路", "街", "大道", "广场", "公园", "大厦", "商场", "医院", "学校", "车站", "机场")
+    )
 
 
 def _admin_name_mentioned_in_query(
