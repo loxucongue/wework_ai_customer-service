@@ -91,6 +91,36 @@ Additional offline simulation evidence:
 | 荆州市 1-3 stores targeted | `.tmp_runtime/simulation/city_few_v01_20260807_1410/report.md` | 100% | 100% | City-level lookup keeps both visible city candidates |
 | 湖北省 -> 荆州市荆州区 targeted | `.tmp_runtime/simulation/province_scope_v01_20260807_1410/report.md` | 100% | 100% | Province asks for city/district first, follow-up sends required stores |
 
+## Refactor Evidence Fixes In Commit `ee9a4f664`
+
+During the next model-matrix smoke, three customer-visible evidence issues were found before enabling any behavior switch:
+
+1. `s10_new_customer_opening` contained absolute or unsupported static claims: "公认最先进最有效", "随做随走不影响出门上班", and "做完不伤害皮肤".
+2. The active SOP activity image and `business_rules.offer.activity_intro_image_url` pointed to different images, so Reply could append an activity image that was not the configured SOP activity image.
+3. City-level "nearest store" requests could use a city-center geocode as if it were the customer's real location. Example: "广州这边最近是哪家" could be ranked from Guangzhou city center and incorrectly say "相对近一些的是广州天河店".
+
+Fixes applied:
+
+- Rewrote the opening SOP copy to factual, non-absolute wording: project scope, current technology name, and "到店先看斑点和皮肤状态，适合再操作".
+- Added a static SOP contract test blocking absolute effect and safety claims.
+- Unified the activity intro image URL between SOP config and `business_rules`.
+- Extended sent-message evidence to recognize the current configured activity image.
+- Hardened `distance_calculate`: province/city-level lookup results with no district/township and more than 3 candidates cannot produce haversine ranking, even if the model supplied junk detail text.
+- Removed the realtime-like static tail "活动名额目前还可以登记"; the pack now asks the customer to confirm participation and then sends the 10 yuan entry.
+
+Deterministic checks after commit `ee9a4f664`:
+
+- `workflow_tests/test_sop_configuration_contract.py workflow_tests/test_store_resolution_v2.py workflow_tests/test_distance_origin_normalization.py workflow_tests/test_prompt_refactor_contract.py workflow_tests/test_reply_chain_behavior_switch_guard.py`: `132 passed, 1 warning`
+- Store/distance focused checks before commit: `60 passed, 1 warning`
+- SOP/image config checks before commit: `15 passed, 1 warning`
+
+Model smoke on commit `ee9a4f664`:
+
+| Scenario | Report | Model | Hard Errors | Semantic Pass | Notes |
+|---|---|---|---:|---:|---|
+| `store_v2_city_nearest_need_district` | `.tmp_runtime/simulation/model_matrix_openai_city_nearest_20260807_1645/openai/report.md` | `gpt-5.4` | 0 | 100% | Asks for district/region/location instead of city-center ranking |
+| `effect_with_case__v01` | `.tmp_runtime/simulation/model_matrix_openai_effect_v01_20260807_1645/openai/report.md` | `gpt-5.4` | 0 | 100% | Sends configured case/activity images and avoids realtime slot claim |
+
 Invalid or incomplete evidence:
 
 - `.tmp_runtime/simulation/suite-20260807-104818/report.md` is invalid because model environment variables were missing.
