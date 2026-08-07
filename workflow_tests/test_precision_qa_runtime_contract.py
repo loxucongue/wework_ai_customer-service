@@ -60,6 +60,13 @@ def test_precision_playbook_is_available_to_planner_and_reply() -> None:
     assert selected["id"] == "one_session_effect"
     assert selected["must_answer"]
     assert selected["reply_examples"]
+    assert selected["evidence_requirement"] == "case_image"
+    serialized_selected = str(selected)
+    assert "历史里出现过手部、脸部或多个部位" in serialized_selected
+    assert "不要把收口改成部位选择" in serialized_selected
+    assert "绝大多数客户都是一次就好" in serialized_selected
+    assert "完成线上活动登记后" in serialized_selected
+    assert "单次单部位" in serialized_selected
 
 
 def test_unknown_precision_question_id_is_not_accepted_as_fact() -> None:

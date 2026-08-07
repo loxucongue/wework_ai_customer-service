@@ -53,7 +53,8 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 需要具体门店/地址/停车/营业时间/导航/附近候选时，用 customer_store_lookup。
 - 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；该工具只按经纬度直线距离排序，客户可见不要输出公里、分钟、车程或路线。
 - 当前普通流程只登记到店日期和时间意向，不调用 available_time/create_order_plan；没有既有正式预约事实不能承诺已安排或已留位。
-- 效果、怕没效果、怕反黑、要效果图时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。
+- 效果、怕没效果、怕反黑、要效果图或担心一次可能没效果时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。一次效果先明确“当前淡斑效果活动价就是268元、绝大多数客户都是一次就好”，再用真实案例建立信任；完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解。
+- 客户说不做了、不要了或算了但同句给出效果、次数、价格、距离、时间或信任等具体原因时，按可挽回异议针对原因处理一次，不得直接 terminal/close。只有明确要求停止联系、投诉退款、当前风险，或近期已处理同一异议后再次强拒绝才停止推进。
 - 客户已经发送皮肤图片时直接使用 `image_info`；需要效果证据只查 case_studies。当前没有询问门店且近聊已有门店锚点时，不得因图片 URL 或合并消息调用门店工具；案例后必须推进一个未完成主线动作。
 - 预约金由 payment_decision 决定；客户口头声称已付不能确认到账。当前订单 `prepay_paid>0`、清晰支付成功截图或结构化 `deposit_state=paid_by_platform_transfer_event` 才是权威已付，可推进付款后信息确认。
 - `stage/sub_rule_id` 必须从 Current Recovery Business Rules 的 `scene_index` 选择，不能自造英文场景名。

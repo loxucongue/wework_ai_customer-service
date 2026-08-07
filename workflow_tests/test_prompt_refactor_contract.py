@@ -78,6 +78,22 @@ def test_transaction_prompts_allow_card_without_order_and_keep_postpaid_informat
     assert "缺少成功 order_id 或开单失败不得取消卡片" in REPLY_TRANSACTION_PATCH_PROMPT
     assert "订单和开单不是发卡前置" in PLANNER_TRANSACTION_PATCH_PROMPT
     assert "不调用 available_time/create_order_plan" in PLANNER_TRANSACTION_PATCH_PROMPT
+
+
+def test_one_session_effect_reasoned_refusal_contract_is_present() -> None:
+    rules = load_business_rules()
+    offer = rules["offer"]
+    evidence = rules["customer_visible_evidence_policy"]
+
+    assert "完成线上活动登记后" in offer["registration_skin_test"]
+    assert "绝大多数客户都是一次就好" in evidence["effect_confidence"]
+    assert "带原因的可挽回异议" in str(rules["conversion_psychology"])
+    assert "不能按“不做了/不要了/算了”几个字直接终止" in PLANNER_SYSTEM_PROMPT
+    assert "不得输出 `terminal/close/no_action`" in PLANNER_SYSTEM_PROMPT
+    assert "绝大多数客户都是一次就好" in PLANNER_SYSTEM_PROMPT
+    assert "视为语义冲突" in REPLY_SYSTEM_PROMPT
+    assert "先不参加也没关系" in REPLY_SYSTEM_PROMPT
+    assert "只有明确追问脸和手等多个部位是否共用268元" in REPLY_SYSTEM_PROMPT
     assert "客户口头说“我付了/转好了”不能单独确认已到账" in PLANNER_TRANSACTION_PATCH_PROMPT
 
 
@@ -114,7 +130,11 @@ def test_timeout_and_recovery_prompts_keep_platform_transfer_as_authoritative_pa
     from app.graph.planner.brain_v2 import PLANNER_TIMEOUT_RECOVERY_PROMPT
 
     assert "deposit_state=paid_by_platform_transfer_event" in PLANNER_TIMEOUT_RECOVERY_PROMPT
+    assert "绝大多数客户都是一次就好" in PLANNER_TIMEOUT_RECOVERY_PROMPT
+    assert "按可挽回异议针对原因处理一次" in PLANNER_TIMEOUT_RECOVERY_PROMPT
     assert "paid_by_platform_transfer_event 是权威已付" in REPLY_RECOVERY_SYSTEM_PROMPT
+    assert "带原因的效果异议" in REPLY_RECOVERY_SYSTEM_PROMPT
+    assert "绝大多数客户都是一次就好" in REPLY_RECOVERY_SYSTEM_PROMPT
 
 
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
@@ -668,6 +688,10 @@ def test_planner_and_reply_do_not_invent_body_area_boundaries_for_face_confirmat
         assert "不主动展开手脸同次操作" in prompt
 
 
+def test_planner_and_reply_demote_historical_body_area_for_non_body_questions() -> None:
+    for prompt in (PLANNER_SYSTEM_PROMPT, REPLY_SYSTEM_PROMPT):
+        assert "历史里出现过手部、脸部或多个部位" in prompt
+        assert "收口改成" in prompt
 
 def test_s1_need_answer_moves_to_real_case_instead_of_symptom_loop() -> None:
     assert "时长、斑型、部位、数量、年龄、图片" in PLANNER_SYSTEM_PROMPT

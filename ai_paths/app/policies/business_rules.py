@@ -144,6 +144,7 @@ def _offer_facts(offer: dict[str, Any]) -> dict[str, Any]:
         "tail_amount": offer.get("tail_amount"),
         "refund_rule": offer.get("refund_rule"),
         "arrival_time_rule": offer.get("arrival_time_rule"),
+        "registration_skin_test": offer.get("registration_skin_test"),
         "body_scope": offer.get("body_scope"),
         "includes": offer.get("includes") or [],
         "supported_online_scope": offer.get("supported_online_scope") or [],

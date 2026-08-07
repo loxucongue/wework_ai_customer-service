@@ -15,6 +15,7 @@ from app.graph.nodes.current_turn_context import build_current_turn_context
 from app.graph.nodes.layer_nodes import create_background_context_layer, create_input_normalization_layer
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model, reply_user_payload_for_model
 from app.graph.nodes.sent_message_summary import sent_message_summary_for_model
+from app.graph.nodes.activity_intro_image import append_activity_intro_image
 from app.graph.nodes.appointment_time_utils import normalize_time_text, summarize_available_slots
 from app.graph.nodes.profile_nodes import _profile_conversation_history
 from app.graph.nodes.reply_nodes import (
@@ -42,6 +43,28 @@ _ACTIVITY_INTRO_EVIDENCE = {
         "completed_categories": ["activity_intro"],
     }
 }
+
+
+def test_activity_intro_image_is_not_appended_by_postprocessor() -> None:
+    messages = [{"type": "text", "order": 1, "content": {"text": "activity intro"}}]
+    warnings: list[object] = []
+
+    output = append_activity_intro_image(
+        messages,
+        {
+            "planner_sub_rule_id": "s10_activity_intro",
+            "business_rules": {
+                "offer": {
+                    "activity_intro_image_url": "https://example.com/activity.jpg",
+                    "activity_intro_image_policy": {"sub_rule_ids": ["s10_activity_intro"]},
+                }
+            },
+        },
+        warnings,
+    )
+
+    assert output == messages
+    assert warnings == []
 
 
 def _payment_order_state(*, amount: int = 10, store_id: str = "386") -> dict:
@@ -4897,6 +4920,18 @@ def test_reply_validation_rejects_store_address_without_fact() -> None:
         )
 
 
+def test_reply_validation_does_not_authorize_store_card_from_raw_state_store_id() -> None:
+    with pytest.raises(ValueError, match="unsupported_store_address_message"):
+        validate_reply_consistency(
+            [{"type": "store_address", "order": 1, "content": {"store_id": "467"}}],
+            {
+                "store_id": "467",
+                "confirmed_store_id": "467",
+                "fact_envelope": {"structured_facts": {"store_facts": []}},
+            },
+        )
+
+
 def test_reply_validation_allows_store_address_from_store_fact() -> None:
     validate_reply_consistency(
         [{"type": "store_address", "order": 1, "content": {"store_id": "227"}}],
@@ -5315,6 +5350,11 @@ def test_no_candidate_store_result_preserves_resolved_area_and_asks_frequent_are
                 "content": "望奎县这边我先记下了，您平时更常去哪个市区或商圈？我按您顺路的地方给您看。",
             }
         ],
+        state,
+    )
+
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": "望奎县这个位置收到了，我先按这个位置给您看。"}],
         state,
     )
 
