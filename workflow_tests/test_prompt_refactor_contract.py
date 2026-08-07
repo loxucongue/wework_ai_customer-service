@@ -536,6 +536,7 @@ def test_reply_prompt_has_fact_priority_examples_and_customer_rules() -> None:
     assert "不得用常识、相似地名或猜测补成某个城市" in REPLY_SYSTEM_PROMPT
     assert "门店工具事实只是本轮可使用的事实，不是自动发送命令" in REPLY_SYSTEM_PROMPT
     assert "当前问题已切换到发货、收费、效果、护理、活动等其他事项时" in REPLY_SYSTEM_PROMPT
+    assert "只发送 `recommended_store.store_id` 对应的一张卡" in REPLY_SYSTEM_PROMPT
     assert "`send_multiple` 时发齐其中 2–3 家" in REPLY_SYSTEM_PROMPT
     assert "孤立地名" in PLANNER_SYSTEM_PROMPT
     assert "禁止 `nearby_candidates/distance_calculate`" in PLANNER_SYSTEM_PROMPT
