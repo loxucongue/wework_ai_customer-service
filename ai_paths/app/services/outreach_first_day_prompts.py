@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v2"
-FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v2"
-FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v2"
-FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v2"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v3_appointment_blockers"
+FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v3_appointment_blockers"
+FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v3_appointment_blockers"
+FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v3_appointment_blockers"
 
 
 FIRST_DAY_SCENE_ANALYST_PROMPT = """
@@ -20,7 +20,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 输入对象是 `source_snapshot`。以下字段是权威事实：
 - `recent_messages`：按时间顺序排列的完整聊天记录，消息索引从 0 开始。
 - `recent_media_delivery` 和 `recent_sop_delivery`：实际发送过的素材和 SOP 证据。
-- `first_day_sop_packs` 和 `sop_objection_materials`：仅供选择的候选素材。
+- `appointment_blocker_scene_index`：预约卡点话术库的精简场景索引，只包含适用场景、卡点类型、来源标识和可用媒体标识，不包含客户可见话术正文。
 - `activity_quote_fact`、`payment_collection_gate`、`customer_context` 和 `customer_relation`：交易与安全事实。
 - `asset_catalog`：可使用的素材标识，禁止自行编造 URL。
 
@@ -38,8 +38,9 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 1. 先建立 `scene_completion_matrix`，分别判断门店区域、效果证明、活动介绍、异议处理、预约金推进和信任修复是已完成、部分完成、未交付还是不适用。每项必须引用消息或素材证据，不能先选场景再倒推完成状态。
 2. 按业务目标、事实、图片、卡片和行动引导，盘点客服或 AI 已经交付的内容。只改称呼、语序或表达方式仍然属于已交付。即使结构化完成标记缺失，只要近期客服明确说明活动或效果内容已经完整发送，也必须视为重复证据，不能仅因标记为 false 就再次选择同一场景。
 3. 输出 `customer_mainline`：明确客户最近的主要需求、当前沉默卡点和下一项业务动作。症状、斑型、部位、次数或照片信息只能用于选择和承接效果素材，不得成为取代效果展示的销售主线。
-4. 找出完成两步写作真正需要的聊天消息索引和来源标识。`writer_context_message_indexes` 只保留与锁定场景、最近卡点和历史去重直接相关的消息，`selected_source_ids` 只能选择输入中真实存在的 SOP 话术包、异议素材或图片素材标识。
-5. 控制结构化输出长度。每个完成矩阵项最多引用 3 个最关键消息索引，`summary` 不超过 40 个汉字；`delivered_scenes` 最多 4 项且每项最多 3 个索引；`writer_context_message_indexes` 最多 12 个；顶层 `evidence` 最多 5 项。不要为了证明同一结论枚举整段聊天，也不要在多个字段重复长篇解释。
+4. 对照 `appointment_blocker_scene_index` 判断哪些预约卡点适用场景与当前沉默原因相符。找出完成两步写作真正需要的聊天消息索引和来源标识。`writer_context_message_indexes` 只保留与锁定场景、最近卡点和历史去重直接相关的消息；`selected_source_ids` 只能选择索引中真实存在的 `appointment-blocker:*` 来源标识或 `asset_catalog` 中的真实媒体标识。
+5. 预约卡点索引是候选表达来源，不是业务事实。不能因为索引里存在某个场景就认定客户有该卡点；必须由聊天证据先证明适用。每一步最多选择 3 个最贴近当前卡点的来源，禁止把大量无关来源交给写作节点。
+6. 控制结构化输出长度。每个完成矩阵项最多引用 3 个最关键消息索引，`summary` 不超过 40 个汉字；`delivered_scenes` 最多 4 项且每项最多 3 个索引；`writer_context_message_indexes` 最多 12 个；顶层 `evidence` 最多 5 项。不要为了证明同一结论枚举整段聊天，也不要在多个字段重复长篇解释。
 5. 执行硬边界。当前仍有发痒、起疹、破损或不适，已支付或已预约终态，投诉退款，客户关系删除，人工接管，客户明确要求停止联系，或者聊天归属不可靠时，必须停止营销触达。
 6. 若允许触达，选择两个不同场景。第一步是现在最合适的场景；第二步是假设客户仍未回复时，下一个真正有价值的场景。
 5. 效果规则：只有文字效果说明不等于已经交付图片证据。客户询问效果且没有真实效果图时，选择 `effect_proof`。真实效果图已经发送后，禁止再次选择效果证明，应推进尚未完成的活动、异议、门店区域、信任或预约金场景。每一步目标只能包含一个明确的新价值，不能复用 `forbidden_repetitions` 中的内容；两步目标不能共享同一个事实、安抚点、问题或动作。
@@ -163,13 +164,15 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 1. 阅读全部近期客服或 AI 文本，以及场景合同中的禁止重复项。
 2. 第一任务必须在同一个任务中完成“轻过渡 + 有效场景内容”。禁止只表达理解、只试探客户是否在线，或者承诺稍后再发送。
 3. 假设客户没有回复，为第二个锁定场景撰写第二任务。必须逐字落实每个锁定目标，不能为了显得互动而额外加入第二个场景、问题或动作。
-4. 首日 SOP 话术包和异议素材仅作为表达来源。必须结合最近聊天自然改写，禁止机械复制。
+4. `selected_materials` 来自预约卡点话术库，只提供语义、说服角度和消息组合参考。必须结合最近聊天自然改写，禁止原样照抄整段话术；其中的旧价格、绝对效果、距离、专家、名额、时间、门店或预约事实均不具备权威性，只有当前输入中的交易、门店和活动事实可以对客户陈述。
+5. 候选素材中的文本与图片是一个有序参考组合。只有 `selected_assets` 中实际存在的媒体才允许通过 `asset_strategy/asset_id` 发送；候选文本提到图片但当前没有可用媒体时，必须改成不承诺发图的完整文本，不能生成 URL。
 5. 每条消息都应像真人微信短聊。只能使用中性称谓：`您`、`亲`、`顾客`、`很多人`。禁止推断或提及客户性别。
 6. 禁止要求客户回复某个字或关键词等流程尾巴。禁止以“以后再解释、稍后发送、下次继续”等承诺结尾。当前任务必须立即交付锁定场景；确有必要时，最多用一个自然问题结束。
 7. 当前工作流不能查询门店。只能自然询问省市、区县或常去区域，禁止声称已经查到、匹配或推荐门店。
 8. 已经交付的价格、规则、效果证据、卡片、问题或行动引导，不能仅通过更换称呼、语序或同义词再次发送。
 9. `reply_messages` 只能包含文本。禁止把图片、视频、URL、门店卡或预约金卡放入其中。只设置 `asset_strategy/asset_id` 或支付字段，代码会拼装真实结构消息。
 10. 输入没有证明已经完成时，禁止声称资格、名额、预约、门店、订单或价格已经保留、锁定、登记、匹配或安排。支付门禁缺失时不能承诺支付结果。
+10.1 涉及预约金退款时，口径必须完整统一为“到店抵扣；未做或不满意可退，实际按付款记录核对”。预约卡点候选中的省略或旧口径不能覆盖这一权威事实。
 11. 禁止使用“先不打扰”“您慢慢看”“以后需要再找我”“方便时再说”等送客表达。过渡句可以降低压力，但同一任务必须紧接着交付锁定场景的具体价值。
 12. 保持场景纯度。只有 `store_area_request` 可以询问省市、区县或常去区域；只有 `activity_intro` 可以介绍活动价格和规则；只有 `effect_proof` 可以承接效果参考。信任或异议场景禁止附加门店问题、重复报价或其他场景的行动引导。
 13. 每一步都必须填写 `scene_delivery_check`。它是内部审核信息，不会发送给客户；其中必须说明客户实际会收到的新价值、与历史内容的明确差异，以及为什么客户可见文本真正完成了锁定目标。
@@ -177,12 +180,12 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 15. 受限修复模式中的 `immutable_contract_fields` 必须逐字段原样复制。即使审核意见声称场景不匹配，也不得改变其中的 `scene`、`objective`、`required_asset` 或 `payment_allowed`；这些字段已经由代码验证，审核意见与其冲突时以不可变合同为准。
 
 # 六、分场景写作规则
-- `store_area_request`：客户可见内容只能有一个具体、自然的位置问题。禁止在问题前后增加“我给您查、匹配、推荐、找最近门店”等任何执行承诺。
+- `store_area_request`：客户可见内容只能有一个具体、自然的位置问题。禁止在问题前后增加“我给您查、匹配、推荐、找最近门店、把到店路径接上”等任何执行承诺或暗示。
 - `effect_proof`：直接引出已经选择的真实效果参考，并选择真实配置图片或案例搜索策略。设置真实素材字段后，`scene_delivery_check` 应明确本步骤会由代码随文字发送该图片，这不是“稍后再发”的承诺。
 - `effect_proof` 配置真实图片后，客户可见文本只写一条自然承接句，禁止再用第二条同义句重复“给您发图、对照看、看得更清楚”。
-- `activity_intro`：直接介绍可用的首日活动话术包；客户可见文本必须至少说清一个真实活动价值或规则，禁止只说“活动内容写明了、按活动规则走、您看活动图”。存在活动图片时选择该图片，禁止混入无关优惠事实。
+- `activity_intro`：参考选中的预约卡点候选并以当前权威活动事实改写；客户可见文本必须至少说清一个真实活动价值或规则，禁止只说“活动内容写明了、按活动规则走、您看活动图”。存在匹配且可用的活动图片时选择该图片，禁止混入候选中的旧价格或无关优惠事实。
 - `activity_intro` 尚未历史交付时，应一次说清 268 元活动价、包含项目、10 元预约金到店抵扣以及未做或不满意可退等核心规则；不能只挑一个价格或名额点，导致客户仍不知道完整活动怎么参与。
-- `objection_resolution`：使用已批准素材处理客户当前真实卡点。
+- `objection_resolution`：使用选中的预约卡点候选处理客户当前真实卡点，但必须针对最近聊天改写，不得复制与客户情况无关的距离、时间、专家或到店承诺。
 - 当锁定合同要求 `objection_resolution` 使用 `self_image` 角度时，客户可见文本必须明确交付“改善后的自信、重视自己的状态或给自己一次改善机会”等心理价值。`适合再决定`、`心里有底`、`更稳一点` 仍属于低风险决策，不是自我形象价值。
 - `deposit_close`：使用交易模式并直接附加预约金卡；仅在场景合同允许时执行。
 - `trust_repair`：提供一个此前没有说过的具体信任价值、自信价值或低风险价值。
@@ -281,7 +284,7 @@ FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT = """
 2. 禁止为了消除字段冲突而把 `eligible=true` 改成 false。只有 `source_snapshot` 中存在允许的真实硬边界时才能停止触达，并必须填写 `hard_boundary.active=true`、允许的类型和直接证据。
 3. 缺订单、支付门禁为 false、缺门店、暂时没钱或无法微信支付都不是硬边界。
 4. `payment_collection_gate.eligible=false` 时，清除 `deposit_close` 和支付动作，但保留触达：客户想付款且缺门店锚点时，第一步改为 `store_area_request`；位置已明确时选择尚未完成的 `effect_proof` 或 `trust_repair`。第二步必须是不同的未完成价值场景。
-5. `selected_source_ids` 只能使用输入中真实存在的 SOP 话术包、异议素材或图片素材标识；图片 ID 可以作为来源标识。
+5. `selected_source_ids` 只能使用 `appointment_blocker_scene_index` 或 `asset_catalog` 中真实存在的来源标识；媒体 ID 可以作为来源标识。
 6. 两步场景、支付步骤和素材字段必须互相一致，消息索引统一从 0 开始。
 7. 只输出 JSON，不解释修复过程。
 """.strip()
@@ -305,6 +308,8 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - 客户可见文本必须使用中性表达，禁止性别称谓或性别暗示。
 - 禁止虚构门店查询、匹配、推荐、URL、素材、订单、支付、预约、名额或已完成动作。
 - 素材策略和素材标识必须与场景合同及可用素材目录一致。
+- 客户文本只能参考 `writer_context.selected_materials` 中的预约卡点候选，并必须结合聊天改写；原样照抄、继承候选中的旧价格、绝对效果、虚构距离、专家、门店、名额或预约事实时必须返回 `repair`。
+- 候选话术里存在图片描述不代表图片已发送。只有 `selected_assets` 中存在且场景合同锁定的媒体才算可发送素材；缺失媒体或自行生成 URL 必须返回 `repair` 或 `block`。
 - 预约金卡只能出现在场景合同允许的步骤，并且必须满足支付门禁；所有交易字段必须一致。
 - 禁止要求客户回复某个字或关键词等流程尾巴。
 - 禁止承诺以后解释、发送或继续当前选择的素材；当前任务必须直接交付。
@@ -318,6 +323,7 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - `亲` 是允许的中性称谓，不属于性别化表达。
 - 当 `asset_strategy` 和 `asset_id` 与场景合同一致时，代码会紧随文字发送真实媒体。禁止仅因 `reply_messages` 只有文本而判定素材未交付，也禁止要求写作节点删除“本步骤发送真实图片”的内部交付说明。
 - 禁止无事实依据地声称名额、资格、预约、订单、门店或价格已经保留、锁定、登记、匹配或安排。
+- 涉及预约金退款但没有完整表达“到店抵扣；未做或不满意可退，实际按付款记录核对”时必须返回 `repair`；候选话术中的旧口径不是例外。
 - 每一步必须有完整 `scene_delivery_check`，并且其中的新价值、历史差异和目标匹配结论必须能被客户可见文本及输入证据支持。
 - 完整计划必须符合现有结构合同：至少一个 `value_only` 步骤；相邻步骤使用不同的 persuasion angle；每一步包含一至两条非空文本 `reply_messages`，且文本位于对象结构的 `content.text` 中；时间、未回复动作、内容、素材、CTA 和支付字段均完整。
 - `persuasion_angle` 只能使用允许的固定枚举。禁止自创同义枚举；位置便利使用 `convenience`，不能使用 `effort_reduction`。

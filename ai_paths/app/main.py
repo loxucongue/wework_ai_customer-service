@@ -17,7 +17,6 @@ from app.services.customer_context import CustomerContextService
 from app.services.customer_store_knowledge import CustomerStoreKnowledgeService
 from app.services.memory_store import CustomerMemoryStore
 from app.services.model_client import ModelClient
-from app.services.outreach_asset_library_service import OutreachAssetLibraryService
 from app.services.outreach_service import OutreachService, classify_conversation_refresh_error
 from app.services.outreach_send_client import OutreachSendClient
 from app.services.outreach_system_client import OutreachSystemClient
@@ -62,17 +61,14 @@ customer_store_knowledge_service = CustomerStoreKnowledgeService(platform_agent_
 store_service = StoreService(platform_agent_client)
 sop_reply_pack_service = SopReplyPackService(settings)
 precision_qa_playbook_service = PrecisionQaPlaybookService(settings)
-outreach_asset_library_service = OutreachAssetLibraryService(settings)
 sop_objection_material_service = SopObjectionMaterialService(settings.sop_objection_materials_path)
 outreach_service = OutreachService(
     repository=repository,
     model_client=model_client,
     system_client=outreach_system_client,
     customer_context_service=customer_context_service,
-    outreach_asset_library_service=outreach_asset_library_service,
+    precision_qa_playbook_service=precision_qa_playbook_service,
     coze_client=coze_client,
-    sop_objection_material_service=sop_objection_material_service,
-    sop_reply_pack_service=sop_reply_pack_service,
     before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
 )
 sop_execution_service = SopExecutionService(
@@ -400,16 +396,6 @@ async def admin_operations_dashboard(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get("/admin/outreach/assets", dependencies=[Depends(require_api_key)])
-async def admin_outreach_assets() -> dict[str, Any]:
-    return outreach_asset_library_service.load()
-
-
-@app.put("/admin/outreach/assets", dependencies=[Depends(require_api_key)])
-async def admin_update_outreach_assets(payload: dict[str, Any] = Body(...)) -> dict[str, Any]:
-    raise HTTPException(status_code=410, detail="旧 Outreach 已转为历史只读")
 
 
 @app.get("/admin/sop-objection-materials", dependencies=[Depends(require_api_key)])

@@ -16,7 +16,7 @@ from app.services.customer_relation import (
 from app.services.customer_scope import build_customer_scope
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
-from app.services.outreach_asset_library_service import OutreachAssetLibraryService
+from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.outreach_first_day_prompts import (
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
@@ -28,8 +28,10 @@ from app.services.outreach_first_day_prompts import (
     FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION,
 )
 from app.services.outreach_assets import (
+    appointment_blocker_materials,
     asset_reply_message,
-    build_outreach_asset_catalog,
+    build_appointment_blocker_asset_catalog,
+    build_appointment_blocker_scene_index,
     enrich_recent_outreach_media,
     recent_outreach_media,
     resolve_case_asset,
@@ -155,6 +157,8 @@ FIRST_DAY_PROCESS_TAIL_TERMS = (
     "以后需要再",
 )
 FIRST_DAY_UNSUPPORTED_STORE_ACTIONS = (
+    "把到店路径接上",
+    "到店路径接上",
     "帮您查",
     "帮您匹配",
     "给您匹配",
@@ -855,68 +859,6 @@ def _first_day_message_policy_error(
     return "", ""
 
 
-def _first_day_sop_pack_context(config: Any) -> list[dict[str, Any]]:
-    packs = config.get("packs") if isinstance(config, dict) and isinstance(config.get("packs"), list) else []
-    output: list[dict[str, Any]] = []
-    for pack in packs:
-        if not isinstance(pack, dict) or not bool(pack.get("enabled")):
-            continue
-        scopes = pack.get("scopes") if isinstance(pack.get("scopes"), list) else [pack.get("scope")]
-        if "chat_gate" not in {_string(scope) for scope in scopes}:
-            continue
-        if _string(pack.get("day_stage")) not in {"", "day1"}:
-            continue
-        pack_id = _string(pack.get("id"))
-        if not pack_id:
-            continue
-        output.append(
-            {
-                "id": pack_id,
-                "sop_category": _string(pack.get("sop_category")),
-                "name": _string(pack.get("name")),
-                "purpose": _string(pack.get("purpose")),
-                "triggers": _list_strings(pack.get("triggers")),
-                "reply_messages": [
-                    dict(message)
-                    for message in pack.get("reply_messages") or []
-                    if isinstance(message, dict)
-                ],
-            }
-        )
-    return output
-
-
-def _first_day_sop_pack_assets(packs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    assets: list[dict[str, Any]] = []
-    for pack in packs:
-        pack_id = _string(pack.get("id"))
-        for message in pack.get("reply_messages") or []:
-            if not isinstance(message, dict):
-                continue
-            asset_type = _string(message.get("type"))
-            if asset_type not in {"image", "video"}:
-                continue
-            content = message.get("content") if isinstance(message.get("content"), dict) else {}
-            url = _string(content.get("url"))
-            if not url.startswith(("http://", "https://")):
-                continue
-            order = _int(message.get("order"), len(assets) + 1)
-            assets.append(
-                {
-                    "asset_id": f"sop-pack:{pack_id}:{order}",
-                    "type": asset_type,
-                    "url": url,
-                    "source": "sop_reply_pack",
-                    "name": _string(pack.get("name")),
-                    "annotation": _string(pack.get("purpose")),
-                    "use_cases": _list_strings(pack.get("triggers")),
-                    "avoid_when": [],
-                    "tags": [_string(pack.get("sop_category")), pack_id],
-                }
-            )
-    return assets
-
-
 def _plan_step_text(step: dict[str, Any]) -> str:
     texts = _plan_step_texts(step)
     return texts[0] if texts else ""
@@ -965,40 +907,6 @@ def _task_resolved_asset(task: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict) and isinstance(item.get("resolved_asset"), dict):
             return dict(item["resolved_asset"])
     return {}
-
-
-def _sop_objection_material_catalog(service: Any | None) -> list[dict[str, Any]]:
-    if service is None:
-        return []
-    try:
-        payload = service.load()
-    except Exception:
-        return []
-    materials = payload.get("materials") if isinstance(payload, dict) else []
-    if not isinstance(materials, list):
-        return []
-    output: list[dict[str, Any]] = []
-    for item in materials[:100]:
-        if not isinstance(item, dict):
-            continue
-        output.append(
-            {
-                "material_id": _string(item.get("material_id"))[:120],
-                "name": _string(item.get("name"))[:160],
-                "category": _string(item.get("category"))[:120],
-                "tags": [_string(value)[:80] for value in item.get("tags", [])[:20]],
-                "applicable_scenes": [
-                    _string(value)[:120]
-                    for value in item.get("applicable_scenes", [])[:20]
-                ],
-                "response_approach": _string(item.get("response_approach"))[:1000],
-                "example_contents": [
-                    _string(value)[:1000]
-                    for value in item.get("example_contents", [])[:10]
-                ],
-            }
-        )
-    return output
 
 
 def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
@@ -1268,10 +1176,11 @@ def _first_day_scene_analysis_error(
     if not isinstance(selected_source_ids, dict):
         return "scene analysis selected_source_ids must be an object"
     available_source_ids = {
-        _string(item.get("id") or item.get("material_id"))
-        for key in ("first_day_sop_packs", "sop_objection_materials")
-        for item in source_snapshot.get(key) or []
-        if isinstance(item, dict) and _string(item.get("id") or item.get("material_id"))
+        _string(source_id)
+        for item in source_snapshot.get("appointment_blocker_scene_index") or []
+        if isinstance(item, dict)
+        for source_id in item.get("source_ids") or []
+        if _string(source_id)
     }
     available_source_ids.update(
         _string(item.get("asset_id"))
@@ -1548,10 +1457,11 @@ def _normalize_first_day_scene_analysis(
         elif not _bool(payment_action.get("allowed")):
             payment_action["step"] = 0
     available_source_ids = {
-        _string(item.get("id") or item.get("material_id"))
-        for key in ("first_day_sop_packs", "sop_objection_materials")
-        for item in (source_snapshot or {}).get(key) or []
-        if isinstance(item, dict) and _string(item.get("id") or item.get("material_id"))
+        _string(source_id)
+        for item in (source_snapshot or {}).get("appointment_blocker_scene_index") or []
+        if isinstance(item, dict)
+        for source_id in item.get("source_ids") or []
+        if _string(source_id)
     }
     available_source_ids.update(
         _string(item.get("asset_id"))
@@ -1800,6 +1710,7 @@ def _first_day_writer_payload(
     source_snapshot: dict[str, Any],
     scene_analysis: dict[str, Any],
     *,
+    appointment_material_catalog: list[dict[str, Any]] | None = None,
     candidate_plan: dict[str, Any] | None = None,
     violations: list[Any] | None = None,
     repair_instructions: list[Any] | None = None,
@@ -1822,17 +1733,11 @@ def _first_day_writer_payload(
         for source_id in (scene_analysis.get("selected_source_ids") or {}).get(key) or []
         if _string(source_id)
     }
-    selected_source_ids.update(
-        source_id.split(":", 2)[1]
-        for source_id in tuple(selected_source_ids)
-        if source_id.startswith("sop-pack:") and len(source_id.split(":", 2)) == 3
-    )
     selected_materials = [
         dict(item)
-        for key in ("first_day_sop_packs", "sop_objection_materials")
-        for item in source_snapshot.get(key) or []
+        for item in appointment_material_catalog or []
         if isinstance(item, dict)
-        and _string(item.get("id") or item.get("material_id")) in selected_source_ids
+        and _string(item.get("source_id")) in selected_source_ids
     ]
     required_asset_ids = {
         _string((scene_analysis.get("required_assets") or {}).get(key, {}).get("asset_id"))
@@ -1973,20 +1878,16 @@ class OutreachService:
         model_client: ModelClient,
         system_client: OutreachSystemClient,
         customer_context_service: CustomerContextService | None = None,
-        outreach_asset_library_service: OutreachAssetLibraryService | None = None,
+        precision_qa_playbook_service: PrecisionQaPlaybookService | None = None,
         coze_client: CozeClient | None = None,
-        sop_objection_material_service: Any | None = None,
-        sop_reply_pack_service: Any | None = None,
         before_send_retry_seconds: int = 60,
     ) -> None:
         self.repository = repository
         self.model_client = model_client
         self.system_client = system_client
         self.customer_context_service = customer_context_service
-        self.outreach_asset_library_service = outreach_asset_library_service
+        self.precision_qa_playbook_service = precision_qa_playbook_service
         self.coze_client = coze_client
-        self.sop_objection_material_service = sop_objection_material_service
-        self.sop_reply_pack_service = sop_reply_pack_service
         self.before_send_retry_seconds = max(1, int(before_send_retry_seconds))
         self._plan_locks: dict[str, asyncio.Lock] = {}
         self._monitor_status: dict[str, Any] = {
@@ -2551,11 +2452,9 @@ class OutreachService:
             0,
         )
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
-        asset_catalog = self._outreach_asset_catalog()
-        first_day_sop_packs: list[dict[str, Any]] = []
-        if first_day_trigger and self.sop_reply_pack_service is not None:
-            first_day_sop_packs = _first_day_sop_pack_context(self.sop_reply_pack_service.load())
-            asset_catalog.extend(_first_day_sop_pack_assets(first_day_sop_packs))
+        appointment_playbook = self._appointment_blocker_playbook()
+        appointment_material_catalog = appointment_blocker_materials(appointment_playbook)
+        asset_catalog = build_appointment_blocker_asset_catalog(appointment_playbook)
         recent_media = enrich_recent_outreach_media(
             recent_outreach_media(recent_messages, hours=72),
             asset_catalog,
@@ -2611,8 +2510,9 @@ class OutreachService:
             ],
             "recent_media_delivery": recent_media,
             "recent_sop_delivery": recent_sop_delivery,
-            "first_day_sop_packs": first_day_sop_packs,
-            "sop_objection_materials": _sop_objection_material_catalog(self.sop_objection_material_service),
+            "appointment_blocker_scene_index": build_appointment_blocker_scene_index(
+                appointment_playbook
+            ),
         }
         if workflow_run_id:
             self.repository.update_first_day_outreach_run(
@@ -2734,6 +2634,7 @@ class OutreachService:
                 writer_payload = _first_day_writer_payload(
                     first_day_model_snapshot,
                     scene_analysis,
+                    appointment_material_catalog=appointment_material_catalog,
                 )
                 writer_result, writer_trace = await self._run_first_day_model_node(
                     node="plan_writer",
@@ -2819,6 +2720,7 @@ class OutreachService:
                             payload=_first_day_writer_payload(
                                 first_day_model_snapshot,
                                 scene_analysis,
+                                appointment_material_catalog=appointment_material_catalog,
                                 candidate_plan=writer_result,
                                 violations=violations,
                                 repair_instructions=repair_instructions,
@@ -3191,9 +3093,15 @@ class OutreachService:
         }
 
     def _outreach_asset_catalog(self) -> list[dict[str, Any]]:
-        if self.outreach_asset_library_service is None:
-            return []
-        return build_outreach_asset_catalog(self.outreach_asset_library_service.load())
+        return build_appointment_blocker_asset_catalog(self._appointment_blocker_playbook())
+
+    def _appointment_blocker_playbook(self) -> dict[str, Any]:
+        if self.precision_qa_playbook_service is None:
+            return {"version": 4, "items": []}
+        try:
+            return self.precision_qa_playbook_service.load()
+        except Exception:
+            return {"version": 4, "items": []}
 
     async def _resolve_outreach_asset(
         self,

@@ -37,7 +37,6 @@ const groups = [
       { href: "/sop", label: "主线 SOP", icon: MessageSquareText },
       { href: "/sop/precision", label: "预约卡点话术", icon: BookOpenText },
       { href: "/sop-materials", label: "SOP 异议素材", icon: Images },
-      { href: "/outreach/assets", label: "主动唤醒素材", icon: Sparkles },
     ],
   },
   {

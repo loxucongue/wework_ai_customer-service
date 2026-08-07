@@ -154,10 +154,6 @@ class Settings(BaseSettings):
         default=Path("config/precision_qa_playbook.json"),
         alias="PRECISION_QA_PLAYBOOK_PATH",
     )
-    outreach_asset_library_path: Path = Field(
-        default=Path("config/outreach_assets.json"),
-        alias="OUTREACH_ASSET_LIBRARY_PATH",
-    )
     sop_objection_materials_path: Path = Field(
         default=Path("config/sop_objection_materials.json"),
         alias="SOP_OBJECTION_MATERIALS_PATH",

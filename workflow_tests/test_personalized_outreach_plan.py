@@ -12,8 +12,6 @@ from app.services.outreach_service import (
     _compose_outreach_messages,
     _conversation_activity_from_context,
     _first_day_final_plan_error,
-    _first_day_sop_pack_assets,
-    _first_day_sop_pack_context,
     _first_day_outreach_plan_error,
     _first_day_scene_analysis_error,
     _first_day_scene_lock_error,
@@ -32,7 +30,12 @@ from app.services.outreach_first_day_prompts import (
     FIRST_DAY_PLAN_WRITER_PROMPT,
     FIRST_DAY_SCENE_ANALYST_PROMPT,
 )
-from app.services.outreach_assets import enrich_recent_outreach_media
+from app.services.outreach_assets import (
+    appointment_blocker_materials,
+    build_appointment_blocker_asset_catalog,
+    build_appointment_blocker_scene_index,
+    enrich_recent_outreach_media,
+)
 from app.services.sop_platform_task_policy import personalized_payment_collection_eligibility
 
 
@@ -109,52 +112,42 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("# 2. Objective", prompt)
             self.assertNotIn("Output Contract", prompt)
 
-    def test_first_day_sop_packs_supply_model_context_and_resolvable_assets(self) -> None:
+    def test_appointment_blockers_supply_model_context_and_resolvable_assets(self) -> None:
         config = {
-            "packs": [
+            "items": [
                 {
-                    "id": "s10_need_and_case",
-                    "enabled": True,
-                    "scope": "chat_gate",
-                    "day_stage": "day1",
-                    "sop_category": "effect_case",
-                    "name": "效果展示",
-                    "purpose": "展示真实改善参考",
-                    "triggers": ["effect_question"],
+                    "content_id": "YYHF-0001",
+                    "blocker_type": "效果顾虑",
+                    "applicable_scene": "客户担心实际效果",
                     "reply_messages": [
-                        {"type": "text", "order": 1, "content": {"text": "效果参考"}},
-                        {"type": "image", "order": 2, "content": {"url": "https://oss.example/effect.png"}},
+                        {"type": "text", "content": "效果参考"},
+                        {"type": "image", "content": "https://oss.example/effect.png"},
                     ],
-                },
-                {
-                    "id": "event_day2",
-                    "enabled": True,
-                    "scope": "event_first_add",
-                    "day_stage": "day2",
-                    "reply_messages": [],
                 },
             ]
         }
 
-        packs = _first_day_sop_pack_context(config)
-        assets = _first_day_sop_pack_assets(packs)
+        materials = appointment_blocker_materials(config)
+        assets = build_appointment_blocker_asset_catalog(config)
+        scene_index = build_appointment_blocker_scene_index(config)
 
-        self.assertEqual([pack["id"] for pack in packs], ["s10_need_and_case"])
-        self.assertEqual(assets[0]["asset_id"], "sop-pack:s10_need_and_case:2")
+        self.assertEqual([item["content_id"] for item in materials], ["YYHF-0001"])
+        self.assertEqual(scene_index[0]["source_ids"], ["appointment-blocker:YYHF-0001"])
+        self.assertEqual(assets[0]["asset_id"], "appointment-blocker:YYHF-0001:2")
         self.assertEqual(assets[0]["url"], "https://oss.example/effect.png")
-        self.assertEqual(assets[0]["source"], "sop_reply_pack")
+        self.assertEqual(assets[0]["source"], "appointment_blocker_playbook")
 
         recent = enrich_recent_outreach_media(
             {"urls": ["https://oss.example/effect.png"], "document_ids": []},
             assets,
         )
         match = recent["items"][0]["configured_matches"][0]
-        self.assertEqual(match["asset_id"], "sop-pack:s10_need_and_case:2")
-        self.assertEqual(match["name"], "效果展示")
-        self.assertEqual(match["annotation"], "展示真实改善参考")
+        self.assertEqual(match["asset_id"], "appointment-blocker:YYHF-0001:2")
+        self.assertEqual(match["name"], "YYHF-0001")
+        self.assertEqual(match["annotation"], "客户担心实际效果")
         self.assertEqual(
             recent["configured_deliveries"][0]["asset_id"],
-            "sop-pack:s10_need_and_case:2",
+            "appointment-blocker:YYHF-0001:2",
         )
 
     def test_first_day_scene_contract_rejects_duplicate_scenes_and_payment_without_gate(self) -> None:
@@ -339,8 +332,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         )
         analysis["writer_context_message_indexes"] = [1, 2]
         analysis["selected_source_ids"] = {
-            "step1": ["effect-pack"],
-            "step2": ["objection-material"],
+            "step1": ["appointment-blocker:YYHF-0001"],
+            "step2": ["appointment-blocker:YYHF-0002"],
         }
         analysis["required_assets"]["step1"] = {
             "strategy": "configured_image",
@@ -354,19 +347,17 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     {"direction": "customer", "content": "效果怎么样"},
                     {"direction": "staff", "content": "只有文字说明"},
                 ],
-                "first_day_sop_packs": [
-                    {"id": "effect-pack", "reply_messages": []},
-                    {"id": "unused-pack", "reply_messages": []},
-                ],
-                "sop_objection_materials": [
-                    {"material_id": "objection-material", "example_contents": ["参考"]}
-                ],
                 "asset_catalog": [
                     {"asset_id": "effect-image", "type": "image"},
                     {"asset_id": "unused-image", "type": "image"},
                 ],
             },
             analysis,
+            appointment_material_catalog=[
+                {"source_id": "appointment-blocker:YYHF-0001", "reply_messages": []},
+                {"source_id": "appointment-blocker:YYHF-0002", "reply_messages": []},
+                {"source_id": "appointment-blocker:YYHF-9999", "reply_messages": []},
+            ],
         )
 
         writer_context = payload["writer_context"]
@@ -375,8 +366,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             [1, 2],
         )
         self.assertEqual(
-            {item.get("id") or item.get("material_id") for item in writer_context["selected_materials"]},
-            {"effect-pack", "objection-material"},
+            {item.get("source_id") for item in writer_context["selected_materials"]},
+            {"appointment-blocker:YYHF-0001", "appointment-blocker:YYHF-0002"},
         )
         self.assertEqual(
             [item["asset_id"] for item in writer_context["selected_assets"]],
@@ -1857,7 +1848,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "avoid_repeating": ["完整报价"],
                     "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，我给您补一个操作过程参考，您看完会更直观。"}}],
                     "asset_strategy": "operation_video",
-                    "asset_id": "operation_pack:1",
+                    "asset_id": "appointment-blocker:operation_pack:2",
                     "cta": "看完回复感受",
                     "should_send_payment_collection": False,
                 },
@@ -1876,7 +1867,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，我再给您看个同类情况参考，您主要担心的是效果对吧？"}}],
                     "asset_strategy": "case_search",
                     "case_query": "晒斑改善案例",
-                    "fallback_asset_id": "effect_pack:2",
+                    "fallback_asset_id": "appointment-blocker:effect_pack:2",
                     "cta": "回复主要顾虑",
                     "should_send_payment_collection": False,
                 },
@@ -1888,7 +1879,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             repository=repository,
             model_client=model,
             system_client=_ConversationSystemClient(),
-            outreach_asset_library_service=_OutreachAssetLibraryService(),
+            precision_qa_playbook_service=_PrecisionQaPlaybookService(),
             coze_client=_CozeClient(),
         )
 
@@ -1936,10 +1927,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 },
                 {
                     "resolved_asset": {
-                        "asset_id": "effect_pack:2",
+                        "asset_id": "appointment-blocker:effect_pack:2",
                         "type": "image",
                         "url": "https://cdn.example/real.jpg",
-                        "source": "outreach_asset_library",
+                        "source": "appointment_blocker_playbook",
                     }
                 },
             ],
@@ -2052,7 +2043,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，我给您补个同类参考，您看完会更直观。您看完最担心的是效果还是恢复呢？"}}],
                     "asset_strategy": "case_search",
                     "case_query": "晒斑改善案例",
-                    "fallback_asset_id": "effect_pack:2",
+                    "fallback_asset_id": "appointment-blocker:effect_pack:2",
                     "cta": "回复主要顾虑",
                     "should_send_payment_collection": False,
                 },
@@ -2063,7 +2054,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             repository=repository,
             model_client=_ModelClient(response=response),
             system_client=_ConversationSystemClient(),
-            outreach_asset_library_service=_OutreachAssetLibraryService(),
+            precision_qa_playbook_service=_PrecisionQaPlaybookService(),
             coze_client=_FailingCozeClient(),
         )
 
@@ -2206,31 +2197,28 @@ class _SequenceModelClient(_ModelClient):
         return dict(self.responses[min(len(self.calls) - 1, len(self.responses) - 1)])
 
 
-class _OutreachAssetLibraryService:
+class _PrecisionQaPlaybookService:
     def load(self) -> dict[str, Any]:
         return {
-            "assets": [
+            "version": 4,
+            "items": [
                 {
-                    "id": "operation_pack:1",
-                    "enabled": True,
-                    "type": "video",
-                    "name": "操作视频",
-                    "annotation": "展示真实操作过程，用于客户不了解操作方式时做专业科普。",
-                    "use_cases": ["操作方式", "专业流程"],
-                    "avoid_when": ["近期已发送操作视频"],
-                    "tags": ["操作", "视频"],
-                    "url": "https://cdn.example/operation.mp4",
+                    "content_id": "operation_pack",
+                    "blocker_type": "操作顾虑",
+                    "applicable_scene": "客户不了解操作方式",
+                    "reply_messages": [
+                        {"type": "text", "content": "操作说明参考"},
+                        {"type": "video", "content": "https://cdn.example/operation.mp4"},
+                    ],
                 },
                 {
-                    "id": "effect_pack:2",
-                    "enabled": True,
-                    "type": "image",
-                    "name": "效果参考",
-                    "annotation": "用于客户担心效果时增强真实信任。",
-                    "use_cases": ["效果顾虑"],
-                    "avoid_when": ["近期已发送同类案例"],
-                    "tags": ["效果", "案例"],
-                    "url": "https://cdn.example/fallback.jpg",
+                    "content_id": "effect_pack",
+                    "blocker_type": "效果顾虑",
+                    "applicable_scene": "客户担心效果",
+                    "reply_messages": [
+                        {"type": "text", "content": "效果说明参考"},
+                        {"type": "image", "content": "https://cdn.example/fallback.jpg"},
+                    ],
                 },
             ]
         }

@@ -8,7 +8,12 @@ from typing import Any
 
 from app.config import Settings
 from app.services.model_client import ModelClient
-from app.services.outreach_assets import build_outreach_asset_catalog, enrich_recent_outreach_media
+from app.services.outreach_assets import (
+    appointment_blocker_materials,
+    build_appointment_blocker_asset_catalog,
+    build_appointment_blocker_scene_index,
+    enrich_recent_outreach_media,
+)
 from app.services.outreach_first_day_prompts import (
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
     FIRST_DAY_PLAN_WRITER_PROMPT,
@@ -21,7 +26,7 @@ from app.services.outreach_prompts import (
     OUTREACH_PLAN_SYSTEM_PROMPT,
     S10_OUTREACH_CONTEXT,
 )
-from app.services.sop_reply_pack_service import SopReplyPackService
+from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_platform_task_policy import personalized_payment_collection_eligibility
 from app.services.outreach_service import (
     FIRST_DAY_SILENCE_TRIGGER_TYPE,
@@ -35,8 +40,6 @@ from app.services.outreach_service import (
     _normalize_first_day_scene_analysis,
     _normalize_first_day_repaired_plan,
     _first_day_writer_payload,
-    _first_day_sop_pack_assets,
-    _first_day_sop_pack_context,
     _normalize_outreach_plan_response,
     _outreach_plan_context_error,
     _outreach_plan_structure_error,
@@ -404,6 +407,7 @@ async def _run_first_day_workflow(
     client: ModelClient,
     payload: dict[str, Any],
     artifacts: dict[str, Any],
+    appointment_material_catalog: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     if int((payload.get("conversation_activity") or {}).get("real_customer_message_count") or 0) == 0:
         scene_analysis = _normalize_first_day_scene_analysis(
@@ -519,7 +523,11 @@ async def _run_first_day_workflow(
             {
                 "role": "user",
                 "content": json.dumps(
-                    _first_day_writer_payload(payload, scene_analysis),
+                    _first_day_writer_payload(
+                        payload,
+                        scene_analysis,
+                        appointment_material_catalog=appointment_material_catalog,
+                    ),
                     ensure_ascii=False,
                 ),
             },
@@ -617,6 +625,7 @@ async def _run_first_day_workflow(
                         _first_day_writer_payload(
                             payload,
                             scene_analysis,
+                            appointment_material_catalog=appointment_material_catalog,
                             candidate_plan=writer_result,
                             violations=violations,
                             repair_instructions=repair_instructions,
@@ -651,6 +660,7 @@ async def _run_case(
     *,
     attempt: int,
     asset_catalog: list[dict[str, Any]],
+    appointment_material_catalog: list[dict[str, Any]],
     semaphore: asyncio.Semaphore,
 ) -> dict[str, Any]:
     first_day = (
@@ -700,7 +710,9 @@ async def _run_case(
             asset_catalog,
         ),
         "recent_sop_delivery": case.get("recent_sop_delivery") or [],
-        "first_day_sop_packs": case.get("first_day_sop_packs") or [],
+        "appointment_blocker_scene_index": build_appointment_blocker_scene_index(
+            {"items": appointment_material_catalog}
+        ),
         "trigger_context": case.get("trigger_context") or {},
     }
     async with semaphore:
@@ -711,6 +723,7 @@ async def _run_case(
                     client,
                     payload,
                     workflow_artifacts,
+                    appointment_material_catalog,
                 )
             else:
                 plan = await client.chat_json(
@@ -951,15 +964,9 @@ async def main() -> int:
     selected_case_ids = {str(item).strip() for item in args.case_id if str(item).strip()}
     if selected_case_ids:
         cases = [case for case in cases if str(case.get("id") or "") in selected_case_ids]
-    sop_config = SopReplyPackService(settings).load()
-    first_day_sop_packs = _first_day_sop_pack_context(sop_config)
-    asset_catalog = [
-        *build_outreach_asset_catalog(sop_config),
-        *_first_day_sop_pack_assets(first_day_sop_packs),
-    ]
-    for case in cases:
-        if str((case.get("trigger_context") or {}).get("trigger_type") or "") == FIRST_DAY_SILENCE_TRIGGER_TYPE:
-            case["first_day_sop_packs"] = first_day_sop_packs
+    appointment_playbook = PrecisionQaPlaybookService(settings).load()
+    appointment_material_catalog = appointment_blocker_materials(appointment_playbook)
+    asset_catalog = build_appointment_blocker_asset_catalog(appointment_playbook)
     semaphore = asyncio.Semaphore(max(1, args.concurrency))
     try:
         results = await asyncio.gather(
@@ -969,6 +976,7 @@ async def main() -> int:
                     case,
                     attempt=attempt,
                     asset_catalog=asset_catalog,
+                    appointment_material_catalog=appointment_material_catalog,
                     semaphore=semaphore,
                 )
                 for case in cases

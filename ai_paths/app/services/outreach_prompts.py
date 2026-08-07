@@ -631,8 +631,10 @@ Rules:
 - You may use only existing message templates and code-supported message
   types. Text is written by you; images, videos, store cards, and payment cards
   are selected or assembled by code from real facts and assets.
-- Read `first_day_sop_packs` and `sop_objection_materials` as candidate
-  business material. Do not copy them mechanically; adapt to the latest chat.
+- Read `appointment_blocker_scene_index` as the only configured first-day
+  reference-material index. Select only sources whose applicable scene is
+  supported by the latest chat. The writer receives the selected appointment
+  blocker entries separately and must rewrite them rather than copy them.
 - Use gender-neutral customer language in both steps. Use neutral forms such as
   “您/亲/顾客/很多人”. Never infer gender from a name, avatar, treatment, or
   writing style, and never use gendered forms such as “女孩子/美女/姐妹/女士/先生/
@@ -676,9 +678,9 @@ is `first_day_opened_silence`. Rewrite the candidate plan before returning it.
   use_cases 明确属于效果/案例的已发送配置素材，就认定真实效果图已经发过。
 - 上述效果图已经发过，且 `source_snapshot.activity_quote_fact.completed=false` 时，无论客户
   最后一句仍在问效果、次数还是能不能做，第一步都必须改成“轻过渡 + 直接介绍当前活动”，
-  并从 `first_day_sop_packs` 选择尚未发送的活动介绍文本/活动图。第一步严禁再讲一次效果、
+  并从预约卡点候选中选择匹配且尚未发送的活动介绍文本/活动图。第一步严禁再讲一次效果、
   原相机、案例、皮肤状态、检测、护理或防晒。
-- 上述强制活动场景只能使用 `first_day_sop_packs` 中活动介绍包的事实，不得混入通用
+- 上述强制活动场景只能使用当前权威活动事实，预约卡点候选只提供表达参考，不得混入通用
   `offer_context` 里的其他赠品、价格或活动。一步只讲该活动包，不堆叠两个以上卖点。
 - 若 `recent_messages` 已明确出现客户所在城市和区县/常去区域，后续两步均不得再次确认或
   询问位置；活动介绍后的第二步改为首日包中的低风险到店/预约金异议承接，但门店锚点或
