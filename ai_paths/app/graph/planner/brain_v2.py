@@ -35,12 +35,11 @@ from app.policies.business_rules import (
     planner_recovery_business_rules_prompt_section,
 )
 from app.policies.sales_flow import precision_qa_context_for_planner
-from app.policies.constants import KNOWN_STORE_NAMES
 from app.services.customer_payment_state import is_inactive_order, normalize_prepay_facts
 from app.services.model_client import ModelClient
+from app.services.store_resolution_v2 import customer_location_hint_texts
 from app.services.risk_hold import HEALTH_RISK_TERMS, current_health_risk_hold_for_model
 from app.services.runtime_budget import can_start_model_retry, model_deadline_monotonic, runtime_budget_snapshot
-from app.services.store_snapshot_service import store_snapshot_rows
 
 PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 你是企业微信线上活动接待的应急 planner。上一轮完整 planner 超时，本轮只用精简事实输出合法 JSON。
@@ -719,18 +718,7 @@ def _stores_matching_text_for_planner(state: AgentState, text: str) -> list[dict
 
 
 def _known_store_candidates_for_planner(state: AgentState) -> list[dict[str, Any]]:
-    candidates = list(_customer_scope_stores_for_planner(state))
-    seen_names = {_store_name_for_planner(store) for store in candidates if _store_name_for_planner(store)}
-    for store in store_snapshot_rows():
-        name = _store_name_for_planner(store)
-        if name and name not in seen_names:
-            candidates.append(store)
-            seen_names.add(name)
-    for name in KNOWN_STORE_NAMES:
-        if name and name not in seen_names:
-            candidates.append({"store_name": name})
-            seen_names.add(name)
-    return candidates
+    return list(_customer_scope_stores_for_planner(state))
 
 
 def _dedupe_store_matches(stores: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1220,8 +1208,7 @@ def _store_scope_location_hints(
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
     request_context = state.get("request_context") if isinstance(state.get("request_context"), dict) else {}
     values = [
-        state.get("normalized_content") or state.get("content"),
-        *[_conversation_item_text(item) for item in (state.get("conversation_history") or [])[-6:]],
+        *customer_location_hint_texts(state, limit=6),
         basic.get("province"),
         basic.get("city") or basic.get("current_city"),
         basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),

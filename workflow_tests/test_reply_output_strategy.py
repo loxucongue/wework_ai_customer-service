@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
-from app.graph.nodes.action_nodes import _snapshot_stores_for_exact_query
 from app.graph.nodes.common import repair_mojibake_text
 from app.graph.nodes.contextual_short_message import short_message_context_for_model
 from app.graph.nodes.conversation_history_fetch import platform_messages_to_history, platform_messages_to_turns
@@ -20,11 +19,9 @@ from app.graph.nodes.appointment_time_utils import normalize_time_text, summariz
 from app.graph.nodes.profile_nodes import _profile_conversation_history
 from app.graph.nodes.reply_nodes import (
     REPLY_RECOVERY_SYSTEM_PROMPT,
-    _append_required_store_address_actions,
     _ensure_required_handoff_notice,
     _maybe_build_required_payment_collection_fallback,
     _normalize_planner_reply_messages,
-    _preserve_planner_store_address_actions,
     _raise_repairable_reply_quality_issues,
     _suppress_stale_handoff_notice,
 )
@@ -218,52 +215,16 @@ def test_recent_exact_snapshot_store_name_hydrates_store_id_for_appointment_turn
                 "用户: 我想去厦门思明店。",
                 "小贝: 好的，厦门思明店可以继续看时间。",
             ],
+            "customer_store_knowledge": {
+                "source": "platform_scope",
+                "stores": [{"store_id": "12", "store_name": "厦门思明店", "city": "厦门市"}],
+            },
         }
     )
 
     assert store["store_id"] == "12"
     assert store["store_name"] == "厦门思明店"
     assert store["source"] == "recent_conversation"
-
-
-def test_reply_payload_and_postprocess_preserve_planner_scope_verified_store_card() -> None:
-    state = {
-        "normalized_content": "厦门思明区都有哪些店？",
-        "planner_decision": "direct_reply",
-        "planner_reply_messages": [
-            {"type": "text", "order": 1, "content": {"text": "思明区这边目前有1家门店。"}},
-            {"type": "store_address", "order": 2, "content": {"store_id": "12"}},
-        ],
-        "customer_store_knowledge": {
-            "source": "platform_scope",
-            "stores": [
-                {
-                    "store_id": "12",
-                    "store_name": "厦门思明店",
-                    "province": "福建省",
-                    "city": "厦门市",
-                    "district": "思明区",
-                }
-            ],
-        },
-    }
-
-    payload = reply_user_payload_for_model(state)
-    assert payload["planner_structured_actions"] == [
-        {
-            "type": "store_address",
-            "content": {"store_id": "12"},
-            "source": "planner_scope_verified",
-        }
-    ]
-
-    messages, preserved = _preserve_planner_store_address_actions(
-        [{"type": "text", "order": 1, "content": "思明区这边目前有1家门店。"}],
-        state,
-    )
-
-    assert preserved is True
-    assert messages[-1] == {"type": "store_address", "order": 2, "content": {"store_id": "12"}}
 
 
 def test_short_message_context_marks_renne_as_contextual() -> None:
@@ -2192,15 +2153,7 @@ def test_appointment_question_can_use_appointment_store() -> None:
     assert known["source"] == "appointment_context"
 
 
-def test_store_lookup_exact_snapshot_name_is_allowed_without_extra_city() -> None:
-    stores = _snapshot_stores_for_exact_query(_u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97"))
-
-    assert stores
-    assert str(stores[0].get("store_id") or stores[0].get("id") or "") == "562"
-    city_suffix_stores = _snapshot_stores_for_exact_query(_u(r"\u5e7f\u5dde\u5e02\u767d\u4e91\u4e09\u5e97"))
-    assert city_suffix_stores
-    assert str(city_suffix_stores[0].get("store_id") or city_suffix_stores[0].get("id") or "") == "562"
-
+def test_store_lookup_does_not_use_global_snapshot_as_customer_scope() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
@@ -2260,7 +2213,7 @@ def test_store_detail_reference_uses_recent_snapshot_store_name() -> None:
     )
 
 
-def test_store_detail_reference_rewrites_region_query_to_recent_store_anchor() -> None:
+def test_store_detail_reference_does_not_rewrite_model_query_from_history() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": _u(r"\u8fd9\u5bb6\u5730\u5740\u53d1\u6211\u4e00\u4e0b"),
@@ -2288,7 +2241,7 @@ def test_store_detail_reference_rewrites_region_query_to_recent_store_anchor() -
         },
     )
 
-    assert plan["planner_tool_calls"][0]["query"] == _u(r"\u5e7f\u5dde\u767d\u4e91\u4e09\u5e97")
+    assert plan["planner_tool_calls"][0]["query"] == _u(r"\u5e7f\u5dde\u5e02\u767d\u4e91\u533a")
 
 
 def test_generic_store_question_with_unique_history_store_allows_lookup() -> None:
@@ -2474,6 +2427,10 @@ def test_relative_month_followup_uses_recent_confirmed_store() -> None:
             "用户: 我想去厦门思明店。",
             "小贝: 好的，厦门思明店可以继续看时间。",
         ],
+        "customer_store_knowledge": {
+            "source": "platform_scope",
+            "stores": [{"store_id": "12", "store_name": "厦门思明店", "city": "厦门市"}],
+        },
     }
 
     known = _current_known_store_for_planner(state)
@@ -2924,7 +2881,7 @@ def test_generic_store_direct_reply_is_not_rewritten_by_normalizer() -> None:
     assert "current_turn_context_guard" not in plan["reply_strategy"]
 
 
-def test_scoped_city_store_question_requires_lookup_when_city_has_limited_candidates() -> None:
+def test_scoped_city_store_question_does_not_force_lookup_over_model_decision() -> None:
     plan = build_planner_plan_v2(
         {
             **_ACTIVITY_INTRO_EVIDENCE,
@@ -2944,14 +2901,11 @@ def test_scoped_city_store_question_requires_lookup_when_city_has_limited_candid
         },
     )
 
-    assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_reply_messages"] == []
-    assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "厦门"}
-    ]
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
 
 
-def test_city_with_limited_snapshot_stores_is_normalized_to_lookup_before_direct_reply() -> None:
+def test_city_with_visible_store_does_not_force_lookup_before_direct_reply() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "荆州市",
@@ -2977,18 +2931,15 @@ def test_city_with_limited_snapshot_stores_is_normalized_to_lookup_before_direct
         },
     )
 
-    assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_reply_messages"] == []
-    assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "荆州市"}
-    ]
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
     assert not any(
         item.get("missing") == "store_location_lookup_required_before_direct_reply"
         for item in plan["tool_policy_violations"]
     )
 
 
-def test_county_location_direct_reply_is_normalized_to_store_lookup() -> None:
+def test_county_location_direct_reply_is_not_replaced_by_python_lookup() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "我人在洪湖城区"},
         {
@@ -3004,14 +2955,11 @@ def test_county_location_direct_reply_is_normalized_to_store_lookup() -> None:
         },
     )
 
-    assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_reply_messages"] == []
-    assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "我人在洪湖城区"}
-    ]
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
 
 
-def test_bare_county_store_question_is_normalized_to_store_lookup() -> None:
+def test_bare_county_store_question_is_not_reclassified_by_python() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "我在武平，店在哪里"},
         {
@@ -3027,14 +2975,11 @@ def test_bare_county_store_question_is_normalized_to_store_lookup() -> None:
         },
     )
 
-    assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_reply_messages"] == []
-    assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "武平"}
-    ]
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
 
 
-def test_current_store_lookup_sentence_query_is_cleaned_to_location() -> None:
+def test_current_store_lookup_query_is_not_semantically_rewritten() -> None:
     plan = build_planner_plan_v2(
         {"normalized_content": "我在武平，店在哪里"},
         {
@@ -3054,7 +2999,7 @@ def test_current_store_lookup_sentence_query_is_cleaned_to_location() -> None:
 
     assert plan["planner_decision"] == "need_tools"
     assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "武平"}
+        {"name": "customer_store_lookup", "purpose": "existence", "query": "我在武平，店在哪里"}
     ]
 
 
@@ -3120,7 +3065,7 @@ def test_short_non_location_message_cannot_reopen_historical_store_lookup() -> N
     )
 
 
-def test_bare_location_answer_after_store_prompt_is_normalized_to_store_lookup() -> None:
+def test_bare_location_answer_after_store_prompt_is_not_reclassified_by_python() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "东坑",
@@ -3141,11 +3086,8 @@ def test_bare_location_answer_after_store_prompt_is_normalized_to_store_lookup()
         },
     )
 
-    assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_reply_messages"] == []
-    assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "东坑"}
-    ]
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
 
 
 def test_many_store_city_can_ask_district_without_lookup() -> None:
@@ -3201,7 +3143,7 @@ def test_multi_store_city_text_cannot_promise_store_info_without_cards() -> None
         )
 
 
-def test_scoped_city_store_question_does_not_override_legal_planner_tool_query() -> None:
+def test_scoped_city_store_question_preserves_model_lookup_query() -> None:
     plan = build_planner_plan_v2(
         {
             **_ACTIVITY_INTRO_EVIDENCE,
@@ -3232,7 +3174,7 @@ def test_scoped_city_store_question_does_not_override_legal_planner_tool_query()
     assert plan["planner_tool_calls"] == [{"name": "customer_store_lookup", "purpose": "detail", "query": "厦门百星湖里店"}]
 
 
-def test_scoped_nearby_store_question_requires_lookup_before_direct_reply() -> None:
+def test_scoped_nearby_store_question_does_not_inject_tools_over_direct_reply() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "厦门思明附近有门店吗",
@@ -3251,14 +3193,11 @@ def test_scoped_nearby_store_question_requires_lookup_before_direct_reply() -> N
         },
     )
 
-    assert plan["planner_decision"] == "need_tools"
-    assert plan["planner_reply_messages"] == []
-    assert plan["planner_tool_calls"] == [
-        {"name": "customer_store_lookup", "purpose": "existence", "query": "厦门思明"}
-    ]
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
 
 
-def test_current_nearby_location_overrides_stale_store_lookup_anchor() -> None:
+def test_current_nearby_location_does_not_rewrite_model_store_anchor() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": _u(
@@ -3293,16 +3232,10 @@ def test_current_nearby_location_overrides_stale_store_lookup_anchor() -> None:
     assert plan["planner_tool_calls"] == [
         {
             "name": "customer_store_lookup",
-            "purpose": "nearby_candidates",
-            "query": _u(r"\u5927\u5cad\u5c71"),
-        },
-        {
-            "name": "distance_calculate",
-            "origin": _u(r"\u5927\u5cad\u5c71"),
-            "candidate_source": "customer_store_lookup",
-        },
+            "purpose": "detail",
+            "query": _u(r"\u4e1c\u839e\u5357\u57ce\u5e97"),
+        }
     ]
-    assert not any(item.get("missing") == "distance_calculate_required" for item in plan["tool_policy_violations"])
 
 
 def test_scoped_nearby_landmark_preserves_landmark_in_distance_origin() -> None:
@@ -3473,7 +3406,7 @@ def test_nearby_store_lookup_with_distance_calculate_passes_distance_policy() ->
     assert not any(item.get("missing") == "distance_calculate_required" for item in plan["tool_policy_violations"])
 
 
-def test_distance_calculate_rejects_bare_city_origin() -> None:
+def test_distance_calculate_does_not_apply_python_location_semantics() -> None:
     plan = build_planner_plan_v2(
         {"content": "厦门哪家方便", "normalized_content": "厦门哪家方便"},
         {
@@ -3490,7 +3423,7 @@ def test_distance_calculate_rejects_bare_city_origin() -> None:
         },
     )
 
-    assert any(
+    assert not any(
         item.get("missing") == "distance_origin_too_broad_for_ranking"
         for item in plan["tool_policy_violations"]
     )
@@ -5157,84 +5090,6 @@ def test_distance_fact_output_hides_customer_visible_numbers() -> None:
     assert "duration_seconds" not in structured["store_facts"][0]
 
 
-def test_distance_ranking_with_many_candidates_delivers_only_recommended_store() -> None:
-    output = build_planner_fact_output(
-        {
-            "distance_calculate": {
-                "origin": "嘉兴秀洲区",
-                "status": "ok",
-                "ranked_stores": [
-                    {
-                        "store_id": str(store_id),
-                        "store_name": f"嘉兴门店{store_id}",
-                        "address": f"嘉兴市示例地址{store_id}",
-                        "distance_km": float(index + 1),
-                        "distance_source": "amap",
-                    }
-                    for index, store_id in enumerate((342, 343, 344, 345))
-                ],
-            }
-        },
-        {},
-    )
-    structured = output["fact_envelope"]["structured_facts"]
-
-    assert structured["store_resolution_fact"]["delivery_mode"] == "send_recommended"
-    assert structured["store_resolution_fact"]["recommended_store_id"] == "342"
-    assert structured["store_resolution_fact"]["distance_ranking_available"] is True
-
-    messages, changed = _append_required_store_address_actions(
-        [{"type": "text", "order": 1, "content": {"text": "我先把当前相对方便的这家门店发您。"}}],
-        output,
-    )
-    assert changed is True
-    assert [
-        item["content"]["store_id"]
-        for item in messages
-        if item["type"] == "store_address"
-    ] == ["342"]
-    validate_reply_consistency(messages, output)
-
-
-def test_distance_ranking_with_two_candidates_does_not_send_all_cards() -> None:
-    output = build_planner_fact_output(
-        {
-            "distance_calculate": {
-                "origin": "嘉兴秀洲区",
-                "status": "ok",
-                "ranked_stores": [
-                    {
-                        "store_id": "342",
-                        "store_name": "嘉兴秀洲店",
-                        "distance_km": 2.0,
-                        "distance_source": "amap",
-                    },
-                    {
-                        "store_id": "343",
-                        "store_name": "嘉兴南湖店",
-                        "distance_km": 4.0,
-                        "distance_source": "amap",
-                    },
-                ],
-            }
-        },
-        {},
-    )
-    structured = output["fact_envelope"]["structured_facts"]
-
-    assert structured["store_resolution_fact"]["delivery_mode"] == "send_recommended"
-    messages, changed = _append_required_store_address_actions(
-        [{"type": "text", "order": 1, "content": {"text": "当前优先看这家。"}}],
-        output,
-    )
-    assert changed is True
-    assert [
-        item["content"]["store_id"]
-        for item in messages
-        if item["type"] == "store_address"
-    ] == ["342"]
-
-
 def test_reply_validation_allows_distance_rank_without_numeric_value() -> None:
     validate_reply_consistency(
         [
@@ -5297,70 +5152,6 @@ def test_complete_store_listing_does_not_treat_customer_origin_as_card_mismatch(
     )
 
 
-def test_reply_validation_requires_all_cards_for_small_complete_store_listing() -> None:
-    state = {
-        "fact_envelope": {
-            "structured_facts": {
-                "store_lookup_status": {
-                    "purpose": "existence",
-                    "status": "ok",
-                    "city": "荆州市",
-                    "resolved_admin_level": "city",
-                    "exact_scope_has_store": True,
-                    "candidate_count": 2,
-                },
-                "store_facts": [
-                    {"store_id": "241", "store_name": "荆州万达店", "city": "荆州市"},
-                    {"store_id": "242", "store_name": "荆州沙市店", "city": "荆州市"},
-                ],
-            }
-        }
-    }
-    with pytest.raises(ValueError, match="complete_store_listing_cards_required"):
-        validate_reply_consistency([{"type": "text", "order": 1, "content": "荆州有两家门店。"}], state)
-
-    validate_reply_consistency(
-        [
-            {"type": "text", "order": 1, "content": "荆州有两家门店，我都发您。"},
-            {"type": "store_address", "order": 2, "content": {"store_id": "241"}},
-            {"type": "store_address", "order": 3, "content": {"store_id": "242"}},
-        ],
-        state,
-    )
-
-
-def test_reply_validation_requires_public_card_when_arrival_guidance_is_missing() -> None:
-    state = {
-        "planner_sub_rule_id": "S2_ADDRESS_PARKING_HOURS",
-        "closing_move": {"action": "ask_visit_intent"},
-        "fact_envelope": {
-            "structured_facts": {
-                "store_lookup_status": {"purpose": "detail", "status": "ok"},
-                "store_facts": [
-                    {
-                        "store_id": "383",
-                        "store_name": "杭州富阳店",
-                        "address": "杭州市富阳区公开地址",
-                    }
-                ],
-            }
-        },
-    }
-    with pytest.raises(ValueError, match="store_detail_public_card_required"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": "具体楼号登记到店意向后发您，您哪天过去？"}],
-            state,
-        )
-
-    validate_reply_consistency(
-        [
-            {"type": "text", "order": 1, "content": "具体楼号登记到店意向后发您，我先把公开位置发您核对。"},
-            {"type": "store_address", "order": 2, "content": {"store_id": "383"}},
-        ],
-        state,
-    )
-
-
 def test_reply_validation_does_not_require_public_card_when_arrival_guidance_exists() -> None:
     state = {
         "planner_sub_rule_id": "S2_ADDRESS_PARKING_HOURS",
@@ -5384,58 +5175,6 @@ def test_reply_validation_does_not_require_public_card_when_arrival_guidance_exi
         [{"type": "text", "order": 1, "content": "门店在2楼205室，您哪天过去？"}],
         state,
     )
-
-
-def test_reply_validation_requires_city_cards_from_customer_visible_scope_without_tool_call() -> None:
-    state = {
-        "normalized_content": "荆州的店发我",
-        "customer_store_knowledge": {
-            "stores": [
-                {
-                    "store_id": "241",
-                    "store_name": "荆州万达店",
-                    "province": "湖北省",
-                    "city": "荆州市",
-                    "district": "荆州区",
-                },
-                {
-                    "store_id": "242",
-                    "store_name": "荆州沙市店",
-                    "province": "湖北省",
-                    "city": "荆州市",
-                    "district": "沙市区",
-                },
-            ]
-        },
-    }
-    with pytest.raises(ValueError, match="complete_store_listing_cards_required"):
-        validate_reply_consistency([{"type": "text", "order": 1, "content": "荆州有两家门店。"}], state)
-    with pytest.raises(ValueError, match="complete_store_listing_cards_required"):
-        validate_reply_consistency(
-            [
-                {"type": "text", "order": 1, "content": "荆州有两家门店，我先发一家。"},
-                {"type": "store_address", "order": 2, "content": {"store_id": "241"}},
-            ],
-            state,
-        )
-
-    validate_reply_consistency(
-        [
-            {"type": "text", "order": 1, "content": "荆州有两家门店，我都发您。"},
-            {"type": "store_address", "order": 2, "content": {"store_id": "241"}},
-            {"type": "store_address", "order": 3, "content": {"store_id": "242"}},
-        ],
-        state,
-    )
-    validate_reply_consistency(
-        [{"type": "text", "order": 1, "content": "好，就按荆州区这家给您接着看。"}],
-        {**state, "normalized_content": "我看荆州区这家"},
-    )
-    with pytest.raises(ValueError, match="complete_store_listing_cards_required"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": "荆州市区可以做。"}],
-            {**state, "normalized_content": "我在荆州市区"},
-        )
 
 
 def test_reply_validation_does_not_treat_province_scope_as_complete_city_listing() -> None:
@@ -5705,36 +5444,6 @@ def test_reply_validation_allows_province_fallback_after_township_resolution() -
     )
 
 
-def test_required_store_cards_are_appended_before_unrelated_text_repair() -> None:
-    state = {
-        "fact_envelope": {
-            "structured_facts": {
-                "store_resolution_fact": {
-                    "resolved_admin_level": "city",
-                    "visible_candidate_ids": ["241", "242"],
-                    "delivery_mode": "send_all_candidates",
-                },
-                "store_facts": [
-                    {"store_id": "241", "store_name": "荆州万达店"},
-                    {"store_id": "242", "store_name": "荆州沙市店"},
-                ],
-            }
-        }
-    }
-
-    messages, changed = _append_required_store_address_actions(
-        [{"type": "text", "order": 1, "content": "两家门店我发您，再给您看案例。"}],
-        state,
-    )
-
-    assert changed is True
-    assert [
-        item["content"]["store_id"]
-        for item in messages
-        if item.get("type") == "store_address"
-    ] == ["241", "242"]
-
-
 def test_reply_validation_allows_store_cards_when_province_message_has_known_city_fact() -> None:
     state = {
         "normalized_content": "四川这边有吗",
@@ -5832,40 +5541,6 @@ def test_reply_validation_does_not_force_all_cards_for_large_or_failed_listing()
     validate_reply_consistency([{"type": "text", "order": 1, "content": "这个地名还需要补一下城市。"}], no_match_state)
 
 
-def test_reply_validation_requires_distance_recommended_store_card() -> None:
-    state = {
-        "fact_envelope": {
-            "structured_facts": {
-                "store_lookup_status": {
-                    "source": "distance_calculate",
-                    "recommendation_status": "ok",
-                    "candidate_count": 2,
-                    "comparable_candidate_count": 2,
-                },
-                "store_facts": [
-                    {"store_id": "101", "store_name": "厦门百星湖里店"},
-                    {"store_id": "102", "store_name": "厦门百星思明店"},
-                ],
-                "recommended_store": {
-                    "store_id": "101",
-                    "store_name": "厦门百星湖里店",
-                    "reason": "distance_calculate_rank_1",
-                },
-            }
-        }
-    }
-    with pytest.raises(ValueError, match="recommended_store_card_required"):
-        validate_reply_consistency([{"type": "text", "order": 1, "content": "优先看湖里这家。"}], state)
-
-    validate_reply_consistency(
-        [
-            {"type": "text", "order": 1, "content": "优先看湖里这家。"},
-            {"type": "store_address", "order": 2, "content": {"store_id": "101"}},
-        ],
-        state,
-    )
-
-
 @pytest.mark.parametrize(
     "pause_text",
     [
@@ -5895,74 +5570,6 @@ def test_health_risk_validation_accepts_clear_pause_synonyms(pause_text: str) ->
     )
 
 
-def test_reply_structure_appends_all_required_small_listing_store_cards() -> None:
-    state = {
-        "normalized_content": "荆州市有门店吗",
-        "fact_envelope": {
-            "structured_facts": {
-                "store_resolution_fact": {
-                    "raw_place": "荆州市",
-                    "resolved_admin_level": "city",
-                    "visible_candidate_ids": ["241", "242"],
-                    "delivery_mode": "send_all_candidates",
-                },
-                "store_facts": [
-                    {"store_id": "241", "store_name": "荆州万达店", "city": "荆州市"},
-                    {"store_id": "242", "store_name": "荆州沙市店", "city": "荆州市"},
-                ],
-            }
-        },
-    }
-    messages, changed = _append_required_store_address_actions(
-        [
-            {"type": "text", "order": 1, "content": "荆州这边有两家，我都发您。"},
-            {"type": "text", "order": 2, "content": "您脸上的斑点大概多久了？"},
-        ],
-        state,
-    )
-    assert changed is True
-    assert [
-        item["content"]["store_id"]
-        for item in messages
-        if item["type"] == "store_address"
-    ] == ["241", "242"]
-
-
-def test_reply_structure_appends_only_ranked_recommended_store_card() -> None:
-    state = {
-        "normalized_content": "哪个离我更近",
-        "fact_envelope": {
-            "structured_facts": {
-                "store_lookup_status": {
-                    "source": "distance_calculate",
-                    "recommendation_status": "ok",
-                    "candidate_count": 2,
-                    "comparable_candidate_count": 2,
-                },
-                "store_facts": [
-                    {"store_id": "303", "store_name": "成都双流店"},
-                    {"store_id": "304", "store_name": "成都高新店"},
-                ],
-                "recommended_store": {
-                    "store_id": "303",
-                    "store_name": "成都双流店",
-                    "reason": "distance_calculate_rank_1",
-                },
-            }
-        },
-    }
-    messages, changed = _append_required_store_address_actions(
-        [{"type": "text", "order": 1, "content": "按定位排序，双流店相对更方便，我把卡片发您。"}],
-        state,
-    )
-    assert changed is True
-    assert [
-        item["content"]["store_id"]
-        for item in messages
-        if item["type"] == "store_address"
-    ] == ["303"]
-
-
 def test_single_haversine_candidate_is_a_valid_single_delivery_fact() -> None:
     output = build_planner_fact_output(
         {
@@ -5987,11 +5594,10 @@ def test_single_haversine_candidate_is_a_valid_single_delivery_fact() -> None:
     assert structured["store_lookup_status"]["comparable_candidate_count"] == 1
     assert structured["store_resolution_fact"]["status"] == "send_single"
     assert structured["store_resolution_fact"]["delivery_store_ids"] == ["12"]
-    with pytest.raises(ValueError, match="store_resolution_send_single_contract_violation"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "给您优先这家：厦门思明店。"}}],
-            output,
-        )
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "给您优先这家：厦门思明店。"}}],
+        output,
+    )
 
 
 def test_reply_validation_allows_asking_location_before_nearby_matching() -> None:

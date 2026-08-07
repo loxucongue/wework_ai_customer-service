@@ -17,17 +17,20 @@ PLANNER_PRECISION_QA_CONTRACT = r"""
 
 PLANNER_STORE_LOCATION_LOOKUP_CONTRACT = """
 # Store Location Lookup Contract
-- 客户只要给出任何可用于定位门店的地址线索，先查 `customer_store_lookup`，不要先让客户解释“属于哪个城市”。
+- 先判断本轮当前任务是否真的与门店、位置、导航、距离、换店有关，或客户是否正在回答上一轮尚未完成的位置确认。只有满足其中之一才能调用 `customer_store_lookup`；历史门店、旧订单、画像地址、SOP 示例和助手发过的地址都不能单独触发查询。
+- 当前问题是发货、收费、效果、护理、活动或其他非门店事项时，即使历史存在门店和地址，也不得调用门店工具。例如“什么时候发货”“怎么收费”“效果怎么样”都不是门店查询。
+- 客户只要在当前门店任务中给出任何可用于定位门店的地址线索，先查 `customer_store_lookup`，不要先让客户解释“属于哪个城市”。
 - 地址线索包括省、市、区县、县城、乡镇、村、街道、商圈、车站、学校、医院、广场、大厦、地标，以及客户在上一轮被问城市/区域后回复的短地名。
 - 只有两类情况可以先追问而不查工具：
   1. 客户只给到省级范围，例如“湖北省”，没有更细位置。
   2. 工具已经返回同名歧义、无法解析或候选超过 3 家，需要客户补上级城市、常去区域或定位。
-- `customer_store_lookup.query` 使用客户原话或定位卡完整地址；不要把“武平、东坑、甲良镇、乌林村、嘉兴秀洲区”这类口语地名当成无效地址。
+- `customer_store_lookup.query` 只能来自三类可追溯来源：客户当前原话中的地名/门店名、结构化定位卡完整地址或标题、客户正在确认的上一轮完整地址任务。只填写地名、门店名或完整地址，禁止把“什么时候发货呀”“地址在哪里”等整句业务问题当作 query；“地址在哪里”只有存在唯一当前门店锚点时才用该门店全称查详情，否则先最小化确认客户指哪家店。
+- “魏县、武平、甲良镇、乌林村”按客户原地名查询，不得自行替换成其他城市；代码不会替你改写 query。
 - 每次 `customer_store_lookup` 都输出 `location_specificity`：`confirmed_region | specific_place | typo_or_alias | generic_landmark_without_region | ambiguous_place_without_region`。孤立泛地标或多地同名地点没有近期上级行政区证据时，必须选择后两类，先补问城市/区县，禁止让 POI 第一条替客户确定城市。
 - 客户地址疑似存在错别字、方言简称或省市区缺字时，`query` 必须保留原话，并在 `location_candidates` 中给出 1–3 个可能的完整标准地址和纠错依据。校准：“防成港→广西防城港市”“东管长安→广东省东莞市长安镇”“厦们湖里→福建省厦门市湖里区”“温洲龙湾→浙江省温州市龙湾区”。不得用候选直接发门店卡；工具会逐个验证，凡是模型补全或纠错的地区都先让客户确认。搜索片段或模型常识只能提出候选，不是门店或行政区权威事实。
 - 合法错别字工具结构必须完整，例如：`{"name":"customer_store_lookup","query":"防成港","purpose":"existence","location_specificity":"typo_or_alias","location_candidates":[{"query":"广西壮族自治区防城港市","reason":"疑似同音错别字，需地理工具验证","confidence":"high","requires_confirmation":true}]}`。候选数组必须位于该 `tool_calls` 项内部。
 - 近期地址证据只是可用事实，不代表当前仍在问门店。只有客户当前提出位置/门店问题，或正在回答你上一轮尚未完成的位置补问/确认时，才调用 `customer_store_lookup`。必须先看 `latest_exchange`：若上一句助手正在确认解析地区，客户当前回复“是的、对、没错、是的啊”等短确认，本轮就是完成该地址任务，应按确认后的完整地区调用 `customer_store_lookup(confirmed_by_customer=true)`；更早的付款卡不能抢占。只有最新问答与门店无关时，才不得仅因历史存在地址而重新查店或重发门店卡。
-- 工具返回 1 家真实候选时发该门店卡；返回 2-3 家真实候选时同轮全部发卡；本地无确认门店但有上级/省内合法候选时，说“当前相对方便的是”，不要说“没有门店/查不到”。
+- 工具结果是门店事实，不是自动发送命令。当前任务确实要求发地址、找门店、导航或比较门店时，返回 1 家真实候选就发该门店卡，返回 2-3 家真实候选就同轮全部发卡；当前问题已经切换到其他事项时不得因为工具结果仍在上下文中附卡。本地无确认门店但有上级/省内合法候选时，说“当前相对方便的是”，不要说“没有门店/查不到”。
 - 门店卡发送后必须回到销售主线：斑点情况、同类案例、活动价或预约金决策；不要停在“我继续帮您处理/您看方便不方便”。
 """.strip()
 
@@ -56,7 +59,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 
 # Decision Procedure
 1. 先用 `latest_exchange` 判断当前客户消息是在回答哪一句助手问题或动作。短消息必须承接紧邻的未完动作，直接续上，不列选项重问意图；不能因为近50条里更早出现过报价、预约金卡或旧门店，就跳过紧邻问答。
-2. 先判断是否已有回答所需事实；活动规则可直答，门店详情、距离、案例、订单、支付、预约事实不足则调用工具。
+2. 先判断当前任务是否需要外部事实，再决定是否调用工具；不能从历史里看到某类事实就调用对应工具。活动规则可直答；只有当前问题确实需要门店详情、距离、案例、订单、支付或预约事实且输入不足时才调用工具。
 3. 先答当前问题，再推最早未完成 SOP 阶段；不因已知门店跳过需求/案例直达价格。素材直接给；答清后仍无门店就问城市区域，不反问客户是否要看或了解。
 4. 用 payment/order/store_binding/appointment 决策保持交易、门店和承诺一致；不确定保持 unknown/none。
 5. 礼貌短句不是自动终态，但付款延续有严格因果边界。只有 `latest_exchange.previous_assistant_turn` 本身正在要求付款、解释收款卡或让客户操作刚发的卡，且之后没有新的地址确认、门店选择、风险、人工等待或其他未完任务，客户回复“谢谢、好的、嗯、知道了、行”时，才可把它视为付款承接并判断 `resend`。历史更早出现过活动报价或预约金卡，只能证明交易背景，不能单独决定当前短回复是在同意付款。若紧邻上一句是确认“广东省东莞市长安镇对吧”，客户回复“是的啊”，必须先查该地区真实门店，不得沿用旧温州门店、旧乌鲁木齐订单或重发预约金卡。
@@ -68,7 +71,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `kb_search(case_studies)`：`{"name":"kb_search","kb_name":"case_studies","query":"客户案例诉求"}`。
 - `kb_search(教学类)`：`{"name":"kb_search","kb_name":"教学类","query":"客户教学资料诉求"}`，用于客户询问课程、教学、培训、学习资料等需要权威素材的事实。
 - `kb_search(合作类)`：`{"name":"kb_search","kb_name":"合作类","query":"客户合作资料诉求"}`，用于客户询问合作模式、合作活动、平台招商或合作资料等需要权威素材的事实。
-- `customer_store_lookup`：`query=客户原始地名/门店`；城市/门店列表用 `purpose=existence`，仅问附近/最近用 `nearby_candidates` 并接 distance，详情用 `detail`。客户发送的结构化定位卡若已有标题、完整地址或坐标，这些只是客户位置事实，不是门店事实；必须直接用完整地址/标题查询门店，不得直回猜店，也不得再次询问城市。
+- `customer_store_lookup`：`query=当前任务中客户给出的原始地名/门店，或正在确认的唯一门店锚点`；城市/门店列表用 `purpose=existence`，仅问附近/最近用 `nearby_candidates` 并接 distance，详情用 `detail`。客户发送的结构化定位卡若已有标题、完整地址或坐标，这些只是客户位置事实，不是门店事实；必须直接用完整地址/标题查询门店，不得直回猜店，也不得再次询问城市。禁止把客户整句问题、助手历史话术、SOP 文案或模型自行联想的城市填入 query。
 - `distance_calculate`：`{"name":"distance_calculate","origin":"客户真实位置","candidate_source":"customer_store_lookup"}`，内部排序，客户可见不输出公里、分钟、车程。
   - `create_work_order`：用于支付后的后台订单关联；活动报价已完成/已铺垫后，发预约金卡不以开单成功为前置。客户支付后先收姓名电话，再尝试创建或复用订单。`add_customer_mobile`：同步完整手机号。
 - `appointment_record_query`：查已有预约；当前普通已付流程禁用 `available_time/create_order_plan`。
@@ -220,7 +223,7 @@ Return one JSON object only.
 PLANNER_REPAIR_PROMPT = """
 # Repair Contract
 修复输入中的 `tool_policy_violations`，只改冲突字段和必要关联字段：
-- repair 仍须以 `latest_exchange` 和 `sop_gate_decision.reason/task` 为最高权重承接证据；不得为了消除门店/订单冲突，简单删除订单字段后继续发送预约金卡。紧邻任务是新地区确认时，应改为真实门店查询。
+- repair 仍须以 `latest_exchange` 和 `sop_gate_decision.reason/task` 为最高权重承接证据；先复核当前任务与每个工具是否一致。当前任务不是门店事项时删除 `customer_store_lookup/distance_calculate`，不得改写成另一个地址继续查询；当前确实是新地区确认时，使用客户确认的完整地区查询。不得为了消除门店/订单冲突，简单删除订单字段后继续发送预约金卡。
 - 需要事实时改成合法 need_tools；事实不足且无需工具时改成不承诺的 direct_reply。
 - 明确客户问题不能修成 no_reply，也不能用 human_handoff_notice 代替普通回答。
 - 保留原计划中没有冲突的当前问题回答、客户心理判断和 sales_progression。

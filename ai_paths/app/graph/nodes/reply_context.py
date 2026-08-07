@@ -22,6 +22,7 @@ from app.policies.compliance_terms import (
     UNSUPPORTED_SERVICE_COMMITMENT_CONTEXT_TERMS,
 )
 from app.services.risk_hold import current_health_risk_hold_for_model
+from app.services.store_resolution_v2 import customer_location_hint_texts
 
 
 def reply_user_payload_for_model(state: AgentState) -> dict[str, Any]:
@@ -660,8 +661,7 @@ def _available_time_fact_note(item: dict[str, Any], content: str) -> str:
 def _store_scope_location_hints_for_reply(state: AgentState) -> list[str]:
     basic = state.get("customer_basic_info") if isinstance(state.get("customer_basic_info"), dict) else {}
     values = [
-        state.get("normalized_content") or state.get("content"),
-        *[str(item or "").strip() for item in (state.get("conversation_history") or [])[-6:]],
+        *customer_location_hint_texts(state, limit=6),
         basic.get("province"),
         basic.get("city") or basic.get("current_city"),
         basic.get("district") or basic.get("area_or_landmark") or basic.get("region"),

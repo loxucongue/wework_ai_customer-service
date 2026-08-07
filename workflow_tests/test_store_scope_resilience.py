@@ -684,6 +684,24 @@ def test_store_lookup_does_not_use_snapshot_region_fallback_for_generic_question
     assert output["missing"] == ["city_or_district"]
 
 
+def test_store_lookup_does_not_invent_query_from_current_business_message() -> None:
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "purpose": "existence"},
+            {
+                "normalized_content": "什么时候发货呀？",
+                "customer_store_knowledge": {"source": "platform_scope", "stores": []},
+            },
+            _FakeCoze(),  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "missing_query"
+    assert output["raw_query"] == ""
+    assert output["query"] == ""
+    assert output["stores"] == []
+
+
 def test_store_lookup_strips_structured_location_label_and_prefers_text_scope() -> None:
     output = asyncio.run(
         _customer_store_lookup(
