@@ -14,6 +14,7 @@ from app.graph.planner.brain_v2 import (
 from app.graph.planner.brain_v2_normalizer import build_planner_plan_v2
 from app.graph.planner.brain_v2_prompts import (
     PLANNER_RISK_PATCH_PROMPT,
+    PLANNER_STORE_LOCATION_LOOKUP_CONTRACT,
     PLANNER_SYSTEM_PROMPT,
     PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT,
     PLANNER_TRANSACTION_PATCH_PROMPT,
@@ -687,6 +688,36 @@ def test_sop_gate_hands_location_slot_completion_to_ai() -> None:
         "门店、定位、图片、订单",
     ]:
         assert marker in source
+
+
+def test_sop_gate_short_ack_after_location_uses_ai_only_light_bridge() -> None:
+    source = (ROOT / "ai_paths/app/prompts/sop_chat_gate.py").read_text(encoding="utf-8")
+    for marker in [
+        "客户当前只是“好/好的/嗯/可以/知道了/行”等短确认",
+        "不要把这类短确认当成 `/sop/events` 沉默触达来发送完整需求案例包或活动包",
+        "优先选择 `ai_only`",
+        "只用一条自然 text 推进一个未完成主线动作",
+        "除非客户当前明确问效果/案例、活动/价格，才允许选择对应 SOP 包",
+    ]:
+        assert marker in source
+    repair = source[source.index("SOP_CHAT_GATE_REPAIR_PROMPT") :]
+    assert "不要改选完整案例包或活动包" in repair
+    assert "交普通 AI 轻承接最近门店上下文" in repair
+
+
+def test_planner_and_reply_short_ack_after_store_context_do_not_reopen_store() -> None:
+    joined = "\n".join(
+        [PLANNER_SYSTEM_PROMPT, PLANNER_STORE_LOCATION_LOOKUP_CONTRACT, REPLY_SYSTEM_PROMPT]
+    )
+    for marker in [
+        "客户当前只回复“好/好的/嗯/可以/知道了/行”等短确认",
+        "不要再说“继续给您对门店/匹配门店/更常去哪一块/确认店/接着看门店/继续看门店”",
+        "回复里不要再说“继续给您对门店、匹配门店、看附近门店、更常去哪一块、再确认店、接着看门店、继续看门店”",
+        "直接接一个下一主线动作",
+        "不要让客户二选一“看效果还是看活动”",
+        "不要让客户先发照片",
+    ]:
+        assert marker in joined
 
 
 def test_sop_gate_prefers_activity_pack_for_activity_and_payment_questions() -> None:

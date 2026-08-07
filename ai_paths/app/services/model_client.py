@@ -668,6 +668,7 @@ class ModelClient:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(timeout, connect=connect_timeout),
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=50),
+                trust_env=bool(self.settings.model_http_trust_env),
             )
             self._client_timeout = timeout
             self._client_loop_id = loop_id

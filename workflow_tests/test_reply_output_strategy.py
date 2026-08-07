@@ -3086,7 +3086,7 @@ def test_current_bare_location_lookup_query_is_not_rejected_as_history_anchor() 
     )
 
 
-def test_short_non_location_message_cannot_reopen_historical_store_lookup() -> None:
+def test_short_non_location_message_does_not_get_tool_deleted_by_normalizer() -> None:
     plan = build_planner_plan_v2(
         {
             "normalized_content": "好的",
@@ -3114,10 +3114,18 @@ def test_short_non_location_message_cannot_reopen_historical_store_lookup() -> N
         },
     )
 
-    assert any(
-        item.get("missing") == "store_lookup_not_relevant_to_current_turn"
+    assert not any(
+        item.get("missing") == "store_lookup_not_relevant_to_current_turn_removed"
         for item in plan["tool_policy_violations"]
     )
+    assert plan["planner_decision"] == "need_tools"
+    assert plan["planner_tool_calls"] == [
+        {
+            "name": "customer_store_lookup",
+            "purpose": "existence",
+            "query": "浙江省温州市龙湾区",
+        }
+    ]
 
 
 def test_bare_location_answer_after_store_prompt_is_normalized_to_store_lookup() -> None:

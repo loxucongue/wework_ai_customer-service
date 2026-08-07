@@ -243,7 +243,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output["reply_source"], "main_model")
         self.assertEqual(output["reply_messages"][0]["content"], "这是最终回复模型生成的成品。")
 
-    async def test_reply_model_failure_can_use_valid_planner_draft_with_non_visible_tool_policy_violations(self) -> None:
+    async def test_valid_planner_draft_with_non_visible_tool_policy_violations_only_after_reply_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             node = create_synthesize_reply_node(
                 trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),

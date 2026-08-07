@@ -145,6 +145,32 @@ class StoreAddressMessageTests(unittest.TestCase):
             )
         )
 
+    def test_reply_validation_allows_scope_backed_store_card_without_current_turn_business_gate(self) -> None:
+        messages = [
+            {"type": "text", "order": 1, "content": "好嘞，我把龙湾区位置再发您。"},
+            {"type": "store_address", "order": 2, "content": {"store_id": "701"}},
+        ]
+        state = {
+            "normalized_content": "\u597d\u7684",
+            "conversation_history": [
+                "\u7528\u6237: \u6211\u5728\u6d59\u6c5f\u7701\u6e29\u5dde\u5e02\u9f99\u6e7e\u533a",
+                "\u5c0f\u8d1d: \u9f99\u6e7e\u533a\u8fd9\u8fb9\u6211\u8bb0\u4e0b\u4e86\u3002",
+            ],
+            "customer_store_knowledge": {
+                "stores": [
+                    {
+                        "store_id": "701",
+                        "store_name": "\u6e29\u5dde\u9f99\u6e7e\u5e97",
+                        "province": "\u6d59\u6c5f\u7701",
+                        "city": "\u6e29\u5dde\u5e02",
+                        "district": "\u9f99\u6e7e\u533a",
+                    }
+                ]
+            },
+        }
+
+        validate_reply_consistency(messages, state)
+
     def test_reply_validation_allows_requested_district_cards_with_followup_text(self) -> None:
         messages = [
             {"type": "text", "order": 1, "content": "双流这边这几家门店我都发您看下。"},

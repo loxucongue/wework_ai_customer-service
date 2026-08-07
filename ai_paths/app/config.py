@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     anthropic_version: str = "2023-06-01"
     model_max_tokens: int = 4096
     model_response_format_enabled: bool = True
+    model_http_trust_env: bool = False
     model_relay_reasoning_control_enabled: bool = True
     model_reasoning_enabled: bool = False
     model_reasoning_effort: str = "low"

@@ -322,7 +322,7 @@
       "id": "store_v2_non_location_short_message",
       "category": "门店V2",
       "critical": true,
-      "semantic_goal": "客户在旧地址对话后只说好的，不得启动新门店查询或重复发卡。",
+      "semantic_goal": "客户在旧地址对话后只说好的，不得启动新门店查询或重复发门店卡；允许轻承接已记录地区后推进一个主线动作，例如询问斑点时长或类型。",
       "initial": {"conversation": ["用户: 我在浙江省温州市龙湾区", "小贝: 龙湾区这边我记下了。"]},
       "timeline": [{"kind": "customer_message", "content": "好的"}],
       "expected": {"must_reply": true, "forbidden_types": ["store_address"]}

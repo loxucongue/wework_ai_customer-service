@@ -174,6 +174,15 @@ class ModelTimeoutAndPlannerPayloadTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(http_client.timeout.connect, 5)
         self.assertEqual(http_client.timeout.read, 45)
+        self.assertFalse(http_client.trust_env)
+        await client.aclose()
+
+    async def test_model_client_can_opt_into_environment_proxy_settings(self) -> None:
+        client = ModelClient(_settings(model_http_trust_env=True))
+
+        http_client = client._http_client()
+
+        self.assertTrue(http_client.trust_env)
         await client.aclose()
 
     def test_planner_retries_primary_once_then_falls_back_to_qwen_turbo(self) -> None:
