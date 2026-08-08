@@ -74,19 +74,23 @@ def personalized_payment_collection_eligibility(
         required_amount = 0
     deposit_state = str(payment.get("deposit_state") or "unknown")
     order_status = str(base.get("order_status") or "unknown")
-    eligible = bool(
-        order
-        and order_status in PERSONALIZED_ORDER_STATUSES
-        and order_id
-        and store_id
-        and required_amount == int(amount)
-        and not bool(payment.get("prepay_paid"))
-        and deposit_state not in {"paid", "paid_by_order"}
-    )
+    paid = bool(payment.get("prepay_paid")) or deposit_state in {"paid", "paid_by_order"}
+    if order_status not in {"no_order", *PERSONALIZED_ORDER_STATUSES}:
+        eligible = False
+        reason = "order_state_changed"
+    elif paid:
+        eligible = False
+        reason = "deposit_already_paid"
+    elif order and required_amount not in {0, int(amount)}:
+        eligible = False
+        reason = "payment_collection_amount_conflict"
+    else:
+        eligible = True
+        reason = "payment_collection_allowed_without_order" if not order else "pending_order_payment_allowed"
     return {
         **base,
         "eligible": eligible,
-        "reason": "matching_unpaid_order" if eligible else "payment_collection_order_not_ready",
+        "reason": reason,
         "order_id": order_id,
         "store_id": store_id,
         "prepay_required": required_amount,

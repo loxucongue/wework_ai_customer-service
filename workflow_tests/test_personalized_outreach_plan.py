@@ -487,7 +487,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(message["msgtype"])
                 self.assertTrue(message["created_at"])
 
-    def test_payment_collection_requires_matching_unpaid_platform_order(self) -> None:
+    def test_payment_collection_does_not_require_matching_unpaid_platform_order(self) -> None:
         no_order = personalized_payment_collection_eligibility(
             {"source": "platform_agent", "orders": []},
             amount=10,
@@ -509,9 +509,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             amount=10,
         )
 
-        self.assertFalse(no_order["eligible"])
-        self.assertEqual(no_order["reason"], "payment_collection_order_not_ready")
+        self.assertTrue(no_order["eligible"])
+        self.assertEqual(no_order["reason"], "payment_collection_allowed_without_order")
         self.assertTrue(matching_order["eligible"])
+        self.assertEqual(matching_order["reason"], "pending_order_payment_allowed")
         self.assertEqual(matching_order["order_id"], "order-unpaid")
 
     def test_plan_normalizer_wraps_text_content_in_reply_message_object(self) -> None:

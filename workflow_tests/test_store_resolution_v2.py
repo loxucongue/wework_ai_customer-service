@@ -553,6 +553,28 @@ def test_distance_calculate_reuses_confirmed_lookup_coordinates() -> None:
     assert client.calls == []
 
 
+def test_distance_calculate_missing_origin_does_not_fallback_to_current_message() -> None:
+    stores = [_store("1", "Store 1", location="120.821,27.911")]
+    client = _GeocodeClient({})
+
+    result = asyncio.run(
+        _distance_calculate(
+            {
+                "name": "distance_calculate",
+                "candidate_source": "customer_store_lookup",
+            },
+            {"normalized_content": "do not geocode this whole customer message"},
+            client,  # type: ignore[arg-type]
+            {"customer_store_lookup": {"candidate_stores": stores}},
+        )
+    )
+
+    assert result["status"] == "missing_origin"
+    assert result["error"] == "missing_origin"
+    assert result["candidate_stores"]
+    assert client.calls == []
+
+
 def test_planner_fact_output_emits_single_v2_delivery_contract() -> None:
     stores = [
         {**_store("1", "近店", location="120.821,27.911"), "distance_km": 0.2, "distance_source": "haversine"},

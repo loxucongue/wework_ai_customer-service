@@ -1736,7 +1736,7 @@ async def _distance_calculate(
     coze_client: CozeClient,
     tool_results: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or state.get("normalized_content") or "").strip()
+    origin = str(tool.get("origin") or tool.get("address") or tool.get("query") or "").strip()
     geocode_origin = _normalize_distance_origin_from_store_regions(_normalize_known_landmark_origin(origin), state)
     raw_candidates = _distance_candidate_stores(tool, state, tool_results or {})
     all_candidates, invalid_candidates = filter_valid_store_facts(

@@ -441,6 +441,9 @@ def test_reply_actual_messages_keep_precision_rules_and_stage_business_rules() -
         "本轮唯一的具体收尾动作",
         "introduce_offer",
         "当轮主动落到活动",
+        "到店再付",
+        "10元是锁优惠名额/活动价",
+        "交预约金后会发会员码",
     ]:
         assert marker in joined
 

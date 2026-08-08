@@ -976,10 +976,8 @@ def _store_ids_in_requested_scope(store_ids: set[str], state: dict[str, Any]) ->
 
 def _validate_store_address_card_consistency(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
     text = _combined_text(messages)
-    current_content = str(state.get("normalized_content") or state.get("content") or "")
     promises_card = _promises_store_address_card(text)
-    customer_requests_card = _current_message_requests_store_address_card(current_content)
-    if not promises_card and not (customer_requests_card and _current_turn_store_address_ids(state)):
+    if not promises_card:
         return
     if any(isinstance(item, dict) and str(item.get("type") or "") == "store_address" for item in messages):
         return
@@ -1225,13 +1223,6 @@ def _allowed_store_address_ids(state: dict[str, Any]) -> set[str]:
     recommended = structured.get("recommended_store")
     if isinstance(recommended, dict) and _store_fact_allowed_by_customer_scope(recommended, scope_ids):
         _add_store_id(allowed, recommended)
-    for item in structured.get("appointment_facts") or []:
-        if isinstance(item, dict):
-            _add_store_id(allowed, item)
-    for key in ("confirmed_store_id", "store_id"):
-        value = str(state.get(key) or "").strip()
-        if value and value != "0":
-            allowed.add(value)
     allowed.update(store_scope_ids(knowledge))
     for region in _store_scope_summary_regions(state):
         for key in ("stores", "requested_district_stores"):

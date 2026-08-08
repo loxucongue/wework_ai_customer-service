@@ -3375,6 +3375,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(GLOBAL_BUSINESS_RHYTHM_CONTRACT, system_prompt)
         self.assertIn("先做拒发审查", system_prompt)
         self.assertIn("客户当前立场与候选包的核心行动相反", system_prompt)
+        self.assertIn("时间/预约金卡点", system_prompt)
+        self.assertIn("不要直接帮客户约到店", system_prompt)
         self.assertIn("阶段目标 + 核心事实 + 行动目标", system_prompt)
         self.assertIn("企业微信一对一聊天", system_prompt)
         self.assertIn("尊敬的客户/尊敬的顾客", system_prompt)

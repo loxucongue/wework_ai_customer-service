@@ -5753,28 +5753,26 @@ def test_reply_validation_requires_store_card_when_promising_navigation() -> Non
         )
 
 
-def test_reply_validation_requires_store_card_when_customer_requests_location() -> None:
-    with pytest.raises(ValueError, match="store_address_message_required"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "重庆百星渝中店地址是瑞天路10号嘉陵中心A馆。"}}],
-            {
-                "content": "发个位置",
-                "normalized_content": "发个位置",
-                "fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "467", "store_name": "重庆百星渝中店"}]}},
-            },
-        )
+def test_reply_validation_allows_plain_address_text_when_customer_requests_location() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "重庆百星渝中店地址是瑞天路10号嘉陵中心A馆。"}}],
+        {
+            "content": "发个位置",
+            "normalized_content": "发个位置",
+            "fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "467", "store_name": "重庆百星渝中店"}]}},
+        },
+    )
 
 
-def test_reply_validation_requires_store_card_for_combined_address_location_request() -> None:
-    with pytest.raises(ValueError, match="store_address_message_required"):
-        validate_reply_consistency(
-            [{"type": "text", "order": 1, "content": {"text": "广州白云三店地址是白云大道北349号。"}}],
-            {
-                "content": _u(r"\u4f60\u5730\u5740\u548c\u5b9a\u4f4d\u53d1\u7ed9\u6211\u4e0b"),
-                "normalized_content": _u(r"\u4f60\u5730\u5740\u548c\u5b9a\u4f4d\u53d1\u7ed9\u6211\u4e0b"),
-                "fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "562", "store_name": "广州白云三店"}]}},
-            },
-        )
+def test_reply_validation_allows_plain_address_text_for_combined_address_location_request() -> None:
+    validate_reply_consistency(
+        [{"type": "text", "order": 1, "content": {"text": "广州白云三店地址是白云大道北349号。"}}],
+        {
+            "content": _u(r"\u4f60\u5730\u5740\u548c\u5b9a\u4f4d\u53d1\u7ed9\u6211\u4e0b"),
+            "normalized_content": _u(r"\u4f60\u5730\u5740\u548c\u5b9a\u4f4d\u53d1\u7ed9\u6211\u4e0b"),
+            "fact_envelope": {"structured_facts": {"store_facts": [{"store_id": "562", "store_name": "广州白云三店"}]}},
+        },
+    )
 
 
 def test_reply_validation_rejects_confirmed_appointment_without_fact() -> None:

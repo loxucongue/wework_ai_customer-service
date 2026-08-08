@@ -19,10 +19,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_gate_only_receives_deduplicated_applicable_scenes() -> None:
     configure_precision_qa_playbook_path(None)
     index = precision_qa_index_for_gate()
-    assert len(index) == 14
+    assert len(index) == 15
     assert all(set(item) == {"scene_id", "applicable_scene"} for item in index)
-    assert len({item["scene_id"] for item in index}) == 14
+    assert len({item["scene_id"] for item in index}) == 15
     assert all("YYHF" not in str(item) and "http" not in str(item) for item in index)
+    assert any("暂时不交预约金" in item["applicable_scene"] for item in index)
 
 
 def test_planner_only_receives_selected_scene_and_reply_receives_candidates() -> None:
@@ -94,3 +95,19 @@ def test_sop_page_exposes_appointment_blocker_workbench() -> None:
     assert "SopConfigWorkbench" in page
     assert "预约卡点话术库" in workbench
     assert "/admin/precision-qa-playbook" in route
+
+
+def test_visit_intent_deposit_objection_playbook_uses_unified_refund_wording() -> None:
+    configure_precision_qa_playbook_path(None)
+    scene = next(
+        item
+        for item in precision_qa_index_for_gate()
+        if "暂时不交预约金" in item["applicable_scene"]
+    )
+    reference = appointment_blocker_reference_for_reply(scene["scene_id"])
+    candidate = next(item for item in reference["candidates"] if item["content_id"] == "YYHF-0027")
+    serialized = str(candidate)
+    assert candidate["blocker_type"] == "没有时间/预约金顾虑"
+    assert "想到店再付" in reference["applicable_scene"]
+    assert "10元到店抵扣；未做或不满意可退，实际按付款记录核对" in serialized
+    assert "随时退还" not in serialized
