@@ -1275,6 +1275,77 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["results"][0]["reason"], "conversation_fingerprint_already_logged")
         self.assertEqual(model.calls, [])
 
+    async def test_first_day_monitor_skipped_existing_runs_do_not_starve_later_candidates(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        customer_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        skipped_candidates = []
+        for index in range(3):
+            customer_id = f"already-{index}"
+            candidate = {
+                **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+                "customer_id": customer_id,
+                "external_userid": f"external-{index}",
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+            }
+            skipped_candidates.append(candidate)
+            repository.first_day_runs_by_customer[customer_id] = {
+                "workflow_run_id": f"logged-{index}",
+                "status": "blocked",
+                "reason_code": "customer_deleted",
+                "final_decision": "no_plan",
+            }
+        target = {
+            **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+            "customer_id": "target-new",
+            "external_userid": "external-target",
+            "sales_contact_started_at": first_added_at,
+            "reply_wait_minutes": 4,
+        }
+        repository.candidates = [*skipped_candidates, target]
+        response = _ModelClient().response
+        response["steps"][0].update({"delay_minutes": 0, "scene": "store_area_request"})
+        response["steps"][1].update(
+            {"delay_minutes": 15, "urgency_level": "immediate", "scene": "trust_repair"}
+        )
+        model = _SequenceModelClient(
+            [
+                _first_day_scene_analysis(
+                    step1_scene="store_area_request",
+                    step2_scene="trust_repair",
+                ),
+                response,
+                {
+                    "decision": "pass",
+                    "block_category": "none",
+                    "violations": [],
+                    "repair_instructions": [],
+                },
+            ]
+        )
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "I will think about it.", "created_at": customer_at},
+                {"direction": "staff", "content": "No problem.", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_first_day_opened_silence_customers(
+            limit=1,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+
+        self.assertEqual(result["skipped_count"], 3)
+        self.assertEqual(result["evaluated_count"], 1)
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(repository.created_plan["customer_id"], "target-new")
+
     async def test_first_day_monitor_retries_stale_running_run_without_plan(self) -> None:
         now = datetime.now(timezone.utc)
         first_added_at = (now - timedelta(hours=1)).isoformat()
@@ -2618,6 +2689,7 @@ class _Repository:
         self.first_day_plan_count = 0
         self.list_candidate_limits: list[int] = []
         self.first_day_run_by_fingerprint: dict[str, Any] = {}
+        self.first_day_runs_by_customer: dict[str, dict[str, Any]] = {}
         self.first_day_run_updates: list[dict[str, Any]] = []
 
     def list_outreach_candidates(self, **kwargs: Any) -> list[dict[str, Any]]:
@@ -2665,9 +2737,15 @@ class _Repository:
             **kwargs,
         }
         self.first_day_run_by_fingerprint = run
+        customer_id = str(kwargs.get("customer_id") or "")
+        if customer_id:
+            self.first_day_runs_by_customer[customer_id] = dict(run)
         return dict(run)
 
-    def find_first_day_outreach_run_by_fingerprint(self, **_kwargs: Any) -> dict[str, Any]:
+    def find_first_day_outreach_run_by_fingerprint(self, **kwargs: Any) -> dict[str, Any]:
+        customer_id = str(kwargs.get("customer_id") or "")
+        if customer_id and customer_id in self.first_day_runs_by_customer:
+            return dict(self.first_day_runs_by_customer[customer_id])
         return dict(self.first_day_run_by_fingerprint)
 
     def update_first_day_outreach_run(self, workflow_run_id: str, **changes: Any) -> dict[str, Any]:

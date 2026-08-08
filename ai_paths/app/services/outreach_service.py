@@ -3835,13 +3835,39 @@ class OutreachService:
         scan_limit = max(200, min(2000, max(1, int(limit)) * 200))
         candidates = self.list_candidates(limit=scan_limit, silent_minutes_min=0)
         stats["candidate_count"] = len(candidates)
-        eligible_seen = 0
+        effective_limit = max(1, int(limit))
+        threshold_minutes = max(1, int(silent_minutes))
+
+        def _first_day_priority(candidate: dict[str, Any]) -> tuple[int, int, float, str]:
+            rough_reason = self._rough_first_day_silence_candidate_reason(
+                candidate,
+                silent_minutes=threshold_minutes,
+            )
+            if rough_reason:
+                return (1, 0, 0.0, _string(candidate.get("customer_id")))
+            reply_wait = max(0, _int(candidate.get("reply_wait_minutes"), 0))
+            outbound_at = (
+                _parse_iso(_string(candidate.get("latest_outbound_message_at")))
+                or _parse_iso(_string(candidate.get("last_staff_message_at")))
+                or _parse_iso(_string(candidate.get("last_ai_reply_at")))
+                or _parse_iso(_string(candidate.get("updated_at")))
+            )
+            outbound_ts = outbound_at.timestamp() if outbound_at else 0.0
+            return (
+                0,
+                max(0, reply_wait - threshold_minutes),
+                -outbound_ts,
+                _string(candidate.get("customer_id")),
+            )
+
+        candidates = sorted(candidates, key=_first_day_priority)
+        evaluated_budget_used = 0
         for candidate in candidates:
-            if eligible_seen >= max(1, int(limit)):
+            if evaluated_budget_used >= effective_limit:
                 break
             rough_reason = self._rough_first_day_silence_candidate_reason(
                 candidate,
-                silent_minutes=max(1, int(silent_minutes)),
+                silent_minutes=threshold_minutes,
             )
             if rough_reason:
                 result = {
@@ -3850,11 +3876,10 @@ class OutreachService:
                     "reason": rough_reason,
                 }
             else:
-                eligible_seen += 1
                 try:
                     result = await self._evaluate_first_day_silence_candidate(
                         candidate,
-                        silent_minutes=max(1, int(silent_minutes)),
+                        silent_minutes=threshold_minutes,
                         auto_activate=auto_activate,
                     )
                 except Exception as exc:
@@ -3871,9 +3896,11 @@ class OutreachService:
                     stats["created_count"] += 1
                 else:
                     stats["rejected_count"] += 1
+                evaluated_budget_used += 1
             elif status == "error":
                 stats["error_count"] += 1
                 stats["last_error"] = _string(result.get("error"))
+                evaluated_budget_used += 1
             else:
                 stats["skipped_count"] += 1
                 reason = _string(result.get("reason")) or "unknown"
