@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, AlertTriangle, Bot, Clock3, RefreshCw, Send, Sparkles } from "lucide-react";
+import { Activity, AlertTriangle, Bot, Clock3, MessageCircle, RefreshCw, Send, Sparkles, UserPlus } from "lucide-react";
 import {
   CartesianGrid,
   Legend,
@@ -26,6 +26,7 @@ type DashboardData = {
     avg_ms: number; p50_ms: number; p90_ms: number; p95_ms: number; trend: TrendPoint[];
     node_breakdown: Array<{ node: string; calls: number; failed: number; timeout: number; avg_ms: number; p90_ms: number }>;
   };
+  contacts: { new_contacts: number; opened_contacts: number };
   platform_sop: {
     events: number; tasks: number; sent: number; no_send: number; failed: number; retry_count: number;
     send_rate: number; avg_dispatch_ms: number | null; trend: TrendPoint[];
@@ -47,6 +48,8 @@ const ranges = [
 
 export function OperationsDashboard() {
   const [rangeHours, setRangeHours] = useState(24);
+  const [dateFrom, setDateFrom] = useState(() => todayDateInput());
+  const [dateTo, setDateTo] = useState(() => todayDateInput());
   const [corpId, setCorpId] = useState("");
   const [wechat, setWechat] = useState("");
   const [data, setData] = useState<DashboardData | null>(null);
@@ -56,8 +59,9 @@ export function OperationsDashboard() {
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
-    const end = new Date();
-    const start = new Date(end.getTime() - rangeHours * 60 * 60 * 1000);
+    const selectedRange = dateRangeToIso(dateFrom, dateTo);
+    const end = selectedRange?.end || new Date();
+    const start = selectedRange?.start || new Date(end.getTime() - rangeHours * 60 * 60 * 1000);
     const params = new URLSearchParams({ started_from: start.toISOString(), started_to: end.toISOString() });
     if (corpId.trim()) params.set("corp_id", corpId.trim());
     if (wechat.trim()) params.set("wechat", wechat.trim());
@@ -71,7 +75,7 @@ export function OperationsDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [corpId, rangeHours, wechat]);
+  }, [corpId, dateFrom, dateTo, rangeHours, wechat]);
 
   useEffect(() => {
     void load();
@@ -91,11 +95,34 @@ export function OperationsDashboard() {
         <div className="flex flex-wrap items-end gap-2">
           <div className="flex rounded-md border bg-white p-1">
             {ranges.map((item) => (
-              <Button key={item.hours} size="sm" variant={rangeHours === item.hours ? "default" : "ghost"} onClick={() => setRangeHours(item.hours)}>
+              <Button
+                key={item.hours}
+                size="sm"
+                variant={!dateFrom && !dateTo && rangeHours === item.hours ? "default" : "ghost"}
+                onClick={() => {
+                  setRangeHours(item.hours);
+                  setDateFrom("");
+                  setDateTo("");
+                }}
+              >
                 {item.label}
               </Button>
             ))}
           </div>
+          <Input
+            className="w-40 bg-white"
+            type="date"
+            value={dateFrom}
+            onChange={(event) => setDateFrom(event.target.value)}
+            title="开始日期"
+          />
+          <Input
+            className="w-40 bg-white"
+            type="date"
+            value={dateTo}
+            onChange={(event) => setDateTo(event.target.value)}
+            title="结束日期"
+          />
           <Input className="w-48 bg-white" value={corpId} onChange={(event) => setCorpId(event.target.value)} placeholder="企业 ID" />
           <Input className="w-48 bg-white" value={wechat} onChange={(event) => setWechat(event.target.value)} placeholder="接待账号" />
           <Button size="icon" variant="outline" onClick={() => void load()} disabled={loading} title="刷新">
@@ -106,7 +133,9 @@ export function OperationsDashboard() {
 
       {error && <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+        <Metric label="新加微人数" value={data?.contacts.new_contacts} detail="按当前日期范围去重" icon={UserPlus} />
+        <Metric label="开口数量" value={data?.contacts.opened_contacts} detail="客户真实消息去重" icon={MessageCircle} />
         <Metric label="AI 回复调用" value={data?.ai_reply.calls} detail={`成功率 ${percent(data?.ai_reply.success_rate)}`} icon={Bot} />
         <Metric label="AI 超时 / 失败" value={`${format(data?.ai_reply.timeout)} / ${format(data?.ai_reply.failed)}`} detail={`P90 ${duration(data?.ai_reply.p90_ms)}`} icon={AlertTriangle} tone="danger" />
         <Metric label="第三方 SOP 已发送" value={data?.platform_sop.sent} detail={`${format(data?.platform_sop.no_send)} 条模型判断不发`} icon={Send} />
@@ -196,6 +225,26 @@ function mergeTrends(data: DashboardData | null) {
   });
   add(data?.ai_reply.trend, "ai"); add(data?.platform_sop.trend, "sop"); add(data?.first_day_outreach.trend, "outreach");
   return [...merged.values()].sort((a, b) => a.bucket.localeCompare(b.bucket)).map((item) => ({ ...item, label: new Date(item.bucket).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: data?.range.bucket === "hour" ? "2-digit" : undefined, hour12: false }) }));
+}
+
+function todayDateInput() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function dateRangeToIso(dateFrom: string, dateTo: string) {
+  if (!dateFrom && !dateTo) return null;
+  const startText = dateFrom || dateTo;
+  const endText = dateTo || dateFrom;
+  const start = new Date(`${startText}T00:00:00`);
+  const end = new Date(`${endText}T00:00:00`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  const exclusiveEnd = new Date(end.getTime() + 24 * 60 * 60 * 1000 - 1);
+  if (start > exclusiveEnd) return { start: new Date(`${endText}T00:00:00`), end: new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1) };
+  return { start, end: exclusiveEnd };
 }
 
 function format(value: number | undefined) { return new Intl.NumberFormat("zh-CN").format(value || 0); }

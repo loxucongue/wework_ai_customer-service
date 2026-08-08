@@ -94,6 +94,23 @@ class OperationsDashboardRepositoryMixin:
                 """,
                 contact_params,
             ).fetchall())
+            new_contact_rows = _dict_rows(conn.execute(
+                f"""
+                SELECT customer_id, external_userid, corp_id, wechat
+                FROM conversations
+                WHERE {' AND '.join(contact_clauses).replace('started_at', 'created_at')}
+                """,
+                contact_params,
+            ).fetchall())
+            opened_contact_rows = _dict_rows(conn.execute(
+                f"""
+                SELECT c.customer_id, c.external_userid, c.corp_id, c.wechat
+                FROM messages m
+                JOIN conversations c ON c.id=m.conversation_id
+                WHERE m.role='user' AND {' AND '.join(contact_clauses).replace('started_at', 'm.created_at')}
+                """,
+                contact_params,
+            ).fetchall())
             plan_ids = [str(row.get("plan_id") or "") for row in outreach_rows if row.get("plan_id")]
             task_rows: list[dict[str, Any]] = []
             if plan_ids:
@@ -113,6 +130,7 @@ class OperationsDashboardRepositoryMixin:
             },
             "filters": {"corp_id": corp_id, "wechat": wechat},
             "ai_reply": _ai_reply_metrics(run_rows, trace_rows, bucket),
+            "contacts": _contact_metrics(new_contact_rows, opened_contact_rows),
             "platform_sop": _platform_sop_metrics(sop_rows, bucket),
             "first_day_outreach": _first_day_metrics(outreach_rows, task_rows, bucket),
             "freshness": {
@@ -121,6 +139,26 @@ class OperationsDashboardRepositoryMixin:
                 "latest_first_day_outreach_at": _latest(outreach_rows, "started_at"),
             },
         }
+
+
+def _contact_metrics(new_rows: list[dict[str, Any]], opened_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "new_contacts": len(_contact_keys(new_rows)),
+        "opened_contacts": len(_contact_keys(opened_rows)),
+    }
+
+
+def _contact_keys(rows: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
+    output: set[tuple[str, str, str]] = set()
+    for row in rows:
+        corp = str(row.get("corp_id") or "").strip().lower()
+        wechat = str(row.get("wechat") or "").strip().lower()
+        external = str(row.get("external_userid") or row.get("customer_id") or "").strip().lower()
+        customer = str(row.get("customer_id") or row.get("external_userid") or "").strip().lower()
+        identity = external or customer
+        if identity:
+            output.add((corp, wechat, identity))
+    return output
 
 
 def _dashboard_range(started_from: str, started_to: str) -> tuple[datetime, datetime]:
