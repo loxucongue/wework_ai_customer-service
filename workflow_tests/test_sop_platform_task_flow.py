@@ -14,7 +14,11 @@ from typing import Any
 from app.config import Settings
 from app.services.sop_platform_client import SopPlatformClient
 from app.services.sop_objection_material_service import SopObjectionMaterialService
-from app.services.sop_platform_task_service import SOP_PLATFORM_TASK_SYSTEM_PROMPT, SopPlatformTaskService
+from app.services.sop_platform_task_service import (
+    SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT,
+    SOP_PLATFORM_TASK_SYSTEM_PROMPT,
+    SopPlatformTaskService,
+)
 from app.services.sop_reply_pack_service import SopReplyPackService
 
 
@@ -53,8 +57,24 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不能延期、重排或创建后续任务", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
         self.assertIn("只返回小写 `json` 对象", SOP_PLATFORM_TASK_SYSTEM_PROMPT)
 
-    async def test_model_input_labels_executable_content_and_supporting_scene(self) -> None:
-        model = _Model([{"decision": "no_send", "reason": "test", "reply_messages": []}])
+    def test_platform_knowledge_prompt_has_current_business_contract(self) -> None:
+        required = (
+            "忽略平台原始待发送话术",
+            "只有硬边界才允许 `no_send`",
+            "普通沉默、普通价格/效果/距离/时间顾虑、客户说考虑一下，都必须 `send`",
+            "性别称谓必须统一改为中性称谓",
+            "当前淡斑活动价 268 元",
+            "10 元预约金，到店抵扣，做的话再付 258 元",
+            "不主动强调具体原价金额",
+            "风险承诺和退款口径由模型结合知识库与权威事实自然处理",
+            "图片/视频是重要消息类型",
+            "sceneName = 分类名 + \"｜\" + 知识库名称",
+        )
+        for item in required:
+            self.assertIn(item, SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT)
+
+    async def test_model_input_labels_original_content_as_audit_only_and_supporting_scene(self) -> None:
+        model = _Model([{"decision": "send", "reason": "test", "reply_messages": [_text("知识库生成")]}])
         service, _repo, _platform, _system = _service(model=model)
         task = _task(use_ai_copy=True)
         task.update(
@@ -72,16 +92,17 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(model.calls), 1)
         payload = json.loads(model.calls[0][1]["content"])
-        self.assertEqual(payload["task"]["message_content_role"], "executable_candidate")
+        self.assertEqual(payload["task"]["original_message_content_role"], "audit_only_ignore_for_generation")
         self.assertEqual(payload["task"]["scene_role"], "supporting_context")
         self.assertEqual(payload["task"]["platform_metadata"]["rule_id"], 81)
         self.assertEqual(payload["task"]["platform_metadata"]["scene_id"], 23)
-        self.assertEqual(payload["task"]["message_content"], [_text("平台原文")])
+        self.assertEqual(payload["task"]["original_message_content"], [_text("平台原文")])
         self.assertNotIn("sender_type", payload["task"]["platform_metadata"])
+        self.assertIn("knowledge_base", payload)
         self.assertIn("authoritative_business_facts", payload)
 
     async def test_context_uses_80_message_timeline_with_beijing_time_scale(self) -> None:
-        model = _Model([{"decision": "no_send", "reason": "test", "reply_messages": []}])
+        model = _Model([{"decision": "send", "reason": "test", "reply_messages": [_text("知识库生成")]}])
         service, _repo, _platform, system = _service(model=model)
         system.conversation_payload["data"]["messages"] = [
             {
@@ -94,7 +115,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         await service.process_task(_task(use_ai_copy=True))
 
-        self.assertEqual(system.conversation_limits, [80])
+        self.assertEqual(system.conversation_limits[0], 80)
         payload = json.loads(model.calls[0][1]["content"])
         timeline = payload["latest_context"]["conversation_timeline"]
         self.assertEqual(len(timeline), 80)
@@ -106,7 +127,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(payload["latest_context"]["timeline_structure"]["assistant_after_latest_customer"])
         self.assertNotIn("task_timing", payload["latest_context"])
 
-    async def test_material_library_is_available_for_ai_copy_conflict_repair(self) -> None:
+    async def test_platform_knowledge_base_is_available_for_model_decision(self) -> None:
         model = _Model([{"decision": "send", "reason": "material", "reply_messages": [_text("自然承接")]}])
         material_service = _Materials()
         service, _repo, _platform, system = _service(model=model, material_service=material_service)
@@ -119,10 +140,12 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         payload = json.loads(model.calls[0][1]["content"])
         self.assertEqual(payload["task"]["task_type"], "add_wecom")
-        self.assertEqual(payload["material_library"][0]["material_id"], "price_001")
+        self.assertTrue(payload["knowledge_base"]["available"])
+        self.assertEqual(payload["knowledge_base"]["categories"][0]["categoryName"], "价格异议")
+        self.assertEqual(payload["knowledge_base"]["items"][0]["knowledgeName"], "价格疑问")
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("自然承接")])
 
-    async def test_non_ai_copy_is_sent_exactly_and_completes_three_state_flow(self) -> None:
+    async def test_platform_original_copy_is_ignored_and_model_messages_are_sent(self) -> None:
         model = _Model(
             [
                 {
@@ -139,7 +162,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型擅自改写")])
         self.assertEqual(system.send_calls[0]["plan_id"], "platform-sop-101")
         self.assertEqual(system.send_calls[0]["task_id"], "platform-sop-send-101")
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
@@ -171,7 +194,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_result["status"], "completed_without_send")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30), ("102", 20), ("102", 30)])
         self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型擅自改写")])
         second_payload = repo.tasks["platform-sop:102"]["send_payload"]
         self.assertEqual(second_payload["decision"]["reason"], "duplicate_platform_task_content")
         self.assertEqual(repo.events["platform_sop_task:102"]["status"], "platform_completed")
@@ -197,7 +220,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         self.assertEqual(len(model.calls), 1)
         self.assertEqual(system.conversation_calls, 2)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("模型擅自改写")])
 
     async def test_manual_resend_pre_cutover_task_sends_original_without_reclaiming_platform(self) -> None:
         model = _Model(
@@ -317,7 +340,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         self.assertEqual(system.conversation_calls, 4)
         self.assertEqual(len(system.send_calls), 1)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("model copy ignored")])
         self.assertEqual(len(model.calls), 1)
 
     async def test_first_day_unopened_first_add_task_continues_normal_model_chain(self) -> None:
@@ -346,7 +369,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("model copy ignored")])
         self.assertEqual(len(model.calls), 1)
         payload = next(iter(repo.tasks.values()))["send_payload"]
         self.assertEqual(
@@ -364,8 +387,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             [
                 {
                     "decision": "no_send",
-                    "reason": "conflicts with unresolved customer question",
-                    "reason_code": "unresolved_customer_question",
+                    "reason": "customer has severe complaint",
+                    "reason_code": "complaint_or_refund",
                     "reply_messages": [],
                 }
             ]
@@ -389,7 +412,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         self.assertEqual(len(model.calls), 1)
         payload = next(iter(repo.tasks.values()))["send_payload"]
-        self.assertEqual(payload["decision"]["reason_code"], "unresolved_customer_question")
+        self.assertEqual(payload["decision"]["reason_code"], "complaint_or_refund")
         self.assertEqual(
             payload["context"]["first_day_platform_sop_route"]["opening_state"],
             "unopened",
@@ -533,7 +556,16 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(system.send_calls), 1)
 
     async def test_no_send_is_business_success_without_customer_message(self) -> None:
-        model = _Model([{"decision": "no_send", "reason": "already paid", "reply_messages": []}])
+        model = _Model(
+            [
+                {
+                    "decision": "no_send",
+                    "reason": "already paid",
+                    "reason_code": "paid_or_appointment_conflict",
+                    "reply_messages": [],
+                }
+            ]
+        )
         service, repo, platform, system = _service(model=model)
 
         result = await service.process_task(_task())
@@ -559,7 +591,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             [
                 {"decision": "no_send", "reason_code": "no_expressed_demand", "reason": "silent", "reply_messages": []},
-                {"decision": "no_send", "reason_code": "similar_content", "reason": "similar", "reply_messages": []},
+                {"decision": "send", "reason": "repair to send", "reply_messages": [_text("修复后发送")]},
             ]
         )
         service, repo, platform, system = _service(model=model)
@@ -570,18 +602,18 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "sent")
         self.assertEqual(len(model.calls), 2)
-        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("平台原文")])
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("修复后发送")])
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         stored = next(iter(repo.tasks.values()))
-        self.assertEqual(stored["send_payload"]["decision"]["reason"], "first_add_default_send_after_invalid_no_send_reason")
+        self.assertEqual(stored["send_payload"]["decision"]["reason"], "repair to send")
 
     async def test_first_add_allowed_no_send_reason_still_completes_without_send(self) -> None:
         model = _Model(
             [
                 {
                     "decision": "no_send",
-                    "reason_code": "unresolved_customer_question",
-                    "reason": "latest customer asks for store lookup and no assistant has answered",
+                    "reason_code": "explicit_stop_contact",
+                    "reason": "customer explicitly asked to stop contact",
                     "reply_messages": [],
                 }
             ]
@@ -590,7 +622,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         task = _task(use_ai_copy=True)
         task["triggerEvent"] = "add_wecom"
         system.conversation_payload["data"]["messages"] = [
-            {"direction": "customer", "content": "你们店在哪里", "msgtime": _beijing_epoch("2026-08-05 10:00:00") * 1000}
+            {"direction": "customer", "content": "不要再联系我", "msgtime": _beijing_epoch("2026-08-05 10:00:00") * 1000}
         ]
 
         result = await service.process_task(task)
@@ -599,7 +631,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         stored = next(iter(repo.tasks.values()))
-        self.assertEqual(stored["send_payload"]["decision"]["reason_code"], "unresolved_customer_question")
+        self.assertEqual(stored["send_payload"]["decision"]["reason_code"], "explicit_stop_contact")
 
     async def test_ai_copy_can_only_rewrite_text_and_preserves_media(self) -> None:
         original_image = {"type": "image", "order": 2, "content": {"url": "https://cdn.example/a.jpg"}}
@@ -655,7 +687,12 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         model = _Model(
             [
                 {"decision": "defer", "delay_minutes": 30, "reason": "later", "reply_messages": []},
-                {"decision": "no_send", "reason": "not now", "reply_messages": []},
+                {
+                    "decision": "no_send",
+                    "reason": "human takeover",
+                    "reason_code": "human_takeover",
+                    "reply_messages": [],
+                },
             ]
         )
         service, _repo, platform, _system = _service(model=model)
@@ -769,6 +806,23 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stored["send_response"]["data"]["assumed_sent"])
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
+    async def test_rule_data_failure_does_not_retry_after_customer_message_sent(self) -> None:
+        model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
+        service, repo, platform, system = _service(model=model)
+        platform.service_rule_data = AsyncMock(side_effect=RuntimeError("rule data timeout"))  # type: ignore[method-assign]
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(system.send_calls), 1)
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        stored = next(iter(repo.tasks.values()))
+        self.assertEqual(stored["status"], "sent")
+        self.assertEqual(
+            stored["send_payload"]["rule_data_response"]["error"],
+            "service_rule_data_failed",
+        )
+
     async def test_legacy_uncertain_recovery_marks_sent_without_resend(self) -> None:
         model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
         service, repo, platform, system = _service(model=model)
@@ -870,7 +924,7 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(system.send_calls, [])
 
     async def test_ai_decision_disables_parallel_model_candidates(self) -> None:
-        model = _Model([{"decision": "no_send", "reason": "test", "reply_messages": []}])
+        model = _Model([{"decision": "send", "reason": "test", "reply_messages": [_text("发送")]}])
         service, _repo, _platform, _system = _service(model=model)
 
         await service.process_task(_task())
@@ -1269,6 +1323,7 @@ class _Platform:
     def __init__(self):
         self.consume_calls: list[tuple[str, int]] = []
         self.consume_responses: list[dict[str, Any]] = []
+        self.rule_data_calls: list[dict[str, Any]] = []
 
     async def consume(self, *, task_id, status):
         self.consume_calls.append((str(task_id), status))
@@ -1278,6 +1333,58 @@ class _Platform:
 
     async def pending(self, *, limit=None):
         return {"items": [], "total": 0, "limit": limit}
+
+    async def knowledge_categories(self, **_kwargs):
+        return {
+            "code": 200,
+            "data": {
+                "total": 1,
+                "list": [
+                    {
+                        "id": 5,
+                        "categoryName": "价格异议",
+                        "meta": "价格/套餐",
+                        "description": "价格顾虑话术",
+                        "sortOrder": 1,
+                        "groupCount": 1,
+                    }
+                ],
+            },
+        }
+
+    async def knowledge_base(self, **_kwargs):
+        return {
+            "code": 200,
+            "data": {
+                "total": 1,
+                "list": [
+                    {
+                        "id": 11,
+                        "categoryId": 5,
+                        "categoryName": "价格异议",
+                        "knowledgeName": "价格疑问",
+                        "sortOrder": 1,
+                        "paragraphs": [
+                            {
+                                "paragraphNo": 1,
+                                "messages": [
+                                    {
+                                        "id": 101,
+                                        "msgType": "text",
+                                        "contentText": "活动价268元，10元预约金到店抵扣。",
+                                        "sortOrder": 1,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        }
+
+    async def service_rule_data(self, **kwargs):
+        self.rule_data_calls.append(kwargs)
+        return {"code": 200, "data": {"taskId": kwargs.get("task_id")}}
 
 
 class _System:

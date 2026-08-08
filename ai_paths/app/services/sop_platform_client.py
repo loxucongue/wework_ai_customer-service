@@ -73,6 +73,73 @@ class SopPlatformClient:
             json_body={"taskId": task_id, "status": status},
         )
 
+    async def knowledge_categories(
+        self,
+        *,
+        category_name: str = "",
+        page: int = 1,
+        page_size: int = 100,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/event/trigger/knowledge-category",
+            json_body={
+                "categoryName": category_name,
+                "page": max(1, int(page or 1)),
+                "pageSize": max(1, min(int(page_size or 100), 100)),
+            },
+        )
+
+    async def knowledge_base(
+        self,
+        *,
+        category_id: int = 0,
+        category_name: str = "",
+        knowledge_name: str = "",
+        page: int = 1,
+        page_size: int = 100,
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/event/trigger/knowledge-base",
+            json_body={
+                "categoryId": max(0, int(category_id or 0)),
+                "categoryName": category_name,
+                "knowledgeName": knowledge_name,
+                "page": max(1, int(page or 1)),
+                "pageSize": max(1, min(int(page_size or 100), 100)),
+            },
+        )
+
+    async def service_rule_data(
+        self,
+        *,
+        task_id: str | int,
+        scene_name: str,
+        scene_code: str = "",
+        knowledge_id: int | None = None,
+        knowledge_paragraph_no: int | None = None,
+        remark: str = "",
+        send_content: str = "",
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "taskId": task_id,
+            "sceneName": scene_name,
+            "remark": remark[:500],
+            "sendContent": send_content[:10000],
+        }
+        if scene_code:
+            payload["sceneCode"] = scene_code
+        if knowledge_id:
+            payload["knowledgeId"] = int(knowledge_id)
+        if knowledge_paragraph_no:
+            payload["knowledgeParagraphNo"] = int(knowledge_paragraph_no)
+        return await self._request(
+            "POST",
+            "/event/trigger/service-rule-data",
+            json_body=payload,
+        )
+
     async def _request(
         self,
         method: str,

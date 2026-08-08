@@ -165,6 +165,84 @@ FIRST_ADD_NO_SEND_REASON_CODES = {
     "invalid_task",
 }
 
+SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES = {
+    "complaint_or_refund",
+    "explicit_stop_contact",
+    "customer_deleted",
+    "health_risk",
+    "paid_or_appointment_conflict",
+    "human_takeover",
+}
+
+
+SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
+# 角色
+你是第三方平台 SOP 到期任务的客户触达决策与文案生成节点。
+
+# 核心目标
+第三方平台只负责告诉系统“现在有一个任务到期”。你必须忽略平台原始待发送话术，把它只当审计信息；真正要发什么，必须基于：
+1. 客户完整聊天记录和最新状态；
+2. 平台客户触达知识库；
+3. 当前权威业务事实。
+
+除严重客诉、明确停止联系、客户关系删除、健康高风险、已付/已预约冲突、人工正在接管等硬边界外，默认都要发送内容。不能因为客户沉默、没有明确需求、普通考虑、距离远、价格顾虑、效果顾虑、没时间而 no_send。
+
+# 决策原则
+1. 先判断硬边界。只有硬边界才允许 `no_send`。
+2. 如果客户有明确卡点，从 `knowledge_base.items` 中选择最贴近的知识组和段落。
+3. 如果客户没有明确卡点，也必须发送，优先推进效果展示、活动价格优惠、预约金锁名额等正常 SOP 内容。
+4. 知识库话术是参考方向，不是必须原样照抄。你必须结合最新聊天自然改写。
+5. 知识库中的性别称谓必须统一改为中性称谓，如“亲、您、顾客、很多客户”，禁止“美女、姐妹、姐姐、哥哥、小姐姐、女士、先生、男士、女孩子”等。
+6. 知识库中的旧价格、旧活动、旧项目必须改成当前权威业务事实：
+   - 当前淡斑活动价 268 元；
+   - 10 元预约金，到店抵扣，做的话再付 258 元；
+   - 当前项目围绕淡斑、检测皮肤、基础清洁、肌肤补水；
+   - 不主动强调具体原价金额，只能说名额满后恢复原价。
+7. 风险承诺和退款口径由模型结合知识库与权威事实自然处理，本节点不因为话术中存在强销售表达就自动阻断；但不得编造当前事实中不存在的项目、门店、订单、支付成功或预约成功。
+8. 图片/视频是重要消息类型。若选中段落包含 image/video，输出中要保留对应消息类型和 URL；不要把图片视频变成纯文本描述。
+9. 文案要像微信短聊，直接解决卡点或推进下一步，不要写内部分析、流程解释、模型判断。
+
+# 知识库选择规则
+- `knowledge_base.items[].id` 是 knowledgeId。
+- `paragraphs[].paragraphNo` 是 knowledgeParagraphNo。
+- 选择某个段落时，必须把该段落所有合适的 text/image/video 按原顺序输出；文本可以改写，媒体 URL 不得改。
+- 如果同一段落有明显旧价格、性别称谓、旧项目，改写文本即可，媒体仍可保留。
+- 如果知识库没有合适卡点段落，使用 `authoritative_business_facts` 生成效果或价格优惠触达，并把 `knowledgeId` 和 `knowledgeParagraphNo` 置空。
+
+# no_send 边界
+只允许以下原因：
+- `complaint_or_refund`：严重客诉、退款纠纷、投诉升级；
+- `explicit_stop_contact`：客户明确要求不要再联系；
+- `customer_deleted`：客户关系删除；
+- `health_risk`：健康高风险，不适合营销；
+- `paid_or_appointment_conflict`：已付/已预约且本任务会重复催付或重复预约；
+- `human_takeover`：人工正在连续接待，发送会插话。
+
+普通沉默、普通价格/效果/距离/时间顾虑、客户说考虑一下，都必须 `send`。
+
+# 输出 JSON
+只返回 JSON，不要 Markdown，不要解释。Schema：
+{
+  "decision": "send | no_send",
+  "reason_code": "send 或 no_send 原因码",
+  "reason": "简短说明为什么这样处理",
+  "sceneName": "回写平台的场景名称",
+  "sceneCode": "回写平台的场景编码",
+  "knowledgeId": 0,
+  "knowledgeParagraphNo": 0,
+  "remark": "回写备注，说明命中知识库/兜底策略",
+  "reply_messages": [
+    {"type": "text", "order": 1, "content": {"text": "客户可见内容"}},
+    {"type": "image", "order": 2, "content": {"url": "https://..."}},
+    {"type": "video", "order": 3, "content": {"url": "https://..."}}
+  ]
+}
+
+`send` 时 `reply_messages` 必须非空。`no_send` 时 `reply_messages` 必须为空，但也必须输出 sceneName、sceneCode、reason_code 和 remark 用于回写。
+命中知识库时：`sceneName = 分类名 + "｜" + 知识库名称`，`sceneCode = "kb_" + categoryId + "_" + knowledgeId`。
+无卡点兜底发送时：`sceneName` 使用 `正常推进｜效果展示` 或 `正常推进｜活动价格`，`sceneCode` 使用 `normal_effect` 或 `normal_activity_price`。
+""".strip()
+
 
 class SopPlatformTaskService:
     RECOVERY_STATUSES = [
@@ -210,6 +288,8 @@ class SopPlatformTaskService:
             name: deque(maxlen=500)
             for name in ("pull", "claim", "context", "model", "send", "task", "queue_lag")
         }
+        self._knowledge_cache: dict[str, Any] = {}
+        self._knowledge_cache_expires_at = 0.0
         self._last_poll_at = ""
         self._last_poll_error = ""
         self._pending_total = 0
@@ -950,10 +1030,19 @@ class SopPlatformTaskService:
                 return {"processed": True, "status": status, "task_id": task_id, "decision": decision}
 
             if decision["decision"] == "no_send":
+                rule_data_response = await self._report_rule_data(
+                    platform_task,
+                    decision=decision,
+                    sent=False,
+                )
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="completed_without_send",
-                    send_payload={"decision": decision, "context": _context_audit(context)},
+                    send_payload={
+                        "decision": decision,
+                        "context": _context_audit(context),
+                        "rule_data_response": rule_data_response,
+                    },
                 )
             else:
                 send_payload = {
@@ -967,8 +1056,19 @@ class SopPlatformTaskService:
                     duplicate_decision = {
                         "decision": "no_send",
                         "reason": "existing_platform_delivery",
+                        "reason_code": "exact_duplicate",
+                        "sceneName": str(decision.get("sceneName") or "不发送｜重复发送"),
+                        "sceneCode": str(decision.get("sceneCode") or "no_send_duplicate"),
+                        "knowledgeId": decision.get("knowledgeId") or 0,
+                        "knowledgeParagraphNo": decision.get("knowledgeParagraphNo") or 0,
+                        "remark": "本地检测到同批平台触达已发送，消费但不重复发送",
                         "reply_messages": [],
                     }
+                    rule_data_response = await self._report_rule_data(
+                        platform_task,
+                        decision=duplicate_decision,
+                        sent=False,
+                    )
                     self.repository.update_sop_send_task(
                         str(local_task.get("id") or ""),
                         status="completed_without_send",
@@ -979,6 +1079,7 @@ class SopPlatformTaskService:
                                 **_context_audit(context),
                                 "existing_delivery": existing_delivery,
                             },
+                            "rule_data_response": rule_data_response,
                         },
                     )
                     self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
@@ -1010,10 +1111,20 @@ class SopPlatformTaskService:
                             "assumed_sent": True,
                         },
                     }
+                rule_data_response = await self._report_rule_data(
+                    platform_task,
+                    decision=decision,
+                    sent=True,
+                )
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="sent",
-                    send_payload={"decision": decision, "request": send_payload, "context": _context_audit(context)},
+                    send_payload={
+                        "decision": decision,
+                        "request": send_payload,
+                        "context": _context_audit(context),
+                        "rule_data_response": rule_data_response,
+                    },
                     send_response=send_result,
                     sent_at=utc_now_iso(),
                 )
@@ -1243,17 +1354,110 @@ class SopPlatformTaskService:
             "task_timing": _task_timing(platform_task),
         }
 
+    async def _load_knowledge_base_context(self) -> dict[str, Any]:
+        now = time.monotonic()
+        if self._knowledge_cache and now < self._knowledge_cache_expires_at:
+            return self._knowledge_cache
+        if not all(
+            callable(getattr(self.platform_client, name, None))
+            for name in ("knowledge_categories", "knowledge_base")
+        ):
+            self._knowledge_cache = {
+                "categories": [],
+                "items": [],
+                "available": False,
+                "error": "platform_client_knowledge_api_unavailable",
+            }
+            self._knowledge_cache_expires_at = now + 60
+            return self._knowledge_cache
+        categories: list[dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
+        try:
+            category_payload = await self.platform_client.knowledge_categories(page_size=100)
+            categories = _knowledge_categories_for_model(category_payload)
+            kb_payload = await self.platform_client.knowledge_base(page_size=100)
+            items = _knowledge_items_for_model(kb_payload)
+            self._knowledge_cache = {
+                "categories": categories,
+                "items": items,
+                "available": True,
+                "loaded_at": utc_now_iso(),
+            }
+            self._knowledge_cache_expires_at = now + 300
+            return self._knowledge_cache
+        except Exception as exc:
+            self._knowledge_cache = {
+                "categories": categories,
+                "items": items,
+                "available": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "loaded_at": utc_now_iso(),
+            }
+            self._knowledge_cache_expires_at = now + 60
+            return self._knowledge_cache
+
+    async def _report_rule_data(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        decision: dict[str, Any],
+        sent: bool,
+    ) -> dict[str, Any]:
+        if not callable(getattr(self.platform_client, "service_rule_data", None)):
+            return {"skipped": True, "reason": "platform_client_rule_data_api_unavailable"}
+        task_id = _task_id(platform_task)
+        if not task_id:
+            return {"skipped": True, "reason": "missing_task_id"}
+        scene_name = str(decision.get("sceneName") or decision.get("scene_name") or "").strip()
+        if not scene_name:
+            scene_name = "正常推进｜活动价格" if sent else "不发送｜硬边界"
+        scene_code = str(decision.get("sceneCode") or decision.get("scene_code") or "").strip()
+        if not scene_code:
+            scene_code = "normal_activity_price" if sent else "no_send_hard_boundary"
+        try:
+            return await self.platform_client.service_rule_data(
+                task_id=task_id,
+                scene_name=scene_name,
+                scene_code=scene_code,
+                knowledge_id=_int(decision.get("knowledgeId", decision.get("knowledge_id")), 0) or None,
+                knowledge_paragraph_no=_int(
+                    decision.get("knowledgeParagraphNo", decision.get("knowledge_paragraph_no")),
+                    0,
+                )
+                or None,
+                remark=str(decision.get("remark") or decision.get("reason") or ""),
+                send_content=_send_content_for_rule_data(decision.get("reply_messages") or []),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to report platform SOP rule data for task %s: %s: %s",
+                task_id,
+                type(exc).__name__,
+                exc,
+            )
+            return {
+                "error": "service_rule_data_failed",
+                "exception_type": type(exc).__name__,
+                "message": str(exc),
+            }
+
     async def _decide(self, platform_task: dict[str, Any], *, context: dict[str, Any]) -> dict[str, Any]:
         relation = context.get("customer_relation") if isinstance(context.get("customer_relation"), dict) else {}
         if relation.get("is_deleted") is True or str(relation.get("status") or "").lower() == "deleted":
-            return {"decision": "no_send", "reason": "customer_relation_deleted", "reply_messages": []}
+            return {
+                "decision": "no_send",
+                "reason": "customer_relation_deleted",
+                "reason_code": "customer_deleted",
+                "sceneName": "不发送｜客户关系删除",
+                "sceneCode": "no_send_customer_deleted",
+                "knowledgeId": 0,
+                "knowledgeParagraphNo": 0,
+                "remark": "客户关系已删除，停止触达",
+                "reply_messages": [],
+            }
         original_messages = _platform_messages(platform_task)
         use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
-        if not original_messages and not use_ai_copy:
-            raise RuntimeError("platform task message_content is empty or unsupported")
-        if not original_messages and not _has_trusted_ai_copy_source(platform_task):
-            return {"decision": "no_send", "reason": "missing_trusted_platform_content", "reply_messages": []}
-        material_library = _material_catalog_for_model(self.objection_material_service)
+        knowledge_base = await self._load_knowledge_base_context()
         model_input = {
             "task": {
                 "task_id": _task_id(platform_task),
@@ -1267,8 +1471,8 @@ class SopPlatformTaskService:
                 "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
                 "scene_role": "supporting_context",
                 "use_ai_copy": use_ai_copy,
-                "message_content": original_messages,
-                "message_content_role": "executable_candidate",
+                "original_message_content": original_messages,
+                "original_message_content_role": "audit_only_ignore_for_generation",
                 "platform_metadata": {
                     "rule_id": platform_task.get("ruleId") or platform_task.get("rule_id"),
                     "rule_name": platform_task.get("ruleName") or platform_task.get("rule_name"),
@@ -1282,18 +1486,23 @@ class SopPlatformTaskService:
                 "timeline_structure": _timeline_structure(context.get("conversation_timeline") or []),
                 "business_state": context.get("business_state") or {},
             },
-            "material_library": material_library,
+            "knowledge_base": knowledge_base,
             "authoritative_business_facts": sop_platform_business_facts_for_model(),
             "output_contract": {
                 "decision": "send | no_send",
                 "reason_code": "required for no_send; optional for send",
                 "reason": "string",
+                "sceneName": "required for platform rule-data callback",
+                "sceneCode": "required for platform rule-data callback",
+                "knowledgeId": "selected knowledge group id, or 0",
+                "knowledgeParagraphNo": "selected paragraph number, or 0",
+                "remark": "required callback remark",
                 "reply_messages": "send must be non-empty; no_send must be []",
-                "first_add_no_send_allowed_reason_codes": sorted(FIRST_ADD_NO_SEND_REASON_CODES),
+                "no_send_allowed_reason_codes": sorted(SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES),
             },
         }
         messages = [
-            {"role": "system", "content": SOP_PLATFORM_TASK_SYSTEM_PROMPT},
+            {"role": "system", "content": SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT},
             {"role": "user", "content": json.dumps(model_input, ensure_ascii=False)},
         ]
         deadline = time.monotonic() + max(5.0, float(self.settings.sop_platform_model_timeout_seconds))
@@ -1304,7 +1513,8 @@ class SopPlatformTaskService:
             deadline_monotonic=deadline,
             max_parallel_candidates=1,
         )
-        error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
+        raw = _normalize_knowledge_decision_callback_fields(raw)
+        error = _decision_error(raw, original_messages=original_messages, use_ai_copy=True)
         policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if error:
             repair_messages = [
@@ -1324,7 +1534,8 @@ class SopPlatformTaskService:
                 deadline_monotonic=deadline,
                 max_parallel_candidates=1,
             )
-            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
+            raw = _normalize_knowledge_decision_callback_fields(raw)
+            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=True)
             policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if not error and policy_error:
             repair_messages = [
@@ -1333,10 +1544,10 @@ class SopPlatformTaskService:
                 {
                     "role": "user",
                     "content": (
-                        f"Decision violates first-add policy: {policy_error}. "
-                        "Return valid json only. If this is a first-add no_send, use one allowed reason_code "
-                        "with concrete evidence. Similar wording, normal silence, no demand, old resolved context, "
-                        "or use_ai_copy=false are not allowed no_send reasons."
+                        f"决策违反第三方 SOP 知识库触达合同：{policy_error}。"
+                        "只返回合法 JSON。除严重客诉、明确停止联系、客户关系删除、健康高风险、"
+                        "已付/已预约冲突、人工接管外，必须改为 send，并从知识库或当前活动事实中"
+                        "生成可发送内容。普通沉默、普通考虑、价格/效果/距离/时间顾虑都不能 no_send。"
                     ),
                 },
             ]
@@ -1347,18 +1558,12 @@ class SopPlatformTaskService:
                 deadline_monotonic=deadline,
                 max_parallel_candidates=1,
             )
-            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=model_input["task"]["use_ai_copy"])
+            raw = _normalize_knowledge_decision_callback_fields(raw)
+            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=True)
             policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if error:
             raise RuntimeError(f"invalid_sop_platform_model_output: {error}")
         if policy_error:
-            if _task_type(platform_task) == "add_wecom" and original_messages:
-                return {
-                    "decision": "send",
-                    "reason": "first_add_default_send_after_invalid_no_send_reason",
-                    "reason_code": "send",
-                    "reply_messages": original_messages,
-                }
             raise RuntimeError(f"invalid_sop_platform_model_output: {policy_error}")
         decision = str(raw.get("decision") or "")
         if decision == "no_send":
@@ -1366,15 +1571,29 @@ class SopPlatformTaskService:
                 "decision": decision,
                 "reason": str(raw.get("reason") or ""),
                 "reason_code": str(raw.get("reason_code") or ""),
+                "sceneName": str(raw.get("sceneName") or raw.get("scene_name") or "不发送｜硬边界"),
+                "sceneCode": str(raw.get("sceneCode") or raw.get("scene_code") or "no_send_hard_boundary"),
+                "knowledgeId": _int(raw.get("knowledgeId", raw.get("knowledge_id")), 0),
+                "knowledgeParagraphNo": _int(
+                    raw.get("knowledgeParagraphNo", raw.get("knowledge_paragraph_no")),
+                    0,
+                ),
+                "remark": str(raw.get("remark") or raw.get("reason") or ""),
                 "reply_messages": [],
             }
         output_messages = raw.get("reply_messages") if isinstance(raw.get("reply_messages"), list) else []
-        if not model_input["task"]["use_ai_copy"]:
-            output_messages = original_messages
         return {
             "decision": decision,
             "reason": str(raw.get("reason") or ""),
             "reason_code": str(raw.get("reason_code") or ""),
+            "sceneName": str(raw.get("sceneName") or raw.get("scene_name") or "正常推进｜活动价格"),
+            "sceneCode": str(raw.get("sceneCode") or raw.get("scene_code") or "normal_activity_price"),
+            "knowledgeId": _int(raw.get("knowledgeId", raw.get("knowledge_id")), 0),
+            "knowledgeParagraphNo": _int(
+                raw.get("knowledgeParagraphNo", raw.get("knowledge_paragraph_no")),
+                0,
+            ),
+            "remark": str(raw.get("remark") or raw.get("reason") or ""),
             "reply_messages": output_messages,
         }
 
@@ -1382,61 +1601,108 @@ class SopPlatformTaskService:
 def _decision_error(raw: Any, *, original_messages: list[dict[str, Any]], use_ai_copy: bool) -> str:
     if not isinstance(raw, dict):
         return "output must be an object"
-    unexpected = set(raw).difference({"decision", "reason", "reason_code", "reply_messages"})
+    unexpected = set(raw).difference(
+        {
+            "decision",
+            "reason",
+            "reason_code",
+            "sceneName",
+            "scene_name",
+            "sceneCode",
+            "scene_code",
+            "knowledgeId",
+            "knowledge_id",
+            "knowledgeParagraphNo",
+            "knowledge_paragraph_no",
+            "remark",
+            "reply_messages",
+        }
+    )
     if unexpected:
         return f"unexpected output fields: {','.join(sorted(unexpected))}"
     decision = str(raw.get("decision") or "").strip()
     if decision not in {"send", "no_send"}:
         return "decision must be send or no_send"
+    if not str(raw.get("sceneName") or raw.get("scene_name") or "").strip():
+        return "sceneName is required"
+    if not str(raw.get("sceneCode") or raw.get("scene_code") or "").strip():
+        return "sceneCode is required"
+    if raw.get("knowledgeId", raw.get("knowledge_id", 0)) not in (None, ""):
+        try:
+            int(raw.get("knowledgeId", raw.get("knowledge_id", 0)) or 0)
+        except (TypeError, ValueError):
+            return "knowledgeId must be an integer"
+    if raw.get("knowledgeParagraphNo", raw.get("knowledge_paragraph_no", 0)) not in (None, ""):
+        try:
+            int(raw.get("knowledgeParagraphNo", raw.get("knowledge_paragraph_no", 0)) or 0)
+        except (TypeError, ValueError):
+            return "knowledgeParagraphNo must be an integer"
     messages = raw.get("reply_messages")
     if not isinstance(messages, list):
         return "reply_messages must be a list"
     if decision == "no_send":
+        code = str(raw.get("reason_code") or "").strip()
+        if code not in SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES:
+            return "no_send reason_code must be one allowed hard-boundary code"
         return "no_send reply_messages must be empty" if messages else ""
     if not messages:
         return "send reply_messages must not be empty"
-    if not use_ai_copy:
-        return ""
-    if not original_messages:
-        if len(messages) > 2:
-            return "AI copy without message_content may contain at most two text messages"
-        for index, candidate in enumerate(messages, start=1):
-            if not isinstance(candidate, dict) or candidate.get("type") != "text":
-                return f"generated reply message {index} must be text"
-            if candidate.get("order") != index:
-                return f"generated reply message {index} order must be {index}"
-            content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
-            if not str(content.get("text") or "").strip():
-                return f"generated reply message {index} text is empty"
-        return ""
-    if len(messages) != len(original_messages):
-        return "AI copy may not add or remove platform messages"
-    for index, (candidate, original) in enumerate(zip(messages, original_messages), start=1):
+    if len(messages) > 6:
+        return "send reply_messages may contain at most six messages"
+    for index, candidate in enumerate(messages, start=1):
         if not isinstance(candidate, dict):
             return f"reply message {index} must be an object"
-        if candidate.get("type") != original.get("type") or candidate.get("order") != original.get("order"):
-            return f"reply message {index} type/order must remain unchanged"
-        message_type = str(original.get("type") or "")
+        if candidate.get("order") != index:
+            return f"reply message {index} order must be {index}"
+        message_type = str(candidate.get("type") or "").strip()
+        if message_type not in {"text", "image", "video"}:
+            return f"reply message {index} type must be text, image, or video"
+        content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
         if message_type == "text":
-            content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
             if not str(content.get("text") or "").strip():
                 return f"reply message {index} text is empty"
-        elif candidate != original:
-            return f"reply message {index} media/link content must remain unchanged"
+        elif not str(content.get("url") or "").strip():
+            return f"reply message {index} media url is empty"
     return ""
+
+
+def _normalize_knowledge_decision_callback_fields(raw: Any) -> Any:
+    if not isinstance(raw, dict):
+        return raw
+    output = dict(raw)
+    decision = str(output.get("decision") or "").strip()
+    if "scene_name" in output and "sceneName" not in output:
+        output["sceneName"] = output.pop("scene_name")
+    if "scene_code" in output and "sceneCode" not in output:
+        output["sceneCode"] = output.pop("scene_code")
+    if "knowledge_id" in output and "knowledgeId" not in output:
+        output["knowledgeId"] = output.pop("knowledge_id")
+    if "knowledge_paragraph_no" in output and "knowledgeParagraphNo" not in output:
+        output["knowledgeParagraphNo"] = output.pop("knowledge_paragraph_no")
+    if not str(output.get("sceneName") or "").strip():
+        output["sceneName"] = "正常推进｜活动价格" if decision == "send" else "不发送｜硬边界"
+    if not str(output.get("sceneCode") or "").strip():
+        output["sceneCode"] = "normal_activity_price" if decision == "send" else "no_send_hard_boundary"
+    if output.get("knowledgeId") in (None, ""):
+        output["knowledgeId"] = 0
+    if output.get("knowledgeParagraphNo") in (None, ""):
+        output["knowledgeParagraphNo"] = 0
+    if not str(output.get("remark") or "").strip():
+        output["remark"] = str(output.get("reason") or "")
+    if decision == "send" and not str(output.get("reason_code") or "").strip():
+        output["reason_code"] = str(output.get("sceneCode") or "send")
+    return output
 
 
 def _decision_policy_error(raw: dict[str, Any], *, platform_task: dict[str, Any]) -> str:
     if str(raw.get("decision") or "").strip() != "no_send":
         return ""
-    if _task_type(platform_task) != "add_wecom":
-        return ""
     code = str(raw.get("reason_code") or "").strip()
-    if code in FIRST_ADD_NO_SEND_REASON_CODES:
+    if code in SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES:
         return ""
     return (
-        "first-add no_send requires reason_code in "
-        + ",".join(sorted(FIRST_ADD_NO_SEND_REASON_CODES))
+        "knowledge-driven platform SOP no_send requires reason_code in "
+        + ",".join(sorted(SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES))
     )
 
 
@@ -2311,6 +2577,130 @@ def _material_catalog_for_model(service: Any | None) -> list[dict[str, Any]]:
             }
         )
     return output
+
+
+def _int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _knowledge_categories_for_model(payload: Any) -> list[dict[str, Any]]:
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    items = data.get("list") if isinstance(data, dict) and isinstance(data.get("list"), list) else []
+    output: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        category_id = _int(item.get("id"), 0)
+        name = str(item.get("categoryName") or item.get("category_name") or "").strip()
+        if not category_id or not name:
+            continue
+        output.append(
+            {
+                "categoryId": category_id,
+                "categoryName": name[:120],
+                "meta": str(item.get("meta") or "")[:300],
+                "description": str(item.get("description") or "")[:500],
+                "sortOrder": _int(item.get("sortOrder", item.get("sort_order")), 0),
+                "groupCount": _int(item.get("groupCount", item.get("group_count")), 0),
+            }
+        )
+    return output
+
+
+def _knowledge_items_for_model(payload: Any) -> list[dict[str, Any]]:
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    items = data.get("list") if isinstance(data, dict) and isinstance(data.get("list"), list) else []
+    output: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        knowledge_id = _int(item.get("id"), 0)
+        name = str(
+            item.get("knowledgeName")
+            or item.get("knowledge_name")
+            or item.get("groupName")
+            or item.get("group_name")
+            or ""
+        ).strip()
+        if not knowledge_id or not name:
+            continue
+        paragraphs: list[dict[str, Any]] = []
+        raw_paragraphs = item.get("paragraphs") if isinstance(item.get("paragraphs"), list) else []
+        for raw_paragraph in raw_paragraphs:
+            if not isinstance(raw_paragraph, dict):
+                continue
+            messages: list[dict[str, Any]] = []
+            raw_messages = raw_paragraph.get("messages") if isinstance(raw_paragraph.get("messages"), list) else []
+            for raw_message in raw_messages:
+                if not isinstance(raw_message, dict):
+                    continue
+                msg_type = str(raw_message.get("msgType") or raw_message.get("msg_type") or "").strip().lower()
+                if msg_type not in {"text", "image", "video"}:
+                    continue
+                content_text = str(raw_message.get("contentText") or raw_message.get("content_text") or "").strip()
+                media_url = str(raw_message.get("mediaUrl") or raw_message.get("media_url") or "").strip()
+                if msg_type == "text" and not content_text:
+                    continue
+                if msg_type in {"image", "video"} and not media_url:
+                    continue
+                messages.append(
+                    {
+                        "id": _int(raw_message.get("id"), 0),
+                        "msgType": msg_type,
+                        "contentText": content_text[:3000],
+                        "mediaUrl": media_url,
+                        "mediaUrlRaw": str(
+                            raw_message.get("mediaUrlRaw") or raw_message.get("media_url_raw") or ""
+                        ).strip(),
+                        "mediaTitle": str(
+                            raw_message.get("mediaTitle") or raw_message.get("media_title") or ""
+                        ).strip()[:200],
+                        "fileId": _int(raw_message.get("fileId", raw_message.get("file_id")), 0),
+                        "sortOrder": _int(raw_message.get("sortOrder", raw_message.get("sort_order")), 0),
+                    }
+                )
+            if messages:
+                paragraphs.append(
+                    {
+                        "paragraphNo": _int(
+                            raw_paragraph.get("paragraphNo", raw_paragraph.get("paragraph_no")),
+                            len(paragraphs) + 1,
+                        ),
+                        "messages": messages,
+                    }
+                )
+        output.append(
+            {
+                "id": knowledge_id,
+                "categoryId": _int(item.get("categoryId", item.get("category_id")), 0),
+                "categoryName": str(item.get("categoryName") or item.get("category_name") or "").strip()[:120],
+                "knowledgeName": name[:200],
+                "sortOrder": _int(item.get("sortOrder", item.get("sort_order")), 0),
+                "paragraphs": paragraphs,
+            }
+        )
+    return output
+
+
+def _send_content_for_rule_data(messages: list[Any]) -> str:
+    parts: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(message.get("type") or "").strip().lower()
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        if message_type == "text":
+            text = str(content.get("text") or content.get("content") or "").strip()
+            if text:
+                parts.append(text)
+        elif message_type in {"image", "video"}:
+            url = str(content.get("url") or content.get("content") or "").strip()
+            if url:
+                parts.append(f"[{message_type}]{url}")
+    return "\n".join(parts)[:10000]
 
 
 def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
