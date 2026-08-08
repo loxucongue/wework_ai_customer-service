@@ -201,6 +201,7 @@ class SopPlatformTaskService:
         self._in_flight_ids: set[str] = set()
         self._terminal_ids: set[str] = set()
         self._terminal_order: deque[str] = deque()
+        self._terminal_reack_at: dict[str, float] = {}
         self._workers: list[asyncio.Task[None]] = []
         self._recovery_worker: asyncio.Task[None] | None = None
         self._running = False
@@ -268,10 +269,8 @@ class SopPlatformTaskService:
                 "in_flight_count": len(self._in_flight_ids),
                 "error_count": 0,
             }
-        limit = min(
-            free_slots,
-            max(1, min(int(self.settings.sop_platform_batch_size), 500)),
-        )
+        configured_limit = max(1, min(int(self.settings.sop_platform_batch_size), 500))
+        limit = max(1, min(max(configured_limit, free_slots * 20), 500))
         started = time.perf_counter()
         self._last_poll_at = utc_now_iso()
         try:
@@ -310,6 +309,8 @@ class SopPlatformTaskService:
                 or task_id in self._in_flight_ids
                 or task_id in self._terminal_ids
             ):
+                if task_id and task_id in self._terminal_ids:
+                    await self._reack_terminal_pending_task(task_id)
                 self._counters["duplicate_poll"] += 1
                 continue
             if self._queue.full():
@@ -663,7 +664,29 @@ class SopPlatformTaskService:
         self._terminal_ids.add(task_id)
         self._terminal_order.append(task_id)
         while len(self._terminal_order) > 50_000:
-            self._terminal_ids.discard(self._terminal_order.popleft())
+            removed = self._terminal_order.popleft()
+            self._terminal_ids.discard(removed)
+            self._terminal_reack_at.pop(removed, None)
+
+    async def _reack_terminal_pending_task(self, task_id: str) -> None:
+        if self.settings.sop_platform_shadow_mode:
+            return
+        now = time.time()
+        last = self._terminal_reack_at.get(task_id, 0.0)
+        if now - last < 300:
+            return
+        self._terminal_reack_at[task_id] = now
+        try:
+            completed = await self.platform_client.consume(task_id=task_id, status=30)
+            _require_platform_status(completed, 30)
+            self._counters["terminal_reack"] += 1
+        except Exception as exc:
+            self._counters["terminal_reack_error"] += 1
+            logger.warning(
+                "Third-party SOP terminal task still appeared pending and re-ack failed: task_id=%s error=%s",
+                task_id,
+                f"{type(exc).__name__}: {exc}",
+            )
 
     def _ensure_local_task(
         self,
@@ -726,6 +749,7 @@ class SopPlatformTaskService:
         event = self.repository.create_sop_event(event_payload)
         current_status = str(event.get("status") or "")
         if current_status == "platform_completed":
+            await self._reack_terminal_pending_task(task_id)
             return {"processed": False, "status": current_status, "task_id": task_id}
         identity = _task_identity(platform_task)
         local_task = self.repository.create_sop_send_task(

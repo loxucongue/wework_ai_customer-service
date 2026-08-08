@@ -892,6 +892,49 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(next(iter(repo.tasks.values()))["status"], "platform_queued")
         self.assertEqual(service.runtime_status()["queue_depth"], 1)
 
+    async def test_poll_reacks_terminal_duplicates_and_keeps_scanning_pending_page(self) -> None:
+        model = _Model([])
+        settings = _settings()
+        settings.sop_platform_batch_size = 1
+        settings.sop_platform_queue_size = 1
+        service, repo, platform, _system = _service(model=model, settings=settings)
+        service._remember_terminal("101")
+        seen_limits: list[int | None] = []
+
+        async def pending(*, limit=None):
+            seen_limits.append(limit)
+            return {"items": [_task(), {**_task(), "task_id": 202}], "total": 2, "limit": limit}
+
+        platform.pending = pending  # type: ignore[method-assign]
+        result = await service.poll_once()
+
+        self.assertEqual(seen_limits, [20])
+        self.assertEqual(platform.consume_calls, [("101", 30)])
+        self.assertEqual(result["enqueued_count"], 1)
+        self.assertIn("platform_sop_task:202", repo.events)
+        self.assertEqual(repo.events["platform_sop_task:202"]["status"], "platform_queued")
+        self.assertEqual(service.runtime_status()["counters"]["terminal_reack"], 1)
+
+    async def test_completed_local_event_reacks_if_platform_returns_pending_after_restart(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        repo.create_sop_event(
+            {
+                "event_id": "platform_sop_task:101",
+                "event_type": "platform_sop_task",
+                "platform_task": _task(),
+            }
+        )
+        repo.events["platform_sop_task:101"]["status"] = "platform_completed"
+
+        result = await service.process_task(_task())
+
+        self.assertFalse(result["processed"])
+        self.assertEqual(result["status"], "platform_completed")
+        self.assertEqual(platform.consume_calls, [("101", 30)])
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+
     async def test_poll_loop_survives_transient_pending_error(self) -> None:
         model = _Model([])
         service, _repo, _platform, _system = _service(model=model, shadow_mode=True)
