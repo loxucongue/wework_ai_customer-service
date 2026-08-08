@@ -1403,7 +1403,27 @@ def _normalize_first_day_scene_analysis(
     message_count: int,
     source_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if not isinstance(response, dict) or message_count <= 0:
+    if not isinstance(response, dict):
+        return response
+    payment_action = response.get("payment_action")
+    if not isinstance(payment_action, dict):
+        payment_action = {"step": 0, "allowed": False, "reason": "未选择预约金卡动作"}
+        response["payment_action"] = payment_action
+    deposit_steps = [
+        index
+        for index, scene in enumerate(
+            (_string(response.get("step1_scene")), _string(response.get("step2_scene"))),
+            start=1,
+        )
+        if scene == "deposit_close"
+    ]
+    payment_gate = (source_snapshot or {}).get("payment_collection_gate") or {}
+    if len(deposit_steps) == 1 and _bool(payment_gate.get("eligible")):
+        payment_action["step"] = deposit_steps[0]
+        payment_action["allowed"] = True
+    elif not _bool(payment_action.get("allowed")):
+        payment_action["step"] = 0
+    if message_count <= 0:
         return response
     conversation_activity = (source_snapshot or {}).get("conversation_activity") or {}
     unopened_first_day = _int(conversation_activity.get("real_customer_message_count"), -1) == 0

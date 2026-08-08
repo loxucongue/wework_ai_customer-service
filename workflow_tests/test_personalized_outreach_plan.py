@@ -283,6 +283,22 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized["evidence"][0]["message_index"], 1)
         self.assertEqual(normalized["delivered_scenes"][0]["message_indexes"], [0])
 
+    def test_first_day_scene_analysis_normalizes_deposit_payment_step_without_messages(self) -> None:
+        analysis = _first_day_scene_analysis(
+            step1_scene="activity_intro",
+            step2_scene="deposit_close",
+        )
+        analysis["payment_action"] = {"step": 0, "allowed": False, "reason": "model omitted"}
+
+        normalized = _normalize_first_day_scene_analysis(
+            analysis,
+            message_count=0,
+            source_snapshot={"payment_collection_gate": {"eligible": True}},
+        )
+
+        self.assertEqual(normalized["payment_action"]["step"], 2)
+        self.assertTrue(normalized["payment_action"]["allowed"])
+
     def test_first_day_scene_analysis_tolerates_mixed_zero_and_one_based_indexes(self) -> None:
         analysis = _first_day_scene_analysis(
             step1_scene="effect_proof",
