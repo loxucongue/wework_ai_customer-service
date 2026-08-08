@@ -2653,6 +2653,7 @@ class OutreachService:
             asset_catalog,
         )
         activity_quote_fact = build_outreach_activity_quote_fact(recent_messages, memory)
+        personalized_order_gate = personalized_order_eligibility(context.get("customer_context") or {})
         payment_collection_gate = personalized_payment_collection_eligibility(
             context.get("customer_context") or {},
             amount=10,
@@ -2682,6 +2683,7 @@ class OutreachService:
             "sop_plan_id": sop_plan_id,
             "offer_context": S10_OUTREACH_CONTEXT,
             "activity_quote_fact": activity_quote_fact,
+            "personalized_order_gate": personalized_order_gate,
             "payment_collection_gate": payment_collection_gate,
             "trigger_context": trigger_context or {},
             "customer_context": context.get("customer_context") or {},

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v5_sop_blocker_strict"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v6_historical_order_gate"
 FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v5_sop_blocker_strict"
 FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v5_sop_blocker_strict"
 FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v5_sop_blocker_strict"
@@ -23,7 +23,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 - `recent_media_delivery` 和 `recent_sop_delivery`：实际发送过的素材和 SOP 证据。
 - `appointment_blocker_scene_index`：预约卡点话术库的精简场景索引，只包含适用场景、卡点类型、来源标识和可用媒体标识，不包含客户可见话术正文。
 - `first_day_sop_sequence`：首日 SOP 话术包顺序，只包含启用的首日 SOP 包、场景映射、消息类型、文本摘要、媒体标识和支付占位。无明确卡点时必须从这里选择下一步。
-- `activity_quote_fact`、`payment_collection_gate`、`customer_context` 和 `customer_relation`：交易与安全事实。
+- `activity_quote_fact`、`personalized_order_gate`、`payment_collection_gate`、`customer_context` 和 `customer_relation`：交易与安全事实。`personalized_order_gate` 是代码已经归一化后的主动触达订单门禁，优先级高于你对 `customer_context.orders` 原始订单字段的自行推断。
 - `asset_catalog`：可使用的素材标识，禁止自行编造 URL。
 
 # 四、权限边界
@@ -45,7 +45,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 6. `selected_source_ids` 的选择规则：卡点处理步骤选择 `appointment-blocker:*`；SOP 推进步骤选择 `sop-pack:*`；需要随消息发送图片或视频时同时选择对应 `asset_id`。每一步最多选择 1 个主话术来源和 2 个媒体来源，禁止把大量无关来源交给写作节点。
 7. 预约卡点索引是候选表达来源，不是业务事实。不能因为索引里存在某个场景就认定客户有该卡点；必须由聊天证据先证明适用。
 6. 控制结构化输出长度。每个完成矩阵项最多引用 3 个最关键消息索引，`summary` 不超过 40 个汉字；`delivered_scenes` 最多 4 项且每项最多 3 个索引；`writer_context_message_indexes` 最多 12 个；顶层 `evidence` 最多 5 项。不要为了证明同一结论枚举整段聊天，也不要在多个字段重复长篇解释。
-5. 执行硬边界。当前仍有发痒、起疹、破损或不适，已支付或已预约终态，投诉退款，客户关系删除，人工接管，客户明确要求停止联系，或者聊天归属不可靠时，必须停止营销触达。
+5. 执行硬边界。当前仍有发痒、起疹、破损或不适，当前有效已支付或已预约终态，投诉退款，客户关系删除，人工接管，客户明确要求停止联系，或者聊天归属不可靠时，必须停止营销触达。三个月外、已过期、已完成的历史订单只作为历史事实，不是当前已支付/已预约终态，不得据此停止触达；当 `personalized_order_gate.eligible=true` 且 reason 为 `historical_order_expired_new_cycle` 时，必须按新一轮首日流程继续选择 SOP 或卡点场景。
 6. 若允许触达，选择两个不同场景。第一步是现在最合适的场景；第二步是假设客户仍未回复时，下一个真正有价值的场景。
 5. 效果规则：只有文字效果说明不等于已经交付图片证据。客户询问效果且没有真实效果图时，选择 `effect_proof`。真实效果图已经发送后，禁止再次选择效果证明，应推进尚未完成的活动、异议、门店区域、信任或预约金场景。每一步目标只能包含一个明确的新价值，不能复用 `forbidden_repetitions` 中的内容；两步目标不能共享同一个事实、安抚点、问题或动作。
 6. 报价规则：活动和价格已经完整介绍后，禁止再次选择活动介绍，应定位真实卡点或推进其他未完成场景。
@@ -87,7 +87,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 普通销售场景已经交付完时，应选择一个新的低压力 `trust_repair` 或 `objection_resolution` 目标，不能直接停止触达。
 活动和价格已经交付后，`trust_repair` 必须提供不同的新价值，例如尚未说过的“到店先看效果和方案，满意再做”，禁止重复价格透明、退款、抵扣、名额或预约金规则。
 完整销售链路已经交付但客户暂时无法支付时，禁止让客户等到能付款以后再联系。第一步交付上述低风险到店价值，第二步从已批准素材中选择不同的中性自信或自我形象价值。
-禁止误抑制：只有健康风险、停止联系、客户关系删除、已支付或已预约终态、投诉退款、人工接管、聊天归属不可靠才允许 `eligible=false`。门店、效果、活动已聊过，客户考虑一下，距离远，没时间，等时机，暂时不付或项目范围不匹配，都必须继续创建计划并推进未完成 SOP 或预约卡点处理。
+禁止误抑制：只有健康风险、停止联系、客户关系删除、当前有效已支付或已预约终态、投诉退款、人工接管、聊天归属不可靠才允许 `eligible=false`。门店、效果、活动已聊过，客户考虑一下，距离远，没时间，等时机，暂时不付、项目范围不匹配，或 `personalized_order_gate.reason=historical_order_expired_new_cycle` 的历史过期订单，都必须继续创建计划并推进未完成 SOP 或预约卡点处理。
 
 # 八、输出合同
 只能返回一个 JSON 对象：
@@ -131,7 +131,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
   "message_index_base": 0,
   "evidence": [{"message_index": 0, "fact": "简短事实证据"}]
 }
-停止触达时，必须同时设置 `hard_boundary.active=true`，并从允许枚举中选择真实硬边界类型、引用直接消息证据；然后设置 `eligible=false`，两步场景都设为 `suppress`，两个目标均为空，两个素材策略均为 `none`，支付步骤设为 0。
+停止触达时，必须同时设置 `hard_boundary.active=true`，并从允许枚举中选择真实硬边界类型、引用直接消息证据；然后设置 `eligible=false`，两步场景都设为 `suppress`，两个目标均为空，两个素材策略均为 `none`，支付步骤设为 0。历史完成单、历史已支付单、过期保护单不能填写为硬边界；只有当前仍受保护的已付、已约、退款投诉或安全事实才能停止。
 没有支付门禁、缺订单、缺门店、暂时没钱、无法微信支付、天气、距离、忙碌或“考虑一下”都不能填写为硬边界，也绝不能据此设置 `eligible=false`。
 
 # 九、校准示例

@@ -100,6 +100,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("场景枚举", analyst)
         self.assertIn("只有文字效果说明不等于已经交付图片证据", analyst)
         self.assertIn("payment_collection_gate.eligible=true", analyst)
+        self.assertIn("personalized_order_gate", analyst)
+        self.assertIn("historical_order_expired_new_cycle", analyst)
         self.assertIn("禁止误抑制", analyst)
         self.assertIn("time_deposit_objection", analyst)
         self.assertIn("out_of_scope_pullback", analyst)
@@ -1082,6 +1084,10 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         workflow = repository.created_plan["source_snapshot"]["first_day_workflow"]
         self.assertEqual(workflow["scene_analysis"]["step1_scene"], "store_area_request")
         self.assertEqual(workflow["verifier_result"]["decision"], "pass")
+        self.assertEqual(
+            repository.created_plan["source_snapshot"]["personalized_order_gate"]["reason"],
+            "still_spoken_without_booked_order",
+        )
         self.assertEqual(len(model.calls), 3)
 
     async def test_first_day_monitor_skips_before_model_after_two_plans_today(self) -> None:
