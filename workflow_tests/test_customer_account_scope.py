@@ -12,6 +12,7 @@ from app.services.customer_payment_state import (
 )
 from app.services.customer_scope import build_customer_scope
 from app.services.sop_event_service import _send_once_key as event_send_once_key
+from app.services.sop_platform_task_policy import personalized_order_eligibility
 from app.services.storage import AppRepository, SQLiteStore
 
 
@@ -135,6 +136,41 @@ def test_finished_paid_order_is_historical_not_current_deposit() -> None:
     assert normalized["deposit_state"] == "historical_paid_completed"
     assert normalized["paid_protection_status"] == "completed_order_expired"
     assert resolved_payment_fact(orders=[{**finished_order, **normalized}]) == {}
+
+
+def test_personalized_order_gate_allows_expired_historical_finished_order() -> None:
+    finished_order = {
+        "id": "finished-paid",
+        "status": "finished",
+        "prepay_required": 10,
+        "prepay_paid": 10,
+        "created_at": "2023-10-01T00:00:00+00:00",
+        "paid_protection_status": "expired",
+    }
+
+    gate = personalized_order_eligibility(
+        {"source": "platform_agent", "orders": [{**finished_order, **normalize_prepay_facts(finished_order)}]}
+    )
+
+    assert gate["eligible"] is True
+    assert gate["reason"] == "historical_order_expired_new_cycle"
+    assert gate["order_status"] == "finished"
+
+
+def test_personalized_order_gate_blocks_nonexpired_finished_order() -> None:
+    paid_order = {
+        "id": "current-paid",
+        "status": "finished",
+        "prepay_required": 10,
+        "prepay_paid": 10,
+        "created_at": "2026-08-01T00:00:00+00:00",
+        "paid_protection_status": "protected",
+    }
+
+    gate = personalized_order_eligibility({"source": "platform_agent", "orders": [paid_order]})
+
+    assert gate["eligible"] is False
+    assert gate["reason"] == "order_state_changed"
 
 
 def test_lost_refunded_paid_order_is_not_current_deposit() -> None:

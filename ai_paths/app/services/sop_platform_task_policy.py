@@ -10,6 +10,11 @@ from app.services.customer_payment_state import normalize_prepay_facts
 
 BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 PERSONALIZED_ORDER_STATUSES = {"pending"}
+EXPIRED_PAYMENT_PROTECTION_STATUSES = {
+    "expired",
+    "inactive_order_expired",
+    "completed_order_expired",
+}
 
 
 def personalized_order_eligibility(customer_context: dict[str, Any]) -> dict[str, Any]:
@@ -40,18 +45,34 @@ def personalized_order_eligibility(customer_context: dict[str, Any]) -> dict[str
     order = _current_order(customer_context)
     order_status = order_status_text(order.get("status")) if order else "no_order"
     payment = normalize_prepay_facts(order) if order else {}
+    protection_status = ""
+    if order:
+        protection_status = str(
+            order.get("paid_protection_status")
+            or payment.get("paid_protection_status")
+            or ""
+        )
+    expired_historical_order = bool(order) and protection_status in EXPIRED_PAYMENT_PROTECTION_STATUSES
+    eligible = (
+        order_status == "no_order"
+        or order_status in PERSONALIZED_ORDER_STATUSES
+        or expired_historical_order
+    )
     return {
         "available": True,
-        "eligible": order_status == "no_order" or order_status in PERSONALIZED_ORDER_STATUSES,
+        "eligible": eligible,
         "reason": (
-            "still_spoken_without_booked_order"
-            if order_status == "no_order" or order_status in PERSONALIZED_ORDER_STATUSES
+            "historical_order_expired_new_cycle"
+            if expired_historical_order
+            else "still_spoken_without_booked_order"
+            if eligible
             else "order_state_changed"
         ),
         "order_status": order_status,
         "order_id": str(order.get("id") or order.get("order_id") or "") if order else "",
         "deposit_state": str(payment.get("deposit_state") or "unknown"),
         "prepay_paid": bool(payment.get("prepay_paid")),
+        "paid_protection_status": protection_status,
     }
 
 
