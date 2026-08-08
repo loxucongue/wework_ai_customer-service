@@ -111,10 +111,13 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("禁止推断或提及客户性别", writer)
         self.assertIn("不要主动强调原价金额", writer)
         self.assertIn("到店抵扣，未做或不满意可退，实际按付款记录核对", writer)
+        self.assertIn("优先保留 SOP 包原有消息顺序和结构", writer)
+        self.assertIn("一条或多条非空 `reply_messages`", writer)
         self.assertIn("不得重新规划业务场景", verifier)
         self.assertIn("语义上重复", verifier)
         self.assertIn("pass|repair|block", verifier)
         self.assertIn("允许以前一步 `activity_intro` 作为本计划内报价证据", verifier)
+        self.assertIn("不得因为超过两句就要求修复", verifier)
         for prompt in (analyst, writer, verifier):
             self.assertNotIn("# 1. Role", prompt)
             self.assertNotIn("# 2. Objective", prompt)
@@ -298,6 +301,32 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             source_snapshot={"payment_collection_gate": {"eligible": True}},
         )
 
+        self.assertEqual(normalized["payment_action"]["step"], 2)
+        self.assertTrue(normalized["payment_action"]["allowed"])
+
+    def test_first_day_scene_analysis_normalizes_sop_category_scene_aliases(self) -> None:
+        analysis = _first_day_scene_analysis(
+            step1_scene="price_quote",
+            step2_scene="payment_followup",
+        )
+        analysis["current_scene"] = "price_quote"
+        analysis["payment_action"] = {"step": 0, "allowed": False, "reason": "model omitted"}
+        snapshot = {
+            "recent_messages": [{"direction": "customer", "content": "你好"}],
+            "conversation_activity": {"real_customer_message_count": 1},
+            "payment_collection_gate": {"eligible": True},
+            "asset_catalog": [],
+        }
+
+        normalized = _normalize_first_day_scene_analysis(
+            analysis,
+            message_count=1,
+            source_snapshot=snapshot,
+        )
+
+        self.assertEqual(normalized["current_scene"], "activity_intro")
+        self.assertEqual(normalized["step1_scene"], "activity_intro")
+        self.assertEqual(normalized["step2_scene"], "deposit_close")
         self.assertEqual(normalized["payment_action"]["step"], 2)
         self.assertTrue(normalized["payment_action"]["allowed"])
 
@@ -529,7 +558,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         response["steps"][0]["reply_messages"][0]["type"] = "object"
         self.assertEqual(
             _first_day_outreach_plan_error(response),
-            "plan step reply_messages must contain one or two non-empty text items",
+            "plan step reply_messages must contain non-empty text items",
         )
 
     def test_first_day_structure_allows_immediate_payment_when_order_gate_is_ready(self) -> None:
@@ -644,7 +673,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(_outreach_plan_structure_error(normalized), "")
 
-    def test_plan_structure_accepts_one_or_two_text_messages_per_step(self) -> None:
+    def test_plan_structure_accepts_multiple_text_messages_per_step(self) -> None:
         response = _ModelClient().response
         response["steps"][0]["reply_messages"] = [
             {"type": "text", "order": 1, "content": {"text": "平时防晒没跟上的话，色素会更容易显出来。"}},
@@ -654,11 +683,14 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_outreach_plan_structure_error(response), "")
 
         response["steps"][0]["reply_messages"].append(
-            {"type": "text", "order": 3, "content": {"text": "第三条不允许"}}
+            {"type": "text", "order": 3, "content": {"text": "按 SOP 包顺序补充第三条也可以。"}}
         )
+        self.assertEqual(_outreach_plan_structure_error(response), "")
+
+        response["steps"][0]["reply_messages"] = []
         self.assertEqual(
             _outreach_plan_structure_error(response),
-            "every step must contain one or two reply_messages text items",
+            "every step must contain at least one reply_messages text item",
         )
 
     def test_message_composition_keeps_two_texts_before_locked_asset_and_card(self) -> None:

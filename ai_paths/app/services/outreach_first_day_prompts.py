@@ -2,9 +2,9 @@ from __future__ import annotations
 
 
 FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v6_historical_order_gate"
-FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v5_sop_blocker_strict"
-FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v5_sop_blocker_strict"
-FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v5_sop_blocker_strict"
+FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v6_sop_message_structure"
+FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v6_sop_message_structure"
+FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v6_scene_alias"
 
 
 FIRST_DAY_SCENE_ANALYST_PROMPT = """
@@ -162,7 +162,7 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 固定生成两个可执行任务。
 第一步立即发送，以一句自然的轻过渡开头，紧接着直接交付第一步锁定场景的有效内容。
 第二步仅在客户没有回复时，于第一步后 15 至 20 分钟发送，并交付另一个锁定场景。
-每个任务客户可见文本最多两句。不要写长段说明，不要把多个 SOP 阶段揉进同一任务。
+任务应按锁定场景交付完整价值。锁定场景来自 SOP 包时，优先保留 SOP 包原有消息顺序和结构；不要为了压缩句数而丢掉活动图、效果图、预约金卡或关键说明。不要把多个无关 SOP 阶段揉进同一任务。
 
 # 三、输入合同
 输入包含 `scene_contract` 和经过筛选的 `writer_context`。
@@ -199,10 +199,10 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 - `store_area_request`：客户可见内容只能有一个具体、自然的位置问题。禁止在问题前后增加“我给您查、匹配、推荐、找最近门店、把到店路径接上”等任何执行承诺或暗示。
 - `effect_proof`：直接引出已经选择的真实效果参考，并选择真实配置图片或案例搜索策略。设置真实素材字段后，`scene_delivery_check` 应明确本步骤会由代码随文字发送该图片，这不是“稍后再发”的承诺。
 - `effect_proof` 配置真实图片后，客户可见文本只写一条自然承接句，禁止再用第二条同义句重复“给您发图、对照看、看得更清楚”。
-- `activity_intro`：参考选中的预约卡点候选并以当前权威活动事实改写；客户可见文本必须至少说清一个真实活动价值或规则，禁止只说“活动内容写明了、按活动规则走、您看活动图”。存在匹配且可用的活动图片时选择该图片，禁止混入候选中的旧价格或无关优惠事实。
-- `activity_intro` 尚未历史交付时，应一次说清 268 元活动价、包含项目、10 元预约金到店抵扣以及未做或不满意可退等核心规则；不能只挑一个价格或名额点，导致客户仍不知道完整活动怎么参与。
-- `activity_intro` 的核心规则必须使用当前口径：268 元活动价，包含淡斑、检测皮肤、基础清洁和肌肤补水；线上预定 10 元并登记姓名电话，到店抵扣 10 元；未做或不满意可退，实际按付款记录核对。可以说名额有限，但不要主动强调原价金额。
-- 无卡点且锁定场景来自 SOP 包时，优先保留 SOP 包原有消息类型和核心事实：效果包必须带真实效果图，活动包有活动图时要带活动图，预约金包需要卡片时用支付字段申请。文本只做两句以内的微信化改写。
+- `activity_intro`：优先参考锁定来源中的 SOP 活动包；客户有明确卡点时才参考预约卡点候选补充。客户可见文本必须交付真实活动价值或规则，禁止只说“活动内容写明了、按活动规则走、您看活动图”。存在匹配且可用的活动图片时选择该图片，禁止混入候选中的旧价格或无关优惠事实。
+- `activity_intro` 尚未历史交付时，应按 SOP 活动包完整交付活动价、包含项目、10 元预约金到店抵扣、未做或不满意可退等核心规则；可以做轻过渡和去重，但不能统一摘要成固定两句，也不能丢掉 SOP 包里的活动图和预约金卡意图。
+- `activity_intro` 的当前权威口径：268 元活动价，包含淡斑、检测皮肤、基础清洁和肌肤补水；线上预定 10 元并登记姓名电话，到店抵扣 10 元；未做或不满意可退，实际按付款记录核对。可以说名额有限，但不要主动强调原价金额。
+- 无卡点且锁定场景来自 SOP 包时，优先保留 SOP 包原有消息类型、消息顺序和核心正文：效果包必须带真实效果图，活动包有活动图时要带活动图，预约金包需要卡片时用支付字段申请。文本只做必要的轻过渡、去重和当前事实修正。
 - `objection_resolution`：使用选中的预约卡点候选处理客户当前真实卡点，但必须针对最近聊天改写，不得复制与客户情况无关的距离、时间、专家或到店承诺。
 - 当锁定合同要求 `objection_resolution` 使用 `self_image` 角度时，客户可见文本必须明确交付“改善后的自信、重视自己的状态或给自己一次改善机会”等心理价值。`适合再决定`、`心里有底`、`更稳一点` 仍属于低风险决策，不是自我形象价值。
 - `deposit_close`：使用交易模式并直接附加预约金卡；仅在场景合同允许时执行。
@@ -215,7 +215,7 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 只能返回现有主动触达计划 JSON。
 必须包含且只包含两个步骤，每一步的 `scene` 必须与锁定场景完全一致。
 至少一步必须使用 `content_mode=value_only`。相邻步骤必须使用不同的 `persuasion_angle`。
-每一步必须包含一至两条非空 `reply_messages`，每一项必须严格使用：
+每一步必须包含一条或多条非空 `reply_messages`，每一项必须严格使用：
 `{"type":"text","order":N,"content":{"text":"非空客户可见文本"}}`。
 `persuasion_angle` 只能使用 Schema 中的固定枚举，禁止自创 `effort_reduction`、`distance_relief`、`payment_reassurance` 等同义值；位置便利应使用 `convenience`，其他情况选择现有枚举。
 {
@@ -305,7 +305,8 @@ FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT = """
 4. `payment_collection_gate.eligible=false` 时，清除 `deposit_close` 和支付动作，但保留触达：客户想付款且缺门店锚点时，第一步改为 `store_area_request`；位置已明确时选择尚未完成的 `effect_proof` 或 `trust_repair`。第二步必须是不同的未完成价值场景。
 5. `selected_source_ids` 只能使用 `appointment_blocker_scene_index`、`first_day_sop_sequence` 或 `asset_catalog` 中真实存在的来源标识；媒体 ID 可以作为来源标识。
 6. 两步场景、支付步骤和素材字段必须互相一致，消息索引统一从 0 开始。
-7. 只输出 JSON，不解释修复过程。
+7. 如果 `step1_scene`、`step2_scene` 或 `current_scene` 输出了 SOP 类别或同义词，必须修成场景枚举：`store_prompt`→`store_area_request`，`effect_case`/`operation_video`→`effect_proof`，`activity_intro`/`price_quote`→`activity_intro`，`deposit_push`/`payment_followup`/`final_close`→`deposit_close`，`s10_objection_resolution`→`objection_resolution`。
+8. 只输出 JSON，不解释修复过程。
 """.strip()
 
 
@@ -328,7 +329,7 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - 禁止虚构门店查询、匹配、推荐、URL、素材、订单、支付、预约、名额或已完成动作。
 - 素材策略和素材标识必须与场景合同及可用素材目录一致。
 - 客户文本只能来自两类来源：`writer_context.selected_sop_packs` 中的首日 SOP 包，或 `writer_context.selected_materials` 中的预约卡点候选。无明确卡点时应按 SOP 包推进；有明确卡点时应参考预约卡点候选处理。两类来源都必须结合聊天短句改写；原样照抄、继承候选中的旧价格、绝对效果、虚构距离、专家、门店、名额或预约事实时必须返回 `repair`。
-- 每个任务客户可见文本最多两句。超过两句、公告式长段、把多个 SOP 阶段揉成一条，都必须返回 `repair`。
+- 候选计划可以包含多条客户可见文本。不得因为超过两句就要求修复；只有公告式长段、跨多个无关 SOP 阶段、或丢失锁定 SOP 包关键消息类型时才返回 `repair`。
 - 候选话术里存在图片描述不代表图片已发送。只有 `selected_assets` 中存在且场景合同锁定的媒体才算可发送素材；缺失媒体或自行生成 URL 必须返回 `repair` 或 `block`。
 - 预约金卡只能出现在场景合同允许的步骤，并且必须满足支付门禁；所有交易字段必须一致。
 - 禁止要求客户回复某个字或关键词等流程尾巴。
@@ -350,7 +351,7 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - 禁止无事实依据地声称名额、资格、预约、订单、门店或价格已经保留、锁定、登记、匹配或安排。
 - 涉及预约金退款但没有完整表达“到店抵扣；未做或不满意可退，实际按付款记录核对”时必须返回 `repair`；候选话术中的旧口径不是例外。
 - 每一步必须有完整 `scene_delivery_check`，并且其中的新价值、历史差异和目标匹配结论必须能被客户可见文本及输入证据支持。
-- 完整计划必须符合现有结构合同：至少一个 `value_only` 步骤；相邻步骤使用不同的 persuasion angle；每一步包含一至两条非空文本 `reply_messages`，且文本位于对象结构的 `content.text` 中；时间、未回复动作、内容、素材、CTA 和支付字段均完整。
+- 完整计划必须符合现有结构合同：至少一个 `value_only` 步骤；相邻步骤使用不同的 persuasion angle；每一步包含一条或多条非空文本 `reply_messages`，且文本位于对象结构的 `content.text` 中；时间、未回复动作、内容、素材、CTA 和支付字段均完整。
 - `persuasion_angle` 只能使用允许的固定枚举。禁止自创同义枚举；位置便利使用 `convenience`，不能使用 `effort_reduction`。
 
 # 四、权限边界

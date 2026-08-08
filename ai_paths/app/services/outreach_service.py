@@ -150,6 +150,29 @@ FIRST_DAY_SOP_SCENE_BY_CATEGORY = {
     "operation_video": "effect_proof",
     "final_close": "deposit_close",
 }
+FIRST_DAY_SCENE_ALIASES = {
+    **FIRST_DAY_SOP_SCENE_BY_CATEGORY,
+    "s10_activity_intro": "activity_intro",
+    "s10_need_and_case": "effect_proof",
+    "s10_deposit_close": "deposit_close",
+    "s10_objection_resolution": "objection_resolution",
+    "activity": "activity_intro",
+    "quote": "activity_intro",
+    "price": "activity_intro",
+    "price_intro": "activity_intro",
+    "case": "effect_proof",
+    "case_study": "effect_proof",
+    "effect": "effect_proof",
+    "store": "store_area_request",
+    "store_request": "store_area_request",
+    "deposit": "deposit_close",
+    "payment": "deposit_close",
+    "payment_collection": "deposit_close",
+    "objection": "objection_resolution",
+    "trust": "trust_repair",
+    "risk": "health_hold",
+    "health": "health_hold",
+}
 FIRST_DAY_SOP_CATEGORY_ORDER = {
     "store_prompt": 10,
     "effect_case": 20,
@@ -840,7 +863,7 @@ def _first_reply_text(messages: Any) -> str:
     return texts[0] if texts else ""
 
 
-def _reply_texts(messages: Any, *, limit: int = 2) -> list[str]:
+def _reply_texts(messages: Any, *, limit: int = 20) -> list[str]:
     if not isinstance(messages, list):
         return []
     output: list[str] = []
@@ -1041,8 +1064,8 @@ def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
         return "every step must use one allowed asset_strategy"
     for step in steps:
         messages = step.get("reply_messages")
-        if not isinstance(messages, list) or len(messages) not in {1, 2}:
-            return "every step must contain one or two reply_messages text items"
+        if not isinstance(messages, list) or not messages:
+            return "every step must contain at least one reply_messages text item"
         if any(
             not isinstance(message, dict)
             or _string(message.get("type")) != "text"
@@ -1050,7 +1073,7 @@ def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
         ) or any(not isinstance(message.get("content"), dict) for message in messages) or len(
             _reply_texts(messages)
         ) != len(messages):
-            return "plan step reply_messages must contain one or two non-empty text items"
+            return "plan step reply_messages must contain non-empty text items"
         if _string(step.get("content_mode")) == "value_only" and _bool(
             step.get("should_send_payment_collection")
         ):
@@ -1180,15 +1203,15 @@ def _first_day_outreach_plan_error(response: dict[str, Any]) -> str:
         ):
             return "every first-day step must contain a complete scene_delivery_check"
         messages = step.get("reply_messages")
-        if not isinstance(messages, list) or len(messages) not in {1, 2}:
-            return "every step must contain one or two reply_messages text items"
+        if not isinstance(messages, list) or not messages:
+            return "every step must contain at least one reply_messages text item"
         if any(
             not isinstance(message, dict)
             or _string(message.get("type")) != "text"
             or not isinstance(message.get("content"), dict)
             for message in messages
         ) or len(_reply_texts(messages)) != len(messages):
-            return "plan step reply_messages must contain one or two non-empty text items"
+            return "plan step reply_messages must contain non-empty text items"
         asset_strategy = _string(step.get("asset_strategy")) or "none"
         if asset_strategy not in OUTREACH_ASSET_STRATEGIES:
             return "every step must use one allowed asset_strategy"
@@ -1417,6 +1440,15 @@ def _normalize_first_day_scene_analysis(
 ) -> dict[str, Any]:
     if not isinstance(response, dict):
         return response
+
+    def _normalize_scene_name(value: Any) -> str:
+        scene = _string(value)
+        return FIRST_DAY_SCENE_ALIASES.get(scene, scene)
+
+    for key in ("current_scene", "step1_scene", "step2_scene"):
+        scene = _normalize_scene_name(response.get(key))
+        if scene:
+            response[key] = scene
     payment_action = response.get("payment_action")
     if not isinstance(payment_action, dict):
         payment_action = {"step": 0, "allowed": False, "reason": "未选择预约金卡动作"}
