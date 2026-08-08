@@ -1018,6 +1018,36 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["created_count"], 1)
         self.assertEqual(len(model.calls), 3)
 
+    async def test_first_day_monitor_expands_candidate_scan_window(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        customer_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        repository.candidates = [
+            {
+                **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+            }
+        ]
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=_ModelClient(),
+            refreshed_messages=[
+                {"direction": "customer", "content": "姝︽眽鏈夊簵鍚?", "created_at": customer_at},
+                {"direction": "staff", "content": "鎮ㄥ湪鍝釜鍖哄憿", "created_at": staff_at},
+            ],
+        )
+
+        await service.evaluate_first_day_opened_silence_customers(
+            limit=5,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+
+        self.assertEqual(repository.list_candidate_limits[0], 1000)
+
     async def test_first_day_verifier_can_repair_writer_without_changing_locked_scenes(self) -> None:
         scene_analysis = _first_day_scene_analysis(
             step1_scene="store_area_request",
@@ -2254,8 +2284,10 @@ class _Repository:
         self.candidates: list[dict[str, Any]] = []
         self.evaluated_fingerprints: set[str] = set()
         self.first_day_plan_count = 0
+        self.list_candidate_limits: list[int] = []
 
-    def list_outreach_candidates(self, **_kwargs: Any) -> list[dict[str, Any]]:
+    def list_outreach_candidates(self, **kwargs: Any) -> list[dict[str, Any]]:
+        self.list_candidate_limits.append(int(kwargs.get("limit") or 0))
         return [dict(item) for item in self.candidates]
 
     def get_active_outreach_plan_for_customer(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:

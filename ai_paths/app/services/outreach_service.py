@@ -3409,7 +3409,7 @@ class OutreachService:
             "last_error": "",
             "results": [],
         }
-        scan_limit = max(50, min(500, max(1, int(limit)) * 20))
+        scan_limit = max(200, min(2000, max(1, int(limit)) * 200))
         candidates = self.list_candidates(
             limit=scan_limit,
             silent_minutes_min=0,
@@ -3501,7 +3501,7 @@ class OutreachService:
             "last_error": "",
             "results": [],
         }
-        scan_limit = max(50, min(500, max(1, int(limit)) * 20))
+        scan_limit = max(200, min(2000, max(1, int(limit)) * 200))
         candidates = self.list_candidates(limit=scan_limit, silent_minutes_min=0)
         stats["candidate_count"] = len(candidates)
         eligible_seen = 0

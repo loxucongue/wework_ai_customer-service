@@ -678,8 +678,8 @@ class OutreachRepositoryMixin:
         keyword: str = "",
     ) -> list[dict[str, Any]]:
         cutoff_72h = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat()
-        result_limit = max(1, min(limit, 200))
-        query_limit = 5000 if keyword.strip() else max(result_limit, min(result_limit * 5, 1000))
+        result_limit = max(1, min(limit, 2000))
+        query_limit = 5000 if keyword.strip() else max(result_limit, min(result_limit * 10, 5000))
         with self.store.connect() as conn:
             rows = conn.execute(
                 """
@@ -771,9 +771,15 @@ class OutreachRepositoryMixin:
             )
             if item["silent_minutes"] >= silent_minutes_min:
                 items.append(item)
-            if len(items) >= result_limit:
-                break
-        return items
+        items.sort(
+            key=lambda item: (
+                0 if item.get("awaiting_customer_reply") else 1,
+                -int(item.get("reply_wait_minutes") or 0),
+                -int(item.get("silent_minutes") or 0),
+                _string(item.get("updated_at")),
+            )
+        )
+        return items[:result_limit]
 
     def outreach_dashboard_stats(self, *, now: str | None = None) -> dict[str, Any]:
         current = _parse_iso(now) if now else datetime.now(timezone.utc)

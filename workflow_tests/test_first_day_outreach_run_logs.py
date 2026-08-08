@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from uuid import uuid4
 
+from app.services.customer_scope import build_customer_scope
 from app.services.first_day_outreach_log import redact_first_day_log_value
 from app.services.outreach_service import OutreachService
 from app.services.storage.repositories import AppRepository
@@ -14,6 +16,36 @@ def _repository(tmp_path) -> AppRepository:
     store = SQLiteStore(SimpleNamespace(db_path=tmp_path / "runs.db"))
     store.initialize()
     return AppRepository(store)
+
+
+def _insert_conversation(
+    repository: AppRepository,
+    *,
+    customer_id: str,
+    corp_id: str,
+    user_id: str,
+    wechat: str,
+    external_userid: str,
+    updated_at: str,
+) -> None:
+    with repository.store.connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO conversations
+                (id, customer_id, external_userid, corp_id, user_id, wechat, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, '', ?, ?)
+            """,
+            (
+                str(uuid4()),
+                customer_id,
+                external_userid,
+                corp_id,
+                user_id,
+                wechat,
+                updated_at,
+                updated_at,
+            ),
+        )
 
 
 def test_redaction_removes_credentials_and_signed_url_values() -> None:
@@ -82,6 +114,61 @@ def test_first_day_run_list_detail_cursor_and_contact_boundary(tmp_path) -> None
     )
     sanitized = repository.list_first_day_outreach_runs(wechat="staff-a")["items"][0]
     assert "secret-token" not in sanitized["error_message"]
+
+
+def test_list_candidates_prioritizes_waiting_reply_and_longer_reply_wait(tmp_path) -> None:
+    repository = _repository(tmp_path)
+    now = datetime.now(timezone.utc)
+    common = {
+        "corp_id": "corp",
+        "user_id": "user",
+        "wechat": "staff",
+    }
+    old_customer = "customer-old-wait"
+    new_customer = "customer-newer-update"
+    _insert_conversation(
+        repository,
+        customer_id=old_customer,
+        external_userid="external-old",
+        updated_at=(now - timedelta(hours=6)).isoformat(),
+        **common,
+    )
+    _insert_conversation(
+        repository,
+        customer_id=new_customer,
+        external_userid="external-new",
+        updated_at=(now - timedelta(minutes=5)).isoformat(),
+        **common,
+    )
+
+    old_scope = build_customer_scope(customer_id=old_customer, external_userid="external-old", **common)
+    new_scope = build_customer_scope(customer_id=new_customer, external_userid="external-new", **common)
+    repository.touch_customer_message_time(
+        old_scope.sales_contact_key,
+        field="last_customer_message_at",
+        value=(now - timedelta(hours=7)).isoformat(),
+    )
+    repository.touch_customer_message_time(
+        old_scope.sales_contact_key,
+        field="last_staff_message_at",
+        value=(now - timedelta(hours=5)).isoformat(),
+    )
+    repository.touch_customer_message_time(
+        new_scope.sales_contact_key,
+        field="last_customer_message_at",
+        value=(now - timedelta(hours=3)).isoformat(),
+    )
+    repository.touch_customer_message_time(
+        new_scope.sales_contact_key,
+        field="last_staff_message_at",
+        value=(now - timedelta(minutes=30)).isoformat(),
+    )
+
+    candidates = repository.list_outreach_candidates(limit=10, silent_minutes_min=0)
+
+    assert [item["customer_id"] for item in candidates[:2]] == [old_customer, new_customer]
+    assert candidates[0]["awaiting_customer_reply"] is True
+    assert int(candidates[0]["reply_wait_minutes"]) > int(candidates[1]["reply_wait_minutes"])
 
 
 def test_retention_redacts_terminal_raw_data_but_keeps_active_runs(tmp_path) -> None:
