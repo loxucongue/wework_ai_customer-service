@@ -1155,6 +1155,174 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["created_count"], 1)
         self.assertEqual(len(model.calls), 3)
 
+    async def test_first_day_monitor_retries_legacy_never_spoke_soft_block_when_customer_now_spoke(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        customer_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        repository.first_day_run_by_fingerprint = {
+            "workflow_run_id": "legacy-soft-block",
+            "status": "blocked",
+            "reason_code": "customer_never_spoke",
+            "final_decision": "no_plan",
+            "retry_count": 0,
+            "workflow": {},
+        }
+        repository.candidates = [
+            {
+                **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+            }
+        ]
+        response = _ModelClient().response
+        response["steps"][0].update({"delay_minutes": 0, "scene": "activity_intro"})
+        response["steps"][1].update({"delay_minutes": 15, "scene": "trust_repair"})
+        model = _SequenceModelClient(
+            [
+                _first_day_scene_analysis(
+                    step1_scene="activity_intro",
+                    step2_scene="trust_repair",
+                ),
+                response,
+                {
+                    "decision": "pass",
+                    "block_category": "none",
+                    "violations": [],
+                    "repair_instructions": [],
+                },
+            ]
+        )
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "我想看看活动", "created_at": customer_at},
+                {"direction": "staff", "content": "活动我给您发一下", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_first_day_opened_silence_customers(
+            limit=5,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+
+        self.assertEqual(result["evaluated_count"], 1)
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(repository.first_day_run_updates[0]["workflow_run_id"], "legacy-soft-block")
+        self.assertEqual(repository.first_day_run_updates[0]["status"], "running")
+        self.assertEqual(repository.first_day_run_updates[0]["retry_count"], 1)
+        self.assertEqual(
+            repository.first_day_run_updates[0]["workflow"]["retry_reason"],
+            "soft_block_retry:customer_never_spoke",
+        )
+        self.assertEqual(len(model.calls), 3)
+
+    async def test_first_day_monitor_keeps_hard_blocked_fingerprint_skipped(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        customer_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        repository.first_day_run_by_fingerprint = {
+            "workflow_run_id": "legacy-hard-block",
+            "status": "blocked",
+            "reason_code": "customer_deleted",
+            "final_decision": "no_plan",
+        }
+        repository.candidates = [
+            {
+                **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+            }
+        ]
+        model = _ModelClient()
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "你好", "created_at": customer_at},
+                {"direction": "staff", "content": "在的", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_first_day_opened_silence_customers(
+            limit=5,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+
+        self.assertEqual(result["created_count"], 0)
+        self.assertEqual(result["results"][0]["reason"], "conversation_fingerprint_already_logged")
+        self.assertEqual(model.calls, [])
+
+    async def test_first_day_monitor_retries_stale_running_run_without_plan(self) -> None:
+        now = datetime.now(timezone.utc)
+        first_added_at = (now - timedelta(hours=1)).isoformat()
+        customer_at = (now - timedelta(minutes=20)).isoformat()
+        staff_at = (now - timedelta(minutes=4)).isoformat()
+        repository = _Repository()
+        repository.first_day_run_by_fingerprint = {
+            "workflow_run_id": "legacy-stale-running",
+            "status": "running",
+            "reason_code": "preflight_retry",
+            "final_decision": "retrying",
+            "retry_count": 1,
+            "started_at": (now - timedelta(minutes=30)).isoformat(),
+            "updated_at": (now - timedelta(minutes=30)).isoformat(),
+            "workflow": {},
+        }
+        repository.candidates = [
+            {
+                **_monitor_candidate(customer_at=customer_at, staff_at=staff_at),
+                "sales_contact_started_at": first_added_at,
+                "reply_wait_minutes": 4,
+            }
+        ]
+        response = _ModelClient().response
+        response["steps"][0].update({"delay_minutes": 0, "scene": "effect_proof"})
+        response["steps"][1].update({"delay_minutes": 15, "scene": "activity_intro"})
+        model = _SequenceModelClient(
+            [
+                _first_day_scene_analysis(
+                    step1_scene="effect_proof",
+                    step2_scene="activity_intro",
+                ),
+                response,
+                {
+                    "decision": "pass",
+                    "block_category": "none",
+                    "violations": [],
+                    "repair_instructions": [],
+                },
+            ]
+        )
+        service = _MonitorOutreachService(
+            repository=repository,
+            model_client=model,
+            refreshed_messages=[
+                {"direction": "customer", "content": "效果怎么样", "created_at": customer_at},
+                {"direction": "staff", "content": "效果可以的", "created_at": staff_at},
+            ],
+        )
+
+        result = await service.evaluate_first_day_opened_silence_customers(
+            limit=5,
+            silent_minutes=3,
+            auto_activate=True,
+        )
+
+        self.assertEqual(result["created_count"], 1)
+        self.assertEqual(repository.first_day_run_updates[0]["workflow_run_id"], "legacy-stale-running")
+        self.assertEqual(repository.first_day_run_updates[0]["retry_count"], 2)
+        self.assertEqual(
+            repository.first_day_run_updates[0]["workflow"]["retry_reason"],
+            "stale_running_retry",
+        )
+
     async def test_first_day_monitor_expands_candidate_scan_window(self) -> None:
         now = datetime.now(timezone.utc)
         first_added_at = (now - timedelta(hours=1)).isoformat()
@@ -2433,6 +2601,8 @@ class _Repository:
         self.evaluated_fingerprints: set[str] = set()
         self.first_day_plan_count = 0
         self.list_candidate_limits: list[int] = []
+        self.first_day_run_by_fingerprint: dict[str, Any] = {}
+        self.first_day_run_updates: list[dict[str, Any]] = []
 
     def list_outreach_candidates(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.list_candidate_limits.append(int(kwargs.get("limit") or 0))
@@ -2470,6 +2640,34 @@ class _Repository:
 
     def count_outreach_plans_for_trigger_between(self, **_kwargs: Any) -> int:
         return self.first_day_plan_count
+
+    def create_first_day_outreach_run(self, **kwargs: Any) -> dict[str, Any]:
+        run = {
+            "workflow_run_id": "workflow-created",
+            "status": "running",
+            "retry_count": 0,
+            **kwargs,
+        }
+        self.first_day_run_by_fingerprint = run
+        return dict(run)
+
+    def find_first_day_outreach_run_by_fingerprint(self, **_kwargs: Any) -> dict[str, Any]:
+        return dict(self.first_day_run_by_fingerprint)
+
+    def update_first_day_outreach_run(self, workflow_run_id: str, **changes: Any) -> dict[str, Any]:
+        updated = {"workflow_run_id": workflow_run_id, **changes}
+        self.first_day_run_updates.append(updated)
+        self.first_day_run_by_fingerprint.update(updated)
+        return dict(self.first_day_run_by_fingerprint)
+
+    def get_first_day_outreach_run(
+        self,
+        workflow_run_id: str,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
+        if self.first_day_run_by_fingerprint.get("workflow_run_id") == workflow_run_id:
+            return dict(self.first_day_run_by_fingerprint)
+        return {}
 
     def update_outreach_plan_status(self, plan_id: str, status: str) -> dict[str, Any]:
         self.updated_statuses.append((plan_id, status))

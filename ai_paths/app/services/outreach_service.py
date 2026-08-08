@@ -79,6 +79,20 @@ OUTREACH_BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 FIRST_DAY_WINDOW_MINUTES = 24 * 60
 FIRST_DAY_SILENCE_TRIGGER_TYPE = "first_day_opened_silence"
 FIRST_DAY_SOP_PLAN_ID = "first_day_opened_silence"
+FIRST_DAY_STALE_RUNNING_RETRY_MINUTES = 15
+FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS = {
+    "customer_never_spoke",
+}
+FIRST_DAY_NON_RETRYABLE_RUN_REASONS = {
+    "customer_deleted",
+    "first_day_daily_plan_limit_reached",
+    "outreach_cycle_completed_without_new_customer_reply",
+    "customer_replied",
+    "order_state_changed",
+    "health_risk",
+    "stop_contact",
+    "manual_takeover_active",
+}
 FIRST_DAY_SCENES = {
     "store_area_request",
     "effect_proof",
@@ -1989,6 +2003,40 @@ def _is_first_day_opened_silence_trigger(trigger_context: dict[str, Any] | None)
     return _string(trigger.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
 
 
+def _first_day_existing_run_retry_reason(
+    existing_run: dict[str, Any],
+    *,
+    latest_customer_message_at: str,
+    now: datetime | None = None,
+) -> str:
+    if not existing_run:
+        return "new_run"
+    status = _string(existing_run.get("status"))
+    reason_code = _string(existing_run.get("reason_code"))
+    if status == "failed":
+        return "failed_retry"
+    if reason_code in FIRST_DAY_NON_RETRYABLE_RUN_REASONS:
+        return ""
+    if (
+        status == "blocked"
+        and reason_code in FIRST_DAY_RETRYABLE_SOFT_BLOCK_REASONS
+        and _string(latest_customer_message_at)
+    ):
+        return f"soft_block_retry:{reason_code}"
+    if status in {"running", "created"} and _string(existing_run.get("plan_id")):
+        return ""
+    if status in {"running", "created"}:
+        reference = _parse_iso(_string(existing_run.get("updated_at"))) or _parse_iso(
+            _string(existing_run.get("started_at"))
+        )
+        current = now or datetime.now(timezone.utc)
+        if reference and reference.tzinfo is None:
+            reference = reference.replace(tzinfo=timezone.utc)
+        if reference and current - reference >= timedelta(minutes=FIRST_DAY_STALE_RUNNING_RETRY_MINUTES):
+            return f"stale_{status}_retry"
+    return ""
+
+
 class OutreachService:
     def __init__(
         self,
@@ -3885,8 +3933,11 @@ class OutreachService:
                 if callable(run_finder)
                 else {}
             )
-            existing_status = _string(existing_run.get("status"))
-            if existing_run and existing_status != "failed":
+            retry_reason = _first_day_existing_run_retry_reason(
+                existing_run,
+                latest_customer_message_at=candidate_customer_at,
+            )
+            if existing_run and not retry_reason:
                 return {
                     "status": "skipped",
                     "customer_id": customer_id,
@@ -3906,6 +3957,14 @@ class OutreachService:
                         error_type="",
                         error_message="",
                         finished_at="",
+                        workflow={
+                            **(
+                                existing_run.get("workflow")
+                                if isinstance(existing_run.get("workflow"), dict)
+                                else {}
+                            ),
+                            "retry_reason": retry_reason,
+                        },
                     )
             else:
                 run_creator = getattr(self.repository, "create_first_day_outreach_run", None)
