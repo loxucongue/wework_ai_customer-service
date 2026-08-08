@@ -155,6 +155,35 @@ class FakeFinalReplyModelClient:
         }
 
 
+class FakeStoreAddressRepairTwiceModelClient:
+    available = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.tiers: list[str] = []
+
+    async def chat_json(self, messages: list[dict[str, Any]], *, tier: str) -> dict[str, Any]:
+        self.calls += 1
+        self.tiers.append(tier)
+        if self.calls == 1:
+            return {
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "好的，我发您昆明门店地址，您点开导航就可以。"}}
+                ]
+            }
+        if self.calls == 2:
+            return {
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "好的，我把地址发您，您看下哪家更方便。"}}
+                ]
+            }
+        return {
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "昆明这边有几家，您明天更方便到哪个区或常去哪个片区？我先按您方便的区域给您匹配。"}}
+            ]
+        }
+
+
 class FakeAlwaysFailReplyModelClient:
     available = True
 
@@ -324,6 +353,53 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
         retry_info = state["trace"][0]["tool_calls"][0].get("retry")
         self.assertIsInstance(retry_info, dict)
         self.assertIn("Model JSON missing reply_messages", retry_info.get("reason", ""))
+
+    async def test_reply_synth_uses_multiple_targeted_repairs_before_compact_recovery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            model = FakeStoreAddressRepairTwiceModelClient()
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=model,
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            state: dict[str, Any] = {
+                "request_id": "test-store-address-multi-repair",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "发个昆明地址",
+                "normalized_content": "发个昆明地址",
+                "planner_decision": "need_tools",
+                "fact_envelope": {
+                    "structured_facts": {
+                        "store_facts": [
+                            {"store_id": "119", "store_name": "昆明五华店", "city": "昆明市", "district": "五华区"},
+                            {"store_id": "169", "store_name": "昆明官渡店", "city": "昆明市", "district": "官渡区"},
+                            {"store_id": "175", "store_name": "昆明五华二店", "city": "昆明市", "district": "五华区"},
+                            {"store_id": "535", "store_name": "昆明呈贡店", "city": "昆明市", "district": "呈贡区"},
+                        ]
+                    }
+                },
+                "required_tools": [{"name": "customer_store_lookup", "query": "昆明", "purpose": "existence"}],
+            }
+
+            output = await node(state)
+
+        self.assertEqual(model.calls, 3)
+        self.assertEqual(model.tiers, ["reply", "reply", "reply"])
+        self.assertEqual(output["reply_source"], "main_model")
+        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text"])
+        self.assertIn("哪个区", output["reply_messages"][0]["content"])
+        tool_call = state["trace"][0]["tool_calls"][0]
+        self.assertIn("repair_retries", tool_call)
+        self.assertEqual(len(tool_call["repair_retries"]), 2)
+        self.assertNotIn("recovery", tool_call)
 
     async def test_reply_synth_keeps_payment_card_after_work_order_rejection(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -674,7 +750,7 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(model.calls, 3)
         self.assertEqual(output["errors"], [])
-        self.assertEqual(output["reply_source"], "compact_recovery_model")
+        self.assertEqual(output["reply_source"], "main_model")
         text = "\n".join(item["content"] for item in output["reply_messages"] if item["type"] == "text")
         self.assertIn("明天到店的意向我记下了", text)
         self.assertNotIn("可以约", text)

@@ -40,6 +40,15 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - 使用自然微信口吻，不解释系统故障，不输出 markdown 或内部分析。
 """
 
+REPLY_TARGETED_REPAIR_SYSTEM_PROMPT = """你是企业微信淡斑活动的最终回复修复模型。上一版回复已经通过了大部分业务理解，但没有通过结构或事实校验。你的任务不是重新规划业务，而是在保留当前问题回答和销售节奏的前提下，按给定违规做最小修复。
+要求：
+- 只输出严格 JSON 对象，顶层必须包含非空 `reply_messages` 数组。
+- 只修复给定 `violation` 和 `repair_hint`，不要改业务场景，不要改门店、价格、支付、图片等已给定事实。
+- 如果违规是“承诺发地址/导航但没有 store_address”，只能二选一：要么补合法 `store_address`，要么删掉这类承诺并改成收区县、片区或门店名。
+- 如果违规是“承诺发预约金入口但没有 payment_collection”，只能二选一：要么补合法 `payment_collection`，要么删掉发入口承诺并改成自然承接。
+- 如果违规是“承诺发效果图/案例图但没有 image”，只能二选一：要么补合法 image，要么删掉发图承诺并改成文字承接。
+- 不要输出 markdown，不要解释错误，不要输出内部分析。"""
+
 
 def create_synthesize_reply_node(
     *,
@@ -235,6 +244,7 @@ async def _run_reply_model_pipeline(
     tier = _reply_model_tier(state)
     primary_budget = _model_budget_seconds(model_client, "model_reply_primary_budget_seconds", 30.0)
     recovery_budget = _model_budget_seconds(model_client, "model_reply_recovery_budget_seconds", 15.0)
+    repair_attempts = 2
     started_at = time.monotonic()
     round_deadline = model_deadline_monotonic(state, tier=tier)
     recovery_reserve_seconds = min(recovery_budget, 9.0)
@@ -281,34 +291,62 @@ async def _run_reply_model_pipeline(
                 validate_reply_consistency(messages, state)
                 _raise_repairable_reply_quality_issues(messages, state)
             except Exception as validation_exc:
-                if not can_start_model_retry(state, tier=tier):
-                    model_call["retry"] = {
-                        "reason": f"{type(validation_exc).__name__}: {validation_exc}",
-                        "status": "skipped_insufficient_round_budget",
-                        "runtime_budget": runtime_budget_snapshot(state, tier=tier),
+                repair_logs: list[dict[str, Any]] = []
+                current_exc: Exception = validation_exc
+                current_messages = model_messages
+                messages = []
+                for attempt in range(1, repair_attempts + 1):
+                    if not can_start_model_retry(state, tier=tier):
+                        repair_logs.append(
+                            {
+                                "attempt": attempt,
+                                "reason": f"{type(current_exc).__name__}: {current_exc}",
+                                "status": "skipped_insufficient_round_budget",
+                                "runtime_budget": runtime_budget_snapshot(state, tier=tier),
+                            }
+                        )
+                        break
+                    retry_messages = _reply_retry_messages(
+                        current_messages,
+                        current_exc,
+                        attempt=attempt,
+                        max_attempts=repair_attempts,
+                    )
+                    retry_deadline = _capped_deadline(
+                        time.monotonic() + recovery_budget,
+                        model_deadline_monotonic(state, tier=tier),
+                    )
+                    retry_payload = await _chat_json_with_deadline(
+                        model_client,
+                        retry_messages,
+                        tier=tier,
+                        deadline_monotonic=retry_deadline,
+                    )
+                    repair_log = {
+                        "attempt": attempt,
+                        "reason": f"{type(current_exc).__name__}: {current_exc}",
+                        "messages": retry_messages,
+                        "raw_json_output": retry_payload,
+                        "usage": model_usage_snapshot(model_client),
                     }
-                    raise
-                retry_messages = _reply_retry_messages(model_messages, validation_exc)
-                retry_deadline = _capped_deadline(
-                    time.monotonic() + recovery_budget,
-                    model_deadline_monotonic(state, tier=tier),
-                )
-                retry_payload = await _chat_json_with_deadline(
-                    model_client,
-                    retry_messages,
-                    tier=tier,
-                    deadline_monotonic=retry_deadline,
-                )
-                model_call["retry"] = {
-                    "reason": f"{type(validation_exc).__name__}: {validation_exc}",
-                    "messages": retry_messages,
-                    "raw_json_output": retry_payload,
-                    "usage": model_usage_snapshot(model_client),
-                }
-                messages = validated_model_messages(retry_payload, state)
-                messages = _prepare_structural_messages(messages, state, warnings)
-                validate_reply_consistency(messages, state)
-                _raise_repairable_reply_quality_issues(messages, state)
+                    repair_logs.append(repair_log)
+                    try:
+                        messages = validated_model_messages(retry_payload, state)
+                        messages = _prepare_structural_messages(messages, state, warnings)
+                        validate_reply_consistency(messages, state)
+                        _raise_repairable_reply_quality_issues(messages, state)
+                        break
+                    except Exception as retry_validation_exc:
+                        repair_log["error"] = f"{type(retry_validation_exc).__name__}: {retry_validation_exc}"
+                        current_exc = retry_validation_exc
+                        current_messages = retry_messages
+                        messages = []
+                if repair_logs:
+                    model_call["retry"] = repair_logs[0]
+                    if len(repair_logs) > 1:
+                        model_call["repair_retries"] = repair_logs
+                if not messages:
+                    raise current_exc
             model_call["draft_messages"] = debug_message_contents(messages)
             model_call["output"] = {"messages": len(messages)}
             model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
@@ -480,16 +518,46 @@ def _capped_deadline(node_deadline: float, round_deadline: float | None) -> floa
     return min(node_deadline, round_deadline) if round_deadline is not None else node_deadline
 
 
-def _reply_retry_messages(messages: list[dict[str, Any]], exc: Exception) -> list[dict[str, Any]]:
+def _reply_retry_messages(
+    messages: list[dict[str, Any]],
+    exc: Exception,
+    *,
+    attempt: int = 1,
+    max_attempts: int = 1,
+) -> list[dict[str, Any]]:
     repair_hint = _reply_repair_hint(str(exc))
+    if _should_use_targeted_reply_repair(str(exc)):
+        retry_payload = {
+            "attempt": attempt,
+            "max_attempts": max_attempts,
+            "violation": str(exc),
+            "repair_hint": repair_hint,
+        }
+        return [
+            *messages,
+            {"role": "system", "content": REPLY_TARGETED_REPAIR_SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(retry_payload, ensure_ascii=False, separators=(",", ":"))},
+        ]
     retry_instruction = (
-        "上一次输出没有通过 JSON schema 校验。"
+        f"上一次输出没有通过校验，当前是第{attempt}次修复，共允许{max_attempts}次。"
         f"错误：{type(exc).__name__}: {exc}。"
         f"{repair_hint}"
         "请只重新输出严格 JSON 对象，顶层必须包含非空 reply_messages 数组；"
         "不要解释错误，不要输出 markdown，不要输出内部分析。"
     )
     return [*messages, {"role": "user", "content": retry_instruction}]
+
+
+def _should_use_targeted_reply_repair(error: str) -> bool:
+    return any(
+        marker in error
+        for marker in (
+            "store_address_message_required_when_reply_promises_location_card",
+            "payment_collection_required_when_reply_promises_payment_entry",
+            "case_image_structure_required_when_reply_promises_delivery",
+            "case_image_required_for_effect_turn",
+        )
+    )
 
 
 def _reply_model_tier(state: AgentState) -> str:

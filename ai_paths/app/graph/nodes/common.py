@@ -213,16 +213,38 @@ def model_recovery_attempts(model_call: Any, *, node: str) -> list[dict[str, Any
     if not isinstance(model_call, dict):
         return []
     attempts: list[dict[str, Any]] = []
-    for name, value in (
-        ("repair", model_call.get("retry")),
-        ("compact_recovery", model_call.get("recovery")),
-    ):
+    repair_attempts = model_call.get("repair_retries")
+    if isinstance(repair_attempts, list) and repair_attempts:
+        for index, value in enumerate(repair_attempts, start=1):
+            if not isinstance(value, dict):
+                continue
+            attempts.append(
+                {
+                    "node": node,
+                    "type": "repair" if index == 1 else f"repair_{index}",
+                    "reason": str(value.get("reason") or value.get("error") or "")[:240],
+                    "succeeded": not bool(value.get("error")),
+                }
+            )
+    else:
+        value = model_call.get("retry")
         if not isinstance(value, dict):
-            continue
+            value = None
+        if isinstance(value, dict):
+            attempts.append(
+                {
+                    "node": node,
+                    "type": "repair",
+                    "reason": str(value.get("reason") or value.get("error") or "")[:240],
+                    "succeeded": not bool(value.get("error")),
+                }
+            )
+    value = model_call.get("recovery")
+    if isinstance(value, dict):
         attempts.append(
             {
                 "node": node,
-                "type": name,
+                "type": "compact_recovery",
                 "reason": str(value.get("reason") or value.get("error") or "")[:240],
                 "succeeded": not bool(value.get("error")),
             }
