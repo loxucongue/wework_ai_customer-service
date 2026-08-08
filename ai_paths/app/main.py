@@ -68,6 +68,7 @@ outreach_service = OutreachService(
     system_client=outreach_system_client,
     customer_context_service=customer_context_service,
     precision_qa_playbook_service=precision_qa_playbook_service,
+    sop_reply_pack_service=sop_reply_pack_service,
     coze_client=coze_client,
     before_send_retry_seconds=settings.outreach_before_send_retry_seconds,
 )

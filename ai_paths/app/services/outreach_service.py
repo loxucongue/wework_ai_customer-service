@@ -17,6 +17,7 @@ from app.services.customer_scope import build_customer_scope
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
+from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.outreach_first_day_prompts import (
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT,
     FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION,
@@ -109,6 +110,7 @@ FIRST_DAY_HARD_BOUNDARY_TYPES = {
 }
 FIRST_DAY_PRECEDENCE_ROWS = {
     "hard_boundary",
+    "no_blocker_sop_progression",
     "effect_saturated",
     "effect_need",
     "symptom_without_effect_proof",
@@ -116,10 +118,33 @@ FIRST_DAY_PRECEDENCE_ROWS = {
     "effect_to_activity",
     "store_to_effect",
     "distance_after_store",
+    "time_deposit_objection",
+    "distance_soft_objection",
+    "out_of_scope_pullback",
     "consider_after_full_pitch",
     "city_store_question",
     "full_funnel_payment_blocked",
     "freeform",
+}
+FIRST_DAY_SOP_SCENE_BY_CATEGORY = {
+    "store_prompt": "store_area_request",
+    "effect_case": "effect_proof",
+    "activity_intro": "activity_intro",
+    "price_quote": "activity_intro",
+    "deposit_push": "deposit_close",
+    "payment_followup": "deposit_close",
+    "operation_video": "effect_proof",
+    "final_close": "deposit_close",
+}
+FIRST_DAY_SOP_CATEGORY_ORDER = {
+    "store_prompt": 10,
+    "effect_case": 20,
+    "activity_intro": 30,
+    "price_quote": 30,
+    "deposit_push": 40,
+    "payment_followup": 50,
+    "operation_video": 60,
+    "final_close": 70,
 }
 FIRST_DAY_REPEAT_SIMILARITY_LIMIT = 0.85
 FIRST_DAY_GENDERED_TERMS = (
@@ -515,6 +540,48 @@ def _valid_activity_quote_evidence(
     quote_fact: dict[str, Any],
 ) -> bool:
     return bool(isinstance(quote_fact, dict) and quote_fact.get("completed"))
+
+
+def _activity_quote_text_is_complete(text: str) -> bool:
+    compact = "".join(_string(text).split())
+    if not compact:
+        return False
+    return (
+        "268" in compact
+        and "10" in compact
+        and "到店" in compact
+        and "抵扣" in compact
+        and "未做或不满意可退" in compact
+        and "付款记录核对" in compact
+    )
+
+
+def _first_day_internal_activity_quote_evidence(
+    steps: list[dict[str, Any]],
+    *,
+    before_step_index: int,
+) -> bool:
+    for step in steps[:before_step_index]:
+        if _string(step.get("scene")) != "activity_intro":
+            continue
+        texts = _plan_step_texts(step)
+        if any(_activity_quote_text_is_complete(text) for text in texts):
+            return True
+        if _activity_quote_text_is_complete(" ".join(texts)):
+            return True
+    return False
+
+
+def _first_day_default_asset_id_for_sources(
+    assets: dict[str, dict[str, Any]],
+    source_ids: list[str],
+) -> str:
+    for source_id in source_ids:
+        prefix = f"{_string(source_id)}:"
+        for asset_id, asset in assets.items():
+            if asset_id.startswith(prefix) and _string(asset.get("type")) == "image":
+                return asset_id
+    return ""
 
 
 def build_outreach_activity_quote_fact(
@@ -962,6 +1029,21 @@ def _outreach_plan_structure_error(response: dict[str, Any]) -> str:
             step.get("should_send_payment_collection")
         ):
             return "value_only step cannot send payment_collection"
+        if _bool(step.get("should_send_payment_collection")):
+            payment_text = " ".join(_plan_step_texts(step))
+            compact_payment_text = "".join(payment_text.split())
+            if not (
+                "10" in compact_payment_text
+                and any(marker in compact_payment_text for marker in ("锁", "留", "保留"))
+                and "到店" in compact_payment_text
+                and "抵扣" in compact_payment_text
+                and "未做或不满意可退" in compact_payment_text
+                and "付款记录核对" in compact_payment_text
+            ):
+                return (
+                    "first-day payment_collection text must explain 10 yuan locks the quota, "
+                    "deducts in store, and uses the unified refund wording"
+                )
     payment_steps = [
         (index, step)
         for index, step in enumerate(steps)
@@ -995,6 +1077,7 @@ def _outreach_plan_context_error(
     activity_quote_fact: dict[str, Any],
     reply_wait_minutes: int = 0,
     customer_silence_minutes: int = 0,
+    allow_first_day_internal_activity_quote: bool = False,
 ) -> str:
     steps = [step for step in response.get("steps") or [] if isinstance(step, dict)]
     if bool(response.get("should_create_plan", True)) and customer_silence_minutes >= 4320 and steps:
@@ -1029,7 +1112,14 @@ def _outreach_plan_context_error(
                 "customer text with no question mark that directly delivers useful value"
             )
     if not _valid_activity_quote_evidence(activity_quote_fact):
-        if any(_bool(step.get("should_send_payment_collection")) for step in steps):
+        for index, step in enumerate(steps):
+            if not _bool(step.get("should_send_payment_collection")):
+                continue
+            if allow_first_day_internal_activity_quote and _first_day_internal_activity_quote_evidence(
+                steps,
+                before_step_index=index,
+            ):
+                continue
             return "activity quote is incomplete; payment_collection must be disabled"
     return ""
 
@@ -1186,6 +1276,11 @@ def _first_day_scene_analysis_error(
         _string(item.get("asset_id"))
         for item in source_snapshot.get("asset_catalog") or []
         if isinstance(item, dict) and _string(item.get("asset_id"))
+    )
+    available_source_ids.update(
+        _string(item.get("source_id"))
+        for item in source_snapshot.get("first_day_sop_sequence") or []
+        if isinstance(item, dict) and _string(item.get("source_id"))
     )
     for key in ("step1", "step2"):
         source_ids = selected_source_ids.get(key)
@@ -1495,6 +1590,23 @@ def _normalize_first_day_scene_analysis(
             required = required_assets.get(key)
             if not isinstance(required, dict):
                 continue
+            step_scene = _string(response.get(f"{key}_scene"))
+            if step_scene in {"effect_proof", "activity_intro"} and (
+                (_string(required.get("strategy")) or "none") == "none"
+                or not _string(required.get("asset_id"))
+            ):
+                default_asset_id = _first_day_default_asset_id_for_sources(
+                    available_assets,
+                    [
+                        _string(source_id)
+                        for source_id in (response.get("selected_source_ids") or {}).get(key) or []
+                        if _string(source_id)
+                    ],
+                )
+                if default_asset_id:
+                    required["strategy"] = "configured_image"
+                    required["asset_id"] = default_asset_id
+                    required["reason"] = "锁定场景含图片素材，代码补齐结构化素材意图"
             strategy = _string(required.get("strategy"))
             if strategy in OUTREACH_ASSET_STRATEGIES:
                 continue
@@ -1739,6 +1851,12 @@ def _first_day_writer_payload(
         if isinstance(item, dict)
         and _string(item.get("source_id")) in selected_source_ids
     ]
+    selected_sop_packs = [
+        dict(item)
+        for item in source_snapshot.get("first_day_sop_sequence") or []
+        if isinstance(item, dict)
+        and _string(item.get("source_id")) in selected_source_ids
+    ]
     required_asset_ids = {
         _string((scene_analysis.get("required_assets") or {}).get(key, {}).get("asset_id"))
         for key in ("step1", "step2")
@@ -1756,6 +1874,7 @@ def _first_day_writer_payload(
             "recent_messages": selected_messages,
             "forbidden_repetitions": scene_analysis.get("forbidden_repetitions") or [],
             "selected_materials": selected_materials,
+            "selected_sop_packs": selected_sop_packs,
             "selected_assets": selected_assets,
             "conversation_activity": source_snapshot.get("conversation_activity") or {},
             "activity_quote_fact": source_snapshot.get("activity_quote_fact") or {},
@@ -1879,6 +1998,7 @@ class OutreachService:
         system_client: OutreachSystemClient,
         customer_context_service: CustomerContextService | None = None,
         precision_qa_playbook_service: PrecisionQaPlaybookService | None = None,
+        sop_reply_pack_service: SopReplyPackService | None = None,
         coze_client: CozeClient | None = None,
         before_send_retry_seconds: int = 60,
     ) -> None:
@@ -1887,6 +2007,7 @@ class OutreachService:
         self.system_client = system_client
         self.customer_context_service = customer_context_service
         self.precision_qa_playbook_service = precision_qa_playbook_service
+        self.sop_reply_pack_service = sop_reply_pack_service
         self.coze_client = coze_client
         self.before_send_retry_seconds = max(1, int(before_send_retry_seconds))
         self._plan_locks: dict[str, asyncio.Lock] = {}
@@ -2454,7 +2575,11 @@ class OutreachService:
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
         appointment_playbook = self._appointment_blocker_playbook()
         appointment_material_catalog = appointment_blocker_materials(appointment_playbook)
-        asset_catalog = build_appointment_blocker_asset_catalog(appointment_playbook)
+        first_day_sop_sequence = self._first_day_sop_sequence()
+        asset_catalog = (
+            build_appointment_blocker_asset_catalog(appointment_playbook)
+            + self._first_day_sop_asset_catalog(first_day_sop_sequence)
+        )
         recent_media = enrich_recent_outreach_media(
             recent_outreach_media(recent_messages, hours=72),
             asset_catalog,
@@ -2510,6 +2635,7 @@ class OutreachService:
             ],
             "recent_media_delivery": recent_media,
             "recent_sop_delivery": recent_sop_delivery,
+            "first_day_sop_sequence": first_day_sop_sequence,
             "appointment_blocker_scene_index": build_appointment_blocker_scene_index(
                 appointment_playbook
             ),
@@ -2887,6 +3013,7 @@ class OutreachService:
                 activity_quote_fact=activity_quote_fact,
                 reply_wait_minutes=reply_wait_minutes,
                 customer_silence_minutes=customer_silence_minutes,
+                allow_first_day_internal_activity_quote=first_day_trigger,
             )
         )
         if structure_error:
@@ -2924,13 +3051,22 @@ class OutreachService:
             schedule = normalized_schedule[index - 1]
             content_mode = _string(step.get("content_mode"))
             payment_collection_basis = _string(step.get("payment_collection_basis"))
+            activity_quote_ready = _valid_activity_quote_evidence(
+                activity_quote_fact
+            ) or (
+                first_day_trigger
+                and _first_day_internal_activity_quote_evidence(
+                    raw_steps,
+                    before_step_index=index - 1,
+                )
+            )
             should_send_payment_collection = (
                 _bool(step.get("should_send_payment_collection"))
                 and (first_day_trigger or index == len(raw_steps))
                 and content_mode == "transaction"
                 and payment_collection_basis == "model_selected_after_quote"
                 and not payment_collection_added
-                and _valid_activity_quote_evidence(activity_quote_fact)
+                and activity_quote_ready
                 and bool(payment_collection_gate.get("eligible"))
             )
             payment_collection_added = payment_collection_added or should_send_payment_collection
@@ -3094,6 +3230,133 @@ class OutreachService:
 
     def _outreach_asset_catalog(self) -> list[dict[str, Any]]:
         return build_appointment_blocker_asset_catalog(self._appointment_blocker_playbook())
+
+    def _first_day_sop_sequence(self) -> list[dict[str, Any]]:
+        if self.sop_reply_pack_service is None:
+            return []
+        try:
+            config = self.sop_reply_pack_service.load()
+        except Exception:
+            return []
+        packs = config.get("packs") if isinstance(config.get("packs"), list) else []
+        output: list[dict[str, Any]] = []
+        for pack in packs:
+            if not isinstance(pack, dict) or not _bool(pack.get("enabled")):
+                continue
+            raw_scopes = pack.get("scopes")
+            scopes = [
+                _string(item)
+                for item in raw_scopes
+                if _string(item)
+            ] if isinstance(raw_scopes, list) else []
+            scope = _string(pack.get("scope"))
+            if "event_first_add" not in set(scopes + ([scope] if scope else [])):
+                continue
+            day_stage = _string(pack.get("day_stage"))
+            if day_stage and not day_stage.startswith("day1"):
+                continue
+            messages = [
+                dict(message)
+                for message in pack.get("reply_messages") or []
+                if isinstance(message, dict) and _string(message.get("type"))
+            ]
+            if not messages:
+                continue
+            category = _string(pack.get("sop_category"))
+            mapped_scene = FIRST_DAY_SOP_SCENE_BY_CATEGORY.get(category, "")
+            if not mapped_scene:
+                continue
+            pack_id = _string(pack.get("id"))
+            media_asset_ids: list[str] = []
+            compact_messages: list[dict[str, Any]] = []
+            for order, message in enumerate(messages, start=1):
+                message_type = _string(message.get("type"))
+                content = message.get("content") if isinstance(message.get("content"), dict) else {}
+                if message_type == "text":
+                    compact_messages.append(
+                        {
+                            "type": "text",
+                            "order": _int(message.get("order"), order),
+                            "text": _string(content.get("text") if isinstance(content, dict) else ""),
+                        }
+                    )
+                elif message_type in {"image", "video"}:
+                    asset_id = f"sop-pack:{pack_id}:{_int(message.get('order'), order)}"
+                    media_asset_ids.append(asset_id)
+                    url = _string(content.get("url") if isinstance(content, dict) else "")
+                    compact_messages.append(
+                        {
+                            "type": message_type,
+                            "order": _int(message.get("order"), order),
+                            "asset_id": asset_id,
+                            "url": url,
+                        }
+                    )
+                elif message_type == "payment_collection":
+                    compact_messages.append(
+                        {
+                            "type": "payment_collection",
+                            "order": _int(message.get("order"), order),
+                            "amount": _int(content.get("amount") if isinstance(content, dict) else 10, 10),
+                        }
+                    )
+            output.append(
+                {
+                    "source_id": f"sop-pack:{pack_id}",
+                    "pack_id": pack_id,
+                    "name": _string(pack.get("name")),
+                    "sop_category": category,
+                    "mapped_scene": mapped_scene,
+                    "order": _int(
+                        pack.get("order"),
+                        FIRST_DAY_SOP_CATEGORY_ORDER.get(category, 999),
+                    ),
+                    "day_stage": day_stage,
+                    "purpose": _string(pack.get("purpose")),
+                    "reply_messages": compact_messages,
+                    "asset_ids": media_asset_ids,
+                }
+            )
+        output.sort(
+            key=lambda item: (
+                FIRST_DAY_SOP_CATEGORY_ORDER.get(_string(item.get("sop_category")), 999),
+                _int(item.get("order"), 9999),
+                _string(item.get("pack_id")),
+            )
+        )
+        return output
+
+    @staticmethod
+    def _first_day_sop_asset_catalog(sop_sequence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        assets: list[dict[str, Any]] = []
+        for pack in sop_sequence:
+            if not isinstance(pack, dict):
+                continue
+            pack_id = _string(pack.get("pack_id"))
+            for message in pack.get("reply_messages") or []:
+                if not isinstance(message, dict):
+                    continue
+                asset_id = _string(message.get("asset_id"))
+                message_type = _string(message.get("type"))
+                if not asset_id or message_type not in {"image", "video"}:
+                    continue
+                url = _string(message.get("url"))
+                if not url:
+                    continue
+                assets.append(
+                    {
+                        "asset_id": asset_id,
+                        "type": message_type,
+                        "url": url,
+                        "source": "first_day_sop_pack",
+                        "name": pack_id,
+                        "annotation": _string(pack.get("name")),
+                        "use_cases": [_string(pack.get("purpose"))],
+                        "avoid_when": ["近期已经发送相同 SOP 或相同素材"],
+                        "tags": [_string(pack.get("sop_category")), pack_id],
+                    }
+                )
+        return assets
 
     def _appointment_blocker_playbook(self) -> dict[str, Any]:
         if self.precision_qa_playbook_service is None:

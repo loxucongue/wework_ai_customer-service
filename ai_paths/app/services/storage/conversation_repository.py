@@ -115,6 +115,47 @@ class ConversationRepositoryMixin:
             ],
         }
 
+    def list_recent_messages_for_sales_contact(
+        self,
+        *,
+        customer_id: str,
+        external_userid: str,
+        corp_id: str = "",
+        wechat: str = "",
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        if not str(wechat or "").strip():
+            return []
+        clauses = ["LOWER(c.wechat)=LOWER(?)"]
+        params: list[Any] = [wechat]
+        if corp_id:
+            clauses.append("c.corp_id=?")
+            params.append(corp_id)
+        if external_userid:
+            clauses.append("c.external_userid=?")
+            params.append(external_userid)
+        elif customer_id:
+            clauses.append("c.customer_id=?")
+            params.append(customer_id)
+        else:
+            return []
+        capped_limit = max(1, min(int(limit or 30), 50))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT m.role, m.content, m.reply_messages, m.created_at
+                FROM messages m
+                JOIN conversations c ON c.id=m.conversation_id
+                WHERE {' AND '.join(clauses)}
+                ORDER BY m.created_at DESC
+                LIMIT ?
+                """,
+                (*params, capped_limit),
+            ).fetchall()
+        output = [{**dict(row), "reply_messages": loads_list(row["reply_messages"])} for row in rows]
+        output.reverse()
+        return output
+
     def clear_customer_conversations(self, customer_id: str) -> int:
         customer = str(customer_id or "").strip()
         if not customer:

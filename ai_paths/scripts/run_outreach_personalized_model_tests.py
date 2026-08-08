@@ -138,6 +138,7 @@ FIRST_DAY_SEMANTIC_REVIEW_PROMPT = """
 
 输入包含测试案例、权威场景分析、候选计划、素材目录和 `runtime_delivery_view`。分别给以下五项 1 至 5 分，4 分表示可上线：
 - `workflow.scene_analysis` 是已经通过代码合同的权威场景锁。测试案例中的预期字段只用于离线统计，不能覆盖权威场景锁；不得仅因候选执行的锁定场景与测试案例预期不同而降低任何语义分数。
+- 评审前必须逐步读取 `workflow.scene_analysis.step1_scene/step2_scene`。如果候选计划的 `scene` 与这两个锁定场景一致，禁止写“和锁定场景不一致、偏离权威场景锁”作为扣分理由；只能评价客户可见文本是否真正交付该锁定场景。
 - `conversation_continuity`：是否自然承接客户最近聊天，而不是重新开场或答非所问。
 - `scene_execution`：两步客户可见文本是否分别真正完成锁定场景，而不只是后台 scene 标签正确。
 - `semantic_non_repeat`：第一步是否避开历史客服/SOP内容，两步是否交付不同的新价值。
@@ -149,6 +150,8 @@ FIRST_DAY_SEMANTIC_REVIEW_PROMPT = """
 - `asset_strategy=configured_image` 且 `asset_id` 来自素材目录，表示代码会在文字后立即发送真实图片；`reply_messages` 只能包含文本，禁止要求其中出现 image 或 URL。
 - `runtime_delivery_view.structured_delivery_appended_by_code.asset_will_be_sent=true` 是图片会随本步骤真实发送的确定性事实。此时绝对禁止声称“只有文本、没有图片、没有实际发送素材”。
 - 当锁定场景是 `effect_proof` 且上述图片发送事实为 true 时，真实图片本身就是本步骤交付的新效果证据。自然、简短且用于引出图片的一句话是合格的微信短聊，不得因为文字没有复述图片内容而降低 `scene_execution` 或 `semantic_non_repeat`。
+- 当锁定场景是 `deposit_close` 且 `payment_card_will_be_sent=true` 时，预约金卡本身就是交易动作；文本仍需说明锁名额和低风险退款，但不得因为 `reply_messages` 没有卡片结构而判失败。
+- `activity_intro` 必须说明 10 元预约登记、到店抵扣和退款规则；`deposit_close` 必须再次说明 10 元锁名额、后面来仍可用和低风险退款。两步都出现“10元、到店抵扣、未做或不满意可退”不自动算重复，只有两步没有区分“活动规则介绍”和“预约金锁名额行动”时才降低 `semantic_non_repeat`。
 - `trust_repair` 中“到店先看效果和方案，满意或确认适合再做”是直接交付的低风险价值，不是送客或等待式承接，不得因此降低 `scene_execution`、`human_tone` 或 `barrier_accuracy`。只有“您慢慢看、以后需要再联系、方便时再说、下次再聊”等结束当前推进的表达才是送客。
 - `persuasion_angle=self_image` 必须真正写到改善后的自信、重视自身状态或给自己一次改善机会；“确认适合再决定、心里更稳或更有底”仍是低风险决策语义。若两步分别交付真实的低风险价值和真实的自我形象价值，应视为两个不同场景；若两步都围绕适合后再决定，则降低 `scene_execution` 和 `semantic_non_repeat`。
 - 只能根据 `recent_messages` 和结构事实判断客户卡点。禁止凭空声称存在费用、支付、距离、健康或其他聊天中没有出现的异议，并禁止因此降低 `barrier_accuracy`。
@@ -243,6 +246,7 @@ def _first_day_review_delivery_view(
         if not isinstance(step, dict):
             continue
         asset_id = str(step.get("asset_id") or "")
+        asset_strategy = str(step.get("asset_strategy") or "none")
         asset = assets.get(asset_id) or {}
         output.append(
             {
@@ -255,11 +259,12 @@ def _first_day_review_delivery_view(
                 ],
                 "structured_delivery_appended_by_code": {
                     "asset_will_be_sent": bool(
-                        str(step.get("asset_strategy") or "none") != "none" and asset_id in assets
+                        (asset_strategy != "none" and asset_id in assets)
+                        or asset_strategy == "case_search"
                     ),
-                    "asset_strategy": step.get("asset_strategy") or "none",
+                    "asset_strategy": asset_strategy,
                     "asset_id": asset_id,
-                    "asset_type": asset.get("type") or "",
+                    "asset_type": asset.get("type") or ("image" if asset_strategy == "case_search" else ""),
                     "payment_card_will_be_sent": bool(step.get("should_send_payment_collection")),
                 },
             }
@@ -270,7 +275,12 @@ def _first_day_review_delivery_view(
 def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]) -> list[str]:
     if not bool(plan.get("should_create_plan", True)):
         expected = str(case.get("expected") or "").lower()
-        if str(case.get("id") or "") == "paid_suppression" or "should_create_plan=false" in expected:
+        if (
+            bool(case.get("allow_suppression"))
+            or str(case.get("id") or "") == "paid_suppression"
+            or "should_create_plan=false" in expected
+            or int((case.get("conversation_activity") or {}).get("real_customer_message_count") or 0) == 0
+        ):
             return []
         return ["unexpected_suppression"]
     steps = [item for item in plan.get("steps") or [] if isinstance(item, dict)]
@@ -286,6 +296,7 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
         customer_silence_minutes=int(
             (case.get("conversation_activity") or {}).get("customer_silence_minutes") or 0
         ),
+        allow_first_day_internal_activity_quote=first_day,
     )
     if context_error:
         errors.append(f"context:{context_error}")

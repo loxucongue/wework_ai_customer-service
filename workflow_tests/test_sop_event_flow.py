@@ -91,6 +91,172 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(_chat_gate_output_violations(output, selector_input), [])
 
+    def test_chat_gate_repeated_soft_refusal_repairs_activity_or_payment_pack(self) -> None:
+        selector_input = {
+            "mainline": {"stages": [{"id": "activity_and_price"}, {"id": "deposit_decision"}]},
+            "precision_qa_index": [],
+            "conversation_evidence": [
+                {"message_ref": "chat_1", "direction": "customer", "content": "我考虑一下"},
+                {"message_ref": "current_message", "direction": "customer", "content": "不急，我想多看看，再做决定"},
+            ],
+            "customer_stance_evidence": {
+                "soft_refusal_quote_count": 2,
+                "repeated_soft_refusal": True,
+                "soft_refusal_evidence": [
+                    {"message_ref": "chat_1", "quote": "我考虑一下"},
+                    {"message_ref": "current_message", "quote": "不急，我想多看看，再做决定"},
+                ],
+            },
+            "unfinished_sops": [
+                {
+                    "id": "s10_activity_intro",
+                    "mainline_stage": "activity_and_price",
+                    "sop_category": "activity_intro",
+                    "payment_collection_gate": {"has_payment_collection": False, "status": "not_required"},
+                },
+                {
+                    "id": "deposit_pack",
+                    "mainline_stage": "deposit_decision",
+                    "sop_category": "deposit_push",
+                    "payment_collection_gate": {"has_payment_collection": True, "status": "supported", "amounts": [10]},
+                },
+            ],
+        }
+
+        activity_output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "s10_activity_intro",
+            "resume_stage": "activity_and_price",
+        }
+        payment_output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "deposit_pack",
+            "resume_stage": "deposit_decision",
+        }
+
+        self.assertIn(
+            "gate_pressure_conflict:repeated_soft_refusal_requires_ai_only",
+            _chat_gate_output_violations(activity_output, selector_input),
+        )
+        self.assertIn(
+            "gate_pressure_conflict:repeated_soft_refusal_requires_ai_only",
+            _chat_gate_output_violations(payment_output, selector_input),
+        )
+
+    def test_chat_gate_first_soft_refusal_blocks_payment_card_but_not_all_sop(self) -> None:
+        selector_input = {
+            "mainline": {"stages": [{"id": "need_and_case"}, {"id": "deposit_decision"}]},
+            "precision_qa_index": [],
+            "conversation_evidence": [
+                {"message_ref": "current_message", "direction": "customer", "content": "我考虑一下"},
+            ],
+            "customer_stance_evidence": {
+                "soft_refusal_quote_count": 1,
+                "repeated_soft_refusal": False,
+                "soft_refusal_evidence": [{"message_ref": "current_message", "quote": "我考虑一下"}],
+            },
+            "unfinished_sops": [
+                {
+                    "id": "case_pack",
+                    "mainline_stage": "need_and_case",
+                    "sop_category": "effect_case",
+                    "payment_collection_gate": {"has_payment_collection": False, "status": "not_required"},
+                },
+                {
+                    "id": "deposit_pack",
+                    "mainline_stage": "deposit_decision",
+                    "sop_category": "deposit_push",
+                    "payment_collection_gate": {"has_payment_collection": True, "status": "supported", "amounts": [10]},
+                },
+            ],
+        }
+
+        case_output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "case_pack",
+            "resume_stage": "need_and_case",
+        }
+        payment_output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "deposit_pack",
+            "resume_stage": "deposit_decision",
+        }
+
+        self.assertEqual(_chat_gate_output_violations(case_output, selector_input), [])
+        self.assertIn(
+            "gate_pressure_conflict:first_soft_refusal_must_not_send_payment_card",
+            _chat_gate_output_violations(payment_output, selector_input),
+        )
+
+    def test_chat_gate_first_soft_refusal_blocks_activity_when_not_asking_activity(self) -> None:
+        selector_input = {
+            "current_message": "还不急先了解",
+            "mainline": {"stages": [{"id": "activity_and_price"}]},
+            "precision_qa_index": [],
+            "conversation_evidence": [
+                {"message_ref": "current_message", "direction": "customer", "content": "还不急先了解"},
+            ],
+            "customer_stance_evidence": {
+                "soft_refusal_quote_count": 1,
+                "repeated_soft_refusal": False,
+                "soft_refusal_evidence": [{"message_ref": "current_message", "quote": "还不急先了解"}],
+            },
+            "unfinished_sops": [
+                {
+                    "id": "s10_activity_intro",
+                    "mainline_stage": "activity_and_price",
+                    "sop_category": "activity_intro",
+                    "payment_collection_gate": {"has_payment_collection": False, "status": "not_required"},
+                },
+            ],
+        }
+        output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "s10_activity_intro",
+            "resume_stage": "activity_and_price",
+        }
+
+        self.assertIn(
+            "gate_pressure_conflict:first_soft_refusal_must_not_send_activity_pack",
+            _chat_gate_output_violations(output, selector_input),
+        )
+
+    def test_chat_gate_first_soft_refusal_allows_activity_when_customer_asks_activity(self) -> None:
+        selector_input = {
+            "current_message": "我考虑一下，活动怎么参加",
+            "mainline": {"stages": [{"id": "activity_and_price"}]},
+            "precision_qa_index": [],
+            "conversation_evidence": [
+                {"message_ref": "current_message", "direction": "customer", "content": "我考虑一下，活动怎么参加"},
+            ],
+            "customer_stance_evidence": {
+                "soft_refusal_quote_count": 1,
+                "repeated_soft_refusal": False,
+                "soft_refusal_evidence": [{"message_ref": "current_message", "quote": "我考虑一下，活动怎么参加"}],
+            },
+            "unfinished_sops": [
+                {
+                    "id": "s10_activity_intro",
+                    "mainline_stage": "activity_and_price",
+                    "sop_category": "activity_intro",
+                    "payment_collection_gate": {"has_payment_collection": False, "status": "not_required"},
+                },
+            ],
+        }
+        output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "s10_activity_intro",
+            "resume_stage": "activity_and_price",
+        }
+
+        self.assertEqual(_chat_gate_output_violations(output, selector_input), [])
+
     async def test_retired_sop_event_route_only_records_audit(self) -> None:
         repo = _Repo()
         client = _OutreachClient()
@@ -4413,6 +4579,67 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
         user_prompt = model.messages[1]["content"]
         self.assertIn("s10_activity_intro", user_prompt)
         self.assertIn("活动怎么参加", user_prompt)
+
+    async def test_chat_gate_repeated_soft_refusal_falls_back_to_ai_only_after_repair(self) -> None:
+        class _ActivityPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_activity_intro",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "activity_intro",
+                            "name": "活动介绍",
+                            "purpose": "说明活动价格",
+                            "order": 10,
+                            "mainline_stage": "activity_and_price",
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "活动价268，预约金10元。"}}
+                            ],
+                        }
+                    ]
+                }
+
+        bad_output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "priority_question_id": "",
+            "sop_pack_id": "s10_activity_intro",
+            "resume_stage": "activity_and_price",
+            "reason": "错误忽略多次婉拒仍发活动包",
+            "text_adjustments": [],
+            "message_operations": [],
+        }
+        service = SopExecutionService(
+            repository=_Repo(),
+            sop_reply_pack_service=_ActivityPackService(),
+            model_client=_SequenceModel([bad_output, bad_output]),
+        )
+
+        result = await service.evaluate_chat_gate(
+            ChatRequest(
+                content="不急，我想多看看，再做决定",
+                customer_id="customer",
+                corp_id="corp",
+                external_userid="ext",
+                wechat="CS001",
+                conversation_history=[
+                    "用户: 我考虑一下",
+                    "小贝: 现在活动还可以参加，先交10元锁名额。",
+                    "用户: 先不定了",
+                ],
+            ),
+            request_id="req_repeated_soft_refusal",
+            request_context={"source_protocol": "workflow-compatible"},
+        )
+
+        self.assertEqual(result["mode"], "ai_only")
+        self.assertFalse(result["send_sop"])
+        self.assertTrue(result["need_ai_reply"])
+        self.assertIn("chat_gate_invalid_after_repair_continue_ai", result["reason"])
+        self.assertIn("gate_pressure_conflict", str(result["selector_output"].get("initial_violations")))
+        self.assertIn("gate_pressure_conflict", str(result["selector_output"].get("repair_violations")))
 
     async def test_chat_gate_precision_question_can_resume_activity_intro(self) -> None:
         class _ActivityPackService:

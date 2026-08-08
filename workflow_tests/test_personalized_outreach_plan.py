@@ -100,13 +100,19 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("场景枚举", analyst)
         self.assertIn("只有文字效果说明不等于已经交付图片证据", analyst)
         self.assertIn("payment_collection_gate.eligible=true", analyst)
+        self.assertIn("禁止误抑制", analyst)
+        self.assertIn("time_deposit_objection", analyst)
+        self.assertIn("out_of_scope_pullback", analyst)
         self.assertIn("scene_contract` 是不可更改的权威合同", writer)
         self.assertIn("轻过渡 + 有效场景内容", writer)
         self.assertIn("15 至 20 分钟", writer)
         self.assertIn("禁止推断或提及客户性别", writer)
+        self.assertIn("不要主动强调原价金额", writer)
+        self.assertIn("到店抵扣，未做或不满意可退，实际按付款记录核对", writer)
         self.assertIn("不得重新规划业务场景", verifier)
         self.assertIn("语义上重复", verifier)
         self.assertIn("pass|repair|block", verifier)
+        self.assertIn("允许以前一步 `activity_intro` 作为本计划内报价证据", verifier)
         for prompt in (analyst, writer, verifier):
             self.assertNotIn("# 1. Role", prompt)
             self.assertNotIn("# 2. Objective", prompt)
@@ -148,6 +154,91 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             recent["configured_deliveries"][0]["asset_id"],
             "appointment-blocker:YYHF-0001:2",
+        )
+
+    def test_first_day_sop_sequence_supplies_ordered_pack_context_and_assets(self) -> None:
+        class _SopReplyPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "event_s10_effect_warmup_30min",
+                            "enabled": True,
+                            "scopes": ["event_first_add"],
+                            "sop_category": "effect_case",
+                            "name": "介绍效果",
+                            "purpose": "发送真实效果参考",
+                            "order": 130,
+                            "day_stage": "day1",
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "亲，您看这个效果参考。"}},
+                                {"type": "image", "order": 2, "content": {"url": "https://oss.example/effect.png"}},
+                            ],
+                        },
+                        {
+                            "id": "event_s10_store_prompt_5min",
+                            "enabled": True,
+                            "scope": "event_first_add",
+                            "sop_category": "store_prompt",
+                            "name": "轻度询问城市",
+                            "purpose": "询问客户方便到店区域",
+                            "order": 120,
+                            "day_stage": "day1",
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "亲，您在哪个城市哪个区呢？"}},
+                            ],
+                        },
+                    ]
+                }
+
+        service = OutreachService.__new__(OutreachService)
+        service.sop_reply_pack_service = _SopReplyPackService()
+
+        sequence = service._first_day_sop_sequence()
+        self.assertEqual([item["pack_id"] for item in sequence], [
+            "event_s10_store_prompt_5min",
+            "event_s10_effect_warmup_30min",
+        ])
+        self.assertEqual(sequence[0]["source_id"], "sop-pack:event_s10_store_prompt_5min")
+        self.assertEqual(sequence[0]["mapped_scene"], "store_area_request")
+        self.assertEqual(sequence[1]["mapped_scene"], "effect_proof")
+        self.assertEqual(sequence[1]["reply_messages"][1]["asset_id"], "sop-pack:event_s10_effect_warmup_30min:2")
+
+        assets = service._first_day_sop_asset_catalog(sequence)
+        self.assertEqual(assets[0]["asset_id"], "sop-pack:event_s10_effect_warmup_30min:2")
+        self.assertEqual(assets[0]["url"], "https://oss.example/effect.png")
+        self.assertEqual(assets[0]["source"], "first_day_sop_pack")
+
+        analysis = _first_day_scene_analysis(
+            step1_scene="store_area_request",
+            step2_scene="effect_proof",
+        )
+        analysis["precedence_decision"] = {
+            "row_id": "no_blocker_sop_progression",
+            "message_indexes": [0],
+            "reason": "客户无明确卡点，按首日 SOP 顺序推进。",
+        }
+        analysis["selected_source_ids"] = {
+            "step1": ["sop-pack:event_s10_store_prompt_5min"],
+            "step2": ["sop-pack:event_s10_effect_warmup_30min", "sop-pack:event_s10_effect_warmup_30min:2"],
+        }
+        analysis["required_assets"]["step2"] = {
+            "strategy": "configured_image",
+            "asset_id": "sop-pack:event_s10_effect_warmup_30min:2",
+            "reason": "效果 SOP 包包含真实图片。",
+        }
+
+        self.assertEqual(
+            _first_day_scene_analysis_error(
+                analysis,
+                source_snapshot={
+                    "recent_messages": [{"direction": "customer", "content": "你好"}],
+                    "first_day_sop_sequence": sequence,
+                    "asset_catalog": assets,
+                    "payment_collection_gate": {"eligible": False},
+                },
+            ),
+            "",
         )
 
     def test_first_day_scene_contract_rejects_duplicate_scenes_and_payment_without_gate(self) -> None:
@@ -627,6 +718,52 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 reply_wait_minutes=20,
             ),
             "",
+        )
+
+    def test_first_day_payment_card_can_use_prior_internal_activity_quote(self) -> None:
+        response = {
+            "should_create_plan": True,
+            "steps": [
+                {
+                    "scene": "activity_intro",
+                    "reply_messages": [
+                        {
+                            "type": "text",
+                            "content": {
+                                "text": (
+                                    "亲，现在是线上活动价268元，包含淡斑、检测皮肤、基础清洁和肌肤补水。"
+                                    "线上预定10元到店抵扣；未做或不满意可退，实际按付款记录核对。"
+                                )
+                            },
+                        }
+                    ],
+                    "should_send_payment_collection": False,
+                },
+                {
+                    "scene": "deposit_close",
+                    "reply_messages": [
+                        {"type": "text", "content": {"text": "亲，第二步可以先把活动名额锁住。"}}
+                    ],
+                    "should_send_payment_collection": True,
+                },
+            ],
+        }
+
+        self.assertEqual(
+            _outreach_plan_context_error(
+                response,
+                activity_quote_fact={"completed": False},
+                allow_first_day_internal_activity_quote=True,
+            ),
+            "",
+        )
+        self.assertEqual(
+            _outreach_plan_context_error(
+                response,
+                activity_quote_fact={"completed": False},
+                allow_first_day_internal_activity_quote=False,
+            ),
+            "activity quote is incomplete; payment_collection must be disabled",
         )
 
     def test_long_customer_silence_requires_immediate_first_touch_and_daily_spacing(self) -> None:
@@ -1711,7 +1848,18 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                     "persuasion_angle": "low_risk_action",
                     "new_value": "先保留活动资格",
                     "avoid_repeating": ["距离顾虑"],
-                    "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，您可以先把活动资格留住，到店时间后面再定。"}}],
+                    "reply_messages": [
+                        {
+                            "type": "text",
+                            "order": 1,
+                            "content": {
+                                "text": (
+                                    "亲，您可以先付10元把活动资格锁住，到店时间后面再定。"
+                                    "这10元到店抵扣，未做或不满意可退，实际按付款记录核对。"
+                                )
+                            },
+                        }
+                    ],
                     "asset_strategy": "none",
                     "cta": "支付10元预约金",
                     "payment_collection_basis": "model_selected_after_quote",

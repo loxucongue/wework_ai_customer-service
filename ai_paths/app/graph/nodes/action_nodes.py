@@ -1431,7 +1431,13 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             if isinstance(raw_result, dict):
                 geocode = raw_result
 
-    text_candidates = _stores_for_text_query(resolved_query, stores, purpose)
+    lookup_stores = stores
+    snapshot_scope_fallback = False
+    if not lookup_stores and _customer_store_scope_unavailable(state):
+        lookup_stores = _snapshot_stores_for_resolved_geocode(geocode, resolved_query)
+        snapshot_scope_fallback = bool(lookup_stores)
+
+    text_candidates = _stores_for_text_query(resolved_query, lookup_stores, purpose)
     exact_store_reference = any(
         _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
         and _compact_store_text(str(item.get("store_name") or item.get("name") or ""))
@@ -1512,7 +1518,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "missing": ["confirmed_location"],
         }
 
-    explicit_region_conflict = _geocode_explicit_region_conflict(resolved_query, geocode, stores)
+    explicit_region_conflict = _geocode_explicit_region_conflict(resolved_query, geocode, lookup_stores)
     if explicit_region_conflict:
         return {
             "status": "geocode_query_conflict",
@@ -1558,7 +1564,7 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             ),
         }
 
-    geocode_conflict = _geocode_conflicts_with_query_scope(resolved_query, geocode, stores)
+    geocode_conflict = _geocode_conflicts_with_query_scope(resolved_query, geocode, lookup_stores)
     if geocode_conflict and not selected_candidate:
         return {
             "status": "geocode_query_conflict",
@@ -1578,8 +1584,10 @@ async def _customer_store_lookup(tool: dict[str, Any], state: AgentState, coze_c
             "candidate_store_count": 0,
             "missing": ["confirmed_location"],
         }
-    candidates = [] if geocode_conflict else _stores_for_geocode(geocode, stores, purpose)
+    candidates = [] if geocode_conflict else _stores_for_geocode(geocode, lookup_stores, purpose)
     source = "customer_scope_geocode_conflict_ignored" if geocode_conflict else "customer_scope_geocode"
+    if snapshot_scope_fallback and not geocode_conflict:
+        source = "store_snapshot_geocode_scope_fallback"
     if not candidates and exact_store_reference:
         candidates = text_candidates
         source = "customer_scope_exact_store_name"
@@ -1964,6 +1972,26 @@ def _stores_for_geocode(geocode: dict[str, Any], stores: list[dict[str, Any]], p
     if province:
         return [store for store in stores if _region_equal(store.get("province"), province)]
     return []
+
+
+def _snapshot_stores_for_resolved_geocode(geocode: dict[str, Any], query: str) -> list[dict[str, Any]]:
+    if not isinstance(geocode, dict) or not str(geocode.get("location") or "").strip():
+        return []
+    resolved_level = _geocode_resolved_admin_level(query, geocode)
+    if resolved_level not in {"district", "township"}:
+        return []
+    province = str(geocode.get("province") or "").strip()
+    city = str(geocode.get("city") or "").strip()
+    district = str(geocode.get("district") or "").strip()
+    if not city or not district:
+        return []
+    return [
+        store
+        for store in _snapshot_store_values()
+        if (not province or _region_equal(store.get("province"), province))
+        and _region_equal(store.get("city"), city)
+        and _region_equal(store.get("district"), district)
+    ]
 
 
 def _stores_for_text_query(query: str, stores: list[dict[str, Any]], purpose: str) -> list[dict[str, Any]]:

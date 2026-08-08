@@ -653,6 +653,92 @@ def test_store_lookup_uses_snapshot_region_fallback_when_scope_unavailable(monke
     assert output["stores"] == []
 
 
+def test_store_lookup_uses_snapshot_district_when_store_index_times_out(monkeypatch) -> None:
+    monkeypatch.setattr(
+        action_nodes,
+        "_snapshot_store_values",
+        lambda: [
+            {
+                "store_id": "133",
+                "store_name": "深圳龙岗店",
+                "province": "广东省",
+                "city": "深圳市",
+                "district": "龙岗区",
+                "store_address": "深圳市龙岗区龙城街道万科大厦",
+                "store_fact_integrity": "valid",
+            }
+        ],
+    )
+    coze = _FakeGeocodeCoze(
+        {
+            "龙岗区龙城街道": {
+                "province": "广东省",
+                "city": "深圳市",
+                "district": "龙岗区",
+                "formatted_address": "广东省深圳市龙岗区龙城街道",
+                "location": "114.240991,22.711962",
+            }
+        }
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "龙岗区龙城街道", "purpose": "nearby_candidates"},
+            {"customer_store_knowledge": {"source": "customer_store_knowledge_timeout", "stores": []}},
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["source"] == "store_snapshot_geocode_scope_fallback"
+    assert output["scope_match_level"] == "township"
+    assert output["exact_scope_has_store"] is True
+    assert [item["store_id"] for item in output["stores"]] == ["133"]
+
+
+def test_store_lookup_uses_snapshot_district_for_location_card_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(
+        action_nodes,
+        "_snapshot_store_values",
+        lambda: [
+            {
+                "store_id": "306",
+                "store_name": "重庆江津店",
+                "province": "重庆市",
+                "city": "重庆市",
+                "district": "江津区",
+                "store_address": "江津西城医院口腔科旁边美学中心",
+                "store_fact_integrity": "valid",
+            }
+        ],
+    )
+    coze = _FakeGeocodeCoze(
+        {
+            "江津区福润大道": {
+                "province": "重庆市",
+                "city": "重庆市",
+                "district": "江津区",
+                "formatted_address": "重庆市江津区福润路",
+                "location": "106.303314,29.426126",
+            }
+        }
+    )
+
+    output = asyncio.run(
+        _customer_store_lookup(
+            {"name": "customer_store_lookup", "query": "江津区福润大道", "purpose": "nearby_candidates"},
+            {"customer_store_knowledge": {"source": "customer_store_knowledge_timeout", "stores": []}},
+            coze,  # type: ignore[arg-type]
+        )
+    )
+
+    assert output["status"] == "ok"
+    assert output["source"] == "store_snapshot_geocode_scope_fallback"
+    assert output["scope_match_level"] == "district"
+    assert output["exact_scope_has_store"] is True
+    assert [item["store_id"] for item in output["stores"]] == ["306"]
+
+
 def test_store_lookup_does_not_use_snapshot_region_fallback_for_generic_question(monkeypatch) -> None:
     monkeypatch.setattr(
         action_nodes,

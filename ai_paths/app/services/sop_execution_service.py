@@ -400,6 +400,10 @@ class SopExecutionService:
                 self.repository,
                 identity,
             )
+            local_recent_messages = _recent_chat_local_messages(
+                self.repository,
+                identity,
+            )
             unfinished = [
                 pack
                 for pack in enabled_packs
@@ -437,10 +441,11 @@ class SopExecutionService:
                 unfinished,
                 sop_progress_evidence=result["sop_progress_evidence"],
                 recent_delivery_evidence=recent_delivery_evidence,
+                local_recent_messages=local_recent_messages,
                 customer_memory=customer_memory,
                 customer_context=order_gate.get("customer_context", {}),
             )
-            result["selector_input"] = compact(selector_input, max_chars=6000)
+            result["selector_input"] = compact(selector_input, max_chars=9000)
             selector_output = await self._select_chat_sop(
                 selector_input,
                 deadline_monotonic=time.monotonic() + self.chat_gate_total_timeout_seconds,
@@ -1763,18 +1768,25 @@ def _chat_selector_input(
     *,
     sop_progress_evidence: dict[str, Any] | None = None,
     recent_delivery_evidence: list[dict[str, Any]] | None = None,
+    local_recent_messages: list[dict[str, Any]] | None = None,
     customer_memory: dict[str, Any] | None = None,
     customer_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    recent_history = _merged_chat_recent_history(
+        _recent_history(request.conversation_history),
+        _local_messages_as_history(local_recent_messages or []),
+    )
     conversation_evidence = _chat_conversation_evidence(
-        request.conversation_history,
+        recent_history,
         current_message=str(request.content or "").strip(),
     )
     return {
         "current_message": str(request.content or "").strip(),
-        "recent_conversation": _recent_history(request.conversation_history),
+        "recent_conversation": recent_history,
         "conversation_evidence": conversation_evidence,
         "recent_sop_delivery_evidence": recent_delivery_evidence or [],
+        "customer_stance_evidence": _chat_customer_stance_evidence(conversation_evidence),
+        "send_frequency_evidence": _chat_send_frequency_evidence(recent_delivery_evidence or []),
         "mainline": sales_mainline_for_model(),
         "mainline_progress": sop_progress_evidence or {},
         "precision_qa_index": precision_qa_index_for_gate(),
@@ -1841,7 +1853,7 @@ def _recent_chat_sop_delivery_evidence(
             external_userid=identity.get("external_userid", ""),
             corp_id=identity.get("corp_id", ""),
             wechat=identity.get("wechat", ""),
-            limit=8,
+            limit=20,
         )
     except Exception:
         return []
@@ -1867,7 +1879,7 @@ def _recent_chat_sop_delivery_evidence(
                 }
             )
         )
-    return output[:8]
+    return output[:20]
 
 
 def _event_summary(payload: dict[str, Any], customer: dict[str, Any]) -> dict[str, Any]:
@@ -1953,6 +1965,171 @@ def _recent_history(history: Any) -> list[str]:
     if not isinstance(history, list):
         return []
     return [str(item)[:240] for item in history[-30:] if str(item or "").strip()]
+
+
+def _recent_chat_local_messages(repository: Any, identity: dict[str, str]) -> list[dict[str, Any]]:
+    list_messages = getattr(repository, "list_recent_messages_for_sales_contact", None)
+    if not callable(list_messages):
+        return []
+    try:
+        messages = list_messages(
+            customer_id=identity.get("customer_id", ""),
+            external_userid=identity.get("external_userid", ""),
+            corp_id=identity.get("corp_id", ""),
+            wechat=identity.get("wechat", ""),
+            limit=30,
+        )
+    except Exception:
+        return []
+    return [item for item in messages if isinstance(item, dict)]
+
+
+def _local_messages_as_history(messages: list[dict[str, Any]]) -> list[str]:
+    output: list[str] = []
+    for item in messages[-30:]:
+        role = _string(item.get("role")).lower()
+        prefix = "用户" if role in {"user", "customer"} else "小贝"
+        content = _string(item.get("content"))
+        if not content and isinstance(item.get("reply_messages"), list):
+            content = _reply_messages_as_text(item["reply_messages"])
+        if content:
+            output.append(f"{prefix}: {content[:240]}")
+    return output
+
+
+def _reply_messages_as_text(messages: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
+    for item in messages[:8]:
+        if not isinstance(item, dict):
+            continue
+        message_type = _string(item.get("type"))
+        content = item.get("content") if isinstance(item.get("content"), dict) else {}
+        if message_type == "text":
+            text = _string(content.get("text") or content.get("content"))
+            if text:
+                parts.append(text)
+        elif message_type == "payment_collection":
+            parts.append(f"[预约金卡:{_payment_message_amount(item)}元]")
+        elif message_type == "store_address":
+            parts.append(f"[门店卡:{_string(content.get('store_id') or content.get('id'))}]")
+        elif message_type in {"image", "video"}:
+            parts.append(f"[{message_type}]")
+    return " / ".join(parts)
+
+
+def _merged_chat_recent_history(request_history: list[str], local_history: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for text in [*local_history, *request_history]:
+        normalized = re.sub(r"\s+", " ", str(text or "").strip())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(str(text)[:240])
+    return merged[-30:]
+
+
+def _chat_customer_stance_evidence(conversation_evidence: list[dict[str, str]]) -> dict[str, Any]:
+    """Expose customer wording evidence; the model still decides the stance semantics."""
+    soft_terms = (
+        "不急",
+        "再看看",
+        "多看看",
+        "考虑",
+        "先不定",
+        "先不订",
+        "不定了",
+        "不订了",
+        "暂时不",
+        "先不用",
+        "先不要",
+        "改天",
+        "以后再说",
+        "晚点再",
+    )
+    clear_terms = (
+        "不要了",
+        "不做了",
+        "别发了",
+        "不要再发",
+        "别联系",
+        "不用联系",
+        "拉黑",
+        "投诉",
+    )
+    soft_quotes: list[dict[str, str]] = []
+    clear_quotes: list[dict[str, str]] = []
+    for item in conversation_evidence:
+        if _string(item.get("direction")) != "customer":
+            continue
+        content = _string(item.get("content"))
+        if not content:
+            continue
+        ref = _string(item.get("message_ref"))
+        if any(term in content for term in clear_terms):
+            clear_quotes.append({"message_ref": ref, "quote": content[:120]})
+            continue
+        if any(term in content for term in soft_terms):
+            soft_quotes.append({"message_ref": ref, "quote": content[:120]})
+    return _drop_empty(
+        {
+            "soft_refusal_evidence": soft_quotes[-6:],
+            "soft_refusal_quote_count": len(soft_quotes),
+            "repeated_soft_refusal": len(soft_quotes) >= 2,
+            "clear_refusal_evidence": clear_quotes[-4:],
+            "clear_refusal_quote_count": len(clear_quotes),
+            "policy": "quotes_only_model_decides_customer_stance",
+        }
+    )
+
+
+def _chat_send_frequency_evidence(recent_delivery_evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    activity_count = 0
+    payment_count = 0
+    sop_count = 0
+    last_activity_at = ""
+    last_payment_at = ""
+    today_activity_count = 0
+    today_payment_count = 0
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
+    for item in recent_delivery_evidence:
+        if not isinstance(item, dict):
+            continue
+        sop_count += 1
+        category = _string(item.get("sop_category"))
+        pack_id = _string(item.get("sop_pack_id"))
+        sent_at = _string(item.get("sent_at"))
+        message_types = [_string(value) for value in item.get("message_types") or []]
+        sent_day = _prompt_time_local_date(sent_at)
+        if category in {"activity_intro", "price_quote"} or pack_id == "s10_activity_intro":
+            activity_count += 1
+            last_activity_at = sent_at or last_activity_at
+            if sent_day == today:
+                today_activity_count += 1
+        if "payment_collection" in message_types:
+            payment_count += 1
+            last_payment_at = sent_at or last_payment_at
+            if sent_day == today:
+                today_payment_count += 1
+    return _drop_empty(
+        {
+            "recent_sop_count": sop_count,
+            "recent_activity_pack_count": activity_count,
+            "today_activity_pack_count": today_activity_count,
+            "last_activity_pack_sent_at": last_activity_at,
+            "recent_payment_collection_count": payment_count,
+            "today_payment_collection_count": today_payment_count,
+            "last_payment_collection_sent_at": last_payment_at,
+            "policy": "send_counts_are_evidence_not_fixed_thresholds",
+        }
+    )
+
+
+def _prompt_time_local_date(value: Any) -> Any:
+    parsed = _parse_prompt_time(value)
+    if not parsed:
+        return None
+    return parsed.astimezone(ZoneInfo("Asia/Shanghai")).date()
 
 
 def _sop_summary(
@@ -2794,6 +2971,7 @@ def _chat_gate_output_violations(
             violations.append("resume_stage_must_match_selected_pack")
         if pack_id in packs:
             violations.extend(_chat_gate_party_size_violations(selector_output, selector_input, packs[pack_id]))
+            violations.extend(_chat_gate_pressure_violations(selector_input, packs[pack_id]))
     else:
         if pack_id:
             violations.append("ai_only_must_not_select_pack")
@@ -2804,6 +2982,81 @@ def _chat_gate_output_violations(
         }:
             violations.append("unknown_resume_stage")
     return violations
+
+
+def _chat_gate_pressure_violations(
+    selector_input: dict[str, Any],
+    selected_pack: dict[str, Any],
+) -> list[str]:
+    stance = (
+        selector_input.get("customer_stance_evidence")
+        if isinstance(selector_input.get("customer_stance_evidence"), dict)
+        else {}
+    )
+    clear_count = _int(stance.get("clear_refusal_quote_count"), 0)
+    soft_count = _int(stance.get("soft_refusal_quote_count"), 0)
+    repeated_soft = bool(stance.get("repeated_soft_refusal")) or soft_count >= 2
+    if clear_count > 0:
+        return ["gate_pressure_conflict:clear_refusal_must_route_ai_only"]
+    pack_id = _string(selected_pack.get("id"))
+    category = _pack_category(selected_pack)
+    stage = _string(selected_pack.get("mainline_stage") or mainline_stage_for_pack(pack_id))
+    has_payment = bool(
+        (
+            selected_pack.get("payment_collection_gate")
+            if isinstance(selected_pack.get("payment_collection_gate"), dict)
+            else {}
+        ).get("has_payment_collection")
+    )
+    high_pressure = (
+        has_payment
+        or pack_id == "s10_activity_intro"
+        or category in {"activity_intro", "price_quote", "deposit_push", "payment_followup"}
+        or stage in {"activity_and_price", "deposit_decision"}
+    )
+    if repeated_soft and high_pressure:
+        return ["gate_pressure_conflict:repeated_soft_refusal_requires_ai_only"]
+    if soft_count > 0 and has_payment:
+        return ["gate_pressure_conflict:first_soft_refusal_must_not_send_payment_card"]
+    activity_pressure = (
+        pack_id == "s10_activity_intro"
+        or category in {"activity_intro", "price_quote"}
+        or stage == "activity_and_price"
+    )
+    if soft_count > 0 and activity_pressure and not _chat_gate_current_message_requests_activity(selector_input):
+        return ["gate_pressure_conflict:first_soft_refusal_must_not_send_activity_pack"]
+    return []
+
+
+def _chat_gate_current_message_requests_activity(selector_input: dict[str, Any]) -> bool:
+    current_message = _string(selector_input.get("current_message"))
+    if not current_message:
+        for item in selector_input.get("conversation_evidence") or []:
+            if not isinstance(item, dict):
+                continue
+            if _string(item.get("message_ref")) == "current_message":
+                current_message = _string(item.get("content"))
+                break
+    if not current_message:
+        return False
+    activity_terms = (
+        "活动",
+        "优惠",
+        "价格",
+        "多少钱",
+        "收费",
+        "费用",
+        "怎么参加",
+        "怎么预约",
+        "怎么付",
+        "付款",
+        "付费",
+        "报名",
+        "预约金",
+        "定金",
+        "名额",
+    )
+    return any(term in current_message for term in activity_terms)
 
 
 def _chat_gate_active_task(value: Any) -> dict[str, str]:
