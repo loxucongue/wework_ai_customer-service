@@ -89,6 +89,8 @@ def test_first_day_prompts_define_appointment_blocker_context_boundaries() -> No
     assert "缺失媒体" in FIRST_DAY_CONTRACT_VERIFIER_PROMPT
     assert "实际按付款记录核对" in FIRST_DAY_PLAN_WRITER_PROMPT
     assert "实际按付款记录核对" in FIRST_DAY_CONTRACT_VERIFIER_PROMPT
+    assert "直接交付来自 `selected_sop_packs` 或 `selected_materials` 的具体价值" in FIRST_DAY_PLAN_WRITER_PROMPT
+    assert "开放式尾巴" in FIRST_DAY_CONTRACT_VERIFIER_PROMPT
 
 
 def test_first_day_policy_rejects_store_execution_implication() -> None:
@@ -101,3 +103,15 @@ def test_first_day_policy_rejects_store_execution_implication() -> None:
 
     assert error == "first_day_unsupported_store_action"
     assert evidence == "把到店路径接上"
+
+
+def test_first_day_policy_rejects_open_ended_process_tail_for_silent_customer() -> None:
+    error, evidence = _first_day_message_policy_error(
+        ["如果您想，我也可以顺着给您说下这次活动的安排。"],
+        step_index=2,
+        plan={},
+        context={},
+    )
+
+    assert error == "first_day_process_tail"
+    assert evidence == "如果您想"
