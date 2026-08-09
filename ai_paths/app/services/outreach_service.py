@@ -16,6 +16,7 @@ from app.services.customer_relation import (
 from app.services.customer_scope import build_customer_scope
 from app.services.coze_client import CozeClient
 from app.services.model_client import ModelClient
+from app.services.payment_collection import unanswered_payment_collection
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
 from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.outreach_first_day_prompts import (
@@ -5054,6 +5055,41 @@ class OutreachService:
                     terminal=True,
                 )
                 return {"ok": True, "status": "skipped", "reason": reason}
+            payment_duplicate = self._unanswered_payment_card_duplicate(
+                task=task,
+                plan=plan,
+                reply_messages=reply_messages,
+            )
+            if payment_duplicate.get("active"):
+                reason = "unanswered_payment_card_duplicate"
+                self.repository.update_outreach_task(
+                    task_id,
+                    status="skipped",
+                    error_message=reason,
+                )
+                self.repository.add_outreach_event(
+                    plan_id=str(task["plan_id"]),
+                    task_id=task_id,
+                    customer_id=str(task["customer_id"]),
+                    event_type="task_skipped_unanswered_payment_card",
+                    event_summary="Outreach payment card skipped because the previous card is still unanswered",
+                    payload=payment_duplicate,
+                )
+                remaining_loader = getattr(self.repository, "outreach_plan_has_remaining_tasks", None)
+                has_remaining = bool(remaining_loader(str(task["plan_id"]))) if callable(remaining_loader) else False
+                self.repository.update_outreach_plan_status(
+                    str(task["plan_id"]),
+                    "waiting" if has_remaining else "completed",
+                )
+                self._sync_first_day_run_for_task(
+                    plan=plan,
+                    task=task,
+                    status="created" if has_remaining else "cancelled",
+                    reason_code=reason,
+                    final_decision="next_task_pending" if has_remaining else "no_send",
+                    terminal=not has_remaining,
+                )
+                return {"ok": True, "status": "skipped", "reason": reason}
             task = self.repository.update_outreach_task(
                 task_id,
                 status="sending",
@@ -5144,6 +5180,34 @@ class OutreachService:
                 payload={"sent_at": sent_at},
             )
         return {"ok": True, "status": "sent", "send_result": send_result}
+
+    def _unanswered_payment_card_duplicate(
+        self,
+        *,
+        task: dict[str, Any],
+        plan: dict[str, Any],
+        reply_messages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not any(
+            isinstance(message, dict)
+            and _string(message.get("type")) == "payment_collection"
+            for message in reply_messages
+        ):
+            return {"active": False, "reason": "task_has_no_payment_card"}
+        context = self.repository.recent_customer_context(
+            str(task["customer_id"]),
+            corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
+            wechat=str(task.get("wechat") or plan.get("wechat") or ""),
+            external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
+        )
+        duplicate = unanswered_payment_collection(context.get("recent_messages"))
+        return {
+            **duplicate,
+            "customer_id": str(task.get("customer_id") or ""),
+            "corp_id": str(task.get("corp_id") or plan.get("corp_id") or ""),
+            "wechat": str(task.get("wechat") or plan.get("wechat") or ""),
+            "external_userid": str(task.get("external_userid") or plan.get("external_userid") or ""),
+        }
 
     async def _refresh_order_eligibility(self, *, task: dict[str, Any], plan: dict[str, Any]) -> dict[str, Any]:
         source_snapshot = plan.get("source_snapshot") if isinstance(plan.get("source_snapshot"), dict) else {}

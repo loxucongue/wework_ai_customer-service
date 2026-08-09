@@ -478,6 +478,23 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         if removed_payment:
             reply_constraints.append("payment_action 表示本轮不直接发送预约金入口；不要输出 payment_collection。")
             reply_strategy.setdefault("payment_action_guard", "payment_card_removed_by_payment_action")
+    prior_payment = sent_message_summary_for_model(state).get("payment_collection") or {}
+    if int(prior_payment.get("total_count") or 0) > 0 and str(payment_decision.get("action") or "") == "send_now":
+        removed_payment = _has_payment_collection(planner_reply_messages)
+        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        payment_decision = _with_payment_decision_action(
+            payment_decision,
+            "explain",
+            source="existing_payment_card_guard",
+            confidence="high",
+            basis="该接待账号已发送过预约金卡；send_now 只允许首次发卡，后续默认承接已有卡",
+        )
+        payment_action = "explain_existing"
+        reply_constraints.append(
+            "该接待账号已发过预约金卡，本轮 send_now 已降级为 explain_existing；只承接已有卡，不得再次输出 payment_collection。"
+        )
+        if removed_payment:
+            reply_strategy.setdefault("payment_card_cooldown", "existing_payment_card_send_now_removed")
     if has_paid_deposit_context:
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)

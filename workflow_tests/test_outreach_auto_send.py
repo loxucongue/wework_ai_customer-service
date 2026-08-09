@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 from app.services.outreach_service import OutreachService
 from app.services.storage import AppRepository, SQLiteStore
@@ -13,6 +14,41 @@ from app.services.customer_scope import build_customer_scope
 
 
 class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unanswered_payment_card_is_not_sent_by_outreach(self) -> None:
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            recent_messages=[
+                {"role": "user", "content": "我考虑一下"},
+                {
+                    "role": "assistant",
+                    "reply_messages": [
+                        {"type": "payment_collection", "content": {"amount": 10, "remark": ""}}
+                    ],
+                    "created_at": "2026-08-09T10:00:00+08:00",
+                },
+            ],
+        )
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=object(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+        service._generate_task_messages = AsyncMock(
+            return_value=[
+                {"type": "text", "order": 1, "content": {"text": "您点卡片把名额锁住。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ]
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result, {"ok": True, "status": "skipped", "reason": "unanswered_payment_card_duplicate"})
+        self.assertEqual(system.sent, [])
+        self.assertIn(("task-1", "skipped"), repository.task_statuses)
+        self.assertEqual(repository.events[-1]["event_type"], "task_skipped_unanswered_payment_card")
+
     async def test_auto_approved_task_sends_after_fresh_conversation_and_order_checks(self) -> None:
         repository = _ExecutionRepository(order_status="no_order", remaining_tasks=True)
         system = _SystemClient()

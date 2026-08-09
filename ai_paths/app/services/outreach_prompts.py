@@ -630,6 +630,11 @@ Rules:
   eligible; use `content_mode=transaction`, then make step 2 a different
   non-payment `value_only` scene. Do not delay an already pending payment action
   to step 2 merely because ordinary long-term plans put payment last.
+- If recent messages show a real `payment_collection` and there is no later
+  real customer message, the existing card is still unanswered. Neither step
+  may select `deposit_close`, set `should_send_payment_collection=true`, or
+  promise another card. Continue with a different useful SOP or blocker value;
+  never use silence itself as a reason to repeat the payment card.
 - You may use only existing message templates and code-supported message
   types. Text is written by you; images, videos, store cards, and payment cards
   are selected or assembled by code from real facts and assets.

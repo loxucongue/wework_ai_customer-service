@@ -116,6 +116,54 @@ def payment_collection_context(
     }
 
 
+def unanswered_payment_collection(messages: Any) -> dict[str, Any]:
+    """Return the latest payment card that has no later customer reply.
+
+    This is a delivery/idempotency fact. It deliberately does not infer whether
+    another sales push would be useful; callers use it only to prevent an
+    automated channel from sending another structured payment card while the
+    previous one is still unanswered.
+    """
+
+    rows = messages if isinstance(messages, list) else []
+    for index in range(len(rows) - 1, -1, -1):
+        row = rows[index]
+        if _payment_history_customer_message(row):
+            return {"active": False, "reason": "customer_replied_after_payment_card"}
+        if _payment_history_has_collection(row):
+            return {
+                "active": True,
+                "reason": "payment_card_sent_without_customer_reply",
+                "message_index": index,
+                "created_at": str(row.get("created_at") or "") if isinstance(row, dict) else "",
+                "request_id": str(row.get("request_id") or "") if isinstance(row, dict) else "",
+            }
+    return {"active": False, "reason": "no_payment_card_in_recent_history"}
+
+
+def _payment_history_customer_message(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    role = str(item.get("role") or item.get("direction") or "").strip().lower()
+    return role in {"user", "customer", "inbound"}
+
+
+def _payment_history_has_collection(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    message_type = str(item.get("type") or item.get("message_type") or "").strip().lower()
+    if message_type == "payment_collection":
+        return True
+    reply_messages = item.get("reply_messages")
+    if not isinstance(reply_messages, list):
+        return False
+    return any(
+        isinstance(message, dict)
+        and str(message.get("type") or "").strip().lower() == "payment_collection"
+        for message in reply_messages
+    )
+
+
 def payment_amount_for_party_size(party_size: int | str | None) -> int | None:
     try:
         participants = int(float(str(party_size or "").strip()))
