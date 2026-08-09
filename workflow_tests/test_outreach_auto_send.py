@@ -188,6 +188,62 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("plan-1", "cancelled"), repository.plan_statuses)
         self.assertEqual(repository.events[-1]["event_type"], "task_skipped_message_policy")
 
+    async def test_first_day_sop_pack_task_preserves_pack_messages_without_rewrite(self) -> None:
+        pack_text = (
+            "现在我们是周年庆线上淡斑活动，前30名登记的顾客到店可以享受268元淡斑特惠价。\n\n"
+            "①268元活动价格仅限30名，套餐包括淡斑、检测皮肤、基础清洁和肌肤补水。\n"
+            "②线上预定每位10元并登记姓名电话，到店抵扣10元；未做或不满意可退，实际按付款记录核对。"
+        )
+        repository = _ExecutionRepository(
+            order_status="no_order",
+            trigger_type="first_day_opened_silence",
+            task_reply_messages=[
+                {"type": "text", "order": 1, "content": {"text": pack_text}},
+                {"type": "image", "order": 2, "content": {"url": "https://oss.example/activity.png"}},
+            ],
+            task_content_sources=[
+                "sop-pack:s10_activity_intro",
+                {"should_send_payment_collection": False},
+                {
+                    "outreach_task_metadata": {
+                        "scene": "activity_intro",
+                        "preserve_sop_pack_messages": True,
+                        "sop_pack_reply_messages": [
+                            {"type": "text", "order": 1, "text": pack_text},
+                            {
+                                "type": "image",
+                                "order": 2,
+                                "asset_id": "sop-pack:s10_activity_intro:2",
+                                "url": "https://oss.example/activity.png",
+                            },
+                        ],
+                    }
+                },
+                {
+                    "resolved_asset": {
+                        "asset_id": "sop-pack:s10_activity_intro:2",
+                        "type": "image",
+                        "url": "https://oss.example/activity.png",
+                    }
+                },
+            ],
+        )
+        model = _SequenceMessageModelClient(["不应该调用模型"])
+        system = _SystemClient()
+        service = OutreachService(
+            repository=repository,
+            model_client=model,
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(model.calls, [])
+        self.assertEqual(system.sent[0]["reply_messages"][0]["content"]["text"], pack_text)
+        self.assertEqual(system.sent[0]["reply_messages"][1]["type"], "image")
+
     async def test_first_day_gendered_customer_language_is_rewritten_to_neutral(self) -> None:
         repository = _ExecutionRepository(
             order_status="no_order",
@@ -844,11 +900,15 @@ class _ExecutionRepository:
         remaining_tasks: bool = False,
         trigger_type: str = "",
         recent_messages: list[dict[str, Any]] | None = None,
+        task_reply_messages: list[dict[str, Any]] | None = None,
+        task_content_sources: list[Any] | None = None,
     ) -> None:
         self.order_status = order_status
         self.remaining_tasks = remaining_tasks
         self.trigger_type = trigger_type
         self.recent_messages = recent_messages or []
+        self.task_reply_messages = task_reply_messages
+        self.task_content_sources = task_content_sources
         self.task_statuses: list[tuple[str, str]] = []
         self.plan_statuses: list[tuple[str, str]] = []
         self.events: list[dict[str, Any]] = []
@@ -867,7 +927,12 @@ class _ExecutionRepository:
             "status": "pending",
             "step_index": 2 if task_id == "task-2" else 1,
             "before_send_check": True,
-            "reply_messages": [{"type": "text", "order": 1, "content": {"text": "亲，前面您主要担心效果，我再给您说清楚一点。"}}],
+            "content_sources": self.task_content_sources or [],
+            "content_source_metadata": [
+                item for item in self.task_content_sources or [] if isinstance(item, dict)
+            ],
+            "reply_messages": self.task_reply_messages
+            or [{"type": "text", "order": 1, "content": {"text": "亲，前面您主要担心效果，我再给您说清楚一点。"}}],
         }
 
     def claim_outreach_task(self, _task_id: str) -> bool:

@@ -246,6 +246,56 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "",
         )
 
+        alias_analysis = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="activity_intro",
+        )
+        alias_analysis["selected_source_ids"] = {
+            "step1": ["sop-pack:effect_proof"],
+            "step2": ["sop-pack:activity_intro"],
+        }
+        normalized_alias = _normalize_first_day_scene_analysis(
+            alias_analysis,
+            message_count=1,
+            source_snapshot={
+                "recent_messages": [{"direction": "customer", "content": "你好"}],
+                "first_day_sop_sequence": [
+                    *sequence,
+                    {
+                        "source_id": "sop-pack:s10_activity_intro",
+                        "pack_id": "s10_activity_intro",
+                        "sop_category": "s10_activity_intro",
+                        "mapped_scene": "activity_intro",
+                        "reply_messages": [
+                            {"type": "text", "order": 1, "text": "完整活动包"},
+                            {"type": "image", "order": 2, "asset_id": "sop-pack:s10_activity_intro:2"},
+                        ],
+                    },
+                ],
+                "asset_catalog": [
+                    *assets,
+                    {
+                        "asset_id": "sop-pack:s10_activity_intro:2",
+                        "type": "image",
+                        "url": "https://oss.example/activity.png",
+                    },
+                ],
+                "payment_collection_gate": {"eligible": False},
+            },
+        )
+        self.assertEqual(
+            normalized_alias["selected_source_ids"]["step1"],
+            ["sop-pack:event_s10_effect_warmup_30min"],
+        )
+        self.assertEqual(
+            normalized_alias["selected_source_ids"]["step2"],
+            ["sop-pack:s10_activity_intro"],
+        )
+        self.assertEqual(
+            normalized_alias["required_assets"]["step2"]["asset_id"],
+            "sop-pack:s10_activity_intro:2",
+        )
+
     def test_first_day_scene_contract_rejects_duplicate_scenes_and_payment_without_gate(self) -> None:
         snapshot = {
             "recent_messages": [{"direction": "customer", "content": "想看看效果"}],

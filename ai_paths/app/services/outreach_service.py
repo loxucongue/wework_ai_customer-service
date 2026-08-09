@@ -633,6 +633,132 @@ def _first_day_default_asset_id_for_sources(
     return ""
 
 
+def _first_day_sop_source_ids(source_snapshot: dict[str, Any] | None) -> set[str]:
+    return {
+        _string(item.get("source_id"))
+        for item in (source_snapshot or {}).get("first_day_sop_sequence") or []
+        if isinstance(item, dict) and _string(item.get("source_id"))
+    }
+
+
+def _first_day_sop_source_aliases(source_snapshot: dict[str, Any] | None) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for item in (source_snapshot or {}).get("first_day_sop_sequence") or []:
+        if not isinstance(item, dict):
+            continue
+        source_id = _string(item.get("source_id"))
+        if not source_id:
+            continue
+        for alias in (
+            _string(item.get("pack_id")),
+            _string(item.get("sop_category")),
+            _string(item.get("mapped_scene")),
+        ):
+            if alias and alias not in aliases:
+                aliases[alias] = source_id
+            if alias:
+                prefixed = f"sop-pack:{alias}"
+                if prefixed not in aliases:
+                    aliases[prefixed] = source_id
+    return aliases
+
+
+def _first_day_normalize_selected_source_ids(
+    response: dict[str, Any],
+    source_snapshot: dict[str, Any] | None,
+) -> None:
+    selected = response.get("selected_source_ids")
+    if not isinstance(selected, dict):
+        return
+    available_source_ids = {
+        _string(source_id)
+        for item in (source_snapshot or {}).get("appointment_blocker_scene_index") or []
+        if isinstance(item, dict)
+        for source_id in item.get("source_ids") or []
+        if _string(source_id)
+    }
+    available_source_ids.update(
+        _string(item.get("asset_id"))
+        for item in (source_snapshot or {}).get("asset_catalog") or []
+        if isinstance(item, dict) and _string(item.get("asset_id"))
+    )
+    available_source_ids.update(_first_day_sop_source_ids(source_snapshot))
+    aliases = _first_day_sop_source_aliases(source_snapshot)
+    if not available_source_ids:
+        return
+    for key in ("step1", "step2"):
+        normalized_ids: list[str] = []
+        for raw_id in selected.get(key) or []:
+            source_id = _string(raw_id)
+            if source_id in available_source_ids:
+                normalized_ids.append(source_id)
+                continue
+            alias_target = aliases.get(source_id)
+            if alias_target:
+                normalized_ids.append(alias_target)
+                continue
+            suffix_matches = [
+                candidate
+                for candidate in available_source_ids
+                if candidate.endswith(f":{source_id}")
+            ]
+            if len(suffix_matches) == 1:
+                normalized_ids.append(suffix_matches[0])
+        step_scene = _string(response.get(f"{key}_scene"))
+        if not normalized_ids and step_scene:
+            alias_target = aliases.get(step_scene) or aliases.get(f"sop-pack:{step_scene}")
+            if alias_target:
+                normalized_ids.append(alias_target)
+        selected[key] = list(dict.fromkeys(normalized_ids))
+
+
+def _first_day_sop_pack_messages_for_step(
+    source_snapshot: dict[str, Any],
+    *,
+    step_index: int,
+    scene: str,
+) -> list[dict[str, Any]]:
+    if scene not in {"effect_proof", "activity_intro", "deposit_close"}:
+        return []
+    workflow = source_snapshot.get("first_day_workflow")
+    scene_analysis = workflow.get("scene_analysis") if isinstance(workflow, dict) else {}
+    selected_ids = {
+        _string(source_id)
+        for source_id in (scene_analysis.get("selected_source_ids") or {}).get(f"step{step_index}") or []
+        if _string(source_id)
+    }
+    if not selected_ids:
+        return []
+    for pack in source_snapshot.get("first_day_sop_sequence") or []:
+        if not isinstance(pack, dict):
+            continue
+        if _string(pack.get("source_id")) not in selected_ids:
+            continue
+        if _string(pack.get("mapped_scene")) != scene:
+            continue
+        messages = [
+            dict(message)
+            for message in pack.get("reply_messages") or []
+            if isinstance(message, dict)
+        ]
+        if messages:
+            return messages
+    return []
+
+
+def _first_day_sop_pack_texts(messages: list[dict[str, Any]]) -> list[str]:
+    texts: list[str] = []
+    for message in sorted(messages, key=lambda item: _int(item.get("order"), 9999)):
+        if _string(message.get("type")) != "text":
+            continue
+        text = _string(message.get("text"))
+        if not text and isinstance(message.get("content"), dict):
+            text = _string(message["content"].get("text"))
+        if text:
+            texts.append(text)
+    return texts
+
+
 def build_outreach_activity_quote_fact(
     recent_messages: list[dict[str, Any]],
     memory: dict[str, Any] | None = None,
@@ -1629,34 +1755,7 @@ def _normalize_first_day_scene_analysis(
             payment_action["allowed"] = True
         elif not _bool(payment_action.get("allowed")):
             payment_action["step"] = 0
-    available_source_ids = {
-        _string(source_id)
-        for item in (source_snapshot or {}).get("appointment_blocker_scene_index") or []
-        if isinstance(item, dict)
-        for source_id in item.get("source_ids") or []
-        if _string(source_id)
-    }
-    available_source_ids.update(
-        _string(item.get("asset_id"))
-        for item in (source_snapshot or {}).get("asset_catalog") or []
-        if isinstance(item, dict) and _string(item.get("asset_id"))
-    )
-    if available_source_ids and isinstance(response.get("selected_source_ids"), dict):
-        for key in ("step1", "step2"):
-            normalized_ids: list[str] = []
-            for raw_id in response["selected_source_ids"].get(key) or []:
-                source_id = _string(raw_id)
-                if source_id in available_source_ids:
-                    normalized_ids.append(source_id)
-                    continue
-                suffix_matches = [
-                    candidate
-                    for candidate in available_source_ids
-                    if candidate.endswith(f":{source_id}")
-                ]
-                if len(suffix_matches) == 1:
-                    normalized_ids.append(suffix_matches[0])
-            response["selected_source_ids"][key] = list(dict.fromkeys(normalized_ids))
+    _first_day_normalize_selected_source_ids(response, source_snapshot)
     available_assets = {
         _string(item.get("asset_id")): item
         for item in (source_snapshot or {}).get("asset_catalog") or []
@@ -3184,7 +3283,17 @@ class OutreachService:
                 and bool(payment_collection_gate.get("eligible"))
             )
             payment_collection_added = payment_collection_added or should_send_payment_collection
-            draft_texts = _plan_step_texts(step)
+            sop_pack_messages = (
+                _first_day_sop_pack_messages_for_step(
+                    source_snapshot,
+                    step_index=index,
+                    scene=_string(step.get("scene")),
+                )
+                if first_day_trigger
+                else []
+            )
+            sop_pack_texts = _first_day_sop_pack_texts(sop_pack_messages)
+            draft_texts = sop_pack_texts or _plan_step_texts(step)
             if not draft_texts:
                 continue
             resolved_asset = resolved_assets[index - 1]
@@ -3205,6 +3314,8 @@ class OutreachService:
                 "case_query": _string(step.get("case_query")),
                 "cta": _string(step.get("cta")),
                 "plan_arc": _string(response.get("plan_arc")),
+                "preserve_sop_pack_messages": bool(sop_pack_texts),
+                "sop_pack_reply_messages": sop_pack_messages,
             }
             reply_messages = _compose_outreach_messages(
                 draft_texts,
@@ -5118,6 +5229,17 @@ class OutreachService:
             _string(trigger_context.get("trigger_type")) == FIRST_DAY_SILENCE_TRIGGER_TYPE
         )
         step_index = _int(task.get("step_index"), 0)
+        if first_day_opened_silence and _bool(task_metadata.get("preserve_sop_pack_messages")):
+            texts = _reply_texts(task.get("reply_messages"))
+            policy_error, evidence = _first_day_message_policy_error(
+                texts,
+                step_index=step_index,
+                plan=plan,
+                context=context,
+            )
+            if policy_error:
+                raise OutreachMessagePolicyError(policy_error or evidence)
+            return [dict(message) for message in task.get("reply_messages") or [] if isinstance(message, dict)]
         payload = {
             "task": {
                 "step_index": step_index,
