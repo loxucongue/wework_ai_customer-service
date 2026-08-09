@@ -78,6 +78,8 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
             "不得再追加销售 CTA",
             "不要主动发送完整活动规则，不要催预约金",
             "不得换句话重复",
+            "精确文本“预约卡片”声明的结构化消息意图",
+            "必须按原顺序保留该 `payment_collection`",
             "性别称谓必须统一改为中性称谓",
             "当前淡斑活动价 268 元",
             "10 元预约金，到店抵扣，做的话再付 258 元",
@@ -394,6 +396,65 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
+    async def test_first_day_payment_card_marker_becomes_payment_collection(self) -> None:
+        model = _Model([])
+        service, _repo, platform, system = _service(model=model)
+        task = _task(
+            use_ai_copy=False,
+            message_content=[
+                {"type": "text", "content": "活动规则已经给您说明了。"},
+                {"type": "text", "content": " 预约卡片 "},
+            ],
+        )
+        task["triggerEvent"] = "add_wecom"
+        task["operateTime"] = datetime.now(timezone.utc).isoformat()
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "我已经添加了你，现在我们可以开始聊天了。",
+                "msgtime": int(time.time() * 1000),
+            }
+        ]
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(model.calls, [])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(
+            system.send_calls[0]["reply_messages"],
+            [
+                _text("活动规则已经给您说明了。"),
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ],
+        )
+
+    async def test_payment_card_phrase_is_not_treated_as_marker(self) -> None:
+        model = _Model([])
+        service, _repo, _platform, system = _service(model=model)
+        task = _task(
+            use_ai_copy=False,
+            message_content=[{"type": "text", "content": "我给您说明一下预约卡片怎么使用。"}],
+        )
+        task["triggerEvent"] = "add_wecom"
+        task["operateTime"] = datetime.now(timezone.utc).isoformat()
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+        system.conversation_payload["data"]["messages"] = [
+            {
+                "direction": "customer",
+                "content": "我已经添加了你，现在我们可以开始聊天了。",
+                "msgtime": int(time.time() * 1000),
+            }
+        ]
+
+        await service.process_task(task)
+
+        self.assertEqual(
+            system.send_calls[0]["reply_messages"],
+            [_text("我给您说明一下预约卡片怎么使用。")],
+        )
+
     async def test_second_day_add_wecom_uses_knowledge_model_chain(self) -> None:
         model = _Model([{"decision": "send", "reason": "second day light effect", "reply_messages": [_text("轻触达效果")] }])
         service, _repo, platform, system = _service(model=model)
@@ -415,6 +476,82 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
         self.assertEqual(system.send_calls[0]["reply_messages"], [_text("轻触达效果")])
         self.assertEqual(len(model.calls), 1)
+
+    async def test_second_day_model_can_preserve_payment_collection_marker(self) -> None:
+        payment_message = {
+            "type": "payment_collection",
+            "order": 2,
+            "content": {"amount": 10, "remark": ""},
+        }
+        model = _Model(
+            [
+                {
+                    "decision": "send",
+                    "reason": "preserve platform payment intent",
+                    "reply_messages": [_text("活动规则已经给您说明了。"), payment_message],
+                }
+            ]
+        )
+        service, _repo, _platform, system = _service(model=model)
+        task = _task(
+            use_ai_copy=True,
+            message_content=[
+                {"type": "text", "content": "活动规则已经给您说明了。"},
+                {"type": "text", "content": "预约卡片"},
+            ],
+        )
+        task["triggerEvent"] = "add_wecom"
+        task["operateTime"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        payload = json.loads(model.calls[0][1]["content"])
+        self.assertEqual(payload["task"]["original_message_content"][1], payment_message)
+        self.assertEqual(
+            payload["task"]["original_message_content_role"],
+            "audit_only_except_structured_payment_collection",
+        )
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("活动规则已经给您说明了。"), payment_message])
+
+    async def test_second_day_missing_payment_collection_marker_is_repaired(self) -> None:
+        payment_message = {
+            "type": "payment_collection",
+            "order": 2,
+            "content": {"amount": 10, "remark": ""},
+        }
+        model = _Model(
+            [
+                {
+                    "decision": "send",
+                    "reason": "marker omitted",
+                    "reply_messages": [_text("活动规则已经给您说明了。")],
+                },
+                {
+                    "decision": "send",
+                    "reason": "marker restored",
+                    "reply_messages": [_text("活动规则已经给您说明了。"), payment_message],
+                },
+            ]
+        )
+        service, _repo, _platform, system = _service(model=model)
+        task = _task(
+            use_ai_copy=True,
+            message_content=[
+                {"type": "text", "content": "活动规则已经给您说明了。"},
+                {"type": "text", "content": "预约卡片"},
+            ],
+        )
+        task["triggerEvent"] = "add_wecom"
+        task["operateTime"] = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        task["scheduledAt"] = datetime.now(timezone.utc).isoformat()
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(system.send_calls[0]["reply_messages"], [_text("活动规则已经给您说明了。"), payment_message])
 
     async def test_first_day_real_customer_opening_is_consumed_without_send_or_model(self) -> None:
         model = _Model([])

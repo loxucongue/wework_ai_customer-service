@@ -13,6 +13,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.policies.business_rules import sop_platform_business_facts_for_model
+from app.services.payment_collection import (
+    PAYMENT_COLLECTION_ALLOWED_AMOUNTS,
+    PAYMENT_COLLECTION_UNIT_AMOUNT,
+)
 from app.services.sop_execution_service import is_platform_auto_opening_message
 from app.services.storage.serialization import utc_now_iso
 
@@ -212,6 +216,7 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 9. 图片/视频是重要消息类型。若选中段落包含 image/video，输出中要保留对应消息类型和 URL；不要把图片视频变成纯文本描述。
 10. 文案要像微信短聊，直接解决卡点或推进下一步，不要写内部分析、流程解释、模型判断。
 11. 必须逐条对照最近聊天和近期已发送的第三方 SOP：已经完整讲过的活动规则、268 元价格、10 元预约金、退款口径、效果说明或同一素材，不得换句话重复。应改选尚未交付的新价值；若客户信息不足，宁可轻问候并发送不同的真实效果素材，也不要重复营销。
+12. `task.original_message_content` 中的 `payment_collection` 是平台用精确文本“预约卡片”声明的结构化消息意图，不是普通参考文案。若最终决定 `send`，且不存在已付、付款冲突或其他硬边界，必须按原顺序保留该 `payment_collection`；不得改写成“预约卡片”文字，也不得生成虚假支付成功事实。
 
 # 知识库选择规则
 - `knowledge_base.items[].id` 是 knowledgeId。
@@ -245,7 +250,8 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
   "reply_messages": [
     {"type": "text", "order": 1, "content": {"text": "客户可见内容"}},
     {"type": "image", "order": 2, "content": {"url": "https://..."}},
-    {"type": "video", "order": 3, "content": {"url": "https://..."}}
+    {"type": "video", "order": 3, "content": {"url": "https://..."}},
+    {"type": "payment_collection", "order": 4, "content": {"amount": 10, "remark": ""}}
   ]
 }
 
@@ -1595,7 +1601,11 @@ class SopPlatformTaskService:
                 "scene_role": "supporting_context",
                 "use_ai_copy": use_ai_copy,
                 "original_message_content": original_messages,
-                "original_message_content_role": "audit_only_ignore_for_generation",
+                "original_message_content_role": (
+                    "audit_only_except_structured_payment_collection"
+                    if any(message.get("type") == "payment_collection" for message in original_messages)
+                    else "audit_only_ignore_for_generation"
+                ),
                 "platform_metadata": {
                     "rule_id": platform_task.get("ruleId") or platform_task.get("rule_id"),
                     "rule_name": platform_task.get("ruleName") or platform_task.get("rule_name"),
@@ -1778,14 +1788,21 @@ def _decision_error(raw: Any, *, original_messages: list[dict[str, Any]], use_ai
         if candidate.get("order") != index:
             return f"reply message {index} order must be {index}"
         message_type = str(candidate.get("type") or "").strip()
-        if message_type not in {"text", "image", "video"}:
-            return f"reply message {index} type must be text, image, or video"
+        if message_type not in {"text", "image", "video", "payment_collection"}:
+            return f"reply message {index} type must be text, image, video, or payment_collection"
         content = candidate.get("content") if isinstance(candidate.get("content"), dict) else {}
         if message_type == "text":
             if not str(content.get("text") or "").strip():
                 return f"reply message {index} text is empty"
-        elif not str(content.get("url") or "").strip():
+        elif message_type in {"image", "video"} and not str(content.get("url") or "").strip():
             return f"reply message {index} media url is empty"
+        elif message_type == "payment_collection":
+            try:
+                amount = int(content.get("amount") or 0)
+            except (TypeError, ValueError):
+                return f"reply message {index} payment amount must be an integer"
+            if amount not in PAYMENT_COLLECTION_ALLOWED_AMOUNTS:
+                return f"reply message {index} payment amount must be 10, 20, 30, or 40"
     return ""
 
 
@@ -1818,7 +1835,24 @@ def _normalize_knowledge_decision_callback_fields(raw: Any) -> Any:
 
 
 def _decision_policy_error(raw: dict[str, Any], *, platform_task: dict[str, Any]) -> str:
-    if str(raw.get("decision") or "").strip() != "no_send":
+    if str(raw.get("decision") or "").strip() == "send":
+        required_cards = [
+            (message.get("order"), (message.get("content") or {}).get("amount"))
+            for message in _platform_messages(platform_task)
+            if isinstance(message, dict) and message.get("type") == "payment_collection"
+        ]
+        if not required_cards:
+            return ""
+        output_cards = [
+            (message.get("order"), (message.get("content") or {}).get("amount"))
+            for message in raw.get("reply_messages") or []
+            if isinstance(message, dict) and message.get("type") == "payment_collection"
+        ]
+        if output_cards != required_cards:
+            return (
+                "platform payment_collection markers must be preserved at the same order and amount; "
+                f"required={required_cards}, output={output_cards}"
+            )
         return ""
     code = str(raw.get("reason_code") or "").strip()
     if code in SOP_PLATFORM_KNOWLEDGE_NO_SEND_REASON_CODES:
@@ -1844,7 +1878,16 @@ def _platform_messages(platform_task: dict[str, Any]) -> list[dict[str, Any]]:
         if message_type == "text":
             text = str(content.get("text") if isinstance(content, dict) else content or "").strip()
             if text:
-                output.append({"type": "text", "order": index, "content": {"text": text}})
+                if text == "预约卡片":
+                    output.append(
+                        {
+                            "type": "payment_collection",
+                            "order": index,
+                            "content": {"amount": PAYMENT_COLLECTION_UNIT_AMOUNT, "remark": ""},
+                        }
+                    )
+                else:
+                    output.append({"type": "text", "order": index, "content": {"text": text}})
         elif message_type in {"image", "video"}:
             url = str(content.get("url") if isinstance(content, dict) else content or "").strip()
             if url:
@@ -2964,6 +3007,9 @@ def _send_content_for_rule_data(messages: list[Any]) -> str:
             url = str(content.get("url") or content.get("content") or "").strip()
             if url:
                 parts.append(f"[{message_type}]{url}")
+        elif message_type == "payment_collection":
+            amount = content.get("amount")
+            parts.append(f"[payment_collection]{amount}")
     return "\n".join(parts)[:10000]
 
 
