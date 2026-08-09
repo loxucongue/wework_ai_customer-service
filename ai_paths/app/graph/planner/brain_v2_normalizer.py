@@ -2545,6 +2545,8 @@ def _enforce_declared_store_detail_lookup(
         for item in messages
         if isinstance(item, dict) and str(item.get("type") or "text") == "text"
     )
+    if not _current_turn_requires_declared_store_lookup(state, reply_text):
+        return decision, messages, required_tools
     query = (
         str(_store_from_current_message(state).get("store_name") or "").strip()
         or str(_request_store_from_state(state).get("store_name") or "").strip()
@@ -2568,6 +2570,24 @@ def _enforce_declared_store_detail_lookup(
     return "need_tools", [], _dedupe_tools(tools)
 
 
+def _current_turn_requires_declared_store_lookup(state: AgentState, reply_text: str) -> bool:
+    """Only upgrade a declared S2 direct reply when this turn needs fresh store facts."""
+
+    current_text = str(state.get("normalized_content") or state.get("content") or "").strip()
+    if location_card_from_state(state):
+        return True
+    if _current_message_requests_store_detail(current_text):
+        return True
+    if _current_message_has_explicit_location_for_lookup(current_text, state):
+        return True
+    if _current_message_mentions_basic_location(state, current_text):
+        return True
+    current_store = _store_from_current_message(state)
+    if current_store and not current_store.get("ambiguous"):
+        return True
+    return _direct_text_requires_store_detail_tool(reply_text)
+
+
 def _store_name_from_reply_messages(messages: list[dict[str, Any]], state: AgentState) -> str:
     text = " ".join(
         _message_text(item.get("content"))
@@ -2588,20 +2608,51 @@ def _enforce_location_card_store_lookup(
 ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     """A structured location card is factual input, not an authoritative store match."""
     card = location_card_from_state(state)
-    if not card or _has_tool(required_tools, "customer_store_lookup") or _fact_envelope_store_ids(state):
+    if not card or _fact_envelope_store_ids(state):
         return decision, messages, required_tools
-    query = str(card.get("address") or card.get("title") or card.get("coordinates") or "").strip()
+    query = _location_card_lookup_query(card)
     if not query:
         return decision, messages, required_tools
+    if _has_tool(required_tools, "customer_store_lookup"):
+        normalized_tools: list[dict[str, Any]] = []
+        for tool in required_tools:
+            if not isinstance(tool, dict) or str(tool.get("name") or "") != "customer_store_lookup":
+                normalized_tools.append(tool)
+                continue
+            normalized = dict(tool)
+            normalized["query"] = query
+            normalized["purpose"] = str(normalized.get("purpose") or "nearby_candidates").strip() or "nearby_candidates"
+            normalized["location_source"] = "platform_location_card"
+            normalized_tools.append(normalized)
+        return "need_tools", [], _dedupe_tools(normalized_tools)
     tools = [tool for tool in required_tools if str(tool.get("name") or "") != "no_tool"]
     tools.append(
         {
             "name": "customer_store_lookup",
             "purpose": "nearby_candidates",
             "query": query,
+            "location_source": "platform_location_card",
         }
     )
     return "need_tools", [], _dedupe_tools(tools)
+
+
+def _location_card_lookup_query(card: dict[str, Any]) -> str:
+    """Build a stable lookup query from all platform location-card fields."""
+
+    title = str(card.get("title") or card.get("location_title") or "").strip()
+    address = str(card.get("address") or card.get("location_address") or "").strip()
+    coordinates = str(card.get("coordinates") or card.get("location") or "").strip()
+    parts: list[str] = []
+    for value in (address, title, coordinates):
+        text = re.sub(r"\s+", " ", str(value or "")).strip()
+        if not text:
+            continue
+        compact = re.sub(r"\s+", "", text)
+        if any(compact and compact in re.sub(r"\s+", "", existing) for existing in parts):
+            continue
+        parts.append(text)
+    return " ".join(parts).strip()
 
 
 def _enforce_sop_gate_active_task(
@@ -2639,11 +2690,38 @@ def _current_message_has_explicit_location_for_lookup(text: str, state: AgentSta
     compact = _compact_text(text)
     if not compact:
         return False
+    if _looks_like_distance_feedback_without_location(compact, state):
+        return False
     if _looks_like_specific_region(compact):
         return True
     if _current_message_has_bare_location_for_store_lookup(compact, state):
         return True
     return bool(_matching_current_message_region_tokens(compact, state))
+
+
+def _looks_like_distance_feedback_without_location(compact: str, state: AgentState) -> bool:
+    """Avoid treating short distance feedback such as '不顺路' as a road address."""
+
+    if not compact:
+        return False
+    feedback_terms = (
+        "不顺路",
+        "顺路",
+        "太远",
+        "有点远",
+        "不方便",
+        "远了",
+        "远呢",
+        "不近",
+    )
+    if not any(term in compact for term in feedback_terms):
+        return False
+    if _matching_current_message_region_tokens(compact, state):
+        return False
+    location_markers = ("省", "市", "区", "县", "镇", "乡", "村", "街道", "地铁", "机场", "车站")
+    if any(marker in compact for marker in location_markers):
+        return False
+    return len(compact) <= 8
 
 
 def _strip_store_question_words(text: str) -> str:

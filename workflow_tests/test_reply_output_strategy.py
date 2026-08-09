@@ -4613,6 +4613,59 @@ def test_current_payment_entry_overrides_unfinished_store_lookup_for_friend() ->
     assert not any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
 
 
+
+def test_distance_objection_after_single_store_card_does_not_requery_same_store() -> None:
+    plan = build_planner_plan_v2(
+        {
+            "normalized_content": "\u4e0d\u987a\u8def",
+            "content": "\u4e0d\u987a\u8def",
+            "conversation_history": [
+                "\u7528\u6237: \u676d\u5dde\u4f59\u676d\u533a",
+                "\u5c0f\u8d1d: \u95e8\u5e97\u4f4d\u7f6e\uff1a\u676d\u5dde\u4f59\u676d\u4e8c\u5e97\n\u6d59\u6c5f\u7701\u676d\u5dde\u5e02\u4f59\u676d\u533a\u666f\u5174\u8def\u534e\u590f\u4e4b\u5fc3\u76db\u4e16\u5199\u5b57\u697c",
+                "\u5c0f\u8d1d: \u6211\u5148\u628a\u8fd9\u5bb6\u95e8\u5e97\u4f4d\u7f6e\u53d1\u60a8\uff0c\u60a8\u8138\u4e0a\u6591\u70b9\u5927\u6982\u591a\u4e45\u4e86\uff1f",
+            ],
+            "customer_store_knowledge": {
+                "stores": [
+                    {
+                        "store_id": "370",
+                        "store_name": "\u676d\u5dde\u4f59\u676d\u4e8c\u5e97",
+                        "city": "\u676d\u5dde\u5e02",
+                        "district": "\u4f59\u676d\u533a",
+                    }
+                ]
+            },
+            "sent_message_summary": {
+                "store_address_delivery": {
+                    "latest_batch_store_ids": ["370"],
+                    "unique_latest_store_id": "370",
+                    "latest_batch_count": 1,
+                }
+            },
+        },
+        {
+            "decision": "direct_reply",
+            "stage": "S2",
+            "sub_rule_id": "S2_LOCATION_DETAIL",
+            "conversion_stage": "store_match",
+            "customer_type": "distance",
+            "main_blocker": "distance",
+            "next_step": "solve_blocker",
+            "store_binding_decision": {
+                "status": "rejected",
+                "store_id": "370",
+                "confidence": "high",
+            },
+            "reply_messages": [
+                {"type": "text", "content": {"text": "\u8def\u7a0b\u786e\u5b9e\u8981\u8003\u8651\uff0c\u60a8\u5148\u4e0d\u7528\u6025\u7740\u5b9a\u5230\u5e97\u65f6\u95f4\uff0c\u6211\u5148\u7ed9\u60a8\u770b\u4e0b\u8fd9\u6b21\u6d3b\u52a8\u6539\u5584\u7684\u53c2\u8003\u3002"}}
+            ],
+            "tool_calls": [],
+        },
+    )
+
+    assert plan["planner_decision"] == "direct_reply"
+    assert plan["planner_tool_calls"] == []
+    assert plan["required_tools"] == [{"name": "no_tool", "purpose": "Planner did not request external tools"}]
+
 def test_current_payment_entry_uses_three_person_amount() -> None:
     plan = build_planner_plan_v2(
         {**_payment_order_state(amount=30), "normalized_content": "带两个朋友一起去，发入口"},
