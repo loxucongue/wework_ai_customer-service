@@ -27,9 +27,11 @@ from app.services.outreach_prompts import (
     S10_OUTREACH_CONTEXT,
 )
 from app.services.precision_qa_playbook_service import PrecisionQaPlaybookService
+from app.services.sop_reply_pack_service import SopReplyPackService
 from app.services.sop_platform_task_policy import personalized_payment_collection_eligibility
 from app.services.outreach_service import (
     FIRST_DAY_SILENCE_TRIGGER_TYPE,
+    OutreachService,
     _first_day_final_plan_error,
     _first_day_scene_analysis_error,
     _first_day_scene_lock_error,
@@ -340,10 +342,22 @@ def _hard_errors(plan: dict[str, Any], asset_ids: set[str], case: dict[str, Any]
         if not str(step.get("no_reply_strategy") or "").strip():
             errors.append(f"missing_no_reply_strategy:{index + 1}")
         reply_messages = step.get("reply_messages")
-        if (
+        source_ids = {
+            str(item or "")
+            for item in step.get("content_sources") or []
+            if isinstance(item, str) and str(item or "")
+        }
+        mainline_sop_step = first_day and any(
+            source_id.startswith("sop-pack:") for source_id in source_ids
+        )
+        invalid_message_count = (
             not isinstance(reply_messages, list)
-            or len(reply_messages) not in {1, 2}
-            or any(str(item.get("type") or "") != "text" for item in reply_messages)
+            or not reply_messages
+            or (not mainline_sop_step and len(reply_messages) > 2)
+        )
+        if invalid_message_count or any(
+            not isinstance(item, dict) or str(item.get("type") or "") != "text"
+            for item in reply_messages or []
         ):
             errors.append(f"invalid_reply_messages:{index + 1}")
         strategy = str(step.get("asset_strategy") or "none")
@@ -672,6 +686,7 @@ async def _run_case(
     attempt: int,
     asset_catalog: list[dict[str, Any]],
     appointment_material_catalog: list[dict[str, Any]],
+    first_day_sop_sequence: list[dict[str, Any]],
     semaphore: asyncio.Semaphore,
 ) -> dict[str, Any]:
     first_day = (
@@ -724,6 +739,7 @@ async def _run_case(
         "appointment_blocker_scene_index": build_appointment_blocker_scene_index(
             {"items": appointment_material_catalog}
         ),
+        "first_day_sop_sequence": first_day_sop_sequence,
         "trigger_context": case.get("trigger_context") or {},
     }
     async with semaphore:
@@ -977,7 +993,13 @@ async def main() -> int:
         cases = [case for case in cases if str(case.get("id") or "") in selected_case_ids]
     appointment_playbook = PrecisionQaPlaybookService(settings).load()
     appointment_material_catalog = appointment_blocker_materials(appointment_playbook)
-    asset_catalog = build_appointment_blocker_asset_catalog(appointment_playbook)
+    sop_sequence_builder = OutreachService.__new__(OutreachService)
+    sop_sequence_builder.sop_reply_pack_service = SopReplyPackService(settings)
+    first_day_sop_sequence = sop_sequence_builder._first_day_sop_sequence()
+    asset_catalog = [
+        *build_appointment_blocker_asset_catalog(appointment_playbook),
+        *sop_sequence_builder._first_day_sop_asset_catalog(first_day_sop_sequence),
+    ]
     semaphore = asyncio.Semaphore(max(1, args.concurrency))
     try:
         results = await asyncio.gather(
@@ -988,6 +1010,7 @@ async def main() -> int:
                     attempt=attempt,
                     asset_catalog=asset_catalog,
                     appointment_material_catalog=appointment_material_catalog,
+                    first_day_sop_sequence=first_day_sop_sequence,
                     semaphore=semaphore,
                 )
                 for case in cases

@@ -11,7 +11,10 @@ from app.services.outreach_service import (
     OutreachService,
     _compose_outreach_messages,
     _conversation_activity_from_context,
+    _first_day_activity_sop_payment_step,
+    _first_day_configured_assets_for_step,
     _first_day_final_plan_error,
+    _first_day_materialized_sop_messages,
     _first_day_outreach_plan_error,
     _first_day_scene_analysis_error,
     _first_day_scene_lock_error,
@@ -167,13 +170,13 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 return {
                     "packs": [
                         {
-                            "id": "event_s10_effect_warmup_30min",
+                            "id": "s10_need_and_case",
                             "enabled": True,
-                            "scopes": ["event_first_add"],
-                            "sop_category": "effect_case",
+                            "scopes": ["chat_gate"],
+                            "sop_category": "s10_need_and_case",
                             "name": "介绍效果",
                             "purpose": "发送真实效果参考",
-                            "order": 130,
+                            "order": 20,
                             "day_stage": "day1",
                             "reply_messages": [
                                 {"type": "text", "order": 1, "content": {"text": "亲，您看这个效果参考。"}},
@@ -181,13 +184,13 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                             ],
                         },
                         {
-                            "id": "event_s10_store_prompt_5min",
+                            "id": "s10_store_prompt",
                             "enabled": True,
-                            "scope": "event_first_add",
+                            "scope": "chat_gate",
                             "sop_category": "store_prompt",
                             "name": "轻度询问城市",
                             "purpose": "询问客户方便到店区域",
-                            "order": 120,
+                            "order": 35,
                             "day_stage": "day1",
                             "reply_messages": [
                                 {"type": "text", "order": 1, "content": {"text": "亲，您在哪个城市哪个区呢？"}},
@@ -201,22 +204,22 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
 
         sequence = service._first_day_sop_sequence()
         self.assertEqual([item["pack_id"] for item in sequence], [
-            "event_s10_store_prompt_5min",
-            "event_s10_effect_warmup_30min",
+            "s10_need_and_case",
+            "s10_store_prompt",
         ])
-        self.assertEqual(sequence[0]["source_id"], "sop-pack:event_s10_store_prompt_5min")
-        self.assertEqual(sequence[0]["mapped_scene"], "store_area_request")
-        self.assertEqual(sequence[1]["mapped_scene"], "effect_proof")
-        self.assertEqual(sequence[1]["reply_messages"][1]["asset_id"], "sop-pack:event_s10_effect_warmup_30min:2")
+        self.assertEqual(sequence[0]["source_id"], "sop-pack:s10_need_and_case")
+        self.assertEqual(sequence[0]["mapped_scene"], "effect_proof")
+        self.assertEqual(sequence[1]["mapped_scene"], "store_area_request")
+        self.assertEqual(sequence[0]["reply_messages"][1]["asset_id"], "sop-pack:s10_need_and_case:2")
 
         assets = service._first_day_sop_asset_catalog(sequence)
-        self.assertEqual(assets[0]["asset_id"], "sop-pack:event_s10_effect_warmup_30min:2")
+        self.assertEqual(assets[0]["asset_id"], "sop-pack:s10_need_and_case:2")
         self.assertEqual(assets[0]["url"], "https://oss.example/effect.png")
         self.assertEqual(assets[0]["source"], "first_day_sop_pack")
 
         analysis = _first_day_scene_analysis(
-            step1_scene="store_area_request",
-            step2_scene="effect_proof",
+            step1_scene="effect_proof",
+            step2_scene="store_area_request",
         )
         analysis["precedence_decision"] = {
             "row_id": "no_blocker_sop_progression",
@@ -224,12 +227,12 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "reason": "客户无明确卡点，按首日 SOP 顺序推进。",
         }
         analysis["selected_source_ids"] = {
-            "step1": ["sop-pack:event_s10_store_prompt_5min"],
-            "step2": ["sop-pack:event_s10_effect_warmup_30min", "sop-pack:event_s10_effect_warmup_30min:2"],
+            "step1": ["sop-pack:s10_need_and_case", "sop-pack:s10_need_and_case:2"],
+            "step2": ["sop-pack:s10_store_prompt"],
         }
-        analysis["required_assets"]["step2"] = {
+        analysis["required_assets"]["step1"] = {
             "strategy": "configured_image",
-            "asset_id": "sop-pack:event_s10_effect_warmup_30min:2",
+            "asset_id": "sop-pack:s10_need_and_case:2",
             "reason": "效果 SOP 包包含真实图片。",
         }
 
@@ -285,7 +288,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             normalized_alias["selected_source_ids"]["step1"],
-            ["sop-pack:event_s10_effect_warmup_30min"],
+            ["sop-pack:s10_need_and_case"],
         )
         self.assertEqual(
             normalized_alias["selected_source_ids"]["step2"],
@@ -296,7 +299,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             "sop-pack:s10_activity_intro:2",
         )
 
-    def test_first_day_scene_contract_rejects_duplicate_scenes_and_payment_without_gate(self) -> None:
+    def test_first_day_scene_contract_rejects_duplicate_scenes_and_non_activity_payment(self) -> None:
         snapshot = {
             "recent_messages": [{"direction": "customer", "content": "想看看效果"}],
             "asset_catalog": [],
@@ -318,7 +321,31 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         payment["payment_action"] = {"step": 1, "allowed": True, "reason": "customer wants to pay"}
         self.assertEqual(
             _first_day_scene_analysis_error(payment, source_snapshot=snapshot),
-            "scene analysis payment action violates payment gate or scene lock",
+            "scene analysis payment action is only allowed for the activity quote SOP pack",
+        )
+
+        external_case_search = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="trust_repair",
+        )
+        external_case_search["required_assets"]["step1"] = {
+            "strategy": "case_search",
+            "asset_id": "",
+            "reason": "临时查询案例",
+        }
+        self.assertIn(
+            "must use media from the selected SOP or appointment-blocker source",
+            _first_day_scene_analysis_error(external_case_search, source_snapshot=snapshot),
+        )
+
+        completed_scene = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="activity_intro",
+        )
+        completed_scene["scene_completion_matrix"]["effect_proof"]["status"] = "completed"
+        self.assertIn(
+            "cannot select a scene whose completion status is completed",
+            _first_day_scene_analysis_error(completed_scene, source_snapshot=snapshot),
         )
 
     def test_first_day_scene_analysis_normalizes_explicit_or_inferred_one_based_evidence(self) -> None:
@@ -338,7 +365,7 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized["evidence"][0]["message_index"], 1)
         self.assertEqual(normalized["delivered_scenes"][0]["message_indexes"], [0])
 
-    def test_first_day_scene_analysis_normalizes_deposit_payment_step_without_messages(self) -> None:
+    def test_first_day_scene_analysis_does_not_add_card_for_deposit_scene(self) -> None:
         analysis = _first_day_scene_analysis(
             step1_scene="activity_intro",
             step2_scene="deposit_close",
@@ -351,8 +378,8 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             source_snapshot={"payment_collection_gate": {"eligible": True}},
         )
 
-        self.assertEqual(normalized["payment_action"]["step"], 2)
-        self.assertTrue(normalized["payment_action"]["allowed"])
+        self.assertEqual(normalized["payment_action"]["step"], 0)
+        self.assertFalse(normalized["payment_action"]["allowed"])
 
     def test_first_day_scene_analysis_normalizes_sop_category_scene_aliases(self) -> None:
         analysis = _first_day_scene_analysis(
@@ -377,8 +404,115 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalized["current_scene"], "activity_intro")
         self.assertEqual(normalized["step1_scene"], "activity_intro")
         self.assertEqual(normalized["step2_scene"], "deposit_close")
-        self.assertEqual(normalized["payment_action"]["step"], 2)
-        self.assertTrue(normalized["payment_action"]["allowed"])
+        self.assertEqual(normalized["payment_action"]["step"], 0)
+        self.assertFalse(normalized["payment_action"]["allowed"])
+
+    def test_first_day_activity_quote_pack_is_the_only_payment_source(self) -> None:
+        activity_source = "sop-pack:s10_activity_intro"
+        deposit_source = "sop-pack:s10_deposit_close"
+        snapshot = {
+            "payment_collection_gate": {"eligible": True},
+            "first_day_sop_sequence": [
+                {
+                    "source_id": activity_source,
+                    "sop_category": "s10_activity_intro",
+                    "mapped_scene": "activity_intro",
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "text": "完整活动介绍"},
+                        {"type": "payment_collection", "order": 2, "amount": 10},
+                    ],
+                },
+                {
+                    "source_id": deposit_source,
+                    "sop_category": "deposit_push",
+                    "mapped_scene": "deposit_close",
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "text": "预约金文字推进"},
+                        {"type": "payment_collection", "order": 2, "amount": 10},
+                    ],
+                },
+            ],
+        }
+        activity = _first_day_scene_analysis(
+            step1_scene="activity_intro",
+            step2_scene="deposit_close",
+        )
+        activity["selected_source_ids"] = {
+            "step1": [activity_source],
+            "step2": [deposit_source],
+        }
+        self.assertEqual(_first_day_activity_sop_payment_step(activity, snapshot), 1)
+
+        deposit_only = _first_day_scene_analysis(
+            step1_scene="deposit_close",
+            step2_scene="trust_repair",
+        )
+        deposit_only["selected_source_ids"] = {
+            "step1": [deposit_source],
+            "step2": [],
+        }
+        self.assertEqual(_first_day_activity_sop_payment_step(deposit_only, snapshot), 0)
+
+    def test_first_day_scene_analysis_requires_one_main_source_and_matching_media(self) -> None:
+        sop_source = "sop-pack:effect"
+        blocker_source = "appointment-blocker:YYHF-0001"
+        snapshot = {
+            "recent_messages": [{"direction": "customer", "content": "效果怎么样"}],
+            "payment_collection_gate": {"eligible": False},
+            "first_day_sop_sequence": [
+                {
+                    "source_id": sop_source,
+                    "mapped_scene": "effect_proof",
+                    "reply_messages": [],
+                }
+            ],
+            "appointment_blocker_scene_index": [
+                {"source_ids": [blocker_source]},
+            ],
+            "asset_catalog": [
+                {
+                    "asset_id": f"{sop_source}:2",
+                    "type": "image",
+                    "url": "https://cdn.example/sop.jpg",
+                },
+                {
+                    "asset_id": f"{blocker_source}:2",
+                    "type": "image",
+                    "url": "https://cdn.example/blocker.jpg",
+                },
+            ],
+        }
+        analysis = _first_day_scene_analysis(
+            step1_scene="effect_proof",
+            step2_scene="trust_repair",
+        )
+        analysis["selected_source_ids"] = {
+            "step1": [sop_source, blocker_source],
+            "step2": [blocker_source],
+        }
+        self.assertIn(
+            "must select exactly one main SOP or appointment-blocker source",
+            _first_day_scene_analysis_error(analysis, source_snapshot=snapshot),
+        )
+
+        analysis["selected_source_ids"] = {
+            "step1": [sop_source, f"{blocker_source}:2"],
+            "step2": [blocker_source],
+        }
+        self.assertIn(
+            "contains media outside the selected main source",
+            _first_day_scene_analysis_error(analysis, source_snapshot=snapshot),
+        )
+
+        analysis["precedence_decision"]["row_id"] = "no_blocker_sop_progression"
+        analysis["selected_source_ids"] = {
+            "step1": [sop_source],
+            "step2": [blocker_source],
+        }
+        self.assertIn(
+            "must use a main SOP source",
+            _first_day_scene_analysis_error(analysis, source_snapshot=snapshot),
+        )
 
     def test_first_day_scene_analysis_tolerates_mixed_zero_and_one_based_indexes(self) -> None:
         analysis = _first_day_scene_analysis(
@@ -756,6 +890,86 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual([item["order"] for item in messages], [1, 2, 3, 4])
 
+    def test_appointment_message_composition_limits_texts_but_keeps_all_media(self) -> None:
+        messages = _compose_outreach_messages(
+            ["第一条卡点承接", "第二条卡点价值", "第三条应被裁掉"],
+            resolved_assets=[
+                {"type": "image", "url": "https://cdn.example/one.jpg"},
+                {"type": "image", "url": "https://cdn.example/two.jpg"},
+                {"type": "video", "url": "https://cdn.example/three.mp4"},
+            ],
+        )
+
+        self.assertEqual(
+            [item["type"] for item in messages],
+            ["text", "text", "image", "image", "video"],
+        )
+        self.assertEqual([item["order"] for item in messages], [1, 2, 3, 4, 5])
+
+    def test_mainline_sop_materialization_keeps_full_order_and_filters_non_allowed_card(self) -> None:
+        pack_messages = [
+            {"type": "text", "order": 1, "text": "第一段"},
+            {"type": "image", "order": 2, "url": "https://cdn.example/one.jpg"},
+            {"type": "image", "order": 3, "url": "https://cdn.example/two.jpg"},
+            {"type": "text", "order": 4, "text": "第二段"},
+            {"type": "text", "order": 5, "text": "第三段"},
+            {"type": "payment_collection", "order": 6, "amount": 10},
+        ]
+
+        activity_messages = _first_day_materialized_sop_messages(
+            pack_messages,
+            allow_payment_collection=True,
+        )
+        self.assertEqual(
+            [item["type"] for item in activity_messages],
+            ["text", "image", "image", "text", "text", "payment_collection"],
+        )
+        self.assertEqual([item["order"] for item in activity_messages], [1, 2, 3, 4, 5, 6])
+
+        non_activity_messages = _first_day_materialized_sop_messages(
+            pack_messages,
+            allow_payment_collection=False,
+        )
+        self.assertEqual(
+            [item["type"] for item in non_activity_messages],
+            ["text", "image", "image", "text", "text"],
+        )
+
+    def test_mainline_sop_source_resolves_all_configured_media(self) -> None:
+        source_id = "sop-pack:s10_need_and_case"
+        catalog = [
+            {
+                "asset_id": f"{source_id}:2",
+                "type": "image",
+                "url": "https://cdn.example/one.jpg",
+            },
+            {
+                "asset_id": f"{source_id}:3",
+                "type": "image",
+                "url": "https://cdn.example/two.jpg",
+            },
+        ]
+        snapshot = {
+            "first_day_workflow": {
+                "scene_analysis": {
+                    "selected_source_ids": {"step1": [source_id], "step2": []},
+                }
+            },
+            "first_day_sop_sequence": [{"source_id": source_id}],
+        }
+
+        assets = _first_day_configured_assets_for_step(
+            snapshot,
+            step_index=1,
+            asset_catalog=catalog,
+            recent_media={"urls": []},
+        )
+
+        self.assertEqual([asset["asset_id"] for asset in assets], [
+            f"{source_id}:2",
+            f"{source_id}:3",
+        ])
+
     def test_manual_plan_context_derives_reply_wait_from_cached_message_facts(self) -> None:
         now = datetime(2026, 7, 30, 4, 35, tzinfo=timezone.utc)
 
@@ -864,6 +1078,44 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                 allow_first_day_internal_activity_quote=False,
             ),
             "activity quote is incomplete; payment_collection must be disabled",
+        )
+
+    def test_first_day_activity_pack_can_quote_then_send_its_own_card(self) -> None:
+        response = {
+            "should_create_plan": True,
+            "steps": [
+                {
+                    "scene": "activity_intro",
+                    "reply_messages": [
+                        {
+                            "type": "text",
+                            "content": {
+                                "text": (
+                                    "亲，活动价268元，包含淡斑、检测皮肤、基础清洁和肌肤补水。"
+                                    "线上预定10元到店抵扣；未做或不满意可退，实际按付款记录核对。"
+                                )
+                            },
+                        }
+                    ],
+                    "should_send_payment_collection": True,
+                },
+                {
+                    "scene": "trust_repair",
+                    "reply_messages": [
+                        {"type": "text", "content": {"text": "到店先了解清楚再决定。"}}
+                    ],
+                    "should_send_payment_collection": False,
+                },
+            ],
+        }
+
+        self.assertEqual(
+            _outreach_plan_context_error(
+                response,
+                activity_quote_fact={"completed": False},
+                allow_first_day_internal_activity_quote=True,
+            ),
+            "",
         )
 
     def test_long_customer_silence_requires_immediate_first_touch_and_daily_spacing(self) -> None:
@@ -2527,6 +2779,144 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["type"] for item in messages], ["text", "text"])
         model_input = json.loads(model.calls[0]["messages"][1]["content"])
         self.assertEqual(model_input["task"]["draft_texts"], ["原草稿第一条", "原草稿第二条"])
+
+    async def test_first_day_appointment_task_keeps_all_media_and_blocks_model_card(self) -> None:
+        model = _ModelClient(
+            response={
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "第一条卡点承接"}},
+                    {"type": "text", "order": 2, "content": {"text": "第二条具体价值"}},
+                    {"type": "text", "order": 3, "content": {"text": "第三条应被裁掉"}},
+                ]
+            }
+        )
+        service = OutreachService(
+            repository=_Repository(),
+            model_client=model,
+            system_client=_ConversationSystemClient(),
+        )
+        task = {
+            "customer_id": "22000001",
+            "step_index": 1,
+            "content_source_metadata": [
+                {
+                    "outreach_task_metadata": {
+                        "source_kind": "appointment_blocker",
+                        "source_id": "appointment-blocker:YYHF-0001",
+                    }
+                },
+                {
+                    "resolved_assets": [
+                        {"type": "image", "url": "https://cdn.example/one.jpg"},
+                        {"type": "image", "url": "https://cdn.example/two.jpg"},
+                    ]
+                },
+            ],
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "原草稿"}},
+            ],
+            "should_send_payment_collection": True,
+        }
+        plan = {
+            "source_snapshot": {
+                "trigger_context": {"trigger_type": "first_day_opened_silence"},
+            }
+        }
+
+        messages = await service._generate_task_messages(task=task, plan=plan)
+
+        self.assertEqual(
+            [message["type"] for message in messages],
+            ["text", "text", "image", "image"],
+        )
+
+    async def test_first_day_non_activity_sop_task_filters_stale_payment_card(self) -> None:
+        service = OutreachService(
+            repository=_Repository(),
+            model_client=_ModelClient(),
+            system_client=_ConversationSystemClient(),
+        )
+        task = {
+            "customer_id": "22000001",
+            "step_index": 1,
+            "content_source_metadata": [
+                {
+                    "outreach_task_metadata": {
+                        "source_kind": "mainline_sop",
+                        "sop_category": "deposit_push",
+                        "preserve_sop_pack_messages": True,
+                    }
+                }
+            ],
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "预约金价值说明"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10}},
+                {"type": "image", "order": 3, "content": {"url": "https://cdn.example/proof.jpg"}},
+            ],
+            "should_send_payment_collection": True,
+        }
+        plan = {
+            "source_snapshot": {
+                "trigger_context": {"trigger_type": "first_day_opened_silence"},
+            }
+        }
+
+        messages = await service._generate_task_messages(task=task, plan=plan)
+
+        self.assertEqual([message["type"] for message in messages], ["text", "image"])
+        self.assertEqual([message["order"] for message in messages], [1, 2])
+
+    async def test_first_day_rewritten_mainline_sop_keeps_unlimited_texts_and_all_media(self) -> None:
+        model = _ModelClient(
+            response={
+                "reply_messages": [
+                    {"type": "text", "order": 1, "content": {"text": "第一段主线内容"}},
+                    {"type": "text", "order": 2, "content": {"text": "第二段主线内容"}},
+                    {"type": "text", "order": 3, "content": {"text": "第三段主线内容"}},
+                ]
+            }
+        )
+        service = OutreachService(
+            repository=_Repository(),
+            model_client=model,
+            system_client=_ConversationSystemClient(),
+        )
+        task = {
+            "customer_id": "22000001",
+            "step_index": 2,
+            "content_source_metadata": [
+                {
+                    "outreach_task_metadata": {
+                        "source_kind": "mainline_sop",
+                        "sop_category": "store_prompt",
+                        "preserve_sop_pack_messages": False,
+                        "sop_pack_rewrite_reason": "first_day_unsupported_store_action",
+                    }
+                },
+                {
+                    "resolved_assets": [
+                        {"type": "image", "url": "https://cdn.example/one.jpg"},
+                        {"type": "image", "url": "https://cdn.example/two.jpg"},
+                    ]
+                },
+            ],
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "原草稿"}},
+            ],
+            "should_send_payment_collection": True,
+        }
+        plan = {
+            "source_snapshot": {
+                "trigger_context": {"trigger_type": "first_day_opened_silence"},
+            }
+        }
+
+        messages = await service._generate_task_messages(task=task, plan=plan)
+
+        self.assertEqual(
+            [message["type"] for message in messages],
+            ["text", "text", "text", "image", "image"],
+        )
 
     async def test_case_search_failure_uses_model_selected_configured_fallback(self) -> None:
         response = {

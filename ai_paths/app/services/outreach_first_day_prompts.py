@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 
-FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v6_historical_order_gate"
-FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v6_sop_message_structure"
-FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v6_sop_message_structure"
-FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v6_scene_alias"
+FIRST_DAY_SCENE_ANALYST_PROMPT_VERSION = "first_day_scene_analyst_zh_v7_source_contract"
+FIRST_DAY_PLAN_WRITER_PROMPT_VERSION = "first_day_plan_writer_zh_v7_source_contract"
+FIRST_DAY_CONTRACT_VERIFIER_PROMPT_VERSION = "first_day_contract_verifier_zh_v7_source_contract"
+FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT_VERSION = "first_day_scene_schema_repair_zh_v7_source_contract"
 
 
 FIRST_DAY_SCENE_ANALYST_PROMPT = """
@@ -38,11 +38,14 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 
 # 六、分析步骤
 1. 先建立 `scene_completion_matrix`，分别判断门店区域、效果证明、活动介绍、异议处理、预约金推进和信任修复是已完成、部分完成、未交付还是不适用。每项必须引用消息或素材证据，不能先选场景再倒推完成状态。
+1.1 两个最终步骤只能选择完成矩阵中 `partial` 或 `not_delivered` 的场景。已经 `completed` 或 `not_applicable` 的场景不得再次选择；客户明确要求更多同类证据时，应把对应场景标为 `partial` 并引用该新需求，而不能一边标为完成一边重复选择。
 2. 按业务目标、事实、图片、卡片和行动引导，盘点客服或 AI 已经交付的内容。只改称呼、语序或表达方式仍然属于已交付。即使结构化完成标记缺失，只要近期客服明确说明活动或效果内容已经完整发送，也必须视为重复证据，不能仅因标记为 false 就再次选择同一场景。
 3. 输出 `customer_mainline`：明确客户最近的主要需求、当前沉默卡点和下一项业务动作。症状、斑型、部位、次数或照片信息只能用于选择和承接效果素材，不得成为取代效果展示的销售主线。
 4. 先判断客户是否存在真实卡点。卡点必须来自最近聊天证据，例如效果、价格、隐形消费、预约金、时间、距离、门店、信任、疼痛恢复、项目范围等；普通沉默、只说你好、只问了一句后停住，不等于有卡点。
 5. 有卡点时，对照 `appointment_blocker_scene_index` 选择最贴近的预约卡点来源，并结合首日 SOP 当前进度选择下一步。无卡点时，禁止选择泛化 `trust_repair` 或 `objection_resolution`，必须按 `first_day_sop_sequence` 从最早未完成 SOP 开始推进。
-6. `selected_source_ids` 的选择规则：卡点处理步骤选择 `appointment-blocker:*`；SOP 推进步骤必须逐字复制 `first_day_sop_sequence[*].source_id` 中真实存在的值，例如 `sop-pack:s10_activity_intro`，禁止输出 `sop-pack:activity_intro`、`sop-pack:effect_proof` 这类场景名伪 source_id；需要随消息发送图片或视频时同时选择对应 `asset_id`。每一步最多选择 1 个主话术来源和 2 个媒体来源，禁止把大量无关来源交给写作节点。
+5.1 预约卡点来源必须引用客户本人尚未解决的明确顾虑证据。客户只是询问价格，客服已经完整回答后客户沉默，不等于付款意向、预约金异议或价格卡点；这种情况不得选择 `appointment-blocker:*`，应继续主线 SOP。客户没有在客服回答后表达反对、担心、拒绝或付款动作时，也不得把客服自己说过的预约金规则反推成客户卡点。
+6. `selected_source_ids` 的选择规则：卡点处理步骤选择一个 `appointment-blocker:*` 主话术来源；SOP 推进步骤必须逐字复制 `first_day_sop_sequence[*].source_id` 中真实存在的值，例如 `sop-pack:s10_activity_intro`，禁止输出 `sop-pack:activity_intro`、`sop-pack:effect_proof` 这类场景名伪 source_id。主来源一旦选中，代码会按该来源原始顺序保留其中全部有效文本、图片和视频，不要为了控制消息数量只挑一张图；禁止把多个无关主来源交给同一步。
+6.1 本链路的内容和媒体只能来自上述主线 SOP 或预约卡点来源。禁止选择 `case_search` 临时查询第三类案例素材；需要效果图片时，从锁定来源已有的 `asset_id` 中选择一个主素材意图，代码会追加该来源全部有效且未重复的图片或视频。
 7. 预约卡点索引是候选表达来源，不是业务事实。不能因为索引里存在某个场景就认定客户有该卡点；必须由聊天证据先证明适用。
 6. 控制结构化输出长度。每个完成矩阵项最多引用 3 个最关键消息索引，`summary` 不超过 40 个汉字；`delivered_scenes` 最多 4 项且每项最多 3 个索引；`writer_context_message_indexes` 最多 12 个；顶层 `evidence` 最多 5 项。不要为了证明同一结论枚举整段聊天，也不要在多个字段重复长篇解释。
 5. 执行硬边界。当前仍有发痒、起疹、破损或不适，当前有效已支付或已预约终态，投诉退款，客户关系删除，人工接管，客户明确要求停止联系，或者聊天归属不可靠时，必须停止营销触达。三个月外、已过期、已完成的历史订单只作为历史事实，不是当前已支付/已预约终态，不得据此停止触达；当 `personalized_order_gate.eligible=true` 且 reason 为 `historical_order_expired_new_cycle` 时，必须按新一轮首日流程继续选择 SOP 或卡点场景。
@@ -50,7 +53,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 5. 效果规则：只有文字效果说明不等于已经交付图片证据。客户询问效果且没有真实效果图时，选择 `effect_proof`。真实效果图已经发送后，禁止再次选择效果证明，应推进尚未完成的活动、异议、门店区域、信任或预约金场景。每一步目标只能包含一个明确的新价值，不能复用 `forbidden_repetitions` 中的内容；两步目标不能共享同一个事实、安抚点、问题或动作。
 6. 报价规则：活动和价格已经完整介绍后，禁止再次选择活动介绍，应定位真实卡点或推进其他未完成场景。
 7. 门店规则：没有权威门店锚点时，`store_area_request` 只能询问省市、区县或常去区域，并且整个计划最多出现一次。
-8. 支付规则：只有 `payment_collection_gate.eligible=true` 时才能选择 `deposit_close`。客户想付款但支付门禁为 false，不属于停止触达；应选择补齐支付前提的场景，再选择另一个价值场景。
+8. 支付规则：沉默主动唤醒默认不主动发送预约金卡。只有当前步骤选择了主线“活动报价” SOP 包、该包自身配置了 `payment_collection`，并且 `payment_collection_gate.eligible=true` 时，才允许把该卡片作为活动包的一部分保留。`deposit_close`、预约卡点、信任修复和其他 SOP 均只能文字推进，不得申请或发送预约金卡。客户想付款但门禁为 false 不属于停止触达，应继续交付非卡片价值。
 9. `store_area_request` 不是通用兜底场景。只有 SOP 顺序中最早未完成的包就是门店区域询问，或位置确实是未解决需求，或客户明确想付款但缺少门店锚点时才能选择。不能仅因客户说“考虑一下”、很忙、提到天气或开始沉默，就主动询问位置。
 10. 对距离、天气或时间顾虑，第一句话可以轻承接，但锁定的第一步应优先交付尚未完成的具体价值，例如 `effect_proof` 或 `activity_intro`。不能用整个任务重复距离或日期顾虑。
 11. 客户在已经收到效果图和完整活动介绍后说“考虑一下”，优先选择 `trust_repair`，使用中性的自我形象、自信或低风险价值；第二步只有在位置确实缺失时才可询问门店区域。禁止复述“考虑一下”或用送客表达结束。即使短测试数据没有完整展示此前销售过程，最近一次真实“考虑一下”也必须承接具体的中性自信或自我形象价值，不能只说“不着急、慢慢考虑、以后再决定”。
@@ -65,7 +68,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 2. 没有明确卡点：第一步必须选择 `first_day_sop_sequence` 中最早未完成的 SOP 包对应场景；第二步选择其后的下一个未完成 SOP 包对应场景。禁止自由生成信任修复、心理安抚或门店兜底。
 2. 客户已经收到两张或以上匹配的真实效果图，随后只是继续追问一般效果或一次能否达到，且活动尚未介绍：第一步必须为 `activity_intro`，禁止继续发送效果图。只有客户明确要求“再发几组、一个看不出来、要更多案例”时才进入下一行。
 3. 客户正在询问效果、发送了客户照片、明确要求更多案例，或询问身体色素问题，且没有发送匹配的真实效果图：第一步必须为 `effect_proof` 并使用真实素材；活动尚未介绍时第二步为 `activity_intro`，否则为 `trust_repair`。
-3. 客户明确想付款：存在匹配且有效的支付门禁时，第一步为 `deposit_close`；缺少支付门禁或门店锚点时，第一步为 `store_area_request`，第二步为尚未完成的效果或信任价值。禁止因为缺少支付门禁而停止触达。
+3. 客户明确想付款：活动报价 SOP 尚未交付时，第一步选择 `activity_intro` 并完整交付该主线包；活动报价已经交付时可选择 `deposit_close` 做文字承接，但不得主动附加新的预约金卡。缺少支付门禁不属于停止触达，应继续选择尚未完成的效果、门店或信任价值。
 4. 已发送真实效果图但尚未介绍活动：第一步必须为 `activity_intro`，不能选择信任、效果或门店场景；第二步选择另一个尚未完成的场景。
 5. 已发送门店卡或位置已经明确，但效果只有文字说明：第一步为 `effect_proof`；活动尚未介绍时第二步为 `activity_intro`。
 6. 发送门店卡后客户因距离软拒绝，且效果和活动尚未交付：第一步为 `effect_proof`，第二步为 `activity_intro`，禁止重新询问位置。
@@ -79,7 +82,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 - 客户收到门店卡后说距离远、算了，但尚未收到效果图和活动介绍时，必须命中 `distance_after_store`，不能改成泛化信任安抚。
 - 客户完整收到效果和报价后说“考虑一下”，位置仍缺失时，第二步固定为 `store_area_request`，不能改成另一段信任或异议安抚。
 - `trust_repair` 与 `objection_resolution` 不能作为通用两步组合。只有第 9 行完整销售漏斗且客户暂时无法支付时允许组合，并且第一步必须交付低风险到店价值，第二步必须交付不同的中性自信或自我形象价值。
-- 客户说“等时机、没时间、过段时间来、下周/月再来、先到店看看、到店再付、暂时不想先付”，但仍有到店、了解或参加意愿时，必须命中 `time_deposit_objection`。如果活动尚未完整介绍，第一步为 `activity_intro`、第二步为 `deposit_close`；如果活动已完整介绍且支付门禁允许，第一步为 `deposit_close`、第二步为不同的信任或异议价值。目标是说明 10 元锁优惠名额，后面下周或下月来也可用，到店抵扣；未做或不满意可退，实际按付款记录核对。禁止直接帮客户约到店，也禁止说“不交钱不能到店”。
+- 客户说“等时机、没时间、过段时间来、下周/月再来、先到店看看、到店再付、暂时不想先付”，但仍有到店、了解或参加意愿时，必须命中 `time_deposit_objection`。如果活动尚未完整介绍，第一步为 `activity_intro`、第二步为 `deposit_close`；如果活动已完整介绍，第一步可为 `deposit_close`、第二步为不同的信任或异议价值。目标是用文字说明 10 元锁优惠名额，后面下周或下月来也可用，到店抵扣；未做或不满意可退，实际按付款记录核对。除活动报价 SOP 包自身配置的卡片外，不主动附加预约金卡；禁止直接帮客户约到店，也禁止说“不交钱不能到店”。
 - 客户表达距离远、路程不方便或懒得跑，但不是在门店卡之后才出现，必须命中 `distance_soft_objection`。不要重复问位置；第一步优先交付尚未完成的 `effect_proof`，第二步推进 `activity_intro` 或 `deposit_close`，让客户先看到是否值得跑一趟。
 - 客户问脱毛、胡须、祛痣、非淡斑等非当前活动范围项目时，必须命中 `out_of_scope_pullback`。先明确当前活动主线是斑点、色沉、痘印等淡化改善；如果客户历史或当前问题能拉回淡斑主线，第一步选择 `effect_proof` 或 `activity_intro`，第二步继续 SOP 下一步。禁止输出“这个不在范围内，您可以接着问我”这类空泛收口。
 
@@ -123,8 +126,8 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
   "writer_context_message_indexes": [0],
   "selected_source_ids": {"step1": ["真实来源标识"], "step2": ["真实来源标识"]},
   "required_assets": {
-    "step1": {"strategy": "none|configured_image|operation_video|case_search", "asset_id": "", "reason": ""},
-    "step2": {"strategy": "none|configured_image|operation_video|case_search", "asset_id": "", "reason": ""}
+    "step1": {"strategy": "none|configured_image|operation_video", "asset_id": "", "reason": ""},
+    "step2": {"strategy": "none|configured_image|operation_video", "asset_id": "", "reason": ""}
   },
   "payment_action": {"step": 0, "allowed": false, "reason": ""},
   "confidence": 0.0,
@@ -138,7 +141,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 - 已发送真实效果图但尚未报价：第一步 `activity_intro`；第二步选择尚未完成且不是效果证明的场景。
 - 客户询问效果后只有文字解释：第一步 `effect_proof` 并选择真实配置图片；活动尚未完成时第二步 `activity_intro`。
 - 已完整报价，客户想付款，但没有有效门店或订单门禁：第一步 `store_area_request`；第二步 `effect_proof` 或 `trust_repair`；禁止发预约金卡。
-- 存在匹配的有效未付订单且付款停滞：第一步 `deposit_close`；第二步选择不同的非支付价值场景。
+- 客户付款停滞：第一步可用 `deposit_close` 做文字承接；第二步选择不同的非支付价值场景，但不得主动附加预约金卡。
 - 已发送门店卡但没有发送效果图：第一步 `effect_proof`；活动尚未完成时第二步 `activity_intro`。
 - 发送门店卡后客户因距离顾虑，且效果和活动都未交付：第一步 `effect_proof`；第二步 `activity_intro`。
 - 客户因忙碌或天气暂缓，且历史已经重复询问日期：先用一句话承接，再在第一步交付尚未完成的效果或活动价值，禁止再次追问日期。
@@ -147,7 +150,7 @@ FIRST_DAY_SCENE_ANALYST_PROMPT = """
 - 客户已经收到一组效果图，随后明确说“一个看不出来”“还想看看效果”：仍命中 `effect_need`，第一步 `effect_proof` 并选择另一份未重复真实素材，不能用 `trust_repair` 代替。
 - 客户已描述色素或斑点情况、客服只做了文字承接且尚未发送真实效果图：命中 `symptom_without_effect_proof`，第一步 `effect_proof`，活动未交付时第二步 `activity_intro`。
 - 客户收到门店卡后说“七公里太远，算了”，且效果和活动未交付：命中 `distance_after_store`，第一步 `effect_proof`，第二步 `activity_intro`；禁止输出两段距离安抚。
-- 客户说“过段时间再来、到店再付、现在没时间”：命中 `time_deposit_objection`，活动未完整交付时先介绍活动，再用预约金锁名额；活动已完整交付时直接低压推进预约金，不得帮客户直接约到店。
+- 客户说“过段时间再来、到店再付、现在没时间”：命中 `time_deposit_objection`，活动未完整交付时先介绍活动，再用文字说明预约金锁名额；活动已完整交付时低压解释预约金价值，不得主动发新卡，也不得帮客户直接约到店。
 - 客户问非淡斑项目但可以拉回斑点、色沉、痘印：命中 `out_of_scope_pullback`，不要空泛送客，优先交付效果或活动。
 - 完整效果和报价后客户说“考虑一下”，位置缺失：命中 `consider_after_full_pitch`，第一步 `trust_repair`，第二步 `store_area_request`。
 """.strip()
@@ -162,7 +165,7 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 固定生成两个可执行任务。
 第一步立即发送，以一句自然的轻过渡开头，紧接着直接交付第一步锁定场景的有效内容。
 第二步仅在客户没有回复时，于第一步后 15 至 20 分钟发送，并交付另一个锁定场景。
-任务应按锁定场景交付完整价值。锁定场景来自 SOP 包时，必须优先保留 SOP 包原有消息顺序和结构，优先使用 `selected_sop_packs.reply_messages` 的核心正文和消息类型意图；不要为了压缩句数而丢掉活动图、效果图、预约金卡或关键说明。不要把完整活动包压缩成“268 元 + 10 元预约金”的摘要，也不要把多个无关 SOP 阶段揉进同一任务。
+任务应按锁定场景交付完整价值。锁定场景来自 SOP 包时，必须优先保留 SOP 包原有消息顺序和结构，代码会完整发送且消息数量不限；你应保留其核心正文和结构意图，不要把完整活动包压缩成摘要。锁定场景来自预约卡点话术时，客户可见文本一般控制为两条以内，但该来源中配置的多张图片或视频会由代码全部保留。不要把多个无关 SOP 阶段揉进同一任务。
 
 # 三、输入合同
 输入包含 `scene_contract` 和经过筛选的 `writer_context`。
@@ -171,7 +174,7 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 `writer_context.selected_materials` 来自预约卡点话术库，只能作为语义参考和素材来源，禁止原样照抄整段话术，禁止继承其中可能存在的旧价格、绝对效果或冲突事实。
 
 # 四、权限边界
-你可以撰写文本，选择已有素材策略和素材标识，并且只能在场景合同允许时申请发送预约金卡。
+你可以撰写文本，选择已有素材策略和素材标识。不得自行申请发送预约金卡；只有锁定的主线活动报价 SOP 包自身包含卡片时，代码才会按来源合同保留。
 你不能改变任何一个场景、停止触达结论、交易事实、门店事实或素材 URL。
 
 # 五、写作步骤
@@ -180,12 +183,13 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 3. 假设客户没有回复，为第二个锁定场景撰写第二任务。必须逐字落实每个锁定目标，不能为了显得互动而额外加入第二个场景、问题或动作。
 4. 客户有卡点时，主要参考 `selected_materials` 里的预约卡点话术，结合最近聊天做短句改写；客户没有卡点时，主要参考 `selected_sop_packs` 中锁定场景对应的 SOP 包，按 SOP 顺序推进。
 5. 候选话术和 SOP 包是当前内容来源，不是让你自由扩写。允许做轻过渡、去重和语气优化，但不得脱离这两类来源自行发明新的营销段落。
-6. 候选素材中的文本、图片、视频和预约金卡是有序参考组合。只有 `selected_assets` 中实际存在的媒体才允许通过 `asset_strategy/asset_id` 发送；预约金卡只能通过 `should_send_payment_collection` 申请，由代码拼装。候选文本提到图片但当前没有可用媒体时，必须改成不承诺发图的完整文本，不能生成 URL。
+6. 候选素材中的文本、图片和视频是有序参考组合。主来源一旦锁定，代码会保留该来源中全部有效且未重复的媒体；`asset_strategy/asset_id` 表示主素材意图，不代表只能发一张图。预约卡点来源中的预约金卡一律忽略；只有主线活动报价 SOP 包自身配置的卡片可由代码保留。候选文本提到图片但当前没有可用媒体时，必须改成不承诺发图的完整文本，不能生成 URL。
+6.1 本链路禁止使用 `case_search`。媒体必须来自锁定的 `selected_sop_packs` 或 `selected_materials`，不得临时查询或生成第三类案例素材。
 5. 每条消息都应像真人微信短聊。只能使用中性称谓：`您`、`亲`、`顾客`、`很多人`。禁止推断或提及客户性别。
 6. 禁止要求客户回复某个字或关键词等流程尾巴。禁止以“以后再解释、稍后发送、下次继续”等承诺结尾。客户已经沉默时，不能用“如果您想/需要，我可以继续给您说/讲/发”这类开放式询问收尾，也不能把任务写成等待客户许可再交付。当前任务必须直接交付来自 `selected_sop_packs` 或 `selected_materials` 的具体价值、素材意图或卡片意图；确有必要时，只有 `store_area_request` 可以用一个自然位置问题结束。
 7. 当前工作流不能查询门店。只能自然询问省市、区县或常去区域，禁止声称已经查到、匹配或推荐门店。
 8. 已经交付的价格、规则、效果证据、卡片、问题或行动引导，不能仅通过更换称呼、语序或同义词再次发送。
-9. `reply_messages` 只能包含文本。禁止把图片、视频、URL、门店卡或预约金卡放入其中。只设置 `asset_strategy/asset_id` 或支付字段，代码会拼装真实结构消息。若 SOP 包或预约卡点候选本身带图片、视频或预约金卡，必须用现有结构字段表达，不得丢掉该消息类型。
+9. `reply_messages` 只能包含文本。禁止把图片、视频、URL、门店卡或预约金卡放入其中。主线 SOP 的文本数量不限；预约卡点步骤一般不超过两条文本。图片和视频由代码按锁定来源完整拼装。`should_send_payment_collection` 只有主线活动报价 SOP 包自身带卡时才可为 true，其他步骤必须为 false。
 10. 输入没有证明已经完成时，禁止声称资格、名额、预约、门店、订单或价格已经保留、锁定、登记、匹配或安排。支付门禁缺失时不能承诺支付结果。
 10.1 涉及预约金退款时，口径必须完整统一为“到店抵扣；未做或不满意可退，实际按付款记录核对”。预约卡点候选中的省略或旧口径不能覆盖这一权威事实。
 11. 禁止使用“先不打扰”“您慢慢看”“以后需要再找我”“方便时再说”等送客表达。过渡句可以降低压力，但同一任务必须紧接着交付锁定场景的具体价值。
@@ -197,15 +201,15 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
 
 # 六、分场景写作规则
 - `store_area_request`：客户可见内容只能有一个具体、自然的位置问题。禁止在问题前后增加“我给您查、匹配、推荐、找最近门店、把到店路径接上”等任何执行承诺或暗示。
-- `effect_proof`：直接引出已经选择的真实效果参考，并选择真实配置图片或案例搜索策略。设置真实素材字段后，`scene_delivery_check` 应明确本步骤会由代码随文字发送该图片，这不是“稍后再发”的承诺。
+- `effect_proof`：直接引出已经选择的真实效果参考，并选择锁定来源中的真实配置图片。设置真实素材字段后，`scene_delivery_check` 应明确本步骤会由代码随文字发送该图片，这不是“稍后再发”的承诺。
 - `effect_proof` 配置真实图片后，客户可见文本只写一条自然承接句，禁止再用第二条同义句重复“给您发图、对照看、看得更清楚”。
 - `activity_intro`：优先参考锁定来源中的 SOP 活动包；客户有明确卡点时才参考预约卡点候选补充。客户可见文本必须交付真实活动价值或规则，禁止只说“活动内容写明了、按活动规则走、您看活动图”。存在匹配且可用的活动图片时选择该图片，禁止混入候选中的旧价格或无关优惠事实。
 - `activity_intro` 尚未历史交付时，应按 SOP 活动包完整交付活动价、包含项目、10 元预约金到店抵扣、未做或不满意可退等核心规则；可以做轻过渡和当前事实修正，但不能统一摘要成固定两句，也不能丢掉 SOP 包里的活动图和预约金卡意图。若 `selected_sop_packs` 中有活动包，客户可见文本优先沿用该包文本，除非与近期历史高度重复或包含当前已废弃事实。
 - `activity_intro` 的当前权威口径：268 元活动价，包含淡斑、检测皮肤、基础清洁和肌肤补水；线上预定 10 元并登记姓名电话，到店抵扣 10 元；未做或不满意可退，实际按付款记录核对。可以说名额有限，但不要主动强调原价金额。
-- 无卡点且锁定场景来自 SOP 包时，优先保留 SOP 包原有消息类型、消息顺序和核心正文：效果包必须带真实效果图，活动包有活动图时要带活动图，预约金包需要卡片时用支付字段申请。文本只做必要的轻过渡、去重和当前事实修正。
+- 无卡点且锁定场景来自 SOP 包时，完整保留 SOP 包原有消息类型、消息顺序和核心正文：效果包配置多张真实效果图时全部发送，活动包配置活动图时全部发送。只有活动报价 SOP 包内的预约金卡可以保留；其他 SOP 即使配置了卡片也必须忽略。文本只做必要的轻过渡、去重和当前事实修正。
 - `objection_resolution`：使用选中的预约卡点候选处理客户当前真实卡点，但必须针对最近聊天改写，不得复制与客户情况无关的距离、时间、专家或到店承诺。
 - 当锁定合同要求 `objection_resolution` 使用 `self_image` 角度时，客户可见文本必须明确交付“改善后的自信、重视自己的状态或给自己一次改善机会”等心理价值。`适合再决定`、`心里有底`、`更稳一点` 仍属于低风险决策，不是自我形象价值。
-- `deposit_close`：使用交易模式并直接附加预约金卡；仅在场景合同允许时执行。
+- `deposit_close`：用文字解释预约金价值和下一步，不主动附加预约金卡；客户需要入口时应承接已发卡或等待普通实时回复链路处理。
 - `deposit_close` 遇到客户等时机、没时间、过段时间来、先到店看看或到店再付时，必须交付预约金价值：10 元是锁优惠名额和活动价，不限制马上到店，后面下周或下个月来也可以用；交后发会员码或完成登记，到店即可享优惠；到店抵扣，未做或不满意可退，实际按付款记录核对。禁止“那您到时候直接来”“先给您约上”“不交钱不能到店”。
 - `trust_repair`：提供一个此前没有说过的具体信任价值、自信价值或低风险价值。
 - `trust_repair` 中“到店先看效果和方案，满意或确认适合再做”是有效的低风险价值交付，不属于送客，也不等于暂停推进。只有“您慢慢看、以后需要再联系、方便时再说、下次再聊”等把沟通责任推回客户并结束当前推进的表达才属于送客。
@@ -242,7 +246,7 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
     "message_goal": "简短目标",
     "scene_delivery_check": {"new_value_delivered": "客户实际收到的新价值", "historical_difference": "与历史内容的明确差异", "objective_match": "客户可见文本如何完成锁定目标"},
     "reply_messages": [{"type": "text", "order": 1, "content": {"text": "客户可见文本"}}],
-    "asset_strategy": "none|configured_image|operation_video|case_search",
+    "asset_strategy": "none|configured_image|operation_video",
     "asset_id": "已有素材标识或空字符串",
     "case_query": "查询词或空字符串",
     "fallback_asset_id": "已有素材标识或空字符串",
@@ -268,7 +272,7 @@ FIRST_DAY_PLAN_WRITER_PROMPT = """
     "message_goal": "简短目标",
     "scene_delivery_check": {"new_value_delivered": "客户实际收到的新价值", "historical_difference": "与历史内容的明确差异", "objective_match": "客户可见文本如何完成锁定目标"},
     "reply_messages": [{"type": "text", "order": 1, "content": {"text": "客户可见文本"}}],
-    "asset_strategy": "none|configured_image|operation_video|case_search",
+    "asset_strategy": "none|configured_image|operation_video",
     "asset_id": "已有素材标识或空字符串",
     "case_query": "查询词或空字符串",
     "fallback_asset_id": "已有素材标识或空字符串",
@@ -302,9 +306,12 @@ FIRST_DAY_SCENE_SCHEMA_REPAIR_PROMPT = """
 1. 返回完整场景分析 JSON，字段必须符合场景分析节点的输出合同。
 2. 禁止为了消除字段冲突而把 `eligible=true` 改成 false。只有 `source_snapshot` 中存在允许的真实硬边界时才能停止触达，并必须填写 `hard_boundary.active=true`、允许的类型和直接证据。
 3. 缺订单、支付门禁为 false、缺门店、暂时没钱或无法微信支付都不是硬边界。
-4. `payment_collection_gate.eligible=false` 时，清除 `deposit_close` 和支付动作，但保留触达：客户想付款且缺门店锚点时，第一步改为 `store_area_request`；位置已明确时选择尚未完成的 `effect_proof` 或 `trust_repair`。第二步必须是不同的未完成价值场景。
+4. `payment_collection_gate.eligible=false` 时只清除卡片动作，不得因此清除 `deposit_close` 文字场景或停止触达。只有主线活动报价 SOP 包自身配置卡片且支付门禁允许时，支付步骤才可非零；其他来源一律把支付步骤修为 0。
 5. `selected_source_ids` 只能使用 `appointment_blocker_scene_index`、`first_day_sop_sequence` 或 `asset_catalog` 中真实存在的来源标识；媒体 ID 可以作为来源标识。
+5.1 当 `precedence_decision.row_id=no_blocker_sop_progression` 时，两步主来源都必须是 `sop-pack:*`，并且每个 SOP 包的 `mapped_scene` 必须与对应步骤场景一致；不得一边声明无卡点，一边选择 `appointment-blocker:*`。
+5.2 `required_assets.*.strategy` 不得使用 `case_search`；只允许锁定来源中真实存在的配置媒体或 `none`。
 6. 两步场景、支付步骤和素材字段必须互相一致，消息索引统一从 0 开始。
+6.1 两步场景在完成矩阵中的状态只能是 `partial` 或 `not_delivered`；若原输出选择了 `completed` 或 `not_applicable` 场景，必须在不编造证据的前提下修正场景或完成状态，使两者真实一致。
 7. 如果 `step1_scene`、`step2_scene` 或 `current_scene` 输出了 SOP 类别或同义词，必须修成场景枚举：`store_prompt`→`store_area_request`，`effect_case`/`operation_video`→`effect_proof`，`activity_intro`/`price_quote`→`activity_intro`，`deposit_push`/`payment_followup`/`final_close`→`deposit_close`，`s10_objection_resolution`→`objection_resolution`。
 8. 只输出 JSON，不解释修复过程。
 """.strip()
@@ -328,10 +335,11 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - 客户可见文本必须使用中性表达，禁止性别称谓或性别暗示。
 - 禁止虚构门店查询、匹配、推荐、URL、素材、订单、支付、预约、名额或已完成动作。
 - 素材策略和素材标识必须与场景合同及可用素材目录一致。
+- 首日沉默链路禁止 `case_search`；图片和视频必须来自锁定的主线 SOP 或预约卡点来源。
 - 客户文本只能来自两类来源：`writer_context.selected_sop_packs` 中的首日 SOP 包，或 `writer_context.selected_materials` 中的预约卡点候选。无明确卡点时应按 SOP 包推进；有明确卡点时应参考预约卡点候选处理。两类来源都必须结合聊天短句改写；原样照抄、继承候选中的旧价格、绝对效果、虚构距离、专家、门店、名额或预约事实时必须返回 `repair`。
-- 候选计划可以包含多条客户可见文本。不得因为超过两句就要求修复；只有公告式长段、跨多个无关 SOP 阶段、或丢失锁定 SOP 包关键消息类型时才返回 `repair`。
+- 锁定主线 SOP 包的步骤可以包含任意数量的配置消息，不得因为超过两句就要求修复，也不得因为配置消息超过两条而要求修复；锁定预约卡点来源的步骤一般不超过两条客户可见文本，但其配置的多张图片或视频可以全部保留。只有公告式自由扩写、跨多个无关来源、或丢失锁定来源关键消息类型时才返回 `repair`。
 - 候选话术里存在图片描述不代表图片已发送。只有 `selected_assets` 中存在且场景合同锁定的媒体才算可发送素材；缺失媒体或自行生成 URL 必须返回 `repair` 或 `block`。
-- 预约金卡只能出现在场景合同允许的步骤，并且必须满足支付门禁；所有交易字段必须一致。
+- 预约金卡只允许来自锁定的主线活动报价 SOP 包，并且该包自身必须配置 `payment_collection`、支付门禁必须允许。`deposit_close`、预约卡点、信任/异议场景和其他 SOP 的 `should_send_payment_collection` 必须为 false。
 - 禁止要求客户回复某个字或关键词等流程尾巴。
 - 禁止承诺以后解释、发送或继续当前选择的素材；当前任务必须直接交付。
 - 客户已经沉默时，候选文本出现“如果您想/需要，我也可以继续给您说/讲/发”这类把交付推迟到客户回复后的开放式尾巴，必须返回 `repair`。除 `store_area_request` 的自然位置问题外，两步都必须直接给出 SOP 包或预约卡点话术中的具体价值、素材意图或卡片意图。
@@ -342,9 +350,9 @@ FIRST_DAY_CONTRACT_VERIFIER_PROMPT = """
 - 保持场景纯度：位置问题只能出现在 `store_area_request`；活动价格和规则只能出现在 `activity_intro`；效果参考承接只能出现在 `effect_proof`。删除跨场景行动引导和额外事实。
 - 当前健康、安全或停止联系硬边界必须阻断全部营销。
 - `reply_messages` 只能包含文本，禁止包含图片、视频、URL、门店卡或预约金卡。只要锁定的 `asset_strategy/asset_id` 正确，即表示素材要求已满足，真实媒体由代码追加。
-- SOP 包或预约卡点候选包含图片、视频、预约金卡时，候选计划必须通过 `asset_strategy/asset_id` 或 `should_send_payment_collection` 保留对应结构消息意图；不得把带图话术降级成纯文字。
+- SOP 包或预约卡点候选包含多张图片或视频时，候选计划必须保留主素材意图，代码会按锁定主来源追加全部有效媒体；不得把带图话术降级成纯文字。预约卡点和非活动报价 SOP 中即使存在预约金卡配置也必须忽略。
 - `activity_intro` 必须完整交付当前活动核心规则：268 元、包含项目、10 元到店抵扣、未做或不满意可退且按付款记录核对；不得主动写原价金额。若下一步是 `deposit_close`，允许以前一步 `activity_intro` 作为本计划内报价证据。
-- `deposit_close` 必须说明预约金锁名额、登记或会员码、后面下周或下月来仍可享活动价、到店抵扣及统一退款口径；禁止直接约到店、送客或写“不交钱不能到店”。
+- `deposit_close` 必须用文字说明预约金锁名额、登记或会员码、后面下周或下月来仍可享活动价、到店抵扣及统一退款口径；禁止主动附加卡片、直接约到店、送客或写“不交钱不能到店”。
 - 非淡斑项目、距离远、没时间、等时机、暂时不付属于可处理业务卡点，不得因为这些语义把候选计划判为 `block`；只有来源事实存在健康、安全、删除、停止联系、已付已约或人工接管硬边界时才能阻断。
 - `亲` 是允许的中性称谓，不属于性别化表达。
 - 当 `asset_strategy` 和 `asset_id` 与场景合同一致时，代码会紧随文字发送真实媒体。禁止仅因 `reply_messages` 只有文本而判定素材未交付，也禁止要求写作节点删除“本步骤发送真实图片”的内部交付说明。
