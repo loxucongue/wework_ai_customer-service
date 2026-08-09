@@ -340,6 +340,19 @@ def _validate_sop_delivery_manifest(messages: list[dict[str, Any]], state: dict[
 
 def _validate_activity_intro_core_facts(text: str) -> None:
     compact = re.sub(r"\s+", "", str(text or ""))
+    # Preserve the fact contract while accepting natural WeChat variants such as
+    # "到了门店直接抵扣". These phrases all state the same redemption fact.
+    compact = re.sub(
+        r"到(?:了)?(?:门)?店(?:以后|之后|后|时)?(?:可以|可)?(?:直接)?抵扣",
+        "到店抵扣",
+        compact,
+    )
+    store_redemption = re.search(
+        r"(?:到店|门店)[^。；！？]{0,50}抵扣|抵扣[^。；！？]{0,50}(?:到店|门店)",
+        compact,
+    )
+    if store_redemption and not re.search(r"(?:不|不能|不可)抵扣", store_redemption.group(0)):
+        compact += "到店抵扣"
     required_groups = (
         ("268",),
         ("30名", "30个"),

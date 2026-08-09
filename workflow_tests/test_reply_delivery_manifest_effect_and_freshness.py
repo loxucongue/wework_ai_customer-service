@@ -144,6 +144,36 @@ def test_activity_manifest_keeps_full_sequence_but_drops_unauthorized_card() -> 
     )
 
 
+@pytest.mark.parametrize(
+    "redemption_text",
+    [
+        "10元预约金到了门店直接抵扣",
+        "10元预约金到门店后可以直接抵扣",
+        "10元预约金到店时可抵扣",
+        "到店后做的话再付258元，10元会直接抵扣",
+    ],
+)
+def test_activity_manifest_accepts_natural_redemption_wording(redemption_text: str) -> None:
+    authorized = authorize_sop_delivery_manifest(
+        build_sop_delivery_manifest(_activity_gate()),
+        payment_decision={"action": "none"},
+        precision_scene_id="",
+    )
+    contract = merge_manifest_into_reply_contract({}, authorized)
+    messages = _activity_gate()["reply_messages"][:-1]
+    messages[0] = {
+        **messages[0],
+        "content": {
+            "text": ACTIVITY_TEXT.replace("到店抵扣10元", redemption_text),
+        },
+    }
+
+    validate_reply_consistency(
+        messages,
+        {"authorized_sop_delivery_manifest": authorized, "reply_contract": contract},
+    )
+
+
 def test_activity_manifest_replaces_duplicate_model_pack_requirements() -> None:
     authorized = authorize_sop_delivery_manifest(
         build_sop_delivery_manifest(_activity_gate()),

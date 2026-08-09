@@ -91,6 +91,9 @@ def create_synthesize_reply_node(
                     )
                 except Exception as exc:
                     primary_error = f"{type(exc).__name__}: {exc}"
+                    attached_model_call = getattr(exc, "reply_model_call", None)
+                    if isinstance(attached_model_call, dict):
+                        model_call = attached_model_call
                     model_call = model_call or {"name": "reply_synthesizer_model", "input": {}}
                     model_call["error"] = primary_error
                     if planner_direct_valid:
@@ -196,7 +199,7 @@ def create_synthesize_reply_node(
                 "reply_review": {
                     "decision": "block" if reply_blocked else "pass",
                     "violations": review_violations,
-                    "repair_attempts": len((model_call or {}).get("repair_retries") or []),
+                    "repair_attempts": _reply_repair_attempt_count(model_call),
                 },
                 "postprocess_changed": False,
                 "postprocess_reasons": [],
@@ -269,6 +272,23 @@ def _reply_contract_failure_code(error: str) -> str:
         if marker in str(error or ""):
             return marker
     return "reply_contract_failed"
+
+
+def _reply_repair_attempt_count(model_call: dict[str, Any] | None) -> int:
+    if not isinstance(model_call, dict):
+        return 0
+    retries = model_call.get("repair_retries")
+    if isinstance(retries, list):
+        return len(retries)
+    return 1 if isinstance(model_call.get("retry"), dict) else 0
+
+
+def _attach_reply_model_call(exc: Exception, model_call: dict[str, Any]) -> Exception:
+    try:
+        setattr(exc, "reply_model_call", model_call)
+    except Exception:
+        pass
+    return exc
 
 
 def _planner_direct_reply_is_valid(
@@ -430,7 +450,7 @@ async def _run_reply_model_pipeline(
             "reason": f"{type(primary_error).__name__}: {primary_error}",
         }
         model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        raise primary_error
+        raise _attach_reply_model_call(primary_error, model_call)
 
     recovery_messages = _reply_recovery_messages(state)
     if not can_start_model_retry(state, tier=tier):
@@ -439,7 +459,8 @@ async def _run_reply_model_pipeline(
             "runtime_budget": runtime_budget_snapshot(state, tier=tier),
         }
         model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        raise RuntimeError(f"reply primary failed: {type(primary_error).__name__}: {primary_error}") from primary_error
+        failure = RuntimeError(f"reply primary failed: {type(primary_error).__name__}: {primary_error}")
+        raise _attach_reply_model_call(failure, model_call) from primary_error
     recovery_deadline = _capped_deadline(
         time.monotonic() + recovery_budget,
         model_deadline_monotonic(state, tier=tier),
@@ -467,10 +488,11 @@ async def _run_reply_model_pipeline(
         recovery_call["usage"] = model_usage_snapshot(model_client)
         model_call["recovery"] = recovery_call
         model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
-        raise RuntimeError(
+        failure = RuntimeError(
             f"reply primary failed: {type(primary_error).__name__}: {primary_error}; "
             f"compact recovery failed: {type(recovery_exc).__name__}: {recovery_exc}"
-        ) from recovery_exc
+        )
+        raise _attach_reply_model_call(failure, model_call) from recovery_exc
 
     model_call["recovery"] = recovery_call
     model_call["draft_messages"] = debug_message_contents(messages)
