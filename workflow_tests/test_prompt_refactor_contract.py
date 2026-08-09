@@ -401,6 +401,30 @@ def test_chat_gate_actual_messages_keep_sop_precision_and_ai_boundaries() -> Non
         assert marker in joined
 
 
+def test_chat_gate_prompt_keeps_activity_sop_when_location_and_price_are_merged() -> None:
+    messages = build_sop_chat_gate_messages(
+        {
+            "current_message": "客户连续发送了多条未回复消息：深圳市龙岗区中心城；怎么收费",
+            "unfinished_sops": [
+                {
+                    "id": "s10_activity_intro",
+                    "mainline_stage": "activity_and_price",
+                    "reply_messages": [{"type": "text", "content": {"text": "活动介绍"}}],
+                }
+            ],
+        }
+    )
+    joined = "\n".join(str(item.get("content") or "") for item in messages)
+
+    assert "Highest Priority Combined-Intent Contract" in joined
+    assert "必须选择 `ai_then_sop`" in joined
+    assert "门店事实需要 Planner 调用工具，但这不构成活动介绍的前置条件" in joined
+    assert '"route":"ai_then_sop"' in joined
+    assert '"type":"store_lookup"' in joined
+    assert "深圳市龙岗区中心城" in joined
+    assert "怎么收费" in joined
+
+
 def test_reply_actual_messages_keep_precision_rules_and_stage_business_rules() -> None:
     payload = {
         "current_message": "一二公里",
