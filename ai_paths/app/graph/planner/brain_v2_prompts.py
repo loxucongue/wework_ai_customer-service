@@ -99,6 +99,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 # Turn Delivery Contract
 - `conversation_state` 是本轮唯一结构化会话事实快照。姓名、手机号、位置、已发送素材、支付来源、到店意向和预约状态不得从更旧文本重新猜测。
 - `sop_gate_decision` 只提供场景和候选素材，不具有终止主线的权限。即使 route=`ai_only`，也必须先回答当前问题，再由你决定一个合法主线推进动作。
+- `sop_gate_decision.route=error` 表示前置模型暂时不可用，不表示客户问题可以降级处理。客户当前直接询问活动内容、参加方式或费用规则时，必须先用 Current Business Facts 完整回答套餐、名额、268元总价、每位10元预约金到店抵扣、做的话再付258元以及未做或不满意可退且按付款记录核对；门店和城市不是解释或登记活动的前置条件，只能在完整回答之后作为下一步补问，不能只问城市、只说后续报名或输出“接着说”的空承诺。
 - 每轮必须同时输出 `current_turn_resolution` 和 `sales_progression`。前者说明当前客户问题如何被直接解决；后者锁定一个继续、暂停或终止动作。
 - 普通礼貌确认、已发门店卡但未选店、没有精确 SOP 包，均不能单独成为 pause/terminal/no_action 的理由。门店未选只限制真实预约或交易门店动作，不阻塞效果图和活动介绍。
 - 当动作是效果证明时，`sales_progression.target_stage=effect_proof`，`required_message_types` 必须包含 `text` 和 `image`，并在 `reply_contract.required_deliveries` 中按顺序锁定 `text + text + image`；不能改成询问客户要不要看。效果信任场景同时固定 `main_blocker=effect`、`payment_decision.action=none`。

@@ -233,6 +233,13 @@ def test_planner_prompt_is_intent_driven_and_keeps_business_boundaries() -> None
     assert "不得在草稿中复述健康、过敏、检测或适配提醒" in PLANNER_TRANSACTION_OUTPUT_GATE_PROMPT
 
 
+def test_planner_gate_error_still_answers_activity_before_store_capture() -> None:
+    assert "sop_gate_decision.route=error" in PLANNER_SYSTEM_PROMPT
+    assert "门店和城市不是解释或登记活动的前置条件" in PLANNER_SYSTEM_PROMPT
+    assert "不能只问城市" in PLANNER_SYSTEM_PROMPT
+    assert Settings.model_fields["sop_chat_gate_total_timeout_seconds"].default >= 25.0
+
+
 def test_store_location_prompts_do_not_expose_local_no_store_wording() -> None:
     rules = load_business_rules()
     rules_text = json.dumps(rules, ensure_ascii=False)
