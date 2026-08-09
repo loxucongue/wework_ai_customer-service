@@ -809,6 +809,48 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(stored["send_response"]["data"]["assumed_sent"])
         self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_completed")
 
+    async def test_near_duplicate_platform_delivery_is_consumed_without_send(self) -> None:
+        current = (
+            "亲，您放心，咱们这次活动是明码标价的，包含检测、基础清洁和肌肤补水这些内容，没有额外捆绑消费。\n\n"
+            "现在活动价268元，先付10元预约金就能帮您锁名额，到店直接抵扣，做的话再补258元就行。\n\n"
+            "当前登记还会赠送一次价值180元的美白管理，名额满了就恢复原价了。\n\n"
+            "您如果想做，我先帮您留一个，到店时间后面按您方便安排就可以。"
+        )
+        previous = (
+            "亲，您放心，咱们这次活动是明码标价的，包含检测、基础清洁和肌肤补水这些内容，没有额外捆绑消费。\n\n"
+            "现在活动价268元，先付10元预约金就能帮您锁名额，到店直接抵扣，做的话再补258元就行。\n\n"
+            "现在登记还赠送一次价值180元的美白管理，名额满了就恢复原价了。\n\n"
+            "您如果想做，我先帮您留一个，到店时间后面按您方便安排就行。"
+        )
+        model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text(current)]}])
+        service, repo, platform, system = _service(model=model)
+        repo.list_platform_sop_task_records = lambda **_kwargs: [  # type: ignore[attr-defined]
+            {
+                "event_id": "platform_sop_task:100",
+                "platform_task": {**_task(), "task_id": 100},
+                "customer_id": "22000001",
+                "external_userid": "wm_external",
+                "corp_id": "ww_corp",
+                "wechat": "DY258",
+                "task_status": "sent",
+                "sent_at": "2026-08-09T01:55:43+00:00",
+                "reply_messages": [_text(previous)],
+                "send_payload": {"request": {"reply_messages": [_text(previous)]}},
+            }
+        ]
+
+        result = await service.process_task(_task())
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(platform.rule_data_calls[-1]["scene_code"], "no_send_duplicate")
+        self.assertEqual(platform.rule_data_calls[-1]["send_content"], "")
+        stored = next(iter(repo.tasks.values()))
+        self.assertEqual(stored["status"], "completed_without_send")
+        self.assertEqual(stored["send_payload"]["decision"]["reason"], "near_duplicate_platform_delivery")
+        self.assertTrue(stored["send_payload"]["context"]["near_duplicate_delivery"]["found"])
+
     async def test_rule_data_failure_does_not_retry_after_customer_message_sent(self) -> None:
         model = _Model([{"decision": "send", "reason": "ok", "reply_messages": [_text("只生成一次")]}])
         service, repo, platform, system = _service(model=model)

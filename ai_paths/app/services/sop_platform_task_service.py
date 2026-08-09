@@ -4,9 +4,11 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from typing import Any
 from urllib.parse import urlparse
 
@@ -126,9 +128,11 @@ Decision hierarchy:
    message asks for a concrete action or fact that still needs the normal AI
    chain or a human/tool answer, such as store lookup, order/payment check, or
    appointment lookup.
-3. Exact duplicate: no_send only when the full candidate batch has the same
-   message types, order, text and media/link URLs as a recently sent full batch.
-   Similar topic, similar intent, or non-identical wording is not duplicate.
+3. Duplicate or near-duplicate: no_send when the final customer-visible copy
+   would repeat the same core facts, same offer, same appointment/deposit CTA,
+   and same reassurance that were already sent recently to the same customer by
+   this receiving WeChat account. Do not require byte-for-byte equality when the
+   semantic customer value is unchanged.
 4. First-add tasks (`add_wecom`) default to send. Silence, no expressed demand,
    old resolved store context, ordinary hesitation, or `use_ai_copy=false` are
    never valid no_send reasons for first-add tasks.
@@ -721,6 +725,32 @@ class SopPlatformTaskService:
             ),
         )
 
+    async def _recent_near_duplicate_platform_delivery(
+        self,
+        *,
+        identity: dict[str, str],
+        task_id: str,
+        reply_messages: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        if not hasattr(self.repository, "list_platform_sop_task_records"):
+            return {"found": False, "match_type": "unsupported"}
+        current_text = _platform_delivery_text(reply_messages)
+        if len(_normalize_platform_delivery_text(current_text)) < 40:
+            return {"found": False, "match_type": "text_too_short"}
+        try:
+            records = self.repository.list_platform_sop_task_records(
+                limit=50,
+                customer_id=identity.get("customer_id") or "",
+            )
+        except Exception as exc:
+            return {"found": False, "match_type": "lookup_error", "error": f"{type(exc).__name__}: {exc}"}
+        return _platform_near_duplicate_delivery_match(
+            records if isinstance(records, list) else [],
+            identity=identity,
+            current_task_id=task_id,
+            reply_messages=reply_messages,
+        )
+
     def _observe(self, name: str, elapsed_seconds: float) -> None:
         values = self._timings.get(name)
         if values is not None:
@@ -1060,7 +1090,7 @@ class SopPlatformTaskService:
                         "reason": "existing_platform_delivery",
                         "reason_code": "exact_duplicate",
                         "sceneName": str(decision.get("sceneName") or "不发送｜重复发送"),
-                        "sceneCode": str(decision.get("sceneCode") or "no_send_duplicate"),
+                        "sceneCode": "no_send_duplicate",
                         "knowledgeId": decision.get("knowledgeId") or 0,
                         "knowledgeParagraphNo": decision.get("knowledgeParagraphNo") or 0,
                         "remark": "本地检测到同批平台触达已发送，消费但不重复发送",
@@ -1080,6 +1110,52 @@ class SopPlatformTaskService:
                             "context": {
                                 **_context_audit(context),
                                 "existing_delivery": existing_delivery,
+                            },
+                            "rule_data_response": rule_data_response,
+                        },
+                    )
+                    self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+                    completed = await self.platform_client.consume(task_id=task_id, status=30)
+                    _require_platform_status(completed, 30)
+                    self.repository.update_sop_event_status(event_id, status="platform_completed")
+                    return {
+                        "processed": True,
+                        "status": "completed_without_send",
+                        "task_id": task_id,
+                        "decision": duplicate_decision,
+                        "platform_response": completed,
+                    }
+                near_duplicate = await self._recent_near_duplicate_platform_delivery(
+                    identity=identity,
+                    task_id=task_id,
+                    reply_messages=decision["reply_messages"],
+                )
+                if near_duplicate.get("found"):
+                    duplicate_decision = {
+                        "decision": "no_send",
+                        "reason": "near_duplicate_platform_delivery",
+                        "reason_code": "exact_duplicate",
+                        "sceneName": str(decision.get("sceneName") or "不发送｜重复触达"),
+                        "sceneCode": "no_send_duplicate",
+                        "knowledgeId": decision.get("knowledgeId") or 0,
+                        "knowledgeParagraphNo": decision.get("knowledgeParagraphNo") or 0,
+                        "remark": "本地检测到同客户近期第三方SOP最终文案高度重复，消费但不重复发送。",
+                        "reply_messages": [],
+                    }
+                    rule_data_response = await self._report_rule_data(
+                        platform_task,
+                        decision=duplicate_decision,
+                        sent=False,
+                    )
+                    self.repository.update_sop_send_task(
+                        str(local_task.get("id") or ""),
+                        status="completed_without_send",
+                        send_payload={
+                            "decision": duplicate_decision,
+                            "request": send_payload,
+                            "context": {
+                                **_context_audit(context),
+                                "near_duplicate_delivery": near_duplicate,
                             },
                             "rule_data_response": rule_data_response,
                         },
@@ -1844,6 +1920,142 @@ def _platform_delivery_match(
         "expected_text_count": len(expected_texts),
         "expected_image_count": len(expected_images),
     }
+
+
+def _platform_near_duplicate_delivery_match(
+    records: list[dict[str, Any]],
+    *,
+    identity: dict[str, str],
+    current_task_id: str,
+    reply_messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    current_text = _platform_delivery_text(reply_messages)
+    current_normalized = _normalize_platform_delivery_text(current_text)
+    if len(current_normalized) < 40:
+        return {"found": False, "match_type": "text_too_short"}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        if not _same_platform_contact(record, identity):
+            continue
+        if _platform_record_task_id(record) == str(current_task_id).strip():
+            continue
+        status = str(record.get("task_status") or "").strip()
+        if status not in {"sent", "sending"} and not str(record.get("sent_at") or "").strip():
+            continue
+        sent_messages = _platform_record_sent_messages(record)
+        sent_text = _platform_delivery_text(sent_messages)
+        sent_normalized = _normalize_platform_delivery_text(sent_text)
+        if len(sent_normalized) < 40:
+            continue
+        ratio = SequenceMatcher(None, current_normalized, sent_normalized).ratio()
+        paragraph_match = _platform_paragraph_duplicate_match(current_text, sent_text)
+        if ratio >= 0.92 or paragraph_match.get("matched"):
+            return {
+                "found": True,
+                "match_type": "near_duplicate_text",
+                "ratio": round(ratio, 4),
+                "paragraph_match": paragraph_match,
+                "duplicate_event_id": str(record.get("event_id") or ""),
+                "duplicate_task_id": _platform_record_task_id(record),
+                "duplicate_status": status,
+                "duplicate_sent_at": str(record.get("sent_at") or ""),
+            }
+    return {"found": False, "match_type": "none"}
+
+
+def _same_platform_contact(record: dict[str, Any], identity: dict[str, str]) -> bool:
+    if str(record.get("corp_id") or "").strip().lower() != str(identity.get("corp_id") or "").strip().lower():
+        return False
+    if str(record.get("wechat") or "").strip().lower() != str(identity.get("wechat") or "").strip().lower():
+        return False
+    record_external = str(record.get("external_userid") or "").strip().lower()
+    current_external = str(identity.get("external_userid") or "").strip().lower()
+    if record_external and current_external:
+        return record_external == current_external
+    return str(record.get("customer_id") or "").strip() == str(identity.get("customer_id") or "").strip()
+
+
+def _platform_record_task_id(record: dict[str, Any]) -> str:
+    platform_task = record.get("platform_task") if isinstance(record.get("platform_task"), dict) else {}
+    task_id = str(platform_task.get("task_id") or platform_task.get("taskId") or "").strip()
+    if task_id:
+        return task_id
+    event_id = str(record.get("event_id") or "").strip()
+    if event_id.startswith("platform_sop_task:"):
+        return event_id.split(":", 1)[1]
+    return ""
+
+
+def _platform_record_sent_messages(record: dict[str, Any]) -> list[dict[str, Any]]:
+    send_payload = record.get("send_payload") if isinstance(record.get("send_payload"), dict) else {}
+    request_payload = send_payload.get("request") if isinstance(send_payload.get("request"), dict) else {}
+    request_messages = request_payload.get("reply_messages")
+    if isinstance(request_messages, list) and request_messages:
+        return [item for item in request_messages if isinstance(item, dict)]
+    decision_payload = send_payload.get("decision") if isinstance(send_payload.get("decision"), dict) else {}
+    decision_messages = decision_payload.get("reply_messages")
+    if isinstance(decision_messages, list) and decision_messages:
+        return [item for item in decision_messages if isinstance(item, dict)]
+    stored_messages = record.get("reply_messages")
+    if isinstance(stored_messages, list):
+        return [item for item in stored_messages if isinstance(item, dict)]
+    return []
+
+
+def _platform_delivery_text(messages: list[Any]) -> str:
+    parts: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("type") or "").strip().lower() != "text":
+            continue
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        text = str(content.get("text") or content.get("content") or "").strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def _normalize_platform_delivery_text(text: str) -> str:
+    normalized = str(text or "").lower()
+    normalized = re.sub(r"https?://\S+", "", normalized)
+    return re.sub(r"[\s\W_]+", "", normalized, flags=re.UNICODE)
+
+
+def _platform_paragraph_duplicate_match(current_text: str, sent_text: str) -> dict[str, Any]:
+    current_parts = _platform_duplicate_paragraphs(current_text)
+    sent_parts = _platform_duplicate_paragraphs(sent_text)
+    matches: list[dict[str, Any]] = []
+    for current in current_parts:
+        current_normalized = _normalize_platform_delivery_text(current)
+        for sent in sent_parts:
+            sent_normalized = _normalize_platform_delivery_text(sent)
+            ratio = SequenceMatcher(None, current_normalized, sent_normalized).ratio()
+            if ratio >= 0.88:
+                matches.append(
+                    {
+                        "ratio": round(ratio, 4),
+                        "current_length": len(current_normalized),
+                        "sent_length": len(sent_normalized),
+                    }
+                )
+                break
+    if len(matches) >= 2:
+        return {"matched": True, "match_type": "multiple_paragraphs", "matches": matches[:5]}
+    if matches and max(match["current_length"] for match in matches) >= 80:
+        return {"matched": True, "match_type": "long_paragraph", "matches": matches[:5]}
+    return {"matched": False, "matches": matches[:5]}
+
+
+def _platform_duplicate_paragraphs(text: str) -> list[str]:
+    chunks = re.split(r"(?:\r?\n)+|[。！？!?；;]", str(text or ""))
+    paragraphs: list[str] = []
+    for chunk in chunks:
+        value = chunk.strip()
+        if len(_normalize_platform_delivery_text(value)) >= 18:
+            paragraphs.append(value)
+    return paragraphs
 
 
 def _manual_resend_messages(local_task: dict[str, Any], platform_task: dict[str, Any]) -> list[dict[str, Any]]:
