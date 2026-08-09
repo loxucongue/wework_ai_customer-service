@@ -343,6 +343,62 @@ def test_missing_trigger_and_timestamp_reports_freshness_unavailable() -> None:
     }
 
 
+def test_missing_platform_message_id_does_not_treat_trigger_echo_as_new_customer_turn() -> None:
+    result = newer_customer_message_after_trigger(
+        [
+            {
+                "direction": "customer",
+                "content": "效果怎么样，有图吗",
+                "msgtype": "text",
+                "created_at": "2026-08-09T17:44:48.999+00:00",
+            }
+        ],
+        trigger_message_id="trigger-1",
+        trigger_events=[
+            {
+                "msgid": "trigger-1",
+                "msgtime": "1786297488798",
+                "msgtype": "text",
+                "content": "效果怎么样，有图吗",
+            }
+        ],
+    )
+
+    assert result["status"] == "checked"
+    assert result["newer_customer_message"] is False
+
+
+def test_missing_platform_message_id_still_detects_different_new_customer_turn() -> None:
+    result = newer_customer_message_after_trigger(
+        [
+            {
+                "direction": "customer",
+                "content": "效果怎么样，有图吗",
+                "msgtype": "text",
+                "created_at": "2026-08-09T17:44:48.999+00:00",
+            },
+            {
+                "direction": "customer",
+                "content": "我问的是能不能一次改善",
+                "msgtype": "text",
+                "created_at": "2026-08-09T17:44:49.200+00:00",
+            },
+        ],
+        trigger_message_id="trigger-1",
+        trigger_events=[
+            {
+                "msgid": "trigger-1",
+                "msgtime": "1786297488798",
+                "msgtype": "text",
+                "content": "效果怎么样，有图吗",
+            }
+        ],
+    )
+
+    assert result["newer_customer_message"] is True
+    assert result["newer_message_refs"] == ["conv_002"]
+
+
 class _FreshnessCoordinator:
     async def is_latest(self, record: PlatformReplyRecord) -> bool:
         return True

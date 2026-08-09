@@ -183,7 +183,8 @@ def newer_customer_message_after_trigger(
                 "reason": "trigger_message_found",
             }
 
-    trigger_timestamp = _latest_trigger_event_timestamp(trigger_events or [], trigger_id=trigger_id)
+    trigger_event = _latest_trigger_event(trigger_events or [], trigger_id=trigger_id)
+    trigger_timestamp = _message_timestamp(trigger_event) if trigger_event else None
     if trigger_timestamp is None:
         return {
             "status": "unavailable",
@@ -192,12 +193,22 @@ def newer_customer_message_after_trigger(
             "reason": "trigger_message_not_found_and_timestamp_unavailable",
         }
     newer_refs: list[str] = []
+    trigger_echo_consumed = False
     for index, item in enumerate(ordered, start=1):
         timestamp = _message_timestamp(item)
         if timestamp is None or timestamp <= trigger_timestamp:
             continue
-        if message_role(item) == "customer":
-            newer_refs.append(_message_ref(item, index=index))
+        if message_role(item) != "customer":
+            continue
+        if (
+            not trigger_echo_consumed
+            and trigger_event
+            and timestamp - trigger_timestamp <= 2.0
+            and _same_customer_message(item, trigger_event)
+        ):
+            trigger_echo_consumed = True
+            continue
+        newer_refs.append(_message_ref(item, index=index))
     return {
         "status": "checked",
         "newer_customer_message": bool(newer_refs),
@@ -292,8 +303,8 @@ def _message_timestamp(item: dict[str, Any]) -> float | None:
     return None
 
 
-def _latest_trigger_event_timestamp(events: list[dict[str, Any]], *, trigger_id: str) -> float | None:
-    candidates: list[float] = []
+def _latest_trigger_event(events: list[dict[str, Any]], *, trigger_id: str) -> dict[str, Any]:
+    candidates: list[tuple[float, dict[str, Any]]] = []
     for item in events:
         if not isinstance(item, dict):
             continue
@@ -302,8 +313,24 @@ def _latest_trigger_event_timestamp(events: list[dict[str, Any]], *, trigger_id:
             continue
         parsed = _message_timestamp(item)
         if parsed is not None:
-            candidates.append(parsed)
-    return max(candidates) if candidates else None
+            candidates.append((parsed, item))
+    return max(candidates, key=lambda candidate: candidate[0])[1] if candidates else {}
+
+
+def _same_customer_message(message: dict[str, Any], trigger_event: dict[str, Any]) -> bool:
+    message_content = message_text(message.get("content")) or message_text(
+        message.get("text") or message.get("message") or message.get("body")
+    )
+    trigger_content = message_text(trigger_event.get("content")) or message_text(
+        trigger_event.get("text") or trigger_event.get("message") or trigger_event.get("body")
+    )
+    if not message_content or not trigger_content:
+        return False
+    if "".join(message_content.split()) != "".join(trigger_content.split()):
+        return False
+    message_type = _message_type(message)
+    trigger_type = _message_type(trigger_event)
+    return not message_type or not trigger_type or message_type == trigger_type
 
 
 def _parse_timestamp(value: Any) -> float | None:
