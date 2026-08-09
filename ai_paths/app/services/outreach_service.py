@@ -4824,6 +4824,7 @@ class OutreachService:
             return {"ok": True, "status": "skipped", "reason": "task_already_claimed"}
         plan_detail = self.repository.get_outreach_plan(str(task["plan_id"]))
         plan = plan_detail.get("plan") or {}
+        fresh_conversation_messages: list[dict[str, Any]] = []
         try:
             sent_today_loader = getattr(self.repository, "outreach_sent_today_count", None)
             if callable(sent_today_loader):
@@ -4911,6 +4912,11 @@ class OutreachService:
                         external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
                         limit=50,
                     )
+                    fresh_conversation_messages = [
+                        dict(message)
+                        for message in refresh.get("messages") or []
+                        if isinstance(message, dict)
+                    ]
                     customer_relation = (
                         refresh.get("customer_relation")
                         if isinstance(refresh.get("customer_relation"), dict)
@@ -5059,6 +5065,7 @@ class OutreachService:
                 task=task,
                 plan=plan,
                 reply_messages=reply_messages,
+                recent_messages=fresh_conversation_messages,
             )
             if payment_duplicate.get("active"):
                 reason = "unanswered_payment_card_duplicate"
@@ -5187,6 +5194,7 @@ class OutreachService:
         task: dict[str, Any],
         plan: dict[str, Any],
         reply_messages: list[dict[str, Any]],
+        recent_messages: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         if not any(
             isinstance(message, dict)
@@ -5194,13 +5202,16 @@ class OutreachService:
             for message in reply_messages
         ):
             return {"active": False, "reason": "task_has_no_payment_card"}
-        context = self.repository.recent_customer_context(
-            str(task["customer_id"]),
-            corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
-            wechat=str(task.get("wechat") or plan.get("wechat") or ""),
-            external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
-        )
-        duplicate = unanswered_payment_collection(context.get("recent_messages"))
+        checked_messages = recent_messages if recent_messages else None
+        if checked_messages is None:
+            context = self.repository.recent_customer_context(
+                str(task["customer_id"]),
+                corp_id=str(task.get("corp_id") or plan.get("corp_id") or ""),
+                wechat=str(task.get("wechat") or plan.get("wechat") or ""),
+                external_userid=str(task.get("external_userid") or plan.get("external_userid") or ""),
+            )
+            checked_messages = context.get("recent_messages") or []
+        duplicate = unanswered_payment_collection(checked_messages)
         return {
             **duplicate,
             "customer_id": str(task.get("customer_id") or ""),

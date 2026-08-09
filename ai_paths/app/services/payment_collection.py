@@ -144,14 +144,21 @@ def unanswered_payment_collection(messages: Any) -> dict[str, Any]:
 def _payment_history_customer_message(item: Any) -> bool:
     if not isinstance(item, dict):
         return False
-    role = str(item.get("role") or item.get("direction") or "").strip().lower()
+    role = str(
+        item.get("role") or item.get("direction") or item.get("sender_type") or ""
+    ).strip().lower()
     return role in {"user", "customer", "inbound"}
 
 
 def _payment_history_has_collection(item: Any) -> bool:
     if not isinstance(item, dict):
         return False
-    message_type = str(item.get("type") or item.get("message_type") or "").strip().lower()
+    message_type = str(
+        item.get("type")
+        or item.get("message_type")
+        or item.get("msgtype")
+        or ""
+    ).strip().lower()
     if message_type == "payment_collection":
         return True
     reply_messages = item.get("reply_messages")

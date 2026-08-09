@@ -49,6 +49,37 @@ class OutreachAutoSendTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("task-1", "skipped"), repository.task_statuses)
         self.assertEqual(repository.events[-1]["event_type"], "task_skipped_unanswered_payment_card")
 
+    async def test_fresh_platform_payment_card_wins_over_stale_local_context(self) -> None:
+        repository = _ExecutionRepository(order_status="no_order", recent_messages=[])
+        system = _SystemClient(
+            messages=[
+                {
+                    "direction": "staff",
+                    "sender_type": "staff",
+                    "msgtype": "payment_collection",
+                    "content": {"amount": 10},
+                    "created_at": "2026-08-09T10:00:00+08:00",
+                }
+            ]
+        )
+        service = OutreachService(
+            repository=repository,
+            model_client=object(),
+            system_client=system,
+            customer_context_service=_CustomerContextService(orders=[]),
+        )
+        service._generate_task_messages = AsyncMock(
+            return_value=[
+                {"type": "text", "order": 1, "content": {"text": "您点卡片把名额锁住。"}},
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+            ]
+        )
+
+        result = await service.execute_task("task-1")
+
+        self.assertEqual(result["reason"], "unanswered_payment_card_duplicate")
+        self.assertEqual(system.sent, [])
+
     async def test_auto_approved_task_sends_after_fresh_conversation_and_order_checks(self) -> None:
         repository = _ExecutionRepository(order_status="no_order", remaining_tasks=True)
         system = _SystemClient()
