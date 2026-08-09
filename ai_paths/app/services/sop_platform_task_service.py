@@ -184,6 +184,7 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 你是第三方平台 SOP 到期任务的客户触达决策与文案生成节点。
 
 # 核心目标
+本节点只处理首次加微满 24 小时后的任务，以及其他非首日任务。首日未开口任务已由代码原样发送，首日已开口任务已由代码消费但不发送，不会进入本节点。
 第三方平台只负责告诉系统“现在有一个任务到期”。你必须忽略平台原始待发送话术，把它只当审计信息；真正要发什么，必须基于：
 1. 客户完整聊天记录和最新状态；
 2. 平台客户触达知识库；
@@ -193,8 +194,11 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 
 # 决策原则
 1. 先判断硬边界。只有硬边界才允许 `no_send`。
-2. 如果客户有明确卡点，从 `knowledge_base.items` 中选择最贴近的知识组和段落。
-3. 如果客户没有明确卡点，也必须发送，优先推进效果展示、活动价格优惠、预约金锁名额等正常 SOP 内容。
+2. 如果客户有明确卡点，从 `knowledge_base.items` 中选择最贴近的知识组和段落，直接解决这个卡点，不得借机重复活动介绍或预约金催付。
+3. 如果客户没有明确卡点，必须先判断信息充分度：
+   - 客户从未真实开口，或历史只有自动欢迎语、简短问候、表情、图片等少量信息，无法可靠判断需求和卡点时，默认选择低压力触达。优先从知识库选择带真实效果图片/视频的效果展示段落，只输出 1 条自然短文本和该段落的效果媒体；短文本用于轻承接或问候，不得再追加销售 CTA。不要主动发送完整活动规则，不要催预约金，不要连续追问隐私或症状。
+   - 若知识库没有可用的效果媒体，只发送 1 条自然问候或低压力开放式承接，给客户一个容易回复的入口；不得用大段营销文案填充。
+   - 只有聊天历史已经提供明确兴趣、卡点或成交进度时，才允许推进与该进度匹配的活动价格或预约金内容。
 4. 知识库话术是参考方向，不是必须原样照抄。你必须结合最新聊天自然改写。
 5. 知识库中的性别称谓必须统一改为中性称谓，如“亲、您、顾客、很多客户”，禁止“美女、姐妹、姐姐、哥哥、小姐姐、女士、先生、男士、女孩子”等。
 6. 知识库中的旧价格、旧活动、旧项目必须改成当前权威业务事实：
@@ -207,13 +211,14 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 8. 风险承诺和退款口径由模型结合知识库与权威事实自然处理，本节点不因为话术中存在强销售表达就自动阻断；但不得编造当前事实中不存在的项目、门店、订单、支付成功、预约成功、赠品或额外服务。
 9. 图片/视频是重要消息类型。若选中段落包含 image/video，输出中要保留对应消息类型和 URL；不要把图片视频变成纯文本描述。
 10. 文案要像微信短聊，直接解决卡点或推进下一步，不要写内部分析、流程解释、模型判断。
+11. 必须逐条对照最近聊天和近期已发送的第三方 SOP：已经完整讲过的活动规则、268 元价格、10 元预约金、退款口径、效果说明或同一素材，不得换句话重复。应改选尚未交付的新价值；若客户信息不足，宁可轻问候并发送不同的真实效果素材，也不要重复营销。
 
 # 知识库选择规则
 - `knowledge_base.items[].id` 是 knowledgeId。
 - `paragraphs[].paragraphNo` 是 knowledgeParagraphNo。
 - 选择某个段落时，必须把该段落所有合适的 text/image/video 按原顺序输出；文本可以改写，媒体 URL 不得改。
 - 如果同一段落有明显旧价格、性别称谓、旧项目，改写文本即可，媒体仍可保留。
-- 如果知识库没有合适卡点段落，使用 `authoritative_business_facts` 生成效果或价格优惠触达，并把 `knowledgeId` 和 `knowledgeParagraphNo` 置空。
+- 如果知识库没有合适卡点段落，信息充分时可使用 `authoritative_business_facts` 生成与当前进度匹配的内容；信息不足时只能生成轻问候/低压力承接。两种情况都把 `knowledgeId` 和 `knowledgeParagraphNo` 置空。
 
 # no_send 边界
 只允许以下原因：
@@ -246,7 +251,7 @@ SOP_PLATFORM_KNOWLEDGE_TASK_PROMPT = """
 
 `send` 时 `reply_messages` 必须非空。`no_send` 时 `reply_messages` 必须为空，但也必须输出 sceneName、sceneCode、reason_code 和 remark 用于回写。
 命中知识库时：`sceneName = 分类名 + "｜" + 知识库名称`，`sceneCode = "kb_" + categoryId + "_" + knowledgeId`。
-无卡点兜底发送时：`sceneName` 使用 `正常推进｜效果展示` 或 `正常推进｜活动价格`，`sceneCode` 使用 `normal_effect` 或 `normal_activity_price`。
+无卡点兜底发送时：信息不足使用 `正常推进｜轻触达效果展示` 或 `正常推进｜轻问候`，`sceneCode` 使用 `normal_light_effect` 或 `normal_light_greeting`；仅当历史足以支持活动推进时，才可使用 `正常推进｜活动价格` / `normal_activity_price`。
 """.strip()
 
 
@@ -1125,10 +1130,19 @@ class SopPlatformTaskService:
                         "decision": duplicate_decision,
                         "platform_response": completed,
                     }
-                near_duplicate = await self._recent_near_duplicate_platform_delivery(
-                    identity=identity,
-                    task_id=task_id,
-                    reply_messages=decision["reply_messages"],
+                first_day_original_delivery = (
+                    context.get("source") == "first_day_platform_sop_route"
+                    and context.get("opening_state") == "unopened"
+                    and context.get("route_reason") == "first_add_unopened_original_platform_content"
+                )
+                near_duplicate = (
+                    {"found": False, "match_type": "first_day_platform_content_owned_by_platform"}
+                    if first_day_original_delivery
+                    else await self._recent_near_duplicate_platform_delivery(
+                        identity=identity,
+                        task_id=task_id,
+                        reply_messages=decision["reply_messages"],
+                    )
                 )
                 if near_duplicate.get("found"):
                     duplicate_decision = {
@@ -1381,10 +1395,41 @@ class SopPlatformTaskService:
                 "first_add_age_seconds": round(age_seconds, 3),
                 "activity": activity,
             }
+        original_messages = _platform_messages(platform_task)
+        if not original_messages:
+            return {
+                "decision": {
+                    "decision": "no_send",
+                    "reason": "first_add_unopened_platform_content_empty",
+                    "reason_code": "invalid_task",
+                    "sceneName": "不发送｜首日平台内容为空",
+                    "sceneCode": "no_send_invalid_first_day_content",
+                    "knowledgeId": 0,
+                    "knowledgeParagraphNo": 0,
+                    "remark": "首日未开口任务要求原样发送，但平台未提供可发送消息",
+                    "reply_messages": [],
+                },
+                "route_checked": True,
+                "opening_state": "unopened",
+                "route_reason": "first_add_unopened_platform_content_empty",
+                "first_add_age_seconds": round(age_seconds, 3),
+                "activity": activity,
+            }
         return {
+            "decision": {
+                "decision": "send",
+                "reason": "first_add_unopened_original_platform_content",
+                "reason_code": "send",
+                "sceneName": "首日未开口｜平台原始SOP",
+                "sceneCode": "first_day_unopened_original_sop",
+                "knowledgeId": 0,
+                "knowledgeParagraphNo": 0,
+                "remark": "首日客户未真实开口，按平台配置原消息、原类型、原顺序发送",
+                "reply_messages": original_messages,
+            },
             "route_checked": True,
             "opening_state": "unopened",
-            "route_reason": "first_add_unopened_continued_normal_model_chain",
+            "route_reason": "first_add_unopened_original_platform_content",
             "first_add_age_seconds": round(age_seconds, 3),
             "activity": activity,
         }
@@ -2247,7 +2292,7 @@ def _raw_message_epoch(item: dict[str, Any]) -> float:
 
 
 def _first_add_epoch(task: dict[str, Any]) -> float:
-    direct_keys = (
+    explicit_keys = (
         "firstAddedAt",
         "first_added_at",
         "firstAddAt",
@@ -2256,20 +2301,25 @@ def _first_add_epoch(task: dict[str, Any]) -> float:
         "add_wechat_time",
         "friendAddedAt",
         "friend_added_at",
+    )
+    platform_event_keys = (
+        "operateTime",
+        "operate_time",
+        "createTime",
+        "create_time",
         "created_at",
         "upstream_created_at",
-        "scheduledAt",
-        "scheduled_at",
     )
-    for key in direct_keys:
+    for key in (*explicit_keys, *platform_event_keys):
         epoch = _parse_epoch(task.get(key))
         if epoch:
             return epoch
-    for container_key in ("customer", "sop", "scene", "metadata", "extra"):
+    # scene.createTime is the SOP scene configuration time, not the customer's add time.
+    for container_key in ("customer", "sop", "metadata", "extra"):
         container = task.get(container_key)
         if not isinstance(container, dict):
             continue
-        for key in direct_keys:
+        for key in (*explicit_keys, *platform_event_keys):
             epoch = _parse_epoch(container.get(key))
             if epoch:
                 return epoch
@@ -2926,6 +2976,19 @@ def _context_audit(context: dict[str, Any]) -> dict[str, Any]:
         if isinstance(context.get("first_day_platform_sop_route"), dict)
         else {}
     )
+    if not first_day_route and context.get("source") == "first_day_platform_sop_route":
+        first_day_route = {
+            key: context.get(key)
+            for key in (
+                "route_checked",
+                "opening_state",
+                "route_reason",
+                "first_add_age_seconds",
+                "activity",
+                "conversation_error",
+            )
+            if context.get(key) not in (None, "")
+        }
     return {
         "source": str(context.get("source") or ""),
         "conversation_count": int(context.get("conversation_count") or 0),
