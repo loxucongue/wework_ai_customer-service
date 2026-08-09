@@ -45,6 +45,7 @@ REPLY_TARGETED_REPAIR_SYSTEM_PROMPT = """你是企业微信淡斑活动的最终
 要求：
 - 只输出严格 JSON 对象，顶层必须包含非空 `reply_messages` 数组。
 - 只修复给定 `violation` 和 `repair_hint`，不要改业务场景，不要改门店、价格、支付、图片等已给定事实。
+- `authorized_sop_delivery_manifest.active=true` 时，必须逐条保留清单中的必需文本、图片、顺序和核心事实；局部措辞违规只能最小修改对应句子，不能重写或删减整套交付。
 - 如果违规是“承诺发地址/导航但没有 store_address”，只能二选一：要么补合法 `store_address`，要么删掉这类承诺并改成收区县、片区或门店名。
 - 如果违规是“承诺发预约金入口但没有 payment_collection”，只能二选一：要么补合法 `payment_collection`，要么删掉发入口承诺并改成自然承接。
 - 如果违规是“承诺发效果图/案例图但没有 image”，只能二选一：要么补合法 image，要么删掉发图承诺并改成文字承接。
@@ -661,6 +662,7 @@ def _should_use_targeted_reply_repair(error: str) -> bool:
             "reply_contract_required_deliveries_missing",
             "known_customer_field_requested_again",
             "adjacent_payment_collection_not_allowed",
+            "nearby_store_claim_without_location_fact",
         )
     )
 
@@ -1000,7 +1002,7 @@ def _reply_repair_hint(error: str) -> str:
     if "distance_fact_required" in error:
         return "没有 store_resolution_fact.ranking_method=haversine 和 customer_claim_level=relative_near 时，不要输出最近、离您最近、较近、就近或交通方便等排序表达。只使用已有门店事实，并按当前主线自然承接。"
     if "nearby_store_claim_without_location_fact" in error:
-        return "没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”。请改成“我给您看下门店/对下城市或区域”，不要编距离感。"
+        return "必须完整保留 authorized_sop_delivery_manifest 的全部必需文本、图片、顺序和核心事实，只最小修改违规收尾。没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”；可改成询问客户所在城市或区域后再看门店，不要编距离感。"
     if "available_time_fact_required" in error:
         return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“正面说明斑点改善效果 + 发送 case_facts.image_url + 完成线上活动登记后可到门店免费检测并听取具体情况讲解”。"
     if "appointment_confirmation_fact_required" in error:
