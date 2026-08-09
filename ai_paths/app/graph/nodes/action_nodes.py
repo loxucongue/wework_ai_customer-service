@@ -11,6 +11,7 @@ from typing import Any, Callable
 from app.graph.nodes.action_module_outputs import build_planner_fact_output
 from app.graph.nodes.action_task_results import ActionToolTask, merge_action_task_results
 from app.graph.nodes.appointment_time_utils import normalize_time_text
+from app.graph.nodes.conversation_state import build_conversation_state
 from app.graph.nodes.sent_message_summary import latest_single_store_card_anchor_id
 from app.graph.planner.runtime_plan import (
     planner_primary_task,
@@ -258,6 +259,7 @@ def create_execute_actions_node(
                 "fact_envelope": fact_envelope,
                 "trace": state.get("trace", []),
             }
+            output["conversation_state"] = build_conversation_state({**execution_state, **output})
             span["output_snapshot"] = output
             if recovered_store_knowledge:
                 return {**output, "customer_store_knowledge": recovered_store_knowledge}
@@ -1009,7 +1011,7 @@ def _filter_case_studies_by_sent_documents(
     if not isinstance(result, dict):
         return
     items = result.get("items") if isinstance(result.get("items"), list) else []
-    sent_ids = _sent_case_document_ids(state)
+    sent_ids = _sent_case_document_ids(state) | _planned_case_excluded_document_ids(state)
     raw_ids = [_document_id(item) for item in items if isinstance(item, dict)]
     visible_items = [
         item
@@ -1039,6 +1041,24 @@ def _sent_case_document_ids(state: AgentState) -> set[str]:
     profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else {}
     raw = profile.get("sent_case_document_ids") if isinstance(profile.get("sent_case_document_ids"), list) else []
     return {str(item).strip() for item in raw if str(item).strip()}
+
+
+def _planned_case_excluded_document_ids(state: AgentState) -> set[str]:
+    output: set[str] = set()
+    for key in ("planner_tool_calls", "required_tools"):
+        for item in state.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("name") or "") != "kb_search":
+                continue
+            if str(item.get("kb_name") or item.get("purpose") or "") != "case_studies":
+                continue
+            output.update(
+                str(document_id).strip()
+                for document_id in item.get("excluded_document_ids") or []
+                if str(document_id or "").strip()
+            )
+    return output
 
 
 def _document_id(item: dict[str, Any]) -> str:

@@ -53,7 +53,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 需要具体门店/地址/停车/营业时间/导航/附近候选时，用 customer_store_lookup。
 - 需要最近/哪家更近/地标附近排序时，先 customer_store_lookup，再 distance_calculate；该工具只按经纬度直线距离排序，客户可见不要输出公里、分钟、车程或路线。
 - 当前普通流程只登记到店日期和时间意向，不调用 available_time/create_order_plan；没有既有正式预约事实不能承诺已安排或已留位。
-- 效果、怕没效果、怕反黑、要效果图或担心一次可能没效果时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。一次效果先明确“当前淡斑效果活动价就是268元、绝大多数客户都是一次就好”，再用真实案例建立信任；完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解。
+- 效果、怕没效果、怕反黑、要效果图、质疑只是淡化或担心一次可能没效果时，用 kb_search(case_studies)，不要让客户先发照片做线上诊断。效果定义与次数疑虑统一先明确“我们是做斑点改善的，绝大多数顾客一次就有很好的改善效果”，再说明完成线上活动登记后可到门店免费做皮肤检测并由门店结合具体情况讲解，最后交付真实案例图；当前轮禁止报价、活动规则和预约金卡。
 - 客户说不做了、不要了或算了但同句给出效果、次数、价格、距离、时间或信任等具体原因时，按可挽回异议针对原因处理一次，不得直接 terminal/close。只有明确要求停止联系、投诉退款、当前风险，或近期已处理同一异议后再次强拒绝才停止推进。
 - 客户已经发送皮肤图片时直接使用 `image_info`；需要效果证据只查 case_studies。当前没有询问门店且近聊已有门店锚点时，不得因图片 URL 或合并消息调用门店工具；案例后必须推进一个未完成主线动作。
 - 预约金由 payment_decision 决定；客户口头声称已付不能确认到账。当前订单 `prepay_paid>0`、清晰支付成功截图或结构化 `deposit_state=paid_by_platform_transfer_event` 才是权威已付，可推进付款后信息确认。
@@ -84,7 +84,9 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "store_binding_decision": {"status":"none | accepted_explicit | accepted_implicit | exploring | rejected | ambiguous","store_id":"","confidence":"high | medium | low","source":"","basis":[]},
   "order_decision": {"action":"none | create_work | use_existing","order_id":"","store_id":"","amount":10,"source":"","basis":[]},
   "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
-  "sales_progression": {"status":"continue | pause | terminal","target_stage":"need_and_case | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[]},
+  "current_turn_resolution": {"required":true,"customer_question":"","resolution_goal":"","required_facts":[]},
+  "sales_progression": {"status":"continue | pause | terminal","target_stage":"need_and_case | effect_proof | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[],"required_message_types":["text"],"source_pack_ids":[],"asset_ids":[],"reason":""},
+  "reply_contract": {"locked_facts":[],"forbidden_claims":[],"known_fields_not_to_request":[],"required_deliveries":[{"message_type":"text","asset_id":"","source_pack_id":""}]},
   "closing_move": {"action":"none | ask_city | ask_spot_history | send_case | introduce_offer | ask_store_choice | send_payment | manual_transfer | ask_party_size | ask_registration | ask_visit_intent | resolve_risk | close","mainline_stage":"need_and_case | trust | store | activity | deposit | registration | appointment | service | close | risk","reason":"","required_slot":"","must_not_repeat":[]},
   "reply_messages": [],
   "tool_calls": [],
@@ -435,6 +437,8 @@ def _planner_call_output(plan: dict[str, Any]) -> dict[str, Any]:
         "order_decision": plan.get("order_decision", {}),
         "appointment_decision": plan.get("appointment_decision", {}),
         "sales_progression": plan.get("sales_progression", {}),
+        "current_turn_resolution": plan.get("current_turn_resolution", {}),
+        "reply_contract": plan.get("reply_contract", {}),
         "closing_move": plan.get("closing_move", {}),
         "reply_messages": len(plan.get("planner_reply_messages", [])),
         "tool_calls": len(plan.get("planner_tool_calls", [])),
@@ -482,8 +486,11 @@ def _planner_payload_for_model(state: AgentState) -> dict[str, Any]:
             location_hints=_store_scope_location_hints(state, current_known_store, store_candidate),
         ),
         "sent_message_summary": sent_message_summary,
+        "conversation_state": state.get("conversation_state") or {},
         "sop_progress_evidence": _sop_progress_evidence_for_planner(state),
         "sop_gate_decision": gate_decision,
+        "sop_gate_candidate_messages": state.get("sop_gate_candidate_messages") or [],
+        "sop_delivery_manifest": state.get("sop_delivery_manifest") or {},
         "precision_qa_playbook": precision_qa_context_for_planner(
             selected_scene_id,
             include_answer_details_in_index=False,
@@ -508,6 +515,7 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "image_info": base.get("image_info"),
         "category_id": base.get("category_id"),
         "transaction_facts": base.get("transaction_facts"),
+        "conversation_state": base.get("conversation_state"),
         "current_known_store": base.get("current_known_store"),
         "store_candidate": base.get("store_candidate"),
         "turn_evidence": base.get("turn_evidence"),
@@ -516,6 +524,8 @@ def _compact_timeout_retry_payload_for_model(state: AgentState, *, previous_erro
         "sent_message_summary": base.get("sent_message_summary"),
         "sop_progress_evidence": base.get("sop_progress_evidence"),
         "sop_gate_decision": base.get("sop_gate_decision"),
+        "sop_gate_candidate_messages": base.get("sop_gate_candidate_messages"),
+        "sop_delivery_manifest": base.get("sop_delivery_manifest"),
         "precision_qa_playbook": _compact_precision_qa_for_timeout(
             base.get("precision_qa_playbook"),
             base.get("sop_gate_decision"),
@@ -869,7 +879,7 @@ def _sop_gate_decision_for_planner(state: AgentState) -> dict[str, Any]:
             "need_ai_reply": raw.get("need_ai_reply"),
             "coverage": raw.get("coverage"),
             "reason": raw.get("reason"),
-            "task": _compact_gate_task(raw.get("active_task")),
+            "task": _compact_gate_task(raw.get("task") or raw.get("active_task")),
             "priority_question_id": raw.get("priority_question_id"),
             "selected_scene_id": raw.get("selected_scene_id") or raw.get("priority_question_id"),
             "resume_stage": raw.get("resume_stage"),

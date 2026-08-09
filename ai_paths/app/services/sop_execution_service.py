@@ -18,7 +18,12 @@ from app.policies.sales_flow import (
     sales_mainline_for_model,
 )
 from app.prompts.global_contract import GLOBAL_BUSINESS_RHYTHM_CONTRACT, GLOBAL_STRUCTURED_NODE_CONTRACT
-from app.prompts.sop_chat_gate import build_sop_chat_gate_messages, build_sop_chat_gate_repair_messages
+from app.prompts.sop_chat_gate import (
+    build_sop_chat_gate_mainline_review_messages,
+    build_sop_chat_gate_messages,
+    build_sop_chat_gate_repair_messages,
+    should_review_sop_chat_gate_mainline,
+)
 from app.schemas import ChatRequest
 from app.services.customer_payment_state import is_paid_deposit_state, resolved_payment_fact
 from app.services.customer_scope import customer_scope_from_identity
@@ -734,6 +739,21 @@ class SopExecutionService:
         output = data if isinstance(data, dict) else {}
         violations = _chat_gate_output_violations(output, selector_input)
         if not violations:
+            if should_review_sop_chat_gate_mainline(selector_input, output):
+                try:
+                    reviewed = await self.model_client.chat_json(
+                        build_sop_chat_gate_mainline_review_messages(selector_input, output),
+                        tier="reply",
+                        temperature=0,
+                        deadline_monotonic=deadline_monotonic,
+                    )
+                except Exception:  # noqa: BLE001 - a valid initial route remains usable
+                    reviewed = {}
+                reviewed_output = reviewed if isinstance(reviewed, dict) else {}
+                if reviewed_output and not _chat_gate_output_violations(reviewed_output, selector_input):
+                    reviewed_output["mainline_review_applied"] = True
+                    reviewed_output["initial_output"] = output
+                    return reviewed_output
             return output
         repaired = await self.model_client.chat_json(
             build_sop_chat_gate_repair_messages(selector_input, output, violations),
@@ -2971,6 +2991,7 @@ def _chat_gate_output_violations(
             violations.append("resume_stage_must_match_selected_pack")
         if pack_id in packs:
             violations.extend(_chat_gate_party_size_violations(selector_output, selector_input, packs[pack_id]))
+            violations.extend(_chat_gate_payment_direct_send_violations(route, packs[pack_id]))
             violations.extend(_chat_gate_pressure_violations(selector_input, packs[pack_id]))
     else:
         if pack_id:
@@ -2982,6 +3003,21 @@ def _chat_gate_output_violations(
         }:
             violations.append("unknown_resume_stage")
     return violations
+
+
+def _chat_gate_payment_direct_send_violations(route: str, selected_pack: dict[str, Any]) -> list[str]:
+    if route != "sop_only":
+        return []
+    gate = selected_pack.get("payment_collection_gate") if isinstance(selected_pack.get("payment_collection_gate"), dict) else {}
+    has_payment = bool(gate.get("has_payment_collection"))
+    if not has_payment:
+        has_payment = any(
+            isinstance(message, dict) and _string(message.get("type")) == "payment_collection"
+            for message in selected_pack.get("reply_messages") or []
+        )
+    if has_payment:
+        return ["gate_payment_conflict:payment_collection_pack_cannot_sop_only"]
+    return []
 
 
 def _chat_gate_pressure_violations(

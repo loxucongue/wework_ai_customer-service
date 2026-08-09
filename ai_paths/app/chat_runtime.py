@@ -12,6 +12,11 @@ from app.chat_runtime_helpers import failed_state_from_exception, safe_repositor
 from app.chat_runtime_metrics import collect_model_usage, collect_tool_calls
 from app.config import Settings
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
+from app.graph.nodes.conversation_history_fetch import (
+    conversation_fetch_params,
+    newer_customer_message_after_trigger,
+)
+from app.graph.nodes.reply_delivery_manifest import build_sop_delivery_manifest
 from app.graph.planner.runtime_plan import planner_public_route
 from app.graph.state import AgentState
 from app.schemas import ChatRequest, ChatResponse, ReplyMessage
@@ -161,6 +166,10 @@ class ChatRuntime:
         initial_state["sop_gate_decision"] = {
             "route": str(sop_gate.get("route") or sop_gate.get("mode") or ""),
             "coverage": str(sop_gate.get("coverage") or ""),
+            "reason": str(sop_gate.get("reason") or ""),
+            "task": dict(sop_gate.get("active_task") or {})
+            if isinstance(sop_gate.get("active_task"), dict)
+            else {},
             "priority_question_id": str(sop_gate.get("priority_question_id") or ""),
             "selected_scene_id": str(
                 sop_gate.get("selected_scene_id") or sop_gate.get("priority_question_id") or ""
@@ -180,40 +189,13 @@ class ChatRuntime:
             "source": "chat_sop_gate_model",
         }
         initial_state["sop_progress_evidence"] = dict(sop_gate.get("sop_progress_evidence") or {})
+        initial_state["sop_gate_candidate_messages"] = [
+            dict(message)
+            for message in (sop_gate.get("reply_messages") or [])
+            if isinstance(message, dict)
+        ]
+        initial_state["sop_delivery_manifest"] = build_sop_delivery_manifest(sop_gate)
         _append_sop_gate_trace(initial_state, sop_gate)
-        if sop_gate.get("send_sop"):
-            sop_state = self._sop_reply_state(initial_state, sop_gate)
-            if sop_gate.get("need_ai_reply"):
-                final_state = await self._run_sop_ai_reply_sync(
-                    request=effective_request,
-                    conversation_id=conversation_id,
-                    initial_state=initial_state,
-                    sop_state=sop_state,
-                    control_record=control_record,
-                )
-                return self._persist_and_build_response(
-                    request=request,
-                    request_id=request_id,
-                    conversation_id=conversation_id,
-                    final_state=final_state,
-                    allow_empty_reply=False,
-                )
-            if self._platform_reply_coordinator:
-                await self._platform_reply_coordinator.complete(control_record)
-            self._schedule_background_profile_update(
-                conversation_id=conversation_id,
-                state=sop_state,
-                background_tasks=background_tasks,
-                reason="sop_gate_sync_reply",
-            )
-            response = self._persist_and_build_response(
-                request=request,
-                request_id=request_id,
-                conversation_id=conversation_id,
-                final_state=sop_state,
-                allow_empty_reply=True,
-            )
-            return response
         if _sop_gate_terminal_no_reply(sop_gate):
             terminal_state = dict(initial_state)
             terminal_state["reply_messages"] = []
@@ -284,6 +266,11 @@ class ChatRuntime:
             "status": "not_required",
         }
         _set_async_final_control(planner_state, planner_state["async_final_reply"])
+        planner_state = await self._apply_platform_freshness_guard(
+            request=request,
+            state=planner_state,
+            control_record=control_record,
+        )
         response = self._persist_and_build_response(
             request=request,
             request_id=request_id,
@@ -399,7 +386,15 @@ class ChatRuntime:
                 if self._platform_reply_coordinator:
                     await self._platform_reply_coordinator.complete(control_record)
                 return state
-            if not messages:
+            final_state = await self._apply_platform_freshness_guard(
+                request=request,
+                state=final_state,
+                control_record=control_record,
+            )
+            if _final_state_superseded(final_state):
+                return final_state
+            messages = final_state.get("reply_messages") if isinstance(final_state.get("reply_messages"), list) else []
+            if not messages and not bool(final_state.get("reply_blocked")):
                 messages = _deterministic_final_fallback_messages(final_state)
                 final_state["reply_messages"] = messages
                 final_state["reply_source"] = "deterministic_sync_empty_reply_fallback"
@@ -408,8 +403,8 @@ class ChatRuntime:
                 )
             result = {
                 "scheduled": False,
-                "status": "completed_sync",
-                "reason": "platform_sync_final_reply",
+                "status": "blocked" if final_state.get("reply_blocked") else "completed_sync",
+                "reason": "reply_contract_blocked" if final_state.get("reply_blocked") else "platform_sync_final_reply",
                 "reply_messages": messages,
             }
             final_state["async_final_reply"] = result
@@ -437,6 +432,70 @@ class ChatRuntime:
         finally:
             if self._platform_reply_coordinator:
                 await self._platform_reply_coordinator.complete(control_record)
+
+    async def _apply_platform_freshness_guard(
+        self,
+        *,
+        request: ChatRequest,
+        state: AgentState,
+        control_record: PlatformReplyRecord | None,
+    ) -> AgentState:
+        """Drop a completed reply when the platform already has a newer customer turn."""
+
+        if not control_record or not self._outreach_send_client:
+            return state
+        if self._platform_reply_coordinator and not await self._platform_reply_coordinator.is_latest(control_record):
+            return self._superseded_state(state, control_record)
+
+        params = conversation_fetch_params(
+            state,
+            request_context=state.get("request_context") if isinstance(state.get("request_context"), dict) else {},
+            limit=50,
+        )
+        started_at = time.perf_counter()
+        try:
+            result = await self._outreach_send_client.fetch_conversation(**params)
+        except Exception as exc:
+            result = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        messages = result.get("messages") if isinstance(result, dict) and isinstance(result.get("messages"), list) else []
+        comparison = newer_customer_message_after_trigger(
+            messages,
+            trigger_message_id=control_record.message_id,
+            trigger_events=control_record.merged_input_events,
+        )
+        fetch_status = str(result.get("status") or "failed") if isinstance(result, dict) else "failed"
+        freshness = {
+            "status": "checked" if fetch_status == "ok" and comparison.get("status") != "unavailable" else "unavailable",
+            "fetch_status": fetch_status,
+            "trigger_message_id": control_record.message_id,
+            "newer_customer_message": bool(comparison.get("newer_customer_message")),
+            "newer_message_refs": list(comparison.get("newer_message_refs") or []),
+            "reason": str(comparison.get("reason") or result.get("reason") or result.get("error") or "")[:500],
+            "duration_ms": int((time.perf_counter() - started_at) * 1000),
+        }
+        state["reply_freshness_check"] = freshness
+        _append_platform_freshness_trace(state, freshness)
+        if fetch_status == "ok" and comparison.get("newer_customer_message"):
+            stale_state = self._superseded_state(state, control_record)
+            stale_state["trace"] = list(state.get("trace") or [])
+            stale_state["errors"] = list(state.get("errors") or [])
+            stale_state["warnings"] = list(state.get("warnings") or [])
+            stale_state["reply_freshness_check"] = {
+                **freshness,
+                "status": "superseded",
+                "reason": "newer_customer_message_detected_after_trigger",
+            }
+            stale_state["reply_source"] = "platform_superseded"
+            return stale_state
+        if freshness["status"] == "unavailable":
+            state.setdefault("warnings", []).append(
+                {
+                    "node": "platform_reply_freshness",
+                    "message": "freshness_check_unavailable",
+                    "detail": freshness,
+                }
+            )
+        return state
 
     async def _run_sop_ai_reply_sync(
         self,
@@ -962,6 +1021,29 @@ class ChatRuntime:
             _set_sync_return(final_state, "empty", [])
             allow_empty_reply = True
         raw_reply_messages = final_state.get("reply_messages") or []
+        gate = final_state.get("sop_gate") if isinstance(final_state.get("sop_gate"), dict) else {}
+        gate_task = gate.get("task") if isinstance(gate.get("task"), dict) else {}
+        if str(gate_task.get("status") or "") == "pending":
+            reply_source = str(final_state.get("reply_source") or "")
+            if (
+                bool(final_state.get("reply_blocked"))
+                or final_state.get("errors")
+                or reply_source.startswith("deterministic_")
+            ):
+                _fail_deferred_chat_sop_task(
+                    self._sop_execution_service,
+                    final_state,
+                    error=str(final_state.get("recovery_reason") or reply_source or "unified_reply_chain_failed"),
+                )
+            elif raw_reply_messages:
+                _confirm_deferred_chat_sop_task(
+                    self._sop_execution_service,
+                    final_state,
+                    request_id=request_id,
+                    reply_messages=[item for item in raw_reply_messages if isinstance(item, dict)],
+                )
+        if bool(final_state.get("reply_blocked")):
+            allow_empty_reply = True
         if not raw_reply_messages and not allow_empty_reply:
             final_state.setdefault("errors", []).append(
                 {
@@ -1361,6 +1443,25 @@ def _append_sync_final_trace(state: AgentState, result: dict[str, Any]) -> None:
     }
     entry["finished_at"] = utc_now_iso()
     entry["duration_ms"] = int((time.perf_counter() - started) * 1000)
+    state.setdefault("trace", []).append(entry)
+
+
+def _append_platform_freshness_trace(state: AgentState, result: dict[str, Any]) -> None:
+    entry = {
+        "node": "platform_reply_freshness",
+        "started_at": utc_now_iso(),
+        "input_snapshot": compact(
+            {
+                "request_id": state.get("request_id", ""),
+                "trigger_message_id": result.get("trigger_message_id", ""),
+            }
+        ),
+        "tool_calls": [{"name": "ai_outreach_conversation", "output": compact(result)}],
+        "error": result.get("reason") if result.get("status") == "unavailable" else None,
+        "output_snapshot": compact(result),
+    }
+    entry["finished_at"] = utc_now_iso()
+    entry["duration_ms"] = int(result.get("duration_ms") or 0)
     state.setdefault("trace", []).append(entry)
 
 

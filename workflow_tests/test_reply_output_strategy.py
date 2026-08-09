@@ -1474,7 +1474,7 @@ def test_planner_non_payment_action_clears_stale_payment_method() -> None:
     assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
 
 
-def test_planner_send_now_is_not_downgraded_by_short_message_guard() -> None:
+def test_planner_adjacent_payment_card_is_downgraded_even_for_short_message() -> None:
     plan = build_planner_plan_v2(
         {
             **_ACTIVITY_INTRO_EVIDENCE,
@@ -1510,11 +1510,11 @@ def test_planner_send_now_is_not_downgraded_by_short_message_guard() -> None:
         },
     )
 
-    assert plan["payment_action"] == "send_now"
+    assert plan["payment_action"] == "explain_existing"
     assert plan["conversion_stage"] == "deposit_push"
     assert plan["next_step"] == "send_deposit"
-    assert any(item["type"] == "payment_collection" for item in plan["planner_reply_messages"])
-    assert not any(item.get("missing") == "payment_collection_blocked_by_payment_action" for item in plan["tool_policy_violations"])
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    assert "send_adjacent_payment_collection" in plan["reply_contract"]["forbidden_claims"]
 
 
 def test_need_tools_does_not_emit_intermediate_customer_reply() -> None:
@@ -1952,7 +1952,7 @@ def test_payment_decision_after_paid_next_step_removes_card() -> None:
     assert plan["payment_decision"]["action"] == "after_paid_next_step"
 
 
-def test_payment_decision_resend_inherits_last_payment_amount() -> None:
+def test_payment_decision_adjacent_resend_uses_existing_card_explanation() -> None:
     plan = build_planner_plan_v2(
         {
             **_payment_order_state(amount=20),
@@ -1978,12 +1978,13 @@ def test_payment_decision_resend_inherits_last_payment_amount() -> None:
             "tool_calls": [],
         },
     )
-    payment = [item for item in plan["planner_reply_messages"] if item["type"] == "payment_collection"][0]
-    assert plan["payment_decision"]["action"] == "resend"
-    assert payment["content"]["amount"] == 20
+    assert plan["payment_decision"]["action"] == "explain"
+    assert plan["payment_action"] == "explain_existing"
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    assert "20" in str(plan["planner_reply_messages"])
 
 
-def test_payment_collection_amount_inherits_recent_twenty_yuan_context() -> None:
+def test_recent_twenty_yuan_card_is_not_sent_again_in_adjacent_reply() -> None:
     state = {
         **_ACTIVITY_INTRO_EVIDENCE,
         "normalized_content": _u(r"\u4eba\u5462"),
@@ -2016,8 +2017,9 @@ def test_payment_collection_amount_inherits_recent_twenty_yuan_context() -> None
         },
     )
 
-    payment = [item for item in plan["planner_reply_messages"] if item["type"] == "payment_collection"][0]
-    assert payment["content"]["amount"] == 20
+    assert plan["payment_action"] == "explain_existing"
+    assert all(item["type"] != "payment_collection" for item in plan["planner_reply_messages"])
+    assert "20" in str(plan["planner_reply_messages"])
 
 
 def test_payment_collection_amount_infers_recent_companion_confirmation() -> None:
@@ -4759,24 +4761,25 @@ def test_current_health_risk_hold_blocks_payment_collection() -> None:
         )
 
 
-def test_reply_validation_allows_payment_collection_after_previous_send() -> None:
-    validate_reply_consistency(
-        [
+def test_reply_validation_rejects_adjacent_payment_collection_after_previous_send() -> None:
+    with pytest.raises(ValueError, match="adjacent_payment_collection_not_allowed"):
+        validate_reply_consistency(
+            [
+                {
+                    "type": "text",
+                    "order": 1,
+                    "content": {"text": "可以的，我这边给您发10元预约金入口，先帮您锁活动名额。"},
+                },
+                {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": "锁活动名额"}},
+            ],
             {
-                "type": "text",
-                "order": 1,
-                "content": {"text": "可以的，我这边给您发10元预约金入口，先帮您锁活动名额。"},
+                **_ACTIVITY_INTRO_EVIDENCE,
+                "conversion_stage": "deposit_push",
+                "next_step": "send_deposit",
+                "sent_message_summary": {"payment_collection_sent": True, "payment_collection_count": 1},
+                "history_events": [{"event_type": "payment_collection_sent"}],
             },
-            {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": "锁活动名额"}},
-        ],
-        {
-            **_ACTIVITY_INTRO_EVIDENCE,
-            "conversion_stage": "deposit_push",
-            "next_step": "send_deposit",
-            "sent_message_summary": {"payment_collection_sent": True, "payment_collection_count": 1},
-            "history_events": [{"event_type": "payment_collection_sent"}],
-        },
-    )
+        )
 
 
 def test_reply_validation_rejects_payment_collection_after_paid_deposit_context() -> None:

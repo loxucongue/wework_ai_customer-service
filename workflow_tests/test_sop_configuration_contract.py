@@ -90,6 +90,19 @@ def test_activity_intro_includes_deposit_card_after_refund_rule_text() -> None:
     assert "实际按付款记录核对" in messages[-2]["content"]["text"]
 
 
+def test_objection_resolution_is_explanation_material_without_payment_card() -> None:
+    objection = _pack(_load_config(), "s10_objection_resolution")
+    messages = objection.get("reply_messages") or []
+    texts = "\n".join(str(message.get("content", {}).get("text") or "") for message in messages)
+
+    assert objection["enabled"] is True
+    assert all(message.get("type") == "text" for message in messages)
+    assert "payment_collection" not in {message.get("type") for message in messages}
+    assert "再付258" in texts
+    assert "到店在付款" not in texts
+    assert "登记记下来" not in texts
+
+
 def test_effect_store_and_deposit_sop_packs_are_configured() -> None:
     config = _load_config()
     cases = _pack(config, "s10_need_and_case")

@@ -193,6 +193,8 @@ def _case_image_delivery(raw_events: Any) -> dict[str, Any]:
         "last_sent_at": latest_at.isoformat() if latest_at is not None else "",
         "last_document_count": len(document_ids),
         "last_image_count": len(image_urls),
+        "last_document_ids": document_ids,
+        "last_image_urls": image_urls,
         "time_confidence": "high" if timestamped_count == len(events) else "partial",
         "source": "history_events",
         "decision_policy": "evidence_only_model_decides_case_image_send",

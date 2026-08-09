@@ -28,6 +28,7 @@ class AgentState(TypedDict, total=False):
     image_urls: list[str]
     conversation_history: list[str]
     conversation_turns: list[dict[str, Any]]
+    conversation_fetch: dict[str, Any]
     user_id: int | None
     wechat: str | None
     external_userid: str | None
@@ -61,7 +62,11 @@ class AgentState(TypedDict, total=False):
     sent_message_summary: dict[str, Any]
     sop_gate: dict[str, Any]
     sop_gate_decision: dict[str, Any]
+    sop_gate_candidate_messages: list[dict[str, Any]]
+    sop_delivery_manifest: dict[str, Any]
+    authorized_sop_delivery_manifest: dict[str, Any]
     sop_progress_evidence: dict[str, Any]
+    conversation_state: dict[str, Any]
     background_substeps: list[dict[str, Any]]
     background_fact_views: dict[str, Any]
     store_context_status: str
@@ -94,6 +99,10 @@ class AgentState(TypedDict, total=False):
     appointment_state: dict[str, Any]
     appointment_decision: dict[str, Any]
     sales_progression: dict[str, Any]
+    current_turn_resolution: dict[str, Any]
+    reply_contract: dict[str, Any]
+    reply_review: dict[str, Any]
+    reply_blocked: bool
     closing_move: dict[str, Any]
     precision_qa_decision: dict[str, Any]
     current_known_store: dict[str, Any]
@@ -125,6 +134,7 @@ class AgentState(TypedDict, total=False):
     policy_version: str
     reply_source: str
     reply_control: dict[str, Any]
+    reply_freshness_check: dict[str, Any]
     async_final_reply: dict[str, Any]
     postprocess_changed: bool
     postprocess_reasons: list[str]

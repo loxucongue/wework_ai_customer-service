@@ -158,6 +158,7 @@ def _appointment_blocker_groups() -> dict[str, dict[str, Any]]:
 
 
 _HARD_PRECISION_QUESTION_IDS = {
+    "effect_definition_trust",
     "one_session_effect",
     "price_transparency",
     "rebound_and_safety",

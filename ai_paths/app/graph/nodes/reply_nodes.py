@@ -7,6 +7,7 @@ from typing import Any, Callable
 from app.graph.nodes.activity_intro_image import activity_intro_image_url, append_activity_intro_image
 from app.graph.nodes.common import model_call_metrics, model_recovery_attempts, model_usage_snapshot
 from app.graph.nodes.reply_quality import collect_reply_soft_warnings
+from app.graph.nodes.reply_delivery_manifest import manifest_image_urls
 from app.graph.nodes.reply_validation import _paid_deposit_context, validate_reply_consistency
 from app.graph.nodes.reply_context import reply_recovery_payload_for_model
 from app.services.payment_collection import (
@@ -32,7 +33,7 @@ REPLY_RECOVERY_SYSTEM_PROMPT = """你是企业微信淡斑活动的真人销售�
 - 人数按到店总人数理解：“我朋友也一起”通常是本人+1位朋友=2位；“我带两个朋友”是本人+2位朋友=3位。卡片金额必须服从 Planner 的人数和金额决策。
 - 客户明确要入口/预约时，不要因为缺订单或开单失败暴露“入口没对上/不能发卡”，也不能再反问“如果你要我再发”；活动报价已铺垫且无硬阻断时按当前结构事实发卡，否则只补最小必要信息。
 - 没有真实 case_facts/image 不能说“我给您发图/图发您了”；有图且当前明确要图时才输出 image。上一轮顾虑已回答、客户只确认时不要擅自重发案例。
-- 客户因担心一次没效果或可能需要多次而说不做时，这是带原因的效果异议，不按“不做了”字面送客。先明确“当前淡斑效果活动价就是268元、绝大多数客户都是一次就好”，有真实 case_facts 时同轮发图，再说明完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解；不得说因人而异、可能需要多次、单次单部位或以后再来找我。明确要求停止联系或近期已处理同一异议后再次强拒绝时才收口。
+- 客户因担心一次没效果或可能需要多次而说不做时，这是带原因的效果异议，不按“不做了”字面送客。先明确“我们是做斑点改善的，绝大多数顾客一次就有很好的改善效果”，再说明完成线上活动登记后可到门店免费做皮肤检测并由门店结合具体情况讲解，有真实 case_facts 时同轮发图；当前轮不得报价、发预约金卡，也不得说因人而异、可能需要多次、单次单部位或以后再来找我。明确要求停止联系或近期已处理同一异议后再次强拒绝时才收口。
 - `store_resolution_fact.status=no_valid_candidate` 且 `candidate_search_complete=true` 表示客户位置已经确认，完整查询后该省范围当前没有可发送的合法门店。不要承诺发卡；要如实、简短地说“您这个地区目前暂时没有门店”，然后只问客户平时常去哪个城市，例如：“亲，您这个地区目前暂时没有门店，您平时更常去哪个城市？我再按您常去的城市帮您看。”不要继续问当前地区的商圈，也不要用“我不乱发、不乱指、不瞎推荐、不敢乱说”这类系统免责表达。若 `candidate_search_complete=false`，这是门店事实加载不完整，不能对客户断言没有门店，也不能主动猜测或列举权威门店事实中没有出现的城市供客户选择。
 - 退款、扣款异常只能先核对门店、时间、金额、项目或截图；不能说已经同意/正在办理退款，也不能承诺自动退回、原路到账或处理时效。
 - 不输出公里、分钟、车程；不承诺绝对效果；没有真实预约事实不能说已经安排好。
@@ -127,33 +128,51 @@ def create_synthesize_reply_node(
                 if model_call:
                     model_call["stale_handoff_notice_removed"] = True
             fallback_source = ""
+            reply_blocked = False
+            review_violations: list[dict[str, Any]] = []
             if not messages and errors:
-                messages = _neutral_final_fallback_messages()
-                reply_source = "deterministic_neutral_final_fallback"
-                fallback_source = reply_source
-                recovered_error = errors.pop() if errors else None
-                if recovered_error:
-                    warnings.append(
+                failure_detail = "; ".join(
+                    str(item.get("detail") if isinstance(item, dict) else item)
+                    for item in errors
+                )
+                if _is_hard_reply_contract_failure(failure_detail):
+                    reply_blocked = True
+                    reply_source = "reply_contract_blocked"
+                    review_violations.append(
                         {
-                            "node": "synthesize_reply",
-                            "message": "final_reply_recovered_by_neutral_fallback",
-                            "detail": str(recovered_error.get("detail") if isinstance(recovered_error, dict) else recovered_error),
+                            "code": _reply_contract_failure_code(failure_detail),
+                            "field": "reply_messages",
+                            "evidence": failure_detail[:1000],
+                            "repair_instruction": "两次受约束修复仍未通过，禁止发送并保留完整审计。",
                         }
                     )
-                warnings.append(
-                    {
-                        "node": "synthesize_reply",
-                        "message": "neutral_final_fallback_used",
-                    }
-                )
-                if model_call:
-                    model_call["fallback"] = {"strategy": reply_source}
-                    model_call["output"] = {"messages": len(messages)}
-                messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
-                if handoff_notice_appended_after_fallback:
-                    warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
                     if model_call:
-                        model_call["handoff_notice_appended"] = True
+                        model_call["contract_review"] = {
+                            "decision": "block",
+                            "violations": review_violations,
+                        }
+                else:
+                    messages = _neutral_final_fallback_messages()
+                    reply_source = "deterministic_neutral_final_fallback"
+                    fallback_source = reply_source
+                    recovered_error = errors.pop() if errors else None
+                    if recovered_error:
+                        warnings.append(
+                            {
+                                "node": "synthesize_reply",
+                                "message": "final_reply_recovered_by_neutral_fallback",
+                                "detail": str(recovered_error.get("detail") if isinstance(recovered_error, dict) else recovered_error),
+                            }
+                        )
+                    warnings.append({"node": "synthesize_reply", "message": "neutral_final_fallback_used"})
+                    if model_call:
+                        model_call["fallback"] = {"strategy": reply_source}
+                        model_call["output"] = {"messages": len(messages)}
+                    messages, handoff_notice_appended_after_fallback = _ensure_required_handoff_notice(messages, state)
+                    if handoff_notice_appended_after_fallback:
+                        warnings.append({"node": "synthesize_reply", "message": "handoff_notice_appended"})
+                        if model_call:
+                            model_call["handoff_notice_appended"] = True
             if messages:
                 warnings.extend(collect_reply_soft_warnings(messages, state))
             if model_call:
@@ -173,6 +192,12 @@ def create_synthesize_reply_node(
             output = {
                 "reply_messages": messages,
                 "reply_source": reply_source,
+                "reply_blocked": reply_blocked,
+                "reply_review": {
+                    "decision": "block" if reply_blocked else "pass",
+                    "violations": review_violations,
+                    "repair_attempts": len((model_call or {}).get("repair_retries") or []),
+                },
                 "postprocess_changed": False,
                 "postprocess_reasons": [],
                 "errors": errors,
@@ -200,6 +225,50 @@ def create_synthesize_reply_node(
             return output
 
     return synthesize_reply
+
+
+def _is_hard_reply_contract_failure(error: str) -> bool:
+    return any(
+        marker in str(error or "")
+        for marker in (
+            "appointment_confirmation_fact_required",
+            "registration_confirmation_fact_required",
+            "reply_contract_required_deliveries_missing",
+            "known_customer_field_requested_again",
+            "adjacent_payment_collection_not_allowed",
+            "case_image_structure_required_when_reply_promises_delivery",
+            "case_image_required_for_effect_turn",
+            "reply_too_similar_to_previous_assistant_message",
+            "sop_delivery_manifest_",
+            "activity_intro_core_facts_missing",
+            "effect_trust_",
+            "empty_delivery_promise_not_allowed",
+            "unsupported_store_address_message",
+            "payment_confirmation_fact_required",
+        )
+    )
+
+
+def _reply_contract_failure_code(error: str) -> str:
+    for marker in (
+        "appointment_confirmation_fact_required",
+        "registration_confirmation_fact_required",
+        "reply_contract_required_deliveries_missing",
+        "known_customer_field_requested_again",
+        "adjacent_payment_collection_not_allowed",
+        "case_image_structure_required_when_reply_promises_delivery",
+        "case_image_required_for_effect_turn",
+        "reply_too_similar_to_previous_assistant_message",
+        "sop_delivery_manifest_",
+        "activity_intro_core_facts_missing",
+        "effect_trust_",
+        "empty_delivery_promise_not_allowed",
+        "unsupported_store_address_message",
+        "payment_confirmation_fact_required",
+    ):
+        if marker in str(error or ""):
+            return marker
+    return "reply_contract_failed"
 
 
 def _planner_direct_reply_is_valid(
@@ -355,6 +424,14 @@ async def _run_reply_model_pipeline(
             primary_error = exc
             model_call["primary_error"] = f"{type(exc).__name__}: {exc}"
 
+    if primary_error is not None and _is_hard_reply_contract_failure(str(primary_error)):
+        model_call["recovery"] = {
+            "status": "skipped_after_contract_repairs_exhausted",
+            "reason": f"{type(primary_error).__name__}: {primary_error}",
+        }
+        model_call["deadline"]["elapsed_ms"] = int((time.monotonic() - started_at) * 1000)
+        raise primary_error
+
     recovery_messages = _reply_recovery_messages(state)
     if not can_start_model_retry(state, tier=tier):
         model_call["recovery"] = {
@@ -406,6 +483,7 @@ def _raise_repairable_reply_quality_issues(messages: list[dict[str, Any]], state
     repairable_details = {
         "nearby_store_claim_without_location_fact",
         "precision_reply_missing_mainline_action",
+        "reply_too_similar_to_previous_assistant_message",
     }
     for warning in collect_reply_soft_warnings(messages, state):
         detail = str(warning.get("detail") or "")
@@ -552,10 +630,15 @@ def _should_use_targeted_reply_repair(error: str) -> bool:
     return any(
         marker in error
         for marker in (
+            "store_resolution_required_store_cards_missing",
+            "location_card_store_candidates_missing_cards",
             "store_address_message_required_when_reply_promises_location_card",
             "payment_collection_required_when_reply_promises_payment_entry",
             "case_image_structure_required_when_reply_promises_delivery",
             "case_image_required_for_effect_turn",
+            "reply_contract_required_deliveries_missing",
+            "known_customer_field_requested_again",
+            "adjacent_payment_collection_not_allowed",
         )
     )
 
@@ -794,12 +877,40 @@ def _compact_text(value: Any) -> str:
 
 
 def _reply_repair_hint(error: str) -> str:
+    if "sop_delivery_manifest_order_or_type_mismatch" in error:
+        return "严格按 authorized_sop_delivery_manifest.messages 的 source_order 输出全部必需文本、图片和已授权卡片；可以把文本短聊化，但不能调整消息顺序、删掉消息或把直接交付改成稍后再说。"
+    if "sop_delivery_manifest_required_asset_missing" in error:
+        return "保留 authorized_sop_delivery_manifest 中指定的真实图片 URL，并放在清单要求的位置；不能换成活动外图片、承诺稍后发送或删除图片。"
+    if "activity_intro_core_facts_missing" in error:
+        return "本轮是首次完整活动介绍。必须保留：前30名、268元、淡斑/检测/基础清洁/肌肤补水、10元到店抵扣、做的话再付258元、未做或不满意可退且按付款记录核对、线上名额与到店时间可按客户方便安排；不主动写原价金额。"
+    if "effect_trust_delivery_sequence_mismatch" in error or "effect_trust_real_case_image_required" in error:
+        return "当前效果信任场景通常只输出两条短 text 后紧跟一张 tool_facts.case_facts 的真实 image。若 tool_facts.case_facts 明确是 no_new_case_image 且近期刚发过真实效果图，则只输出两条 text，不发 image，并在第一条明确承接刚才/前面发的那张图。第一条正面回答效果，第二条说明完成线上活动登记后可免费检测；不得插入报价、活动包、门店卡或预约金卡。"
+    if "effect_trust_positive_answer_missing" in error:
+        return "第一条必须正面说明：我们是做斑点改善的，绝大多数顾客一次就有很好的改善效果。先建立信心，再说明个体情况由门店结合皮肤状态讲解。"
+    if "effect_trust_registered_free_detection_missing" in error:
+        return "第二条必须明确带条件说明：完成线上活动登记后，可以到门店免费做皮肤检测，门店会结合客户具体情况或皮肤状态讲解。"
+    if "effect_trust_price_or_deposit_not_allowed" in error or "effect_trust_payment_collection_not_allowed" in error:
+        return "当前轮只解决效果信任，删除268、10、258、活动价、预约金及 payment_collection；客户认可效果后才能恢复成交推进。"
+    if "effect_trust_conflicting_wording" in error:
+        return "删除‘一次通常不能去干净、一般/可能需要多次、只能轻微淡化、不一定有效、淡斑不是祛斑’等削弱信任的表述；保留积极效果口径和非绝对承诺边界。"
+    if "effect_trust_absolute_claim" in error:
+        return "保留积极效果信心，但删除根治、永久不再、100%去掉、所有人一次完全去除等绝对承诺。"
+    if "effect_trust_recent_case_reference_missing" in error:
+        return "工具已确认没有新的未发送案例图，且上一轮刚发过真实效果图。本轮不要再发 image；第一条明确说‘您刚才/前面看到的这张就是同类真实改善参考’，围绕这张图回答效果信任，同时保留批准的正向效果口径。"
+    if "empty_delivery_promise_not_allowed" in error:
+        return "删除‘我接着给您说清楚、给您接上、您要的话我再发、确定了再往下接’等没有当轮交付的空话，直接输出 Planner 锁定的内容或结构消息。"
+    if "reply_contract_required_deliveries_missing" in error:
+        return "严格保留 Planner 的场景和交付合同，把缺少的 required_deliveries 结构消息补齐；如果要求 image，只能使用输入中真实可用的图片 URL，不能改成询问客户是否要看。"
+    if "known_customer_field_requested_again" in error:
+        return "conversation_state 已证明客户姓名或手机号已提供。删除让客户重发姓名、电话的句子，改为明确说已经收到，并继续当前到店意向或主线动作。"
+    if "adjacent_payment_collection_not_allowed" in error:
+        return "上一轮回复已经发送预约金卡，本轮删除 payment_collection。可以用文字说明上一张卡仍可使用，或在客户愿意时说明也可以转账，让客户决定；不要连续发卡。"
     if "precision_reply_passive_mainline_closure" in error:
         return "精准支线问题已经回答到点，但收尾不能等待客户许可。请删除“如果您想/如果您愿意/我可以继续/要不要/是否需要”等表达，直接落一个主线动作：问城市或区域、主动接活动、发案例、推进预约金或登记。没有真实图片或门店卡事实时，直接问城市/区或接活动，不要承诺稍后发。"
     if "precision_reply_missing_mainline_action" in error:
         return "精准支线问题不能只答疑后停住。请保留当前问题的正面回答，再补一条明确主线动作句：问城市或区域、主动接活动名额、发案例、推进预约金或登记到店时间。动作句要具体、像微信销售，不要写“继续处理/安排下一步/如果您想”。"
     if "precision_reply_weak_one_session_confidence" in error:
-        return "客户问只能淡或一次效果时，先明确说当前淡斑效果活动价就是268元、绝大多数客户都是一次就好；有真实 case_facts 时同轮发效果图，再说明完成线上活动登记后可到线下门店免费做皮肤检测并由门店结合具体情况讲解。不要以因人而异、可能需要多次、需要看深浅和时间开头，不主动说单次单部位，也不要直接送客。"
+        return "客户问只能淡或一次效果时，先明确说我们是做斑点改善的、绝大多数顾客一次就有很好的改善效果；有真实 case_facts 时同轮发效果图，再说明完成线上活动登记后可到门店免费做皮肤检测并由门店结合具体情况讲解。本轮不报价、不发预约金卡，不要以因人而异、可能需要多次、需要看深浅和时间开头。"
     if "payment_collection_blocked_by_health_risk_hold" in error:
         return "客户近期有健康/过敏高风险，未到店检测确认适配前不要输出 payment_collection；只确认检测、门店或时间。"
     if "payment_collection_blocked_by_payment_action" in error:
@@ -827,7 +938,7 @@ def _reply_repair_hint(error: str) -> str:
     if "case_image_required_for_effect_turn" in error:
         return "本轮客户在问效果或案例，且已有 case_facts 案例图片事实。必须先用 text 肯定效果方向，再追加 1 条 case_facts.image_url 的 image。"
     if "effect_reply_confidence_order_required" in error:
-        return "效果疑问要先明确当前淡斑效果活动价268元、绝大多数客户都是一次就好，并用真实案例建立信任；完成线上活动登记后可到门店免费做皮肤检测并听取具体情况讲解。不要第一句就说因人而异、可能需要多次、不保证或具体看个人情况。"
+        return "效果疑问要先明确我们是做斑点改善的、绝大多数顾客一次就有很好的改善效果，并用真实案例建立信任；完成线上活动登记后可到门店免费做皮肤检测并听取具体情况讲解。本轮不报价、不发预约金卡，不要第一句就说因人而异、可能需要多次、不保证或具体看个人情况。"
     if "effect_absolute_safety_claim" in error:
         return "效果和安全顾虑可以积极承接，允许‘一般不会反黑’和‘多数客户反馈都比较正常’这类信心表达；只避免明确的绝对、保证或100%安全承诺，再自然接到店检测或当前主线。"
     if "reply_too_similar" in error:
@@ -852,6 +963,10 @@ def _reply_repair_hint(error: str) -> str:
         return "本轮 store_resolution_fact 要求 clarify_location，说明客户只给了省份、候选超过3家或地点仍有歧义。删除所有 store_address，只问一个最小必要字段：具体城市、区县或定位。"
     if "store_cards_not_allowed_for_province_only_scope" in error:
         return "客户当前只给了省份，且没有可靠的城市、区县或定位事实。删除所有 store_address，不按省中心猜门店；只自然追问具体城市、区县或请客户发定位。"
+    if "location_card_store_candidates_missing_cards" in error:
+        return "客户本轮已经发了定位卡，定位卡的坐标、标题或地址是权威位置事实；门店工具已返回 1-3 家可发送候选。请不要再让客户发定位、补区县或重新确认位置，必须按 store_resolution.candidate_policy.delivery_store_ids 输出对应 store_address，并在卡片后用一句话回到斑点、案例或活动主线。"
+    if "store_resolution_required_store_cards_missing" in error:
+        return "本轮门店工具已完成查询，并且 store_resolution.candidate_policy.status=send_single/send_multiple、delivery_store_ids 为 1-3 家可发送候选。请按 delivery_store_ids 输出对应 store_address：send_single 发 1 张，send_multiple 发齐 2-3 张；不要再追问定位、区县或商圈。卡片前后用自然短文本承接，并在最后回到一个主线动作。"
     if "store_address_message_required_when_reply_promises_location_card" in error:
         return "你在文本里承诺了发送地址或位置卡，但本轮没有对应门店卡。只有 store_resolution_fact.status=send_single/send_multiple 时，才按 delivery_store_ids 追加对应 store_address；其他状态必须删除发卡承诺，并按状态补问地区、确认解析结果或询问客户常去的市区/商圈。"
     if "store_cards_not_allowed_when_service_area_clarification_required" in error:
@@ -865,9 +980,9 @@ def _reply_repair_hint(error: str) -> str:
     if "nearby_store_claim_without_location_fact" in error:
         return "没有客户定位、门店工具或距离排序事实时，不要说“附近门店/离您近”。请改成“我给您看下门店/对下城市或区域”，不要编距离感。"
     if "available_time_fact_required" in error:
-        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“当前淡斑效果活动价268元、绝大多数客户一次就好 + 发送 case_facts.image_url + 登记后可到门店免费检测并听取具体情况讲解”。"
+        return "available_time 工具失败、超时或没有返回可用 slots 时，不要说有空、可以约、有时间或有名额；只能说明暂时没查到实时档期，并继续确认门店/时间或让门店核对。如果本轮是效果/案例图场景且已有 case_facts，请删除所有旧历史里的今天/明天/几点、几位、预约金、锁名额表达，改成“正面说明斑点改善效果 + 发送 case_facts.image_url + 完成线上活动登记后可到门店免费检测并听取具体情况讲解”。"
     if "appointment_confirmation_fact_required" in error:
-        return "available_time 只表示目标时段目前可选，不代表已经留位、改约或安排成功。普通预约可问“这个时间方便吗”；已有旧预约的改约场景只输出一条：“这个时间目前可以，您确认要改到这个时间吗？”。删除其他“继续核对/先按这个时间/帮您改过去/帮您留/锁定/安排/记上/预约成功”表达。"
+        return "先核对输入中的 conversation_state.visit_context 和权威 appointment_facts。若只是 tentative 到店意向、没有真实旧预约，只能说“先按后天这个到店意向”，再问上午还是下午方便；不得说这个时间可以、改到、记上、暂定上、直接过来、留位、安排或预约成功。只有存在真实旧预约且 Planner 明确是改约动作时，才可问客户是否确认改到新时间；available_time 本身也不代表已改约成功。"
     if "too_many_appointment_time_options" in error:
         return "档期回复最多只能给 1 个推荐时间和 1 个备选时间。请基于 recommended_slot 和 backup_slots 重写，不要列完整时间表。"
     if "unfinished_appointment_lookup_promise" in error:
@@ -920,6 +1035,7 @@ def _case_image_urls(state: AgentState) -> set[str]:
     activity_url = activity_intro_image_url(state)
     if activity_url:
         urls.add(activity_url)
+    urls.update(manifest_image_urls(state.get("authorized_sop_delivery_manifest")))
     return urls
 
 

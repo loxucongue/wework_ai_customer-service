@@ -57,7 +57,8 @@ def test_store_scope_exposes_every_real_store_in_requested_district() -> None:
 
 
 def test_planner_uses_store_resolution_v2_as_the_only_delivery_contract() -> None:
-    assert "`store_resolution_fact` 是唯一门店决策" in PLANNER_SYSTEM_PROMPT
+    assert "`store_resolution`" in PLANNER_SYSTEM_PROMPT
+    assert "`candidate_policy.status=send_single/send_multiple`" in PLANNER_SYSTEM_PROMPT
     assert "只能发送 `delivery_store_ids`" in PLANNER_SYSTEM_PROMPT
     assert "不得自行增减门店" in PLANNER_SYSTEM_PROMPT
 

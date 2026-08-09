@@ -81,12 +81,28 @@ def test_customer_reply_clears_unanswered_payment_card_guard() -> None:
     assert result["reason"] == "customer_replied_after_payment_card"
 
 
-def test_existing_card_turns_send_now_into_explain_existing() -> None:
+def test_platform_message_shape_detects_unanswered_payment_card() -> None:
+    result = unanswered_payment_collection(
+        [
+            {"direction": "customer", "sender_type": "customer", "msgtype": "text"},
+            {
+                "direction": "staff",
+                "sender_type": "staff",
+                "msgtype": "payment_collection",
+                "content": {"amount": 10},
+            },
+        ]
+    )
+
+    assert result["active"] is True
+
+
+def test_non_adjacent_historical_card_does_not_create_permanent_cooldown() -> None:
     plan = build_planner_plan_v2(_payment_state(), _payment_payload("send_now"))
 
-    assert plan["payment_decision"]["action"] == "explain"
-    assert plan["payment_action"] == "explain_existing"
-    assert all(message["type"] != "payment_collection" for message in plan["planner_reply_messages"])
+    assert plan["payment_decision"]["action"] == "send_now"
+    assert plan["payment_action"] == "send_now"
+    assert any(message["type"] == "payment_collection" for message in plan["planner_reply_messages"])
 
 
 def test_explicit_resend_decision_can_keep_payment_card() -> None:

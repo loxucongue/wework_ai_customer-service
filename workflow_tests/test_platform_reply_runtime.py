@@ -204,8 +204,8 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.saved_states[-1]["reply_source"], "platform_superseded")
         self.assertEqual(repository.saved_states[-1]["reply_control"]["sync_return"]["type"], "empty")
 
-    async def test_platform_auto_opening_returns_sop_before_planner(self) -> None:
-        graph = _UnexpectedGraph()
+    async def test_platform_auto_opening_sop_is_candidate_for_unified_planner(self) -> None:
+        graph = _OpeningUnifiedGraph()
         repository = _Repository()
         runtime = ChatRuntime(
             full_graph=graph,
@@ -220,15 +220,15 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([message.type for message in response.reply_messages], ["text"])
         self.assertEqual(response.reply_messages[0].content["text"], "新客破冰话术")
-        self.assertFalse(graph.called)
+        self.assertTrue(graph.called)
         self.assertTrue(repository.saved_states)
         state = repository.saved_states[-1]
-        self.assertEqual(state["reply_source"], "sop_gate")
+        self.assertEqual(state["reply_source"], "planner_direct_reply")
         self.assertEqual(state["planner_decision"], "direct_reply")
-        self.assertEqual(state["planner_stage"], "SOP")
+        self.assertEqual(state["planner_stage"], "S1")
         self.assertEqual(state["async_final_reply"]["scheduled"], False)
-        self.assertEqual(state["async_final_reply"]["status"], "not_required")
-        self.assertEqual(state["reply_control"]["sync_return"]["type"], "sop_reply")
+        self.assertEqual(state["async_final_reply"]["status"], "skipped")
+        self.assertEqual(state["reply_control"]["sync_return"]["type"], "direct_reply")
         self.assertEqual(len(state["reply_messages"]), 1)
         workflow_body = workflow_response_from_chat(response)
         self.assertEqual(workflow_body["code"], 0)
@@ -488,6 +488,28 @@ class _UnexpectedGraph:
         raise AssertionError("planner should not run for ignored platform auto opening")
 
 
+class _OpeningUnifiedGraph:
+    def __init__(self) -> None:
+        self.called = False
+
+    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        self.called = True
+        output = dict(state)
+        messages = list(state.get("sop_gate_candidate_messages") or [])
+        output.update(
+            {
+                "planner_decision": "direct_reply",
+                "planner_stage": "S1",
+                "reply_source": "reply_synthesizer",
+                "planner_reply_messages": messages,
+                "reply_messages": messages,
+                "trace": [],
+                "errors": [],
+            }
+        )
+        return output
+
+
 class _UnexpectedProfileExtractor:
     async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError("profile extractor should not run for ignored platform auto opening")
@@ -560,17 +582,21 @@ class _PrecisionReplyGraph:
     async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
         self.states.append(dict(state))
         output = dict(state)
+        candidate_messages = list(state.get("sop_gate_candidate_messages") or [])
+        final_messages = [
+            {
+                "type": "text",
+                "order": 1,
+                "content": {"text": "多数客户做一次就能看到改善，具体程度要到店检测后判断。"},
+            },
+            *candidate_messages,
+        ]
         output.update(
             {
                 "planner_decision": "direct_reply",
                 "reply_source": "reply_synthesizer",
-                "reply_messages": [
-                    {
-                        "type": "text",
-                        "order": 1,
-                        "content": {"text": "多数客户做一次就能看到改善，具体程度要到店检测后判断。"},
-                    }
-                ],
+                "planner_reply_messages": final_messages,
+                "reply_messages": final_messages,
                 "trace": [],
                 "errors": [],
             }

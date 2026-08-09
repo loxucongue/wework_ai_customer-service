@@ -58,6 +58,9 @@ def test_multiple_voice_messages_keep_msgtime_order_when_asr_finishes_out_of_ord
         assert first.request_context["platform_input_batch_role"] == "superseded"
         assert second.request_context["platform_input_batch_role"] == "owner"
         assert second.request_context["platform_input_batch"]["ordered_message_ids"] == ["m1", "m2"]
+        assert [event["msgid"] for event in second.request_context["merged_input_events"]] == ["m1", "m2"]
+        assert second.request_context["merged_input_events"][0]["msgtype"] == "voice"
+        assert second.request_context["merged_input_events"][0]["content"] == "我在嘉兴"
         assert second.content.index("语音1转写：我在嘉兴") < second.content.index("语音2转写：秀洲区有门店吗")
         assert client.calls.count("https://audio/1.mp3") == 1
         assert client.calls.count("https://audio/2.mp3") == 1

@@ -192,6 +192,48 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             _chat_gate_output_violations(payment_output, selector_input),
         )
 
+    def test_chat_gate_payment_collection_pack_cannot_sop_only(self) -> None:
+        selector_input = {
+            "mainline": {"stages": [{"id": "deposit_decision"}]},
+            "precision_qa_index": [],
+            "conversation_evidence": [
+                {"message_ref": "current_message", "direction": "customer", "content": "检测收费吗，是三百多全包。"},
+            ],
+            "unfinished_sops": [
+                {
+                    "id": "charge_pack",
+                    "mainline_stage": "deposit_decision",
+                    "sop_category": "deposit_push",
+                    "payment_collection_gate": {"has_payment_collection": True, "status": "supported", "amounts": [10]},
+                    "reply_messages": [
+                        {"type": "text", "order": 1, "content": {"text": "明码标价"}},
+                        {"type": "payment_collection", "order": 2, "content": {"amount": 10, "remark": ""}},
+                    ],
+                },
+            ],
+        }
+        sop_only_output = {
+            "route": "sop_only",
+            "coverage": "exact",
+            "sop_pack_id": "charge_pack",
+            "resume_stage": "deposit_decision",
+        }
+        ai_then_sop_output = {
+            "route": "ai_then_sop",
+            "coverage": "partial",
+            "sop_pack_id": "charge_pack",
+            "resume_stage": "deposit_decision",
+        }
+
+        self.assertIn(
+            "gate_payment_conflict:payment_collection_pack_cannot_sop_only",
+            _chat_gate_output_violations(sop_only_output, selector_input),
+        )
+        self.assertNotIn(
+            "gate_payment_conflict:payment_collection_pack_cannot_sop_only",
+            _chat_gate_output_violations(ai_then_sop_output, selector_input),
+        )
+
     def test_chat_gate_first_soft_refusal_blocks_activity_when_not_asking_activity(self) -> None:
         selector_input = {
             "current_message": "还不急先了解",
@@ -4221,8 +4263,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         missing = await missing_service.evaluate_chat_gate(request, request_id="req_payment_missing", request_context={})
 
-        self.assertTrue(missing["send_sop"])
-        self.assertEqual([item["type"] for item in missing["reply_messages"]], ["text", "payment_collection"])
+        self.assertFalse(missing["send_sop"])
+        self.assertEqual(missing["mode"], "ai_only")
 
         valid_service = SopExecutionService(
             repository=_Repo(),
@@ -4248,8 +4290,8 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
 
         valid = await valid_service.evaluate_chat_gate(request, request_id="req_payment_valid", request_context={})
 
-        self.assertTrue(valid["send_sop"])
-        self.assertEqual([item["type"] for item in valid["reply_messages"]], ["text", "payment_collection"])
+        self.assertFalse(valid["send_sop"])
+        self.assertEqual(valid["mode"], "ai_only")
 
     async def test_chat_gate_exposes_authoritative_sop_progress_without_message_bodies(self) -> None:
         class _ProgressPackService:
@@ -4574,9 +4616,9 @@ class SopEventFlowTests(unittest.IsolatedAsyncioTestCase):
             request_context={"source_protocol": "workflow-compatible"},
         )
 
-        self.assertEqual(result["mode"], "sop_only")
-        self.assertEqual(result["sop_pack_id"], "s10_activity_intro")
-        user_prompt = model.messages[1]["content"]
+        self.assertEqual(result["mode"], "ai_only")
+        self.assertFalse(result.get("send_sop"))
+        user_prompt = "\n".join(str(message.get("content") or "") for message in model.messages)
         self.assertIn("s10_activity_intro", user_prompt)
         self.assertIn("活动怎么参加", user_prompt)
 

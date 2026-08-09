@@ -104,8 +104,6 @@ def _validate_appointment_time_option_count(messages: list[dict[str, Any]], stat
 
 
 def _validate_repeat_similarity(messages: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    if any(str(item.get("type") or "") != "text" for item in messages if isinstance(item, dict)):
-        return
     current_text = _combined_text(messages)
     if not current_text or _is_price_confirmation_turn(str(state.get("normalized_content") or state.get("content") or "")):
         return

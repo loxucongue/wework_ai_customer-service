@@ -12,6 +12,16 @@ from app.graph.nodes.current_turn_context import (
     current_store_anchor_from_state,
     is_context_reference_message,
 )
+from app.graph.nodes.conversation_state import (
+    conversation_state_for_guard,
+    known_customer_field_names,
+    payment_card_cooldown_active,
+)
+from app.graph.nodes.reply_delivery_manifest import (
+    EFFECT_TRUST_SCENE_IDS,
+    authorize_sop_delivery_manifest,
+    merge_manifest_into_reply_contract,
+)
 from app.graph.nodes.location_card import location_card_from_state
 from app.graph.nodes.sent_message_summary import (
     latest_single_store_card_anchor_id,
@@ -136,6 +146,7 @@ ALLOWED_SALES_PROGRESSION_ACTIONS = (
 ALLOWED_SALES_PROGRESSION_TARGETS = (
     "none",
     "need_and_case",
+    "effect_proof",
     "trust",
     "store",
     "activity",
@@ -229,6 +240,15 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     sales_progression = _normalize_sales_progression(
         model_payload.get("sales_progression") if isinstance(model_payload, dict) else {},
     )
+    current_turn_resolution = _normalize_current_turn_resolution(
+        model_payload.get("current_turn_resolution") if isinstance(model_payload, dict) else {},
+        state=state,
+    )
+    reply_contract = _normalize_reply_contract(
+        model_payload.get("reply_contract") if isinstance(model_payload, dict) else {},
+        state=state,
+        sales_progression=sales_progression,
+    )
     closing_move = _normalize_closing_move(
         model_payload.get("closing_move") if isinstance(model_payload, dict) else {},
     )
@@ -314,13 +334,76 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         required_tools=required_tools,
         state=state,
     )
-    decision, planner_reply_messages, required_tools = _enforce_declared_store_detail_lookup(
-        decision=decision,
-        sub_rule_id=sub_rule_id,
-        messages=planner_reply_messages,
-        required_tools=required_tools,
+    effect_scene_id = "" if explicit_risk_reason or is_hard_health_risk_hold(risk_hold) else _selected_effect_trust_scene_id(
+        precision_qa_decision=precision_qa_decision,
         state=state,
     )
+    if effect_scene_id:
+        precision_qa_decision = {
+            **precision_qa_decision,
+            "question_id": effect_scene_id,
+            "confidence": str(precision_qa_decision.get("confidence") or "high"),
+        }
+        decision = "need_tools"
+        conversion_stage = "objection_resolution"
+        customer_type = "effect"
+        main_blocker = "effect"
+        next_step = "solve_blocker"
+        payment_state = "unknown"
+        payment_action = "none"
+        payment_decision = _with_payment_decision_action(
+            payment_decision,
+            "none",
+            source="effect_trust_contract",
+            confidence="high",
+            basis="当前轮先解决效果定义与效果信任，不报价、不催预约金",
+        )
+        planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
+        sales_progression = {
+            **sales_progression,
+            "status": "continue",
+            "target_stage": "effect_proof",
+            "action": "deliver_value",
+            "goal": "正面回答效果疑虑并交付真实同类效果证据",
+            "required_message_types": ["text", "image"],
+            "reason": "效果卡点解决前不切换到活动报价或预约金推进",
+        }
+        current_turn_resolution = {
+            **current_turn_resolution,
+            "required": True,
+            "resolution_goal": "正面说明斑点改善效果，建立一次改善信心并用真实案例证明",
+            "required_facts": list(
+                dict.fromkeys(
+                    [
+                        *current_turn_resolution.get("required_facts", []),
+                        "绝大多数顾客一次就有很好的改善效果",
+                        "完成线上活动登记后可到门店免费做皮肤检测",
+                    ]
+                )
+            ),
+        }
+        reply_contract = _effect_trust_reply_contract(reply_contract, scene_id=effect_scene_id)
+        closing_move = {
+            **closing_move,
+            "action": "send_case",
+            "mainline_stage": "effect_proof",
+            "reason": "当前轮只完成效果信任交付",
+            "must_not_repeat": list(
+                dict.fromkeys([*closing_move.get("must_not_repeat", []), "activity_price", "deposit_rules"])
+            ),
+        }
+        required_tools = _effect_trust_case_search_tools(required_tools, state)
+        reply_constraints.append(
+            "当前为效果定义与效果信任场景：固定输出两条短文本后交付真实效果图；本轮禁止报价、活动规则和预约金卡。"
+        )
+    if not effect_scene_id:
+        decision, planner_reply_messages, required_tools = _enforce_declared_store_detail_lookup(
+            decision=decision,
+            sub_rule_id=sub_rule_id,
+            messages=planner_reply_messages,
+            required_tools=required_tools,
+            state=state,
+        )
     order_decision, required_tools = _reconcile_existing_order_for_payment(
         state=state,
         payment_decision=payment_decision,
@@ -478,23 +561,37 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         if removed_payment:
             reply_constraints.append("payment_action 表示本轮不直接发送预约金入口；不要输出 payment_collection。")
             reply_strategy.setdefault("payment_action_guard", "payment_card_removed_by_payment_action")
-    prior_payment = sent_message_summary_for_model(state).get("payment_collection") or {}
-    if int(prior_payment.get("total_count") or 0) > 0 and str(payment_decision.get("action") or "") == "send_now":
+    if payment_card_cooldown_active(conversation_state_for_guard(state)):
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
-        payment_decision = _with_payment_decision_action(
-            payment_decision,
-            "explain",
-            source="existing_payment_card_guard",
-            confidence="high",
-            basis="该接待账号已发送过预约金卡；send_now 只允许首次发卡，后续默认承接已有卡",
+        if str(payment_decision.get("action") or "") in {"send_now", "resend"}:
+            payment_decision = _with_payment_decision_action(
+                payment_decision,
+                "explain",
+                source="adjacent_payment_card_cooldown",
+                confidence="high",
+                basis="上一轮回复批次已发送预约金卡，本轮不得连续发送；可解释已有卡或用文字提供转账选择",
+            )
+            payment_action = "explain_existing"
+        required_types = [
+            item
+            for item in sales_progression.get("required_message_types") or []
+            if item != "payment_collection"
+        ]
+        sales_progression["required_message_types"] = required_types or ["text"]
+        reply_contract["required_deliveries"] = [
+            item
+            for item in reply_contract.get("required_deliveries") or []
+            if str(item.get("message_type") if isinstance(item, dict) else item) != "payment_collection"
+        ]
+        reply_contract["forbidden_claims"] = list(
+            dict.fromkeys([*reply_contract.get("forbidden_claims", []), "send_adjacent_payment_collection"])
         )
-        payment_action = "explain_existing"
         reply_constraints.append(
-            "该接待账号已发过预约金卡，本轮 send_now 已降级为 explain_existing；只承接已有卡，不得再次输出 payment_collection。"
+            "上一轮回复批次已发送预约金卡，本轮禁止再次输出 payment_collection；可以用文字解释已有卡，或让客户选择转账。"
         )
         if removed_payment:
-            reply_strategy.setdefault("payment_card_cooldown", "existing_payment_card_send_now_removed")
+            reply_strategy.setdefault("payment_card_cooldown", "adjacent_payment_collection_removed")
     if has_paid_deposit_context:
         removed_payment = _has_payment_collection(planner_reply_messages)
         planner_reply_messages = _remove_payment_collection_messages(planner_reply_messages)
@@ -563,6 +660,23 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         payment_action=payment_action,
         payment_decision=payment_decision,
         messages=planner_reply_messages,
+    )
+    manifest_input = state.get("sop_delivery_manifest")
+    if explicit_risk_reason or is_hard_health_risk_hold(risk_hold):
+        manifest_input = {
+            **(manifest_input if isinstance(manifest_input, dict) else {}),
+            "active": False,
+            "messages": [],
+            "reason": "safety_gate_owns_current_turn",
+        }
+    authorized_sop_delivery_manifest = authorize_sop_delivery_manifest(
+        manifest_input,
+        payment_decision=payment_decision,
+        precision_scene_id=effect_scene_id,
+    )
+    reply_contract = merge_manifest_into_reply_contract(
+        reply_contract,
+        authorized_sop_delivery_manifest,
     )
     handoff = _normalize_handoff(handoff_raw)
     tool_policy_violations = [
@@ -658,6 +772,9 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "order_decision": order_decision,
         "appointment_decision": appointment_decision,
         "sales_progression": sales_progression,
+        "current_turn_resolution": current_turn_resolution,
+        "reply_contract": reply_contract,
+        "authorized_sop_delivery_manifest": authorized_sop_delivery_manifest,
         "closing_move": closing_move,
         "precision_qa_decision": precision_qa_decision,
         "planner_reply_messages": planner_reply_messages,
@@ -671,6 +788,150 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "handoff": handoff,
         "memory_update_hint": memory_update_hint,
     }
+
+
+def _normalize_current_turn_resolution(value: Any, *, state: AgentState) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    current_message = str(state.get("normalized_content") or state.get("content") or "").strip()
+    return {
+        "required": bool(raw.get("required", True)),
+        "customer_question": str(raw.get("customer_question") or current_message)[:500],
+        "resolution_goal": str(raw.get("resolution_goal") or "直接解决客户当前消息")[:500],
+        "required_facts": _clean_str_list(raw.get("required_facts") or []),
+    }
+
+
+def _normalize_reply_contract(
+    value: Any,
+    *,
+    state: AgentState,
+    sales_progression: dict[str, Any],
+) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    known_fields = known_customer_field_names(state.get("conversation_state"))
+    required_deliveries = []
+    for item in raw.get("required_deliveries") or []:
+        if isinstance(item, dict):
+            message_type = str(item.get("message_type") or item.get("type") or "").strip()
+            if message_type:
+                required_deliveries.append(
+                    {
+                        "message_type": message_type,
+                        "asset_id": str(item.get("asset_id") or "").strip(),
+                        "source_pack_id": str(item.get("source_pack_id") or "").strip(),
+                    }
+                )
+        elif str(item or "").strip():
+            required_deliveries.append({"message_type": str(item).strip()})
+    for message_type in sales_progression.get("required_message_types") or []:
+        if not any(item.get("message_type") == message_type for item in required_deliveries):
+            required_deliveries.append({"message_type": message_type})
+    return {
+        "locked_facts": _clean_str_list(raw.get("locked_facts") or []),
+        "forbidden_claims": _clean_str_list(raw.get("forbidden_claims") or []),
+        "known_fields_not_to_request": list(
+            dict.fromkeys([*known_fields, *_clean_str_list(raw.get("known_fields_not_to_request") or [])])
+        ),
+        "required_deliveries": required_deliveries,
+        "locked_progression_action": str(sales_progression.get("action") or ""),
+        "locked_progression_stage": str(sales_progression.get("target_stage") or ""),
+    }
+
+
+def _selected_effect_trust_scene_id(
+    *,
+    precision_qa_decision: dict[str, Any],
+    state: AgentState,
+) -> str:
+    planner_scene = str(precision_qa_decision.get("question_id") or "").strip()
+    if planner_scene in EFFECT_TRUST_SCENE_IDS:
+        return planner_scene
+    gate = state.get("sop_gate_decision") if isinstance(state.get("sop_gate_decision"), dict) else {}
+    gate_scene = str(gate.get("selected_scene_id") or gate.get("priority_question_id") or "").strip()
+    return gate_scene if gate_scene in EFFECT_TRUST_SCENE_IDS else ""
+
+
+def _effect_trust_reply_contract(value: dict[str, Any], *, scene_id: str) -> dict[str, Any]:
+    contract = dict(value)
+    contract["locked_facts"] = list(
+        dict.fromkeys(
+            [
+                *contract.get("locked_facts", []),
+                "我们是做斑点改善的",
+                "绝大多数顾客一次就有很好的改善效果",
+                "完成线上活动登记后可到门店免费做皮肤检测",
+            ]
+        )
+    )
+    contract["forbidden_claims"] = list(
+        dict.fromkeys(
+            [
+                *contract.get("forbidden_claims", []),
+                "effect_round_price_or_activity_rules",
+                "effect_round_payment_collection",
+                "一次通常不能去干净",
+                "一般需要多次",
+                "只能轻微淡化",
+                "不一定有效",
+                "all_customers_complete_removal_or_permanent_cure",
+            ]
+        )
+    )
+    contract["required_deliveries"] = [
+        {
+            "message_type": "text",
+            "delivery_role": "positive_effect_answer",
+            "source_order": 1,
+            "required": True,
+        },
+        {
+            "message_type": "text",
+            "delivery_role": "registered_free_detection",
+            "source_order": 2,
+            "required": True,
+        },
+        {
+            "message_type": "image",
+            "delivery_role": "real_case_image",
+            "source_order": 3,
+            "required": True,
+            "allow_recent_reference_when_no_new_case": True,
+        },
+    ]
+    contract["effect_trust_scene_id"] = scene_id
+    contract["locked_progression_action"] = "deliver_value"
+    contract["locked_progression_stage"] = "effect_proof"
+    return contract
+
+
+def _effect_trust_case_search_tools(
+    required_tools: list[dict[str, Any]],
+    state: AgentState,
+) -> list[dict[str, Any]]:
+    current_query = str(state.get("normalized_content") or state.get("content") or "").strip()
+    summary = sent_message_summary_for_model(state)
+    delivery = summary.get("case_image_delivery") if isinstance(summary.get("case_image_delivery"), dict) else {}
+    excluded_ids = [str(item) for item in delivery.get("last_document_ids") or [] if str(item or "").strip()]
+    existing = next(
+        (
+            dict(item)
+            for item in required_tools
+            if isinstance(item, dict)
+            and str(item.get("name") or "").strip() == "kb_search"
+            and str(item.get("kb_name") or item.get("purpose") or "").strip() == "case_studies"
+        ),
+        {},
+    )
+    return [
+        {
+            **existing,
+            "name": "kb_search",
+            "kb_name": "case_studies",
+            "purpose": "case_studies",
+            "query": str(existing.get("query") or current_query or "斑点改善真实效果案例")[:600],
+            "excluded_document_ids": excluded_ids,
+        }
+    ]
 
 
 def safety_fallback_plan(state: AgentState, *, reason: str = "Planner unavailable") -> dict[str, Any]:
@@ -1637,6 +1898,11 @@ def _normalize_appointment_decision(value: Any) -> dict[str, Any]:
 
 def _normalize_sales_progression(value: Any) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
+    required_message_types = [
+        item
+        for item in _clean_str_list(raw.get("required_message_types") or [])
+        if item in {"text", "image", "video", "store_address", "payment_collection", "human_handoff_notice"}
+    ]
     return {
         "status": _normalize_enum(
             str(raw.get("status") or ""),
@@ -1655,6 +1921,10 @@ def _normalize_sales_progression(value: Any) -> dict[str, Any]:
         ),
         "goal": str(raw.get("goal") or "").strip()[:240],
         "basis": _clean_str_list(raw.get("basis") if isinstance(raw.get("basis"), list) else [])[:6],
+        "required_message_types": required_message_types,
+        "source_pack_ids": _clean_str_list(raw.get("source_pack_ids") or [])[:8],
+        "asset_ids": _clean_str_list(raw.get("asset_ids") or [])[:12],
+        "reason": str(raw.get("reason") or "").strip()[:240],
     }
 
 
@@ -3090,7 +3360,26 @@ def _current_message_requests_store_detail(text: str) -> bool:
     compact = _compact_text(text)
     if not compact:
         return False
-    if any(term in compact for term in ("发个位置", "发位置", "位置发我", "发个地址", "发地址", "地址发我", "发导航", "发定位", "定位发我")):
+    if any(
+        term in compact
+        for term in (
+            "发个位置",
+            "发位置",
+            "位置发我",
+            "发个地址",
+            "发地址",
+            "地址发我",
+            "发导航",
+            "发定位",
+            "定位发我",
+            "几号楼",
+            "楼号",
+            "房间号",
+            "门牌号",
+            "怎么上楼",
+            "怎么进店",
+        )
+    ):
         return True
     return bool(re.search(r"发.{0,8}(地址|位置|定位|导航)", compact)) or bool(
         re.search(r"(地址|位置|定位|导航).{0,8}(发|给)", compact)
