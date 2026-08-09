@@ -16,6 +16,8 @@ import {
   RefreshCw,
   Search,
   Send,
+  ShieldCheck,
+  UserPlus,
 } from "lucide-react";
 
 type JsonRecord = Record<string, unknown>;
@@ -79,6 +81,25 @@ type ApiResult = {
   error?: string;
 };
 
+type WechatScopeItem = {
+  user_wechat: string;
+  enabled: boolean;
+  source?: string;
+  task_count?: number;
+  first_seen_at?: string;
+  last_seen_at?: string;
+};
+
+type WechatScopeResult = {
+  strict_mode?: boolean;
+  configured?: boolean;
+  enabled_count?: number;
+  days?: number;
+  items?: WechatScopeItem[];
+  error?: string;
+  detail?: string;
+};
+
 const BUCKETS = [
   ["", "全部阶段"],
   ["platform_pending", "平台待拉取"],
@@ -108,12 +129,23 @@ export function SopPlatformLogViewer() {
   const [error, setError] = useState("");
   const [resendingId, setResendingId] = useState("");
   const [notice, setNotice] = useState("");
+  const [wechatScope, setWechatScope] = useState<WechatScopeResult>({});
+  const [wechatFilter, setWechatFilter] = useState("");
+  const [newWechat, setNewWechat] = useState("");
+  const [scopeLoading, setScopeLoading] = useState(false);
+  const [scopeSaving, setScopeSaving] = useState("");
 
   const items = data.items || [];
   const selected = useMemo(
     () => items.find((item) => item.task_id === selectedId) || items[0] || null,
     [items, selectedId]
   );
+  const scopeItems = wechatScope.items || [];
+  const filteredScopeItems = useMemo(() => {
+    const keyword = wechatFilter.trim().toLowerCase();
+    if (!keyword) return scopeItems;
+    return scopeItems.filter((item) => item.user_wechat.toLowerCase().includes(keyword));
+  }, [scopeItems, wechatFilter]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -133,9 +165,68 @@ export function SopPlatformLogViewer() {
     }
   }, [filters]);
 
+  const loadWechatScope = useCallback(async () => {
+    setScopeLoading(true);
+    try {
+      const response = await fetch("/api/logs/sop-platform/wechat-scope?days=2", { cache: "no-store" });
+      const payload = (await response.json()) as WechatScopeResult;
+      if (!response.ok) throw new Error(payload.detail || payload.error || "加载企微号范围失败");
+      setWechatScope(payload);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载企微号范围失败");
+    } finally {
+      setScopeLoading(false);
+    }
+  }, []);
+
+  const saveWechatScope = useCallback(async (nextItems: WechatScopeItem[], savingWechat: string) => {
+    setScopeSaving(savingWechat);
+    setError("");
+    try {
+      const response = await fetch("/api/logs/sop-platform/wechat-scope", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accounts: nextItems.map((item) => ({
+            user_wechat: item.user_wechat,
+            enabled: item.enabled,
+            source: item.source || "manual",
+          })),
+        }),
+      });
+      const payload = (await response.json()) as WechatScopeResult;
+      if (!response.ok) throw new Error(payload.detail || payload.error || "保存企微号范围失败");
+      setWechatScope(payload);
+      setNotice(`企微号 ${savingWechat} 的处理范围已更新`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "保存企微号范围失败");
+    } finally {
+      setScopeSaving("");
+    }
+  }, []);
+
+  const toggleWechat = useCallback((userWechat: string, enabled: boolean) => {
+    const nextItems = scopeItems.map((item) =>
+      item.user_wechat === userWechat ? { ...item, enabled, source: item.source || "observed" } : item
+    );
+    void saveWechatScope(nextItems, userWechat);
+  }, [saveWechatScope, scopeItems]);
+
+  const addWechat = useCallback(() => {
+    const value = newWechat.trim();
+    if (!value || scopeSaving) return;
+    const existing = scopeItems.find((item) => item.user_wechat === value);
+    const nextItems = existing
+      ? scopeItems.map((item) => item.user_wechat === value ? { ...item, enabled: true } : item)
+      : [...scopeItems, { user_wechat: value, enabled: true, source: "manual" }];
+    setNewWechat("");
+    void saveWechatScope(nextItems, value);
+  }, [newWechat, saveWechatScope, scopeItems, scopeSaving]);
+
   useEffect(() => {
     void load();
-  }, [load]);
+    void loadWechatScope();
+  }, [load, loadWechatScope]);
 
   const resend = useCallback(
     async (task: TaskItem) => {
@@ -201,7 +292,7 @@ export function SopPlatformLogViewer() {
             </Link>
             <button
               type="button"
-              onClick={() => void load()}
+              onClick={() => { void load(); void loadWechatScope(); }}
               disabled={loading}
               className="inline-flex items-center gap-2 rounded-md bg-slate-950 px-4 py-2 text-sm text-white disabled:opacity-60"
             >
@@ -213,6 +304,83 @@ export function SopPlatformLogViewer() {
       </header>
 
       <section className="border-b bg-white px-5 py-4">
+        <div className="mb-4 border bg-slate-50 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <ShieldCheck className="h-4 w-4" />
+                企微号处理范围
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                仅已确认的 user_wechat 会进入首日开口判断、会话读取和模型链路；未确认账号的任务只消费，不发送。
+              </p>
+            </div>
+            <div className="text-xs text-slate-500">
+              已确认 {wechatScope.enabled_count || 0} 个 · 最近 {wechatScope.days || 2} 天观测 {scopeItems.length} 个
+            </div>
+          </div>
+          {wechatScope.configured === false ? (
+            <div className="mt-3 flex items-center gap-2 border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              尚未完成首次配置，平台任务会保留等待，不会被消费。请至少确认一个企微号。
+            </div>
+          ) : null}
+          <div className="mt-4 flex flex-wrap gap-2">
+            <div className="relative min-w-56 flex-1 sm:max-w-xs">
+              <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+              <input
+                value={wechatFilter}
+                onChange={(event) => setWechatFilter(event.target.value)}
+                placeholder="筛选企微号"
+                className="h-9 w-full border bg-white pl-9 pr-3 text-sm outline-none focus:border-slate-500"
+              />
+            </div>
+            <input
+              value={newWechat}
+              onChange={(event) => setNewWechat(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") addWechat(); }}
+              placeholder="添加 user_wechat，如 DY258"
+              className="h-9 min-w-64 border bg-white px-3 text-sm outline-none focus:border-slate-500"
+            />
+            <button
+              type="button"
+              onClick={addWechat}
+              disabled={!newWechat.trim() || Boolean(scopeSaving)}
+              className="inline-flex h-9 items-center gap-2 bg-slate-950 px-4 text-sm text-white disabled:opacity-50"
+            >
+              <UserPlus className="h-4 w-4" />
+              添加并确认
+            </button>
+          </div>
+          <div className="mt-3 max-h-48 overflow-auto border bg-white">
+            {filteredScopeItems.map((item) => (
+              <label key={item.user_wechat} className="flex min-h-11 cursor-pointer items-center justify-between gap-4 border-b px-3 py-2 last:border-b-0 hover:bg-slate-50">
+                <div className="flex min-w-0 items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={item.enabled}
+                    disabled={Boolean(scopeSaving)}
+                    onChange={(event) => toggleWechat(item.user_wechat, event.target.checked)}
+                    className="h-4 w-4 accent-slate-950"
+                  />
+                  <span className="truncate font-mono text-sm font-medium">{item.user_wechat}</span>
+                  <span className={`shrink-0 px-2 py-0.5 text-xs ${item.enabled ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
+                    {scopeSaving === item.user_wechat ? "保存中" : item.enabled ? "已确认" : "未确认"}
+                  </span>
+                </div>
+                <div className="shrink-0 text-right text-xs text-slate-500">
+                  <div>近两天 {item.task_count || 0} 个任务</div>
+                  <div>{item.last_seen_at ? `最近 ${formatTime(item.last_seen_at)}` : "手动添加"}</div>
+                </div>
+              </label>
+            ))}
+            {!filteredScopeItems.length ? (
+              <div className="px-4 py-6 text-center text-sm text-slate-500">
+                {scopeLoading ? "正在读取企微号…" : "没有匹配的企微号"}
+              </div>
+            ) : null}
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-md border bg-slate-200 sm:grid-cols-4 xl:grid-cols-8">
           <Metric label="平台状态10" value={summary.platform_pending_total} icon={<Database className="h-4 w-4" />} />
           <Metric label="平台待拉取" value={summary.platform_pending} icon={<Clock3 className="h-4 w-4" />} />

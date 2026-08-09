@@ -20,6 +20,7 @@ from app.services.sop_platform_task_service import (
     SopPlatformTaskService,
     _first_add_epoch,
 )
+from app.services.sop_platform_wechat_scope_service import SopPlatformWechatScopeService
 from app.services.sop_reply_pack_service import SopReplyPackService
 
 
@@ -32,6 +33,52 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(Settings.model_fields["sop_platform_quiet_start_hour"].default, 0)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_end_hour"].default, 8)
         self.assertEqual(Settings.model_fields["sop_platform_quiet_first_add_grace_minutes"].default, 30)
+
+    async def test_unconfirmed_user_wechat_is_consumed_without_context_or_model(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        service.wechat_scope_service = _WechatScope({"DY258"})
+        task = _task(use_ai_copy=True)
+        task["user_wechat"] = "SL0069"
+
+        result = await service.process_task(task)
+
+        self.assertEqual(result["status"], "completed_without_send")
+        self.assertEqual(result["decision"]["reason_code"], "wechat_not_enabled")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(system.send_calls, [])
+        self.assertEqual(model.calls, [])
+        self.assertEqual(platform.rule_data_calls[0]["scene_code"], "no_send_wechat_not_enabled")
+        audit = repo.tasks["platform-sop:101"]["send_payload"]["context"]
+        self.assertEqual(audit["user_wechat"], "SL0069")
+        self.assertFalse(audit["model_called"])
+
+    async def test_missing_scope_configuration_holds_task_without_consuming_it(self) -> None:
+        model = _Model([])
+        service, repo, platform, system = _service(model=model)
+        service.wechat_scope_service = _WechatScope(set(), configured=False)
+
+        result = await service.process_task(_task(use_ai_copy=True))
+
+        self.assertEqual(result["status"], "scope_config_required")
+        self.assertEqual(platform.consume_calls, [])
+        self.assertEqual(system.conversation_calls, 0)
+        self.assertEqual(model.calls, [])
+        self.assertEqual(repo.events["platform_sop_task:101"]["status"], "platform_scope_config_required")
+
+    async def test_confirmed_user_wechat_continues_existing_model_chain(self) -> None:
+        model = _Model([{"decision": "send", "reason": "test", "reply_messages": [_text("正常发送")] }])
+        service, _repo, platform, system = _service(model=model)
+        service.wechat_scope_service = _WechatScope({"DY258"})
+
+        result = await service.process_task(_task(use_ai_copy=True))
+
+        self.assertEqual(result["status"], "sent")
+        self.assertEqual(platform.consume_calls, [("101", 20), ("101", 30)])
+        self.assertGreater(system.conversation_calls, 0)
+        self.assertEqual(len(model.calls), 1)
+        self.assertEqual(len(system.send_calls), 1)
 
     def test_scene_configuration_time_is_not_used_as_first_add_time(self) -> None:
         task = {
@@ -1292,6 +1339,29 @@ class SopPlatformTaskFlowTests(unittest.IsolatedAsyncioTestCase):
 
 
 class SopReplyPackScopeTests(unittest.TestCase):
+    def test_wechat_scope_is_exact_persistent_and_strict_by_default(self) -> None:
+        with TemporaryDirectory() as directory:
+            settings = SimpleNamespace(
+                db_path=Path(directory) / "state.db",
+                sop_platform_wechat_scope_path=None,
+            )
+            service = SopPlatformWechatScopeService(settings)
+            self.assertFalse(service.is_configured())
+            self.assertFalse(service.is_enabled("DY258"))
+            saved = service.save(
+                {
+                    "accounts": [
+                        {"user_wechat": "DY258", "enabled": True},
+                        {"user_wechat": "dy8832", "enabled": False},
+                    ]
+                }
+            )
+            self.assertTrue(saved["strict_mode"])
+            self.assertTrue(service.is_configured())
+            self.assertTrue(service.is_enabled("DY258"))
+            self.assertFalse(service.is_enabled("dy258"))
+            self.assertFalse(service.is_enabled("dy8832"))
+
     def test_load_hides_legacy_event_packs_and_save_rejects_event_scope(self) -> None:
         with TemporaryDirectory() as directory:
             path = Path(directory) / "packs.json"
@@ -1617,6 +1687,18 @@ class _Materials:
                 }
             ],
         }
+
+
+class _WechatScope:
+    def __init__(self, enabled: set[str], *, configured: bool = True):
+        self.enabled = enabled
+        self.configured = configured
+
+    def is_configured(self) -> bool:
+        return self.configured
+
+    def is_enabled(self, user_wechat: str) -> bool:
+        return user_wechat in self.enabled
 
 
 class _Model:

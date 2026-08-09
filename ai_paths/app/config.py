@@ -158,6 +158,10 @@ class Settings(BaseSettings):
         default=Path("config/sop_objection_materials.json"),
         alias="SOP_OBJECTION_MATERIALS_PATH",
     )
+    sop_platform_wechat_scope_path: Path | None = Field(
+        default=None,
+        alias="SOP_PLATFORM_WECHAT_SCOPE_PATH",
+    )
     sop_event_daily_touch_soft_limit: int = Field(default=2, alias="SOP_EVENT_DAILY_TOUCH_SOFT_LIMIT")
     outreach_send_base_url: str = Field(default="https://wecom.cs.4ba.cn", alias="OUTREACH_SEND_BASE_URL")
     outreach_send_agent_token: str = Field(default="", alias="OUTREACH_SEND_AGENT_TOKEN", repr=False)

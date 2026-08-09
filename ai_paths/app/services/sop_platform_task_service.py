@@ -281,6 +281,7 @@ class SopPlatformTaskService:
         model_client: Any,
         customer_context_service: Any,
         objection_material_service: Any | None = None,
+        wechat_scope_service: Any | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -289,6 +290,7 @@ class SopPlatformTaskService:
         self.model_client = model_client
         self.customer_context_service = customer_context_service
         self.objection_material_service = objection_material_service
+        self.wechat_scope_service = wechat_scope_service
         self._locks: dict[str, asyncio.Lock] = {}
         queue_size = max(1, int(getattr(settings, "sop_platform_queue_size", 24) or 24))
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=queue_size)
@@ -620,6 +622,12 @@ class SopPlatformTaskService:
         platform_task = payload.get("platform_task") if isinstance(payload.get("platform_task"), dict) else {}
         if not platform_task:
             raise ValueError("platform task payload is missing")
+        platform_user_wechat = _platform_user_wechat(platform_task)
+        if self.wechat_scope_service is not None:
+            if not self.wechat_scope_service.is_configured():
+                raise RuntimeError("task cannot be resent: wechat_scope_config_required")
+            if not self.wechat_scope_service.is_enabled(platform_user_wechat):
+                raise RuntimeError("task cannot be resent: wechat_not_enabled")
 
         event_status = str(event.get("status") or "")
         local_task = self.repository.get_sop_send_task_by_idempotency_key(f"platform-sop:{task_id}")
@@ -892,6 +900,43 @@ class SopPlatformTaskService:
             status="platform_received",
         )
         local_status = str(local_task.get("status") or "")
+        platform_user_wechat = _platform_user_wechat(platform_task)
+        if self.wechat_scope_service is not None:
+            if not self.wechat_scope_service.is_configured():
+                self.repository.update_sop_send_task(
+                    str(local_task.get("id") or ""),
+                    status="scope_config_required",
+                    send_payload={
+                        "decision": {
+                            "decision": "no_send",
+                            "reason": "wechat_scope_config_required",
+                            "reply_messages": [],
+                        },
+                        "context": {
+                            "source": "platform_user_wechat_scope",
+                            "user_wechat": platform_user_wechat,
+                            "scope_configured": False,
+                            "conversation_loaded": False,
+                            "model_called": False,
+                        },
+                    },
+                )
+                self.repository.update_sop_event_status(event_id, status="platform_scope_config_required")
+                self._counters["wechat_scope_config_required"] += 1
+                return {
+                    "processed": False,
+                    "status": "scope_config_required",
+                    "task_id": task_id,
+                }
+            if not self.wechat_scope_service.is_enabled(platform_user_wechat):
+                return await self._complete_disabled_wechat_task(
+                    platform_task,
+                    task_id=task_id,
+                    event_id=event_id,
+                    local_task=local_task,
+                    recovery_status=recovery_status,
+                    user_wechat=platform_user_wechat,
+                )
         duplicate_reason = _duplicate_platform_task_reason(
             self.repository,
             local_task=local_task,
@@ -1253,6 +1298,88 @@ class SopPlatformTaskService:
                     error=f"{type(exc).__name__}: {exc}",
                 )
             raise
+
+    async def _complete_disabled_wechat_task(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        task_id: str,
+        event_id: str,
+        local_task: dict[str, Any],
+        recovery_status: str,
+        user_wechat: str,
+    ) -> dict[str, Any]:
+        decision = {
+            "decision": "no_send",
+            "reason": "wechat_not_enabled",
+            "reason_code": "wechat_not_enabled",
+            "sceneName": "不发送｜企微号未启用",
+            "sceneCode": "no_send_wechat_not_enabled",
+            "knowledgeId": 0,
+            "knowledgeParagraphNo": 0,
+            "remark": f"user_wechat={user_wechat or '[missing]'} 未在已确认处理范围内",
+            "reply_messages": [],
+        }
+        context = {
+            "source": "platform_user_wechat_scope",
+            "user_wechat": user_wechat,
+            "scope_enabled": False,
+            "conversation_loaded": False,
+            "model_called": False,
+        }
+        self._counters["wechat_not_enabled"] += 1
+        local_task_id = str(local_task.get("id") or "")
+        if self.settings.sop_platform_shadow_mode:
+            self.repository.update_sop_send_task(
+                local_task_id,
+                status="shadow_no_send",
+                send_payload={"decision": decision, "context": context},
+            )
+            self.repository.update_sop_event_status(event_id, status="shadow_no_send")
+            return {
+                "processed": True,
+                "status": "shadow_no_send",
+                "task_id": task_id,
+                "decision": decision,
+            }
+
+        already_claimed = recovery_status in {
+            "platform_processing",
+            "platform_processing_retry",
+            "platform_send_uncertain",
+            "platform_complete_pending",
+        }
+        if not already_claimed:
+            self.repository.update_sop_event_status(event_id, status="platform_claiming")
+            started = time.perf_counter()
+            claimed = await self.platform_client.consume(task_id=task_id, status=20)
+            self._observe("claim", time.perf_counter() - started)
+            _require_platform_status(claimed, 20)
+        rule_data_response = await self._report_rule_data(
+            platform_task,
+            decision=decision,
+            sent=False,
+        )
+        self.repository.update_sop_send_task(
+            local_task_id,
+            status="completed_without_send",
+            send_payload={
+                "decision": decision,
+                "context": context,
+                "rule_data_response": rule_data_response,
+            },
+        )
+        self.repository.update_sop_event_status(event_id, status="platform_complete_pending")
+        completed = await self.platform_client.consume(task_id=task_id, status=30)
+        _require_platform_status(completed, 30)
+        self.repository.update_sop_event_status(event_id, status="platform_completed")
+        return {
+            "processed": True,
+            "status": "completed_without_send",
+            "task_id": task_id,
+            "decision": decision,
+            "platform_response": completed,
+        }
 
     async def _quiet_hours_guard(
         self,
@@ -2439,6 +2566,11 @@ def _task_identity(task: dict[str, Any]) -> dict[str, str]:
         "user_id": str(task.get("user_wechat_id") or task.get("userWechatId") or task.get("user_id") or "").strip(),
         "wechat": str(task.get("user_wechat") or task.get("userWechat") or task.get("wechat") or "").strip(),
     }
+
+
+def _platform_user_wechat(task: dict[str, Any]) -> str:
+    """Return only the platform's reception-account field used for scope checks."""
+    return str(task.get("user_wechat") or task.get("userWechat") or "").strip()
 
 
 def _task_id(task: dict[str, Any]) -> str:

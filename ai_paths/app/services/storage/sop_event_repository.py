@@ -197,6 +197,33 @@ class SopEventRepositoryMixin:
             records.append(row)
         return records
 
+    def list_recent_platform_sop_wechats(self, *, days: int = 2) -> list[dict[str, Any]]:
+        safe_days = max(1, min(int(days or 2), 30))
+        beijing = timezone(timedelta(hours=8))
+        local_start = datetime.now(beijing).replace(hour=0, minute=0, second=0, microsecond=0)
+        since = (local_start - timedelta(days=safe_days - 1)).astimezone(timezone.utc).isoformat()
+        nested = self.store.json_text("e.raw_payload_json", "$.platform_task.user_wechat")
+        root = self.store.json_text("e.raw_payload_json", "$.user_wechat")
+        expression = f"COALESCE(NULLIF({nested}, ''), NULLIF({root}, ''))"
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    {expression} AS user_wechat,
+                    COUNT(*) AS task_count,
+                    MIN(e.received_at) AS first_seen_at,
+                    MAX(e.received_at) AS last_seen_at
+                FROM sop_events e
+                WHERE e.event_type='platform_sop_task'
+                  AND e.received_at>=?
+                  AND {expression} IS NOT NULL
+                GROUP BY {expression}
+                ORDER BY task_count DESC, user_wechat ASC
+                """,
+                (since,),
+            ).fetchall()
+        return [dict(row) for row in rows if str(dict(row).get("user_wechat") or "").strip()]
+
     def schedule_sop_event_model_retry(
         self,
         event_id: str,
