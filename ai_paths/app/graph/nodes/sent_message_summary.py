@@ -304,6 +304,8 @@ def _visible_payment_records(raw_history: Any) -> list[dict[str, Any]]:
 
 
 def _is_visible_payment_collection(item: Any) -> bool:
+    if _is_customer_message(item):
+        return False
     if isinstance(item, dict):
         if str(item.get("type") or item.get("message_type") or "").strip() == "payment_collection":
             return True
@@ -311,7 +313,11 @@ def _is_visible_payment_collection(item: Any) -> bool:
         if isinstance(content, dict) and str(content.get("type") or "").strip() == "payment_collection":
             return True
     text = _conversation_text(item)
-    return bool(re.search(r"\bpayment_collection\b", text, flags=re.IGNORECASE))
+    return bool(
+        re.search(r"\bpayment_collection\b", text, flags=re.IGNORECASE)
+        or re.search(r"预约金收款\s*[:：]\s*(?:10|20|30|40)(?:\.0)?\b", text)
+        or re.search(r"付款给\s*[:：]\s*\S+", text)
+    )
 
 
 def _customer_turns_since_last_card(records: list[dict[str, Any]]) -> int | None:

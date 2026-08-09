@@ -471,23 +471,31 @@ class ChatRuntime:
                     await self._platform_reply_coordinator.complete(control_record)
                 return state
             ai_reply_usable = _ai_reply_usable_before_sop(final_state, ai_messages)
+            authorized_sop_messages = _payment_authorized_reply_messages(
+                sop_messages,
+                payment_decision=final_state.get("payment_decision"),
+            )
             if ai_reply_usable:
-                messages = _merge_ai_then_sop_reply_messages(ai_messages, sop_messages)
+                messages = _merge_ai_then_sop_reply_messages(
+                    ai_messages,
+                    authorized_sop_messages,
+                    payment_decision=final_state.get("payment_decision"),
+                )
                 _confirm_deferred_chat_sop_task(
                     self._sop_execution_service,
                     sop_state,
                     request_id=str(final_state.get("request_id") or initial_state.get("request_id") or ""),
-                    reply_messages=sop_messages,
+                    reply_messages=authorized_sop_messages,
                 )
                 result_reason = "ai_reply_then_sop_returned_with_response"
-            elif sop_messages:
-                messages = list(sop_messages)
+            elif authorized_sop_messages:
+                messages = list(authorized_sop_messages)
                 final_state["reply_source"] = "sop_gate_sync_sop_fallback_after_ai_unavailable"
                 _confirm_deferred_chat_sop_task(
                     self._sop_execution_service,
                     sop_state,
                     request_id=str(final_state.get("request_id") or initial_state.get("request_id") or ""),
-                    reply_messages=sop_messages,
+                    reply_messages=authorized_sop_messages,
                 )
                 final_state.setdefault("warnings", []).append(
                     {"node": "sop_gate_sync_ai_reply", "message": "sop_sent_after_ai_reply_unavailable"}
@@ -1368,7 +1376,14 @@ def _merge_reply_message_groups(*groups: list[dict[str, Any]]) -> list[dict[str,
     return messages
 
 
-def _merge_ai_then_sop_reply_messages(ai_messages: list[dict[str, Any]], sop_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _merge_ai_then_sop_reply_messages(
+    ai_messages: list[dict[str, Any]],
+    sop_messages: list[dict[str, Any]],
+    *,
+    payment_decision: Any = None,
+) -> list[dict[str, Any]]:
+    ai_messages = _payment_authorized_reply_messages(ai_messages, payment_decision=payment_decision)
+    sop_messages = _payment_authorized_reply_messages(sop_messages, payment_decision=payment_decision)
     if not any(_message_type(message) == "text" and _message_text(message) for message in ai_messages):
         return _merge_reply_message_groups(ai_messages, sop_messages)
 
@@ -1411,6 +1426,25 @@ def _merge_ai_then_sop_reply_messages(ai_messages: list[dict[str, Any]], sop_mes
         copied["order"] = len(merged) + 1
         merged.append(copied)
     return merged
+
+
+def _payment_authorized_reply_messages(
+    messages: list[dict[str, Any]],
+    *,
+    payment_decision: Any,
+) -> list[dict[str, Any]]:
+    # Keep the helper's legacy behavior for isolated callers that do not pass a
+    # planner decision. Runtime callers always pass the structured authority.
+    if payment_decision is None:
+        return list(messages)
+    decision = payment_decision if isinstance(payment_decision, dict) else {}
+    if str(decision.get("action") or "").strip() in {"send_now", "resend"}:
+        return list(messages)
+    return [
+        message
+        for message in messages
+        if isinstance(message, dict) and _message_type(message) != "payment_collection"
+    ]
 
 
 def _message_type(message: dict[str, Any]) -> str:
