@@ -143,6 +143,16 @@ def test_timeout_and_recovery_prompts_keep_platform_transfer_as_authoritative_pa
     assert "绝大多数顾客一次就有很好的改善效果" in REPLY_RECOVERY_SYSTEM_PROMPT
 
 
+def test_reply_prompts_state_no_post_product_dependency() -> None:
+    from app.graph.nodes.reply_nodes import REPLY_RECOVERY_SYSTEM_PROMPT
+
+    for prompt in (REPLY_SYSTEM_PROMPT, REPLY_RECOVERY_SYSTEM_PROMPT):
+        assert "做完后不依赖任何后期产品" in prompt
+        assert "不需要客户回去额外购买、涂抹或持续使用其他产品" in prompt
+        assert "保持日常基础清洁即可" in prompt
+        assert "不得把普通生活习惯说成项目生效条件" in prompt
+
+
 def test_transaction_prompts_allow_only_authoritative_single_store_card_binding() -> None:
     assert "发预约金卡不要求先创建或复用订单" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
     assert "礼貌短句" in GLOBAL_BUSINESS_RHYTHM_CONTRACT
