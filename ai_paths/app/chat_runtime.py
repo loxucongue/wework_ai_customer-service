@@ -220,6 +220,24 @@ class ChatRuntime:
                 allow_empty_reply=True,
             )
 
+        if _sop_gate_direct_reply(sop_gate):
+            direct_state = self._sop_reply_state(initial_state, sop_gate)
+            direct_state = await self._apply_platform_freshness_guard(
+                request=effective_request,
+                state=direct_state,
+                control_record=control_record,
+            )
+            response = self._persist_and_build_response(
+                request=request,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                final_state=direct_state,
+                allow_empty_reply=False,
+            )
+            if self._platform_reply_coordinator:
+                await self._platform_reply_coordinator.complete(control_record)
+            return response
+
         try:
             planner_state = await self._run_planner_graph_with_preemption(initial_state, control_record)
         except Exception as exc:
@@ -1257,6 +1275,15 @@ def _sop_gate_terminal_no_reply(sop_gate: dict[str, Any]) -> bool:
         str(sop_gate.get("mode") or "") == "ignored_platform_auto_message"
         and not sop_gate.get("send_sop")
         and not sop_gate.get("need_ai_reply")
+    )
+
+
+def _sop_gate_direct_reply(sop_gate: dict[str, Any]) -> bool:
+    return (
+        bool(sop_gate.get("send_sop"))
+        and not bool(sop_gate.get("need_ai_reply"))
+        and isinstance(sop_gate.get("reply_messages"), list)
+        and bool(sop_gate.get("reply_messages"))
     )
 
 

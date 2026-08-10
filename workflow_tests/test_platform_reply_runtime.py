@@ -204,7 +204,7 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(repository.saved_states[-1]["reply_source"], "platform_superseded")
         self.assertEqual(repository.saved_states[-1]["reply_control"]["sync_return"]["type"], "empty")
 
-    async def test_platform_auto_opening_sop_is_candidate_for_unified_planner(self) -> None:
+    async def test_platform_auto_opening_sop_returns_configured_messages_without_models(self) -> None:
         graph = _OpeningUnifiedGraph()
         repository = _Repository()
         runtime = ChatRuntime(
@@ -218,21 +218,22 @@ class PlatformReplyRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         response = await runtime.run_platform_reply(_request("我已经添加了你，现在我们可以开始聊天了。"))
 
-        self.assertEqual([message.type for message in response.reply_messages], ["text"])
+        self.assertEqual([message.type for message in response.reply_messages], ["text", "image"])
         self.assertEqual(response.reply_messages[0].content["text"], "新客破冰话术")
-        self.assertTrue(graph.called)
+        self.assertEqual(response.reply_messages[1].content["url"], "https://example.com/opening.png")
+        self.assertFalse(graph.called)
         self.assertTrue(repository.saved_states)
         state = repository.saved_states[-1]
-        self.assertEqual(state["reply_source"], "planner_direct_reply")
+        self.assertEqual(state["reply_source"], "sop_gate")
         self.assertEqual(state["planner_decision"], "direct_reply")
-        self.assertEqual(state["planner_stage"], "S1")
+        self.assertEqual(state["planner_stage"], "SOP")
         self.assertEqual(state["async_final_reply"]["scheduled"], False)
-        self.assertEqual(state["async_final_reply"]["status"], "skipped")
-        self.assertEqual(state["reply_control"]["sync_return"]["type"], "direct_reply")
-        self.assertEqual(len(state["reply_messages"]), 1)
+        self.assertEqual(state["async_final_reply"]["status"], "not_required")
+        self.assertEqual(state["reply_control"]["sync_return"]["type"], "sop_reply")
+        self.assertEqual(len(state["reply_messages"]), 2)
         workflow_body = workflow_response_from_chat(response)
         self.assertEqual(workflow_body["code"], 0)
-        self.assertEqual(len(workflow_body["data"]["reply_messages"]), 1)
+        self.assertEqual(len(workflow_body["data"]["reply_messages"]), 2)
 
     async def test_precision_ai_reply_precedes_selected_sop_and_confirms_task(self) -> None:
         repository = _Repository()
@@ -529,7 +530,14 @@ class _OpeningSopGate:
             "need_ai_reply": False,
             "reason": "platform_auto_opening_first_add_sop",
             "sop_pack_id": "s10_new_customer_opening",
-            "reply_messages": [{"type": "text", "order": 1, "content": {"text": "新客破冰话术"}}],
+            "reply_messages": [
+                {"type": "text", "order": 1, "content": {"text": "新客破冰话术"}},
+                {
+                    "type": "image",
+                    "order": 2,
+                    "content": {"url": "https://example.com/opening.png"},
+                },
+            ],
         }
 
 
