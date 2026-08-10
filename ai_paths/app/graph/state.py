@@ -64,6 +64,7 @@ class AgentState(TypedDict, total=False):
     sop_gate_decision: dict[str, Any]
     sop_gate_candidate_messages: list[dict[str, Any]]
     sop_delivery_manifest: dict[str, Any]
+    sop_delivery_decision: dict[str, Any]
     authorized_sop_delivery_manifest: dict[str, Any]
     sop_progress_evidence: dict[str, Any]
     conversation_state: dict[str, Any]

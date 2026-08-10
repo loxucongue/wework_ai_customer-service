@@ -139,7 +139,36 @@ def create_synthesize_reply_node(
                     str(item.get("detail") if isinstance(item, dict) else item)
                     for item in errors
                 )
-                if _is_hard_reply_contract_failure(failure_detail):
+                manifest_fallback = _validated_manifest_fallback_messages(state, warnings)
+                if manifest_fallback:
+                    messages = manifest_fallback
+                    reply_source = "deterministic_authorized_sop_manifest_fallback"
+                    fallback_source = reply_source
+                    warnings.append(
+                        {
+                            "node": "synthesize_reply",
+                            "message": "authorized_sop_manifest_used_after_reply_failure",
+                            "detail": failure_detail[:1000],
+                        }
+                    )
+                    if model_call:
+                        model_call["fallback"] = {"strategy": reply_source, "reason": failure_detail[:1000]}
+                        model_call["output"] = {"messages": len(messages)}
+                elif _is_recoverable_delivery_contract_failure(failure_detail):
+                    messages = _neutral_final_fallback_messages()
+                    reply_source = "deterministic_neutral_final_fallback"
+                    fallback_source = reply_source
+                    warnings.append(
+                        {
+                            "node": "synthesize_reply",
+                            "message": "delivery_contract_failure_recovered_by_neutral_fallback",
+                            "detail": failure_detail[:1000],
+                        }
+                    )
+                    if model_call:
+                        model_call["fallback"] = {"strategy": reply_source, "reason": failure_detail[:1000]}
+                        model_call["output"] = {"messages": len(messages)}
+                elif _is_hard_reply_contract_failure(failure_detail):
                     reply_blocked = True
                     reply_source = "reply_contract_blocked"
                     review_violations.append(
@@ -250,6 +279,30 @@ def _is_hard_reply_contract_failure(error: str) -> bool:
             "unsupported_store_address_message",
             "payment_confirmation_fact_required",
         )
+    )
+
+
+def _is_recoverable_delivery_contract_failure(error: str) -> bool:
+    detail = str(error or "")
+    recoverable_markers = (
+        "reply_contract_required_deliveries_missing",
+        "sop_delivery_manifest_",
+        "activity_intro_core_facts_missing",
+        "case_image_structure_required_when_reply_promises_delivery",
+        "case_image_required_for_effect_turn",
+    )
+    hard_fact_markers = (
+        "appointment_confirmation_fact_required",
+        "registration_confirmation_fact_required",
+        "known_customer_field_requested_again",
+        "adjacent_payment_collection_not_allowed",
+        "reply_too_similar_to_previous_assistant_message",
+        "effect_trust_",
+        "unsupported_store_address_message",
+        "payment_confirmation_fact_required",
+    )
+    return any(marker in detail for marker in recoverable_markers) and not any(
+        marker in detail for marker in hard_fact_markers
     )
 
 
@@ -696,6 +749,52 @@ def _needs_strong_reply_model(state: AgentState) -> bool:
 
 def _neutral_final_fallback_messages() -> list[dict[str, Any]]:
     return [{"type": "text", "order": 1, "content": "您稍等一下"}]
+
+
+def _validated_manifest_fallback_messages(
+    state: AgentState,
+    warnings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    manifest = (
+        state.get("authorized_sop_delivery_manifest")
+        if isinstance(state.get("authorized_sop_delivery_manifest"), dict)
+        else {}
+    )
+    if not manifest.get("active"):
+        return []
+    ordered = sorted(
+        (item for item in manifest.get("messages") or [] if isinstance(item, dict) and item.get("required")),
+        key=lambda item: int(item.get("source_order") or 0),
+    )
+    messages: list[dict[str, Any]] = []
+    for item in ordered:
+        message_type = str(item.get("message_type") or "").strip()
+        if not message_type:
+            continue
+        content = item.get("content")
+        if message_type == "text" and isinstance(content, dict):
+            content = content.get("text") or content.get("content") or ""
+        messages.append(
+            {
+                "type": message_type,
+                "order": len(messages) + 1,
+                "content": content,
+            }
+        )
+    if not messages:
+        return []
+    try:
+        validate_reply_consistency(messages, state)
+    except Exception as exc:
+        warnings.append(
+            {
+                "node": "synthesize_reply",
+                "message": "authorized_sop_manifest_fallback_invalid",
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
+        )
+        return []
+    return messages
 
 
 def _maybe_build_required_payment_collection_fallback(

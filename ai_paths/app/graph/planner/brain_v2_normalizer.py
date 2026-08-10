@@ -240,6 +240,9 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
     sales_progression = _normalize_sales_progression(
         model_payload.get("sales_progression") if isinstance(model_payload, dict) else {},
     )
+    sop_delivery_decision = (
+        model_payload.get("sop_delivery_decision") if isinstance(model_payload, dict) else {}
+    )
     current_turn_resolution = _normalize_current_turn_resolution(
         model_payload.get("current_turn_resolution") if isinstance(model_payload, dict) else {},
         state=state,
@@ -673,6 +676,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         manifest_input,
         payment_decision=payment_decision,
         precision_scene_id=effect_scene_id,
+        delivery_decision=sop_delivery_decision,
     )
     reply_contract = merge_manifest_into_reply_contract(
         reply_contract,
@@ -772,6 +776,7 @@ def build_planner_plan_v2(state: AgentState, model_payload: dict[str, Any]) -> d
         "order_decision": order_decision,
         "appointment_decision": appointment_decision,
         "sales_progression": sales_progression,
+        "sop_delivery_decision": authorized_sop_delivery_manifest.get("delivery_decision", {}),
         "current_turn_resolution": current_turn_resolution,
         "reply_contract": reply_contract,
         "authorized_sop_delivery_manifest": authorized_sop_delivery_manifest,

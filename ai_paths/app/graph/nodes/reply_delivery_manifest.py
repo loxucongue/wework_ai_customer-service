@@ -61,23 +61,36 @@ def authorize_sop_delivery_manifest(
     *,
     payment_decision: Any,
     precision_scene_id: str,
+    delivery_decision: Any = None,
 ) -> dict[str, Any]:
     raw = dict(manifest) if isinstance(manifest, dict) else {}
     messages = raw.get("messages") if isinstance(raw.get("messages"), list) else []
     scene_id = str(precision_scene_id or "").strip()
+    decision = normalize_sop_delivery_decision(delivery_decision, manifest=raw)
     if not raw.get("active") or not messages:
-        return {**raw, "active": False, "messages": []}
+        return {**raw, "active": False, "messages": [], "delivery_decision": decision}
     if scene_id in EFFECT_TRUST_SCENE_IDS:
         return {
             **raw,
             "active": False,
             "messages": [],
             "reason": "effect_trust_scene_owns_current_turn",
+            "delivery_decision": decision,
             "suppressed_message_count": len(messages),
         }
 
-    decision = payment_decision if isinstance(payment_decision, dict) else {}
-    payment_authorized = str(decision.get("action") or "").strip() in {"send_now", "resend"}
+    if decision["action"] != "deliver_now":
+        return {
+            **raw,
+            "active": False,
+            "messages": [],
+            "reason": f"planner_{decision['action']}",
+            "delivery_decision": decision,
+            "suppressed_message_count": len(messages),
+        }
+
+    payment = payment_decision if isinstance(payment_decision, dict) else {}
+    payment_authorized = str(payment.get("action") or "").strip() in {"send_now", "resend"}
     authorized: list[dict[str, Any]] = []
     suppressed: list[dict[str, Any]] = []
     for item in messages:
@@ -92,7 +105,30 @@ def authorize_sop_delivery_manifest(
         "active": bool(authorized),
         "messages": authorized,
         "payment_authorized": payment_authorized,
+        "delivery_decision": decision,
         "suppressed_messages": suppressed,
+    }
+
+
+def normalize_sop_delivery_decision(value: Any, *, manifest: Any) -> dict[str, str]:
+    """Normalize the Planner-owned decision without inferring business semantics."""
+
+    raw = value if isinstance(value, dict) else {}
+    candidate = manifest if isinstance(manifest, dict) else {}
+    route = str(candidate.get("route") or "").strip()
+    candidate_pack_id = str(candidate.get("sop_pack_id") or "").strip()
+    action = str(raw.get("action") or "").strip()
+    if action not in {"deliver_now", "defer", "suppress"}:
+        # sop_only is already a direct Gate delivery decision. ai_then_sop remains
+        # a candidate until Planner explicitly accepts it for the current turn.
+        action = "deliver_now" if route == "sop_only" else "defer"
+    requested_pack_id = str(raw.get("sop_pack_id") or "").strip()
+    if action == "deliver_now" and requested_pack_id and requested_pack_id != candidate_pack_id:
+        action = "defer"
+    return {
+        "action": action,
+        "sop_pack_id": candidate_pack_id,
+        "reason": str(raw.get("reason") or "").strip()[:240],
     }
 
 

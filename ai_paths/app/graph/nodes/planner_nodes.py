@@ -88,6 +88,7 @@ def create_planner_brain_node(
                 "order_decision": plan.get("order_decision", {}),
                 "appointment_decision": plan.get("appointment_decision", {}),
                 "sales_progression": plan.get("sales_progression", {}),
+                "sop_delivery_decision": plan.get("sop_delivery_decision", {}),
                 "current_turn_resolution": plan.get("current_turn_resolution", {}),
                 "reply_contract": plan.get("reply_contract", {}),
                 "authorized_sop_delivery_manifest": plan.get("authorized_sop_delivery_manifest", {}),

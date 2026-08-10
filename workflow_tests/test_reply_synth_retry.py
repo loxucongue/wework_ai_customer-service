@@ -389,10 +389,74 @@ class ReplySynthRetryTests(unittest.IsolatedAsyncioTestCase):
             output = await node(state)
 
         self.assertEqual(model.calls, 3)
-        self.assertTrue(output["reply_blocked"])
-        self.assertEqual(output["reply_source"], "reply_contract_blocked")
+        self.assertFalse(output["reply_blocked"])
+        self.assertEqual(output["reply_source"], "deterministic_neutral_final_fallback")
+        self.assertEqual(output["reply_messages"], [{"type": "text", "order": 1, "content": "您稍等一下"}])
         self.assertEqual(output["reply_review"]["repair_attempts"], 2)
         self.assertGreater(output["model_context_metrics"]["reply"]["message_count"], 0)
+
+    async def test_model_failure_uses_valid_authorized_manifest_without_replanning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            node = create_synthesize_reply_node(
+                trace_logger=TraceLogger(Settings(trace_log_dir=Path(tmpdir))),
+                model_client=FakeAlwaysFailReplyModelClient(),
+                debug_message_contents=debug_message_contents,
+                reply_messages_for_model=lambda _state: [
+                    {"role": "system", "content": "output json"},
+                    {"role": "user", "content": "{}"},
+                ],
+                should_use_model_reply=lambda _state: True,
+                validated_model_messages=validated_model_messages,
+            )
+            manifest_messages = [
+                {
+                    "source_order": 1,
+                    "message_type": "text",
+                    "required": True,
+                    "content": {"text": "现在把完整活动内容发您。"},
+                },
+                {
+                    "source_order": 2,
+                    "message_type": "image",
+                    "required": True,
+                    "content": {"url": "https://example.test/activity.png"},
+                },
+                {
+                    "source_order": 3,
+                    "message_type": "text",
+                    "required": True,
+                    "content": {"text": "到店时间按您方便安排。"},
+                },
+            ]
+            state: dict[str, Any] = {
+                "request_id": "test-authorized-manifest-fallback",
+                "trace": [],
+                "errors": [],
+                "warnings": [],
+                "content": "先问问价格",
+                "normalized_content": "先问问价格",
+                "planner_decision": "direct_reply",
+                "planner_reply_messages": [],
+                "fact_envelope": {},
+                "required_tools": [],
+                "authorized_sop_delivery_manifest": {
+                    "active": True,
+                    "core_fact_contract": "",
+                    "messages": manifest_messages,
+                },
+                "reply_contract": {
+                    "required_deliveries": [
+                        {"message_type": item["message_type"]}
+                        for item in manifest_messages
+                    ]
+                },
+            }
+
+            output = await node(state)
+
+        self.assertFalse(output["reply_blocked"])
+        self.assertEqual(output["reply_source"], "deterministic_authorized_sop_manifest_fallback")
+        self.assertEqual([item["type"] for item in output["reply_messages"]], ["text", "image", "text"])
 
     async def test_low_round_budget_skips_primary_and_runs_compact_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

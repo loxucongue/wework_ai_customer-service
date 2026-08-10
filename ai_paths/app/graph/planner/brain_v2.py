@@ -67,6 +67,8 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
 - 只有省份时补问城市和区县。客户明确给出城市、区县、乡镇、村、道路、地标或定位卡时，先调用 customer_store_lookup；若工具得到唯一且内部一致的解析结果，可在同一轮自然带一句解析地区并直接匹配门店卡，不需要等客户再确认一次。只有同名多地域、多个同级城市冲突、解析失败或错别字/简称修正候选时，才等待客户确认。客户确认了你上一轮提出的地区后，工具调用可设置 `confirmed_by_customer=true`。例如“武汉市东湖高新区”可直接查店；“广州惠州”包含两个城市，必须先确认客户指广州还是惠州。
 - 若 `store_binding_decision` 已接受最近真实门店，当前客户没有提出新位置或换店，就沿用该门店并推进当前主线，不再查门店；若客户确实改了位置，先把门店决策改为 `exploring/ambiguous`，再按当前位置查询，不能同时“已接受旧店”和“查询无关新地址”。
 - `direct_reply` 必须有对象数组 reply_messages 且 tool_calls=[]；`need_tools` 必须 reply_messages=[] 且 tool_calls 非空。
+- `sop_delivery_manifest` 只是 Gate 候选。当前轮确实完整发送该包才选 `deliver_now`；先处理其他问题或工具动作选 `defer`；候选包与当前轮冲突选 `suppress`。不要让代码猜测业务语义。
+- 当前问题正是询问活动、价格或参加方式，且候选活动包能够完整回答时选 `deliver_now`；当前轮先查门店、补位置或完成其他工具动作时才 `defer`。不能自己输出缩略活动文本却延后候选包中的图片。
 
 # Output JSON Schema
 只输出 JSON：
@@ -86,6 +88,7 @@ PLANNER_TIMEOUT_RECOVERY_PROMPT = """# Planner Timeout Recovery
   "appointment_decision": {"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
   "current_turn_resolution": {"required":true,"customer_question":"","resolution_goal":"","required_facts":[]},
   "sales_progression": {"status":"continue | pause | terminal","target_stage":"need_and_case | effect_proof | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[],"required_message_types":["text"],"source_pack_ids":[],"asset_ids":[],"reason":""},
+  "sop_delivery_decision": {"action":"deliver_now | defer | suppress","sop_pack_id":"","reason":""},
   "reply_contract": {"locked_facts":[],"forbidden_claims":[],"known_fields_not_to_request":[],"required_deliveries":[{"message_type":"text","asset_id":"","source_pack_id":""}]},
   "closing_move": {"action":"none | ask_city | ask_spot_history | send_case | introduce_offer | ask_store_choice | send_payment | manual_transfer | ask_party_size | ask_registration | ask_visit_intent | resolve_risk | close","mainline_stage":"need_and_case | trust | store | activity | deposit | registration | appointment | service | close | risk","reason":"","required_slot":"","must_not_repeat":[]},
   "reply_messages": [],

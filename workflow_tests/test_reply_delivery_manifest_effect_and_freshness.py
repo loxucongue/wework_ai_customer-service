@@ -132,6 +132,7 @@ def test_activity_manifest_keeps_full_sequence_but_drops_unauthorized_card() -> 
         manifest,
         payment_decision={"action": "none"},
         precision_scene_id="",
+        delivery_decision={"action": "deliver_now", "sop_pack_id": "s10_activity_intro"},
     )
     contract = merge_manifest_into_reply_contract({}, authorized)
     messages = _activity_gate()["reply_messages"][:-1]
@@ -158,6 +159,7 @@ def test_activity_manifest_accepts_natural_redemption_wording(redemption_text: s
         build_sop_delivery_manifest(_activity_gate()),
         payment_decision={"action": "none"},
         precision_scene_id="",
+        delivery_decision={"action": "deliver_now", "sop_pack_id": "s10_activity_intro"},
     )
     contract = merge_manifest_into_reply_contract({}, authorized)
     messages = _activity_gate()["reply_messages"][:-1]
@@ -179,6 +181,7 @@ def test_activity_manifest_replaces_duplicate_model_pack_requirements() -> None:
         build_sop_delivery_manifest(_activity_gate()),
         payment_decision={"action": "none"},
         precision_scene_id="",
+        delivery_decision={"action": "deliver_now", "sop_pack_id": "s10_activity_intro"},
     )
     contract = merge_manifest_into_reply_contract(
         {
@@ -199,6 +202,7 @@ def test_activity_manifest_blocks_compressed_or_incomplete_activity_copy() -> No
         build_sop_delivery_manifest(_activity_gate()),
         payment_decision={"action": "none"},
         precision_scene_id="",
+        delivery_decision={"action": "deliver_now", "sop_pack_id": "s10_activity_intro"},
     )
     contract = merge_manifest_into_reply_contract({}, manifest)
     compressed = [
@@ -212,6 +216,126 @@ def test_activity_manifest_blocks_compressed_or_incomplete_activity_copy() -> No
             compressed,
             {"authorized_sop_delivery_manifest": manifest, "reply_contract": contract},
         )
+
+
+def test_ai_then_sop_remains_candidate_until_planner_delivers_it() -> None:
+    manifest = build_sop_delivery_manifest(_activity_gate())
+
+    deferred = authorize_sop_delivery_manifest(
+        manifest,
+        payment_decision={"action": "none"},
+        precision_scene_id="",
+        delivery_decision={"action": "defer", "sop_pack_id": "s10_activity_intro"},
+    )
+
+    assert deferred["active"] is False
+    assert deferred["reason"] == "planner_defer"
+    assert merge_manifest_into_reply_contract({}, deferred)["required_deliveries"] == []
+
+
+def test_ai_then_sop_without_planner_decision_defaults_to_defer() -> None:
+    deferred = authorize_sop_delivery_manifest(
+        build_sop_delivery_manifest(_activity_gate()),
+        payment_decision={"action": "none"},
+        precision_scene_id="",
+    )
+
+    assert deferred["active"] is False
+    assert deferred["delivery_decision"]["action"] == "defer"
+
+
+def test_sop_only_keeps_gate_direct_delivery_when_planner_field_is_missing() -> None:
+    gate = {**_activity_gate(), "route": "sop_only"}
+    authorized = authorize_sop_delivery_manifest(
+        build_sop_delivery_manifest(gate),
+        payment_decision={"action": "none"},
+        precision_scene_id="",
+    )
+
+    assert authorized["active"] is True
+    assert authorized["delivery_decision"]["action"] == "deliver_now"
+
+
+def test_planner_defer_keeps_activity_candidate_out_of_store_turn_contract() -> None:
+    state = {
+        "content": "我在广州这边",
+        "normalized_content": "我在广州这边",
+        "sop_delivery_manifest": build_sop_delivery_manifest(_activity_gate()),
+        "conversation_history": ["用户: 我在广州这边"],
+        "history_events": [],
+    }
+    payload = {
+        "decision": "need_tools",
+        "stage": "S1",
+        "sales_progression": {
+            "status": "continue",
+            "target_stage": "store",
+            "action": "confirm_store",
+            "required_message_types": ["text"],
+        },
+        "sop_delivery_decision": {
+            "action": "defer",
+            "sop_pack_id": "s10_activity_intro",
+            "reason": "本轮先完成门店区域确认",
+        },
+        "reply_contract": {"required_deliveries": [{"message_type": "text"}]},
+        "tool_calls": [
+            {
+                "name": "customer_store_lookup",
+                "query": "广州",
+                "purpose": "existence",
+                "location_specificity": "confirmed_region",
+            }
+        ],
+        "reply_messages": [],
+    }
+
+    plan = build_planner_plan_v2(state, payload)
+
+    assert plan["sop_delivery_decision"]["action"] == "defer"
+    assert plan["authorized_sop_delivery_manifest"]["active"] is False
+    assert plan["reply_contract"]["delivery_manifest_active"] is False
+    assert [item["message_type"] for item in plan["reply_contract"]["required_deliveries"]] == ["text"]
+
+
+def test_planner_deliver_now_activates_complete_activity_contract() -> None:
+    state = {
+        "content": "先问问价格",
+        "normalized_content": "先问问价格",
+        "sop_delivery_manifest": build_sop_delivery_manifest(_activity_gate()),
+        "conversation_history": ["用户: 先问问价格"],
+        "history_events": [],
+    }
+    payload = {
+        "decision": "direct_reply",
+        "stage": "S2",
+        "sales_progression": {
+            "status": "continue",
+            "target_stage": "activity",
+            "action": "deliver_value",
+            "required_message_types": ["text", "image"],
+            "source_pack_ids": ["s10_activity_intro"],
+        },
+        "sop_delivery_decision": {
+            "action": "deliver_now",
+            "sop_pack_id": "s10_activity_intro",
+            "reason": "本轮直接完整回答活动价格",
+        },
+        "payment_decision": {"action": "none"},
+        "reply_contract": {"required_deliveries": []},
+        "tool_calls": [],
+        "reply_messages": [{"type": "text", "content": "活动内容按完整话术包发送。"}],
+    }
+
+    plan = build_planner_plan_v2(state, payload)
+
+    assert plan["sop_delivery_decision"]["action"] == "deliver_now"
+    assert plan["authorized_sop_delivery_manifest"]["active"] is True
+    assert [item["message_type"] for item in plan["reply_contract"]["required_deliveries"]] == [
+        "text",
+        "image",
+        "text",
+    ]
 
 
 @pytest.mark.parametrize("scene_id", ["effect_definition_trust", "one_session_effect"])

@@ -50,7 +50,9 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
 - `transaction_facts`：实时订单/支付；`current_known_store`：高置信事实；`store_candidate`：低置信候选，不能当确认门店。
 - `store_scope_summary`：可见省/市/区门店和真实 ID；`sent_message_summary`：发送事实；`sop_progress_evidence`：已发流程。
 - `sop_gate_decision`：前置精准问题和主线路由；其中 `reason/task` 是上一模型对当前任务的语义证据。复核后一致则沿用，不能被更早的付款或门店历史覆盖。
-- `sop_gate_decision.sop_message_types/sop_image_count`：`ai_then_sop` 后续确定会发送的 SOP 结构素材事实。若选中的案例阶段 SOP 已经带真实 image，AI 前置答疑只负责把顾虑说准，不要再调用 `kb_search(case_studies)` 发送第二套重复案例；只有客户明确要求另一类新案例且现有 SOP 素材无法满足时才另查。
+- `sop_gate_decision.sop_message_types/sop_image_count`：Gate 候选 SOP 的结构素材事实。只有 `sop_delivery_decision.action=deliver_now` 才表示本轮确定发送；候选案例包已经带真实 image 且本轮决定交付时，不要再调用 `kb_search(case_studies)` 发送第二套重复案例。
+- `sop_delivery_manifest` 是 Gate 选出的候选 SOP 清单，不等于本轮已经授权发送。你必须输出 `sop_delivery_decision`：本轮当前问题和推进动作确实要完整交付该包时选 `deliver_now`；本轮应先完成门店查询、补充位置、处理其他卡点或工具动作时选 `defer`；候选包与当前问题冲突或本轮不应再发时选 `suppress`。这是业务语义决定，不能让代码猜测。`deliver_now` 后清单会成为完整硬合同；`defer/suppress` 后本轮不得要求 Reply 同时补齐该包。
+- `sop_delivery_decision` 先比较“客户当前问题”和“候选包实际交付内容”，不能因为 `ai_then_sop` 字样就默认延后。客户当前明确要求介绍活动、询问活动价格或参加方式，而候选活动包正好完整回答本轮问题时，必须 `deliver_now`，不能另写一份缩略活动说明后把图片延后。客户当前给出城市、需要先查门店或补充区县，Planner 本轮锁定的是门店工具/位置确认而不是活动交付时，活动包才 `defer`；下一轮仍可继续。当前效果、风险或其他顾虑与候选活动包冲突时才 `suppress`。
 - `available_tools` 是唯一可调用工具；Current Business Facts 是稳定活动/品牌事实。
 
 # Fact Priority
@@ -125,6 +127,7 @@ PLANNER_SYSTEM_PROMPT = "\n\n".join(
   "appointment_decision":{"action":"none | ask_store | ask_time | lookup_store | check_availability | confirm_existing | tentative_arrange | create_plan","commitment_level":"none | tentative | confirmed","basis":[]},
   "current_turn_resolution":{"required":true,"customer_question":"","resolution_goal":"","required_facts":[]},
   "sales_progression":{"status":"continue | pause | terminal","target_stage":"need_and_case | effect_proof | trust | store | activity | deposit | registration | appointment | service | close | risk","action":"ask_need_context | deliver_value | confirm_store | explain_deposit | send_payment_card | manual_transfer | collect_registration | confirm_visit_time | confirm_appointment | close | risk_pause","goal":"","basis":[],"required_message_types":["text"],"source_pack_ids":[],"asset_ids":[],"reason":""},
+  "sop_delivery_decision":{"action":"deliver_now | defer | suppress","sop_pack_id":"","reason":""},
   "reply_contract":{"locked_facts":[],"forbidden_claims":[],"known_fields_not_to_request":[],"required_deliveries":[{"message_type":"text | image | video | store_address | payment_collection","asset_id":"","source_pack_id":""}]},
   "closing_move":{"action":"none | ask_city | ask_spot_history | send_case | introduce_offer | ask_store_choice | send_payment | manual_transfer | ask_party_size | ask_registration | ask_visit_intent | resolve_risk | close","mainline_stage":"need_and_case | effect_proof | trust | store | activity | deposit | registration | appointment | service | close | risk","reason":"","required_slot":"","must_not_repeat":[]},
   "reply_messages":[],
