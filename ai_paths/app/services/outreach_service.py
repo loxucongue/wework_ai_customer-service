@@ -3009,7 +3009,7 @@ class OutreachService:
         goal = business_goal or "推动客户重新开口，并逐步推进到店或支付10元预约金"
         appointment_playbook = self._appointment_blocker_playbook()
         appointment_material_catalog = appointment_blocker_materials(appointment_playbook)
-        first_day_sop_sequence = self._first_day_sop_sequence()
+        first_day_sop_sequence = self._first_day_sop_sequence(required=first_day_trigger)
         asset_catalog = (
             build_appointment_blocker_asset_catalog(appointment_playbook)
             + self._first_day_sop_asset_catalog(first_day_sop_sequence)
@@ -3783,12 +3783,16 @@ class OutreachService:
     def _outreach_asset_catalog(self) -> list[dict[str, Any]]:
         return build_appointment_blocker_asset_catalog(self._appointment_blocker_playbook())
 
-    def _first_day_sop_sequence(self) -> list[dict[str, Any]]:
+    def _first_day_sop_sequence(self, *, required: bool = False) -> list[dict[str, Any]]:
         if self.sop_reply_pack_service is None:
             return []
         try:
             config = self.sop_reply_pack_service.load()
-        except Exception:
+        except Exception as exc:
+            if required:
+                raise RuntimeError(
+                    f"first_day_sop_context_load_failed: {type(exc).__name__}: {exc}"
+                ) from exc
             return []
         packs = config.get("packs") if isinstance(config.get("packs"), list) else []
         output: list[dict[str, Any]] = []
@@ -3878,6 +3882,18 @@ class OutreachService:
                 _string(item.get("pack_id")),
             )
         )
+        if required:
+            available_scenes = {
+                _string(item.get("mapped_scene"))
+                for item in output
+                if isinstance(item, dict) and _string(item.get("mapped_scene"))
+            }
+            missing_scenes = sorted({"effect_proof", "activity_intro"} - available_scenes)
+            if missing_scenes:
+                raise RuntimeError(
+                    "first_day_sop_context_incomplete: missing_scenes="
+                    + ",".join(missing_scenes)
+                )
         return output
 
     @staticmethod

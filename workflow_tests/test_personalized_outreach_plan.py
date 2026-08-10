@@ -196,6 +196,22 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
                                 {"type": "text", "order": 1, "content": {"text": "亲，您在哪个城市哪个区呢？"}},
                             ],
                         },
+                        {
+                            "id": "s10_activity_intro",
+                            "enabled": True,
+                            "scopes": ["chat_gate"],
+                            "sop_category": "s10_activity_intro",
+                            "name": "活动介绍",
+                            "purpose": "完整介绍活动和参与方式",
+                            "order": 30,
+                            "day_stage": "day1",
+                            "reply_messages": [
+                                {"type": "text", "order": 1, "content": {"text": "完整活动规则"}},
+                                {"type": "image", "order": 2, "content": {"url": "https://oss.example/activity.png"}},
+                                {"type": "text", "order": 3, "content": {"text": "到店抵扣退款说明"}},
+                                {"type": "payment_collection", "order": 4, "content": {"amount": 10}},
+                            ],
+                        },
                     ]
                 }
 
@@ -203,13 +219,19 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
         service.sop_reply_pack_service = _SopReplyPackService()
 
         sequence = service._first_day_sop_sequence()
-        self.assertEqual([item["pack_id"] for item in sequence], [
-            "s10_need_and_case",
-            "s10_store_prompt",
-        ])
+        self.assertEqual(
+            [item["pack_id"] for item in sequence],
+            ["s10_need_and_case", "s10_activity_intro", "s10_store_prompt"],
+        )
         self.assertEqual(sequence[0]["source_id"], "sop-pack:s10_need_and_case")
         self.assertEqual(sequence[0]["mapped_scene"], "effect_proof")
-        self.assertEqual(sequence[1]["mapped_scene"], "store_area_request")
+        self.assertEqual(sequence[1]["source_id"], "sop-pack:s10_activity_intro")
+        self.assertEqual(sequence[1]["mapped_scene"], "activity_intro")
+        self.assertEqual(
+            [message["type"] for message in sequence[1]["reply_messages"]],
+            ["text", "image", "text", "payment_collection"],
+        )
+        self.assertEqual(sequence[2]["mapped_scene"], "store_area_request")
         self.assertEqual(sequence[0]["reply_messages"][1]["asset_id"], "sop-pack:s10_need_and_case:2")
 
         assets = service._first_day_sop_asset_catalog(sequence)
@@ -298,6 +320,40 @@ class PersonalizedOutreachPlanTests(unittest.IsolatedAsyncioTestCase):
             normalized_alias["required_assets"]["step2"]["asset_id"],
             "sop-pack:s10_activity_intro:2",
         )
+
+    def test_first_day_required_sop_context_fails_closed(self) -> None:
+        class _BrokenSopReplyPackService:
+            def load(self) -> dict[str, Any]:
+                raise OSError("temporary config failure")
+
+        service = OutreachService.__new__(OutreachService)
+        service.sop_reply_pack_service = _BrokenSopReplyPackService()
+
+        with self.assertRaisesRegex(RuntimeError, "first_day_sop_context_load_failed"):
+            service._first_day_sop_sequence(required=True)
+
+        class _IncompleteSopReplyPackService:
+            def load(self) -> dict[str, Any]:
+                return {
+                    "packs": [
+                        {
+                            "id": "s10_store_prompt",
+                            "enabled": True,
+                            "scope": "chat_gate",
+                            "sop_category": "store_prompt",
+                            "reply_messages": [
+                                {"type": "text", "content": {"text": "您在哪个城市？"}},
+                            ],
+                        }
+                    ]
+                }
+
+        service.sop_reply_pack_service = _IncompleteSopReplyPackService()
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "first_day_sop_context_incomplete: missing_scenes=activity_intro,effect_proof",
+        ):
+            service._first_day_sop_sequence(required=True)
 
     def test_first_day_scene_contract_rejects_duplicate_scenes_and_non_activity_payment(self) -> None:
         snapshot = {
