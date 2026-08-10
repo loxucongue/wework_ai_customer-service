@@ -10,7 +10,7 @@ from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 from app.policies.business_rules import sop_platform_business_facts_for_model
 from app.services.payment_collection import (
@@ -509,12 +509,34 @@ class SopPlatformTaskService:
             raise ValueError("platform task_id is required")
         lock = self._locks.setdefault(task_id, asyncio.Lock())
         async with lock:
-            duplicate_key = _platform_duplicate_send_once_key(platform_task)
-            if duplicate_key:
-                content_lock = self._locks.setdefault(f"platform-content:{duplicate_key}", asyncio.Lock())
-                async with content_lock:
-                    return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
-            return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
+            contact_lock_key = _platform_contact_lock_key(platform_task)
+            if contact_lock_key:
+                contact_lock = self._locks.setdefault(f"platform-contact:{contact_lock_key}", asyncio.Lock())
+                async with contact_lock:
+                    return await self._process_with_content_lock(
+                        platform_task,
+                        task_id=task_id,
+                        recovery_status=recovery_status,
+                    )
+            return await self._process_with_content_lock(
+                platform_task,
+                task_id=task_id,
+                recovery_status=recovery_status,
+            )
+
+    async def _process_with_content_lock(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        task_id: str,
+        recovery_status: str,
+    ) -> dict[str, Any]:
+        duplicate_key = _platform_duplicate_send_once_key(platform_task)
+        if duplicate_key:
+            content_lock = self._locks.setdefault(f"platform-content:{duplicate_key}", asyncio.Lock())
+            async with content_lock:
+                return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
+        return await self._process_locked(platform_task, task_id=task_id, recovery_status=recovery_status)
 
     def runtime_status(self) -> dict[str, Any]:
         return {
@@ -753,12 +775,9 @@ class SopPlatformTaskService:
     ) -> dict[str, Any]:
         if not hasattr(self.repository, "list_platform_sop_task_records"):
             return {"found": False, "match_type": "unsupported"}
-        current_text = _platform_delivery_text(reply_messages)
-        if len(_normalize_platform_delivery_text(current_text)) < 40:
-            return {"found": False, "match_type": "text_too_short"}
         try:
             records = self.repository.list_platform_sop_task_records(
-                limit=50,
+                limit=500,
                 customer_id=identity.get("customer_id") or "",
             )
         except Exception as exc:
@@ -769,6 +788,73 @@ class SopPlatformTaskService:
             current_task_id=task_id,
             reply_messages=reply_messages,
         )
+
+    async def _repair_duplicate_media_decision(
+        self,
+        platform_task: dict[str, Any],
+        *,
+        context: dict[str, Any],
+        decision: dict[str, Any],
+        duplicate: dict[str, Any],
+    ) -> dict[str, Any]:
+        original_messages = _platform_messages(platform_task)
+        knowledge_base = await self._load_knowledge_base_context()
+        repair_input = {
+            "task": {
+                "task_id": _task_id(platform_task),
+                "scene": platform_task.get("scene") if isinstance(platform_task.get("scene"), dict) else {},
+                "use_ai_copy": True,
+                "original_message_content": original_messages,
+            },
+            "latest_context": {
+                "conversation_timeline": context.get("conversation_timeline") or [],
+                "business_state": context.get("business_state") or {},
+            },
+            "locked_decision": decision,
+            "duplicate_media_evidence": duplicate,
+            "knowledge_base": knowledge_base,
+            "authoritative_business_facts": sop_platform_business_facts_for_model(),
+        }
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是第三方SOP重复素材修复节点。原发送决策已经锁定为send，不得改变业务场景、"
+                    "销售目标或硬事实。候选消息包含已向同一客户发送过的图片或视频。请从给定知识库"
+                    "选择未发送过且适用于同一场景的素材，必要时只调整与新素材衔接的文字。"
+                    "禁止再次使用duplicate_media_evidence中的任何媒体；不得编造URL、素材、门店、"
+                    "订单或支付事实。找不到合法新素材时输出decision=no_send和空reply_messages。"
+                    "只返回与原决策相同字段的JSON。"
+                ),
+            },
+            {"role": "user", "content": json.dumps(repair_input, ensure_ascii=False)},
+        ]
+        deadline = time.monotonic() + max(5.0, float(self.settings.sop_platform_model_timeout_seconds))
+        raw = await self.model_client.chat_json(
+            messages,
+            tier="balanced",
+            temperature=0.0,
+            deadline_monotonic=deadline,
+            max_parallel_candidates=1,
+        )
+        raw = _normalize_knowledge_decision_callback_fields(raw)
+        if str(raw.get("decision") or "").strip() != "send":
+            return {}
+        error = _decision_error(raw, original_messages=original_messages, use_ai_copy=True)
+        policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
+        if error or policy_error:
+            return {}
+        return {
+            "decision": "send",
+            "reason": str(raw.get("reason") or "duplicate_media_repaired"),
+            "reason_code": str(raw.get("reason_code") or "duplicate_media_repaired"),
+            "sceneName": str(raw.get("sceneName") or decision.get("sceneName") or "重复素材修复"),
+            "sceneCode": str(raw.get("sceneCode") or decision.get("sceneCode") or "duplicate_media_repaired"),
+            "knowledgeId": _int(raw.get("knowledgeId"), 0),
+            "knowledgeParagraphNo": _int(raw.get("knowledgeParagraphNo"), 0),
+            "remark": str(raw.get("remark") or raw.get("reason") or "已更换重复素材"),
+            "reply_messages": raw.get("reply_messages") if isinstance(raw.get("reply_messages"), list) else [],
+        }
 
     def _observe(self, name: str, elapsed_seconds: float) -> None:
         values = self._timings.get(name)
@@ -1139,6 +1225,10 @@ class SopPlatformTaskService:
                     "task_id": f"platform-sop-send-{task_id}",
                     "reply_messages": decision["reply_messages"],
                 }
+                media_delivery_audit = {
+                    "original": _platform_media_refs(_platform_messages(platform_task)),
+                    "final": _platform_media_refs(decision["reply_messages"]),
+                }
                 existing_delivery = await self._existing_platform_delivery(identity=identity, send_payload=send_payload)
                 if existing_delivery.get("found"):
                     duplicate_decision = {
@@ -1166,6 +1256,7 @@ class SopPlatformTaskService:
                             "context": {
                                 **_context_audit(context),
                                 "existing_delivery": existing_delivery,
+                                "media_delivery": media_delivery_audit,
                             },
                             "rule_data_response": rule_data_response,
                         },
@@ -1186,19 +1277,54 @@ class SopPlatformTaskService:
                     and context.get("opening_state") == "unopened"
                     and context.get("route_reason") == "first_add_unopened_original_platform_content"
                 )
-                near_duplicate = (
-                    {"found": False, "match_type": "first_day_platform_content_owned_by_platform"}
-                    if first_day_original_delivery
-                    else await self._recent_near_duplicate_platform_delivery(
-                        identity=identity,
-                        task_id=task_id,
-                        reply_messages=decision["reply_messages"],
-                    )
+                near_duplicate = await self._recent_near_duplicate_platform_delivery(
+                    identity=identity,
+                    task_id=task_id,
+                    reply_messages=decision["reply_messages"],
                 )
+                duplicate_repair: dict[str, Any] = {}
+                use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
+                if (
+                    near_duplicate.get("found")
+                    and near_duplicate.get("match_type") == "duplicate_media"
+                    and use_ai_copy
+                    and not first_day_original_delivery
+                ):
+                    repaired_decision = await self._repair_duplicate_media_decision(
+                        platform_task,
+                        context=context,
+                        decision=decision,
+                        duplicate=near_duplicate,
+                    )
+                    duplicate_repair = {
+                        "attempted": True,
+                        "succeeded": bool(repaired_decision),
+                        "initial_duplicate": near_duplicate,
+                    }
+                    if repaired_decision:
+                        repaired_duplicate = await self._recent_near_duplicate_platform_delivery(
+                            identity=identity,
+                            task_id=task_id,
+                            reply_messages=repaired_decision["reply_messages"],
+                        )
+                        duplicate_repair["verification"] = repaired_duplicate
+                        decision = repaired_decision
+                        send_payload["reply_messages"] = decision["reply_messages"]
+                        media_delivery_audit["final"] = _platform_media_refs(decision["reply_messages"])
+                        near_duplicate = repaired_duplicate
                 if near_duplicate.get("found"):
+                    media_duplicate = near_duplicate.get("match_type") == "duplicate_media"
+                    if media_duplicate:
+                        duplicate_reason = (
+                            "duplicate_media_exhausted"
+                            if use_ai_copy and not first_day_original_delivery
+                            else "duplicate_media_delivery"
+                        )
+                    else:
+                        duplicate_reason = "near_duplicate_platform_delivery"
                     duplicate_decision = {
                         "decision": "no_send",
-                        "reason": "near_duplicate_platform_delivery",
+                        "reason": duplicate_reason,
                         "reason_code": "exact_duplicate",
                         "sceneName": str(decision.get("sceneName") or "不发送｜重复触达"),
                         "sceneCode": "no_send_duplicate",
@@ -1221,6 +1347,8 @@ class SopPlatformTaskService:
                             "context": {
                                 **_context_audit(context),
                                 "near_duplicate_delivery": near_duplicate,
+                                "duplicate_media_repair": duplicate_repair,
+                                "media_delivery": media_delivery_audit,
                             },
                             "rule_data_response": rule_data_response,
                         },
@@ -1239,7 +1367,15 @@ class SopPlatformTaskService:
                 self.repository.update_sop_send_task(
                     str(local_task.get("id") or ""),
                     status="sending",
-                    send_payload={"decision": decision, "request": send_payload, "context": _context_audit(context)},
+                    send_payload={
+                        "decision": decision,
+                        "request": send_payload,
+                        "context": {
+                            **_context_audit(context),
+                            "media_delivery": media_delivery_audit,
+                            "duplicate_media_repair": duplicate_repair,
+                        },
+                    },
                 )
                 started = time.perf_counter()
                 send_result = await self.system_client.send(**send_payload)
@@ -1265,7 +1401,11 @@ class SopPlatformTaskService:
                     send_payload={
                         "decision": decision,
                         "request": send_payload,
-                        "context": _context_audit(context),
+                        "context": {
+                            **_context_audit(context),
+                            "media_delivery": media_delivery_audit,
+                            "duplicate_media_repair": duplicate_repair,
+                        },
                         "rule_data_response": rule_data_response,
                     },
                     send_response=send_result,
@@ -1714,6 +1854,26 @@ class SopPlatformTaskService:
         original_messages = _platform_messages(platform_task)
         use_ai_copy = _bool(platform_task.get("useAiCopy", platform_task.get("use_ai_copy")))
         knowledge_base = await self._load_knowledge_base_context()
+        recent_media_lookup = await self._recent_near_duplicate_platform_delivery(
+            identity=_task_identity(platform_task),
+            task_id=_task_id(platform_task),
+            reply_messages=[],
+        )
+        recent_sent_media = (
+            recent_media_lookup.get("sent_media")
+            if isinstance(recent_media_lookup.get("sent_media"), list)
+            else []
+        )
+        sent_fingerprints = {
+            str(item.get("fingerprint") or "")
+            for item in recent_sent_media
+            if isinstance(item, dict)
+        }
+        available_unsent_media = [
+            item
+            for item in _knowledge_media_catalog(knowledge_base)
+            if item.get("fingerprint") not in sent_fingerprints
+        ]
         model_input = {
             "task": {
                 "task_id": _task_id(platform_task),
@@ -1729,7 +1889,9 @@ class SopPlatformTaskService:
                 "use_ai_copy": use_ai_copy,
                 "original_message_content": original_messages,
                 "original_message_content_role": (
-                    "audit_only_except_structured_payment_collection"
+                    "exact_send_payload_if_approved"
+                    if not use_ai_copy
+                    else "audit_only_except_structured_payment_collection"
                     if any(message.get("type") == "payment_collection" for message in original_messages)
                     else "audit_only_ignore_for_generation"
                 ),
@@ -1745,6 +1907,9 @@ class SopPlatformTaskService:
                 "conversation_timeline": context.get("conversation_timeline") or [],
                 "timeline_structure": _timeline_structure(context.get("conversation_timeline") or []),
                 "business_state": context.get("business_state") or {},
+                "recent_sent_media": recent_sent_media,
+                "forbidden_media_fingerprints": sorted(value for value in sent_fingerprints if value),
+                "available_unsent_media": available_unsent_media,
             },
             "knowledge_base": knowledge_base,
             "authoritative_business_facts": sop_platform_business_facts_for_model(),
@@ -1774,7 +1939,7 @@ class SopPlatformTaskService:
             max_parallel_candidates=1,
         )
         raw = _normalize_knowledge_decision_callback_fields(raw)
-        error = _decision_error(raw, original_messages=original_messages, use_ai_copy=True)
+        error = _decision_error(raw, original_messages=original_messages, use_ai_copy=use_ai_copy)
         policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if error:
             repair_messages = [
@@ -1795,7 +1960,7 @@ class SopPlatformTaskService:
                 max_parallel_candidates=1,
             )
             raw = _normalize_knowledge_decision_callback_fields(raw)
-            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=True)
+            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=use_ai_copy)
             policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if not error and policy_error:
             repair_messages = [
@@ -1819,7 +1984,7 @@ class SopPlatformTaskService:
                 max_parallel_candidates=1,
             )
             raw = _normalize_knowledge_decision_callback_fields(raw)
-            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=True)
+            error = _decision_error(raw, original_messages=original_messages, use_ai_copy=use_ai_copy)
             policy_error = "" if error else _decision_policy_error(raw, platform_task=platform_task)
         if error:
             raise RuntimeError(f"invalid_sop_platform_model_output: {error}")
@@ -1841,7 +2006,11 @@ class SopPlatformTaskService:
                 "remark": str(raw.get("remark") or raw.get("reason") or ""),
                 "reply_messages": [],
             }
-        output_messages = raw.get("reply_messages") if isinstance(raw.get("reply_messages"), list) else []
+        output_messages = (
+            raw.get("reply_messages")
+            if use_ai_copy and isinstance(raw.get("reply_messages"), list)
+            else original_messages
+        )
         return {
             "decision": decision,
             "reason": str(raw.get("reason") or ""),
@@ -2053,6 +2222,138 @@ def _platform_duplicate_send_once_key(platform_task: dict[str, Any]) -> str:
     return f"platform_sop_content:{contact}:{scheduled_day}:{task_type}:{content_hash}"
 
 
+def _platform_contact_lock_key(platform_task: dict[str, Any]) -> str:
+    identity = _task_identity(platform_task)
+    contact_id = identity.get("external_userid") or identity.get("customer_id")
+    if not identity.get("corp_id") or not identity.get("wechat") or not contact_id:
+        return ""
+    canonical = "|".join(
+        [identity["corp_id"].lower(), identity["wechat"].lower(), contact_id.lower()]
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+
+
+_VOLATILE_MEDIA_QUERY_KEYS = {
+    "authorization",
+    "expires",
+    "ossaccesskeyid",
+    "signature",
+    "token",
+    "x-expires",
+    "x-signature",
+}
+
+
+def _canonical_platform_media_url(url: str) -> str:
+    value = unquote(str(url or "").strip())
+    parsed = urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        return value
+    hostname = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError:
+        return value
+    netloc = hostname
+    if port and not (
+        (parsed.scheme.lower() == "http" and port == 80)
+        or (parsed.scheme.lower() == "https" and port == 443)
+    ):
+        netloc = f"{hostname}:{port}"
+    query = []
+    for key, query_value in parse_qsl(parsed.query, keep_blank_values=True):
+        lowered = key.lower()
+        if (
+            lowered in _VOLATILE_MEDIA_QUERY_KEYS
+            or lowered.startswith("x-amz-")
+            or lowered.startswith("x-oss-")
+        ):
+            continue
+        query.append((key, query_value))
+    return urlunparse(
+        (
+            parsed.scheme.lower(),
+            netloc,
+            re.sub(r"/{2,}", "/", unquote(parsed.path or "/")),
+            "",
+            urlencode(sorted(query)),
+            "",
+        )
+    )
+
+
+def _platform_media_refs(messages: list[Any]) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        message_type = str(message.get("type") or "").strip().lower()
+        if message_type not in {"image", "video"}:
+            continue
+        content = message.get("content") if isinstance(message.get("content"), dict) else {}
+        asset_id = ""
+        for key in ("asset_id", "assetId", "media_id", "mediaId", "file_id", "fileId", "id"):
+            asset_id = str(content.get(key) or message.get(key) or "").strip()
+            if asset_id:
+                break
+        url = str(content.get("url") or content.get("content") or "").strip()
+        canonical_url = _canonical_platform_media_url(url) if url else ""
+        if asset_id:
+            fingerprint_source = f"{message_type}:asset:{asset_id}"
+        elif canonical_url:
+            fingerprint_source = f"{message_type}:url:{canonical_url}"
+        else:
+            continue
+        refs.append(
+            {
+                "type": message_type,
+                "asset_id": asset_id,
+                "canonical_url": canonical_url,
+                "fingerprint": hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest(),
+            }
+        )
+    return refs
+
+
+def _knowledge_media_catalog(knowledge_base: dict[str, Any]) -> list[dict[str, Any]]:
+    catalog: list[dict[str, Any]] = []
+    items = knowledge_base.get("items") if isinstance(knowledge_base.get("items"), list) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        paragraphs = item.get("paragraphs") if isinstance(item.get("paragraphs"), list) else []
+        for paragraph in paragraphs:
+            if not isinstance(paragraph, dict):
+                continue
+            messages = paragraph.get("messages") if isinstance(paragraph.get("messages"), list) else []
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                message_type = str(message.get("msgType") or "").strip().lower()
+                if message_type not in {"image", "video"}:
+                    continue
+                normalized = {
+                    "type": message_type,
+                    "content": {
+                        "url": str(message.get("mediaUrl") or "").strip(),
+                        "fileId": message.get("fileId"),
+                    },
+                }
+                refs = _platform_media_refs([normalized])
+                if not refs:
+                    continue
+                catalog.append(
+                    {
+                        **refs[0],
+                        "knowledge_id": _int(item.get("id"), 0),
+                        "knowledge_name": str(item.get("knowledgeName") or ""),
+                        "paragraph_no": _int(paragraph.get("paragraphNo"), 0),
+                        "message_id": _int(message.get("id"), 0),
+                    }
+                )
+    return catalog
+
+
 def _duplicate_platform_task_reason(
     repository: Any,
     *,
@@ -2146,8 +2447,11 @@ def _platform_near_duplicate_delivery_match(
 ) -> dict[str, Any]:
     current_text = _platform_delivery_text(reply_messages)
     current_normalized = _normalize_platform_delivery_text(current_text)
-    if len(current_normalized) < 40:
-        return {"found": False, "match_type": "text_too_short"}
+    current_media = _platform_media_refs(reply_messages)
+    current_fingerprints = {item["fingerprint"] for item in current_media}
+    sent_media: list[dict[str, Any]] = []
+    media_match: dict[str, Any] = {}
+    text_match: dict[str, Any] = {}
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -2159,14 +2463,39 @@ def _platform_near_duplicate_delivery_match(
         if status not in {"sent", "sending"} and not str(record.get("sent_at") or "").strip():
             continue
         sent_messages = _platform_record_sent_messages(record)
+        record_media = _platform_media_refs(sent_messages)
+        for media in record_media:
+            sent_media.append(
+                {
+                    **media,
+                    "task_id": _platform_record_task_id(record),
+                    "event_id": str(record.get("event_id") or ""),
+                    "status": status,
+                    "sent_at": str(record.get("sent_at") or ""),
+                }
+            )
+        duplicate_media = [item for item in record_media if item["fingerprint"] in current_fingerprints]
+        if duplicate_media and not media_match:
+            media_match = {
+                "found": True,
+                "match_type": "duplicate_media",
+                "duplicate_media": duplicate_media,
+                "current_media": current_media,
+                "duplicate_event_id": str(record.get("event_id") or ""),
+                "duplicate_task_id": _platform_record_task_id(record),
+                "duplicate_status": status,
+                "duplicate_sent_at": str(record.get("sent_at") or ""),
+            }
+        if len(current_normalized) < 40:
+            continue
         sent_text = _platform_delivery_text(sent_messages)
         sent_normalized = _normalize_platform_delivery_text(sent_text)
         if len(sent_normalized) < 40:
             continue
         ratio = SequenceMatcher(None, current_normalized, sent_normalized).ratio()
         paragraph_match = _platform_paragraph_duplicate_match(current_text, sent_text)
-        if ratio >= 0.92 or paragraph_match.get("matched"):
-            return {
+        if (ratio >= 0.92 or paragraph_match.get("matched")) and not text_match:
+            text_match = {
                 "found": True,
                 "match_type": "near_duplicate_text",
                 "ratio": round(ratio, 4),
@@ -2176,7 +2505,16 @@ def _platform_near_duplicate_delivery_match(
                 "duplicate_status": status,
                 "duplicate_sent_at": str(record.get("sent_at") or ""),
             }
-    return {"found": False, "match_type": "none"}
+    if media_match:
+        return {**media_match, "sent_media": sent_media}
+    if text_match:
+        return {**text_match, "current_media": current_media, "sent_media": sent_media}
+    return {
+        "found": False,
+        "match_type": "text_too_short" if len(current_normalized) < 40 else "none",
+        "current_media": current_media,
+        "sent_media": sent_media,
+    }
 
 
 def _same_platform_contact(record: dict[str, Any], identity: dict[str, str]) -> bool:
